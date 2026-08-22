@@ -90,8 +90,11 @@ abstract class RecordFirebaseAndroidRuntimeEvidenceTask @Inject constructor(
             copiedApp.releaseDigest(), copiedTest.releaseDigest(), copiedAar.releaseDigest(),
             appRuntime, aarRuntime,
         )))
-        verifyFirebaseAndroidRuntimeEvidenceArtifacts(
+        val verified = verifyFirebaseAndroidRuntimeEvidenceArtifacts(
             evidence, output, commit, pinnedRuntime, ::applicationId, ::testIdentity,
+        )
+        writeFirebaseAndroidVerificationReceipt(
+            output.resolve(FIREBASE_ANDROID_VERIFICATION_RECEIPT_FILE), verified,
         )
     }
 
@@ -134,17 +137,7 @@ abstract class VerifyFirebaseAndroidRuntimeEvidenceTask @Inject constructor(
             directory.resolve(FIREBASE_ANDROID_EVIDENCE_FILE), directory, expectedCommit.get(),
             pinnedRuntimeSha256.get(), ::applicationId, ::testIdentity,
         )
-        verificationFile.get().asFile.atomicWriteJson(buildJsonObject {
-            put("schemaVersion", JsonPrimitive(1))
-            put("result", JsonPrimitive("passed"))
-            put("evidenceSha256", JsonPrimitive(verified.evidenceSha256))
-            put("firebaseMatrixSha256", JsonPrimitive(verified.matrixSha256))
-            put("testReportSha256", JsonPrimitive(verified.testReportSha256))
-            put("applicationApkSha256", JsonPrimitive(verified.applicationApkSha256))
-            put("testApkSha256", JsonPrimitive(verified.testApkSha256))
-            put("releaseAarSha256", JsonPrimitive(verified.releaseAarSha256))
-            put("bundledRuntimeSha256", JsonPrimitive(verified.bundledRuntimeSha256))
-        })
+        writeFirebaseAndroidVerificationReceipt(verificationFile.get().asFile, verified)
     }
 
     private fun applicationId(apk: File): String = parseAndroidApplicationId(printManifest(apk))
@@ -158,3 +151,18 @@ abstract class VerifyFirebaseAndroidRuntimeEvidenceTask @Inject constructor(
         return output.toString(Charsets.UTF_8)
     }
 }
+
+internal fun writeFirebaseAndroidVerificationReceipt(
+    output: File,
+    verified: FirebaseAndroidEvidenceVerification,
+) = output.atomicWriteJson(buildJsonObject {
+    put("schemaVersion", JsonPrimitive(1))
+    put("result", JsonPrimitive("passed"))
+    put("evidenceSha256", JsonPrimitive(verified.evidenceSha256))
+    put("firebaseMatrixSha256", JsonPrimitive(verified.matrixSha256))
+    put("testReportSha256", JsonPrimitive(verified.testReportSha256))
+    put("applicationApkSha256", JsonPrimitive(verified.applicationApkSha256))
+    put("testApkSha256", JsonPrimitive(verified.testApkSha256))
+    put("releaseAarSha256", JsonPrimitive(verified.releaseAarSha256))
+    put("bundledRuntimeSha256", JsonPrimitive(verified.bundledRuntimeSha256))
+})

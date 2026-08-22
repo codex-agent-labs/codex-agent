@@ -19,6 +19,24 @@ class FirebaseAndroidRuntimeEvidenceTasksTest {
     }
 
     @Test
+    fun `trusted recording emits the candidate Firebase verification receipt`() = withFixture { fixture ->
+        val verified = fixture.verify()
+        val receipt = fixture.root.resolve(FIREBASE_ANDROID_VERIFICATION_RECEIPT_FILE)
+        writeFirebaseAndroidVerificationReceipt(receipt, verified)
+
+        val record = receipt.readReleaseObject()
+        assertEquals(1, record.releaseInt("schemaVersion"))
+        assertEquals("passed", record.releaseString("result"))
+        assertEquals(verified.evidenceSha256, record.releaseString("evidenceSha256"))
+        assertEquals(verified.matrixSha256, record.releaseString("firebaseMatrixSha256"))
+        assertEquals(verified.testReportSha256, record.releaseString("testReportSha256"))
+        assertEquals(verified.applicationApkSha256, record.releaseString("applicationApkSha256"))
+        assertEquals(verified.testApkSha256, record.releaseString("testApkSha256"))
+        assertEquals(verified.releaseAarSha256, record.releaseString("releaseAarSha256"))
+        assertEquals(verified.bundledRuntimeSha256, record.releaseString("bundledRuntimeSha256"))
+    }
+
+    @Test
     fun `schema identity and exact ARM device mismatches fail`() {
         listOf(
             "schemaVersion" to JsonPrimitive(2),
