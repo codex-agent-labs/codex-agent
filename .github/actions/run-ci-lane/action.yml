@@ -96,9 +96,23 @@ runs:
         targets: aarch64-apple-ios,aarch64-apple-ios-sim
     - id: setup-sccache
       if: inputs.rust-version != 'none'
+      continue-on-error: true
       uses: ./.github/actions/setup-sccache
       with:
         write: ${{ steps.cache-policy.outputs.rust-write }}
+        sccache-write: ${{ steps.cache-policy.outputs.sccache-write }}
+        version: ${{ steps.cache-policy.outputs.sccache-version }}
+    - name: Fall back to direct Rust compilation when cache setup fails
+      if: inputs.rust-version != 'none' && steps.setup-sccache.outcome == 'failure'
+      shell: bash
+      run: |
+        {
+          printf 'SCCACHE_GHA_ENABLED=\n'
+          printf 'SCCACHE_GHA_VERSION=\n'
+          printf 'SCCACHE_GHA_RW_MODE=\n'
+          printf 'SCCACHE_IGNORE_SERVER_IO_ERROR=\n'
+          printf 'RUSTC_WRAPPER=\n'
+        } >> "$GITHUB_ENV"
     - id: environment
       env:
         NODE_REQUESTED: ${{ inputs.node-version }}

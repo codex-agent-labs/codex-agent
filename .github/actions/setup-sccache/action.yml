@@ -2,8 +2,14 @@ name: Setup sccache
 description: Install and integrity-check the pinned Rust compiler cache.
 inputs:
   write:
-    description: Request a write from the one elected authoritative PR merge-ref lane.
+    description: Request a Cargo dependency-cache write from the elected authoritative PR merge-ref lane.
     default: "false"
+  sccache-write:
+    description: Request a compiler-cache write from an isolated authoritative PR merge-ref lane.
+    default: "false"
+  version:
+    description: Stable SCCACHE_GHA_VERSION namespace.
+    default: codex-agent-rust-v1
 outputs:
   cargo-main-cache-key:
     value: ${{ steps.policy.outputs.cargo-main-key }}
@@ -15,8 +21,10 @@ runs:
         version: v0.17.0
     - name: Verify the pinned binary and configure its GHA backend
       env:
-        ALLOW_WRITE: ${{ inputs.write }}
+        ALLOW_CARGO_WRITE: ${{ inputs.write }}
+        ALLOW_SCCACHE_WRITE: ${{ inputs.sccache-write }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
+        SCCACHE_VERSION: ${{ inputs.version }}
       shell: bash
       run: |
         expected=""
@@ -28,21 +36,24 @@ runs:
           actual=$(openssl dgst -sha256 "$(command -v sccache)" | awk '{print $NF}')
           test "$actual" = "$expected"
         fi
-        mode=READ_ONLY
-        if [ "$ALLOW_WRITE" = true ] && [ "$GITHUB_EVENT_NAME" = pull_request ] && \
+        cargo_write=false
+        sccache_mode=READ_ONLY
+        if [ "$GITHUB_EVENT_NAME" = pull_request ] && \
           [ -n "$PR_NUMBER" ] && [ "$GITHUB_REF" = "refs/pull/$PR_NUMBER/merge" ]; then
-          mode=READ_WRITE
+          [ "$ALLOW_CARGO_WRITE" != true ] || cargo_write=true
+          [ "$ALLOW_SCCACHE_WRITE" != true ] || sccache_mode=READ_WRITE
         fi
         {
           printf 'SCCACHE_GHA_ENABLED=true\n'
-          printf 'SCCACHE_GHA_VERSION=codex-agent-rust-v1\n'
-          printf 'SCCACHE_GHA_RW_MODE=%s\n' "$mode"
+          printf 'SCCACHE_GHA_VERSION=%s\n' "$SCCACHE_VERSION"
+          printf 'SCCACHE_GHA_RW_MODE=%s\n' "$sccache_mode"
+          printf 'SCCACHE_IGNORE_SERVER_IO_ERROR=1\n'
           printf 'RUSTC_WRAPPER=sccache\n'
           printf 'CARGO_INCREMENTAL=0\n'
         } >> "$GITHUB_ENV"
         dependency_hash="${{ hashFiles('codex-agent-runtime-ios/native/provenance.json', 'codex-agent-runtime-ios/native/patches/**') }}"
         {
-          printf 'write=%s\n' "$([ "$mode" = READ_WRITE ] && printf true || printf false)"
+          printf 'write=%s\n' "$cargo_write"
           printf 'cargo-main-key=cargo-main-dependencies-v1-%s-%s-%s\n' \
             "$RUNNER_OS" "$RUNNER_ARCH" "$dependency_hash"
           printf 'cargo-pr-key=cargo-pr-dependencies-v1-%s-%s-%s-%s\n' \
@@ -50,6 +61,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
       id: policy
     - id: cargo-main-read
+      continue-on-error: true
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |
@@ -59,6 +71,7 @@ runs:
         key: ${{ steps.policy.outputs.cargo-main-key }}
     - id: cargo-pr-read
       if: steps.policy.outputs.write != 'true' && github.event_name == 'pull_request'
+      continue-on-error: true
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |
@@ -68,6 +81,7 @@ runs:
         key: ${{ steps.policy.outputs.cargo-pr-key }}
     - id: cargo-pr-write
       if: steps.policy.outputs.write == 'true'
+      continue-on-error: true
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |

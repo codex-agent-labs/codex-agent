@@ -362,11 +362,16 @@ class CacheSeedTest(unittest.TestCase):
         self.assertTrue(result["write"])
         self.assertTrue(result["seed"])
 
-    def test_policy_elects_cargo_writer_from_producer_lanes(self) -> None:
+    def test_policy_isolates_cargo_and_sccache_writers(self) -> None:
+        namespaces = {
+            "ios-native-tests": "codex-agent-rust-v1-ios-native-tests",
+            "ios-rust-device": "codex-agent-rust-v1-ios-rust-device",
+            "ios-rust-simulator": "codex-agent-rust-v1-ios-rust-simulator",
+        }
         self.plan["event"] = "pull_request"
         self.plan["lanes"] = {
-            "ios-kotlin-tests": {"build": False, "test": True, "metadata": False},
-            "ios-rust-simulator": {"build": True, "test": False, "metadata": False},
+            lane: {"build": True, "test": False, "metadata": False}
+            for lane in (*namespaces, "ios-framework-device")
         }
         self.write_plan()
         environment = {
@@ -376,18 +381,67 @@ class CacheSeedTest(unittest.TestCase):
             "GITHUB_REF": "refs/pull/7/merge",
             "PR_NUMBER": "7",
         }
-        arguments = Namespace(
-            plan=self.plan_path,
-            lane="ios-rust-simulator",
-            validation_commit=COMMIT,
-            runner_os="macOS",
-            runner_arch="ARM64",
-            github_output=None,
+
+        def evaluate(lane: str, values: dict[str, str] = environment) -> dict[str, object]:
+            arguments = Namespace(
+                plan=self.plan_path,
+                lane=lane,
+                validation_commit=COMMIT,
+                runner_os="macOS",
+                runner_arch="ARM64",
+                github_output=None,
+            )
+            with patch.dict(os.environ, values, clear=True):
+                return policy(arguments)
+
+        results = {lane: evaluate(lane) for lane in namespaces}
+        self.assertEqual(
+            ["ios-native-tests"],
+            [lane for lane, result in results.items() if result["rust-write"]],
         )
-        with patch.dict(os.environ, environment, clear=True):
-            result = policy(arguments)
-        self.assertTrue(result["rust-write"])
-        self.assertTrue(result["rust-seed"])
+        self.assertEqual(
+            ["ios-native-tests"],
+            [lane for lane, result in results.items() if result["rust-seed"]],
+        )
+        self.assertEqual(set(namespaces), {lane for lane, result in results.items() if result["sccache-write"]})
+        self.assertEqual(namespaces, {lane: result["sccache-version"] for lane, result in results.items()})
+        self.assertEqual(len(namespaces), len({result["sccache-version"] for result in results.values()}))
+
+        framework = evaluate("ios-framework-device")
+        self.assertFalse(framework["sccache-write"])
+        self.assertEqual("codex-agent-rust-v1", framework["sccache-version"])
+
+        self.plan["lanes"]["ios-rust-simulator"]["build"] = False
+        self.write_plan()
+        self.assertFalse(evaluate("ios-rust-simulator")["sccache-write"])
+
+        self.plan["lanes"]["ios-rust-simulator"]["build"] = True
+        self.write_plan()
+        for override in (
+            {"GITHUB_REF": "refs/heads/main"},
+            {"GITHUB_SHA": "3" * 40},
+            {"GITHUB_REPOSITORY": "other/repository"},
+            {"GITHUB_EVENT_NAME": "push"},
+            {"PR_NUMBER": ""},
+        ):
+            untrusted = environment | override
+            for lane in namespaces:
+                result = evaluate(lane, untrusted)
+                self.assertFalse(result["rust-write"])
+                self.assertFalse(result["rust-seed"])
+                self.assertFalse(result["sccache-write"])
+
+        self.plan["event"] = "merge_group"
+        self.write_plan()
+        merge = environment | {
+            "GITHUB_EVENT_NAME": "merge_group",
+            "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-7-deadbeef",
+            "PR_NUMBER": "",
+        }
+        native = evaluate("ios-native-tests", merge)
+        self.assertTrue(native["rust-seed"])
+        self.assertFalse(native["rust-write"])
+        self.assertFalse(native["sccache-write"])
 
     def test_identical_tree_merge_group_promotes_pr_source_seed_without_product_job(self) -> None:
         pr_commit = "3" * 40
@@ -432,12 +486,30 @@ class CacheSeedTest(unittest.TestCase):
         lane = (REPOSITORY / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
         kmp = (REPOSITORY / ".github/actions/setup-kmp/action.yml").read_text(encoding="utf-8")
         sccache = (REPOSITORY / ".github/actions/setup-sccache/action.yml").read_text(encoding="utf-8")
+        cargo_task = (REPOSITORY / "gradle/build-logic/src/main/kotlin/PinnedCargoTask.kt").read_text(encoding="utf-8")
         promotion = (REPOSITORY / ".github/workflows/promote.yml").read_text(encoding="utf-8")
         self.assertIn("ci/cache_seed.py policy", lane)
         self.assertIn("GITHUB_EVENT_NAME", lane)
         self.assertIn("gradle-main-dependencies-v1", kmp)
         self.assertIn("konan-main-v2", kmp)
         self.assertIn("cargo-main-dependencies-v1", sccache)
+        self.assertIn("write: ${{ steps.cache-policy.outputs.rust-write }}", lane)
+        self.assertIn("sccache-write: ${{ steps.cache-policy.outputs.sccache-write }}", lane)
+        self.assertIn("version: ${{ steps.cache-policy.outputs.sccache-version }}", lane)
+        self.assertIn("SCCACHE_IGNORE_SERVER_IO_ERROR=1", sccache)
+        self.assertIn('"SCCACHE_IGNORE_SERVER_IO_ERROR"', cargo_task)
+        self.assertIn('test "$actual" = "$expected"', sccache)
+        setup = lane[lane.index("    - id: setup-sccache"):lane.index("    - id: environment")]
+        self.assertIn("continue-on-error: true", setup)
+        self.assertIn("steps.setup-sccache.outcome == 'failure'", setup)
+        for name in (
+            "SCCACHE_GHA_ENABLED", "SCCACHE_GHA_VERSION", "SCCACHE_GHA_RW_MODE",
+            "SCCACHE_IGNORE_SERVER_IO_ERROR", "RUSTC_WRAPPER",
+        ):
+            self.assertIn(f"printf '{name}=\\n'", setup)
+        for step in ("cargo-main-read", "cargo-pr-read", "cargo-pr-write"):
+            section = sccache[sccache.index(f"    - id: {step}"):]
+            self.assertIn("continue-on-error: true", section.split("\n    - id:", 1)[0])
         self.assertIn("actions/cache/save@", promotion)
         for path in (
             "~/.gradle/caches/modules-2",

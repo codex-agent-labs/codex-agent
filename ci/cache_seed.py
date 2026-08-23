@@ -14,7 +14,12 @@ from pathlib import Path, PurePosixPath
 
 OID = re.compile(r"[0-9a-f]{40}")
 KEY = re.compile(r"[A-Za-z0-9_.-]+")
-CARGO_PRODUCER_LANES = {"ios-native-tests", "ios-rust-device", "ios-rust-simulator"}
+CARGO_PRODUCER_LANES = {"ios-native-tests"}
+SCCACHE_VERSIONS = {
+    "ios-native-tests": "codex-agent-rust-v1-ios-native-tests",
+    "ios-rust-device": "codex-agent-rust-v1-ios-rust-device",
+    "ios-rust-simulator": "codex-agent-rust-v1-ios-rust-simulator",
+}
 CACHE_PATHS = {
     "kmp": {
         "gradle": (".gradle/caches/modules-2",),
@@ -162,6 +167,12 @@ def policy(arguments: argparse.Namespace) -> dict[str, object]:
     result: dict[str, object] = {
         "write": bool(authoritative_pr and writers and arguments.lane == writers[0]),
         "rust-write": bool(authoritative_pr and rust_writers and arguments.lane == rust_writers[0]),
+        "sccache-write": bool(
+            authoritative_pr
+            and arguments.lane in writers
+            and arguments.lane in SCCACHE_VERSIONS
+        ),
+        "sccache-version": SCCACHE_VERSIONS.get(arguments.lane, "codex-agent-rust-v1"),
         "seed": bool(
             (authoritative_pr or authoritative_merge_group)
             and writers
