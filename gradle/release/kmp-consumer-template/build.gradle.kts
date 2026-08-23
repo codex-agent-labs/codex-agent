@@ -40,7 +40,7 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation("io.github.codex-agent-labs:codex-agent-client:$codexAgentVersion")
+            implementation("io.github.codex-agent-labs:codex-agent:$codexAgentVersion")
         }
         when (consumerTarget) {
             "common" -> Unit

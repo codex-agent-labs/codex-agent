@@ -25,10 +25,10 @@ class MavenRepositoryTasksTest {
     fun `Gradle transport metadata is excluded from verification and inventory`() =
         withRepository { repository, inventory ->
             writeExactRepository(repository, signed = true)
-            val coordinate = repository.resolve("io/github/codex-agent-labs/codex-agent-client")
+            val coordinate = repository.resolve("io/github/codex-agent-labs/codex-agent")
             coordinate.resolve("maven-metadata.xml").writeText("<metadata/>")
             coordinate.resolve("maven-metadata.xml.sha256").writeText("0".repeat(64))
-            val primary = coordinate.resolve("$VERSION/codex-agent-client-$VERSION.jar")
+            val primary = coordinate.resolve("$VERSION/codex-agent-$VERSION.jar")
             primary.resolveSibling(primary.name + ".asc.sha256").writeText("0".repeat(64))
 
             verifyMavenRepository(repository, GROUP, VERSION, true, inventory)
@@ -43,7 +43,7 @@ class MavenRepositoryTasksTest {
         writeExactRepository(repository)
         val group = repository.resolve("io/github/codex-agent-labs")
         listOf(
-            "codex-agent-client/0.2.0/codex-agent-client-0.2.0.module",
+            "codex-agent/0.2.0/codex-agent-0.2.0.module",
             "codex-agent-runtime-android/0.2.0/codex-agent-runtime-android-0.2.0.aar",
         ).forEach { relative ->
             val file = group.resolve(relative)
@@ -106,7 +106,7 @@ class MavenRepositoryTasksTest {
     @Test
     fun `every POM requires exact GPL metadata`() = withRepository { repository, inventory ->
         writeExactRepository(repository)
-        val pom = repository.resolve("io/github/codex-agent-labs/codex-agent-client/0.2.0/codex-agent-client-0.2.0.pom")
+        val pom = repository.resolve("io/github/codex-agent-labs/codex-agent/0.2.0/codex-agent-0.2.0.pom")
         pom.writeText(pom.readText().replace("distribution>repo", "distribution>manual"))
         val failure = assertFailsWith<IllegalStateException> {
             verifyMavenRepository(repository, GROUP, VERSION, false, inventory)

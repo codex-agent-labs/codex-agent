@@ -308,8 +308,8 @@ class ReleaseWorkflowContractTest {
         assertTrue("generateConsumerCommonMavenRelocationPoms" in plugin)
         val commonPublications = plugin.substringAfter("\"common\" to listOf(")
             .substringBefore("\n    ),")
-        assertTrue("publicationTask(\"codex-agent-client\", \"KotlinMultiplatform\", \"common\")" in commonPublications)
-        assertTrue("publicationTask(\"codex-agent-client\", \"Jvm\", \"common\")" in commonPublications)
+        assertTrue("publicationTask(\"codex-agent-core\", \"KotlinMultiplatform\", \"common\")" in commonPublications)
+        assertTrue("publicationTask(\"codex-agent-core\", \"Jvm\", \"common\")" in commonPublications)
         assertFalse("allPublicationTask" in commonPublications)
         listOf(
             "verifyStagedKmpConsumerCommon", "verifyStagedKmpConsumerAndroid",

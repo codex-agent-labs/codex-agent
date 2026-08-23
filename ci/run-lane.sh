@@ -64,11 +64,11 @@ run_desktop() {
 case "$lane" in
   contracts)
     if [ "$build" = true ]; then
-      ./gradlew :codex-agent-client:verifyProtocolSource "${args[@]}"
+      ./gradlew :codex-agent-core:verifyProtocolSource "${args[@]}"
       ./gradlew -p gradle/build-logic releaseToolingJar --stacktrace
     fi
     if [ "$test_lane" = true ]; then
-      ./gradlew :codex-agent-client:jvmTest :tooling:protocol-generator:test "${args[@]}"
+      ./gradlew :codex-agent-core:jvmTest :tooling:protocol-generator:test "${args[@]}"
       ./gradlew -p gradle/build-logic test --parallel --stacktrace
     fi
     [ "$metadata" != true ] || ./gradlew -p gradle/build-logic test --tests '*WorkflowContractTest' --parallel --stacktrace

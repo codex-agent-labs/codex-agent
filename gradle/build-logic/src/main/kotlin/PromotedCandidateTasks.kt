@@ -35,30 +35,30 @@ private val promotedInputFiles = linkedMapOf(
 private val promotedSidecarSuffixes = listOf(".asc", ".md5", ".sha1", ".sha256", ".sha512")
 internal val promotedMavenArtifactOwnership = linkedMapOf(
     "common" to setOf(
-        "codex-agent-client", "codex-agent-client-jvm",
+        "codex-agent", "codex-agent-jvm",
     ),
     "android" to setOf(
-        "codex-agent-client-android", "codex-agent-runtime-android",
+        "codex-agent-android", "codex-agent-runtime-android",
     ),
     "desktop" to setOf(
-        "codex-agent-client-linuxarm64", "codex-agent-client-linuxx64",
-        "codex-agent-client-macosarm64", "codex-agent-client-macosx64", "codex-agent-client-mingwx64",
+        "codex-agent-linuxarm64", "codex-agent-linuxx64",
+        "codex-agent-macosarm64", "codex-agent-macosx64", "codex-agent-mingwx64",
         "codex-agent-runtime-desktop", "codex-agent-runtime-desktop-jvm",
         "codex-agent-runtime-desktop-linuxarm64", "codex-agent-runtime-desktop-linuxx64",
         "codex-agent-runtime-desktop-macosarm64", "codex-agent-runtime-desktop-macosx64",
         "codex-agent-runtime-desktop-mingwx64",
     ),
     "ios-device" to setOf(
-        "codex-agent-client-iosarm64", "codex-agent-runtime-ios", "codex-agent-runtime-ios-iosarm64",
+        "codex-agent-iosarm64", "codex-agent-runtime-ios", "codex-agent-runtime-ios-iosarm64",
     ),
     "ios-simulator" to setOf(
-        "codex-agent-client-iossimulatorarm64", "codex-agent-runtime-ios-iossimulatorarm64",
+        "codex-agent-iossimulatorarm64", "codex-agent-runtime-ios-iossimulatorarm64",
     ),
     "node-js" to setOf(
-        "codex-agent-client-js", "codex-agent-runtime-node", "codex-agent-runtime-node-js",
+        "codex-agent-js", "codex-agent-runtime-node", "codex-agent-runtime-node-js",
     ),
     "node-wasm" to setOf(
-        "codex-agent-client-wasm-js", "codex-agent-runtime-node-wasm-js",
+        "codex-agent-wasm-js", "codex-agent-runtime-node-wasm-js",
     ),
 )
 internal val promotedCandidateLaneNames = setOf(

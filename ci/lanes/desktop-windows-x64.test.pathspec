@@ -6,9 +6,9 @@ codex-agent-runtime-node/build.gradle.kts
 codex-agent-runtime-node/src/webMain/**
 codex-agent-runtime-node/src/jsMain/**
 codex-agent-runtime-node/src/wasmJsMain/**
-codex-agent-client/src/jvmMain/**
-codex-agent-client/src/jsMain/**
-codex-agent-client/src/wasmJsMain/**
+codex-agent-core/src/jvmMain/**
+codex-agent-core/src/jsMain/**
+codex-agent-core/src/wasmJsMain/**
 gradle/build-logic/src/main/kotlin/GenerateNodeDistributionSourceTask.kt
 gradle/build-logic/src/main/kotlin/JvmRuntimeEvidence*.kt
 gradle/build-logic/src/main/kotlin/NodeRuntimeEvidence*.kt

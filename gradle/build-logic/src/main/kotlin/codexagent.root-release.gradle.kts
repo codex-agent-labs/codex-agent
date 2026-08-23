@@ -145,7 +145,7 @@ val prepareProtectedCandidate = tasks.register<PrepareProtectedCandidateTask>("p
 val stageCentralRepository = tasks.register("stageCentralRepository") {
     group = "publishing"
     dependsOn(
-        ":codex-agent-client:publishAllPublicationsToCENTRAL_STAGINGRepository",
+        ":codex-agent-core:publishAllPublicationsToCENTRAL_STAGINGRepository",
         ":codex-agent-runtime-android:publishAllPublicationsToCENTRAL_STAGINGRepository",
         ":codex-agent-runtime-desktop:publishAllPublicationsToCENTRAL_STAGINGRepository",
         ":codex-agent-runtime-ios:publishAllPublicationsToCENTRAL_STAGINGRepository",
@@ -194,40 +194,40 @@ fun publicationTask(module: String, publication: String, target: String) =
     ":$module:publish${publication}PublicationTo${stagedConsumerRepositoryNames.getValue(target)}Repository"
 val stagedConsumerPublicationTasks = mapOf(
     "common" to listOf(
-        publicationTask("codex-agent-client", "KotlinMultiplatform", "common"),
-        publicationTask("codex-agent-client", "Jvm", "common"),
+        publicationTask("codex-agent-core", "KotlinMultiplatform", "common"),
+        publicationTask("codex-agent-core", "Jvm", "common"),
     ),
     "android" to listOf(
-        publicationTask("codex-agent-client", "KotlinMultiplatform", "android"),
-        publicationTask("codex-agent-client", "Android", "android"),
+        publicationTask("codex-agent-core", "KotlinMultiplatform", "android"),
+        publicationTask("codex-agent-core", "Android", "android"),
         publicationTask("codex-agent-runtime-android", "Maven", "android"),
     ),
     "desktop" to listOf("KotlinMultiplatform", "Jvm", "MacosArm64", "MacosX64", "LinuxArm64", "LinuxX64", "MingwX64")
         .flatMap { publication -> listOf(
-            publicationTask("codex-agent-client", publication, "desktop"),
+            publicationTask("codex-agent-core", publication, "desktop"),
             publicationTask("codex-agent-runtime-desktop", publication, "desktop"),
         ) },
     "ios-device" to listOf(
-        publicationTask("codex-agent-client", "KotlinMultiplatform", "ios-device"),
-        publicationTask("codex-agent-client", "IosArm64", "ios-device"),
+        publicationTask("codex-agent-core", "KotlinMultiplatform", "ios-device"),
+        publicationTask("codex-agent-core", "IosArm64", "ios-device"),
         publicationTask("codex-agent-runtime-ios", "KotlinMultiplatform", "ios-device"),
         publicationTask("codex-agent-runtime-ios", "IosArm64", "ios-device"),
     ),
     "ios-simulator" to listOf(
-        publicationTask("codex-agent-client", "KotlinMultiplatform", "ios-simulator"),
-        publicationTask("codex-agent-client", "IosSimulatorArm64", "ios-simulator"),
+        publicationTask("codex-agent-core", "KotlinMultiplatform", "ios-simulator"),
+        publicationTask("codex-agent-core", "IosSimulatorArm64", "ios-simulator"),
         publicationTask("codex-agent-runtime-ios", "KotlinMultiplatform", "ios-simulator"),
         publicationTask("codex-agent-runtime-ios", "IosSimulatorArm64", "ios-simulator"),
     ),
     "node-js" to listOf(
-        publicationTask("codex-agent-client", "KotlinMultiplatform", "node-js"),
-        publicationTask("codex-agent-client", "Js", "node-js"),
+        publicationTask("codex-agent-core", "KotlinMultiplatform", "node-js"),
+        publicationTask("codex-agent-core", "Js", "node-js"),
         publicationTask("codex-agent-runtime-node", "KotlinMultiplatform", "node-js"),
         publicationTask("codex-agent-runtime-node", "Js", "node-js"),
     ),
     "node-wasm" to listOf(
-        publicationTask("codex-agent-client", "KotlinMultiplatform", "node-wasm"),
-        publicationTask("codex-agent-client", "WasmJs", "node-wasm"),
+        publicationTask("codex-agent-core", "KotlinMultiplatform", "node-wasm"),
+        publicationTask("codex-agent-core", "WasmJs", "node-wasm"),
         publicationTask("codex-agent-runtime-node", "KotlinMultiplatform", "node-wasm"),
         publicationTask("codex-agent-runtime-node", "WasmJs", "node-wasm"),
     ),

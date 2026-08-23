@@ -55,7 +55,7 @@ class RepositoryLayoutContractTest {
     @Test
     fun `Central publishing has one verified transport path`() {
         listOf(
-            "codex-agent-client", "codex-agent-runtime-android", "codex-agent-runtime-desktop",
+            "codex-agent-core", "codex-agent-runtime-android", "codex-agent-runtime-desktop",
             "codex-agent-runtime-ios", "codex-agent-runtime-node",
         ).forEach { module ->
             assertFalse("publishToMavenCentral(" in repository.resolve("$module/build.gradle.kts").readText(), module)
@@ -73,7 +73,7 @@ class RepositoryLayoutContractTest {
     fun `all internal plugins are explicit and applied only by their owners`() {
         val owners = linkedMapOf(
             "build.gradle.kts" to "root-release",
-            "codex-agent-client/build.gradle.kts" to "client-verification",
+            "codex-agent-core/build.gradle.kts" to "core-verification",
             "codex-agent-runtime-android/build.gradle.kts" to "codex-runtime",
             "codex-agent-runtime-desktop/build.gradle.kts" to "desktop-runtime",
             "codex-agent-runtime-ios/build.gradle.kts" to "ios-runtime",

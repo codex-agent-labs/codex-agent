@@ -87,7 +87,7 @@ extensions.configure<KotlinMultiplatformExtension> {
         target.binaries.framework {
             baseName = "CodexAgent"
             isStatic = true
-            export(project(":codex-agent-client"))
+            export(project(":codex-agent-core"))
             xcframework.add(this)
         }
     }

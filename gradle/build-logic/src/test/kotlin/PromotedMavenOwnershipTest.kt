@@ -14,12 +14,12 @@ class PromotedMavenOwnershipTest {
             expectedMavenPrimaryPaths(VERSION).mapTo(sortedSetOf()) { it.substringBefore('/') },
             owners.keys,
         )
-        assertEquals("common", owners.getValue("codex-agent-client"))
-        assertEquals("common", owners.getValue("codex-agent-client-jvm"))
+        assertEquals("common", owners.getValue("codex-agent"))
+        assertEquals("common", owners.getValue("codex-agent-jvm"))
         assertEquals("ios-device", owners.getValue("codex-agent-runtime-ios"))
         assertEquals("node-js", owners.getValue("codex-agent-runtime-node"))
 
-        val sharedPath = "$GROUP_PATH/codex-agent-client/$VERSION/codex-agent-client-$VERSION.jar"
+        val sharedPath = "$GROUP_PATH/codex-agent/$VERSION/codex-agent-$VERSION.jar"
         fixture.repositories.getValue("android").resolve(sharedPath).apply {
             parentFile.mkdirs()
             writeText("independent duplicate that must not be compared or forwarded")
@@ -39,7 +39,7 @@ class PromotedMavenOwnershipTest {
     @Test
     fun `duplicate canonical ownership is rejected instead of comparing output bytes`() {
         val conflicting = promotedMavenArtifactOwnership.mapValuesTo(linkedMapOf()) { it.value.toSet() }
-        conflicting["android"] = conflicting.getValue("android") + "codex-agent-client"
+        conflicting["android"] = conflicting.getValue("android") + "codex-agent"
         val failure = assertFailsWith<IllegalStateException> { canonicalPromotedMavenOwners(conflicting) }
         assertTrue(failure.message.orEmpty().contains("Duplicate canonical Maven ownership"))
     }

@@ -65,15 +65,15 @@ class GitFixture(unittest.TestCase):
             "node-wasm.production": "wasm/**\nconfigured/node-wasm.txt\n",
             "portable.production": (
                 "desktop-runtime/**\njs/**\nwasm/**\n"
-                "codex-agent-client/src/jvmMain/**\nconfigured/portable.txt\n"
+                "codex-agent-core/src/jvmMain/**\nconfigured/portable.txt\n"
             ),
             "contracts.production": "configured/contracts.txt\n",
             "contracts.metadata": "Package.swift\n",
             "consumer-common.production": (
-                "codex-agent-client/src/jvmMain/**\nconfigured/consumer-common.txt\n"
+                "codex-agent-core/src/jvmMain/**\nconfigured/consumer-common.txt\n"
             ),
             "consumer-desktop.production": (
-                "codex-agent-client/src/jvmMain/**\nconfigured/consumer-desktop.txt\n"
+                "codex-agent-core/src/jvmMain/**\nconfigured/consumer-desktop.txt\n"
             ),
             "ios-package.metadata": "Package.swift\n",
             "ios-privacy-metrics.metadata": "privacy-policy/**\n",
@@ -400,7 +400,7 @@ class ImpactPlanTest(GitFixture):
         ))
 
     def test_jvm_only_change_selects_only_common_and_desktop_consumers(self) -> None:
-        result, _, _ = self.make_plan("codex-agent-client/src/jvmMain/kotlin/JvmOnly.kt")
+        result, _, _ = self.make_plan("codex-agent-core/src/jvmMain/kotlin/JvmOnly.kt")
         selected_consumers = {
             lane
             for lane, state in result["lanes"].items()
@@ -477,7 +477,7 @@ class RealImpactPlanTest(unittest.TestCase):
             {"portable", "consumer-common", "consumer-desktop"},
             matching_lanes(
                 "production",
-                "codex-agent-client/src/jvmMain/kotlin/io/github/codex_agent_labs/ClientJvm.kt",
+                "codex-agent-core/src/jvmMain/kotlin/io/github/codex_agent_labs/ClientJvm.kt",
             ),
         )
 

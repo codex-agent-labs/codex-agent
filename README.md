@@ -23,7 +23,7 @@ general-purpose shell.
 
 ## Modules
 
-- `codex-agent-client` contains `CodexHost`, `CodexAgent`,
+- `codex-agent-core` contains `CodexHost`, `CodexAgent`,
   `CodexConversation`, their public domain model, and the narrow runtime and
   extension contracts used by platform adapters.
 - `codex-agent-runtime-android` verifies and launches the packaged Android App
@@ -39,7 +39,7 @@ general-purpose shell.
 ## Coordinates
 
 ```kotlin
-implementation("io.github.codex-agent-labs:codex-agent-client:0.2.0")
+implementation("io.github.codex-agent-labs:codex-agent:0.2.0")
 implementation("io.github.codex-agent-labs:codex-agent-runtime-android:0.2.0")
 implementation("io.github.codex-agent-labs:codex-agent-runtime-ios:0.2.0")
 implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.2.0")

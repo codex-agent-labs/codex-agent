@@ -1,2 +1,2 @@
 codex-agent-runtime-ios/src/iosTest/**
-codex-agent-client/src/commonTest/**
+codex-agent-core/src/commonTest/**

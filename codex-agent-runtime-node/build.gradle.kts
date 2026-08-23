@@ -33,7 +33,7 @@ kotlin {
             kotlin.srcDir(tasks.named("generateNodeDistributionSource"))
             kotlin.srcDir(rootProject.layout.projectDirectory.dir("runtime-host-shared/src/commonMain/kotlin"))
             dependencies {
-                api(project(":codex-agent-client"))
+                api(project(":codex-agent-core"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.okio)
             }

@@ -1,8 +1,8 @@
-codex-agent-client/src/commonMain/**
-codex-agent-client/build.gradle.kts
-codex-agent-client/src/jvmMain/**
-codex-agent-client/src/jsMain/**
-codex-agent-client/src/wasmJsMain/**
+codex-agent-core/src/commonMain/**
+codex-agent-core/build.gradle.kts
+codex-agent-core/src/jvmMain/**
+codex-agent-core/src/jsMain/**
+codex-agent-core/src/wasmJsMain/**
 codex-agent-runtime-desktop/build.gradle.kts
 codex-agent-runtime-desktop/src/commonMain/**
 codex-agent-runtime-desktop/src/commonTest/**

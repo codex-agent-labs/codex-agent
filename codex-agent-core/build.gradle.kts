@@ -12,7 +12,7 @@ plugins {
     alias(libs.plugins.android.kmp.library)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.maven.publish)
-    id("codexagent.client-verification")
+    id("codexagent.core-verification")
 }
 
 val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toString()
@@ -69,7 +69,7 @@ mavenPublishing {
             sourcesJar = SourcesJar.Sources(),
         ),
     )
-    coordinates(project.group.toString(), "codex-agent-client", project.version.toString())
+    coordinates(project.group.toString(), "codex-agent", project.version.toString())
     if (
         providers.gradleProperty("signingInMemoryKey").isPresent ||
         providers.gradleProperty("signing.secretKeyRingFile").isPresent
@@ -77,8 +77,8 @@ mavenPublishing {
         signAllPublications()
     }
     pom {
-        name.set("Codex Agent Client")
-        description.set("Portable Kotlin Multiplatform client for the Codex App Server.")
+        name.set("Codex Agent")
+        description.set("Portable Kotlin Multiplatform core for Codex agents.")
         inceptionYear.set("2026")
         url.set(codexAgentRepositoryUrl)
         licenses {

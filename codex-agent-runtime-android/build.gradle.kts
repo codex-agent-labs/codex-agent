@@ -44,7 +44,7 @@ kotlin {
 }
 
 dependencies {
-    api(project(":codex-agent-client"))
+    api(project(":codex-agent-core"))
     implementation(libs.androidx.browser)
     implementation(libs.androidx.sqlite)
     implementation(libs.androidx.sqlite.framework)
