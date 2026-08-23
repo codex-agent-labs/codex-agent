@@ -349,9 +349,13 @@ class ReleaseWorkflowContractTest {
     fun `publication revalidates exact candidate bytes before protected mutation`() {
         val publish = workflows.getValue("publish.yml")
         val core = publish.substringAfter("\n  publish-core:").substringBefore("\n  swift-resolution:")
+        val candidateSchema = Regex("PROMOTED_CANDIDATE_SCHEMA = (\\d+)").find(
+            repository.resolve("gradle/build-logic/src/main/kotlin/PromotedCandidateTasks.kt").readText(),
+        )!!.groupValues[1]
         assertTrue("github.event.workflow_run.conclusion == 'success'" in core)
         assertTrue("github.event.workflow_run.head_repository.full_name == github.repository" in core)
         assertTrue("environment: release-publication" in core)
+        assertTrue(".schemaVersion == $candidateSchema and" in core)
         assertTrue("test \"${'$'}(git rev-parse 'HEAD^{tree}')\" = \"${'$'}candidate_tree\"" in core)
         val verification = core.indexOf("Revalidate every transported candidate byte and policy")
         val central = core.indexOf("Prepare or recover every exact Central deployment")

@@ -6,6 +6,20 @@ import kotlin.test.assertTrue
 
 class ReleaseCandidateTasksTest {
     @Test
+    fun `tracked publication approvals match exact tracked policy bytes`() {
+        val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .first { it.resolve("gradle/release/publication-approvals.json").isFile }
+        verifyPublicationReadiness(
+            repository.resolve("gradle/release/publication-approvals.json"),
+            repository.resolve("codex-agent-runtime-ios/apple/Sources/CodexAgentAuthentication/PrivacyInfo.xcprivacy"),
+            repository.resolve("gradle/release/privacy-data-flow-review.json"),
+            repository.resolve("codex-agent-runtime-desktop/codex-app-server-distributions.json"),
+            repository.resolve("codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt"),
+            repository.resolve("codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt"),
+        )
+    }
+
+    @Test
     fun `tracked release policy JSON names are versionless and never pending placeholders`() {
         val releaseDirectory = File(System.getProperty("user.dir")).parentFile.resolve("release")
         val forbidden = releaseDirectory.listFiles().orEmpty().filter { file ->
