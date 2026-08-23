@@ -25,6 +25,7 @@ class FirebaseAndroidRuntimeEvidenceTasksTest {
         writeFirebaseAndroidVerificationReceipt(receipt, verified)
 
         val record = receipt.readReleaseObject()
+        assertEquals(9, record.size)
         assertEquals(1, record.releaseInt("schemaVersion"))
         assertEquals("passed", record.releaseString("result"))
         assertEquals(verified.evidenceSha256, record.releaseString("evidenceSha256"))
