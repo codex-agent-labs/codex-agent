@@ -33,4 +33,5 @@ data class IosNativeTasks(
     val iosSimulatorArm64RustArchive: Provider<RegularFile>,
     val prepareCodexAgentIosArm64RustSlice: TaskProvider<Task>,
     val prepareCodexAgentIosSimulatorArm64RustSlice: TaskProvider<Task>,
+    val appleFrameworkToolchainIdentity: Provider<String>,
 )

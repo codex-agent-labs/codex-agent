@@ -79,6 +79,10 @@ class GitFixture(unittest.TestCase):
             "ios-privacy-metrics.metadata": "privacy-policy/**\n",
             "ios-kotlin-tests.test": "ios-sim-tests/**\n",
             "ios-swift-tests.test": "ios-swift-auth-tests/**\n",
+            "ios-package.production": (
+                "configured/ios-package.txt\n"
+                "codex-agent-runtime-ios/apple/Sources/**\n"
+            ),
         }
         for name, contents in inventories.items():
             self.write(f"ci/lanes/{name}.pathspec", contents)
@@ -262,6 +266,41 @@ class ImpactPlanTest(GitFixture):
             if lane.startswith("ios-")
         ))
 
+    def test_swift_wrapper_change_keeps_framework_production_compatible(self) -> None:
+        prior_path = self.root / "build/ci/prior/impact-plan.json"
+        plan(
+            root=self.root,
+            base=self.base,
+            target=self.base,
+            head=self.base,
+            event="pull_request",
+            pull_request=7,
+            merge_ready=True,
+            force_full=False,
+            require_android_evidence=False,
+            repository="codex-agent-labs/codex-agent",
+            output=prior_path,
+        )
+        wrapper = "codex-agent-runtime-ios/apple/Sources/Wrapper.swift"
+        result, current_path, _ = self.make_plan(wrapper, "public struct Wrapper {}\n")
+        self.assertTrue(result["lanes"]["ios-package"]["build"])
+        package = Path("inventories/ios-package/production-inputs.git-tree")
+        self.assertNotEqual(
+            (prior_path.parent / package).read_bytes(),
+            (current_path.parent / package).read_bytes(),
+        )
+        self.assertIn(
+            f"\t{wrapper}\n",
+            (current_path.parent / package).read_text(encoding="utf-8"),
+        )
+        for lane in ("ios-framework-device", "ios-framework-simulator"):
+            self.assertTrue(result["lanes"][lane]["build"])
+            relative = Path("inventories", lane, "production-inputs.git-tree")
+            self.assertEqual(
+                (prior_path.parent / relative).read_bytes(),
+                (current_path.parent / relative).read_bytes(),
+            )
+
     def test_candidate_support_fallbacks_produce_complete_desktop_and_privacy_lanes(self) -> None:
         desktop, _, _ = self.make_plan("configured/consumer-desktop.txt", "consumer changed\n")
         for lane in (name for name in LANES if name.startswith("desktop-")):
@@ -425,6 +464,14 @@ class RealImpactPlanTest(unittest.TestCase):
         self.assertEqual(
             set(LANES),
             matching_lanes("production", "gradle/libs.versions.toml"),
+        )
+        self.assertEqual(
+            set(LANES),
+            matching_lanes("production", prefix + "ReleaseIo.kt"),
+        )
+        self.assertEqual(
+            {"contracts"},
+            matching_lanes("test", prefix + "ReleaseIo.kt"),
         )
         self.assertEqual(
             {"portable", "consumer-common", "consumer-desktop"},

@@ -46,6 +46,7 @@ fun Project.registerIosAppleReleaseVerificationTasks(
         destinationDirectory.set(layout.buildDirectory.dir("distributions"))
         isPreserveFileTimestamps = false
         isReproducibleFileOrder = true
+        outputs.cacheIf("Reproducible XCFramework binary ZIP") { true }
         from(distribution.releaseXCFrameworkDirectory) { into("CodexAgent.xcframework") }
     }
 

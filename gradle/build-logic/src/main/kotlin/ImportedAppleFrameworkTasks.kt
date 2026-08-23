@@ -14,7 +14,6 @@ import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecOperations
-import org.gradle.work.DisableCachingByDefault
 
 internal fun importedFrameworkPlatformCommand(infoPlist: File) = listOf(
     "/usr/bin/plutil", "-extract", "CFBundleSupportedPlatforms.0", "raw", "-o", "-", infoPlist.absolutePath,
@@ -66,7 +65,7 @@ abstract class ImportCodexAgentFrameworkTask @Inject constructor(
     }
 }
 
-@DisableCachingByDefault(because = "xcodebuild assembles exact previously validated framework inputs")
+@CacheableTask
 abstract class AssembleImportedCodexAgentXCFrameworkTask @Inject constructor(
     private val processes: ExecOperations,
 ) : DefaultTask() {
@@ -74,6 +73,7 @@ abstract class AssembleImportedCodexAgentXCFrameworkTask @Inject constructor(
     abstract val deviceFrameworkDirectory: DirectoryProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val simulatorFrameworkDirectory: DirectoryProperty
+    @get:Input abstract val appleToolchainIdentity: Property<String>
     @get:OutputDirectory abstract val xcframeworkDirectory: DirectoryProperty
 
     @TaskAction

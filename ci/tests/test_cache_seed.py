@@ -55,11 +55,11 @@ class CacheSeedTest(unittest.TestCase):
     def write_plan(self) -> None:
         self.plan_path.write_text(json.dumps(self.plan), encoding="utf-8")
 
-    def write_promotion(self, source_commit: str) -> None:
+    def write_promotion(self, source_commit: str, lane: str = "android") -> None:
         summary = {
             "runId": 71,
             "runAttempt": 2,
-            "artifactName": f"codex-agent-ci-android-{TREE}",
+            "artifactName": f"codex-agent-ci-{lane}-{TREE}",
             "validationCommit": source_commit,
             "validationTree": TREE,
             "result": "passed",
@@ -71,7 +71,7 @@ class CacheSeedTest(unittest.TestCase):
             "validationCommit": COMMIT,
             "validationTree": TREE,
             "impactPlan": "impact-plan.json",
-            "lanes": {"android": summary},
+            "lanes": {lane: summary},
             "result": "passed",
         }
         promotion = {
@@ -88,14 +88,14 @@ class CacheSeedTest(unittest.TestCase):
             "promotedAggregateArtifactName": f"codex-agent-promoted-validation-{'4' * 40}",
             "promotedInventoryArtifactName": f"codex-agent-promoted-inventories-{'4' * 40}",
             "lanes": {
-                "android": {
+                lane: {
                     "sourceKind": "validation",
                     "sourceRunId": 71,
                     "sourceRunAttempt": 2,
                     "sourceArtifactName": summary["artifactName"],
                     "sourcePromotionRunId": None,
                     "sourcePromotionCommit": None,
-                    "promotedArtifactName": f"codex-agent-promoted-android-{'4' * 40}",
+                    "promotedArtifactName": f"codex-agent-promoted-{lane}-{'4' * 40}",
                 },
             },
         }
@@ -107,25 +107,31 @@ class CacheSeedTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
-    def create_kmp(self, output: Path) -> dict[str, object]:
+    def create_kmp(
+        self,
+        output: Path,
+        lane: str = "android",
+        runner_os: str = "Linux",
+        runner_arch: str = "X64",
+    ) -> dict[str, object]:
         return create(Namespace(
             plan=self.plan_path,
             root=output,
             home=self.home,
             kind="kmp",
-            artifact_name=artifact_name("kmp", "Linux", "X64", TREE),
+            artifact_name=artifact_name("kmp", runner_os, runner_arch, TREE),
             repository=REPO,
             event=self.plan["event"],
             validation_commit=self.plan["validationCommit"],
             validation_tree=TREE,
             run_id="71",
             run_attempt="2",
-            lane="android",
-            runner_os="Linux",
-            runner_arch="X64",
+            lane=lane,
+            runner_os=runner_os,
+            runner_arch=runner_arch,
             cache_key=[
-                "gradle=gradle-main-dependencies-v1-Linux-X64-abc",
-                "konan=konan-main-v2-Linux-X64-none-abc",
+                f"gradle=gradle-main-dependencies-v1-{runner_os}-{runner_arch}-abc",
+                f"konan=konan-main-v2-{runner_os}-{runner_arch}-none-abc",
             ],
         ))
 
@@ -371,7 +377,7 @@ class CacheSeedTest(unittest.TestCase):
         self.plan["event"] = "pull_request"
         self.plan["lanes"] = {
             lane: {"build": True, "test": False, "metadata": False}
-            for lane in (*namespaces, "ios-framework-device")
+            for lane in (*namespaces, "ios-framework-device", "ios-package")
         }
         self.write_plan()
         environment = {
@@ -394,7 +400,16 @@ class CacheSeedTest(unittest.TestCase):
             with patch.dict(os.environ, values, clear=True):
                 return policy(arguments)
 
-        results = {lane: evaluate(lane) for lane in namespaces}
+        active = (*namespaces, "ios-framework-device", "ios-package")
+        results = {lane: evaluate(lane) for lane in active}
+        self.assertEqual(
+            ["ios-package"],
+            [lane for lane, result in results.items() if result["write"]],
+        )
+        self.assertEqual(
+            ["ios-package"],
+            [lane for lane, result in results.items() if result["seed"]],
+        )
         self.assertEqual(
             ["ios-native-tests"],
             [lane for lane, result in results.items() if result["rust-write"]],
@@ -404,12 +419,19 @@ class CacheSeedTest(unittest.TestCase):
             [lane for lane, result in results.items() if result["rust-seed"]],
         )
         self.assertEqual(set(namespaces), {lane for lane, result in results.items() if result["sccache-write"]})
-        self.assertEqual(namespaces, {lane: result["sccache-version"] for lane, result in results.items()})
-        self.assertEqual(len(namespaces), len({result["sccache-version"] for result in results.values()}))
+        self.assertEqual(namespaces, {lane: results[lane]["sccache-version"] for lane in namespaces})
+        self.assertEqual(len(namespaces), len({results[lane]["sccache-version"] for lane in namespaces}))
 
-        framework = evaluate("ios-framework-device")
+        framework = results["ios-framework-device"]
         self.assertFalse(framework["sccache-write"])
         self.assertEqual("codex-agent-rust-v1", framework["sccache-version"])
+
+        self.plan["lanes"]["ios-package"]["build"] = False
+        self.write_plan()
+        fallback = evaluate("ios-framework-device")
+        self.assertTrue(fallback["write"])
+        self.assertTrue(fallback["seed"])
+        self.plan["lanes"]["ios-package"]["build"] = True
 
         self.plan["lanes"]["ios-rust-simulator"]["build"] = False
         self.write_plan()
@@ -425,8 +447,10 @@ class CacheSeedTest(unittest.TestCase):
             {"PR_NUMBER": ""},
         ):
             untrusted = environment | override
-            for lane in namespaces:
+            for lane in active:
                 result = evaluate(lane, untrusted)
+                self.assertFalse(result["write"])
+                self.assertFalse(result["seed"])
                 self.assertFalse(result["rust-write"])
                 self.assertFalse(result["rust-seed"])
                 self.assertFalse(result["sccache-write"])
@@ -442,6 +466,31 @@ class CacheSeedTest(unittest.TestCase):
         self.assertTrue(native["rust-seed"])
         self.assertFalse(native["rust-write"])
         self.assertFalse(native["sccache-write"])
+        package = evaluate("ios-package", merge)
+        self.assertTrue(package["seed"])
+        self.assertFalse(package["write"])
+
+    def test_macos_kmp_seed_uses_the_elected_package_source(self) -> None:
+        self.plan["lanes"] = {
+            lane: {"build": True, "test": False, "metadata": False}
+            for lane in ("ios-framework-device", "ios-package")
+        }
+        self.write_plan()
+        self.write_promotion(COMMIT, "ios-package")
+        seed = self.root / "macos-seed"
+        manifest = self.create_kmp(seed, "ios-package", "macOS", "ARM64")
+        self.assertEqual("ios-package", manifest["lane"])
+
+        selected = source(Namespace(
+            plan=self.plan_path,
+            promotion_plan=self.promotion_path,
+            aggregate=self.aggregate_path,
+            kind="kmp",
+            runner_os="macOS",
+            runner_arch="ARM64",
+            github_output=None,
+        ))
+        self.assertEqual("ios-package", selected["lane"])
 
     def test_identical_tree_merge_group_promotes_pr_source_seed_without_product_job(self) -> None:
         pr_commit = "3" * 40
