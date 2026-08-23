@@ -21,8 +21,8 @@ internal val repositoryVerificationTaskPaths = listOf(
     ":codex-agent-runtime-desktop:compileKotlinLinuxArm64",
     ":codex-agent-runtime-desktop:compileKotlinLinuxX64",
     ":codex-agent-runtime-desktop:compileKotlinMingwX64",
-    ":codex-agent-runtime-node:jsNodeTest",
-    ":codex-agent-runtime-node:wasmJsNodeTest",
+    ":codex-agent-runtime-desktop:jsNodeTest",
+    ":codex-agent-runtime-desktop:wasmJsNodeTest",
     ":tooling:protocol-generator:test",
 )
 

@@ -78,7 +78,7 @@ private suspend fun relativeExecutableProof() {
 
 private suspend fun wrongChecksumProof() {
     val directory = nodeTemporaryDirectory("codex-agent-node-wrong-hash-")
-    val distribution = nodeCodexDistribution(currentNodeTarget())
+    val distribution = desktopCodexDistribution(currentNodeTarget())
     val executable = nodeJoinPath(directory, distribution.executableName)
     val supervisor = nodeJoinPath(directory, distribution.supervisorExecutableName)
     nodeWriteFile(executable, "not an app server")

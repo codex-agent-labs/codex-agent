@@ -13,14 +13,14 @@ internal const val NODE_RUNTIME_WASM_BACKEND = "wasm"
 internal const val NODE_RUNTIME_TEST_CLASS =
     "io.github.codex_agent_labs.codexmobile.appserver.runtime.NodeCodexRuntimeTest"
 internal const val NODE_RUNTIME_RUNNER_ARCHIVE = "codex-agent-node-runtime-evidence-runner.zip"
-internal const val NODE_RUNTIME_RUNNER_ENTRY = "codex-agent-codex-agent-runtime-node.js"
+internal const val NODE_RUNTIME_RUNNER_ENTRY = "codex-agent-codex-agent-runtime-desktop.js"
 internal const val NODE_WASM_RUNTIME_RUNNER_ARCHIVE = "codex-agent-node-wasm-runtime-evidence-runner.zip"
-internal const val NODE_WASM_RUNTIME_RUNNER_ENTRY = "codex-agent-codex-agent-runtime-node.mjs"
+internal const val NODE_WASM_RUNTIME_RUNNER_ENTRY = "codex-agent-codex-agent-runtime-desktop.mjs"
 internal val nodeRuntimeBackends = linkedSetOf(NODE_RUNTIME_JS_BACKEND, NODE_RUNTIME_WASM_BACKEND)
 internal val nodeWasmRuntimeRunnerEntries = setOf(
     NODE_WASM_RUNTIME_RUNNER_ENTRY,
-    "codex-agent-codex-agent-runtime-node.uninstantiated.mjs",
-    "codex-agent-codex-agent-runtime-node.wasm",
+    "codex-agent-codex-agent-runtime-desktop.uninstantiated.mjs",
+    "codex-agent-codex-agent-runtime-desktop.wasm",
     "custom-formatters.js",
 )
 internal val nodeRuntimeTestMethods = sortedSetOf(
@@ -49,7 +49,7 @@ internal fun nodeRuntimeEvidenceTestTask(target: String, runtimeBackend: String 
     requireNodeRuntimeBackend(runtimeBackend)
     if (target == "linuxArm64") return LINUX_ARM64_RUNTIME_EVIDENCE_TASK
     val prefix = if (runtimeBackend == NODE_RUNTIME_JS_BACKEND) "nodeRuntime" else "nodeWasmRuntime"
-    return ":codex-agent-runtime-node:$prefix${target.replaceFirstChar(Char::uppercase)}Test"
+    return ":codex-agent-runtime-desktop:$prefix${target.replaceFirstChar(Char::uppercase)}Test"
 }
 
 internal fun requireNodeRuntimeBackend(runtimeBackend: String): String {

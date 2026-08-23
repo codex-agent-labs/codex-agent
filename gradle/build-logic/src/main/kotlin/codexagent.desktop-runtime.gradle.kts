@@ -1,20 +1,21 @@
+import java.io.File
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.api.tasks.bundling.Zip
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
 
+val desktopManifestFile = layout.projectDirectory.file("codex-app-server-distributions.json")
 val generateDesktopDistributionSource = tasks.register<GenerateDesktopDistributionSourceTask>(
     "generateDesktopDistributionSource",
 ) {
-    manifestFile.set(layout.projectDirectory.file("codex-app-server-distributions.json"))
+    manifestFile.set(desktopManifestFile)
     libraryVersion.set(project.version.toString())
     outputDirectory.set(layout.buildDirectory.dir("generated/distributions/kotlin"))
 }
-val desktopManifest = readDesktopCodexManifest(
-    layout.projectDirectory.file("codex-app-server-distributions.json").asFile,
-)
+val desktopManifest = readDesktopCodexManifest(desktopManifestFile.asFile)
 val localArchiveDirectory = providers.gradleProperty("codexAgent.desktopArchiveDirectory")
 val importedClassifierDirectory = providers.gradleProperty("codexAgent.desktopClassifierDirectory")
 val supervisorDirectory = providers.gradleProperty("codexAgent.desktopSupervisorDirectory")
@@ -107,11 +108,27 @@ tasks.matching {
 }.configureEach {
     notCompatibleWithConfigurationCache("Kotlin/Native commonization accesses project state at execution time")
 }
+@OptIn(ExperimentalWasmDsl::class)
 extensions.configure<KotlinMultiplatformExtension> {
     jvmToolchain(17)
     jvm()
     val desktopTargets = listOf(macosArm64(), macosX64(), linuxArm64(), linuxX64(), mingwX64())
-    applyDefaultHierarchyTemplate()
+    js {
+        nodejs()
+        binaries.executable()
+    }
+    wasmJs {
+        nodejs()
+        binaries.executable()
+    }
+    applyDefaultHierarchyTemplate {
+        common {
+            group("desktop") {
+                withJvm()
+                withNative()
+            }
+        }
+    }
     desktopTargets.forEach { target ->
         target.compilations.getByName("main").cinterops.create("codexDesktop") {
             defFile(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_desktop.def"))
@@ -119,6 +136,45 @@ extensions.configure<KotlinMultiplatformExtension> {
         }
     }
     sourceSets.getByName("commonMain").kotlin.srcDir(generateDesktopDistributionSource)
+}
+
+val nodeRuntimeEvidenceRunnerArchive = layout.file(
+    providers.gradleProperty("codexAgent.nodeRuntimeEvidenceRunnerArchive").map(::File),
+)
+val nodeWasmRuntimeEvidenceRunnerArchive = layout.file(
+    providers.gradleProperty("codexAgent.nodeWasmRuntimeEvidenceRunnerArchive").map(::File),
+)
+val nodeClassifierArchive = layout.file(
+    providers.gradleProperty("codexAgent.nodeClassifierArchive").map(::File),
+)
+val nodeEvidenceRunners = listOf(
+    Triple("nodeRuntime", "js", nodeRuntimeEvidenceRunnerArchive),
+    Triple("nodeWasmRuntime", "wasm", nodeWasmRuntimeEvidenceRunnerArchive),
+)
+desktopManifest.distributions.forEach { distribution ->
+    nodeEvidenceRunners.forEach { (taskPrefix, backend, runnerArchive) ->
+        tasks.register<RecordNodeRuntimeEvidenceTask>(
+            "$taskPrefix${distribution.target.replaceFirstChar(Char::uppercase)}Test",
+        ) {
+            group = "verification"
+            description = "Runs the exact ${distribution.target} Node $backend App Server lifecycle evidence."
+            candidateCommit.set(providers.gradleProperty("codexAgent.candidateCommit"))
+            target.set(distribution.target)
+            runtimeBackend.set(backend)
+            runnerOs.set(providers.environmentVariable("RUNNER_OS"))
+            runnerArch.set(providers.environmentVariable("RUNNER_ARCH"))
+            nodeExecutable.set(providers.gradleProperty("codexAgent.nodeExecutable").orElse("node"))
+            distributionManifest.set(desktopManifestFile)
+            classifierArchive.set(nodeClassifierArchive)
+            compiledNodeTestRuntime.set(runnerArchive)
+            evidenceFile.set(layout.buildDirectory.file(
+                "reports/node-runtime-evidence/${nodeRuntimeEvidenceFileName(distribution.target, backend)}",
+            ))
+            testReport.set(layout.buildDirectory.file(
+                "test-results/node-runtime-evidence/${nodeRuntimeTestReportFileName(distribution.target, backend)}",
+            ))
+        }
+    }
 }
 
 val jvmTestRuntimeClasspath = configurations.named("jvmTestRuntimeClasspath")

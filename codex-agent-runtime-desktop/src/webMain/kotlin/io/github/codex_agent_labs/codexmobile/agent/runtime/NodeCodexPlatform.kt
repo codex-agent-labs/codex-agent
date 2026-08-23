@@ -13,7 +13,7 @@ import io.github.codex_agent_labs.codexmobile.agent.PreparedCodexRuntime
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.NodeCodexRuntimeConfiguration
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.NodeCodexRuntimeFactory
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.currentNodeTarget
-import io.github.codex_agent_labs.codexmobile.appserver.runtime.nodeCodexDistribution
+import io.github.codex_agent_labs.codexmobile.appserver.runtime.desktopCodexDistribution
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.nodeHost
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.host.NodePathWorkspaceStore
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.host.NodeRuntimeBundleInstaller
@@ -30,7 +30,7 @@ public class NodeCodexPlatform(
     private val resolvedStorageRoots = resolveNodeStorageRoots(dataDirectory, storageRoots)
     public override val workspaceStore: CodexWorkspaceStore = pathWorkspaceStore
     public override val authorizationBrowser: CodexAuthorizationBrowser = NodeCodexAuthorizationBrowser
-    private val distribution = nodeCodexDistribution(currentNodeTarget())
+    private val distribution = desktopCodexDistribution(currentNodeTarget())
     private val installer = NodeRuntimeBundleInstaller(
         bundleDirectory = bundleDirectory,
         dataDirectory = dataDirectory,

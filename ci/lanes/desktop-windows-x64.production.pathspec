@@ -7,7 +7,7 @@ codex-agent-runtime-desktop/src/mingwMain/**
 codex-agent-core/build.gradle.kts
 codex-agent-core/src/commonMain/**
 codex-agent-core/src/nativeMain/**
-runtime-host-shared/src/commonMain/**
+codex-agent-runtime-desktop/src/desktopMain/**
 codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt
 codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt
 gradle/build-logic/src/main/kotlin/*Desktop*.kt

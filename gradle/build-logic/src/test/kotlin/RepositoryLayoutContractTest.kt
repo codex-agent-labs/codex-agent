@@ -56,7 +56,7 @@ class RepositoryLayoutContractTest {
     fun `Central publishing has one verified transport path`() {
         listOf(
             "codex-agent-core", "codex-agent-runtime-android", "codex-agent-runtime-desktop",
-            "codex-agent-runtime-ios", "codex-agent-runtime-node",
+            "codex-agent-runtime-ios",
         ).forEach { module ->
             assertFalse("publishToMavenCentral(" in repository.resolve("$module/build.gradle.kts").readText(), module)
         }
@@ -77,7 +77,6 @@ class RepositoryLayoutContractTest {
             "codex-agent-runtime-android/build.gradle.kts" to "codex-runtime",
             "codex-agent-runtime-desktop/build.gradle.kts" to "desktop-runtime",
             "codex-agent-runtime-ios/build.gradle.kts" to "ios-runtime",
-            "codex-agent-runtime-node/build.gradle.kts" to "node-runtime",
             "tooling/android-runtime-evidence/build.gradle.kts" to "android-runtime-evidence",
             "tooling/protocol-generator/build.gradle.kts" to "protocol-generator",
         )
@@ -97,7 +96,7 @@ class RepositoryLayoutContractTest {
             val applications = buildScripts.filterValues { "id(\"$id\")" in it }.keys
             assertEquals(setOf(owner), applications, "$id must be applied only by $owner")
         }
-        assertEquals(8, owners.size)
+        assertEquals(7, owners.size)
     }
 
     @Test
@@ -147,7 +146,7 @@ class RepositoryLayoutContractTest {
         val verification = repository.resolve(
             "gradle/build-logic/src/main/kotlin/RepositoryVerificationTasks.kt",
         ).readText()
-        assertTrue(":codex-agent-runtime-node:jsNodeTest" in verification)
-        assertTrue(":codex-agent-runtime-node:wasmJsNodeTest" in verification)
+        assertTrue(":codex-agent-runtime-desktop:jsNodeTest" in verification)
+        assertTrue(":codex-agent-runtime-desktop:wasmJsNodeTest" in verification)
     }
 }

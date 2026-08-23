@@ -45,17 +45,17 @@ run_desktop() {
     fi
     test "${#archives[@]}" -eq 1
     test -f codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip
-    test -f codex-agent-runtime-node/build/distributions/codex-agent-node-runtime-evidence-runner.zip
-    test -f codex-agent-runtime-node/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip
+    test -f codex-agent-runtime-desktop/build/distributions/codex-agent-node-runtime-evidence-runner.zip
+    test -f codex-agent-runtime-desktop/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip
     local tasks=(":codex-agent-runtime-desktop:$jvm_task")
-    [ "${CI_NODE_JS_REQUIRED:-true}" != true ] || tasks+=(":codex-agent-runtime-node:$node_task")
-    [ "${CI_NODE_WASM_REQUIRED:-true}" != true ] || tasks+=(":codex-agent-runtime-node:$wasm_task")
+    [ "${CI_NODE_JS_REQUIRED:-true}" != true ] || tasks+=(":codex-agent-runtime-desktop:$node_task")
+    [ "${CI_NODE_WASM_REQUIRED:-true}" != true ] || tasks+=(":codex-agent-runtime-desktop:$wasm_task")
     ./gradlew "${tasks[@]}" \
       -PcodexAgent.jvmClassifierArchive="$PWD/${archives[0]}" \
       -PcodexAgent.jvmRuntimeEvidenceRunner="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip" \
       -PcodexAgent.nodeClassifierArchive="$PWD/${archives[0]}" \
-      -PcodexAgent.nodeRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-node/build/distributions/codex-agent-node-runtime-evidence-runner.zip" \
-      -PcodexAgent.nodeWasmRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-node/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip" \
+      -PcodexAgent.nodeRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-node-runtime-evidence-runner.zip" \
+      -PcodexAgent.nodeWasmRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip" \
       -PcodexAgent.desktopDistributionManifest="$PWD/codex-agent-runtime-desktop/codex-app-server-distributions.json" \
       "${args[@]}"
   fi
@@ -75,8 +75,8 @@ case "$lane" in
     ;;
   portable)
     [ "$build" != true ] || ./gradlew :codex-agent-runtime-desktop:packageJvmRuntimeEvidenceRunner \
-        :codex-agent-runtime-node:packageNodeRuntimeEvidenceRunner \
-        :codex-agent-runtime-node:packageNodeWasmRuntimeEvidenceRunner "${args[@]}"
+        :codex-agent-runtime-desktop:packageNodeRuntimeEvidenceRunner \
+        :codex-agent-runtime-desktop:packageNodeWasmRuntimeEvidenceRunner "${args[@]}"
     if [ "$test_lane" = true ]; then
       ./gradlew :codex-agent-runtime-desktop:jvmTest "${args[@]}"
       ./gradlew -p gradle/build-logic test --tests '*RuntimeEvidence*' --parallel --stacktrace
@@ -95,10 +95,10 @@ case "$lane" in
     ./gradlew "${tasks[@]}" "${args[@]}"
     ;;
   node-js)
-    [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-node:jsNodeTest "${args[@]}"
+    [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-desktop:jsNodeTest "${args[@]}"
     ;;
   node-wasm)
-    [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-node:wasmJsNodeTest "${args[@]}"
+    [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-desktop:wasmJsNodeTest "${args[@]}"
     ;;
   desktop-macos-arm64)
     run_desktop macosArm64 recordMacosArm64DesktopRuntimeEvidence recordJvmRuntimeMacosArm64Evidence \
@@ -117,8 +117,8 @@ case "$lane" in
         -PcodexAgent.linuxArm64RuntimeEvidenceBundle="$LINUX_ARM64_RUNTIME_BUNDLE" \
         -PcodexAgent.desktopEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/desktop-runtime-evidence/desktop-runtime-linuxArm64.json" \
         -PcodexAgent.jvmEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/jvm-runtime-evidence/jvm-runtime-linuxArm64.json" \
-        -PcodexAgent.nodeEvidenceOutput="$PWD/codex-agent-runtime-node/build/reports/node-runtime-evidence/node-runtime-linuxArm64.json" \
-        -PcodexAgent.nodeWasmEvidenceOutput="$PWD/codex-agent-runtime-node/build/reports/node-runtime-evidence/node-wasm-runtime-linuxArm64.json" \
+        -PcodexAgent.nodeEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-runtime-linuxArm64.json" \
+        -PcodexAgent.nodeWasmEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-wasm-runtime-linuxArm64.json" \
         -PcodexAgent.javaExecutable=java --parallel --stacktrace
     fi
     ;;

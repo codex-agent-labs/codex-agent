@@ -149,7 +149,6 @@ val stageCentralRepository = tasks.register("stageCentralRepository") {
         ":codex-agent-runtime-android:publishAllPublicationsToCENTRAL_STAGINGRepository",
         ":codex-agent-runtime-desktop:publishAllPublicationsToCENTRAL_STAGINGRepository",
         ":codex-agent-runtime-ios:publishAllPublicationsToCENTRAL_STAGINGRepository",
-        ":codex-agent-runtime-node:publishAllPublicationsToCENTRAL_STAGINGRepository",
     )
 }
 val generateRelocationPoms = tasks.register<GenerateMavenRelocationPomsTask>("generateMavenRelocationPoms") {
@@ -222,14 +221,14 @@ val stagedConsumerPublicationTasks = mapOf(
     "node-js" to listOf(
         publicationTask("codex-agent-core", "KotlinMultiplatform", "node-js"),
         publicationTask("codex-agent-core", "Js", "node-js"),
-        publicationTask("codex-agent-runtime-node", "KotlinMultiplatform", "node-js"),
-        publicationTask("codex-agent-runtime-node", "Js", "node-js"),
+        publicationTask("codex-agent-runtime-desktop", "KotlinMultiplatform", "node-js"),
+        publicationTask("codex-agent-runtime-desktop", "Js", "node-js"),
     ),
     "node-wasm" to listOf(
         publicationTask("codex-agent-core", "KotlinMultiplatform", "node-wasm"),
         publicationTask("codex-agent-core", "WasmJs", "node-wasm"),
-        publicationTask("codex-agent-runtime-node", "KotlinMultiplatform", "node-wasm"),
-        publicationTask("codex-agent-runtime-node", "WasmJs", "node-wasm"),
+        publicationTask("codex-agent-runtime-desktop", "KotlinMultiplatform", "node-wasm"),
+        publicationTask("codex-agent-runtime-desktop", "WasmJs", "node-wasm"),
     ),
 )
 val stagedConsumerGroupId = project.group.toString()

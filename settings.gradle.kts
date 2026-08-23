@@ -22,7 +22,6 @@ include(
     ":codex-agent-runtime-android",
     ":codex-agent-runtime-desktop",
     ":codex-agent-runtime-ios",
-    ":codex-agent-runtime-node",
     ":tooling:android-runtime-evidence",
     ":tooling:protocol-generator",
 )

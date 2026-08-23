@@ -67,12 +67,12 @@ kotlin {
                 implementation("io.github.codex-agent-labs:codex-agent-runtime-ios:$codexAgentVersion")
             }
             "node-js" -> jsMain.dependencies {
-                implementation("io.github.codex-agent-labs:codex-agent-runtime-node:$codexAgentVersion")
+                implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:$codexAgentVersion")
             }
             "node-wasm" -> wasmJsMain {
                 kotlin.srcDir("src/jsMain/kotlin")
                 dependencies {
-                    implementation("io.github.codex-agent-labs:codex-agent-runtime-node:$codexAgentVersion")
+                    implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:$codexAgentVersion")
                 }
             }
         }

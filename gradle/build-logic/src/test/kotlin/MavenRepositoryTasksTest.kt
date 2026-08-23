@@ -11,8 +11,8 @@ class MavenRepositoryTasksTest {
         writeExactRepository(repository, signed = true)
         verifyMavenRepository(repository, GROUP, VERSION, true, inventory)
         val report = inventory.readReleaseObject()
-        assertEquals(160, report.releaseInt("primaryArtifactCount"))
-        assertEquals(26, report.releaseArray("artifactIds").size)
+        assertEquals(154, report.releaseInt("primaryArtifactCount"))
+        assertEquals(25, report.releaseArray("artifactIds").size)
         assertEquals(6, report.releaseArray("relocationArtifactIds").size)
         expectedMavenPrimaryPaths(VERSION).forEach { relative ->
             val primary = repository.resolve("io/github/codex-agent-labs/$relative")

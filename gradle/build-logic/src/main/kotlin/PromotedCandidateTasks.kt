@@ -55,10 +55,10 @@ internal val promotedMavenArtifactOwnership = linkedMapOf(
         "codex-agent-iossimulatorarm64", "codex-agent-runtime-ios-iossimulatorarm64",
     ),
     "node-js" to setOf(
-        "codex-agent-js", "codex-agent-runtime-node", "codex-agent-runtime-node-js",
+        "codex-agent-js", "codex-agent-runtime-desktop-js",
     ),
     "node-wasm" to setOf(
-        "codex-agent-wasm-js", "codex-agent-runtime-node-wasm-js",
+        "codex-agent-wasm-js", "codex-agent-runtime-desktop-wasm-js",
     ),
 )
 internal val promotedCandidateLaneNames = setOf(

@@ -1,6 +1,11 @@
 import com.vanniktech.maven.publish.JavadocJar
 import com.vanniktech.maven.publish.KotlinMultiplatform
 import com.vanniktech.maven.publish.SourcesJar
+import java.io.File
+import java.util.zip.ZipFile
+import org.gradle.api.tasks.bundling.Zip
+import org.jetbrains.kotlin.gradle.targets.js.nodejs.NodeJsEnvSpec
+import org.jetbrains.kotlin.gradle.targets.wasm.nodejs.WasmNodeJsEnvSpec
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -13,7 +18,6 @@ val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toSt
 kotlin {
     explicitApi()
     sourceSets {
-        commonMain { kotlin.srcDir(rootProject.layout.projectDirectory.dir("runtime-host-shared/src/commonMain/kotlin")) }
         commonMain.dependencies {
             api(project(":codex-agent-core"))
             implementation(libs.kotlinx.coroutines.core)
@@ -22,6 +26,79 @@ kotlin {
         commonTest.dependencies { implementation(kotlin("test")) }
         nativeTest.dependencies { implementation(kotlin("test")) }
         jvmTest.dependencies { implementation(kotlin("test")) }
+        jsTest.dependencies { implementation(kotlin("test")) }
+        wasmJsTest.dependencies { implementation(kotlin("test")) }
+    }
+}
+
+rootProject.extensions.configure<NodeJsEnvSpec> { download.set(false) }
+extensions.configure<NodeJsEnvSpec> { download.set(false) }
+rootProject.extensions.configure<WasmNodeJsEnvSpec> { download.set(false) }
+extensions.configure<WasmNodeJsEnvSpec> { download.set(false) }
+
+val packageNodeRuntimeEvidenceRunner = tasks.register<Zip>(
+    "packageNodeRuntimeEvidenceRunner",
+) {
+    group = "distribution"
+    description = "Packages the compiled standalone Node runtime evidence runner."
+    dependsOn("jsProductionExecutableCompileSync")
+    from(layout.buildDirectory.dir("compileSync/js/main/productionExecutable/kotlin")) {
+        include("*.js")
+    }
+    archiveFileName.set("codex-agent-node-runtime-evidence-runner.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("distributions"))
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+    entryCompression = ZipEntryCompression.STORED
+    doLast {
+        ZipFile(archiveFile.get().asFile).use { zip ->
+            val members = zip.entries().asSequence().toList()
+            check(members.isNotEmpty() && members.none { it.isDirectory } &&
+                members.map { it.name }.toSet().size == members.size &&
+                members.all { it.name == File(it.name).name && it.name.endsWith(".js") && it.size > 0 } &&
+                members.any { it.name == "codex-agent-codex-agent-runtime-desktop.js" }) {
+                "Node evidence runner package has an incomplete or unsafe CommonJS module set"
+            }
+        }
+    }
+}
+
+val nodeWasmRunnerBaseName = "codex-agent-codex-agent-runtime-desktop"
+val nodeWasmRunnerMembers = setOf(
+    "$nodeWasmRunnerBaseName.mjs",
+    "$nodeWasmRunnerBaseName.uninstantiated.mjs",
+    "$nodeWasmRunnerBaseName.wasm",
+    "custom-formatters.js",
+)
+val packageNodeWasmRuntimeEvidenceRunner = tasks.register<Zip>(
+    "packageNodeWasmRuntimeEvidenceRunner",
+) {
+    group = "distribution"
+    description = "Packages the unoptimized standalone Kotlin/Wasm Node evidence runner."
+    dependsOn("wasmJsDevelopmentExecutableCompileSync")
+    from(layout.buildDirectory.dir("compileSync/wasmJs/main/developmentExecutable/kotlin")) {
+        include(nodeWasmRunnerMembers)
+    }
+    archiveFileName.set("codex-agent-node-wasm-runtime-evidence-runner.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("distributions"))
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+    entryCompression = ZipEntryCompression.STORED
+    doLast {
+        ZipFile(archiveFile.get().asFile).use { zip ->
+            val members = zip.entries().asSequence().toList()
+            val expectedMembers = setOf(
+                "codex-agent-codex-agent-runtime-desktop.mjs",
+                "codex-agent-codex-agent-runtime-desktop.uninstantiated.mjs",
+                "codex-agent-codex-agent-runtime-desktop.wasm",
+                "custom-formatters.js",
+            )
+            check(
+                members.none { it.isDirectory } &&
+                    members.map { it.name }.toSet() == expectedMembers &&
+                    members.all { it.name == File(it.name).name && it.size > 0 }
+            ) { "Node Wasm evidence runner package has an incomplete or unsafe module set" }
+        }
     }
 }
 
@@ -41,7 +118,7 @@ mavenPublishing {
     }
     pom {
         name.set("Codex Agent Runtime for Desktop")
-        description.set("Native desktop process runtime for the Codex App Server.")
+        description.set("JVM, Native, and Node desktop process runtime for the Codex App Server.")
         inceptionYear.set("2026")
         url.set(codexAgentRepositoryUrl)
         licenses {

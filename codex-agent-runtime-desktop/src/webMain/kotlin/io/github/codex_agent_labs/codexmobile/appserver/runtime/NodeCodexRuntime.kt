@@ -130,7 +130,7 @@ internal fun validateNodeLaunch(configuration: NodeCodexRuntimeConfiguration): N
     }
 
     val target = currentNodeTarget()
-    val distribution = nodeCodexDistribution(target)
+    val distribution = desktopCodexDistribution(target)
     val executable = canonical(configuration.appServerExecutable, "App Server executable")
     val supervisor = canonical(configuration.processSupervisorExecutable, "Process supervisor executable")
     val workingDirectory = canonical(configuration.workingDirectory, "Working directory")

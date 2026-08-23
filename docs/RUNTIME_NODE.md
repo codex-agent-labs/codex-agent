@@ -1,6 +1,6 @@
 # Node runtimes
 
-`codex-agent-runtime-node` provides a local Codex App Server runtime to both
+`codex-agent-runtime-desktop` provides a local Codex App Server runtime to both
 Kotlin/JS and Kotlin/WasmJS applications running on Node.js. It implements the
 existing `CodexRuntimeFactory` boundary. Applications use the public
 `CodexHost` -> `CodexAgent` -> `CodexConversation` lifecycle; the raw runtime
@@ -29,7 +29,7 @@ Add the client and runtime to a Kotlin/JS or Kotlin/WasmJS Node application:
 ```kotlin
 dependencies {
     implementation("io.github.codex-agent-labs:codex-agent:0.2.0")
-    implementation("io.github.codex-agent-labs:codex-agent-runtime-node:0.2.0")
+    implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.2.0")
 }
 ```
 

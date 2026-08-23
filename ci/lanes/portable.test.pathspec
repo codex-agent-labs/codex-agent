@@ -1,3 +1,6 @@
 gradle/build-logic/src/test/**/*RuntimeEvidence*
+codex-agent-runtime-desktop/src/desktopTest/**
 codex-agent-runtime-desktop/src/jvmTest/**
-codex-agent-runtime-node/src/*Test/**
+codex-agent-runtime-desktop/src/webTest/**
+codex-agent-runtime-desktop/src/jsTest/**
+codex-agent-runtime-desktop/src/wasmJsTest/**

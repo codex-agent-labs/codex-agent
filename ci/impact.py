@@ -73,11 +73,14 @@ SUPPORT_DEPENDENCIES = {
         for lane in LANES
         if lane.startswith("desktop-")
     },
-    "consumer-desktop": tuple(
-        (lane, action)
-        for lane in LANES if lane.startswith("desktop-")
-        for action in ("build", "test")
-    ),
+    **{
+        consumer: tuple(
+            (lane, action)
+            for lane in LANES if lane.startswith("desktop-")
+            for action in ("build", "test")
+        )
+        for consumer in ("consumer-desktop", "consumer-node-js", "consumer-node-wasm")
+    },
     "consumer-android": (("android", "build"),),
     "consumer-ios-device": (("ios-rust-device", "build"), ("ios-rust-simulator", "build")),
     "consumer-ios-simulator": (("ios-rust-device", "build"), ("ios-rust-simulator", "build")),
@@ -219,21 +222,40 @@ def inventory_paths(contents: str) -> set[str]:
     return {line.split("\t", 3)[3] for line in contents.splitlines() if line}
 
 
-def changed_paths(root: Path, base: str, target: str) -> set[str]:
+@lru_cache(maxsize=8)
+def historical_pathspecs(root: Path, revision: str) -> tuple[str, ...]:
+    raw = str(run_git(root, "grep", "-h", "-e", ".", revision, "--", "ci/lanes/*.pathspec"))
+    return tuple(
+        line
+        for raw_line in raw.splitlines()
+        if (line := raw_line.strip()) and not line.startswith("#")
+    )
+
+
+def changed_paths(root: Path, base: str, target: str) -> tuple[set[str], set[str]]:
     raw = run_git(root, "diff", "--name-status", "-z", base, target, binary=True)
     tokens = raw.split(b"\0")
     result: set[str] = set()
+    removals: set[str] = set()
     index = 0
     while index < len(tokens) and tokens[index]:
         status = tokens[index].decode("ascii")
         index += 1
         count = 2 if status.startswith(("R", "C")) else 1
+        paths: list[str] = []
         for _ in range(count):
             if index >= len(tokens) or not tokens[index]:
                 raise ValueError(f"Malformed git diff entry for {status}")
-            result.add(tokens[index].decode("utf-8"))
+            paths.append(tokens[index].decode("utf-8"))
             index += 1
-    return result
+        if status.startswith("R"):
+            result.update(paths)
+            removals.add(paths[0])
+        else:
+            result.add(paths[-1])
+            if status.startswith("D"):
+                removals.add(paths[-1])
+    return result, removals
 
 
 def lane_action(root: Path, lane: str, category: str) -> bool:
@@ -287,7 +309,7 @@ def plan(
     target_commit = str(run_git(root, "rev-parse", f"{target}^{{commit}}")).strip()
     head_commit = str(run_git(root, "rev-parse", f"{head}^{{commit}}")).strip()
     validation_tree = str(run_git(root, "rev-parse", f"{target}^{{tree}}")).strip()
-    changes = changed_paths(root, base_commit, target_commit)
+    changes, removals = changed_paths(root, base_commit, target_commit)
     lanes: dict[str, dict[str, object]] = {}
     covered: set[str] = set()
     target_inventories: dict[tuple[str, str], str] = {}
@@ -321,6 +343,12 @@ def plan(
     harmless_target = inventory(root, target_commit, HARMLESS_PATHS)
     covered.update(inventory_paths(harmless_base))
     covered.update(inventory_paths(harmless_target))
+    prior_specs = historical_pathspecs(root, base_commit)
+    covered.update(
+        path
+        for path in removals
+        if any(fnmatch.fnmatchcase(path, spec) for spec in prior_specs)
+    )
     unknown = sorted(changes - covered)
     core_change = any(
         path in FULL_VALIDATION_PATHS or path.startswith(FULL_VALIDATION_PREFIXES)

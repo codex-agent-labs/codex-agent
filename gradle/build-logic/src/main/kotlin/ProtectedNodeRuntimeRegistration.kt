@@ -44,7 +44,7 @@ fun Project.registerProtectedNodeRuntimeCandidate(
             providers.gradleProperty("codexAgent.portableRuntimeArtifactsDirectory").map {
                 file("$it/$runnerName")
             },
-        ).orElse(layout.projectDirectory.file("codex-agent-runtime-node/build/distributions/$runnerName"))
+        ).orElse(layout.projectDirectory.file("codex-agent-runtime-desktop/build/distributions/$runnerName"))
         prepareCandidate.configure {
             if (wasm) {
                 nodeWasmEvidence.from(importedEvidence)

@@ -18,7 +18,7 @@ class NodeRuntimeEvidenceTasksTest {
             )
             val prefix = if (backend == NODE_RUNTIME_JS_BACKEND) "nodeRuntime" else "nodeWasmRuntime"
             assertTrue((desktopRuntimeEvidenceTargets.keys - "linuxArm64").all {
-                nodeRuntimeEvidenceTestTask(it, backend).startsWith(":codex-agent-runtime-node:$prefix")
+                nodeRuntimeEvidenceTestTask(it, backend).startsWith(":codex-agent-runtime-desktop:$prefix")
             })
         }
     }

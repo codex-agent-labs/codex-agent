@@ -17,7 +17,9 @@ class PromotedMavenOwnershipTest {
         assertEquals("common", owners.getValue("codex-agent"))
         assertEquals("common", owners.getValue("codex-agent-jvm"))
         assertEquals("ios-device", owners.getValue("codex-agent-runtime-ios"))
-        assertEquals("node-js", owners.getValue("codex-agent-runtime-node"))
+        assertEquals("desktop", owners.getValue("codex-agent-runtime-desktop"))
+        assertEquals("node-js", owners.getValue("codex-agent-runtime-desktop-js"))
+        assertEquals("node-wasm", owners.getValue("codex-agent-runtime-desktop-wasm-js"))
 
         val sharedPath = "$GROUP_PATH/codex-agent/$VERSION/codex-agent-$VERSION.jar"
         fixture.repositories.getValue("android").resolve(sharedPath).apply {

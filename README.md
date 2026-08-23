@@ -31,9 +31,8 @@ general-purpose shell.
   guard.
 - `codex-agent-runtime-ios` embeds the pinned Rust App Server and confines its
   workspace tools to the selected sandbox or security-scoped folder.
-- `codex-agent-runtime-desktop` supplies native and JVM desktop adapters for the
-  five supported desktop hosts.
-- `codex-agent-runtime-node` supplies the same local lifecycle to Kotlin/JS and
+- `codex-agent-runtime-desktop` supplies native and JVM adapters for the five
+  supported desktop hosts plus the same local lifecycle to Kotlin/JS and
   Kotlin/WasmJS applications running on Node.js.
 
 ## Coordinates
@@ -43,7 +42,6 @@ implementation("io.github.codex-agent-labs:codex-agent:0.2.0")
 implementation("io.github.codex-agent-labs:codex-agent-runtime-android:0.2.0")
 implementation("io.github.codex-agent-labs:codex-agent-runtime-ios:0.2.0")
 implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.2.0")
-implementation("io.github.codex-agent-labs:codex-agent-runtime-node:0.2.0")
 ```
 
 Version `0.2.0` has not yet been tagged or published.

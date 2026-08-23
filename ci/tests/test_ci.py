@@ -145,6 +145,103 @@ class GitFixture(unittest.TestCase):
 
 
 class ImpactPlanTest(GitFixture):
+    def test_rename_is_classified_by_its_destination(self) -> None:
+        base = self.commit("desktop-runtime/old.txt", "old\n")
+        (self.root / "js").mkdir()
+        self.git("mv", "desktop-runtime/old.txt", "js/Main.kt")
+        self.git("commit", "-qm", "move into classified JS input")
+        target = self.git("rev-parse", "HEAD")
+
+        result = plan(
+            root=self.root,
+            base=base,
+            target=target,
+            head=target,
+            event="pull_request",
+            pull_request=7,
+            merge_ready=True,
+            force_full=False,
+            repository="codex-agent-labs/codex-agent",
+            output=self.root / "build/ci/rename-impact-plan.json",
+        )
+
+        self.assertEqual([], result["unknownPaths"])
+        self.assertTrue(result["lanes"]["node-js"]["build"])
+
+    def test_rename_from_unclassified_source_forces_full_validation(self) -> None:
+        base = self.commit("legacy/old.txt", "old\n")
+        (self.root / "js").mkdir()
+        self.git("mv", "legacy/old.txt", "js/Main.kt")
+        self.git("commit", "-qm", "move unclassified input into JS")
+        target = self.git("rev-parse", "HEAD")
+
+        result = plan(
+            root=self.root,
+            base=base,
+            target=target,
+            head=target,
+            event="pull_request",
+            pull_request=7,
+            merge_ready=True,
+            force_full=False,
+            repository="codex-agent-labs/codex-agent",
+            output=self.root / "build/ci/unclassified-rename-impact-plan.json",
+        )
+
+        self.assertEqual(["legacy/old.txt"], result["unknownPaths"])
+        self.assertTrue(result["full"])
+        self.assertTrue(all(not state["reuseAllowed"] for state in result["lanes"].values()))
+
+    def test_deleted_classified_input_still_selects_its_lane(self) -> None:
+        base = self.commit("js/Removed.kt", "old\n")
+        self.git("rm", "js/Removed.kt")
+        self.write(
+            "ci/lanes/node-js.production.pathspec",
+            "new-js/**\nconfigured/node-js.txt\n",
+        )
+        self.git("add", "ci/lanes/node-js.production.pathspec")
+        self.git("commit", "-qm", "remove classified JS input and its retired pathspec")
+        target = self.git("rev-parse", "HEAD")
+
+        result = plan(
+            root=self.root,
+            base=base,
+            target=target,
+            head=target,
+            event="pull_request",
+            pull_request=7,
+            merge_ready=True,
+            force_full=False,
+            repository="codex-agent-labs/codex-agent",
+            output=self.root / "build/ci/deletion-impact-plan.json",
+        )
+
+        self.assertEqual([], result["unknownPaths"])
+        self.assertTrue(result["lanes"]["node-js"]["build"])
+
+    def test_deleted_unclassified_input_forces_full_validation(self) -> None:
+        base = self.commit("legacy/removed.txt", "old\n")
+        self.git("rm", "legacy/removed.txt")
+        self.git("commit", "-qm", "remove unclassified input")
+        target = self.git("rev-parse", "HEAD")
+
+        result = plan(
+            root=self.root,
+            base=base,
+            target=target,
+            head=target,
+            event="pull_request",
+            pull_request=7,
+            merge_ready=True,
+            force_full=False,
+            repository="codex-agent-labs/codex-agent",
+            output=self.root / "build/ci/unclassified-deletion-impact-plan.json",
+        )
+
+        self.assertEqual(["legacy/removed.txt"], result["unknownPaths"])
+        self.assertTrue(result["full"])
+        self.assertTrue(all(not state["reuseAllowed"] for state in result["lanes"].values()))
+
     def test_docs_only_runs_no_product_lane(self) -> None:
         result, _, _ = self.make_plan("README.md", "docs\n")
         self.assertEqual([], result["unknownPaths"])
@@ -177,8 +274,9 @@ class ImpactPlanTest(GitFixture):
         self.assertTrue(result["lanes"]["node-js"]["build"])
         self.assertFalse(result["lanes"]["node-wasm"]["build"])
         for lane in (name for name in LANES if name.startswith("desktop-")):
-            self.assertFalse(result["lanes"][lane]["build"])
+            self.assertTrue(result["lanes"][lane]["build"])
             self.assertTrue(result["lanes"][lane]["test"])
+        self.assertTrue(result["lanes"]["consumer-desktop"]["build"])
         output = self.root / "selection.out"
         subprocess.run([
             sys.executable, str(CI_ROOT / "lane_selection.py"), "--plan", str(plan_path),
@@ -194,8 +292,9 @@ class ImpactPlanTest(GitFixture):
         self.assertFalse(result["lanes"]["node-js"]["build"])
         self.assertTrue(result["lanes"]["node-wasm"]["build"])
         for lane in (name for name in LANES if name.startswith("desktop-")):
-            self.assertFalse(result["lanes"][lane]["build"])
+            self.assertTrue(result["lanes"][lane]["build"])
             self.assertTrue(result["lanes"][lane]["test"])
+        self.assertTrue(result["lanes"]["consumer-desktop"]["build"])
         output = self.root / "selection.out"
         subprocess.run([
             sys.executable, str(CI_ROOT / "lane_selection.py"), "--plan", str(plan_path),
@@ -207,8 +306,8 @@ class ImpactPlanTest(GitFixture):
 
     def test_real_runner_pathspecs_keep_js_and_wasm_product_inputs_independent(self) -> None:
         root = CI_ROOT.parent
-        js = "codex-agent-runtime-node/src/jsMain/kotlin/OnlyJs.kt"
-        wasm = "codex-agent-runtime-node/src/wasmJsMain/kotlin/OnlyWasm.kt"
+        js = "codex-agent-runtime-desktop/src/jsMain/kotlin/OnlyJs.kt"
+        wasm = "codex-agent-runtime-desktop/src/wasmJsMain/kotlin/OnlyWasm.kt"
 
         def matches(lane: str, category: str, path: str) -> bool:
             return any(
@@ -302,10 +401,14 @@ class ImpactPlanTest(GitFixture):
             )
 
     def test_candidate_support_fallbacks_produce_complete_desktop_and_privacy_lanes(self) -> None:
-        desktop, _, _ = self.make_plan("configured/consumer-desktop.txt", "consumer changed\n")
-        for lane in (name for name in LANES if name.startswith("desktop-")):
-            self.assertTrue(desktop["lanes"][lane]["build"])
-            self.assertTrue(desktop["lanes"][lane]["test"])
+        for consumer in ("consumer-desktop", "consumer-node-js", "consumer-node-wasm"):
+            desktop, _, _ = self.make_plan(
+                f"configured/{consumer}.txt",
+                f"{consumer} changed\n",
+            )
+            for lane in (name for name in LANES if name.startswith("desktop-")):
+                self.assertTrue(desktop["lanes"][lane]["build"])
+                self.assertTrue(desktop["lanes"][lane]["test"])
 
         privacy, _, _ = self.make_plan("privacy-policy/review.json", "{}\n")
         self.assertTrue(privacy["lanes"]["ios-privacy-metrics"]["metadata"])
@@ -338,6 +441,8 @@ class ImpactPlanTest(GitFixture):
             self.assertIn(f"\n  {job}:\n", apple)
 
         workflow = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for consumer in ("consumer-desktop", "consumer-node-js", "consumer-node-wasm"):
+            self.assertEqual(2, workflow.count(f"matrix.lane == '{consumer}'"))
         gate = workflow[workflow.index("\n  merge-gate:"):]
         self.assertIn(
             "needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple, consumers]",
