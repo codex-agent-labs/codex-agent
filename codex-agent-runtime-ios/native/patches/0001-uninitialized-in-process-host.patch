@@ -1,8 +1,8 @@
 diff --git a/codex-rs/Cargo.toml b/codex-rs/Cargo.toml
-index 17edbbf..18013c0 100644
+index 6e5fa01..8b5a799 100644
 --- a/codex-rs/Cargo.toml
 +++ b/codex-rs/Cargo.toml
-@@ -19,6 +19,7 @@ members = [
+@@ -21,6 +21,7 @@ members = [
      "feedback",
      "features",
      "install-context",
@@ -10,12 +10,20 @@ index 17edbbf..18013c0 100644
      "codex-backend-openapi-models",
      "code-mode",
      "code-mode-host",
+@@ -581,6 +582,7 @@ inherits = "test"
+ opt-level = 0
+
+ [patch.crates-io]
++i18n-embed-fl = { path = "ios-bridge/vendor/i18n-embed-fl-0.9.4" }
+ # Uncomment to debug local changes.
+ # ratatui = { path = "../../ratatui" }
+ crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "45fecb9508105988f42fe6ff0441783ed3717f92" }
 diff --git a/codex-rs/app-server-client/src/lib.rs b/codex-rs/app-server-client/src/lib.rs
-index a46feb5..e165a24 100644
+index cb9375f..ee788ae 100644
 --- a/codex-rs/app-server-client/src/lib.rs
 +++ b/codex-rs/app-server-client/src/lib.rs
-@@ -458,8 +458,28 @@ impl InProcessAppServerClient {
-     /// with overload error instead of being silently dropped.
+@@ -326,8 +326,28 @@ impl InProcessAppServerClient {
+     /// Request queues remain bounded without blocking on unread notifications.
      pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
          let channel_capacity = args.channel_capacity.max(1);
 -        let mut handle =
@@ -43,11 +51,11 @@ index a46feb5..e165a24 100644
 +    ) -> Self {
          let request_sender = handle.sender();
          let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
-         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
-@@ -568,11 +588,11 @@ impl InProcessAppServerClient {
+         // e9996ec62a preserved transcript events by awaiting a bounded queue, but that can
+@@ -419,11 +439,11 @@ impl InProcessAppServerClient {
              }
          });
- 
+
 -        Ok(Self {
 +        Self {
              command_tx,
@@ -56,25 +64,25 @@ index a46feb5..e165a24 100644
 -        })
 +        }
      }
- 
+
      pub fn request_handle(&self) -> InProcessAppServerRequestHandle {
 diff --git a/codex-rs/app-server/src/in_process.rs b/codex-rs/app-server/src/in_process.rs
-index 84fec13..ccc654f 100644
+index 31fc421..8446ddf 100644
 --- a/codex-rs/app-server/src/in_process.rs
 +++ b/codex-rs/app-server/src/in_process.rs
-@@ -361,7 +361,7 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
+@@ -374,7 +374,7 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
          });
      }
      let initialize = args.initialize.clone();
 -    let client = start_uninitialized(args).await?;
 +    let client = start_uninitialized(args, crate::PluginStartupTasks::Start).await?;
- 
+
      let initialize_response = client
          .request(ClientRequest::Initialize {
-@@ -381,7 +381,14 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
-     Ok(client)
+@@ -413,7 +413,14 @@ async fn run_outbound_router(
+     }
  }
- 
+
 -async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
 +/// Starts an in-process app-server runtime without performing the client handshake.
 +///
@@ -84,11 +92,11 @@ index 84fec13..ccc654f 100644
 +    args: InProcessStartArgs,
 +    plugin_startup_tasks: crate::PluginStartupTasks,
 +) -> IoResult<InProcessClientHandle> {
+     args.config.auth_config().validate()?;
      let channel_capacity = args.channel_capacity.max(1);
      let installation_id = resolve_installation_id(&args.config.codex_home).await?;
-     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
-@@ -449,7 +456,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
-                 installation_id,
+@@ -486,7 +493,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
+                 code_mode_session_provider: None,
                  rpc_transport: AppServerRpcTransport::InProcess,
                  remote_control_handle: None,
 -                plugin_startup_tasks: crate::PluginStartupTasks::Start,
@@ -96,165 +104,17 @@ index 84fec13..ccc654f 100644
              }));
              let mut thread_created_rx = processor.thread_created_receiver();
              let session = Arc::new(ConnectionSessionState::new());
-diff --git a/codex-rs/code-mode/Cargo.toml b/codex-rs/code-mode/Cargo.toml
-index be14424..6f48b24 100644
---- a/codex-rs/code-mode/Cargo.toml
-+++ b/codex-rs/code-mode/Cargo.toml
-@@ -18,12 +18,14 @@ workspace = true
- [dependencies]
- codex-code-mode-protocol = { workspace = true }
- codex-protocol = { workspace = true }
--deno_core_icudata = { workspace = true }
- futures = { workspace = true }
- serde_json = { workspace = true }
- tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
- tokio-util = { workspace = true, features = ["rt"] }
- tracing = { workspace = true }
-+
-+[target.'cfg(not(target_os = "ios"))'.dependencies]
-+deno_core_icudata = { workspace = true }
- v8 = { workspace = true }
- 
- [dev-dependencies]
-diff --git a/codex-rs/code-mode/src/lib.rs b/codex-rs/code-mode/src/lib.rs
-index 6d332bf..a34d997 100644
---- a/codex-rs/code-mode/src/lib.rs
-+++ b/codex-rs/code-mode/src/lib.rs
-@@ -1,17 +1,43 @@
-+#[cfg(not(target_os = "ios"))]
- mod cell_actor;
-+#[cfg(target_os = "ios")]
-+mod ios;
-+#[cfg(not(target_os = "ios"))]
- mod remote_session;
-+#[cfg(not(target_os = "ios"))]
- mod runtime;
-+#[cfg(not(target_os = "ios"))]
- mod service;
-+#[cfg(not(target_os = "ios"))]
- mod session_runtime;
-+#[cfg(not(target_os = "ios"))]
- mod v8_init;
- 
-+#[cfg(not(target_os = "ios"))]
- pub(crate) type TaskFailureHandler = std::sync::Arc<dyn Fn(String) + Send + Sync>;
- 
- pub use codex_code_mode_protocol::*;
-+#[cfg(target_os = "ios")]
-+pub use ios::InProcessCodeModeSessionProvider;
-+#[cfg(target_os = "ios")]
-+pub use ios::NoopCodeModeSessionDelegate;
-+#[cfg(target_os = "ios")]
-+pub use ios::ProcessOwnedCodeModeSessionProvider;
-+#[cfg(target_os = "ios")]
-+pub use ios::V8JitMode;
-+#[cfg(target_os = "ios")]
-+pub use ios::initialize_v8;
-+#[cfg(not(target_os = "ios"))]
- pub use remote_session::ProcessOwnedCodeModeSession;
-+#[cfg(not(target_os = "ios"))]
- pub use remote_session::ProcessOwnedCodeModeSessionProvider;
-+#[cfg(not(target_os = "ios"))]
- pub use service::InProcessCodeModeSession;
-+#[cfg(not(target_os = "ios"))]
- pub use service::InProcessCodeModeSessionProvider;
-+#[cfg(not(target_os = "ios"))]
- pub use service::NoopCodeModeSessionDelegate;
-+#[cfg(not(target_os = "ios"))]
- pub use v8_init::V8JitMode;
-+#[cfg(not(target_os = "ios"))]
- pub use v8_init::initialize_v8;
-diff --git a/codex-rs/code-mode/src/ios.rs b/codex-rs/code-mode/src/ios.rs
-new file mode 100644
-index 0000000..b0f6654
---- /dev/null
-+++ b/codex-rs/code-mode/src/ios.rs
-@@ -0,0 +1,78 @@
-+use std::path::PathBuf;
-+use std::sync::Arc;
-+
-+use codex_code_mode_protocol::CellId;
-+use codex_code_mode_protocol::CodeModeNestedToolCall;
-+use codex_code_mode_protocol::CodeModeSessionDelegate;
-+use codex_code_mode_protocol::CodeModeSessionProvider;
-+use codex_code_mode_protocol::CodeModeSessionProviderFuture;
-+use codex_code_mode_protocol::NotificationFuture;
-+use codex_code_mode_protocol::ToolInvocationFuture;
-+use tokio_util::sync::CancellationToken;
-+
-+const UNSUPPORTED: &str = "code mode is unsupported on iOS";
-+
-+pub struct NoopCodeModeSessionDelegate;
-+
-+impl CodeModeSessionDelegate for NoopCodeModeSessionDelegate {
-+    fn invoke_tool<'a>(
-+        &'a self,
-+        _invocation: CodeModeNestedToolCall,
-+        _cancellation_token: CancellationToken,
-+    ) -> ToolInvocationFuture<'a> {
-+        Box::pin(async { Err(UNSUPPORTED.to_string()) })
-+    }
-+
-+    fn notify<'a>(
-+        &'a self,
-+        _call_id: String,
-+        _cell_id: CellId,
-+        _text: String,
-+        _cancellation_token: CancellationToken,
-+    ) -> NotificationFuture<'a> {
-+        Box::pin(async { Err(UNSUPPORTED.to_string()) })
-+    }
-+
-+    fn cell_closed(&self, _cell_id: &CellId) {}
-+}
-+
-+#[derive(Default)]
-+pub struct InProcessCodeModeSessionProvider;
-+
-+impl CodeModeSessionProvider for InProcessCodeModeSessionProvider {
-+    fn create_session<'a>(
-+        &'a self,
-+        _delegate: Arc<dyn CodeModeSessionDelegate>,
-+    ) -> CodeModeSessionProviderFuture<'a> {
-+        Box::pin(async { Err(UNSUPPORTED.to_string()) })
-+    }
-+}
-+
-+#[derive(Default)]
-+pub struct ProcessOwnedCodeModeSessionProvider;
-+
-+impl ProcessOwnedCodeModeSessionProvider {
-+    pub fn with_host_program(_host_program: PathBuf) -> Self {
-+        Self
-+    }
-+}
-+
-+impl CodeModeSessionProvider for ProcessOwnedCodeModeSessionProvider {
-+    fn create_session<'a>(
-+        &'a self,
-+        _delegate: Arc<dyn CodeModeSessionDelegate>,
-+    ) -> CodeModeSessionProviderFuture<'a> {
-+        Box::pin(async { Err(UNSUPPORTED.to_string()) })
-+    }
-+}
-+
-+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-+pub enum V8JitMode {
-+    #[default]
-+    Enabled,
-+    Disabled,
-+}
-+
-+pub fn initialize_v8(_jit_mode: V8JitMode) -> Result<(), String> {
-+    Err(UNSUPPORTED.to_string())
-+}
 diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
+index 5c29628..dd9dd2c 100644
 --- a/codex-rs/core/src/tools/mod.rs
 +++ b/codex-rs/core/src/tools/mod.rs
-@@ -65,2 +65,19 @@
+@@ -71,10 +71,27 @@ pub(crate) fn tool_user_shell_type(
+ }
+
+ pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
 -    turn_context.model_info.tool_mode.unwrap_or_else(|| {
 -        if turn_context.config.features.enabled(Feature::CodeModeOnly) {
-+    resolve_tool_mode(
++    resolve_requested_tool_mode(
 +        turn_context.model_info.tool_mode,
 +        turn_context.config.features.enabled(Feature::CodeModeOnly),
 +        turn_context.config.features.enabled(Feature::CodeMode),
@@ -262,7 +122,7 @@ diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
 +    )
 +}
 +
-+fn resolve_tool_mode(
++fn resolve_requested_tool_mode(
 +    model_tool_mode: Option<ToolMode>,
 +    code_mode_only_enabled: bool,
 +    code_mode_enabled: bool,
@@ -273,19 +133,25 @@ diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
 +    }
 +    model_tool_mode.unwrap_or_else(|| {
 +        if code_mode_only_enabled {
-@@ -68 +85 @@
+             ToolMode::CodeModeOnly
 -        } else if turn_context.config.features.enabled(Feature::CodeMode) {
 +        } else if code_mode_enabled {
-@@ -75,0 +93,19 @@
+             ToolMode::CodeMode
+         } else {
+             ToolMode::Direct
+@@ -94,6 +111,25 @@ pub(crate) fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
+     }
+ }
+
 +#[cfg(test)]
 +mod effective_tool_mode_tests {
 +    use super::ToolMode;
-+    use super::resolve_tool_mode;
++    use super::resolve_requested_tool_mode;
 +
 +    #[test]
 +    fn ios_runtime_forces_direct_tools_for_code_mode_only_models() {
 +        assert_eq!(
-+            resolve_tool_mode(
++            resolve_requested_tool_mode(
 +                Some(ToolMode::CodeModeOnly),
 +                /*code_mode_only_enabled*/ true,
 +                /*code_mode_enabled*/ true,
@@ -296,160 +162,12 @@ diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
 +    }
 +}
 +
-
-
---- a/codex-rs/app-server-protocol/src/lib.rs
-+++ b/codex-rs/app-server-protocol/src/lib.rs
-@@ -1,17 +1,19 @@
- mod experimental_api;
-+#[cfg_attr(target_os = "ios", allow(dead_code, unused_imports))]
- mod export;
- mod protocol;
- pub mod rpc;
-+#[cfg(not(target_os = "ios"))]
- mod schema_fixtures;
- 
- pub use experimental_api::*;
--pub use export::GenerateTsOptions;
-+#[cfg(not(target_os = "ios"))]
-+pub use export::{
-+    GenerateTsOptions, generate_ts, generate_ts_with_options, generate_types,
-+};
- pub use export::generate_internal_json_schema;
- pub use export::generate_json;
- pub use export::generate_json_with_experimental;
--pub use export::generate_ts;
--pub use export::generate_ts_with_options;
--pub use export::generate_types;
- pub use protocol::common::*;
- pub use protocol::event_mapping::*;
- pub use protocol::item_builders::*;
-@@ -41,10 +43,11 @@
- pub use protocol::v1::UserSavedConfig;
- pub use protocol::v2::*;
- pub use rpc::*;
--pub use schema_fixtures::SchemaFixtureOptions;
-+#[cfg(not(target_os = "ios"))]
-+pub use schema_fixtures::{
-+    SchemaFixtureOptions, read_schema_fixture_subtree, read_schema_fixture_tree,
-+    write_schema_fixtures, write_schema_fixtures_with_options,
-+};
-+#[cfg(not(target_os = "ios"))]
- #[doc(hidden)]
- pub use schema_fixtures::generate_typescript_schema_fixture_subtree_for_tests;
--pub use schema_fixtures::read_schema_fixture_subtree;
--pub use schema_fixtures::read_schema_fixture_tree;
--pub use schema_fixtures::write_schema_fixtures;
--pub use schema_fixtures::write_schema_fixtures_with_options;
---- a/codex-rs/app-server-protocol/src/export.rs
-+++ b/codex-rs/app-server-protocol/src/export.rs
-@@ -7,10 +7,12 @@
- use crate::export_client_notification_schemas;
- use crate::export_client_param_schemas;
- use crate::export_client_response_schemas;
-+#[cfg(not(target_os = "ios"))]
- use crate::export_client_responses;
- use crate::export_server_notification_schemas;
- use crate::export_server_param_schemas;
- use crate::export_server_response_schemas;
-+#[cfg(not(target_os = "ios"))]
- use crate::export_server_responses;
- use crate::protocol::common::EXPERIMENTAL_CLIENT_METHOD_PARAM_TYPES;
- use crate::protocol::common::EXPERIMENTAL_CLIENT_METHOD_RESPONSE_TYPES;
-@@ -38,6 +40,7 @@
- use std::path::PathBuf;
- use std::process::Command;
- use std::thread;
-+#[cfg(not(target_os = "ios"))]
- use ts_rs::TS;
- 
- pub(crate) const GENERATED_TS_HEADER: &str = "// GENERATED CODE! DO NOT MODIFY BY HAND!\n\n";
-@@ -88,6 +91,7 @@
- }
- 
- type JsonSchemaEmitter = fn(&Path) -> Result<GeneratedSchema>;
-+#[cfg(not(target_os = "ios"))]
- pub fn generate_types(out_dir: &Path, prettier: Option<&Path>) -> Result<()> {
-     generate_ts(out_dir, prettier)?;
-     generate_json(out_dir)?;
-@@ -95,6 +99,7 @@
- }
- 
- #[derive(Clone, Copy, Debug)]
-+#[cfg(not(target_os = "ios"))]
- pub struct GenerateTsOptions {
-     pub generate_indices: bool,
-     pub ensure_headers: bool,
-@@ -102,6 +107,7 @@
-     pub experimental_api: bool,
- }
- 
-+#[cfg(not(target_os = "ios"))]
- impl Default for GenerateTsOptions {
-     fn default() -> Self {
-         Self {
-@@ -113,10 +119,12 @@
-     }
- }
- 
-+#[cfg(not(target_os = "ios"))]
- pub fn generate_ts(out_dir: &Path, prettier: Option<&Path>) -> Result<()> {
-     generate_ts_with_options(out_dir, prettier, GenerateTsOptions::default())
- }
- 
-+#[cfg(not(target_os = "ios"))]
- pub fn generate_ts_with_options(
-     out_dir: &Path,
-     prettier: Option<&Path>,
---- a/codex-rs/app-server-protocol/src/protocol/common.rs
-+++ b/codex-rs/app-server-protocol/src/protocol/common.rs
-@@ -419,6 +419,7 @@
-             )*
-         ];
- 
-+        #[cfg(not(target_os = "ios"))]
-         pub fn export_client_responses(
-             out_dir: &::std::path::Path,
-         ) -> ::std::result::Result<(), ::ts_rs::ExportError> {
-@@ -428,6 +429,7 @@
-             Ok(())
-         }
- 
-+        #[cfg(not(target_os = "ios"))]
-         pub(crate) fn visit_client_response_types(v: &mut impl ::ts_rs::TypeVisitor) {
-             $(
-                 v.visit::<$response>();
-@@ -1341,6 +1343,7 @@
-             )*
-         ];
- 
-+        #[cfg(not(target_os = "ios"))]
-         pub fn export_server_responses(
-             out_dir: &::std::path::Path,
-         ) -> ::std::result::Result<(), ::ts_rs::ExportError> {
-@@ -1350,6 +1353,7 @@
-             Ok(())
-         }
- 
-+        #[cfg(not(target_os = "ios"))]
-         pub(crate) fn visit_server_response_types(v: &mut impl ::ts_rs::TypeVisitor) {
-             $(
-                 v.visit::<$response>();
-
-diff --git a/codex-rs/Cargo.toml b/codex-rs/Cargo.toml
---- a/codex-rs/Cargo.toml
-+++ b/codex-rs/Cargo.toml
-@@ -559,5 +559,6 @@ opt-level = 0
- 
- [patch.crates-io]
-+i18n-embed-fl = { path = "ios-bridge/vendor/i18n-embed-fl-0.9.4" }
- # Uncomment to debug local changes.
- # ratatui = { path = "../../ratatui" }
- crossterm = { git = "https://github.com/nornagon/crossterm", rev = "87db8bfa6dc99427fd3b071681b07fc31c6ce995" }
-
-
+ /// Format the combined exec output for sending back to the model.
+ /// Includes exit code and duration metadata; truncates large bodies safely.
+ pub fn format_exec_output_for_model(
 diff --git a/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/Cargo.toml b/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/Cargo.toml
 new file mode 100644
+index 0000000..d0588b7
 --- /dev/null
 +++ b/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/Cargo.toml
 @@ -0,0 +1,103 @@
@@ -556,9 +274,9 @@ new file mode 100644
 +
 +[features]
 +dashmap = ["dep:dashmap"]
-
 diff --git a/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/LICENSE.txt b/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/LICENSE.txt
 new file mode 100644
+index 0000000..2c0f002
 --- /dev/null
 +++ b/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/LICENSE.txt
 @@ -0,0 +1,8 @@
@@ -571,9 +289,9 @@ new file mode 100644
 +THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 +© 2020 Luke Frisken
 \ No newline at end of file
-
 diff --git a/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/README.md b/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/README.md
 new file mode 100644
+index 0000000..71531a2
 --- /dev/null
 +++ b/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/README.md
 @@ -0,0 +1,78 @@
@@ -655,9 +373,9 @@ new file mode 100644
 +```
 +
 +This can now be invoked like so: `fl!("message-id")`, `fl!("message-id", args)` and `fl!("message-id", arg = "value")`.
-
 diff --git a/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/src/lib.rs b/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/src/lib.rs
 new file mode 100644
+index 0000000..5cd7f8d
 --- /dev/null
 +++ b/codex-rs/ios-bridge/vendor/i18n-embed-fl-0.9.4/src/lib.rs
 @@ -0,0 +1,963 @@

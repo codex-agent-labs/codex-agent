@@ -111,6 +111,7 @@ internal suspend fun CodexAgentClient.listSkillsAction(
     val entries = result.data
     return AgentSkillCatalog(
         skills = entries.flatMap { it.skills }.map(::parseSkill)
+            .map { skill -> skill.copy(canUninstall = ownedResources?.ownsSkill(skill) == true) }
             .distinctBy { it.path },
         errors = entries.flatMap { it.errors }.map { "${it.path}: ${it.message}" },
     ).also { catalog ->

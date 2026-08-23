@@ -84,7 +84,7 @@ final class AgentHost: ObservableObject {
         )
         host = codexHost
         stateObservation = Task { [weak self, codexHost] in
-            for await state in codexHost.states {
+            for await state in codexHost.lifecycleStates {
                 self?.handle(state)
             }
         }
@@ -101,7 +101,7 @@ final class AgentHost: ObservableObject {
 
     func authenticate() {
         guard let agent else { return }
-        run { try await agent.authenticate() }
+        run { try await agent.authentication.authenticate() }
     }
 
     func runWorkspaceAcceptance() {
@@ -116,7 +116,7 @@ final class AgentHost: ObservableObject {
             if let active = self.conversation {
                 conversation = active
             } else {
-                conversation = try await agent.openConversation(
+                conversation = try await agent.conversations.open(
                     conversationId: nil,
                     settings: AgentConversationSettings(
                         approvalPreset: .never,
@@ -202,13 +202,13 @@ final class AgentHost: ObservableObject {
         self.agent = agent
         canAuthenticate = true
         authenticationObservation = Task { [weak self, agent] in
-            for await state in agent.authenticationStates {
+            for await state in agent.authentication.states {
                 self?.authentication = "Authentication: \(state.status.name.lowercased())"
                 self?.canRunAcceptance = state.status == .authenticated
             }
         }
         activeConversationObservation = Task { [weak self, agent] in
-            for await conversation in agent.activeConversations {
+            for await conversation in agent.conversations.activeConversations {
                 self?.observe(conversation)
             }
         }

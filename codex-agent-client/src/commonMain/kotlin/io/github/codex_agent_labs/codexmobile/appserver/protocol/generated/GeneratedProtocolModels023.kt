@@ -13,208 +13,214 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class McpServerToolCallResponse(
-    @SerialName("content")
-    public val content: List<JsonElement>,
-    @SerialName("_meta")
-    public val _meta: JsonElement? = null,
-    @SerialName("isError")
-    public val isError: Boolean? = null,
-    @SerialName("structuredContent")
-    public val structuredContent: JsonElement? = null,
+internal data class MarketplaceUpgradeParams(
+    @SerialName("marketplaceName")
+    public val marketplaceName: String? = null,
 )
 
 @Serializable
-internal data class McpToolCallAppContext(
-    @SerialName("connectorId")
-    public val connectorId: String,
-    @SerialName("actionName")
-    public val actionName: String? = null,
-    @SerialName("appName")
-    public val appName: String? = null,
-    @SerialName("linkId")
-    public val linkId: String? = null,
-    @SerialName("resourceUri")
-    public val resourceUri: String? = null,
+internal data class MarketplaceUpgradeResponse(
+    @SerialName("errors")
+    public val errors: List<MarketplaceUpgradeErrorInfo>,
+    @SerialName("selectedMarketplaces")
+    public val selectedMarketplaces: List<String>,
+    @SerialName("upgradedRoots")
+    public val upgradedRoots: List<AbsolutePathBuf>,
 )
 
 @Serializable
-internal data class McpToolCallError(
-    @SerialName("message")
-    public val message: String,
-)
-
-@Serializable
-internal data class McpToolCallProgressNotification(
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("message")
-    public val message: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-)
-
-@Serializable
-internal data class McpToolCallResult(
-    @SerialName("content")
-    public val content: List<JsonElement>,
-    @SerialName("_meta")
-    public val _meta: JsonElement? = null,
-    @SerialName("structuredContent")
-    public val structuredContent: JsonElement? = null,
-)
-
-@Serializable
-internal enum class McpToolCallStatus {
-    @SerialName("inProgress") IN_PROGRESS,
-    @SerialName("completed") COMPLETED,
-    @SerialName("failed") FAILED,
+internal enum class McpAuthStatus {
+    @SerialName("unknown") UNKNOWN,
+    @SerialName("unsupported") UNSUPPORTED,
+    @SerialName("notLoggedIn") NOT_LOGGED_IN,
+    @SerialName("bearerToken") BEARER_TOKEN,
+    @SerialName("oAuth") O_AUTH,
 }
 
 @Serializable
-internal data class MemoryCitation(
-    @SerialName("entries")
-    public val entries: List<MemoryCitationEntry>,
-    @SerialName("threadIds")
-    public val threadIds: List<String>,
-)
-
-@Serializable
-internal data class MemoryCitationEntry(
-    @SerialName("lineEnd")
-    public val lineEnd: Long,
-    @SerialName("lineStart")
-    public val lineStart: Long,
-    @SerialName("note")
-    public val note: String,
-    @SerialName("path")
-    public val path: String,
-)
-
-@Serializable
-internal enum class MergeStrategy {
-    @SerialName("replace") REPLACE,
-    @SerialName("upsert") UPSERT,
-}
-
-internal typealias MessagePhase = JsonElement
-
-@Serializable
-internal data class MigrationDetails(
-    @SerialName("commands")
-    public val commands: List<CommandMigration>? = null,
-    @SerialName("hooks")
-    public val hooks: List<HookMigration>? = null,
-    @SerialName("mcpServers")
-    public val mcpServers: List<McpServerMigration>? = null,
-    @SerialName("memory")
-    public val memory: List<String>? = null,
-    @SerialName("plugins")
-    public val plugins: List<PluginsMigration>? = null,
-    @SerialName("sessions")
-    public val sessions: List<SessionMigration>? = null,
-    @SerialName("skills")
-    public val skills: List<SkillMigration>? = null,
-    @SerialName("subagents")
-    public val subagents: List<SubagentMigration>? = null,
-)
-
-@Serializable
-internal enum class ModeKind {
-    @SerialName("plan") PLAN,
-    @SerialName("default") DEFAULT,
+internal enum class McpElicitationArrayType {
+    @SerialName("array") ARRAY,
 }
 
 @Serializable
-internal data class Model(
-    @SerialName("defaultReasoningEffort")
-    public val defaultReasoningEffort: ReasoningEffort,
+internal data class McpElicitationBooleanSchema(
+    @SerialName("type")
+    public val type: McpElicitationBooleanType,
+    @SerialName("default")
+    public val default: Boolean? = null,
     @SerialName("description")
-    public val description: String,
-    @SerialName("displayName")
-    public val displayName: String,
-    @SerialName("hidden")
-    public val hidden: Boolean,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("isDefault")
-    public val isDefault: Boolean,
-    @SerialName("model")
-    public val model: String,
-    @SerialName("supportedReasoningEfforts")
-    public val supportedReasoningEfforts: List<ReasoningEffortOption>,
-    @SerialName("additionalSpeedTiers")
-    public val additionalSpeedTiers: List<String>? = null,
-    @SerialName("availabilityNux")
-    public val availabilityNux: ModelAvailabilityNux? = null,
-    @SerialName("defaultServiceTier")
-    public val defaultServiceTier: String? = null,
-    @SerialName("inputModalities")
-    public val inputModalities: List<InputModality>? = null,
-    @SerialName("serviceTiers")
-    public val serviceTiers: List<ModelServiceTier>? = null,
-    @SerialName("supportsPersonality")
-    public val supportsPersonality: Boolean? = null,
-    @SerialName("upgrade")
-    public val upgrade: String? = null,
-    @SerialName("upgradeInfo")
-    public val upgradeInfo: ModelUpgradeInfo? = null,
+    public val description: String? = null,
+    @SerialName("title")
+    public val title: String? = null,
 )
 
 @Serializable
-internal data class ModelAvailabilityNux(
-    @SerialName("message")
-    public val message: String,
-)
-
-@Serializable
-internal data class ModelListParams(
-    @SerialName("cursor")
-    public val cursor: String? = null,
-    @SerialName("includeHidden")
-    public val includeHidden: Boolean? = null,
-    @SerialName("limit")
-    public val limit: Long? = null,
-)
-
-@Serializable
-internal data class ModelListResponse(
-    @SerialName("data")
-    public val data: List<Model>,
-    @SerialName("nextCursor")
-    public val nextCursor: String? = null,
-)
-
-@Serializable
-internal class ModelProviderCapabilitiesReadParams
-
-@Serializable
-internal data class ModelProviderCapabilitiesReadResponse(
-    @SerialName("imageGeneration")
-    public val imageGeneration: Boolean,
-    @SerialName("namespaceTools")
-    public val namespaceTools: Boolean,
-    @SerialName("webSearch")
-    public val webSearch: Boolean,
-)
-
-@Serializable
-internal enum class ModelRerouteReason {
-    @SerialName("highRiskCyberActivity") HIGH_RISK_CYBER_ACTIVITY,
+internal enum class McpElicitationBooleanType {
+    @SerialName("boolean") BOOLEAN,
 }
 
 @Serializable
-internal data class ModelReroutedNotification(
-    @SerialName("fromModel")
-    public val fromModel: String,
-    @SerialName("reason")
-    public val reason: ModelRerouteReason,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("toModel")
-    public val toModel: String,
-    @SerialName("turnId")
-    public val turnId: String,
+internal data class McpElicitationConstOption(
+    @SerialName("const")
+    public val const: String,
+    @SerialName("title")
+    public val title: String,
+)
+
+internal typealias McpElicitationEnumSchema = JsonElement
+
+@Serializable
+internal data class McpElicitationLegacyTitledEnumSchema(
+    @SerialName("enum")
+    public val enum: List<String>,
+    @SerialName("type")
+    public val type: McpElicitationStringType,
+    @SerialName("default")
+    public val default: String? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("enumNames")
+    public val enumNames: List<String>? = null,
+    @SerialName("title")
+    public val title: String? = null,
+)
+
+internal typealias McpElicitationMultiSelectEnumSchema = JsonElement
+
+@Serializable
+internal data class McpElicitationNumberSchema(
+    @SerialName("type")
+    public val type: McpElicitationNumberType,
+    @SerialName("default")
+    public val default: Double? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("maximum")
+    public val maximum: Double? = null,
+    @SerialName("minimum")
+    public val minimum: Double? = null,
+    @SerialName("title")
+    public val title: String? = null,
+)
+
+@Serializable
+internal enum class McpElicitationNumberType {
+    @SerialName("number") NUMBER,
+    @SerialName("integer") INTEGER,
+}
+
+@Serializable
+internal enum class McpElicitationObjectType {
+    @SerialName("object") OBJECT,
+}
+
+internal typealias McpElicitationPrimitiveSchema = JsonElement
+
+@Serializable
+internal data class McpElicitationSchema(
+    @SerialName("properties")
+    public val properties: Map<String, McpElicitationPrimitiveSchema>,
+    @SerialName("type")
+    public val type: McpElicitationObjectType,
+    @SerialName("\$schema")
+    public val _schema: String? = null,
+    @SerialName("required")
+    public val required: List<String>? = null,
+)
+
+internal typealias McpElicitationSingleSelectEnumSchema = JsonElement
+
+@Serializable
+internal enum class McpElicitationStringFormat {
+    @SerialName("email") EMAIL,
+    @SerialName("uri") URI,
+    @SerialName("date") DATE,
+    @SerialName("date-time") DATE_TIME,
+}
+
+@Serializable
+internal data class McpElicitationStringSchema(
+    @SerialName("type")
+    public val type: McpElicitationStringType,
+    @SerialName("default")
+    public val default: String? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("format")
+    public val format: McpElicitationStringFormat? = null,
+    @SerialName("maxLength")
+    public val maxLength: Long? = null,
+    @SerialName("minLength")
+    public val minLength: Long? = null,
+    @SerialName("title")
+    public val title: String? = null,
+)
+
+@Serializable
+internal enum class McpElicitationStringType {
+    @SerialName("string") STRING,
+}
+
+@Serializable
+internal data class McpElicitationTitledEnumItems(
+    @SerialName("anyOf")
+    public val anyOf: List<McpElicitationConstOption>,
+)
+
+@Serializable
+internal data class McpElicitationTitledMultiSelectEnumSchema(
+    @SerialName("items")
+    public val items: McpElicitationTitledEnumItems,
+    @SerialName("type")
+    public val type: McpElicitationArrayType,
+    @SerialName("default")
+    public val default: List<String>? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("maxItems")
+    public val maxItems: Long? = null,
+    @SerialName("minItems")
+    public val minItems: Long? = null,
+    @SerialName("title")
+    public val title: String? = null,
+)
+
+@Serializable
+internal data class McpElicitationTitledSingleSelectEnumSchema(
+    @SerialName("oneOf")
+    public val oneOf: List<McpElicitationConstOption>,
+    @SerialName("type")
+    public val type: McpElicitationStringType,
+    @SerialName("default")
+    public val default: String? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("title")
+    public val title: String? = null,
+)
+
+@Serializable
+internal data class McpElicitationUntitledEnumItems(
+    @SerialName("enum")
+    public val enum: List<String>,
+    @SerialName("type")
+    public val type: McpElicitationStringType,
+)
+
+@Serializable
+internal data class McpElicitationUntitledMultiSelectEnumSchema(
+    @SerialName("items")
+    public val items: McpElicitationUntitledEnumItems,
+    @SerialName("type")
+    public val type: McpElicitationArrayType,
+    @SerialName("default")
+    public val default: List<String>? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("maxItems")
+    public val maxItems: Long? = null,
+    @SerialName("minItems")
+    public val minItems: Long? = null,
+    @SerialName("title")
+    public val title: String? = null,
 )

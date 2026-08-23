@@ -80,6 +80,7 @@ internal class AppServerConnection(
         method: AppServerMethod<P, R>,
         params: P,
         timeoutMillis: Long = requestTimeoutMillis,
+        onRequestEnqueued: (suspend () -> Unit)? = null,
     ): R {
         ensureStarted()
         val response = CompletableDeferred<JsonElement>()
@@ -87,6 +88,7 @@ internal class AppServerConnection(
         val encodedResponse = try {
             withAppServerTimeout(timeoutMillis, "App-server request ${method.descriptor.method}") {
                 commands.send(ConnectionCommand.Request(method.descriptor.method, encodedParams, response))
+                onRequestEnqueued?.invoke()
                 response.await()
             }
         } finally {

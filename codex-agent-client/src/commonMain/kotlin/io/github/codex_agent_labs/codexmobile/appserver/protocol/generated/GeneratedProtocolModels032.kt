@@ -13,212 +13,219 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class SandboxPolicyReadOnlySandboxPolicy(
-    @SerialName("networkAccess")
-    public val networkAccess: Boolean? = null,
-    @SerialName("type")
-    public val type: String = "readOnly",
-) : SandboxPolicy {
-    init { require(type == "readOnly") }
-}
-
-@Serializable
-internal data class SandboxPolicyExternalSandboxSandboxPolicy(
-    @SerialName("networkAccess")
-    public val networkAccess: NetworkAccess? = null,
-    @SerialName("type")
-    public val type: String = "externalSandbox",
-) : SandboxPolicy {
-    init { require(type == "externalSandbox") }
-}
-
-@Serializable
-internal data class SandboxPolicyWorkspaceWriteSandboxPolicy(
-    @SerialName("excludeSlashTmp")
-    public val excludeSlashTmp: Boolean? = null,
-    @SerialName("excludeTmpdirEnvVar")
-    public val excludeTmpdirEnvVar: Boolean? = null,
-    @SerialName("networkAccess")
-    public val networkAccess: Boolean? = null,
-    @SerialName("type")
-    public val type: String = "workspaceWrite",
-    @SerialName("writableRoots")
-    public val writableRoots: List<AbsolutePathBuf>? = null,
-) : SandboxPolicy {
-    init { require(type == "workspaceWrite") }
-}
-
-internal object SandboxPolicySerializer : JsonContentPolymorphicSerializer<SandboxPolicy>(SandboxPolicy::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<SandboxPolicy> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "dangerFullAccess" -> SandboxPolicyDangerFullAccessSandboxPolicy.serializer()
-            "readOnly" -> SandboxPolicyReadOnlySandboxPolicy.serializer()
-            "externalSandbox" -> SandboxPolicyExternalSandboxSandboxPolicy.serializer()
-            "workspaceWrite" -> SandboxPolicyWorkspaceWriteSandboxPolicy.serializer()
-            else -> error("Unknown SandboxPolicy type")
-        }
-}
-
-@Serializable
-internal data class SandboxWorkspaceWrite(
-    @SerialName("exclude_slash_tmp")
-    public val exclude_slash_tmp: Boolean? = null,
-    @SerialName("exclude_tmpdir_env_var")
-    public val exclude_tmpdir_env_var: Boolean? = null,
-    @SerialName("network_access")
-    public val network_access: Boolean? = null,
-    @SerialName("writable_roots")
-    public val writable_roots: List<String>? = null,
+internal data class ReasoningTextDeltaNotification(
+    @SerialName("contentIndex")
+    public val contentIndex: Long,
+    @SerialName("delta")
+    public val delta: String,
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
 )
 
-@Serializable(with = ScheduledTaskScheduleSerializer::class)
-internal sealed interface ScheduledTaskSchedule
-
 @Serializable
-internal data class ScheduledTaskScheduleHourlyScheduledTaskSchedule(
-    @SerialName("intervalHours")
-    public val intervalHours: Long,
-    @SerialName("days")
-    public val days: List<ScheduledTaskWeekday>? = null,
-    @SerialName("type")
-    public val type: String = "hourly",
-) : ScheduledTaskSchedule {
-    init { require(type == "hourly") }
+internal enum class RemoteControlConnectionStatus {
+    @SerialName("disabled") DISABLED,
+    @SerialName("connecting") CONNECTING,
+    @SerialName("connected") CONNECTED,
+    @SerialName("errored") ERRORED,
 }
 
 @Serializable
-internal data class ScheduledTaskScheduleDailyScheduledTaskSchedule(
-    @SerialName("time")
-    public val time: String,
-    @SerialName("type")
-    public val type: String = "daily",
-) : ScheduledTaskSchedule {
-    init { require(type == "daily") }
+internal data class RemoteControlDisableParams(
+    @SerialName("ephemeral")
+    public val ephemeral: Boolean? = null,
+)
+
+@Serializable
+internal data class RemoteControlEnableParams(
+    @SerialName("ephemeral")
+    public val ephemeral: Boolean? = null,
+)
+
+@Serializable
+internal data class RemoteControlStatusChangedNotification(
+    @SerialName("installationId")
+    public val installationId: String,
+    @SerialName("serverName")
+    public val serverName: String,
+    @SerialName("status")
+    public val status: RemoteControlConnectionStatus,
+    @SerialName("environmentId")
+    public val environmentId: String? = null,
+)
+
+internal typealias RequestId = JsonElement
+
+@Serializable
+internal data class RequestPermissionProfile(
+    @SerialName("fileSystem")
+    public val fileSystem: AdditionalFileSystemPermissions? = null,
+    @SerialName("network")
+    public val network: AdditionalNetworkPermissions? = null,
+)
+
+@Serializable
+internal enum class ResidencyRequirement {
+    @SerialName("us") US,
 }
 
 @Serializable
-internal data class ScheduledTaskScheduleWeekdaysScheduledTaskSchedule(
-    @SerialName("time")
-    public val time: String,
-    @SerialName("type")
-    public val type: String = "weekdays",
-) : ScheduledTaskSchedule {
-    init { require(type == "weekdays") }
-}
-
-@Serializable
-internal data class ScheduledTaskScheduleWeeklyScheduledTaskSchedule(
-    @SerialName("days")
-    public val days: List<ScheduledTaskWeekday>,
-    @SerialName("time")
-    public val time: String,
-    @SerialName("type")
-    public val type: String = "weekly",
-) : ScheduledTaskSchedule {
-    init { require(type == "weekly") }
-}
-
-internal object ScheduledTaskScheduleSerializer : JsonContentPolymorphicSerializer<ScheduledTaskSchedule>(ScheduledTaskSchedule::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ScheduledTaskSchedule> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "hourly" -> ScheduledTaskScheduleHourlyScheduledTaskSchedule.serializer()
-            "daily" -> ScheduledTaskScheduleDailyScheduledTaskSchedule.serializer()
-            "weekdays" -> ScheduledTaskScheduleWeekdaysScheduledTaskSchedule.serializer()
-            "weekly" -> ScheduledTaskScheduleWeeklyScheduledTaskSchedule.serializer()
-            else -> error("Unknown ScheduledTaskSchedule type")
-        }
-}
-
-@Serializable
-internal data class ScheduledTaskSummary(
-    @SerialName("key")
-    public val key: String,
+internal data class Resource(
     @SerialName("name")
     public val name: String,
-    @SerialName("prompt")
-    public val prompt: String,
-    @SerialName("schedule")
-    public val schedule: ScheduledTaskSchedule,
+    @SerialName("uri")
+    public val uri: String,
+    @SerialName("_meta")
+    public val _meta: JsonElement? = null,
+    @SerialName("annotations")
+    public val annotations: JsonElement? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("icons")
+    public val icons: List<JsonElement>? = null,
+    @SerialName("mimeType")
+    public val mimeType: String? = null,
+    @SerialName("size")
+    public val size: Long? = null,
+    @SerialName("title")
+    public val title: String? = null,
 )
 
-@Serializable
-internal enum class ScheduledTaskWeekday {
-    @SerialName("MO") MO,
-    @SerialName("TU") TU,
-    @SerialName("WE") WE,
-    @SerialName("TH") TH,
-    @SerialName("FR") FR,
-    @SerialName("SA") SA,
-    @SerialName("SU") SU,
-}
+internal typealias ResourceContent = JsonElement
 
 @Serializable
-internal data class SelectedCapabilityRoot(
+internal data class ResourceTemplate(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("uriTemplate")
+    public val uriTemplate: String,
+    @SerialName("annotations")
+    public val annotations: JsonElement? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("mimeType")
+    public val mimeType: String? = null,
+    @SerialName("title")
+    public val title: String? = null,
+)
+
+@Serializable(with = ResponseItemSerializer::class)
+internal sealed interface ResponseItem
+
+@Serializable
+internal data class ResponseItemMessageResponseItem(
+    @SerialName("content")
+    public val content: List<ContentItem>,
+    @SerialName("role")
+    public val role: String,
     @SerialName("id")
-    public val id: String,
-    @SerialName("location")
-    public val location: CapabilityRootLocation,
-)
+    public val id: String? = null,
+    @SerialName("internal_chat_message_metadata_passthrough")
+    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
+    @SerialName("phase")
+    public val phase: MessagePhase? = null,
+    @SerialName("type")
+    public val type: String = "message",
+) : ResponseItem {
+    init { require(type == "message") }
+}
 
 @Serializable
-internal data class SendAddCreditsNudgeEmailParams(
-    @SerialName("creditType")
-    public val creditType: AddCreditsNudgeCreditType,
-)
+internal data class ResponseItemAgentMessageResponseItem(
+    @SerialName("author")
+    public val author: String,
+    @SerialName("content")
+    public val content: List<AgentMessageInputContent>,
+    @SerialName("recipient")
+    public val recipient: String,
+    @SerialName("id")
+    public val id: String? = null,
+    @SerialName("internal_chat_message_metadata_passthrough")
+    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
+    @SerialName("type")
+    public val type: String = "agent_message",
+) : ResponseItem {
+    init { require(type == "agent_message") }
+}
 
 @Serializable
-internal data class SendAddCreditsNudgeEmailResponse(
+internal data class ResponseItemReasoningResponseItem(
+    @SerialName("summary")
+    public val summary: List<ReasoningItemReasoningSummary>,
+    @SerialName("content")
+    public val content: List<ReasoningItemContent>? = null,
+    @SerialName("encrypted_content")
+    public val encrypted_content: String? = null,
+    @SerialName("id")
+    public val id: String? = null,
+    @SerialName("internal_chat_message_metadata_passthrough")
+    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
+    @SerialName("type")
+    public val type: String = "reasoning",
+) : ResponseItem {
+    init { require(type == "reasoning") }
+}
+
+@Serializable
+internal data class ResponseItemLocalShellCallResponseItem(
+    @SerialName("action")
+    public val action: LocalShellAction,
     @SerialName("status")
-    public val status: AddCreditsNudgeEmailStatus,
-)
-
-@Serializable(with = ServerNotificationSerializer::class)
-internal sealed interface ServerNotification
-
-@Serializable
-internal data class ServerNotificationErrorNotification(
-    @SerialName("params")
-    public val params: ErrorNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "error",
-) : ServerNotification {
-    init { require(method == "error") }
+    public val status: LocalShellStatus,
+    @SerialName("call_id")
+    public val call_id: String? = null,
+    @SerialName("id")
+    public val id: String? = null,
+    @SerialName("internal_chat_message_metadata_passthrough")
+    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
+    @SerialName("type")
+    public val type: String = "local_shell_call",
+) : ResponseItem {
+    init { require(type == "local_shell_call") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadStartedNotification(
-    @SerialName("params")
-    public val params: ThreadStartedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "thread/started",
-) : ServerNotification {
-    init { require(method == "thread/started") }
+internal data class ResponseItemFunctionCallResponseItem(
+    @SerialName("arguments")
+    public val arguments: String,
+    @SerialName("call_id")
+    public val call_id: String,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("encrypted_function_args")
+    public val encrypted_function_args: List<String>? = null,
+    @SerialName("id")
+    public val id: String? = null,
+    @SerialName("internal_chat_message_metadata_passthrough")
+    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
+    @SerialName("namespace")
+    public val namespace: String? = null,
+    @SerialName("type")
+    public val type: String = "function_call",
+) : ResponseItem {
+    init { require(type == "function_call") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadStatusChangedNotification(
-    @SerialName("params")
-    public val params: ThreadStatusChangedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "thread/status/changed",
-) : ServerNotification {
-    init { require(method == "thread/status/changed") }
-}
-
-@Serializable
-internal data class ServerNotificationThreadArchivedNotification(
-    @SerialName("params")
-    public val params: ThreadArchivedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "thread/archived",
-) : ServerNotification {
-    init { require(method == "thread/archived") }
+internal data class ResponseItemToolSearchCallResponseItem(
+    @SerialName("arguments")
+    public val arguments: JsonElement,
+    @SerialName("execution")
+    public val execution: String,
+    @SerialName("call_id")
+    public val call_id: String? = null,
+    @SerialName("id")
+    public val id: String? = null,
+    @SerialName("internal_chat_message_metadata_passthrough")
+    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
+    @SerialName("status")
+    public val status: String? = null,
+    @SerialName("type")
+    public val type: String = "tool_search_call",
+) : ResponseItem {
+    init { require(type == "tool_search_call") }
 }

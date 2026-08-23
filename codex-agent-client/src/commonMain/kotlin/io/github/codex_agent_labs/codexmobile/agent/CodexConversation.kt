@@ -58,7 +58,9 @@ public data class AgentConversationState(
             (status == AgentConversationStatus.READY ||
                 status == AgentConversationStatus.FAILED && failure?.isRecoverable == true)
 
-    public val canReload: Boolean get() = canStartTurn
+    public val canReload: Boolean
+        get() = conversationId != null &&
+            (status == AgentConversationStatus.READY || status == AgentConversationStatus.FAILED)
 
     public val canCancelTurn: Boolean
         get() = status == AgentConversationStatus.STARTING_TURN ||
@@ -74,11 +76,19 @@ public class CodexConversation internal constructor(
 ) {
     private val lock = Mutex()
     private val mutableState = MutableStateFlow(AgentConversationState())
+    private val mutableCurrentMessages = MutableStateFlow<List<AgentMessage>>(emptyList())
+    private val mutableActiveTurnProgress = MutableStateFlow<AgentTurnProgress?>(null)
+    private val mutableCanStartTurn = MutableStateFlow(false)
+    private val mutableCanReload = MutableStateFlow(false)
+    private val mutableCanCancelTurn = MutableStateFlow(false)
+    private val mutableCanRunShellCommand = MutableStateFlow(false)
     private var generation = 0L
     private var closed = false
     private var closeRequested = false
     private var closeStarted = false
     private val closeCompletion = CompletableDeferred<Unit>()
+    // Access is serialized by the owning CodexAgent's lock.
+    internal var agentReleaseCompletion: CompletableDeferred<Throwable?>? = null
     private var turnStarting = false
     private var pendingCancellation = false
     private var cancellationSent = false
@@ -86,10 +96,17 @@ public class CodexConversation internal constructor(
     private var cancellationCompletion: CompletableDeferred<Unit>? = null
     private var reasoningSegment: Pair<String, Long>? = null
     private var planItemId: String? = null
+    private var pendingUserMessage: AgentMessage? = null
 
     private val features = features.toSet()
 
     public val state: StateFlow<AgentConversationState> = mutableState.asStateFlow()
+    public val currentMessages: StateFlow<List<AgentMessage>> = mutableCurrentMessages.asStateFlow()
+    public val activeTurnProgress: StateFlow<AgentTurnProgress?> = mutableActiveTurnProgress.asStateFlow()
+    public val canStartTurn: StateFlow<Boolean> = mutableCanStartTurn.asStateFlow()
+    public val canReload: StateFlow<Boolean> = mutableCanReload.asStateFlow()
+    public val canCancelTurn: StateFlow<Boolean> = mutableCanCancelTurn.asStateFlow()
+    public val canRunShellCommand: StateFlow<Boolean> = mutableCanRunShellCommand.asStateFlow()
 
     private val eventObservation: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         client.events.collect(::process)
@@ -104,7 +121,7 @@ public class CodexConversation internal constructor(
                 "Conversation has already been opened"
             }
             generation += 1
-            mutableState.value = mutableState.value.copy(status = AgentConversationStatus.OPENING)
+            publishState(mutableState.value.copy(status = AgentConversationStatus.OPENING))
             generation
         }
         val openedId = try {
@@ -116,14 +133,14 @@ public class CodexConversation internal constructor(
             lock.withLock {
                 val current = mutableState.value
                 if (!closed && generation == operation && current.status == AgentConversationStatus.OPENING) {
-                    mutableState.value = current.copy(
+                    publishState(current.copy(
                         status = if (conversationId == null) {
                             AgentConversationStatus.READY
                         } else {
                             AgentConversationStatus.RELOADING
                         },
                         conversationId = openedId,
-                    )
+                    ))
                 }
             }
         }
@@ -139,7 +156,7 @@ public class CodexConversation internal constructor(
         requireOpen()
         if (request.invocations.any { it is AgentInvocation.Skill }) requireFeature(CodexRuntimeFeature.SKILLS)
         if (request.invocations.any { it is AgentInvocation.Plugin }) requireFeature(CodexRuntimeFeature.PLUGINS)
-        startTurn { conversationId -> client.sendTurn(conversationId, request, workingDirectory) }
+        startTurn(request) { conversationId -> client.sendTurn(conversationId, request, workingDirectory) }
     }
 
     @Throws(Exception::class)
@@ -161,12 +178,12 @@ public class CodexConversation internal constructor(
             when {
                 turnStarting && current.status in ACTIVE_TURN_STATUSES -> {
                     pendingCancellation = true
-                    mutableState.value = current.copy(status = AgentConversationStatus.CANCELLING_TURN)
+                    publishState(current.copy(status = AgentConversationStatus.CANCELLING_TURN))
                     null
                 }
                 current.status == AgentConversationStatus.STARTING_TURN -> {
                     pendingCancellation = true
-                    mutableState.value = current.copy(status = AgentConversationStatus.CANCELLING_TURN)
+                    publishState(current.copy(status = AgentConversationStatus.CANCELLING_TURN))
                     null
                 }
                 current.status == AgentConversationStatus.CANCELLING_TURN -> null
@@ -174,7 +191,7 @@ public class CodexConversation internal constructor(
                     if (cancellationSent) return@withLock null
                     cancellationSent = true
                     cancellationCompletion = CompletableDeferred()
-                    mutableState.value = current.copy(status = AgentConversationStatus.CANCELLING_TURN)
+                    publishState(current.copy(status = AgentConversationStatus.CANCELLING_TURN))
                     generation to checkNotNull(current.conversationId)
                 }
                 else -> error("Conversation does not have an active turn")
@@ -191,10 +208,10 @@ public class CodexConversation internal constructor(
             check(current.canReload) { "Conversation cannot reload while ${current.status.name.lowercase()}" }
             checkNotNull(current.conversationId)
             generation += 1
-            mutableState.value = current.copy(
+            publishState(current.copy(
                 status = AgentConversationStatus.RELOADING,
                 failure = null,
-            )
+            ))
             generation
         }
         reloadCanonical(operation, clearProgress = true, throwOnFailure = true)
@@ -250,19 +267,33 @@ public class CodexConversation internal constructor(
                 lock.withLock {
                     closed = true
                     generation += 1
-                    mutableState.value = mutableState.value.copy(status = AgentConversationStatus.CLOSED)
+                    publishState(mutableState.value.copy(status = AgentConversationStatus.CLOSED))
                     closeCompletion.complete(Unit)
                 }
             }
         }
     }
 
-    private suspend fun startTurn(block: suspend (ConversationId) -> Unit) {
+    private suspend fun startTurn(
+        request: AgentTurnRequest? = null,
+        block: suspend (ConversationId) -> Unit,
+    ) {
         val start = lock.withLock {
             val current = mutableState.value
             check(!closed && !closeRequested) { "Conversation is closed" }
             check(current.canStartTurn) { "Conversation is not ready for a turn" }
             generation += 1
+            pendingUserMessage = request?.let {
+                AgentMessage(
+                    id = it.clientMessageId ?: "pending-user-$generation",
+                    clientMessageId = it.clientMessageId,
+                    role = AgentMessageRole.USER,
+                    text = it.prompt,
+                    collaborationMode = it.collaborationMode,
+                    capabilities = it.capabilities,
+                    invocations = it.invocations,
+                )
+            }
             turnStarting = true
             pendingCancellation = false
             cancellationSent = false
@@ -270,11 +301,11 @@ public class CodexConversation internal constructor(
             cancellationCompletion = null
             reasoningSegment = null
             planItemId = null
-            mutableState.value = current.copy(
+            publishState(current.copy(
                 status = AgentConversationStatus.STARTING_TURN,
                 turnProgress = AgentTurnProgress(),
                 failure = null,
-            )
+            ))
             generation to checkNotNull(current.conversationId)
         }
         try {
@@ -299,13 +330,13 @@ public class CodexConversation internal constructor(
                     current.status in STARTING_TURN_STATUSES
                 val shouldCancel = mayTransition && pendingCancellation
                 if (mayTransition) {
-                    mutableState.value = mutableState.value.copy(
+                    publishState(mutableState.value.copy(
                         status = if (shouldCancel) {
                             AgentConversationStatus.CANCELLING_TURN
                         } else {
                             AgentConversationStatus.RUNNING_TURN
                         },
-                    )
+                    ))
                 }
                 if (shouldCancel && !cancellationSent) {
                     cancellationSent = true
@@ -347,12 +378,12 @@ public class CodexConversation internal constructor(
                     (current.conversationId == event.conversationId ||
                         current.status == AgentConversationStatus.OPENING && current.conversationId == null)
                 ) {
-                    mutableState.value = current.copy(
+                    publishState(current.copy(
                         conversationId = event.conversationId,
                         model = event.model,
                         effort = event.effort,
                         serviceTier = event.serviceTier,
-                    )
+                    ))
                 }
             }
             is AgentEvent.TextDelta -> updateProgress(event.conversationId) { progress ->
@@ -408,14 +439,14 @@ public class CodexConversation internal constructor(
     ) = lock.withLock {
         val current = mutableState.value
         if (!closed && current.conversationId == conversationId && current.status in ACTIVE_TURN_STATUSES) {
-            mutableState.value = current.copy(
+            publishState(current.copy(
                 status = if (current.status == AgentConversationStatus.STARTING_TURN) {
                     AgentConversationStatus.RUNNING_TURN
                 } else {
                     current.status
                 },
                 turnProgress = update(current.turnProgress),
-            )
+            ))
         }
     }
 
@@ -438,7 +469,7 @@ public class CodexConversation internal constructor(
             if (closed || current.conversationId != conversationId || current.status !in ACTIVE_TURN_STATUSES) return
             startupCompletion?.complete(Unit)
             cancellationCompletion?.complete(Unit)
-            mutableState.value = current.copy(status = AgentConversationStatus.RELOADING)
+            publishState(current.copy(status = AgentConversationStatus.RELOADING))
             generation
         }
         reloadCanonical(operation, clearProgress = true, throwOnFailure = false)
@@ -465,12 +496,13 @@ public class CodexConversation internal constructor(
             lock.withLock {
                 val current = mutableState.value
                 if (!closed && generation == operation && current.status == AgentConversationStatus.RELOADING) {
-                    mutableState.value = current.copy(
+                    pendingUserMessage = null
+                    publishState(current.copy(
                         status = AgentConversationStatus.READY,
                         conversation = conversation,
                         turnProgress = if (clearProgress) AgentTurnProgress() else current.turnProgress,
                         failure = null,
-                    )
+                    ))
                 }
             }
         }
@@ -482,7 +514,7 @@ public class CodexConversation internal constructor(
             if (!closed && (event.conversationId == null || event.conversationId == current.conversationId)) {
                 startupCompletion?.complete(Unit)
                 cancellationCompletion?.complete(Unit)
-                mutableState.value = current.copy(
+                publishState(current.copy(
                     status = AgentConversationStatus.FAILED,
                     failure = codexFailure(
                         event.code,
@@ -490,7 +522,7 @@ public class CodexConversation internal constructor(
                         "Codex operation failed",
                         event.isRecoverable,
                     ),
-                )
+                ))
             }
         }
     }
@@ -516,10 +548,10 @@ public class CodexConversation internal constructor(
             lock.withLock {
                 val current = mutableState.value
                 if (!closed && generation == operation && current.status != AgentConversationStatus.READY) {
-                    mutableState.value = current.copy(
+                    publishState(current.copy(
                         status = AgentConversationStatus.FAILED,
                         failure = failure,
-                    )
+                    ))
                 }
             }
         }
@@ -540,6 +572,16 @@ public class CodexConversation internal constructor(
 
     private suspend fun requireOpen() {
         lock.withLock { check(!closed && !closeRequested) { "Conversation is closed" } }
+    }
+
+    private fun publishState(state: AgentConversationState) {
+        mutableState.value = state
+        mutableCurrentMessages.value = state.conversation?.messages.orEmpty() + listOfNotNull(pendingUserMessage)
+        mutableActiveTurnProgress.value = state.turnProgress.takeUnless { it == AgentTurnProgress() }
+        mutableCanStartTurn.value = state.canStartTurn
+        mutableCanReload.value = state.canReload
+        mutableCanCancelTurn.value = state.canCancelTurn
+        mutableCanRunShellCommand.value = CodexRuntimeFeature.SHELL_COMMANDS in features && state.canStartTurn
     }
 
     private companion object {

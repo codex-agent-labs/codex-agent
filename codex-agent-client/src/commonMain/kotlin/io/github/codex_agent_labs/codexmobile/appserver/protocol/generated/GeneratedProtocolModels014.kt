@@ -12,214 +12,220 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-@Serializable
-internal data class ExternalAgentConfigImportResponse(
-    @SerialName("importId")
-    public val importId: String,
-)
+@Serializable(with = DynamicToolSpecSerializer::class)
+internal sealed interface DynamicToolSpec
 
 @Serializable
-internal data class ExternalAgentConfigImportTypeResult(
-    @SerialName("failures")
-    public val failures: List<ExternalAgentConfigImportItemTypeFailure>,
-    @SerialName("itemType")
-    public val itemType: ExternalAgentConfigMigrationItemType,
-    @SerialName("successes")
-    public val successes: List<ExternalAgentConfigImportItemTypeSuccess>,
-)
-
-@Serializable
-internal data class ExternalAgentConfigMigrationItem(
+internal data class DynamicToolSpecFunctionDynamicToolSpec(
     @SerialName("description")
     public val description: String,
-    @SerialName("itemType")
-    public val itemType: ExternalAgentConfigMigrationItemType,
-    @SerialName("cwd")
-    public val cwd: String? = null,
-    @SerialName("details")
-    public val details: MigrationDetails? = null,
-)
-
-@Serializable
-internal enum class ExternalAgentConfigMigrationItemType {
-    @SerialName("AGENTS_MD") AGENTS_MD,
-    @SerialName("CONFIG") CONFIG,
-    @SerialName("SKILLS") SKILLS,
-    @SerialName("PLUGINS") PLUGINS,
-    @SerialName("MCP_SERVER_CONFIG") MCP_SERVER_CONFIG,
-    @SerialName("SUBAGENTS") SUBAGENTS,
-    @SerialName("HOOKS") HOOKS,
-    @SerialName("COMMANDS") COMMANDS,
-    @SerialName("MEMORY") MEMORY,
-    @SerialName("SESSIONS") SESSIONS,
-}
-
-@Serializable
-internal data class ExternalAgentImportedConnectorCandidate(
+    @SerialName("inputSchema")
+    public val inputSchema: JsonElement,
     @SerialName("name")
     public val name: String,
-    @SerialName("sessionCount")
-    public val sessionCount: Long,
-    @SerialName("source")
-    public val source: ExternalAgentImportedConnectorSource,
-)
-
-@Serializable
-internal enum class ExternalAgentImportedConnectorSource {
-    @SerialName("remoteMcpServersConfig") REMOTE_MCP_SERVERS_CONFIG,
+    @SerialName("deferLoading")
+    public val deferLoading: Boolean? = null,
+    @SerialName("type")
+    public val type: String = "function",
+) : DynamicToolSpec {
+    init { require(type == "function") }
 }
 
 @Serializable
-internal data class FeedbackUploadParams(
-    @SerialName("classification")
-    public val classification: String,
-    @SerialName("extraLogFiles")
-    public val extraLogFiles: List<String>? = null,
-    @SerialName("includeLogs")
-    public val includeLogs: Boolean? = null,
+internal data class DynamicToolSpecNamespaceDynamicToolSpec(
+    @SerialName("description")
+    public val description: String,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("tools")
+    public val tools: List<DynamicToolNamespaceTool>,
+    @SerialName("type")
+    public val type: String = "namespace",
+) : DynamicToolSpec {
+    init { require(type == "namespace") }
+}
+
+internal object DynamicToolSpecSerializer : JsonContentPolymorphicSerializer<DynamicToolSpec>(DynamicToolSpec::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<DynamicToolSpec> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "function" -> DynamicToolSpecFunctionDynamicToolSpec.serializer()
+            "namespace" -> DynamicToolSpecNamespaceDynamicToolSpec.serializer()
+            else -> error("Unknown DynamicToolSpec type")
+        }
+}
+
+@Serializable
+internal data class EnvironmentConnectionNotification(
+    @SerialName("environmentId")
+    public val environmentId: String,
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ErrorNotification(
+    @SerialName("error")
+    public val error: TurnError,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("willRetry")
+    public val willRetry: Boolean,
+)
+
+@Serializable
+internal data class ExecCommandApprovalParams(
+    @SerialName("callId")
+    public val callId: String,
+    @SerialName("command")
+    public val command: List<String>,
+    @SerialName("conversationId")
+    public val conversationId: ThreadId,
+    @SerialName("cwd")
+    public val cwd: String,
+    @SerialName("parsedCmd")
+    public val parsedCmd: List<ParsedCommand>,
+    @SerialName("approvalId")
+    public val approvalId: String? = null,
     @SerialName("reason")
     public val reason: String? = null,
-    @SerialName("tags")
-    public val tags: Map<String, String>? = null,
+)
+
+@Serializable
+internal data class ExecCommandApprovalResponse(
+    @SerialName("decision")
+    public val decision: ReviewDecision,
+)
+
+@Serializable
+internal data class ExperimentalFeature(
+    @SerialName("defaultEnabled")
+    public val defaultEnabled: Boolean,
+    @SerialName("enabled")
+    public val enabled: Boolean,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("stage")
+    public val stage: ExperimentalFeatureStage,
+    @SerialName("announcement")
+    public val announcement: String? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("displayName")
+    public val displayName: String? = null,
+)
+
+@Serializable
+internal data class ExperimentalFeatureEnablementSetParams(
+    @SerialName("enablement")
+    public val enablement: Map<String, Boolean>,
+)
+
+@Serializable
+internal data class ExperimentalFeatureEnablementSetResponse(
+    @SerialName("enablement")
+    public val enablement: Map<String, Boolean>,
+)
+
+@Serializable
+internal data class ExperimentalFeatureListParams(
+    @SerialName("cursor")
+    public val cursor: String? = null,
+    @SerialName("limit")
+    public val limit: Long? = null,
     @SerialName("threadId")
     public val threadId: String? = null,
 )
 
 @Serializable
-internal data class FeedbackUploadResponse(
-    @SerialName("threadId")
-    public val threadId: String,
+internal data class ExperimentalFeatureListResponse(
+    @SerialName("data")
+    public val data: List<ExperimentalFeature>,
+    @SerialName("nextCursor")
+    public val nextCursor: String? = null,
 )
 
-@Serializable(with = FileChangeSerializer::class)
-internal sealed interface FileChange
+internal typealias ExperimentalFeatureStage = JsonElement
 
 @Serializable
-internal data class FileChangeAddFileChange(
-    @SerialName("content")
-    public val content: String,
-    @SerialName("type")
-    public val type: String = "add",
-) : FileChange {
-    init { require(type == "add") }
-}
-
-@Serializable
-internal data class FileChangeDeleteFileChange(
-    @SerialName("content")
-    public val content: String,
-    @SerialName("type")
-    public val type: String = "delete",
-) : FileChange {
-    init { require(type == "delete") }
-}
-
-@Serializable
-internal data class FileChangeUpdateFileChange(
-    @SerialName("unified_diff")
-    public val unified_diff: String,
-    @SerialName("move_path")
-    public val move_path: String? = null,
-    @SerialName("type")
-    public val type: String = "update",
-) : FileChange {
-    init { require(type == "update") }
-}
-
-internal object FileChangeSerializer : JsonContentPolymorphicSerializer<FileChange>(FileChange::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<FileChange> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "add" -> FileChangeAddFileChange.serializer()
-            "delete" -> FileChangeDeleteFileChange.serializer()
-            "update" -> FileChangeUpdateFileChange.serializer()
-            else -> error("Unknown FileChange type")
-        }
-}
-
-internal typealias FileChangeApprovalDecision = JsonElement
-
-@Serializable
-internal data class FileChangeOutputDeltaNotification(
-    @SerialName("delta")
-    public val delta: String,
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
+internal data class ExternalAgentConfigDetectParams(
+    @SerialName("cwds")
+    public val cwds: List<String>? = null,
+    @SerialName("includeHome")
+    public val includeHome: Boolean? = null,
+    @SerialName("maxSessionAgeDays")
+    public val maxSessionAgeDays: Long? = null,
+    @SerialName("maxSessions")
+    public val maxSessions: Long? = null,
+    @SerialName("migrationSource")
+    public val migrationSource: String? = null,
+    @SerialName("source")
+    public val source: String? = null,
 )
 
 @Serializable
-internal data class FileChangePatchUpdatedNotification(
-    @SerialName("changes")
-    public val changes: List<FileUpdateChange>,
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
+internal data class ExternalAgentConfigDetectResponse(
+    @SerialName("items")
+    public val items: List<ExternalAgentConfigMigrationItem>,
+    @SerialName("connectors")
+    public val connectors: List<ExternalAgentDetectedConnectorCandidate>? = null,
 )
 
 @Serializable
-internal data class FileChangeRequestApprovalParams(
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("startedAtMs")
-    public val startedAtMs: Long,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("grantRoot")
-    public val grantRoot: String? = null,
-    @SerialName("reason")
-    public val reason: String? = null,
+internal data class ExternalAgentConfigImportCompletedNotification(
+    @SerialName("importId")
+    public val importId: String,
+    @SerialName("itemTypeResults")
+    public val itemTypeResults: List<ExternalAgentConfigImportTypeResult>,
 )
 
 @Serializable
-internal data class FileChangeRequestApprovalResponse(
-    @SerialName("decision")
-    public val decision: FileChangeApprovalDecision,
+internal data class ExternalAgentConfigImportHistoriesReadResponse(
+    @SerialName("connectors")
+    public val connectors: List<ExternalAgentImportedConnectorCandidate>,
+    @SerialName("data")
+    public val data: List<ExternalAgentConfigImportHistory>,
 )
 
 @Serializable
-internal enum class FileSystemAccessMode {
-    @SerialName("read") READ,
-    @SerialName("write") WRITE,
-    @SerialName("deny") DENY,
-}
-
-@Serializable(with = FileSystemPathSerializer::class)
-internal sealed interface FileSystemPath
-
-@Serializable
-internal data class FileSystemPathPathFileSystemPath(
-    @SerialName("path")
-    public val path: LegacyAppPathString,
-    @SerialName("type")
-    public val type: String = "path",
-) : FileSystemPath {
-    init { require(type == "path") }
-}
+internal data class ExternalAgentConfigImportHistory(
+    @SerialName("completedAtMs")
+    public val completedAtMs: Long,
+    @SerialName("failures")
+    public val failures: List<ExternalAgentConfigImportItemTypeFailure>,
+    @SerialName("importId")
+    public val importId: String,
+    @SerialName("successes")
+    public val successes: List<ExternalAgentConfigImportItemTypeSuccess>,
+    @SerialName("providerId")
+    public val providerId: String? = null,
+)
 
 @Serializable
-internal data class FileSystemPathGlobPatternFileSystemPath(
-    @SerialName("pattern")
-    public val pattern: String,
-    @SerialName("type")
-    public val type: String = "glob_pattern",
-) : FileSystemPath {
-    init { require(type == "glob_pattern") }
-}
+internal data class ExternalAgentConfigImportHistoryRecordParams(
+    @SerialName("itemTypeResults")
+    public val itemTypeResults: List<ExternalAgentConfigImportHistoryRecordTypeResultParams>,
+    @SerialName("providerId")
+    public val providerId: String,
+)
 
 @Serializable
-internal data class FileSystemPathSpecialFileSystemPath(
-    @SerialName("value")
-    public val value: FileSystemSpecialPath,
-    @SerialName("type")
-    public val type: String = "special",
-) : FileSystemPath {
-    init { require(type == "special") }
-}
+internal data class ExternalAgentConfigImportHistoryRecordResponse(
+    @SerialName("importId")
+    public val importId: String,
+)
+
+@Serializable
+internal data class ExternalAgentConfigImportHistoryRecordSuccessParams(
+    @SerialName("itemType")
+    public val itemType: ExternalAgentConfigMigrationItemType,
+    @SerialName("cwd")
+    public val cwd: String? = null,
+    @SerialName("source")
+    public val source: String? = null,
+    @SerialName("target")
+    public val target: String? = null,
+    @SerialName("title")
+    public val title: String? = null,
+)

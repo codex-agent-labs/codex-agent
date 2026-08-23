@@ -13,6 +13,114 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
+internal data class ClientRequestFsUnwatchRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: FsUnwatchParams,
+    @SerialName("method")
+    public val method: String = "fs/unwatch",
+) : ClientRequest {
+    init { require(method == "fs/unwatch") }
+}
+
+@Serializable
+internal data class ClientRequestSkillsConfigWriteRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: SkillsConfigWriteParams,
+    @SerialName("method")
+    public val method: String = "skills/config/write",
+) : ClientRequest {
+    init { require(method == "skills/config/write") }
+}
+
+@Serializable
+internal data class ClientRequestPluginInstallRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PluginInstallParams,
+    @SerialName("method")
+    public val method: String = "plugin/install",
+) : ClientRequest {
+    init { require(method == "plugin/install") }
+}
+
+@Serializable
+internal data class ClientRequestPluginUninstallRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PluginUninstallParams,
+    @SerialName("method")
+    public val method: String = "plugin/uninstall",
+) : ClientRequest {
+    init { require(method == "plugin/uninstall") }
+}
+
+@Serializable
+internal data class ClientRequestTurnStartRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: TurnStartParams,
+    @SerialName("method")
+    public val method: String = "turn/start",
+) : ClientRequest {
+    init { require(method == "turn/start") }
+}
+
+@Serializable
+internal data class ClientRequestTurnSteerRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: TurnSteerParams,
+    @SerialName("method")
+    public val method: String = "turn/steer",
+) : ClientRequest {
+    init { require(method == "turn/steer") }
+}
+
+@Serializable
+internal data class ClientRequestTurnInterruptRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: TurnInterruptParams,
+    @SerialName("method")
+    public val method: String = "turn/interrupt",
+) : ClientRequest {
+    init { require(method == "turn/interrupt") }
+}
+
+@Serializable
+internal data class ClientRequestReviewStartRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ReviewStartParams,
+    @SerialName("method")
+    public val method: String = "review/start",
+) : ClientRequest {
+    init { require(method == "review/start") }
+}
+
+@Serializable
+internal data class ClientRequestModelListRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ModelListParams,
+    @SerialName("method")
+    public val method: String = "model/list",
+) : ClientRequest {
+    init { require(method == "model/list") }
+}
+
+@Serializable
 internal data class ClientRequestModelProviderCapabilitiesReadRequest(
     @SerialName("id")
     public val id: RequestId,
@@ -118,112 +226,4 @@ internal data class ClientRequestMcpServerToolCallRequest(
     public val method: String = "mcpServer/tool/call",
 ) : ClientRequest {
     init { require(method == "mcpServer/tool/call") }
-}
-
-@Serializable
-internal data class ClientRequestWindowsSandboxSetupStartRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: WindowsSandboxSetupStartParams,
-    @SerialName("method")
-    public val method: String = "windowsSandbox/setupStart",
-) : ClientRequest {
-    init { require(method == "windowsSandbox/setupStart") }
-}
-
-@Serializable
-internal data class ClientRequestWindowsSandboxReadinessRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("method")
-    public val method: String = "windowsSandbox/readiness",
-    @SerialName("params")
-    public val params: JsonElement? = null,
-) : ClientRequest {
-    init { require(method == "windowsSandbox/readiness") }
-}
-
-@Serializable
-internal data class ClientRequestAccountLoginStartRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: LoginAccountParams,
-    @SerialName("method")
-    public val method: String = "account/login/start",
-) : ClientRequest {
-    init { require(method == "account/login/start") }
-}
-
-@Serializable
-internal data class ClientRequestAccountLoginCancelRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: CancelLoginAccountParams,
-    @SerialName("method")
-    public val method: String = "account/login/cancel",
-) : ClientRequest {
-    init { require(method == "account/login/cancel") }
-}
-
-@Serializable
-internal data class ClientRequestAccountLogoutRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("method")
-    public val method: String = "account/logout",
-    @SerialName("params")
-    public val params: JsonElement? = null,
-) : ClientRequest {
-    init { require(method == "account/logout") }
-}
-
-@Serializable
-internal data class ClientRequestAccountRateLimitsReadRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("method")
-    public val method: String = "account/rateLimits/read",
-    @SerialName("params")
-    public val params: JsonElement? = null,
-) : ClientRequest {
-    init { require(method == "account/rateLimits/read") }
-}
-
-@Serializable
-internal data class ClientRequestAccountRateLimitResetCreditConsumeRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ConsumeAccountRateLimitResetCreditParams,
-    @SerialName("method")
-    public val method: String = "account/rateLimitResetCredit/consume",
-) : ClientRequest {
-    init { require(method == "account/rateLimitResetCredit/consume") }
-}
-
-@Serializable
-internal data class ClientRequestAccountUsageReadRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("method")
-    public val method: String = "account/usage/read",
-    @SerialName("params")
-    public val params: JsonElement? = null,
-) : ClientRequest {
-    init { require(method == "account/usage/read") }
-}
-
-@Serializable
-internal data class ClientRequestAccountWorkspaceMessagesReadRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("method")
-    public val method: String = "account/workspaceMessages/read",
-    @SerialName("params")
-    public val params: JsonElement? = null,
-) : ClientRequest {
-    init { require(method == "account/workspaceMessages/read") }
 }

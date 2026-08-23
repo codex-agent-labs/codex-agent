@@ -68,6 +68,7 @@ internal suspend inline fun <T> codexOperation(
 ): T = try {
     operation()
 } catch (error: Throwable) {
+    if (error is AgentResourceInstallationException) throw error
     throw error.asCodexOperationException(code, fallback, isRecoverable)
 }
 

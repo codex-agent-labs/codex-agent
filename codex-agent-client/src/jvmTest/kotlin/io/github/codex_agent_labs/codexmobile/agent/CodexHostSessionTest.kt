@@ -20,6 +20,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -171,13 +172,18 @@ class CodexHostTest {
         try {
             host.start()
             val agent = readyAgent(host)
-            val conversation = agent.openConversation()
+            val conversation = agent.conversations.open()
+            assertFalse(agent.skills.isAvailable)
+            assertFalse(agent.hooks.isAvailable)
+            assertFalse(agent.plugins.isAvailable)
+            assertFalse(agent.connectors.isAvailable)
+            assertFalse(agent.mcpServers.isAvailable)
             val failures = listOf(
-                assertFailsWith<CodexOperationException> { agent.listSkills() },
-                assertFailsWith<CodexOperationException> { agent.listHooks() },
-                assertFailsWith<CodexOperationException> { agent.listPlugins() },
-                assertFailsWith<CodexOperationException> { agent.listConnectors() },
-                assertFailsWith<CodexOperationException> { agent.listMcpServers() },
+                assertFailsWith<CodexOperationException> { agent.skills.list() },
+                assertFailsWith<CodexOperationException> { agent.hooks.list() },
+                assertFailsWith<CodexOperationException> { agent.plugins.list() },
+                assertFailsWith<CodexOperationException> { agent.connectors.list() },
+                assertFailsWith<CodexOperationException> { agent.mcpServers.list() },
                 assertFailsWith<CodexOperationException> { conversation.runShellCommand("pwd") },
                 assertFailsWith<CodexOperationException> {
                     conversation.send(
@@ -263,17 +269,21 @@ class CodexHostTest {
             host.start()
             val agent = readyAgent(host)
             assertEquals(logicalWorkspace, agent.workspace)
-            assertEquals(CodexRuntimeFeature.entries.toSet(), agent.features)
-            val conversation = agent.openConversation()
-            assertFalse(host.state is MutableStateFlow<*>)
-            assertFalse(agent.authenticationState is MutableStateFlow<*>)
-            assertFalse(agent.interactionState is MutableStateFlow<*>)
-            assertFalse(agent.integrationAuthorizationState is MutableStateFlow<*>)
-            assertFalse(agent.activeConversation is MutableStateFlow<*>)
+            assertTrue(agent.skills.isAvailable)
+            assertTrue(agent.hooks.isAvailable)
+            assertTrue(agent.plugins.isAvailable)
+            assertSame(agent.authentication, agent.authentication)
+            assertSame(agent.conversations, agent.conversations)
+            val conversation = agent.conversations.open()
+            assertFalse(host.lifecycleState is MutableStateFlow<*>)
+            assertFalse(agent.authentication.state is MutableStateFlow<*>)
+            assertFalse(agent.interactions.state is MutableStateFlow<*>)
+            assertFalse(agent.integrationAuthorization.state is MutableStateFlow<*>)
+            assertFalse(agent.conversations.active is MutableStateFlow<*>)
             assertFalse(conversation.state is MutableStateFlow<*>)
-            agent.listSkills()
-            agent.listHooks()
-            agent.listPlugins()
+            agent.skills.list()
+            agent.hooks.list()
+            agent.plugins.list()
             assertTrue(paths.size >= 5)
             assertTrue(paths.all { it == "/prepared" })
             assertEquals(
@@ -337,7 +347,7 @@ class CodexHostTest {
                 currentHash = "hash-from-snapshot",
                 isEnabled = false,
                 eventName = "afterTurn",
-                handlerType = "command",
+                handler = AgentHookHandler.Command("./typed-hook", isAsync = false),
                 isManaged = false,
                 source = "user",
                 sourcePath = "/hooks/typed.json",
@@ -345,7 +355,7 @@ class CodexHostTest {
                 trustStatus = AgentHookTrustStatus.UNTRUSTED,
             )
             agent.setHookEnabled(hook, true)
-            agent.trustHook(hook)
+            agent.hooks.trust(hook)
             agent.setPluginEnabled(
                 AgentPluginSummary(
                     reference = AgentPluginReference("typed-plugin", "typed", "catalog", remotePluginId = "remote"),
@@ -368,6 +378,103 @@ class CodexHostTest {
                 ),
                 mutations,
             )
+        } finally {
+            host.close()
+        }
+    }
+
+    @Test
+    fun modelFacadeResolvesConfiguredModelEffortAndTierWithoutCallerPreferences(): Unit = runBlocking {
+        var configReads = 0
+        val preferred = buildJsonObject {
+            model("preferred-catalog", "preferred", "Preferred", "medium", false)
+                .forEach { (name, value) -> put(name, value) }
+            put("defaultServiceTier", "free")
+            putJsonArray("serviceTiers") {
+                add(buildJsonObject {
+                    put("id", "free")
+                    put("name", "Free")
+                    put("description", "Default")
+                })
+                add(buildJsonObject {
+                    put("id", "fast")
+                    put("name", "Fast")
+                    put("description", "Faster")
+                })
+            }
+        }
+        val runtime = FakeCodexRuntime { message, server ->
+            when (message.method) {
+                "initialize" -> server.respond(message.id, buildJsonObject {})
+                "model/list" -> server.respond(message.id, page(
+                    listOf(
+                        model("default-catalog", "default", "Default", "medium", true),
+                        preferred,
+                    ),
+                    nextCursor = null,
+                ))
+                "config/read" -> server.respond(message.id, buildJsonObject {
+                    configReads += 1
+                    putJsonObject("config") {
+                        put("model", "preferred")
+                        put("model_reasoning_effort", "low")
+                        put("service_tier", "fast")
+                    }
+                    putJsonObject("origins") {}
+                })
+            }
+        }
+        val workspace = CodexWorkspace("/workspace")
+        val host = CodexHost(
+            FakePlatformSupport(
+                FakeWorkspaceStore(CodexWorkspaceResolution.Available(workspace)),
+                ArrayDeque<FakeCodexRuntime>().apply { add(runtime) },
+            ),
+            TEST_CLIENT_INFO,
+        )
+        try {
+            host.start()
+            val models = readyAgent(host).models
+            val selected = models.resolve()
+            assertEquals("preferred", selected.id)
+            assertEquals("low", models.resolveEffort(selected))
+            assertEquals("fast", models.resolveServiceTier(selected)?.id)
+            assertEquals("default", models.resolve(AgentResolution.Default).id)
+            assertEquals("medium", models.resolveEffort(selected, AgentResolution.Default))
+            assertEquals("free", models.resolveServiceTier(selected, AgentResolution.First)?.id)
+            assertEquals(3, configReads)
+        } finally {
+            host.close()
+        }
+    }
+
+    @Test
+    fun modelFacadeReportsAnEmptyCatalogBeforeReadingPreferences(): Unit = runBlocking {
+        var configReads = 0
+        val runtime = FakeCodexRuntime { message, server ->
+            when (message.method) {
+                "initialize" -> server.respond(message.id, buildJsonObject {})
+                "model/list" -> server.respond(message.id, buildJsonObject { putJsonArray("data") {} })
+                "config/read" -> {
+                    configReads += 1
+                    server.respond(message.id, buildJsonObject {
+                        putJsonObject("config") {}
+                        putJsonObject("origins") {}
+                    })
+                }
+            }
+        }
+        val host = CodexHost(
+            FakePlatformSupport(
+                FakeWorkspaceStore(CodexWorkspaceResolution.Available(CodexWorkspace("/workspace"))),
+                ArrayDeque<FakeCodexRuntime>().apply { add(runtime) },
+            ),
+            TEST_CLIENT_INFO,
+        )
+        try {
+            host.start()
+            assertFailsWith<AgentModelUnavailableException> { readyAgent(host).models.resolve() }
+            assertEquals(0, configReads)
         } finally {
             host.close()
         }
@@ -564,7 +671,7 @@ class CodexHostTest {
             val pending = withTimeout(1_000) {
                 agent.interactionState.first { it.pending.isNotEmpty() }.pending.single()
             }
-            agent.openElicitationUrl(assertIs<AgentPendingElicitation>(pending))
+            agent.interactions.openUrl(assertIs<AgentPendingElicitation>(pending))
 
             val first = assertFailsWith<CodexOperationException> { conversation.close() }
             val second = assertFailsWith<CodexOperationException> { conversation.close() }
@@ -826,6 +933,75 @@ class CodexHostTest {
     }
 
     @Test
+    fun rejectedConversationOpenDoesNotStartAnEventObserver(): Unit = runBlocking {
+        val logoutRequest = CompletableDeferred<Pair<Long, FakeCodexRuntime>>()
+        val runtime = FakeCodexRuntime { message, server ->
+            when (message.method) {
+                "initialize" -> server.respond(message.id, buildJsonObject {})
+                "account/logout" -> logoutRequest.complete(checkNotNull(message.id) to server)
+            }
+        }
+        val workspace = CodexWorkspace("/workspace")
+        val host = CodexHost(
+            FakePlatformSupport(
+                FakeWorkspaceStore(CodexWorkspaceResolution.Available(workspace)),
+                ArrayDeque<FakeCodexRuntime>().apply { add(runtime) },
+            ),
+            this,
+            TEST_CLIENT_INFO,
+        )
+        try {
+            host.start()
+            val agent = readyAgent(host)
+            val signingOut = async(start = CoroutineStart.UNDISPATCHED) {
+                agent.authentication.signOut()
+            }
+            val (requestId, server) = withTimeout(1_000) { logoutRequest.await() }
+            try {
+                val activeJobsBefore = checkNotNull(coroutineContext[Job]).activeDescendantCount()
+                assertFailsWith<IllegalStateException> { agent.conversations.open() }
+
+                assertEquals(activeJobsBefore, checkNotNull(coroutineContext[Job]).activeDescendantCount())
+                assertNull(agent.conversations.active.value)
+            } finally {
+                server.respond(requestId, buildJsonObject {})
+                signingOut.await()
+            }
+        } finally {
+            host.close()
+        }
+    }
+
+    @Test
+    fun closedConversationsAreNotRetainedInAnAgentCollection(): Unit = runBlocking {
+        val threadIds = AtomicInteger()
+        val runtime = FakeCodexRuntime { message, server ->
+            when (message.method) {
+                "initialize" -> server.respond(message.id, buildJsonObject {})
+                "thread/start" -> server.respond(message.id, buildJsonObject {
+                    putJsonObject("thread") { put("id", "thread-${threadIds.incrementAndGet()}") }
+                })
+            }
+        }
+        val host = CodexHost(
+            FakePlatformSupport(
+                FakeWorkspaceStore(CodexWorkspaceResolution.Available(CodexWorkspace("/workspace"))),
+                ArrayDeque<FakeCodexRuntime>().apply { add(runtime) },
+            ),
+            TEST_CLIENT_INFO,
+        )
+        try {
+            host.start()
+            val agent = readyAgent(host)
+            repeat(32) { agent.conversations.open().close() }
+
+            assertEquals(0, agent.directlyRetainedClosedConversationCount())
+        } finally {
+            host.close()
+        }
+    }
+
+    @Test
     fun cancellingCloseConversationStillClosesAndDetachesTheConversation(): Unit = runBlocking {
         val interruptRequest = CompletableDeferred<Long>()
         val staleApprovalRejected = CountDownLatch(1)
@@ -980,22 +1156,22 @@ class CodexHostTest {
         val host = CodexHost(support, this, clientInfo = TEST_CLIENT_INFO)
 
         host.start()
-        val required = assertIs<CodexHostState.WorkspaceRequired>(host.state.value)
+        val required = assertIs<CodexHostState.WorkspaceRequired>(host.lifecycleState.value)
         assertEquals(CodexWorkspaceSelectionReason.NOT_FOUND, required.requirement.reason)
         assertFailsWith<IllegalStateException> { host.start() }
 
         store.selectResult = CodexWorkspaceResolution.Available(workspaceOne)
         host.selectWorkspace(CodexPathWorkspaceSelection(workspaceOne.path))
         val firstAgent = readyAgent(host)
-        assertEquals(AgentIntegrationAuthorizationStatus.IDLE, firstAgent.integrationAuthorizationState.value.status)
-        firstAgent.listModels()
+        assertEquals(AgentIntegrationAuthorizationStatus.IDLE, firstAgent.integrationAuthorization.state.value.status)
+        firstAgent.models.list()
         val firstRuntime = support.preparedRuntimes[0]
 
-        val firstConversation = firstAgent.openConversation()
-        assertSame(firstConversation, firstAgent.activeConversation.value)
+        val firstConversation = firstAgent.conversations.open()
+        assertSame(firstConversation, firstAgent.conversations.active.value)
         val firstConversationId = firstConversation.state.value.conversationId
         assertEquals("/workspace/one", conversationWorkspaces.last())
-        val secondConversation = firstAgent.openConversation()
+        val secondConversation = firstAgent.conversations.open()
         val secondConversationId = secondConversation.state.value.conversationId
         assertTrue(firstConversationId != secondConversationId)
         assertEquals(AgentConversationStatus.CLOSED, firstConversation.state.value.status)
@@ -1004,8 +1180,8 @@ class CodexHostTest {
         store.selectResult = CodexWorkspaceResolution.Available(workspaceTwo)
         host.selectWorkspace(CodexPathWorkspaceSelection(workspaceTwo.path))
         val secondAgent = readyAgent(host)
-        assertNull(secondAgent.activeConversation.value)
-        assertFailsWith<IllegalStateException> { firstAgent.listModels() }
+        assertNull(secondAgent.conversations.active.value)
+        assertFailsWith<IllegalStateException> { firstAgent.models.list() }
         assertTrue(firstRuntime.allClientStreamsClosed())
 
         support.failNextPrepare = true
@@ -1013,15 +1189,15 @@ class CodexHostTest {
         assertFailsWith<CodexOperationException> {
             host.selectWorkspace(CodexPathWorkspaceSelection("/workspace/three"))
         }
-        val failed = assertIs<CodexHostState.Failed>(host.state.value)
+        val failed = assertIs<CodexHostState.Failed>(host.lifecycleState.value)
         assertEquals("Could not prepare Codex", failed.failure.message)
         host.start()
         val thirdAgent = readyAgent(host)
-        thirdAgent.listModels()
+        thirdAgent.models.list()
 
-        val signedOutConversation = thirdAgent.openConversation()
-        thirdAgent.signOut()
-        assertNull(thirdAgent.activeConversation.value)
+        val signedOutConversation = thirdAgent.conversations.open()
+        thirdAgent.authentication.signOut()
+        assertNull(thirdAgent.conversations.active.value)
         assertEquals(AgentConversationStatus.CLOSED, signedOutConversation.state.value.status)
         assertFailsWith<IllegalStateException> {
             signedOutConversation.send(AgentTurnRequest("after sign-out"))
@@ -1029,15 +1205,15 @@ class CodexHostTest {
 
         host.close()
         host.close()
-        assertIs<CodexHostState.Closed>(host.state.value)
-        assertFailsWith<IllegalStateException> { thirdAgent.listModels() }
+        assertIs<CodexHostState.Closed>(host.lifecycleState.value)
+        assertFailsWith<IllegalStateException> { thirdAgent.models.list() }
         signedOutConversation.close()
         assertTrue(support.preparedRuntimes.last().allClientStreamsClosed())
     }
 }
 
 private fun readyAgent(host: CodexHost): CodexAgent =
-    assertIs<CodexHostState.Ready>(host.state.value).agent
+    assertIs<CodexHostState.Ready>(host.lifecycleState.value).agent
 
 private class FakeWorkspaceStore(
     var restoreResult: CodexWorkspaceResolution,
@@ -1076,6 +1252,20 @@ private class FakePlatformSupport(
 }
 
 private val TEST_CLIENT_INFO = CodexClientInfo("codex_agent_tests", "Codex Agent Tests", "test")
+
+private fun Job.activeDescendantCount(): Int = children.sumOf { child ->
+    (if (child.isActive) 1 else 0) + child.activeDescendantCount()
+}
+
+private fun CodexAgent.directlyRetainedClosedConversationCount(): Int =
+    javaClass.declaredFields.sumOf { field ->
+        field.isAccessible = true
+        when (val value = field.get(this)) {
+            is Map<*, *> -> (value.keys + value.values).count { it is CodexConversation }
+            is Iterable<*> -> value.count { it is CodexConversation }
+            else -> 0
+        }
+    }
 
 private fun hostRuntime(
     threadIds: AtomicInteger,

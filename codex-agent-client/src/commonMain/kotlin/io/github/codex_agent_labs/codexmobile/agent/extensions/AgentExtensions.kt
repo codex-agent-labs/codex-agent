@@ -21,6 +21,12 @@ public data class AgentSkill(
     public val brandColor: String? = null,
     public val dependencies: List<String> = emptyList(),
     public val canUninstall: Boolean = false,
+    public val origin: AgentResourceOrigin = when (scope) {
+        AgentSkillScope.USER -> AgentResourceOrigin.USER
+        AgentSkillScope.REPO -> AgentResourceOrigin.WORKSPACE
+        AgentSkillScope.PLUGIN -> AgentResourceOrigin.PLUGIN
+        AgentSkillScope.SYSTEM, AgentSkillScope.ADMIN -> AgentResourceOrigin.MANAGED
+    },
 )
 
 public enum class AgentSkillScope(public val displayName: String) {
@@ -111,9 +117,12 @@ public data class AgentMcpServer(
     public val name: String,
     public val displayName: String,
     public val authStatus: AgentMcpAuthStatus,
+    public val configuration: AgentMcpServerConfiguration? = null,
+    public val origin: AgentResourceOrigin = AgentResourceOrigin.UNKNOWN,
+    public val canRemove: Boolean = false,
 )
 
-public enum class AgentMcpAuthStatus { UNSUPPORTED, NOT_LOGGED_IN, BEARER_TOKEN, OAUTH }
+public enum class AgentMcpAuthStatus { UNKNOWN, UNSUPPORTED, NOT_LOGGED_IN, BEARER_TOKEN, OAUTH }
 
 public sealed interface AgentInvocation {
     public val name: String

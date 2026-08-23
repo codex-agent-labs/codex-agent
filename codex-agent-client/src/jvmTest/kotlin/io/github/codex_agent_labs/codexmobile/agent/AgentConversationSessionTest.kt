@@ -6,7 +6,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -22,6 +24,85 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
 class CodexConversationTest {
+    @Test
+    fun exposesCanonicalMessagesTurnProgressAndCapabilitiesAsStateFlows(): Unit = runBlocking {
+        val turnCount = AtomicInteger()
+        val process = FakeCodexRuntime { message, server ->
+            when (message.method) {
+                "initialize" -> server.respond(message.id, buildJsonObject {})
+                "thread/start" -> server.respond(message.id, buildJsonObject {
+                    putJsonObject("thread") { put("id", "thread-1") }
+                })
+                "turn/start" -> server.respond(message.id, buildJsonObject {
+                    putJsonObject("turn") { put("id", "turn-${turnCount.incrementAndGet()}") }
+                })
+                "thread/read" -> server.respond(message.id, canonicalConversation())
+            }
+        }
+        val client = CodexAgentClient({ process }, requestTimeoutMillis = 1_000)
+        val conversation = testConversation(client, this)
+        try {
+            conversation.open()
+            assertTrue(conversation.currentMessages.value.isEmpty())
+            assertNull(conversation.activeTurnProgress.value)
+            assertTrue(conversation.canStartTurn.value)
+            assertTrue(conversation.canReload.value)
+            assertFalse(conversation.canCancelTurn.value)
+            assertTrue(conversation.canRunShellCommand.value)
+
+            conversation.send("hello")
+            assertEquals("hello", conversation.currentMessages.value.single().text)
+            assertEquals(AgentMessageRole.USER, conversation.currentMessages.value.single().role)
+            assertFalse(conversation.canStartTurn.value)
+            assertFalse(conversation.canReload.value)
+            assertTrue(conversation.canCancelTurn.value)
+            assertFalse(conversation.canRunShellCommand.value)
+
+            conversation.process(AgentEvent.TextDelta(ConversationId("thread-1"), "working"))
+            assertEquals("working", conversation.activeTurnProgress.value?.text)
+
+            process.notify("turn/completed", completedTurn("turn-1"))
+            withTimeout(1_000) {
+                conversation.state.first { it.status == AgentConversationStatus.READY }
+            }
+            assertEquals(
+                listOf(AgentMessageRole.USER, AgentMessageRole.ASSISTANT),
+                conversation.currentMessages.value.map(AgentMessage::role),
+            )
+            assertNull(conversation.activeTurnProgress.value)
+            assertTrue(conversation.canStartTurn.value)
+            assertTrue(conversation.canReload.value)
+            assertFalse(conversation.canCancelTurn.value)
+            assertTrue(conversation.canRunShellCommand.value)
+
+            conversation.send(AgentTurnRequest("structured", clientMessageId = "client-2"))
+            assertEquals("structured", conversation.currentMessages.value.last().text)
+            assertEquals("client-2", conversation.currentMessages.value.last().clientMessageId)
+            process.notify("turn/completed", completedTurn("turn-2"))
+            withTimeout(1_000) {
+                conversation.state.first { it.status == AgentConversationStatus.READY }
+            }
+
+            conversation.close()
+            assertFalse(conversation.canStartTurn.value)
+            assertFalse(conversation.canReload.value)
+            assertFalse(conversation.canCancelTurn.value)
+            assertFalse(conversation.canRunShellCommand.value)
+
+            val withoutShell = testConversation(client, this, features = emptySet())
+            try {
+                withoutShell.open()
+                assertTrue(withoutShell.canStartTurn.value)
+                assertFalse(withoutShell.canRunShellCommand.value)
+            } finally {
+                withoutShell.close()
+            }
+        } finally {
+            conversation.close()
+            client.close()
+        }
+    }
+
     @Test
     fun callerCancellationLeavesTurnAndRefreshInRecoverableFailedState(): Unit = runBlocking {
         val process = FakeCodexRuntime { message, server ->
@@ -310,12 +391,16 @@ class CodexConversationTest {
     }
 }
 
-private fun testConversation(client: CodexAgentClient, scope: CoroutineScope): CodexConversation =
+private fun testConversation(
+    client: CodexAgentClient,
+    scope: CoroutineScope,
+    features: Set<CodexRuntimeFeature> = CodexRuntimeFeature.entries.toSet(),
+): CodexConversation =
     CodexConversation(
         client = client,
         scope = scope,
         workingDirectory = "/workspace",
-        features = CodexRuntimeFeature.entries.toSet(),
+        features = features,
         onClose = CodexConversation::closeOwned,
     )
 

@@ -13,145 +13,212 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class UserInputSkillUserInput(
-    @SerialName("name")
-    public val name: String,
-    @SerialName("path")
-    public val path: String,
-    @SerialName("type")
-    public val type: String = "skill",
-) : UserInput {
-    init { require(type == "skill") }
-}
-
-@Serializable
-internal data class UserInputMentionUserInput(
-    @SerialName("name")
-    public val name: String,
-    @SerialName("path")
-    public val path: String,
-    @SerialName("type")
-    public val type: String = "mention",
-) : UserInput {
-    init { require(type == "mention") }
-}
-
-internal object UserInputSerializer : JsonContentPolymorphicSerializer<UserInput>(UserInput::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<UserInput> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "text" -> UserInputTextUserInput.serializer()
-            "image" -> UserInputImageUserInput.serializer()
-            "localImage" -> UserInputLocalImageUserInput.serializer()
-            "audio" -> UserInputAudioUserInput.serializer()
-            "localAudio" -> UserInputLocalAudioUserInput.serializer()
-            "skill" -> UserInputSkillUserInput.serializer()
-            "mention" -> UserInputMentionUserInput.serializer()
-            else -> error("Unknown UserInput type")
-        }
-}
-
-@Serializable
-internal enum class Verbosity {
-    @SerialName("low") LOW,
-    @SerialName("medium") MEDIUM,
-    @SerialName("high") HIGH,
-}
-
-@Serializable
-internal data class W3cTraceContext(
-    @SerialName("traceparent")
-    public val traceparent: String? = null,
-    @SerialName("tracestate")
-    public val tracestate: String? = null,
+internal data class ThreadResumeResponse(
+    @SerialName("approvalPolicy")
+    public val approvalPolicy: AskForApproval,
+    @SerialName("approvalsReviewer")
+    public val approvalsReviewer: ApprovalsReviewer,
+    @SerialName("cwd")
+    public val cwd: AbsolutePathBuf,
+    @SerialName("model")
+    public val model: String,
+    @SerialName("modelProvider")
+    public val modelProvider: String,
+    @SerialName("sandbox")
+    public val sandbox: SandboxPolicy,
+    @SerialName("thread")
+    public val thread: Thread,
+    @SerialName("instructionSources")
+    public val instructionSources: List<LegacyAppPathString>? = null,
+    @SerialName("reasoningEffort")
+    public val reasoningEffort: ReasoningEffort? = null,
+    @SerialName("serviceTier")
+    public val serviceTier: String? = null,
 )
 
 @Serializable
-internal data class WarningNotification(
-    @SerialName("message")
-    public val message: String,
+internal data class ThreadRevertedNotification(
     @SerialName("threadId")
-    public val threadId: String? = null,
-)
-
-@Serializable(with = WebSearchActionSerializer::class)
-internal sealed interface WebSearchAction
-
-@Serializable
-internal data class WebSearchActionSearchWebSearchAction(
-    @SerialName("queries")
-    public val queries: List<String>? = null,
-    @SerialName("query")
-    public val query: String? = null,
-    @SerialName("type")
-    public val type: String = "search",
-) : WebSearchAction {
-    init { require(type == "search") }
-}
-
-@Serializable
-internal data class WebSearchActionOpenPageWebSearchAction(
-    @SerialName("type")
-    public val type: String = "openPage",
-    @SerialName("url")
-    public val url: String? = null,
-) : WebSearchAction {
-    init { require(type == "openPage") }
-}
-
-@Serializable
-internal data class WebSearchActionFindInPageWebSearchAction(
-    @SerialName("pattern")
-    public val pattern: String? = null,
-    @SerialName("type")
-    public val type: String = "findInPage",
-    @SerialName("url")
-    public val url: String? = null,
-) : WebSearchAction {
-    init { require(type == "findInPage") }
-}
-
-@Serializable
-internal data class WebSearchActionOtherWebSearchAction(
-    @SerialName("type")
-    public val type: String = "other",
-) : WebSearchAction {
-    init { require(type == "other") }
-}
-
-internal object WebSearchActionSerializer : JsonContentPolymorphicSerializer<WebSearchAction>(WebSearchAction::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<WebSearchAction> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "search" -> WebSearchActionSearchWebSearchAction.serializer()
-            "openPage" -> WebSearchActionOpenPageWebSearchAction.serializer()
-            "findInPage" -> WebSearchActionFindInPageWebSearchAction.serializer()
-            "other" -> WebSearchActionOtherWebSearchAction.serializer()
-            else -> error("Unknown WebSearchAction type")
-        }
-}
-
-@Serializable
-internal enum class WebSearchContextSize {
-    @SerialName("low") LOW,
-    @SerialName("medium") MEDIUM,
-    @SerialName("high") HIGH,
-}
-
-@Serializable
-internal data class WebSearchLocation(
-    @SerialName("city")
-    public val city: String? = null,
-    @SerialName("country")
-    public val country: String? = null,
-    @SerialName("region")
-    public val region: String? = null,
-    @SerialName("timezone")
-    public val timezone: String? = null,
+    public val threadId: String,
 )
 
 @Serializable
-internal enum class WebSearchMode {
-    @SerialName("disabled") DISABLED,
-    @SerialName("cached") CACHED,
-    @SerialName("indexed") INDEXED,
-    @SerialName("live") LIVE,
+internal data class ThreadRollbackParams(
+    @SerialName("numTurns")
+    public val numTurns: Long,
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ThreadRollbackResponse(
+    @SerialName("thread")
+    public val thread: Thread,
+)
+
+@Serializable
+internal data class ThreadSearchResult(
+    @SerialName("snippet")
+    public val snippet: String,
+    @SerialName("thread")
+    public val thread: Thread,
+)
+
+@Serializable
+internal enum class ThreadSearchSortKey {
+    @SerialName("created_at") CREATED_AT,
+    @SerialName("updated_at") UPDATED_AT,
+    @SerialName("recency_at") RECENCY_AT,
+}
+
+@Serializable
+internal data class ThreadSection(
+    @SerialName("id")
+    public val id: String,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("appearance")
+    public val appearance: ThreadSectionAppearance? = null,
+)
+
+@Serializable
+internal data class ThreadSectionAppearance(
+    @SerialName("color")
+    public val color: String? = null,
+    @SerialName("icon")
+    public val icon: String? = null,
+)
+
+@Serializable
+internal data class ThreadSectionCreateParams(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("appearance")
+    public val appearance: ThreadSectionAppearance? = null,
+)
+
+@Serializable
+internal data class ThreadSectionCreateResponse(
+    @SerialName("section")
+    public val section: ThreadSection,
+)
+
+@Serializable
+internal data class ThreadSectionDeleteParams(
+    @SerialName("sectionId")
+    public val sectionId: String,
+)
+
+@Serializable
+internal class ThreadSectionDeleteResponse
+
+@Serializable
+internal data class ThreadSectionListParams(
+    @SerialName("cursor")
+    public val cursor: String? = null,
+    @SerialName("limit")
+    public val limit: Long? = null,
+)
+
+@Serializable
+internal data class ThreadSectionListResponse(
+    @SerialName("data")
+    public val data: List<ThreadSection>,
+    @SerialName("nextCursor")
+    public val nextCursor: String? = null,
+)
+
+@Serializable
+internal data class ThreadSectionMoveParams(
+    @SerialName("sectionId")
+    public val sectionId: String?,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("beforeThreadId")
+    public val beforeThreadId: String? = null,
+)
+
+@Serializable
+internal class ThreadSectionMoveResponse
+
+@Serializable
+internal data class ThreadSectionUpdateParams(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("sectionId")
+    public val sectionId: String,
+    @SerialName("appearance")
+    public val appearance: ThreadSectionAppearance? = null,
+)
+
+@Serializable
+internal data class ThreadSectionUpdateResponse(
+    @SerialName("section")
+    public val section: ThreadSection,
+)
+
+@Serializable
+internal data class ThreadSetNameParams(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal class ThreadSetNameResponse
+
+@Serializable
+internal data class ThreadSettings(
+    @SerialName("approvalPolicy")
+    public val approvalPolicy: AskForApproval,
+    @SerialName("approvalsReviewer")
+    public val approvalsReviewer: ApprovalsReviewer,
+    @SerialName("collaborationMode")
+    public val collaborationMode: CollaborationMode,
+    @SerialName("cwd")
+    public val cwd: AbsolutePathBuf,
+    @SerialName("model")
+    public val model: String,
+    @SerialName("modelProvider")
+    public val modelProvider: String,
+    @SerialName("sandboxPolicy")
+    public val sandboxPolicy: SandboxPolicy,
+    @SerialName("activePermissionProfile")
+    public val activePermissionProfile: ActivePermissionProfile? = null,
+    @SerialName("effort")
+    public val effort: ReasoningEffort? = null,
+    @SerialName("personality")
+    public val personality: Personality? = null,
+    @SerialName("serviceTier")
+    public val serviceTier: String? = null,
+    @SerialName("summary")
+    public val summary: ReasoningSummary? = null,
+)
+
+@Serializable
+internal data class ThreadSettingsUpdatedNotification(
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("threadSettings")
+    public val threadSettings: ThreadSettings,
+)
+
+@Serializable
+internal data class ThreadShellCommandParams(
+    @SerialName("command")
+    public val command: String,
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal class ThreadShellCommandResponse
+
+@Serializable
+internal enum class ThreadSortKey {
+    @SerialName("created_at") CREATED_AT,
+    @SerialName("updated_at") UPDATED_AT,
+    @SerialName("recency_at") RECENCY_AT,
+    @SerialName("section_position") SECTION_POSITION,
 }

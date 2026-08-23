@@ -169,13 +169,13 @@ shared lifecycle layer on every Kotlin target:
 ```kotlin
 val clientInfo = CodexClientInfo("com.example.app", "Example App", appVersion)
 val host = CodexHost(platform, clientInfo)
-applicationScope.launch { host.state.collect(::render) }
+applicationScope.launch { host.lifecycleState.collect(::render) }
 host.start()
 
-when (val state = host.state.value) {
+when (val state = host.lifecycleState.value) {
     is CodexHostState.Ready -> {
         val agent = state.agent
-        val conversation = agent.openConversation()
+        val conversation = agent.conversations.open()
         conversation.send("Hello")
     }
     is CodexHostState.WorkspaceRequired -> {
@@ -192,20 +192,23 @@ cancels it on `close()`. Applications that need their own parent job may use
 identifies the embedding application in the App Server initialize request; it
 is deliberately not the Codex Agent library version.
 
-`CodexHost` owns workspace/runtime startup and shutdown. `CodexAgent` owns
-authentication, approvals and elicitations, connector and MCP authorization,
-backend catalogs, and at most one active conversation. `CodexConversation`
-owns live text, reasoning, plan, shell, work, and hook updates, then reconciles
-with canonical history after completion. The raw client, connection, generated
-protocol, and workflow controllers remain internal.
+`CodexHost` owns workspace/runtime startup and shutdown. A ready `CodexAgent`
+groups backend capabilities into focused resources: `authentication`,
+`interactions`, `integrationAuthorization`, `conversations`, `models`,
+`skills`, `hooks`, `plugins`, `connectors`, and `mcpServers`.
+`CodexConversation` owns live text, reasoning, plan, shell, work, and hook
+updates, then reconciles with canonical history after completion. The raw
+client, connection, generated protocol, and workflow controllers remain
+internal.
 
 Swift applications receive the same host, ready agent, conversation handles,
 and immutable state through the `CodexAgent` framework. The
 `CodexAgentObservation` SwiftPM product adds cancellation-safe typed
-`AsyncStream` properties such as `host.states`, `agent.authenticationStates`,
-`agent.activeConversations`, and `conversation.states`.
+`AsyncStream` properties such as `host.lifecycleStates`,
+`agent.authentication.states`, `agent.conversations.activeConversations`, and
+`conversation.states`.
 `CodexAgentSwiftSupport` adds only the natural default calls
-`agent.authenticate()`, `agent.openConversation()`, and
+`agent.authentication.authenticate()`, `agent.conversations.open()`, and
 `conversation.send(_:)`, plus `Error.codexFailure` for stable code, message,
 and recoverability. Advanced Kotlin overloads remain available as native Swift
 `async throws` operations.
@@ -215,11 +218,12 @@ or reducer.
 
 ## Runtime features and failures
 
-`CodexAgent.features` is the immutable feature set prepared by the selected
-runtime. Android, Desktop, and Node advertise shell commands, skills, hooks,
-plugins, connectors, and MCP servers. The embedded iOS runtime advertises only
-skills; its sandboxed built-in file tools are runtime implementation details.
-Calling an unavailable capability fails before an RPC with
+Each optional resource exposes `isAvailable`; adopters do not need to interpret
+a shared feature enum. Android, Desktop, and Node make skills, hooks, plugins,
+connectors, and MCP servers available. On embedded iOS only
+`agent.skills.isAvailable` is true; its sandboxed built-in file tools are
+runtime implementation details. Calling an unavailable capability fails before
+an RPC with
 `CodexOperationException` and a non-recoverable `CodexFailure` whose code is
 `unsupported_feature`.
 

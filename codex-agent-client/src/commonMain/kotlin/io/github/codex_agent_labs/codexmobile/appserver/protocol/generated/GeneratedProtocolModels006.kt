@@ -13,6 +13,114 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
+internal data class ClientRequestPluginReadRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PluginReadParams,
+    @SerialName("method")
+    public val method: String = "plugin/read",
+) : ClientRequest {
+    init { require(method == "plugin/read") }
+}
+
+@Serializable
+internal data class ClientRequestPluginSkillReadRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PluginSkillReadParams,
+    @SerialName("method")
+    public val method: String = "plugin/skill/read",
+) : ClientRequest {
+    init { require(method == "plugin/skill/read") }
+}
+
+@Serializable
+internal data class ClientRequestPluginShareSaveRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PluginShareSaveParams,
+    @SerialName("method")
+    public val method: String = "plugin/share/save",
+) : ClientRequest {
+    init { require(method == "plugin/share/save") }
+}
+
+@Serializable
+internal data class ClientRequestPluginShareUpdateTargetsRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PluginShareUpdateTargetsParams,
+    @SerialName("method")
+    public val method: String = "plugin/share/updateTargets",
+) : ClientRequest {
+    init { require(method == "plugin/share/updateTargets") }
+}
+
+@Serializable
+internal data class ClientRequestPluginShareListRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PluginShareListParams,
+    @SerialName("method")
+    public val method: String = "plugin/share/list",
+) : ClientRequest {
+    init { require(method == "plugin/share/list") }
+}
+
+@Serializable
+internal data class ClientRequestPluginShareCheckoutRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PluginShareCheckoutParams,
+    @SerialName("method")
+    public val method: String = "plugin/share/checkout",
+) : ClientRequest {
+    init { require(method == "plugin/share/checkout") }
+}
+
+@Serializable
+internal data class ClientRequestPluginShareDeleteRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PluginShareDeleteParams,
+    @SerialName("method")
+    public val method: String = "plugin/share/delete",
+) : ClientRequest {
+    init { require(method == "plugin/share/delete") }
+}
+
+@Serializable
+internal data class ClientRequestAppReadRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: AppsReadParams,
+    @SerialName("method")
+    public val method: String = "app/read",
+) : ClientRequest {
+    init { require(method == "app/read") }
+}
+
+@Serializable
+internal data class ClientRequestAppListRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: AppsListParams,
+    @SerialName("method")
+    public val method: String = "app/list",
+) : ClientRequest {
+    init { require(method == "app/list") }
+}
+
+@Serializable
 internal data class ClientRequestAppInstalledRequest(
     @SerialName("id")
     public val id: RequestId,
@@ -118,112 +226,4 @@ internal data class ClientRequestFsWatchRequest(
     public val method: String = "fs/watch",
 ) : ClientRequest {
     init { require(method == "fs/watch") }
-}
-
-@Serializable
-internal data class ClientRequestFsUnwatchRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: FsUnwatchParams,
-    @SerialName("method")
-    public val method: String = "fs/unwatch",
-) : ClientRequest {
-    init { require(method == "fs/unwatch") }
-}
-
-@Serializable
-internal data class ClientRequestSkillsConfigWriteRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: SkillsConfigWriteParams,
-    @SerialName("method")
-    public val method: String = "skills/config/write",
-) : ClientRequest {
-    init { require(method == "skills/config/write") }
-}
-
-@Serializable
-internal data class ClientRequestPluginInstallRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: PluginInstallParams,
-    @SerialName("method")
-    public val method: String = "plugin/install",
-) : ClientRequest {
-    init { require(method == "plugin/install") }
-}
-
-@Serializable
-internal data class ClientRequestPluginUninstallRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: PluginUninstallParams,
-    @SerialName("method")
-    public val method: String = "plugin/uninstall",
-) : ClientRequest {
-    init { require(method == "plugin/uninstall") }
-}
-
-@Serializable
-internal data class ClientRequestTurnStartRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: TurnStartParams,
-    @SerialName("method")
-    public val method: String = "turn/start",
-) : ClientRequest {
-    init { require(method == "turn/start") }
-}
-
-@Serializable
-internal data class ClientRequestTurnSteerRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: TurnSteerParams,
-    @SerialName("method")
-    public val method: String = "turn/steer",
-) : ClientRequest {
-    init { require(method == "turn/steer") }
-}
-
-@Serializable
-internal data class ClientRequestTurnInterruptRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: TurnInterruptParams,
-    @SerialName("method")
-    public val method: String = "turn/interrupt",
-) : ClientRequest {
-    init { require(method == "turn/interrupt") }
-}
-
-@Serializable
-internal data class ClientRequestReviewStartRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ReviewStartParams,
-    @SerialName("method")
-    public val method: String = "review/start",
-) : ClientRequest {
-    init { require(method == "review/start") }
-}
-
-@Serializable
-internal data class ClientRequestModelListRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ModelListParams,
-    @SerialName("method")
-    public val method: String = "model/list",
-) : ClientRequest {
-    init { require(method == "model/list") }
 }

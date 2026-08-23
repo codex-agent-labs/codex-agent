@@ -15,7 +15,7 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class PrepareCodexIosSourceTaskTest {
     @Test
-    fun `validates patches and stages the exact source revision`() {
+    fun `validates patches and stages the exact GitHub API source revision`() {
         val project = fixture()
         try {
             val revision = "1".repeat(40)
@@ -23,8 +23,9 @@ class PrepareCodexIosSourceTaskTest {
             writeTarGz(
                 archive,
                 mapOf(
-                    "codex-$revision/marker.txt" to "before\n".encodeToByteArray(),
-                    "codex-$revision/codex-rs/Cargo.lock" to "locked\n".encodeToByteArray(),
+                    "openai-codex-${revision.take(7)}/marker.txt" to "before\n".encodeToByteArray(),
+                    "openai-codex-${revision.take(7)}/codex-rs/Cargo.lock" to
+                        "locked\n".encodeToByteArray(),
                 ),
             )
             project.resolve("change.patch").writeText(

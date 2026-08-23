@@ -99,7 +99,11 @@ abstract class PrepareCodexIosSourceTask @Inject constructor(
                 into(extracted)
             }
             val roots = extracted.listFiles().orEmpty().filter(java.io.File::isDirectory)
-            check(roots.size == 1 && roots.single().name == "codex-$expectedRevision") {
+            val expectedRoots = setOf(
+                "codex-$expectedRevision",
+                "openai-codex-${expectedRevision.take(7)}",
+            )
+            check(roots.size == 1 && roots.single().name in expectedRoots) {
                 "Codex source archive must contain the exact revision root"
             }
             val staged = temporary.resolve("staged").toFile().also { it.mkdirs() }

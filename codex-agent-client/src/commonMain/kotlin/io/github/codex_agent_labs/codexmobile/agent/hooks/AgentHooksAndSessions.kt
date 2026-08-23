@@ -83,28 +83,90 @@ internal suspend fun CodexAgentClient.listHooksAction(workingDirectory: String):
         HooksListParams(listOf(workingDirectory)),
     ).data
     return AgentHookCatalog(
-        hooks = entries.flatMap(HooksListEntry::hooks).distinctBy(HookMetadata::key).map { hook ->
-            AgentHook(
-                key = hook.key,
-                currentHash = hook.currentHash,
-                isEnabled = hook.enabled,
-                eventName = hook.eventName.name,
-                handlerType = hook.handlerType.name,
-                isManaged = hook.isManaged,
-                source = hook.source.name,
-                sourcePath = hook.sourcePath,
-                timeoutSeconds = hook.timeoutSec,
-                trustStatus = enumValueOf(hook.trustStatus.name),
-                command = hook.command,
-                matcher = hook.matcher,
-                pluginId = hook.pluginId,
-                statusMessage = hook.statusMessage,
-            )
-        }.sortedBy(AgentHook::key),
+        hooks = entries.flatMap(HooksListEntry::hooks)
+            .map(::parseHook)
+            .map { hook -> hook.copy(canUninstall = ownedResources?.ownsHook(hook) == true) }
+            .distinctBy(AgentHook::key)
+            .sortedBy(AgentHook::key),
         warnings = entries.flatMap(HooksListEntry::warnings).distinct(),
         errors = entries.flatMap(HooksListEntry::errors).map { "${it.path}: ${it.message}" }.distinct(),
     )
 }
+
+private fun parseHook(hook: HookMetadata): AgentHook = when (hook) {
+    is HookMetadataCommand -> hook.toAgentHook(
+        AgentHookHandler.Command(hook.command, hook.async ?: false),
+    )
+    is HookMetadataMcpTool -> hook.toAgentHook(
+        AgentHookHandler.McpTool(hook.server, hook.tool),
+    )
+    is HookMetadataPromptHookMetadata -> hook.toAgentHook(AgentHookHandler.Prompt)
+    is HookMetadataAgentHookMetadata -> hook.toAgentHook(AgentHookHandler.Agent)
+}
+
+private fun HookMetadataCommand.toAgentHook(handler: AgentHookHandler): AgentHook = AgentHook(
+    key = key,
+    currentHash = currentHash,
+    isEnabled = enabled,
+    eventName = eventName.name,
+    handler = handler,
+    isManaged = isManaged,
+    source = source.name,
+    sourcePath = sourcePath,
+    timeoutSeconds = timeoutSec,
+    trustStatus = enumValueOf(trustStatus.name),
+    matcher = matcher,
+    pluginId = pluginId,
+    statusMessage = statusMessage,
+)
+
+private fun HookMetadataMcpTool.toAgentHook(handler: AgentHookHandler): AgentHook = AgentHook(
+    key = key,
+    currentHash = currentHash,
+    isEnabled = enabled,
+    eventName = eventName.name,
+    handler = handler,
+    isManaged = isManaged,
+    source = source.name,
+    sourcePath = sourcePath,
+    timeoutSeconds = timeoutSec,
+    trustStatus = enumValueOf(trustStatus.name),
+    matcher = matcher,
+    pluginId = pluginId,
+    statusMessage = statusMessage,
+)
+
+private fun HookMetadataPromptHookMetadata.toAgentHook(handler: AgentHookHandler): AgentHook = AgentHook(
+    key = key,
+    currentHash = currentHash,
+    isEnabled = enabled,
+    eventName = eventName.name,
+    handler = handler,
+    isManaged = isManaged,
+    source = source.name,
+    sourcePath = sourcePath,
+    timeoutSeconds = timeoutSec,
+    trustStatus = enumValueOf(trustStatus.name),
+    matcher = matcher,
+    pluginId = pluginId,
+    statusMessage = statusMessage,
+)
+
+private fun HookMetadataAgentHookMetadata.toAgentHook(handler: AgentHookHandler): AgentHook = AgentHook(
+    key = key,
+    currentHash = currentHash,
+    isEnabled = enabled,
+    eventName = eventName.name,
+    handler = handler,
+    isManaged = isManaged,
+    source = source.name,
+    sourcePath = sourcePath,
+    timeoutSeconds = timeoutSec,
+    trustStatus = enumValueOf(trustStatus.name),
+    matcher = matcher,
+    pluginId = pluginId,
+    statusMessage = statusMessage,
+)
 
 internal suspend fun CodexAgentClient.setHookEnabledAction(key: String, enabled: Boolean) {
     require(key.isNotBlank()) { "Hook key must not be blank" }
@@ -133,11 +195,16 @@ internal suspend fun CodexAgentClient.writeHookStateAction(key: String, state: J
     )
 }
 
-internal suspend fun CodexAgentClient.startMcpOauthAction(serverName: String, conversationId: ConversationId?): String {
+internal suspend fun CodexAgentClient.startMcpOauthAction(
+    serverName: String,
+    conversationId: ConversationId?,
+    onRequestEnqueued: (suspend () -> Unit)?,
+): String {
     require(serverName.isNotBlank()) { "MCP server name must not be blank" }
     return connection.request(
         AppServerClientMethods.McpServerOauthLogin,
         McpServerOauthLoginParams(name = serverName, threadId = conversationId?.value),
+        onRequestEnqueued = onRequestEnqueued,
     ).authorizationUrl.also(::requireSafeAuthUrl)
 }
 

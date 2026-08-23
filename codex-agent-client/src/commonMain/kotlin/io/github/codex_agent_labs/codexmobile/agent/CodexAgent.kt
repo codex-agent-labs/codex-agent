@@ -28,42 +28,56 @@ public class CodexAgent internal constructor(
     private val scope = CoroutineScope(
         parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]),
     )
-    private val authentication = AuthenticationController(client, scope, authorizationBrowser)
-    private val interactions = InteractionController(client, scope, authorizationBrowser)
-    private val integrationAuthorization =
+    private val authenticationController = AuthenticationController(client, scope, authorizationBrowser)
+    private val interactionController = InteractionController(client, scope, authorizationBrowser)
+    private val integrationAuthorizationController =
         IntegrationAuthorizationController(client, scope, authorizationBrowser)
     private val mutableActiveConversation = MutableStateFlow<CodexConversation?>(null)
-    private val conversationReleases = mutableMapOf<CodexConversation, CompletableDeferred<Throwable?>>()
     private var conversationGeneration = 0L
     private var signingOut = false
     private var closed = false
 
-    public val features: Set<CodexRuntimeFeature> = features.toSet()
-    public val authenticationState: StateFlow<AgentAuthenticationState> = authentication.state
-    public val interactionState: StateFlow<AgentInteractionState> = interactions.state
-    public val integrationAuthorizationState: StateFlow<AgentIntegrationAuthorizationState> =
-        integrationAuthorization.state
-    public val activeConversation: StateFlow<CodexConversation?> =
+    private val runtimeFeatures: Set<CodexRuntimeFeature> = features.toSet()
+    internal val authenticationState: StateFlow<AgentAuthenticationState> = authenticationController.state
+    internal val interactionState: StateFlow<AgentInteractionState> = interactionController.state
+    internal val pendingApprovals: StateFlow<List<AgentPendingApproval>> = interactionController.approvals
+    internal val pendingElicitations: StateFlow<List<AgentPendingElicitation>> = interactionController.elicitations
+    internal val integrationAuthorizationState: StateFlow<AgentIntegrationAuthorizationState> =
+        integrationAuthorizationController.state
+    internal val activeIntegrationAuthorization: StateFlow<AgentIntegration?> =
+        integrationAuthorizationController.active
+    internal val activeConversation: StateFlow<CodexConversation?> =
         mutableActiveConversation.asStateFlow()
+
+    public val authentication: CodexAuthentication = CodexAuthentication(this)
+    public val interactions: CodexInteractions = CodexInteractions(this)
+    public val integrationAuthorization: CodexIntegrationAuthorization = CodexIntegrationAuthorization(this)
+    public val conversations: CodexConversations = CodexConversations(this)
+    public val models: CodexModels = CodexModels(this)
+    public val skills: CodexSkills = CodexSkills(this)
+    public val hooks: CodexHooks = CodexHooks(this)
+    public val plugins: CodexPlugins = CodexPlugins(this)
+    public val connectors: CodexConnectors = CodexConnectors(this)
+    public val mcpServers: CodexMcpServers = CodexMcpServers(this)
 
     internal suspend fun start(): Unit = client.start()
 
     @Throws(Exception::class)
-    public suspend fun authenticate(
+    internal suspend fun authenticate(
         method: CodexAuthenticationMethod = CodexAuthenticationMethod.ChatGptBrowser,
     ): Unit {
         requireOpen()
-        authentication.authenticate(method)
+        authenticationController.authenticate(method)
     }
 
     @Throws(Exception::class)
-    public suspend fun cancelAuthentication(): Unit {
+    internal suspend fun cancelAuthentication(): Unit {
         requireOpen()
-        authentication.cancel()
+        authenticationController.cancel()
     }
 
     @Throws(Exception::class)
-    public suspend fun signOut(): Unit {
+    internal suspend fun signOut(): Unit {
         val conversation = lock.withLock {
             checkOpenLocked()
             check(!signingOut) { "Sign-out is already in progress" }
@@ -78,7 +92,7 @@ public class CodexAgent internal constructor(
                     completeCleanup(
                         listOf(
                             { conversation?.let { releaseConversation(it) } },
-                            { authentication.signOut() },
+                            { authenticationController.signOut() },
                         ),
                     )
                 } catch (error: Throwable) {
@@ -99,31 +113,31 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun resolveApproval(
+    internal suspend fun resolveApproval(
         approval: AgentPendingApproval,
         decision: AgentApprovalDecision,
     ): Unit {
         requireOpen()
-        interactions.resolveApproval(approval.requestId, decision)
+        interactionController.resolveApproval(approval, decision)
     }
 
     @Throws(Exception::class)
-    public suspend fun resolveElicitation(
+    internal suspend fun resolveElicitation(
         elicitation: AgentPendingElicitation,
         response: AgentElicitationResponse,
     ): Unit {
         requireOpen()
-        interactions.resolveElicitation(elicitation.requestId, response)
+        interactionController.resolveElicitation(elicitation, response)
     }
 
     @Throws(Exception::class)
-    public suspend fun openElicitationUrl(elicitation: AgentPendingElicitation): Unit {
+    internal suspend fun openElicitationUrl(elicitation: AgentPendingElicitation): Unit {
         requireOpen()
-        interactions.openUrl(elicitation.requestId)
+        interactionController.openUrl(elicitation)
     }
 
     @Throws(Exception::class)
-    public suspend fun listConversations(): List<AgentConversationSummary> {
+    internal suspend fun listConversations(): List<AgentConversationSummary> {
         requireOpen()
         return codexOperation("conversation_list_failed", "Could not list conversations") {
             client.listConversations()
@@ -131,7 +145,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun readConversation(conversationId: ConversationId): AgentConversation {
+    internal suspend fun readConversation(conversationId: ConversationId): AgentConversation {
         requireOpen()
         return codexOperation("conversation_read_failed", "Could not read conversation") {
             client.readConversation(conversationId)
@@ -139,7 +153,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun renameConversation(conversationId: ConversationId, name: String): Unit {
+    internal suspend fun renameConversation(conversationId: ConversationId, name: String): Unit {
         requireOpen()
         require(name.isNotBlank()) { "Conversation name must not be blank" }
         codexOperation("conversation_rename_failed", "Could not rename conversation") {
@@ -148,7 +162,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun deleteConversation(conversationId: ConversationId): Unit {
+    internal suspend fun deleteConversation(conversationId: ConversationId): Unit {
         requireOpen()
         mutableActiveConversation.value
             ?.takeIf { it.state.value.conversationId == conversationId }
@@ -160,25 +174,26 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun openConversation(
+    internal suspend fun openConversation(
         conversationId: ConversationId? = null,
         settings: AgentConversationSettings = AgentConversationSettings(),
     ): CodexConversation {
-        val conversation = CodexConversation(
-            client = client,
-            scope = scope,
-            workingDirectory = workingDirectory,
-            features = features,
-            onClose = ::closeConversation,
-        )
         val transition = lock.withLock {
             checkOpenLocked()
             check(!signingOut) { "Sign-out is in progress" }
+            val conversation = CodexConversation(
+                client = client,
+                scope = scope,
+                workingDirectory = workingDirectory,
+                features = runtimeFeatures,
+                onClose = ::closeConversation,
+            )
             conversationGeneration += 1
             val previous = mutableActiveConversation.value
             mutableActiveConversation.value = conversation
-            ConversationTransition(conversationGeneration, previous)
+            ConversationTransition(conversationGeneration, previous, conversation)
         }
+        val conversation = transition.conversation
 
         var openedId: ConversationId? = null
         try {
@@ -241,13 +256,20 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun listModels(): List<AgentModel> {
+    internal suspend fun listModels(): List<AgentModel> {
         requireOpen()
         return codexOperation("model_list_failed", "Could not list models") { client.listModels() }
     }
 
+    internal suspend fun modelPreferences(): AgentModelPreferences {
+        requireOpen()
+        return codexOperation("model_preferences_failed", "Could not read model preferences") {
+            client.readModelPreferences(workingDirectory)
+        }
+    }
+
     @Throws(Exception::class)
-    public suspend fun listSkills(forceReload: Boolean = false): AgentSkillCatalog {
+    internal suspend fun listSkills(forceReload: Boolean = false): AgentSkillCatalog {
         requireOpen()
         requireFeature(CodexRuntimeFeature.SKILLS)
         return codexOperation("skill_list_failed", "Could not list skills") {
@@ -256,7 +278,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun readSkill(path: String, offset: Long = 0): AgentSkillChunk {
+    internal suspend fun readSkill(path: String, offset: Long = 0): AgentSkillChunk {
         requireOpen()
         requireFeature(CodexRuntimeFeature.SKILLS)
         require(path.isAbsoluteHostPath()) { "Skill path must be absolute" }
@@ -264,8 +286,24 @@ public class CodexAgent internal constructor(
         return codexOperation("skill_read_failed", "Could not read skill") { client.readSkill(path, offset) }
     }
 
+    internal suspend fun installSkill(directory: String, scope: AgentInstallationScope): AgentSkill {
+        requireOpen()
+        requireFeature(CodexRuntimeFeature.SKILLS)
+        return codexOperation("skill_install_failed", "Could not install skill") {
+            client.installSkill(directory, scope, workingDirectory)
+        }
+    }
+
+    internal suspend fun uninstallSkill(skill: AgentSkill) {
+        requireOpen()
+        requireFeature(CodexRuntimeFeature.SKILLS)
+        codexOperation("skill_uninstall_failed", "Could not uninstall skill") {
+            client.uninstallSkill(skill, workingDirectory)
+        }
+    }
+
     @Throws(Exception::class)
-    public suspend fun setSkillEnabled(skill: AgentSkill, isEnabled: Boolean): Unit {
+    internal suspend fun setSkillEnabled(skill: AgentSkill, isEnabled: Boolean): Unit {
         requireOpen()
         requireFeature(CodexRuntimeFeature.SKILLS)
         require(skill.path.isAbsoluteHostPath()) { "Skill path must be absolute" }
@@ -275,14 +313,30 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun listHooks(): AgentHookCatalog {
+    internal suspend fun listHooks(): AgentHookCatalog {
         requireOpen()
         requireFeature(CodexRuntimeFeature.HOOKS)
         return codexOperation("hook_list_failed", "Could not list hooks") { client.listHooks(workingDirectory) }
     }
 
+    internal suspend fun installHook(directory: String, scope: AgentInstallationScope): AgentHook {
+        requireOpen()
+        requireFeature(CodexRuntimeFeature.HOOKS)
+        return codexOperation("hook_install_failed", "Could not install hook") {
+            client.installHook(directory, scope, workingDirectory)
+        }
+    }
+
+    internal suspend fun uninstallHook(hook: AgentHook) {
+        requireOpen()
+        requireFeature(CodexRuntimeFeature.HOOKS)
+        codexOperation("hook_uninstall_failed", "Could not uninstall hook") {
+            client.uninstallHook(hook, workingDirectory)
+        }
+    }
+
     @Throws(Exception::class)
-    public suspend fun setHookEnabled(hook: AgentHook, isEnabled: Boolean): Unit {
+    internal suspend fun setHookEnabled(hook: AgentHook, isEnabled: Boolean): Unit {
         requireOpen()
         requireFeature(CodexRuntimeFeature.HOOKS)
         require(hook.key.isNotBlank()) { "Hook key must not be blank" }
@@ -292,7 +346,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun trustHook(hook: AgentHook): Unit {
+    internal suspend fun trustHook(hook: AgentHook): Unit {
         requireOpen()
         requireFeature(CodexRuntimeFeature.HOOKS)
         require(hook.key.isNotBlank()) { "Hook key must not be blank" }
@@ -303,7 +357,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun listPlugins(forceRefresh: Boolean = false): AgentPluginCatalog {
+    internal suspend fun listPlugins(forceRefresh: Boolean = false): AgentPluginCatalog {
         requireOpen()
         requireFeature(CodexRuntimeFeature.PLUGINS)
         return codexOperation("plugin_list_failed", "Could not list plugins") {
@@ -312,7 +366,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun readPlugin(plugin: AgentPluginReference): AgentPluginDetail {
+    internal suspend fun readPlugin(plugin: AgentPluginReference): AgentPluginDetail {
         requireOpen()
         requireFeature(CodexRuntimeFeature.PLUGINS)
         requireValidPlugin(plugin)
@@ -320,7 +374,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun installPlugin(plugin: AgentPluginReference): AgentPluginInstallResult {
+    internal suspend fun installPlugin(plugin: AgentPluginReference): AgentPluginInstallResult {
         requireOpen()
         requireFeature(CodexRuntimeFeature.PLUGINS)
         requireValidPlugin(plugin)
@@ -328,7 +382,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun uninstallPlugin(plugin: AgentPluginReference): Unit {
+    internal suspend fun uninstallPlugin(plugin: AgentPluginReference): Unit {
         requireOpen()
         requireFeature(CodexRuntimeFeature.PLUGINS)
         requireValidPlugin(plugin)
@@ -338,7 +392,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun setPluginEnabled(plugin: AgentPluginSummary, isEnabled: Boolean): Unit {
+    internal suspend fun setPluginEnabled(plugin: AgentPluginSummary, isEnabled: Boolean): Unit {
         requireOpen()
         requireFeature(CodexRuntimeFeature.PLUGINS)
         require(plugin.reference.id.isNotBlank() && '.' !in plugin.reference.id) { "Invalid plugin ID" }
@@ -348,7 +402,7 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun listConnectors(forceReload: Boolean = false): List<AgentConnector> {
+    internal suspend fun listConnectors(forceReload: Boolean = false): List<AgentConnector> {
         requireOpen()
         requireFeature(CodexRuntimeFeature.CONNECTORS)
         return codexOperation("connector_list_failed", "Could not list connectors") {
@@ -360,41 +414,57 @@ public class CodexAgent internal constructor(
     }
 
     @Throws(Exception::class)
-    public suspend fun listMcpServers(): List<AgentMcpServer> {
+    internal suspend fun listMcpServers(): List<AgentMcpServer> {
         requireOpen()
         requireFeature(CodexRuntimeFeature.MCP_SERVERS)
         return codexOperation("mcp_server_list_failed", "Could not list MCP servers") {
-            client.listMcpServers()
+            client.listMcpServers(workingDirectory)
+        }
+    }
+
+    internal suspend fun addMcpServer(configuration: AgentMcpServerConfiguration): AgentMcpServer {
+        requireOpen()
+        requireFeature(CodexRuntimeFeature.MCP_SERVERS)
+        return codexOperation("mcp_server_add_failed", "Could not add MCP server") {
+            client.addMcpServer(configuration, workingDirectory)
+        }
+    }
+
+    internal suspend fun removeMcpServer(server: AgentMcpServer) {
+        requireOpen()
+        requireFeature(CodexRuntimeFeature.MCP_SERVERS)
+        codexOperation("mcp_server_remove_failed", "Could not remove MCP server") {
+            client.removeMcpServer(server, workingDirectory)
         }
     }
 
     @Throws(Exception::class)
-    public suspend fun authorizeConnector(connector: AgentConnector): Unit {
+    internal suspend fun authorizeConnector(connector: AgentConnector): Unit {
         requireOpen()
         requireFeature(CodexRuntimeFeature.CONNECTORS)
-        integrationAuthorization.authorizeConnector(
-            connector.id,
+        integrationAuthorizationController.authorizeConnector(
+            connector,
             mutableActiveConversation.value?.state?.value?.conversationId,
         )
     }
 
     @Throws(Exception::class)
-    public suspend fun authorizeMcpServer(
+    internal suspend fun authorizeMcpServer(
         server: AgentMcpServer,
         conversationId: ConversationId? = null,
     ): Unit {
         requireOpen()
         requireFeature(CodexRuntimeFeature.MCP_SERVERS)
-        integrationAuthorization.authorizeMcpServer(
-            server.name,
+        integrationAuthorizationController.authorizeMcpServer(
+            server,
             conversationId ?: mutableActiveConversation.value?.state?.value?.conversationId,
         )
     }
 
     @Throws(Exception::class)
-    public suspend fun dismissIntegrationAuthorization(): Unit {
+    internal suspend fun cancelIntegrationAuthorization(): Unit {
         requireOpen()
-        integrationAuthorization.dismiss()
+        integrationAuthorizationController.cancel()
     }
 
     internal suspend fun close(): Unit {
@@ -409,9 +479,9 @@ public class CodexAgent internal constructor(
             completeCleanup(
                 listOf(
                     { conversation?.let { releaseConversation(it) } },
-                    { integrationAuthorization.close() },
-                    { interactions.close() },
-                    { authentication.close() },
+                    { integrationAuthorizationController.close() },
+                    { interactionController.close() },
+                    { authenticationController.close() },
                     { client.closeSuspendingAction() },
                     { scope.cancel() },
                 ),
@@ -434,9 +504,9 @@ public class CodexAgent internal constructor(
         knownConversationId: ConversationId? = conversation.state.value.conversationId,
     ) {
         val release = lock.withLock {
-            conversationReleases[conversation]?.let { ReleaseClaim(it, false) }
+            conversation.agentReleaseCompletion?.let { ReleaseClaim(it, false) }
                 ?: CompletableDeferred<Throwable?>().let { completion ->
-                    conversationReleases[conversation] = completion
+                    conversation.agentReleaseCompletion = completion
                     ReleaseClaim(completion, true)
                 }
         }
@@ -471,7 +541,7 @@ public class CodexAgent internal constructor(
         var failure = result.failure
         if (result.owned) {
             try {
-                interactions.detachConversation(conversationId)
+                interactionController.detachConversation(conversationId)
             } catch (error: Throwable) {
                 if (failure == null) failure = error
             }
@@ -485,8 +555,10 @@ public class CodexAgent internal constructor(
         check(!closed) { "Codex agent is closed" }
     }
 
+    internal fun supports(feature: CodexRuntimeFeature): Boolean = feature in runtimeFeatures
+
     private fun requireFeature(feature: CodexRuntimeFeature) {
-        if (feature !in features) {
+        if (feature !in runtimeFeatures) {
             throw CodexOperationException(
                 CodexFailure(
                     code = "unsupported_feature",
@@ -509,6 +581,7 @@ public class CodexAgent internal constructor(
     private data class ConversationTransition(
         val generation: Long,
         val previous: CodexConversation?,
+        val conversation: CodexConversation,
     )
 
     private data class ReleaseClaim(

@@ -13,217 +13,212 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class ServerNotificationItemAutoApprovalReviewStartedNotification(
-    @SerialName("params")
-    public val params: ItemGuardianApprovalReviewStartedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/autoApprovalReview/started",
-) : ServerNotification {
-    init { require(method == "item/autoApprovalReview/started") }
+internal data class ResponsesApiWebSearchActionOtherResponsesApiWebSearchAction(
+    @SerialName("type")
+    public val type: String = "other",
+) : ResponsesApiWebSearchAction {
+    init { require(type == "other") }
+}
+
+internal object ResponsesApiWebSearchActionSerializer : JsonContentPolymorphicSerializer<ResponsesApiWebSearchAction>(ResponsesApiWebSearchAction::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ResponsesApiWebSearchAction> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "search" -> ResponsesApiWebSearchActionSearchResponsesApiWebSearchAction.serializer()
+            "open_page" -> ResponsesApiWebSearchActionOpenPageResponsesApiWebSearchAction.serializer()
+            "find_in_page" -> ResponsesApiWebSearchActionFindInPageResponsesApiWebSearchAction.serializer()
+            "other" -> ResponsesApiWebSearchActionOtherResponsesApiWebSearchAction.serializer()
+            else -> error("Unknown ResponsesApiWebSearchAction type")
+        }
+}
+
+internal typealias ReviewDecision = JsonElement
+
+@Serializable
+internal enum class ReviewDelivery {
+    @SerialName("inline") INLINE,
+    @SerialName("detached") DETACHED,
 }
 
 @Serializable
-internal data class ServerNotificationItemAutoApprovalReviewCompletedNotification(
-    @SerialName("params")
-    public val params: ItemGuardianApprovalReviewCompletedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/autoApprovalReview/completed",
-) : ServerNotification {
-    init { require(method == "item/autoApprovalReview/completed") }
+internal data class ReviewStartParams(
+    @SerialName("target")
+    public val target: ReviewTarget,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("delivery")
+    public val delivery: ReviewDelivery? = null,
+)
+
+@Serializable
+internal data class ReviewStartResponse(
+    @SerialName("reviewThreadId")
+    public val reviewThreadId: String,
+    @SerialName("turn")
+    public val turn: Turn,
+)
+
+@Serializable(with = ReviewTargetSerializer::class)
+internal sealed interface ReviewTarget
+
+@Serializable
+internal data class ReviewTargetUncommittedChangesReviewTarget(
+    @SerialName("type")
+    public val type: String = "uncommittedChanges",
+) : ReviewTarget {
+    init { require(type == "uncommittedChanges") }
 }
 
 @Serializable
-internal data class ServerNotificationItemCompletedNotification(
-    @SerialName("params")
-    public val params: ItemCompletedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/completed",
-) : ServerNotification {
-    init { require(method == "item/completed") }
+internal data class ReviewTargetBaseBranchReviewTarget(
+    @SerialName("branch")
+    public val branch: String,
+    @SerialName("type")
+    public val type: String = "baseBranch",
+) : ReviewTarget {
+    init { require(type == "baseBranch") }
 }
 
 @Serializable
-internal data class ServerNotificationItemAgentMessageDeltaNotification(
-    @SerialName("params")
-    public val params: AgentMessageDeltaNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/agentMessage/delta",
-) : ServerNotification {
-    init { require(method == "item/agentMessage/delta") }
+internal data class ReviewTargetCommitReviewTarget(
+    @SerialName("sha")
+    public val sha: String,
+    @SerialName("title")
+    public val title: String? = null,
+    @SerialName("type")
+    public val type: String = "commit",
+) : ReviewTarget {
+    init { require(type == "commit") }
 }
 
 @Serializable
-internal data class ServerNotificationItemPlanDeltaNotification(
-    @SerialName("params")
-    public val params: PlanDeltaNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/plan/delta",
-) : ServerNotification {
-    init { require(method == "item/plan/delta") }
+internal data class ReviewTargetCustomReviewTarget(
+    @SerialName("instructions")
+    public val instructions: String,
+    @SerialName("type")
+    public val type: String = "custom",
+) : ReviewTarget {
+    init { require(type == "custom") }
+}
+
+internal object ReviewTargetSerializer : JsonContentPolymorphicSerializer<ReviewTarget>(ReviewTarget::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ReviewTarget> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "uncommittedChanges" -> ReviewTargetUncommittedChangesReviewTarget.serializer()
+            "baseBranch" -> ReviewTargetBaseBranchReviewTarget.serializer()
+            "commit" -> ReviewTargetCommitReviewTarget.serializer()
+            "custom" -> ReviewTargetCustomReviewTarget.serializer()
+            else -> error("Unknown ReviewTarget type")
+        }
 }
 
 @Serializable
-internal data class ServerNotificationCommandExecOutputDeltaNotification(
-    @SerialName("params")
-    public val params: CommandExecOutputDeltaNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "command/exec/outputDelta",
-) : ServerNotification {
-    init { require(method == "command/exec/outputDelta") }
+internal enum class SandboxMode {
+    @SerialName("read-only") READ_ONLY,
+    @SerialName("workspace-write") WORKSPACE_WRITE,
+    @SerialName("danger-full-access") DANGER_FULL_ACCESS,
+}
+
+@Serializable(with = SandboxPolicySerializer::class)
+internal sealed interface SandboxPolicy
+
+@Serializable
+internal data class SandboxPolicyDangerFullAccessSandboxPolicy(
+    @SerialName("type")
+    public val type: String = "dangerFullAccess",
+) : SandboxPolicy {
+    init { require(type == "dangerFullAccess") }
 }
 
 @Serializable
-internal data class ServerNotificationProcessOutputDeltaNotification(
-    @SerialName("params")
-    public val params: ProcessOutputDeltaNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "process/outputDelta",
-) : ServerNotification {
-    init { require(method == "process/outputDelta") }
+internal data class SandboxPolicyReadOnlySandboxPolicy(
+    @SerialName("networkAccess")
+    public val networkAccess: Boolean? = null,
+    @SerialName("type")
+    public val type: String = "readOnly",
+) : SandboxPolicy {
+    init { require(type == "readOnly") }
 }
 
 @Serializable
-internal data class ServerNotificationProcessExitedNotification(
-    @SerialName("params")
-    public val params: ProcessExitedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "process/exited",
-) : ServerNotification {
-    init { require(method == "process/exited") }
+internal data class SandboxPolicyExternalSandboxSandboxPolicy(
+    @SerialName("networkAccess")
+    public val networkAccess: NetworkAccess? = null,
+    @SerialName("type")
+    public val type: String = "externalSandbox",
+) : SandboxPolicy {
+    init { require(type == "externalSandbox") }
 }
 
 @Serializable
-internal data class ServerNotificationItemCommandExecutionOutputDeltaNotification(
-    @SerialName("params")
-    public val params: CommandExecutionOutputDeltaNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/commandExecution/outputDelta",
-) : ServerNotification {
-    init { require(method == "item/commandExecution/outputDelta") }
+internal data class SandboxPolicyWorkspaceWriteSandboxPolicy(
+    @SerialName("excludeSlashTmp")
+    public val excludeSlashTmp: Boolean? = null,
+    @SerialName("excludeTmpdirEnvVar")
+    public val excludeTmpdirEnvVar: Boolean? = null,
+    @SerialName("networkAccess")
+    public val networkAccess: Boolean? = null,
+    @SerialName("type")
+    public val type: String = "workspaceWrite",
+    @SerialName("writableRoots")
+    public val writableRoots: List<AbsolutePathBuf>? = null,
+) : SandboxPolicy {
+    init { require(type == "workspaceWrite") }
+}
+
+internal object SandboxPolicySerializer : JsonContentPolymorphicSerializer<SandboxPolicy>(SandboxPolicy::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<SandboxPolicy> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "dangerFullAccess" -> SandboxPolicyDangerFullAccessSandboxPolicy.serializer()
+            "readOnly" -> SandboxPolicyReadOnlySandboxPolicy.serializer()
+            "externalSandbox" -> SandboxPolicyExternalSandboxSandboxPolicy.serializer()
+            "workspaceWrite" -> SandboxPolicyWorkspaceWriteSandboxPolicy.serializer()
+            else -> error("Unknown SandboxPolicy type")
+        }
 }
 
 @Serializable
-internal data class ServerNotificationItemCommandExecutionTerminalInteractionNotification(
-    @SerialName("params")
-    public val params: TerminalInteractionNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/commandExecution/terminalInteraction",
-) : ServerNotification {
-    init { require(method == "item/commandExecution/terminalInteraction") }
+internal data class SandboxWorkspaceWrite(
+    @SerialName("exclude_slash_tmp")
+    public val exclude_slash_tmp: Boolean? = null,
+    @SerialName("exclude_tmpdir_env_var")
+    public val exclude_tmpdir_env_var: Boolean? = null,
+    @SerialName("network_access")
+    public val network_access: Boolean? = null,
+    @SerialName("writable_roots")
+    public val writable_roots: List<String>? = null,
+)
+
+@Serializable(with = ScheduledTaskScheduleSerializer::class)
+internal sealed interface ScheduledTaskSchedule
+
+@Serializable
+internal data class ScheduledTaskScheduleHourlyScheduledTaskSchedule(
+    @SerialName("intervalHours")
+    public val intervalHours: Long,
+    @SerialName("days")
+    public val days: List<ScheduledTaskWeekday>? = null,
+    @SerialName("type")
+    public val type: String = "hourly",
+) : ScheduledTaskSchedule {
+    init { require(type == "hourly") }
 }
 
 @Serializable
-internal data class ServerNotificationItemFileChangeOutputDeltaNotification(
-    @SerialName("params")
-    public val params: FileChangeOutputDeltaNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/fileChange/outputDelta",
-) : ServerNotification {
-    init { require(method == "item/fileChange/outputDelta") }
+internal data class ScheduledTaskScheduleDailyScheduledTaskSchedule(
+    @SerialName("time")
+    public val time: String,
+    @SerialName("type")
+    public val type: String = "daily",
+) : ScheduledTaskSchedule {
+    init { require(type == "daily") }
 }
 
 @Serializable
-internal data class ServerNotificationItemFileChangePatchUpdatedNotification(
-    @SerialName("params")
-    public val params: FileChangePatchUpdatedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/fileChange/patchUpdated",
-) : ServerNotification {
-    init { require(method == "item/fileChange/patchUpdated") }
-}
-
-@Serializable
-internal data class ServerNotificationServerRequestResolvedNotification(
-    @SerialName("params")
-    public val params: ServerRequestResolvedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "serverRequest/resolved",
-) : ServerNotification {
-    init { require(method == "serverRequest/resolved") }
-}
-
-@Serializable
-internal data class ServerNotificationItemMcpToolCallProgressNotification(
-    @SerialName("params")
-    public val params: McpToolCallProgressNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "item/mcpToolCall/progress",
-) : ServerNotification {
-    init { require(method == "item/mcpToolCall/progress") }
-}
-
-@Serializable
-internal data class ServerNotificationMcpServerOauthLoginCompletedNotification(
-    @SerialName("params")
-    public val params: McpServerOauthLoginCompletedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "mcpServer/oauthLogin/completed",
-) : ServerNotification {
-    init { require(method == "mcpServer/oauthLogin/completed") }
-}
-
-@Serializable
-internal data class ServerNotificationMcpServerStartupStatusUpdatedNotification(
-    @SerialName("params")
-    public val params: McpServerStatusUpdatedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "mcpServer/startupStatus/updated",
-) : ServerNotification {
-    init { require(method == "mcpServer/startupStatus/updated") }
-}
-
-@Serializable
-internal data class ServerNotificationAccountUpdatedNotification(
-    @SerialName("params")
-    public val params: AccountUpdatedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "account/updated",
-) : ServerNotification {
-    init { require(method == "account/updated") }
-}
-
-@Serializable
-internal data class ServerNotificationAccountRateLimitsUpdatedNotification(
-    @SerialName("params")
-    public val params: AccountRateLimitsUpdatedNotification,
-    @SerialName("emittedAtMs")
-    public val emittedAtMs: Long? = null,
-    @SerialName("method")
-    public val method: String = "account/rateLimits/updated",
-) : ServerNotification {
-    init { require(method == "account/rateLimits/updated") }
+internal data class ScheduledTaskScheduleWeekdaysScheduledTaskSchedule(
+    @SerialName("time")
+    public val time: String,
+    @SerialName("type")
+    public val type: String = "weekdays",
+) : ScheduledTaskSchedule {
+    init { require(type == "weekdays") }
 }

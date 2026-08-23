@@ -12,214 +12,219 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-@Serializable
-internal enum class McpElicitationArrayType {
-    @SerialName("array") ARRAY,
-}
+internal typealias InputModality = JsonElement
 
 @Serializable
-internal data class McpElicitationBooleanSchema(
-    @SerialName("type")
-    public val type: McpElicitationBooleanType,
-    @SerialName("default")
-    public val default: Boolean? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("title")
-    public val title: String? = null,
+internal data class InstalledApp(
+    @SerialName("callable")
+    public val callable: Boolean,
+    @SerialName("enabled")
+    public val enabled: Boolean,
+    @SerialName("id")
+    public val id: String,
+    @SerialName("runtimeName")
+    public val runtimeName: String? = null,
 )
 
 @Serializable
-internal enum class McpElicitationBooleanType {
-    @SerialName("boolean") BOOLEAN,
-}
-
-@Serializable
-internal data class McpElicitationConstOption(
-    @SerialName("const")
-    public val const: String,
-    @SerialName("title")
-    public val title: String,
-)
-
-internal typealias McpElicitationEnumSchema = JsonElement
-
-@Serializable
-internal data class McpElicitationLegacyTitledEnumSchema(
-    @SerialName("enum")
-    public val enum: List<String>,
-    @SerialName("type")
-    public val type: McpElicitationStringType,
-    @SerialName("default")
-    public val default: String? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("enumNames")
-    public val enumNames: List<String>? = null,
-    @SerialName("title")
-    public val title: String? = null,
-)
-
-internal typealias McpElicitationMultiSelectEnumSchema = JsonElement
-
-@Serializable
-internal data class McpElicitationNumberSchema(
-    @SerialName("type")
-    public val type: McpElicitationNumberType,
-    @SerialName("default")
-    public val default: Double? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("maximum")
-    public val maximum: Double? = null,
-    @SerialName("minimum")
-    public val minimum: Double? = null,
-    @SerialName("title")
-    public val title: String? = null,
+internal data class InternalChatMessageMetadataPassthrough(
+    @SerialName("turn_id")
+    public val turn_id: String? = null,
 )
 
 @Serializable
-internal enum class McpElicitationNumberType {
-    @SerialName("number") NUMBER,
-    @SerialName("integer") INTEGER,
-}
-
-@Serializable
-internal enum class McpElicitationObjectType {
-    @SerialName("object") OBJECT,
-}
-
-internal typealias McpElicitationPrimitiveSchema = JsonElement
-
-@Serializable
-internal data class McpElicitationSchema(
-    @SerialName("properties")
-    public val properties: Map<String, McpElicitationPrimitiveSchema>,
-    @SerialName("type")
-    public val type: McpElicitationObjectType,
-    @SerialName("\$schema")
-    public val _schema: String? = null,
-    @SerialName("required")
-    public val required: List<String>? = null,
-)
-
-internal typealias McpElicitationSingleSelectEnumSchema = JsonElement
-
-@Serializable
-internal enum class McpElicitationStringFormat {
-    @SerialName("email") EMAIL,
-    @SerialName("uri") URI,
-    @SerialName("date") DATE,
-    @SerialName("date-time") DATE_TIME,
-}
-
-@Serializable
-internal data class McpElicitationStringSchema(
-    @SerialName("type")
-    public val type: McpElicitationStringType,
-    @SerialName("default")
-    public val default: String? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("format")
-    public val format: McpElicitationStringFormat? = null,
-    @SerialName("maxLength")
-    public val maxLength: Long? = null,
-    @SerialName("minLength")
-    public val minLength: Long? = null,
-    @SerialName("title")
-    public val title: String? = null,
+internal data class ItemCompletedNotification(
+    @SerialName("completedAtMs")
+    public val completedAtMs: Long,
+    @SerialName("item")
+    public val item: ThreadItem,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
 )
 
 @Serializable
-internal enum class McpElicitationStringType {
-    @SerialName("string") STRING,
-}
-
-@Serializable
-internal data class McpElicitationTitledEnumItems(
-    @SerialName("anyOf")
-    public val anyOf: List<McpElicitationConstOption>,
+internal data class ItemGuardianApprovalReviewCompletedNotification(
+    @SerialName("action")
+    public val action: GuardianApprovalReviewAction,
+    @SerialName("completedAtMs")
+    public val completedAtMs: Long,
+    @SerialName("decisionSource")
+    public val decisionSource: AutoReviewDecisionSource,
+    @SerialName("review")
+    public val review: GuardianApprovalReview,
+    @SerialName("reviewId")
+    public val reviewId: String,
+    @SerialName("startedAtMs")
+    public val startedAtMs: Long,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("targetItemId")
+    public val targetItemId: String? = null,
 )
 
 @Serializable
-internal data class McpElicitationTitledMultiSelectEnumSchema(
-    @SerialName("items")
-    public val items: McpElicitationTitledEnumItems,
-    @SerialName("type")
-    public val type: McpElicitationArrayType,
-    @SerialName("default")
-    public val default: List<String>? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("maxItems")
-    public val maxItems: Long? = null,
-    @SerialName("minItems")
-    public val minItems: Long? = null,
-    @SerialName("title")
-    public val title: String? = null,
+internal data class ItemGuardianApprovalReviewStartedNotification(
+    @SerialName("action")
+    public val action: GuardianApprovalReviewAction,
+    @SerialName("review")
+    public val review: GuardianApprovalReview,
+    @SerialName("reviewId")
+    public val reviewId: String,
+    @SerialName("startedAtMs")
+    public val startedAtMs: Long,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("targetItemId")
+    public val targetItemId: String? = null,
 )
 
 @Serializable
-internal data class McpElicitationTitledSingleSelectEnumSchema(
-    @SerialName("oneOf")
-    public val oneOf: List<McpElicitationConstOption>,
-    @SerialName("type")
-    public val type: McpElicitationStringType,
-    @SerialName("default")
-    public val default: String? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("title")
-    public val title: String? = null,
+internal data class ItemStartedNotification(
+    @SerialName("item")
+    public val item: ThreadItem,
+    @SerialName("startedAtMs")
+    public val startedAtMs: Long,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
 )
 
 @Serializable
-internal data class McpElicitationUntitledEnumItems(
-    @SerialName("enum")
-    public val enum: List<String>,
-    @SerialName("type")
-    public val type: McpElicitationStringType,
+internal data class JSONRPCError(
+    @SerialName("error")
+    public val error: JSONRPCErrorError,
+    @SerialName("id")
+    public val id: RequestId,
 )
 
 @Serializable
-internal data class McpElicitationUntitledMultiSelectEnumSchema(
-    @SerialName("items")
-    public val items: McpElicitationUntitledEnumItems,
-    @SerialName("type")
-    public val type: McpElicitationArrayType,
-    @SerialName("default")
-    public val default: List<String>? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("maxItems")
-    public val maxItems: Long? = null,
-    @SerialName("minItems")
-    public val minItems: Long? = null,
-    @SerialName("title")
-    public val title: String? = null,
+internal data class JSONRPCErrorError(
+    @SerialName("code")
+    public val code: Long,
+    @SerialName("message")
+    public val message: String,
+    @SerialName("data")
+    public val data: JsonElement? = null,
+)
+
+internal typealias JSONRPCMessage = JsonElement
+
+@Serializable
+internal data class JSONRPCNotification(
+    @SerialName("method")
+    public val method: String,
+    @SerialName("params")
+    public val params: JsonElement? = null,
 )
 
 @Serializable
-internal data class McpElicitationUntitledSingleSelectEnumSchema(
-    @SerialName("enum")
-    public val enum: List<String>,
-    @SerialName("type")
-    public val type: McpElicitationStringType,
-    @SerialName("default")
-    public val default: String? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("title")
-    public val title: String? = null,
+internal data class JSONRPCRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("method")
+    public val method: String,
+    @SerialName("params")
+    public val params: JsonElement? = null,
+    @SerialName("trace")
+    public val trace: W3cTraceContext? = null,
 )
 
 @Serializable
-internal data class McpResourceReadParams(
-    @SerialName("server")
-    public val server: String,
-    @SerialName("uri")
-    public val uri: String,
+internal data class JSONRPCResponse(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("result")
+    public val result: JsonElement,
+)
+
+internal typealias LegacyAppPathString = String
+
+@Serializable
+internal data class ListMcpServerStatusParams(
+    @SerialName("cursor")
+    public val cursor: String? = null,
+    @SerialName("detail")
+    public val detail: McpServerStatusDetail? = null,
+    @SerialName("limit")
+    public val limit: Long? = null,
     @SerialName("threadId")
     public val threadId: String? = null,
 )
+
+@Serializable
+internal data class ListMcpServerStatusResponse(
+    @SerialName("data")
+    public val data: List<McpServerStatus>,
+    @SerialName("nextCursor")
+    public val nextCursor: String? = null,
+)
+
+@Serializable(with = LocalShellActionSerializer::class)
+internal sealed interface LocalShellAction
+
+@Serializable
+internal data class LocalShellActionExecLocalShellAction(
+    @SerialName("command")
+    public val command: List<String>,
+    @SerialName("env")
+    public val env: Map<String, String>? = null,
+    @SerialName("timeout_ms")
+    public val timeout_ms: Long? = null,
+    @SerialName("type")
+    public val type: String = "exec",
+    @SerialName("user")
+    public val user: String? = null,
+    @SerialName("working_directory")
+    public val working_directory: String? = null,
+) : LocalShellAction {
+    init { require(type == "exec") }
+}
+
+internal object LocalShellActionSerializer : JsonContentPolymorphicSerializer<LocalShellAction>(LocalShellAction::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<LocalShellAction> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "exec" -> LocalShellActionExecLocalShellAction.serializer()
+            else -> error("Unknown LocalShellAction type")
+        }
+}
+
+@Serializable
+internal enum class LocalShellStatus {
+    @SerialName("completed") COMPLETED,
+    @SerialName("in_progress") IN_PROGRESS,
+    @SerialName("incomplete") INCOMPLETE,
+}
+
+@Serializable(with = LoginAccountParamsSerializer::class)
+internal sealed interface LoginAccountParams
+
+@Serializable
+internal data class LoginAccountParamsApiKey(
+    @SerialName("apiKey")
+    public val apiKey: String,
+    @SerialName("type")
+    public val type: String = "apiKey",
+) : LoginAccountParams {
+    init { require(type == "apiKey") }
+}
+
+@Serializable
+internal data class LoginAccountParamsChatgpt(
+    @SerialName("appBrand")
+    public val appBrand: LoginAppBrand? = null,
+    @SerialName("codexStreamlinedLogin")
+    public val codexStreamlinedLogin: Boolean? = null,
+    @SerialName("type")
+    public val type: String = "chatgpt",
+    @SerialName("useHostedLoginSuccessPage")
+    public val useHostedLoginSuccessPage: Boolean? = null,
+) : LoginAccountParams {
+    init { require(type == "chatgpt") }
+}

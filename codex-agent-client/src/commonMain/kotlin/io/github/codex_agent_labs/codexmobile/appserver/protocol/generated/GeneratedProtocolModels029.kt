@@ -12,215 +12,220 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-internal typealias ReasoningEffort = String
-
 @Serializable
-internal data class ReasoningEffortOption(
-    @SerialName("description")
-    public val description: String,
-    @SerialName("reasoningEffort")
-    public val reasoningEffort: ReasoningEffort,
-)
-
-@Serializable(with = ReasoningItemContentSerializer::class)
-internal sealed interface ReasoningItemContent
-
-@Serializable
-internal data class ReasoningItemContentReasoningTextReasoningItemContent(
-    @SerialName("text")
-    public val text: String,
-    @SerialName("type")
-    public val type: String = "reasoning_text",
-) : ReasoningItemContent {
-    init { require(type == "reasoning_text") }
+internal enum class PluginSearchScope {
+    @SerialName("global") GLOBAL,
+    @SerialName("workspace") WORKSPACE,
+    @SerialName("personal") PERSONAL,
 }
 
 @Serializable
-internal data class ReasoningItemContentTextReasoningItemContent(
-    @SerialName("text")
-    public val text: String,
-    @SerialName("type")
-    public val type: String = "text",
-) : ReasoningItemContent {
-    init { require(type == "text") }
-}
-
-internal object ReasoningItemContentSerializer : JsonContentPolymorphicSerializer<ReasoningItemContent>(ReasoningItemContent::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ReasoningItemContent> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "reasoning_text" -> ReasoningItemContentReasoningTextReasoningItemContent.serializer()
-            "text" -> ReasoningItemContentTextReasoningItemContent.serializer()
-            else -> error("Unknown ReasoningItemContent type")
-        }
-}
-
-@Serializable(with = ReasoningItemReasoningSummarySerializer::class)
-internal sealed interface ReasoningItemReasoningSummary
-
-@Serializable
-internal data class ReasoningItemReasoningSummarySummaryTextReasoningItemReasoningSummary(
-    @SerialName("text")
-    public val text: String,
-    @SerialName("type")
-    public val type: String = "summary_text",
-) : ReasoningItemReasoningSummary {
-    init { require(type == "summary_text") }
-}
-
-internal object ReasoningItemReasoningSummarySerializer : JsonContentPolymorphicSerializer<ReasoningItemReasoningSummary>(ReasoningItemReasoningSummary::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ReasoningItemReasoningSummary> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "summary_text" -> ReasoningItemReasoningSummarySummaryTextReasoningItemReasoningSummary.serializer()
-            else -> error("Unknown ReasoningItemReasoningSummary type")
-        }
-}
-
-internal typealias ReasoningSummary = JsonElement
-
-@Serializable
-internal data class ReasoningSummaryPartAddedNotification(
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("summaryIndex")
-    public val summaryIndex: Long,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
+internal data class PluginShareCheckoutParams(
+    @SerialName("remotePluginId")
+    public val remotePluginId: String,
 )
 
 @Serializable
-internal data class ReasoningSummaryTextDeltaNotification(
-    @SerialName("delta")
-    public val delta: String,
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("summaryIndex")
-    public val summaryIndex: Long,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
+internal data class PluginShareCheckoutResponse(
+    @SerialName("marketplaceName")
+    public val marketplaceName: String,
+    @SerialName("marketplacePath")
+    public val marketplacePath: AbsolutePathBuf,
+    @SerialName("pluginId")
+    public val pluginId: String,
+    @SerialName("pluginName")
+    public val pluginName: String,
+    @SerialName("pluginPath")
+    public val pluginPath: AbsolutePathBuf,
+    @SerialName("remotePluginId")
+    public val remotePluginId: String,
+    @SerialName("remoteVersion")
+    public val remoteVersion: String? = null,
 )
 
 @Serializable
-internal data class ReasoningTextDeltaNotification(
-    @SerialName("contentIndex")
-    public val contentIndex: Long,
-    @SerialName("delta")
-    public val delta: String,
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
+internal data class PluginShareContext(
+    @SerialName("remotePluginId")
+    public val remotePluginId: String,
+    @SerialName("canPublishToWorkspace")
+    public val canPublishToWorkspace: Boolean? = null,
+    @SerialName("creatorAccountUserId")
+    public val creatorAccountUserId: String? = null,
+    @SerialName("creatorName")
+    public val creatorName: String? = null,
+    @SerialName("discoverability")
+    public val discoverability: PluginShareDiscoverability? = null,
+    @SerialName("remoteVersion")
+    public val remoteVersion: String? = null,
+    @SerialName("sharePrincipals")
+    public val sharePrincipals: List<PluginSharePrincipal>? = null,
+    @SerialName("shareUrl")
+    public val shareUrl: String? = null,
 )
 
 @Serializable
-internal enum class RemoteControlConnectionStatus {
-    @SerialName("disabled") DISABLED,
-    @SerialName("connecting") CONNECTING,
-    @SerialName("connected") CONNECTED,
-    @SerialName("errored") ERRORED,
+internal data class PluginShareDeleteParams(
+    @SerialName("remotePluginId")
+    public val remotePluginId: String,
+)
+
+@Serializable
+internal class PluginShareDeleteResponse
+
+@Serializable
+internal enum class PluginShareDiscoverability {
+    @SerialName("LISTED") LISTED,
+    @SerialName("UNLISTED") UNLISTED,
+    @SerialName("PRIVATE") PRIVATE,
 }
 
 @Serializable
-internal data class RemoteControlDisableParams(
-    @SerialName("ephemeral")
-    public val ephemeral: Boolean? = null,
+internal data class PluginShareListItem(
+    @SerialName("plugin")
+    public val plugin: PluginSummary,
+    @SerialName("localPluginPath")
+    public val localPluginPath: AbsolutePathBuf? = null,
 )
 
 @Serializable
-internal data class RemoteControlEnableParams(
-    @SerialName("ephemeral")
-    public val ephemeral: Boolean? = null,
+internal class PluginShareListParams
+
+@Serializable
+internal data class PluginShareListResponse(
+    @SerialName("data")
+    public val data: List<PluginShareListItem>,
 )
 
 @Serializable
-internal data class RemoteControlStatusChangedNotification(
-    @SerialName("installationId")
-    public val installationId: String,
-    @SerialName("serverName")
-    public val serverName: String,
-    @SerialName("status")
-    public val status: RemoteControlConnectionStatus,
-    @SerialName("environmentId")
-    public val environmentId: String? = null,
-)
-
-internal typealias RequestId = JsonElement
-
-@Serializable
-internal data class RequestPermissionProfile(
-    @SerialName("fileSystem")
-    public val fileSystem: AdditionalFileSystemPermissions? = null,
-    @SerialName("network")
-    public val network: AdditionalNetworkPermissions? = null,
-)
-
-@Serializable
-internal enum class ResidencyRequirement {
-    @SerialName("us") US,
-}
-
-@Serializable
-internal data class Resource(
+internal data class PluginSharePrincipal(
     @SerialName("name")
     public val name: String,
-    @SerialName("uri")
-    public val uri: String,
-    @SerialName("_meta")
-    public val _meta: JsonElement? = null,
-    @SerialName("annotations")
-    public val annotations: JsonElement? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("icons")
-    public val icons: List<JsonElement>? = null,
-    @SerialName("mimeType")
-    public val mimeType: String? = null,
-    @SerialName("size")
-    public val size: Long? = null,
-    @SerialName("title")
-    public val title: String? = null,
-)
-
-internal typealias ResourceContent = JsonElement
-
-@Serializable
-internal data class ResourceTemplate(
-    @SerialName("name")
-    public val name: String,
-    @SerialName("uriTemplate")
-    public val uriTemplate: String,
-    @SerialName("annotations")
-    public val annotations: JsonElement? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("mimeType")
-    public val mimeType: String? = null,
-    @SerialName("title")
-    public val title: String? = null,
-)
-
-@Serializable(with = ResponseItemSerializer::class)
-internal sealed interface ResponseItem
-
-@Serializable
-internal data class ResponseItemMessageResponseItem(
-    @SerialName("content")
-    public val content: List<ContentItem>,
+    @SerialName("principalId")
+    public val principalId: String,
+    @SerialName("principalType")
+    public val principalType: PluginSharePrincipalType,
     @SerialName("role")
-    public val role: String,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("phase")
-    public val phase: MessagePhase? = null,
+    public val role: PluginSharePrincipalRole,
+)
+
+@Serializable
+internal enum class PluginSharePrincipalRole {
+    @SerialName("reader") READER,
+    @SerialName("editor") EDITOR,
+    @SerialName("owner") OWNER,
+}
+
+@Serializable
+internal enum class PluginSharePrincipalType {
+    @SerialName("user") USER,
+    @SerialName("group") GROUP,
+    @SerialName("workspace") WORKSPACE,
+}
+
+@Serializable
+internal data class PluginShareSaveParams(
+    @SerialName("pluginPath")
+    public val pluginPath: AbsolutePathBuf,
+    @SerialName("discoverability")
+    public val discoverability: PluginShareDiscoverability? = null,
+    @SerialName("remotePluginId")
+    public val remotePluginId: String? = null,
+    @SerialName("shareTargets")
+    public val shareTargets: List<PluginShareTarget>? = null,
+)
+
+@Serializable
+internal data class PluginShareSaveResponse(
+    @SerialName("remotePluginId")
+    public val remotePluginId: String,
+    @SerialName("shareUrl")
+    public val shareUrl: String,
+    @SerialName("canPublishToWorkspace")
+    public val canPublishToWorkspace: Boolean? = null,
+)
+
+@Serializable
+internal data class PluginShareTarget(
+    @SerialName("principalId")
+    public val principalId: String,
+    @SerialName("principalType")
+    public val principalType: PluginSharePrincipalType,
+    @SerialName("role")
+    public val role: PluginShareTargetRole,
+)
+
+@Serializable
+internal enum class PluginShareTargetRole {
+    @SerialName("reader") READER,
+    @SerialName("editor") EDITOR,
+}
+
+@Serializable
+internal enum class PluginShareUpdateDiscoverability {
+    @SerialName("UNLISTED") UNLISTED,
+    @SerialName("PRIVATE") PRIVATE,
+    @SerialName("LISTED") LISTED,
+}
+
+@Serializable
+internal data class PluginShareUpdateTargetsParams(
+    @SerialName("discoverability")
+    public val discoverability: PluginShareUpdateDiscoverability,
+    @SerialName("remotePluginId")
+    public val remotePluginId: String,
+    @SerialName("shareTargets")
+    public val shareTargets: List<PluginShareTarget>,
+)
+
+@Serializable
+internal data class PluginShareUpdateTargetsResponse(
+    @SerialName("discoverability")
+    public val discoverability: PluginShareDiscoverability,
+    @SerialName("principals")
+    public val principals: List<PluginSharePrincipal>,
+)
+
+@Serializable
+internal data class PluginSkillReadParams(
+    @SerialName("remoteMarketplaceName")
+    public val remoteMarketplaceName: String,
+    @SerialName("remotePluginId")
+    public val remotePluginId: String,
+    @SerialName("skillName")
+    public val skillName: String,
+)
+
+@Serializable
+internal data class PluginSkillReadResponse(
+    @SerialName("contents")
+    public val contents: String? = null,
+)
+
+@Serializable(with = PluginSourceSerializer::class)
+internal sealed interface PluginSource
+
+@Serializable
+internal data class PluginSourceLocalPluginSource(
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
     @SerialName("type")
-    public val type: String = "message",
-) : ResponseItem {
-    init { require(type == "message") }
+    public val type: String = "local",
+) : PluginSource {
+    init { require(type == "local") }
+}
+
+@Serializable
+internal data class PluginSourceGitPluginSource(
+    @SerialName("url")
+    public val url: String,
+    @SerialName("path")
+    public val path: String? = null,
+    @SerialName("refName")
+    public val refName: String? = null,
+    @SerialName("sha")
+    public val sha: String? = null,
+    @SerialName("type")
+    public val type: String = "git",
+) : PluginSource {
+    init { require(type == "git") }
 }

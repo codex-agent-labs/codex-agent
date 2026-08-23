@@ -13,216 +13,217 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class SkillMigration(
-    @SerialName("name")
-    public val name: String,
-)
-
-@Serializable
-internal enum class SkillScope {
-    @SerialName("user") USER,
-    @SerialName("repo") REPO,
-    @SerialName("system") SYSTEM,
-    @SerialName("admin") ADMIN,
+internal data class ServerNotificationRemoteControlStatusChangedNotification(
+    @SerialName("params")
+    public val params: RemoteControlStatusChangedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "remoteControl/status/changed",
+) : ServerNotification {
+    init { require(method == "remoteControl/status/changed") }
 }
 
 @Serializable
-internal data class SkillSummary(
-    @SerialName("description")
-    public val description: String,
-    @SerialName("enabled")
-    public val enabled: Boolean,
-    @SerialName("name")
-    public val name: String,
-    @SerialName("interface")
-    public val interface_: SkillInterface? = null,
-    @SerialName("path")
-    public val path: AbsolutePathBuf? = null,
-    @SerialName("shortDescription")
-    public val shortDescription: String? = null,
-)
-
-@Serializable
-internal data class SkillToolDependency(
-    @SerialName("type")
-    public val type: String,
-    @SerialName("value")
-    public val value: String,
-    @SerialName("command")
-    public val command: String? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("transport")
-    public val transport: String? = null,
-    @SerialName("url")
-    public val url: String? = null,
-)
-
-@Serializable
-internal class SkillsChangedNotification
-
-@Serializable
-internal data class SkillsConfigWriteParams(
-    @SerialName("enabled")
-    public val enabled: Boolean,
-    @SerialName("name")
-    public val name: String? = null,
-    @SerialName("path")
-    public val path: AbsolutePathBuf? = null,
-)
-
-@Serializable
-internal data class SkillsConfigWriteResponse(
-    @SerialName("effectiveEnabled")
-    public val effectiveEnabled: Boolean,
-)
-
-@Serializable
-internal data class SkillsExtraRootsSetParams(
-    @SerialName("extraRoots")
-    public val extraRoots: List<AbsolutePathBuf>,
-)
-
-@Serializable
-internal class SkillsExtraRootsSetResponse
-
-@Serializable
-internal data class SkillsListEntry(
-    @SerialName("cwd")
-    public val cwd: String,
-    @SerialName("errors")
-    public val errors: List<SkillErrorInfo>,
-    @SerialName("skills")
-    public val skills: List<SkillMetadata>,
-)
-
-@Serializable
-internal data class SkillsListParams(
-    @SerialName("cwds")
-    public val cwds: List<String>? = null,
-    @SerialName("forceReload")
-    public val forceReload: Boolean? = null,
-)
-
-@Serializable
-internal data class SkillsListResponse(
-    @SerialName("data")
-    public val data: List<SkillsListEntry>,
-)
-
-@Serializable
-internal enum class SortDirection {
-    @SerialName("asc") ASC,
-    @SerialName("desc") DESC,
+internal data class ServerNotificationExternalAgentConfigImportProgressNotification(
+    @SerialName("params")
+    public val params: ExternalAgentConfigImportProgressNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "externalAgentConfig/import/progress",
+) : ServerNotification {
+    init { require(method == "externalAgentConfig/import/progress") }
 }
 
 @Serializable
-internal data class SpendControlLimitSnapshot(
-    @SerialName("limit")
-    public val limit: String,
-    @SerialName("remainingPercent")
-    public val remainingPercent: Long,
-    @SerialName("resetsAt")
-    public val resetsAt: Long,
-    @SerialName("used")
-    public val used: String,
-)
-
-@Serializable
-internal enum class SubAgentActivityKind {
-    @SerialName("started") STARTED,
-    @SerialName("interacted") INTERACTED,
-    @SerialName("interrupted") INTERRUPTED,
+internal data class ServerNotificationExternalAgentConfigImportCompletedNotification(
+    @SerialName("params")
+    public val params: ExternalAgentConfigImportCompletedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "externalAgentConfig/import/completed",
+) : ServerNotification {
+    init { require(method == "externalAgentConfig/import/completed") }
 }
 
-internal typealias SubAgentSource = JsonElement
+@Serializable
+internal data class ServerNotificationFsChangedNotification(
+    @SerialName("params")
+    public val params: FsChangedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "fs/changed",
+) : ServerNotification {
+    init { require(method == "fs/changed") }
+}
 
 @Serializable
-internal data class SubagentMigration(
-    @SerialName("name")
-    public val name: String,
-)
+internal data class ServerNotificationItemReasoningSummaryTextDeltaNotification(
+    @SerialName("params")
+    public val params: ReasoningSummaryTextDeltaNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "item/reasoning/summaryTextDelta",
+) : ServerNotification {
+    init { require(method == "item/reasoning/summaryTextDelta") }
+}
 
 @Serializable
-internal data class TerminalInteractionNotification(
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("processId")
-    public val processId: String,
-    @SerialName("stdin")
-    public val stdin: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-)
+internal data class ServerNotificationItemReasoningSummaryPartAddedNotification(
+    @SerialName("params")
+    public val params: ReasoningSummaryPartAddedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "item/reasoning/summaryPartAdded",
+) : ServerNotification {
+    init { require(method == "item/reasoning/summaryPartAdded") }
+}
 
 @Serializable
-internal data class TextElement(
-    @SerialName("byteRange")
-    public val byteRange: ByteRange,
-    @SerialName("placeholder")
-    public val placeholder: String? = null,
-)
+internal data class ServerNotificationItemReasoningTextDeltaNotification(
+    @SerialName("params")
+    public val params: ReasoningTextDeltaNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "item/reasoning/textDelta",
+) : ServerNotification {
+    init { require(method == "item/reasoning/textDelta") }
+}
 
 @Serializable
-internal data class TextPosition(
-    @SerialName("column")
-    public val column: Long,
-    @SerialName("line")
-    public val line: Long,
-)
+internal data class ServerNotificationThreadCompactedNotification(
+    @SerialName("params")
+    public val params: ContextCompactedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "thread/compacted",
+) : ServerNotification {
+    init { require(method == "thread/compacted") }
+}
 
 @Serializable
-internal data class TextRange(
-    @SerialName("end")
-    public val end: TextPosition,
-    @SerialName("start")
-    public val start: TextPosition,
-)
+internal data class ServerNotificationModelReroutedNotification(
+    @SerialName("params")
+    public val params: ModelReroutedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "model/rerouted",
+) : ServerNotification {
+    init { require(method == "model/rerouted") }
+}
 
 @Serializable
-internal data class Thread(
-    @SerialName("cliVersion")
-    public val cliVersion: String,
-    @SerialName("createdAt")
-    public val createdAt: Long,
-    @SerialName("cwd")
-    public val cwd: AbsolutePathBuf,
-    @SerialName("ephemeral")
-    public val ephemeral: Boolean,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("modelProvider")
-    public val modelProvider: String,
-    @SerialName("preview")
-    public val preview: String,
-    @SerialName("sessionId")
-    public val sessionId: String,
-    @SerialName("source")
-    public val source: SessionSource,
-    @SerialName("status")
-    public val status: ThreadStatus,
-    @SerialName("turns")
-    public val turns: List<Turn>,
-    @SerialName("updatedAt")
-    public val updatedAt: Long,
-    @SerialName("agentNickname")
-    public val agentNickname: String? = null,
-    @SerialName("agentRole")
-    public val agentRole: String? = null,
-    @SerialName("forkedFromId")
-    public val forkedFromId: String? = null,
-    @SerialName("gitInfo")
-    public val gitInfo: GitInfo? = null,
-    @SerialName("name")
-    public val name: String? = null,
-    @SerialName("parentThreadId")
-    public val parentThreadId: String? = null,
-    @SerialName("path")
-    public val path: String? = null,
-    @SerialName("recencyAt")
-    public val recencyAt: Long? = null,
-    @SerialName("threadSource")
-    public val threadSource: ThreadSource? = null,
-)
+internal data class ServerNotificationModelVerificationNotification(
+    @SerialName("params")
+    public val params: ModelVerificationNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "model/verification",
+) : ServerNotification {
+    init { require(method == "model/verification") }
+}
+
+@Serializable
+internal data class ServerNotificationTurnModerationMetadataNotification(
+    @SerialName("params")
+    public val params: TurnModerationMetadataNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "turn/moderationMetadata",
+) : ServerNotification {
+    init { require(method == "turn/moderationMetadata") }
+}
+
+@Serializable
+internal data class ServerNotificationModelSafetyBufferingUpdatedNotification(
+    @SerialName("params")
+    public val params: ModelSafetyBufferingUpdatedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "model/safetyBuffering/updated",
+) : ServerNotification {
+    init { require(method == "model/safetyBuffering/updated") }
+}
+
+@Serializable
+internal data class ServerNotificationWarningNotification(
+    @SerialName("params")
+    public val params: WarningNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "warning",
+) : ServerNotification {
+    init { require(method == "warning") }
+}
+
+@Serializable
+internal data class ServerNotificationGuardianWarningNotification(
+    @SerialName("params")
+    public val params: GuardianWarningNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "guardianWarning",
+) : ServerNotification {
+    init { require(method == "guardianWarning") }
+}
+
+@Serializable
+internal data class ServerNotificationDeprecationNoticeNotification(
+    @SerialName("params")
+    public val params: DeprecationNoticeNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "deprecationNotice",
+) : ServerNotification {
+    init { require(method == "deprecationNotice") }
+}
+
+@Serializable
+internal data class ServerNotificationConfigWarningNotification(
+    @SerialName("params")
+    public val params: ConfigWarningNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "configWarning",
+) : ServerNotification {
+    init { require(method == "configWarning") }
+}
+
+@Serializable
+internal data class ServerNotificationFuzzyFileSearchSessionUpdatedNotification(
+    @SerialName("params")
+    public val params: FuzzyFileSearchSessionUpdatedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "fuzzyFileSearch/sessionUpdated",
+) : ServerNotification {
+    init { require(method == "fuzzyFileSearch/sessionUpdated") }
+}
+
+@Serializable
+internal data class ServerNotificationFuzzyFileSearchSessionCompletedNotification(
+    @SerialName("params")
+    public val params: FuzzyFileSearchSessionCompletedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "fuzzyFileSearch/sessionCompleted",
+) : ServerNotification {
+    init { require(method == "fuzzyFileSearch/sessionCompleted") }
+}

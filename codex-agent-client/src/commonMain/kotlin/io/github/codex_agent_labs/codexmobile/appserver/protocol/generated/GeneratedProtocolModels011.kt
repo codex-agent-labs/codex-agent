@@ -13,6 +13,201 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
+internal data class CommandExecutionRequestApprovalParams(
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("startedAtMs")
+    public val startedAtMs: Long,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("approvalId")
+    public val approvalId: String? = null,
+    @SerialName("command")
+    public val command: String? = null,
+    @SerialName("commandActions")
+    public val commandActions: List<CommandAction>? = null,
+    @SerialName("cwd")
+    public val cwd: LegacyAppPathString? = null,
+    @SerialName("environmentId")
+    public val environmentId: String? = null,
+    @SerialName("networkApprovalContext")
+    public val networkApprovalContext: NetworkApprovalContext? = null,
+    @SerialName("proposedExecpolicyAmendment")
+    public val proposedExecpolicyAmendment: List<String>? = null,
+    @SerialName("proposedNetworkPolicyAmendments")
+    public val proposedNetworkPolicyAmendments: List<NetworkPolicyAmendment>? = null,
+    @SerialName("reason")
+    public val reason: String? = null,
+)
+
+@Serializable
+internal data class CommandExecutionRequestApprovalResponse(
+    @SerialName("decision")
+    public val decision: CommandExecutionApprovalDecision,
+)
+
+@Serializable
+internal enum class CommandExecutionSource {
+    @SerialName("agent") AGENT,
+    @SerialName("userShell") USER_SHELL,
+    @SerialName("unifiedExecStartup") UNIFIED_EXEC_STARTUP,
+    @SerialName("unifiedExecInteraction") UNIFIED_EXEC_INTERACTION,
+}
+
+@Serializable
+internal enum class CommandExecutionStatus {
+    @SerialName("inProgress") IN_PROGRESS,
+    @SerialName("completed") COMPLETED,
+    @SerialName("failed") FAILED,
+    @SerialName("declined") DECLINED,
+}
+
+@Serializable
+internal data class CommandMigration(
+    @SerialName("name")
+    public val name: String,
+)
+
+@Serializable
+internal data class ComputerUseRequirements(
+    @SerialName("allowLockedComputerUse")
+    public val allowLockedComputerUse: Boolean? = null,
+)
+
+internal typealias Config = JsonElement
+
+@Serializable
+internal data class ConfigBatchWriteParams(
+    @SerialName("edits")
+    public val edits: List<ConfigEdit>,
+    @SerialName("expectedVersion")
+    public val expectedVersion: String? = null,
+    @SerialName("filePath")
+    public val filePath: String? = null,
+    @SerialName("reloadUserConfig")
+    public val reloadUserConfig: Boolean? = null,
+)
+
+@Serializable
+internal data class ConfigEdit(
+    @SerialName("keyPath")
+    public val keyPath: String,
+    @SerialName("mergeStrategy")
+    public val mergeStrategy: MergeStrategy,
+    @SerialName("value")
+    public val value: JsonElement,
+)
+
+@Serializable
+internal data class ConfigLayer(
+    @SerialName("config")
+    public val config: JsonElement,
+    @SerialName("name")
+    public val name: ConfigLayerSource,
+    @SerialName("version")
+    public val version: String,
+    @SerialName("disabledReason")
+    public val disabledReason: String? = null,
+)
+
+@Serializable
+internal data class ConfigLayerMetadata(
+    @SerialName("name")
+    public val name: ConfigLayerSource,
+    @SerialName("version")
+    public val version: String,
+)
+
+@Serializable(with = ConfigLayerSourceSerializer::class)
+internal sealed interface ConfigLayerSource
+
+@Serializable
+internal data class ConfigLayerSourcePackagedDefaultsConfigLayerSource(
+    @SerialName("file")
+    public val file: AbsolutePathBuf,
+    @SerialName("type")
+    public val type: String = "packagedDefaults",
+) : ConfigLayerSource {
+    init { require(type == "packagedDefaults") }
+}
+
+@Serializable
+internal data class ConfigLayerSourceMdmConfigLayerSource(
+    @SerialName("domain")
+    public val domain: String,
+    @SerialName("key")
+    public val key: String,
+    @SerialName("type")
+    public val type: String = "mdm",
+) : ConfigLayerSource {
+    init { require(type == "mdm") }
+}
+
+@Serializable
+internal data class ConfigLayerSourceSystemConfigLayerSource(
+    @SerialName("file")
+    public val file: AbsolutePathBuf,
+    @SerialName("type")
+    public val type: String = "system",
+) : ConfigLayerSource {
+    init { require(type == "system") }
+}
+
+@Serializable
+internal data class ConfigLayerSourceEnterpriseManagedConfigLayerSource(
+    @SerialName("id")
+    public val id: String,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("type")
+    public val type: String = "enterpriseManaged",
+) : ConfigLayerSource {
+    init { require(type == "enterpriseManaged") }
+}
+
+@Serializable
+internal data class ConfigLayerSourceUserConfigLayerSource(
+    @SerialName("file")
+    public val file: AbsolutePathBuf,
+    @SerialName("profile")
+    public val profile: String? = null,
+    @SerialName("type")
+    public val type: String = "user",
+) : ConfigLayerSource {
+    init { require(type == "user") }
+}
+
+@Serializable
+internal data class ConfigLayerSourceProjectConfigLayerSource(
+    @SerialName("dotCodexFolder")
+    public val dotCodexFolder: AbsolutePathBuf,
+    @SerialName("type")
+    public val type: String = "project",
+) : ConfigLayerSource {
+    init { require(type == "project") }
+}
+
+@Serializable
+internal data class ConfigLayerSourceSessionFlagsConfigLayerSource(
+    @SerialName("type")
+    public val type: String = "sessionFlags",
+) : ConfigLayerSource {
+    init { require(type == "sessionFlags") }
+}
+
+@Serializable
+internal data class ConfigLayerSourceLegacyManagedConfigTomlFromFileConfigLayerSource(
+    @SerialName("file")
+    public val file: AbsolutePathBuf,
+    @SerialName("type")
+    public val type: String = "legacyManagedConfigTomlFromFile",
+) : ConfigLayerSource {
+    init { require(type == "legacyManagedConfigTomlFromFile") }
+}
+
+@Serializable
 internal data class ConfigLayerSourceLegacyManagedConfigTomlFromMdmConfigLayerSource(
     @SerialName("type")
     public val type: String = "legacyManagedConfigTomlFromMdm",
@@ -23,6 +218,7 @@ internal data class ConfigLayerSourceLegacyManagedConfigTomlFromMdmConfigLayerSo
 internal object ConfigLayerSourceSerializer : JsonContentPolymorphicSerializer<ConfigLayerSource>(ConfigLayerSource::class) {
     override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ConfigLayerSource> =
         when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "packagedDefaults" -> ConfigLayerSourcePackagedDefaultsConfigLayerSource.serializer()
             "mdm" -> ConfigLayerSourceMdmConfigLayerSource.serializer()
             "system" -> ConfigLayerSourceSystemConfigLayerSource.serializer()
             "enterpriseManaged" -> ConfigLayerSourceEnterpriseManagedConfigLayerSource.serializer()
@@ -34,190 +230,3 @@ internal object ConfigLayerSourceSerializer : JsonContentPolymorphicSerializer<C
             else -> error("Unknown ConfigLayerSource type")
         }
 }
-
-@Serializable
-internal data class ConfigReadParams(
-    @SerialName("cwd")
-    public val cwd: String? = null,
-    @SerialName("includeLayers")
-    public val includeLayers: Boolean? = null,
-)
-
-@Serializable
-internal data class ConfigReadResponse(
-    @SerialName("config")
-    public val config: Config,
-    @SerialName("origins")
-    public val origins: Map<String, ConfigLayerMetadata>,
-    @SerialName("layers")
-    public val layers: List<ConfigLayer>? = null,
-)
-
-@Serializable
-internal data class ConfigRequirements(
-    @SerialName("allowAppshots")
-    public val allowAppshots: Boolean? = null,
-    @SerialName("allowManagedHooksOnly")
-    public val allowManagedHooksOnly: Boolean? = null,
-    @SerialName("allowRemoteControl")
-    public val allowRemoteControl: Boolean? = null,
-    @SerialName("allowedApprovalPolicies")
-    public val allowedApprovalPolicies: List<AskForApproval>? = null,
-    @SerialName("allowedPermissionProfiles")
-    public val allowedPermissionProfiles: Map<String, Boolean>? = null,
-    @SerialName("allowedSandboxModes")
-    public val allowedSandboxModes: List<SandboxMode>? = null,
-    @SerialName("allowedWebSearchModes")
-    public val allowedWebSearchModes: List<WebSearchMode>? = null,
-    @SerialName("allowedWindowsSandboxImplementations")
-    public val allowedWindowsSandboxImplementations: List<WindowsSandboxSetupMode>? = null,
-    @SerialName("computerUse")
-    public val computerUse: ComputerUseRequirements? = null,
-    @SerialName("defaultPermissions")
-    public val defaultPermissions: String? = null,
-    @SerialName("enforceResidency")
-    public val enforceResidency: ResidencyRequirement? = null,
-    @SerialName("featureRequirements")
-    public val featureRequirements: Map<String, Boolean>? = null,
-    @SerialName("models")
-    public val models: ModelsRequirements? = null,
-)
-
-@Serializable
-internal data class ConfigRequirementsReadResponse(
-    @SerialName("requirements")
-    public val requirements: ConfigRequirements? = null,
-)
-
-@Serializable
-internal data class ConfigValueWriteParams(
-    @SerialName("keyPath")
-    public val keyPath: String,
-    @SerialName("mergeStrategy")
-    public val mergeStrategy: MergeStrategy,
-    @SerialName("value")
-    public val value: JsonElement,
-    @SerialName("expectedVersion")
-    public val expectedVersion: String? = null,
-    @SerialName("filePath")
-    public val filePath: String? = null,
-)
-
-@Serializable
-internal data class ConfigWarningNotification(
-    @SerialName("summary")
-    public val summary: String,
-    @SerialName("details")
-    public val details: String? = null,
-    @SerialName("path")
-    public val path: String? = null,
-    @SerialName("range")
-    public val range: TextRange? = null,
-)
-
-@Serializable
-internal data class ConfigWriteResponse(
-    @SerialName("filePath")
-    public val filePath: AbsolutePathBuf,
-    @SerialName("status")
-    public val status: WriteStatus,
-    @SerialName("version")
-    public val version: String,
-    @SerialName("overriddenMetadata")
-    public val overriddenMetadata: OverriddenMetadata? = null,
-)
-
-@Serializable(with = ConfiguredHookHandlerSerializer::class)
-internal sealed interface ConfiguredHookHandler
-
-@Serializable
-internal data class ConfiguredHookHandlerCommandConfiguredHookHandler(
-    @SerialName("async")
-    public val async: Boolean,
-    @SerialName("command")
-    public val command: String,
-    @SerialName("additionalContextLimit")
-    public val additionalContextLimit: Long? = null,
-    @SerialName("commandWindows")
-    public val commandWindows: String? = null,
-    @SerialName("statusMessage")
-    public val statusMessage: String? = null,
-    @SerialName("timeoutSec")
-    public val timeoutSec: Long? = null,
-    @SerialName("type")
-    public val type: String = "command",
-) : ConfiguredHookHandler {
-    init { require(type == "command") }
-}
-
-@Serializable
-internal data class ConfiguredHookHandlerPromptConfiguredHookHandler(
-    @SerialName("type")
-    public val type: String = "prompt",
-) : ConfiguredHookHandler {
-    init { require(type == "prompt") }
-}
-
-@Serializable
-internal data class ConfiguredHookHandlerAgentConfiguredHookHandler(
-    @SerialName("type")
-    public val type: String = "agent",
-) : ConfiguredHookHandler {
-    init { require(type == "agent") }
-}
-
-internal object ConfiguredHookHandlerSerializer : JsonContentPolymorphicSerializer<ConfiguredHookHandler>(ConfiguredHookHandler::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ConfiguredHookHandler> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "command" -> ConfiguredHookHandlerCommandConfiguredHookHandler.serializer()
-            "prompt" -> ConfiguredHookHandlerPromptConfiguredHookHandler.serializer()
-            "agent" -> ConfiguredHookHandlerAgentConfiguredHookHandler.serializer()
-            else -> error("Unknown ConfiguredHookHandler type")
-        }
-}
-
-@Serializable
-internal data class ConfiguredHookMatcherGroup(
-    @SerialName("hooks")
-    public val hooks: List<ConfiguredHookHandler>,
-    @SerialName("matcher")
-    public val matcher: String? = null,
-)
-
-@Serializable
-internal data class ConnectorMetadata(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("name")
-    public val name: String,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("distributionChannel")
-    public val distributionChannel: String? = null,
-    @SerialName("iconUrl")
-    public val iconUrl: String? = null,
-    @SerialName("iconUrlDark")
-    public val iconUrlDark: String? = null,
-    @SerialName("installUrl")
-    public val installUrl: String? = null,
-    @SerialName("pluginDisplayNames")
-    public val pluginDisplayNames: List<String>? = null,
-    @SerialName("toolSummaries")
-    public val toolSummaries: List<AppToolSummary>? = null,
-)
-
-internal typealias ConsumeAccountRateLimitResetCreditOutcome = JsonElement
-
-@Serializable
-internal data class ConsumeAccountRateLimitResetCreditParams(
-    @SerialName("idempotencyKey")
-    public val idempotencyKey: String,
-    @SerialName("creditId")
-    public val creditId: String? = null,
-)
-
-@Serializable
-internal data class ConsumeAccountRateLimitResetCreditResponse(
-    @SerialName("outcome")
-    public val outcome: ConsumeAccountRateLimitResetCreditOutcome,
-)

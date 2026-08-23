@@ -1,5 +1,7 @@
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentHook
+import io.github.codex_agent_labs.codexmobile.agent.AgentInstallationScope
+import io.github.codex_agent_labs.codexmobile.agent.AgentPluginReference
 import io.github.codex_agent_labs.codexmobile.agent.AgentPluginSummary
 import io.github.codex_agent_labs.codexmobile.agent.AgentSkill
 import io.github.codex_agent_labs.codexmobile.agent.AgentTurnRequest
@@ -9,7 +11,6 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexConversation
 import io.github.codex_agent_labs.codexmobile.agent.CodexHost
 import io.github.codex_agent_labs.codexmobile.agent.CodexHostState
 import io.github.codex_agent_labs.codexmobile.agent.CodexPlatform
-import io.github.codex_agent_labs.codexmobile.agent.CodexRuntimeFeature
 import kotlinx.coroutines.CoroutineScope
 
 fun publicHost(
@@ -23,28 +24,38 @@ fun scopedPublicHost(
     clientInfo: CodexClientInfo,
 ): CodexHost = CodexHost(platform, scope, clientInfo)
 
-fun readyAgent(state: CodexHostState): CodexAgent? =
-    (state as? CodexHostState.Ready)?.agent
+fun readyAgent(host: CodexHost): CodexAgent? =
+    (host.lifecycleState.value as? CodexHostState.Ready)?.agent
 
 suspend fun openConversation(agent: CodexAgent): CodexConversation =
-    agent.openConversation()
+    agent.conversations.open()
 
-fun supports(agent: CodexAgent, feature: CodexRuntimeFeature): Boolean =
-    feature in agent.features
+fun supportsSkills(agent: CodexAgent): Boolean = agent.skills.isAvailable
 
 fun conversationActions(state: AgentConversationState): Triple<Boolean, Boolean, Boolean> =
     Triple(state.canStartTurn, state.canReload, state.canCancelTurn)
 
-suspend fun mutateExtensions(
+suspend fun installExtensions(
+    agent: CodexAgent,
+    skillDirectory: String,
+    hookDirectory: String,
+    plugin: AgentPluginReference,
+) {
+    agent.skills.install(skillDirectory, AgentInstallationScope.User)
+    val hook = agent.hooks.install(hookDirectory, AgentInstallationScope.User)
+    agent.hooks.trust(hook)
+    agent.plugins.install(plugin)
+}
+
+suspend fun uninstallExtensions(
     agent: CodexAgent,
     skill: AgentSkill,
     hook: AgentHook,
     plugin: AgentPluginSummary,
 ) {
-    agent.setSkillEnabled(skill, isEnabled = true)
-    agent.setHookEnabled(hook, isEnabled = true)
-    agent.trustHook(hook)
-    agent.setPluginEnabled(plugin, isEnabled = true)
+    agent.skills.uninstall(skill)
+    agent.hooks.uninstall(hook)
+    agent.plugins.uninstall(plugin.reference)
 }
 
 suspend fun send(

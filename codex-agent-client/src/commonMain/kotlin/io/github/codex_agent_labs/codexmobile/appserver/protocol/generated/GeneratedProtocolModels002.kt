@@ -13,6 +13,22 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
+internal data class AppBranding(
+    @SerialName("isDiscoverableApp")
+    public val isDiscoverableApp: Boolean,
+    @SerialName("category")
+    public val category: String? = null,
+    @SerialName("developer")
+    public val developer: String? = null,
+    @SerialName("privacyPolicy")
+    public val privacyPolicy: String? = null,
+    @SerialName("termsOfService")
+    public val termsOfService: String? = null,
+    @SerialName("website")
+    public val website: String? = null,
+)
+
+@Serializable
 internal data class AppConfig(
     @SerialName("approvals_reviewer")
     public val approvals_reviewer: ApprovalsReviewer? = null,
@@ -78,8 +94,6 @@ internal data class AppMetadata(
     public val developer: String? = null,
     @SerialName("firstPartyRequiresInstall")
     public val firstPartyRequiresInstall: Boolean? = null,
-    @SerialName("firstPartyType")
-    public val firstPartyType: String? = null,
     @SerialName("review")
     public val review: AppReview? = null,
     @SerialName("screenshots")
@@ -178,6 +192,12 @@ internal data class AppToolSummary(
     public val description: String,
     @SerialName("name")
     public val name: String,
+    @SerialName("disabledReason")
+    public val disabledReason: String? = null,
+    @SerialName("isEnabled")
+    public val isEnabled: Boolean? = null,
+    @SerialName("isReadOnly")
+    public val isReadOnly: Boolean? = null,
     @SerialName("title")
     public val title: String? = null,
 )
@@ -197,23 +217,4 @@ internal data class ApplyPatchApprovalParams(
     public val grantRoot: String? = null,
     @SerialName("reason")
     public val reason: String? = null,
-)
-
-@Serializable
-internal data class ApplyPatchApprovalResponse(
-    @SerialName("decision")
-    public val decision: ReviewDecision,
-)
-
-@Serializable
-internal enum class ApprovalsReviewer {
-    @SerialName("user") USER,
-    @SerialName("auto_review") AUTO_REVIEW,
-    @SerialName("guardian_subagent") GUARDIAN_SUBAGENT,
-}
-
-@Serializable
-internal data class AppsConfig(
-    @SerialName("_default")
-    public val _default: AppsDefaultConfig? = null,
 )

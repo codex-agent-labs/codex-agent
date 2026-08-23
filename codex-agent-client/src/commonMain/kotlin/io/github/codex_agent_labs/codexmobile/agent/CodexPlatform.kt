@@ -2,6 +2,7 @@ package io.github.codex_agent_labs.codexmobile.agent
 
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.CodexRuntimeFactory
 import okio.Path
+import okio.Path.Companion.toPath
 
 public interface CodexWorkspaceSelection
 
@@ -98,6 +99,7 @@ public data class PreparedCodexRuntime(
     public val workspacePath: String,
     public val features: Set<CodexRuntimeFeature>,
     public val storageRoots: CodexStorageRoots = CodexStorageRoots(),
+    public val installationRoots: CodexInstallationRoots = workspaceInstallationRoots(workspacePath),
     public val toolProvider: CodexToolProvider? = null,
 ) {
     internal fun createClient(
@@ -110,8 +112,17 @@ public data class PreparedCodexRuntime(
         pluginCacheDirectory = storageRoots.directory(CodexStorageArea.PLUGIN_CACHE),
         shellTranscriptDirectory = storageRoots.directory(CodexStorageArea.SHELL_TRANSCRIPTS),
         turnInputMetadataDirectory = storageRoots.directory(CodexStorageArea.TURN_INPUT_METADATA),
+        installationRoots = installationRoots,
         toolProvider = toolProvider,
         fileSystem = systemAgentFileStore,
+    )
+}
+
+private fun workspaceInstallationRoots(workspacePath: String): CodexInstallationRoots {
+    val workspace = workspacePath.toPath(normalize = true)
+    return CodexInstallationRoots(
+        workspaceSkillsRoot = workspace / ".agents" / "skills",
+        workspaceHooksFile = workspace / ".codex" / "hooks.json",
     )
 }
 

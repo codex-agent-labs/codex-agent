@@ -48,9 +48,9 @@ codex.start()
 ```
 
 `CodexClientInfo` is the embedding application's identity sent to App Server;
-it is not synthesized from the Codex Agent artifact version. Node advertises
-all six `CodexRuntimeFeature` values, and the ready agent rejects an operation
-before RPC if a custom runtime omits its required feature.
+it is not synthesized from the Codex Agent artifact version. Each optional
+agent resource exposes `isAvailable`, and rejects an unavailable operation
+before RPC.
 
 There is no separate public Node operational layer or Windows supervisor
 classifier; applications use `NodeCodexPlatform` with `CodexHost`.

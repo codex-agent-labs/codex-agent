@@ -99,7 +99,7 @@ class DesktopCodexRuntimeTest {
         )
         try {
             host.start()
-            val ready = assertIs<CodexHostState.Ready>(host.state.value)
+            val ready = assertIs<CodexHostState.Ready>(host.lifecycleState.value)
             assertEquals(selected.workspace, ready.agent.workspace)
         } finally {
             host.close()

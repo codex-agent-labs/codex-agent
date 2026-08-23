@@ -85,6 +85,7 @@ internal sealed interface AgentEvent {
 
     data class McpOauthCompleted(
         val serverName: String,
+        val conversationId: ConversationId?,
         val success: Boolean,
         val error: String? = null,
     ) : AgentEvent

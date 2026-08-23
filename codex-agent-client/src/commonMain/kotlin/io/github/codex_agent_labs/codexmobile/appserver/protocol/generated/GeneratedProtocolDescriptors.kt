@@ -4,6 +4,7 @@
 package io.github.codex_agent_labs.codexmobile.appserver.protocol.generated
 
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.builtins.serializer
 
 internal data class AppServerRequestDescriptor(
@@ -27,7 +28,7 @@ internal interface AppServerMethod<P, R> {
 }
 
 internal object AppServerProtocolDescriptors {
-    public const val SCHEMA_SHA256: String = "8039a1222460b3846a3688c61eb4b2626b451d61b9c2b36b83fea0ce341ce0be"
+    public const val SCHEMA_SHA256: String = "02a4c63a638fdae4a5f6c3ad32a41a377b642c66f3abc84f6fc47c7f3d6074df"
     public val clientRequests: Map<String, AppServerRequestDescriptor> = generatedClientRequests
     public val serverRequests: Map<String, AppServerRequestDescriptor> = generatedServerRequests
     public val serverNotifications: Map<String, AppServerNotificationDescriptor> = generatedServerNotifications
@@ -36,34 +37,34 @@ internal object AppServerProtocolDescriptors {
 
 internal object AppServerServerMethods {
     public data object AccountChatgptAuthTokensRefresh : AppServerMethod<ChatgptAuthTokensRefreshParams, ChatgptAuthTokensRefreshResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("account/chatgptAuthTokens/refresh"); override val paramsSerializer = ChatgptAuthTokensRefreshParams.serializer(); override val responseSerializer = ChatgptAuthTokensRefreshResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("account/chatgptAuthTokens/refresh"); override val paramsSerializer: KSerializer<ChatgptAuthTokensRefreshParams> = ChatgptAuthTokensRefreshParams.serializer(); override val responseSerializer: KSerializer<ChatgptAuthTokensRefreshResponse> = ChatgptAuthTokensRefreshResponse.serializer() }
 
     public data object ApplyPatchApproval : AppServerMethod<ApplyPatchApprovalParams, ApplyPatchApprovalResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("applyPatchApproval"); override val paramsSerializer = ApplyPatchApprovalParams.serializer(); override val responseSerializer = ApplyPatchApprovalResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("applyPatchApproval"); override val paramsSerializer: KSerializer<ApplyPatchApprovalParams> = ApplyPatchApprovalParams.serializer(); override val responseSerializer: KSerializer<ApplyPatchApprovalResponse> = ApplyPatchApprovalResponse.serializer() }
 
     public data object AttestationGenerate : AppServerMethod<AttestationGenerateParams, AttestationGenerateResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("attestation/generate"); override val paramsSerializer = AttestationGenerateParams.serializer(); override val responseSerializer = AttestationGenerateResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("attestation/generate"); override val paramsSerializer: KSerializer<AttestationGenerateParams> = AttestationGenerateParams.serializer(); override val responseSerializer: KSerializer<AttestationGenerateResponse> = AttestationGenerateResponse.serializer() }
 
     public data object ExecCommandApproval : AppServerMethod<ExecCommandApprovalParams, ExecCommandApprovalResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("execCommandApproval"); override val paramsSerializer = ExecCommandApprovalParams.serializer(); override val responseSerializer = ExecCommandApprovalResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("execCommandApproval"); override val paramsSerializer: KSerializer<ExecCommandApprovalParams> = ExecCommandApprovalParams.serializer(); override val responseSerializer: KSerializer<ExecCommandApprovalResponse> = ExecCommandApprovalResponse.serializer() }
 
     public data object ItemCommandExecutionRequestApproval : AppServerMethod<CommandExecutionRequestApprovalParams, CommandExecutionRequestApprovalResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/commandExecution/requestApproval"); override val paramsSerializer = CommandExecutionRequestApprovalParams.serializer(); override val responseSerializer = CommandExecutionRequestApprovalResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/commandExecution/requestApproval"); override val paramsSerializer: KSerializer<CommandExecutionRequestApprovalParams> = CommandExecutionRequestApprovalParams.serializer(); override val responseSerializer: KSerializer<CommandExecutionRequestApprovalResponse> = CommandExecutionRequestApprovalResponse.serializer() }
 
     public data object ItemFileChangeRequestApproval : AppServerMethod<FileChangeRequestApprovalParams, FileChangeRequestApprovalResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/fileChange/requestApproval"); override val paramsSerializer = FileChangeRequestApprovalParams.serializer(); override val responseSerializer = FileChangeRequestApprovalResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/fileChange/requestApproval"); override val paramsSerializer: KSerializer<FileChangeRequestApprovalParams> = FileChangeRequestApprovalParams.serializer(); override val responseSerializer: KSerializer<FileChangeRequestApprovalResponse> = FileChangeRequestApprovalResponse.serializer() }
 
     public data object ItemPermissionsRequestApproval : AppServerMethod<PermissionsRequestApprovalParams, PermissionsRequestApprovalResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/permissions/requestApproval"); override val paramsSerializer = PermissionsRequestApprovalParams.serializer(); override val responseSerializer = PermissionsRequestApprovalResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/permissions/requestApproval"); override val paramsSerializer: KSerializer<PermissionsRequestApprovalParams> = PermissionsRequestApprovalParams.serializer(); override val responseSerializer: KSerializer<PermissionsRequestApprovalResponse> = PermissionsRequestApprovalResponse.serializer() }
 
     public data object ItemToolCall : AppServerMethod<DynamicToolCallParams, DynamicToolCallResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/tool/call"); override val paramsSerializer = DynamicToolCallParams.serializer(); override val responseSerializer = DynamicToolCallResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/tool/call"); override val paramsSerializer: KSerializer<DynamicToolCallParams> = DynamicToolCallParams.serializer(); override val responseSerializer: KSerializer<DynamicToolCallResponse> = DynamicToolCallResponse.serializer() }
 
     public data object ItemToolRequestUserInput : AppServerMethod<ToolRequestUserInputParams, ToolRequestUserInputResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/tool/requestUserInput"); override val paramsSerializer = ToolRequestUserInputParams.serializer(); override val responseSerializer = ToolRequestUserInputResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("item/tool/requestUserInput"); override val paramsSerializer: KSerializer<ToolRequestUserInputParams> = ToolRequestUserInputParams.serializer(); override val responseSerializer: KSerializer<ToolRequestUserInputResponse> = ToolRequestUserInputResponse.serializer() }
 
     public data object McpServerElicitationRequest : AppServerMethod<McpServerElicitationRequestParams, McpServerElicitationRequestResponse> {
-        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("mcpServer/elicitation/request"); override val paramsSerializer = McpServerElicitationRequestParams.serializer(); override val responseSerializer = McpServerElicitationRequestResponse.serializer() }
+        override val descriptor = AppServerProtocolDescriptors.serverRequests.getValue("mcpServer/elicitation/request"); override val paramsSerializer: KSerializer<McpServerElicitationRequestParams> = McpServerElicitationRequestParams.serializer(); override val responseSerializer: KSerializer<McpServerElicitationRequestResponse> = McpServerElicitationRequestResponse.serializer() }
 
 }
 
@@ -95,6 +96,7 @@ internal val generatedServerNotifications: Map<String, AppServerNotificationDesc
         AppServerNotificationDescriptor("account/rateLimits/updated", "AccountRateLimitsUpdatedNotification"),
         AppServerNotificationDescriptor("account/updated", "AccountUpdatedNotification"),
         AppServerNotificationDescriptor("app/list/updated", "AppListUpdatedNotification"),
+        AppServerNotificationDescriptor("autoApprovalReview/strictReviewRequired", "StrictReviewRequiredNotification"),
         AppServerNotificationDescriptor("command/exec/outputDelta", "CommandExecOutputDeltaNotification"),
         AppServerNotificationDescriptor("configWarning", "ConfigWarningNotification"),
         AppServerNotificationDescriptor("deprecationNotice", "DeprecationNoticeNotification"),
@@ -128,6 +130,7 @@ internal val generatedServerNotifications: Map<String, AppServerNotificationDesc
         AppServerNotificationDescriptor("model/verification", "ModelVerificationNotification"),
         AppServerNotificationDescriptor("process/exited", "ProcessExitedNotification"),
         AppServerNotificationDescriptor("process/outputDelta", "ProcessOutputDeltaNotification"),
+        AppServerNotificationDescriptor("project/changed", "ProjectChangedNotification"),
         AppServerNotificationDescriptor("remoteControl/status/changed", "RemoteControlStatusChangedNotification"),
         AppServerNotificationDescriptor("serverRequest/resolved", "ServerRequestResolvedNotification"),
         AppServerNotificationDescriptor("skills/changed", "SkillsChangedNotification"),
@@ -140,6 +143,8 @@ internal val generatedServerNotifications: Map<String, AppServerNotificationDesc
         AppServerNotificationDescriptor("thread/goal/cleared", "ThreadGoalClearedNotification"),
         AppServerNotificationDescriptor("thread/goal/updated", "ThreadGoalUpdatedNotification"),
         AppServerNotificationDescriptor("thread/name/updated", "ThreadNameUpdatedNotification"),
+        AppServerNotificationDescriptor("thread/project/updated", "ThreadProjectUpdatedNotification"),
+        AppServerNotificationDescriptor("thread/queue/changed", "ThreadQueueChangedNotification"),
         AppServerNotificationDescriptor("thread/realtime/closed", "ThreadRealtimeClosedNotification"),
         AppServerNotificationDescriptor("thread/realtime/error", "ThreadRealtimeErrorNotification"),
         AppServerNotificationDescriptor("thread/realtime/itemAdded", "ThreadRealtimeItemAddedNotification"),
@@ -148,6 +153,7 @@ internal val generatedServerNotifications: Map<String, AppServerNotificationDesc
         AppServerNotificationDescriptor("thread/realtime/started", "ThreadRealtimeStartedNotification"),
         AppServerNotificationDescriptor("thread/realtime/transcript/delta", "ThreadRealtimeTranscriptDeltaNotification"),
         AppServerNotificationDescriptor("thread/realtime/transcript/done", "ThreadRealtimeTranscriptDoneNotification"),
+        AppServerNotificationDescriptor("thread/reverted", "ThreadRevertedNotification"),
         AppServerNotificationDescriptor("thread/settings/updated", "ThreadSettingsUpdatedNotification"),
         AppServerNotificationDescriptor("thread/started", "ThreadStartedNotification"),
         AppServerNotificationDescriptor("thread/status/changed", "ThreadStatusChangedNotification"),

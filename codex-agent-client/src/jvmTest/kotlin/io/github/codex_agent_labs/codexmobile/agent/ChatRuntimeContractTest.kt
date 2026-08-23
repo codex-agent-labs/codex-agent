@@ -90,6 +90,7 @@ class ChatRuntimeContractTest {
                 withTimeout(1_000) { client.events.filterIsInstance<AgentEvent.ElicitationRequested>().first() }
             }
             process.request(91, "item/tool/requestUserInput", buildJsonObject {
+                put("isBlocking", true)
                 put("itemId", "item-1")
                 put("threadId", "thread-1")
                 put("turnId", "turn-1")
@@ -182,7 +183,7 @@ class ChatRuntimeContractTest {
         try {
             val hook = client.listHooks("/workspace").hooks.single()
             assertEquals(AgentHookTrustStatus.UNTRUSTED, hook.trustStatus)
-            assertEquals("./check", hook.command)
+            assertEquals("./check", (hook.handler as AgentHookHandler.Command).command)
 
             client.trustHook(hook.key, hook.currentHash)
             client.setHookEnabled(hook.key, true)

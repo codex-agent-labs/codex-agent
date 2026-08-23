@@ -1,20 +1,26 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index 471c342..e3f1f7d 100644
 --- a/codex-rs/Cargo.lock
 +++ b/codex-rs/Cargo.lock
-@@ -397 +397 @@
+@@ -397 +397 @@ name = "app_test_support"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -1840 +1840 @@
++version = "0.149.0"
+@@ -1873 +1873 @@ name = "codex-agent-extension"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -1852 +1852 @@
++version = "0.149.0"
+@@ -1885 +1885 @@ name = "codex-agent-graph-store"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -1866 +1866 @@
++version = "0.149.0"
+@@ -1900 +1900 @@ name = "codex-agent-identity"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -1883,0 +1884,22 @@
++version = "0.149.0"
+@@ -1920 +1920 @@ name = "codex-analytics"
+-version = "0.0.0"
++version = "0.149.0"
+@@ -1938,0 +1939,23 @@ dependencies = [
++[[package]]
 +name = "codex-agent-ios-bridge"
-+version = "0.145.0"
++version = "0.149.0"
 +dependencies = [
 + "codex-app-server",
 + "codex-app-server-client",
@@ -25,6 +31,7 @@
 + "codex-core",
 + "codex-exec-server",
 + "codex-feedback",
++ "codex-http-client",
 + "codex-protocol",
 + "codex-utils-path-uri",
 + "serde",
@@ -34,392 +41,408 @@
 + "toml 0.9.11+spec-1.1.0",
 +]
 +
-+[[package]]
-@@ -1885 +1907 @@
+@@ -1941 +1963 @@ name = "codex-ansi-escape"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -1906 +1928 @@
++version = "0.149.0"
+@@ -1950 +1972 @@ name = "codex-api"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -1915 +1937 @@
++version = "0.149.0"
+@@ -1985 +2007 @@ name = "codex-app-server"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -1951 +1973 @@
++version = "0.149.0"
+@@ -2085 +2107 @@ name = "codex-app-server-client"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2046 +2068 @@
++version = "0.149.0"
+@@ -2112 +2134 @@ name = "codex-app-server-daemon"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2073 +2095 @@
++version = "0.149.0"
+@@ -2133 +2155 @@ name = "codex-app-server-protocol"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2094 +2116 @@
++version = "0.149.0"
+@@ -2166 +2188 @@ name = "codex-app-server-protocol-noop-macros"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2123 +2145 @@
++version = "0.149.0"
+@@ -2170 +2192 @@ name = "codex-app-server-test-client"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2145 +2167 @@
++version = "0.149.0"
+@@ -2192 +2214 @@ name = "codex-app-server-transport"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2187 +2209 @@
++version = "0.149.0"
+@@ -2234 +2256 @@ name = "codex-apply-patch"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2207 +2229 @@
++version = "0.149.0"
+@@ -2254 +2276 @@ name = "codex-arg0"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2227 +2249 @@
++version = "0.149.0"
+@@ -2274 +2296 @@ name = "codex-async-utils"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2236 +2258 @@
++version = "0.149.0"
+@@ -2283 +2305 @@ name = "codex-aws-auth"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2251 +2273 @@
++version = "0.149.0"
+@@ -2298 +2320 @@ name = "codex-backend-client"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2268 +2290 @@
++version = "0.149.0"
+@@ -2318 +2340 @@ name = "codex-backend-openapi-models"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2277 +2299 @@
++version = "0.149.0"
+@@ -2327 +2349 @@ name = "codex-build-info"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2286 +2308 @@
++version = "0.149.0"
+@@ -2339 +2361 @@ name = "codex-bwrap"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2307 +2329 @@
++version = "0.149.0"
+@@ -2348 +2370 @@ name = "codex-chatgpt"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2385 +2407 @@
++version = "0.149.0"
+@@ -2370 +2392 @@ name = "codex-cli"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2397 +2419 @@
++version = "0.149.0"
+@@ -2458 +2480 @@ name = "codex-client"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2421 +2443 @@
++version = "0.149.0"
+@@ -2471 +2493 @@ name = "codex-cloud-config"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2452 +2474 @@
++version = "0.149.0"
+@@ -2496 +2518 @@ name = "codex-cloud-tasks"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2466 +2488 @@
++version = "0.149.0"
+@@ -2529 +2551 @@ name = "codex-cloud-tasks-client"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2475 +2497 @@
++version = "0.149.0"
+@@ -2544 +2566 @@ name = "codex-cloud-tasks-mock-client"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2491 +2513 @@
++version = "0.149.0"
+@@ -2553 +2575 @@ name = "codex-code-mode"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2507 +2529 @@
++version = "0.149.0"
+@@ -2577 +2599 @@ name = "codex-code-mode-host"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2519 +2541 @@
++version = "0.149.0"
+@@ -2604 +2626 @@ name = "codex-code-mode-protocol"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2523 +2545 @@
++version = "0.149.0"
+@@ -2622 +2644 @@ name = "codex-code-mode-runtime"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2571 +2593 @@
++version = "0.149.0"
+@@ -2638 +2660 @@ name = "codex-collaboration-mode-templates"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2593 +2615 @@
++version = "0.149.0"
+@@ -2642 +2664 @@ name = "codex-config"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2606 +2628 @@
++version = "0.149.0"
+@@ -2690 +2712 @@ name = "codex-connectors"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2614 +2636 @@
++version = "0.149.0"
+@@ -2712 +2734 @@ name = "codex-connectors-extension"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2742 +2764 @@
++version = "0.149.0"
+@@ -2726 +2748 @@ name = "codex-context-fragments"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2763 +2785 @@
++version = "0.149.0"
+@@ -2734 +2756 @@ name = "codex-core"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2813 +2835 @@
++version = "0.149.0"
+@@ -2865 +2887 @@ name = "codex-core-api"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2847 +2869 @@
++version = "0.149.0"
+@@ -2888 +2910 @@ name = "codex-core-plugins"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2893 +2915 @@
++version = "0.149.0"
+@@ -2944 +2966 @@ name = "codex-diagnostics"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2945 +2967 @@
++version = "0.149.0"
+@@ -2952 +2974 @@ name = "codex-exec"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2960 +2982 @@
++version = "0.149.0"
+@@ -2999 +3021 @@ name = "codex-exec-server"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2978 +3000 @@
++version = "0.149.0"
+@@ -3057 +3079 @@ name = "codex-exec-server-protocol"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -2987 +3009 @@
++version = "0.149.0"
+@@ -3072 +3094 @@ name = "codex-exec-server-test-support"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3002 +3024 @@
++version = "0.149.0"
+@@ -3080 +3102 @@ name = "codex-execpolicy"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3014 +3036 @@
++version = "0.149.0"
+@@ -3098 +3120 @@ name = "codex-experimental-api-macros"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3042 +3064 @@
++version = "0.149.0"
+@@ -3107 +3129 @@ name = "codex-extension-api"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3055 +3077 @@
++version = "0.149.0"
+@@ -3124 +3146 @@ name = "codex-extension-items"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3069 +3091 @@
++version = "0.149.0"
+@@ -3136 +3158 @@ name = "codex-external-agent-migration"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3085 +3107 @@
++version = "0.149.0"
+@@ -3166 +3188 @@ name = "codex-features"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3097 +3119 @@
++version = "0.149.0"
+@@ -3179 +3201 @@ name = "codex-feedback"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3108 +3130 @@
++version = "0.149.0"
+@@ -3197 +3219 @@ name = "codex-file-search"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3133 +3155 @@
++version = "0.149.0"
+@@ -3213 +3235 @@ name = "codex-file-system"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3155 +3177 @@
++version = "0.149.0"
+@@ -3225 +3247 @@ name = "codex-file-watcher"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3164 +3186 @@
++version = "0.149.0"
+@@ -3236 +3258 @@ name = "codex-git-attribution"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3175 +3197 @@
++version = "0.149.0"
+@@ -3249 +3271 @@ name = "codex-git-utils"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3198 +3220 @@
++version = "0.149.0"
+@@ -3275 +3297 @@ name = "codex-goal-extension"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3229 +3251 @@
++version = "0.149.0"
+@@ -3299 +3321 @@ name = "codex-guardian-v2"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3256 +3278 @@
++version = "0.149.0"
+@@ -3321 +3343 @@ name = "codex-history"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3266 +3288 @@
++version = "0.149.0"
+@@ -3333 +3355 @@ name = "codex-home"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3274 +3296 @@
++version = "0.149.0"
+@@ -3344 +3366 @@ name = "codex-hooks"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3299 +3321 @@
++version = "0.149.0"
+@@ -3369 +3391 @@ name = "codex-http-client"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3313 +3335 @@
++version = "0.149.0"
+@@ -3401 +3423 @@ name = "codex-image-generation-extension"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3356 +3378 @@
++version = "0.149.0"
+@@ -3428 +3450 @@ name = "codex-install-context"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3392 +3414 @@
++version = "0.149.0"
+@@ -3441 +3463 @@ name = "codex-keyring-store"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3418 +3440 @@
++version = "0.149.0"
+@@ -3449 +3471 @@ name = "codex-linux-sandbox"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3452 +3474 @@
++version = "0.149.0"
+@@ -3474 +3496 @@ name = "codex-lmstudio"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3473 +3495 @@
++version = "0.149.0"
+@@ -3488 +3510 @@ name = "codex-login"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3483 +3505 @@
++version = "0.149.0"
+@@ -3531 +3553 @@ name = "codex-mcp"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3520 +3542 @@
++version = "0.149.0"
+@@ -3569 +3591 @@ name = "codex-mcp-extension"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3534 +3556 @@
++version = "0.149.0"
+@@ -3595 +3617 @@ name = "codex-mcp-server"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3557 +3579 @@
++version = "0.149.0"
+@@ -3634 +3656 @@ name = "codex-memories-extension"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3573 +3595 @@
++version = "0.149.0"
+@@ -3655 +3677 @@ name = "codex-memories-read"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3593 +3615 @@
++version = "0.149.0"
+@@ -3665 +3687 @@ name = "codex-memories-write"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3629 +3651 @@
++version = "0.149.0"
+@@ -3702 +3724 @@ name = "codex-message-history"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3649 +3671 @@
++version = "0.149.0"
+@@ -3716 +3738 @@ name = "codex-model-provider"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3680 +3702 @@
++version = "0.149.0"
+@@ -3739 +3761 @@ name = "codex-model-provider-info"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3693 +3715 @@
++version = "0.149.0"
+@@ -3755 +3777 @@ name = "codex-models-manager"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3701 +3723 @@
++version = "0.149.0"
+@@ -3775 +3797 @@ name = "codex-network-proxy"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3715 +3737 @@
++version = "0.149.0"
+@@ -3813 +3835 @@ name = "codex-ollama"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3757 +3779 @@
++version = "0.149.0"
+@@ -3833 +3855 @@ name = "codex-otel"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3768 +3790 @@
++version = "0.149.0"
+@@ -3866 +3888 @@ name = "codex-plugin"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3785 +3807 @@
++version = "0.149.0"
+@@ -3879 +3901 @@ name = "codex-process-hardening"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3826 +3848 @@
++version = "0.149.0"
+@@ -3887 +3909 @@ name = "codex-prompts"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3851 +3873 @@
++version = "0.149.0"
+@@ -3901 +3923 @@ name = "codex-protocol"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3867 +3889 @@
++version = "0.149.0"
+@@ -3943 +3965 @@ name = "codex-queue-extension"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3891 +3913 @@
++version = "0.149.0"
+@@ -3964 +3986 @@ name = "codex-response-debug-context"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3912 +3934 @@
++version = "0.149.0"
+@@ -3975 +3997 @@ name = "codex-responses-api-proxy"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3933 +3955 @@
++version = "0.149.0"
+@@ -3992 +4014 @@ name = "codex-rmcp-client"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3953 +3975 @@
++version = "0.149.0"
+@@ -4038 +4060 @@ name = "codex-rollout"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3964 +3986 @@
++version = "0.149.0"
+@@ -4065 +4087 @@ name = "codex-rollout-trace"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -3988 +4010 @@
++version = "0.149.0"
+@@ -4081 +4103 @@ name = "codex-sandboxing"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4014 +4036 @@
++version = "0.149.0"
+@@ -4105 +4127 @@ name = "codex-secrets"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4026 +4048 @@
++version = "0.149.0"
+@@ -4126 +4148 @@ name = "codex-shell-command"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4034 +4056 @@
++version = "0.149.0"
+@@ -4149 +4171 @@ name = "codex-shell-escalation"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4042 +4064 @@
++version = "0.149.0"
+@@ -4169 +4191 @@ name = "codex-skills"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4053 +4075 @@
++version = "0.149.0"
+@@ -4186 +4208 @@ name = "codex-skills-extension"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4079 +4101 @@
++version = "0.149.0"
+@@ -4222 +4244 @@ name = "codex-state"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4104 +4126 @@
++version = "0.149.0"
+@@ -4246 +4268 @@ name = "codex-stdio-to-uds"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4215 +4237 @@
++version = "0.149.0"
+@@ -4258 +4280 @@ name = "codex-terminal-detection"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4227 +4249 @@
++version = "0.149.0"
+@@ -4266 +4288 @@ name = "codex-test-binary-support"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4241 +4263 @@
++version = "0.149.0"
+@@ -4274 +4296 @@ name = "codex-thread-manager-sample"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4248 +4270 @@
++version = "0.149.0"
+@@ -4285 +4307 @@ name = "codex-thread-store"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4257 +4279 @@
++version = "0.149.0"
+@@ -4315 +4337 @@ name = "codex-tools"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4266 +4288 @@
++version = "0.149.0"
+@@ -4341 +4363 @@ name = "codex-tui"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4278 +4300 @@
++version = "0.149.0"
+@@ -4453 +4475 @@ name = "codex-uds"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4282 +4304 @@
++version = "0.149.0"
+@@ -4465 +4487 @@ name = "codex-utils-absolute-path"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4286 +4308 @@
++version = "0.149.0"
+@@ -4479 +4501 @@ name = "codex-utils-approval-presets"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4296 +4318 @@
++version = "0.149.0"
+@@ -4486 +4508 @@ name = "codex-utils-audio"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4309 +4331 @@
++version = "0.149.0"
+@@ -4500 +4522 @@ name = "codex-utils-cache"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4318 +4340 @@
++version = "0.149.0"
+@@ -4509 +4531 @@ name = "codex-utils-cargo-bin"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4328 +4350 @@
++version = "0.149.0"
+@@ -4518 +4540 @@ name = "codex-utils-cli"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4337 +4359 @@
++version = "0.149.0"
+@@ -4530 +4552 @@ name = "codex-utils-elapsed"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4347 +4369 @@
++version = "0.149.0"
+@@ -4534 +4556 @@ name = "codex-utils-fuzzy-match"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4363 +4385 @@
++version = "0.149.0"
+@@ -4538 +4560 @@ name = "codex-utils-home-dir"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4377 +4399 @@
++version = "0.149.0"
+@@ -4548 +4570 @@ name = "codex-utils-image"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4393 +4415 @@
++version = "0.149.0"
+@@ -4561 +4583 @@ name = "codex-utils-json-to-toml"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4403 +4425 @@
++version = "0.149.0"
+@@ -4570 +4592 @@ name = "codex-utils-oss"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4410 +4432 @@
++version = "0.149.0"
+@@ -4580 +4602 @@ name = "codex-utils-output-truncation"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4419 +4441 @@
++version = "0.149.0"
+@@ -4589 +4611 @@ name = "codex-utils-path"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4429 +4451 @@
++version = "0.149.0"
+@@ -4599 +4621 @@ name = "codex-utils-path-uri"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4436 +4458 @@
++version = "0.149.0"
+@@ -4615 +4637 @@ name = "codex-utils-plugins"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4446 +4468 @@
++version = "0.149.0"
+@@ -4629 +4651 @@ name = "codex-utils-pty"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4453 +4475 @@
++version = "0.149.0"
+@@ -4645 +4667 @@ name = "codex-utils-readiness"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4461 +4483 @@
++version = "0.149.0"
+@@ -4655 +4677 @@ name = "codex-utils-rustls-provider"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4482 +4504 @@
++version = "0.149.0"
+@@ -4662 +4684 @@ name = "codex-utils-sandbox-summary"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4498 +4520 @@
++version = "0.149.0"
+@@ -4671 +4693 @@ name = "codex-utils-sleep-inhibitor"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -4749 +4771 @@
++version = "0.149.0"
+@@ -4681 +4703 @@ name = "codex-utils-stream-parser"
 -version = "0.0.0"
-+version = "0.145.0"
-@@ -8911 +8933 @@
++version = "0.149.0"
+@@ -4688 +4710 @@ name = "codex-utils-string"
 -version = "0.0.0"
-+version = "0.145.0"
-
-diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
---- a/codex-rs/Cargo.lock
-+++ b/codex-rs/Cargo.lock
-@@ -7836,5 +7836,3 @@
- name = "i18n-embed-fl"
- version = "0.9.4"
++version = "0.149.0"
+@@ -4698 +4720 @@ name = "codex-utils-template"
+-version = "0.0.0"
++version = "0.149.0"
+@@ -4705 +4727 @@ name = "codex-v8-poc"
+-version = "0.0.0"
++version = "0.149.0"
+@@ -4713 +4735 @@ name = "codex-web-search-extension"
+-version = "0.0.0"
++version = "0.149.0"
+@@ -4734 +4756 @@ name = "codex-websocket-client"
+-version = "0.0.0"
++version = "0.149.0"
+@@ -4750 +4772 @@ name = "codex-windows-sandbox"
+-version = "0.0.0"
++version = "0.149.0"
+@@ -4776 +4798 @@ name = "codex-workload-identity"
+-version = "0.0.0"
++version = "0.149.0"
+@@ -5016 +5038 @@ name = "core_test_support"
+-version = "0.0.0"
++version = "0.149.0"
+@@ -8178,2 +8199,0 @@ version = "0.9.4"
 -source = "registry+https://github.com/rust-lang/crates.io-index"
 -checksum = "04b2969d0b3fc6143776c535184c19722032b43e6a642d710fa3f88faec53c2d"
- dependencies = [
+@@ -9278 +9298 @@ name = "mcp_test_support"
+-version = "0.0.0"
++version = "0.149.0"

@@ -13,214 +13,211 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class TurnEnvironmentParams(
-    @SerialName("cwd")
-    public val cwd: LegacyAppPathString,
-    @SerialName("environmentId")
-    public val environmentId: String,
-    @SerialName("runtimeWorkspaceRoots")
-    public val runtimeWorkspaceRoots: List<LegacyAppPathString>? = null,
+internal data class ThreadMetadataUpdateParams(
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("gitInfo")
+    public val gitInfo: ThreadMetadataGitInfoUpdateParams? = null,
 )
 
 @Serializable
-internal data class TurnError(
+internal data class ThreadMetadataUpdateResponse(
+    @SerialName("thread")
+    public val thread: Thread,
+)
+
+@Serializable
+internal data class ThreadNameUpdatedNotification(
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("threadName")
+    public val threadName: String? = null,
+)
+
+@Serializable
+internal data class ThreadProjectUpdatedNotification(
+    @SerialName("projectId")
+    public val projectId: String?,
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ThreadQueueChangedNotification(
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ThreadReadParams(
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("includeTurns")
+    public val includeTurns: Boolean? = null,
+)
+
+@Serializable
+internal data class ThreadReadResponse(
+    @SerialName("thread")
+    public val thread: Thread,
+)
+
+@Serializable
+internal data class ThreadRealtimeAudioChunk(
+    @SerialName("data")
+    public val data: String,
+    @SerialName("numChannels")
+    public val numChannels: Long,
+    @SerialName("sampleRate")
+    public val sampleRate: Long,
+    @SerialName("itemId")
+    public val itemId: String? = null,
+    @SerialName("samplesPerChannel")
+    public val samplesPerChannel: Long? = null,
+)
+
+@Serializable
+internal data class ThreadRealtimeClosedNotification(
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("reason")
+    public val reason: String? = null,
+)
+
+@Serializable
+internal data class ThreadRealtimeErrorNotification(
     @SerialName("message")
     public val message: String,
-    @SerialName("additionalDetails")
-    public val additionalDetails: String? = null,
-    @SerialName("codexErrorInfo")
-    public val codexErrorInfo: CodexErrorInfo? = null,
-)
-
-@Serializable
-internal data class TurnInterruptParams(
     @SerialName("threadId")
     public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
 )
 
 @Serializable
-internal class TurnInterruptResponse
-
-internal typealias TurnItemsView = JsonElement
+internal data class ThreadRealtimeInitialItem(
+    @SerialName("role")
+    public val role: ConversationTextRole,
+    @SerialName("text")
+    public val text: String,
+)
 
 @Serializable
-internal data class TurnModerationMetadataNotification(
-    @SerialName("metadata")
-    public val metadata: JsonElement,
+internal data class ThreadRealtimeItemAddedNotification(
+    @SerialName("item")
+    public val item: JsonElement,
     @SerialName("threadId")
     public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
 )
 
 @Serializable
-internal data class TurnPlanStep(
-    @SerialName("status")
-    public val status: TurnPlanStepStatus,
-    @SerialName("step")
-    public val step: String,
+internal data class ThreadRealtimeOutputAudioDeltaNotification(
+    @SerialName("audio")
+    public val audio: ThreadRealtimeAudioChunk,
+    @SerialName("threadId")
+    public val threadId: String,
 )
 
 @Serializable
-internal enum class TurnPlanStepStatus {
-    @SerialName("pending") PENDING,
-    @SerialName("inProgress") IN_PROGRESS,
-    @SerialName("completed") COMPLETED,
+internal data class ThreadRealtimeSdpNotification(
+    @SerialName("sdp")
+    public val sdp: String,
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable(with = ThreadRealtimeStartTransportSerializer::class)
+internal sealed interface ThreadRealtimeStartTransport
+
+@Serializable
+internal data class ThreadRealtimeStartTransportWebsocketThreadRealtimeStartTransport(
+    @SerialName("type")
+    public val type: String = "websocket",
+) : ThreadRealtimeStartTransport {
+    init { require(type == "websocket") }
 }
 
 @Serializable
-internal data class TurnPlanUpdatedNotification(
-    @SerialName("plan")
-    public val plan: List<TurnPlanStep>,
+internal data class ThreadRealtimeStartTransportWebrtcThreadRealtimeStartTransport(
+    @SerialName("sdp")
+    public val sdp: String,
+    @SerialName("type")
+    public val type: String = "webrtc",
+) : ThreadRealtimeStartTransport {
+    init { require(type == "webrtc") }
+}
+
+internal object ThreadRealtimeStartTransportSerializer : JsonContentPolymorphicSerializer<ThreadRealtimeStartTransport>(ThreadRealtimeStartTransport::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ThreadRealtimeStartTransport> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "websocket" -> ThreadRealtimeStartTransportWebsocketThreadRealtimeStartTransport.serializer()
+            "webrtc" -> ThreadRealtimeStartTransportWebrtcThreadRealtimeStartTransport.serializer()
+            else -> error("Unknown ThreadRealtimeStartTransport type")
+        }
+}
+
+@Serializable
+internal data class ThreadRealtimeStartedNotification(
     @SerialName("threadId")
     public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("explanation")
-    public val explanation: String? = null,
+    @SerialName("version")
+    public val version: RealtimeConversationVersion,
+    @SerialName("realtimeSessionId")
+    public val realtimeSessionId: String? = null,
 )
 
 @Serializable
-internal data class TurnStartParams(
-    @SerialName("input")
-    public val input: List<UserInput>,
+internal data class ThreadRealtimeTranscriptDeltaNotification(
+    @SerialName("delta")
+    public val delta: String,
+    @SerialName("role")
+    public val role: String,
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ThreadRealtimeTranscriptDoneNotification(
+    @SerialName("role")
+    public val role: String,
+    @SerialName("text")
+    public val text: String,
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ThreadResumeInitialTurnsPageParams(
+    @SerialName("itemsView")
+    public val itemsView: TurnItemsView? = null,
+    @SerialName("limit")
+    public val limit: Long? = null,
+    @SerialName("sortDirection")
+    public val sortDirection: SortDirection? = null,
+)
+
+@Serializable
+internal data class ThreadResumeParams(
     @SerialName("threadId")
     public val threadId: String,
     @SerialName("approvalPolicy")
     public val approvalPolicy: AskForApproval? = null,
     @SerialName("approvalsReviewer")
     public val approvalsReviewer: ApprovalsReviewer? = null,
-    @SerialName("clientUserMessageId")
-    public val clientUserMessageId: String? = null,
+    @SerialName("baseInstructions")
+    public val baseInstructions: String? = null,
+    @SerialName("config")
+    public val config: JsonObject? = null,
     @SerialName("cwd")
     public val cwd: String? = null,
-    @SerialName("effort")
-    public val effort: ReasoningEffort? = null,
+    @SerialName("developerInstructions")
+    public val developerInstructions: String? = null,
     @SerialName("model")
     public val model: String? = null,
-    @SerialName("outputSchema")
-    public val outputSchema: JsonElement? = null,
+    @SerialName("modelProvider")
+    public val modelProvider: String? = null,
     @SerialName("personality")
     public val personality: Personality? = null,
-    @SerialName("sandboxPolicy")
-    public val sandboxPolicy: SandboxPolicy? = null,
+    @SerialName("sandbox")
+    public val sandbox: SandboxMode? = null,
     @SerialName("serviceTier")
     public val serviceTier: String? = null,
-    @SerialName("summary")
-    public val summary: ReasoningSummary? = null,
-    @SerialName("collaborationMode")
-    public val collaborationMode: CollaborationMode? = null,
 )
-
-@Serializable
-internal data class TurnStartResponse(
-    @SerialName("turn")
-    public val turn: Turn,
-)
-
-@Serializable
-internal data class TurnStartedNotification(
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turn")
-    public val turn: Turn,
-)
-
-@Serializable
-internal enum class TurnStatus {
-    @SerialName("completed") COMPLETED,
-    @SerialName("interrupted") INTERRUPTED,
-    @SerialName("failed") FAILED,
-    @SerialName("inProgress") IN_PROGRESS,
-}
-
-@Serializable
-internal data class TurnSteerParams(
-    @SerialName("expectedTurnId")
-    public val expectedTurnId: String,
-    @SerialName("input")
-    public val input: List<UserInput>,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("clientUserMessageId")
-    public val clientUserMessageId: String? = null,
-    @SerialName("additionalContext")
-    public val additionalContext: Map<String, AdditionalContextEntry>? = null,
-)
-
-@Serializable
-internal data class TurnSteerResponse(
-    @SerialName("turnId")
-    public val turnId: String,
-)
-
-@Serializable
-internal data class TurnsPage(
-    @SerialName("data")
-    public val data: List<Turn>,
-    @SerialName("backwardsCursor")
-    public val backwardsCursor: String? = null,
-    @SerialName("nextCursor")
-    public val nextCursor: String? = null,
-)
-
-@Serializable(with = UserInputSerializer::class)
-internal sealed interface UserInput
-
-@Serializable
-internal data class UserInputTextUserInput(
-    @SerialName("text")
-    public val text: String,
-    @SerialName("text_elements")
-    public val text_elements: List<TextElement>? = null,
-    @SerialName("type")
-    public val type: String = "text",
-) : UserInput {
-    init { require(type == "text") }
-}
-
-@Serializable
-internal data class UserInputImageUserInput(
-    @SerialName("url")
-    public val url: String,
-    @SerialName("detail")
-    public val detail: ImageDetail? = null,
-    @SerialName("type")
-    public val type: String = "image",
-) : UserInput {
-    init { require(type == "image") }
-}
-
-@Serializable
-internal data class UserInputLocalImageUserInput(
-    @SerialName("path")
-    public val path: String,
-    @SerialName("detail")
-    public val detail: ImageDetail? = null,
-    @SerialName("type")
-    public val type: String = "localImage",
-) : UserInput {
-    init { require(type == "localImage") }
-}
-
-@Serializable
-internal data class UserInputAudioUserInput(
-    @SerialName("url")
-    public val url: String,
-    @SerialName("type")
-    public val type: String = "audio",
-) : UserInput {
-    init { require(type == "audio") }
-}
-
-@Serializable
-internal data class UserInputLocalAudioUserInput(
-    @SerialName("path")
-    public val path: String,
-    @SerialName("type")
-    public val type: String = "localAudio",
-) : UserInput {
-    init { require(type == "localAudio") }
-}

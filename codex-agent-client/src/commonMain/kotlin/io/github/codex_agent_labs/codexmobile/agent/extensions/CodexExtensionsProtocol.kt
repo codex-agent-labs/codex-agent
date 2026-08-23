@@ -160,6 +160,7 @@ internal fun parseMcpServer(item: McpServerStatus): AgentMcpServer {
         name = name,
         displayName = item.serverInfo?.title ?: name,
         authStatus = when (item.authStatus) {
+            McpAuthStatus.UNKNOWN -> AgentMcpAuthStatus.UNKNOWN
             McpAuthStatus.UNSUPPORTED -> AgentMcpAuthStatus.UNSUPPORTED
             McpAuthStatus.NOT_LOGGED_IN -> AgentMcpAuthStatus.NOT_LOGGED_IN
             McpAuthStatus.BEARER_TOKEN -> AgentMcpAuthStatus.BEARER_TOKEN

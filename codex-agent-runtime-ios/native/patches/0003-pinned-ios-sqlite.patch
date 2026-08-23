@@ -1,18 +1,8 @@
-diff --git a/codex-rs/Cargo.toml b/codex-rs/Cargo.toml
---- a/codex-rs/Cargo.toml
-+++ b/codex-rs/Cargo.toml
-@@ -560,6 +560,7 @@ strip = false
- [patch.crates-io]
- # Uncomment to debug local changes.
- # ratatui = { path = "../../ratatui" }
-+libsqlite3-sys = { path = "third-party/libsqlite3-sys" }
- crossterm = { git = "https://github.com/nornagon/crossterm", rev = "87db8bfa6dc99427fd3b071681b07fc31c6ce995" }
- ratatui = { git = "https://github.com/nornagon/ratatui", rev = "9b2ad1298408c45918ee9f8241a6f95498cdbed2" }
- tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
 diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index e3f1f7d..fbfd9a6 100644
 --- a/codex-rs/Cargo.lock
 +++ b/codex-rs/Cargo.lock
-@@ -8670,8 +8670,6 @@ dependencies = [
+@@ -9046,8 +9046,6 @@ dependencies = [
  [[package]]
  name = "libsqlite3-sys"
  version = "0.37.0"
@@ -21,3 +11,15 @@ diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
  dependencies = [
   "cc",
   "pkg-config",
+diff --git a/codex-rs/Cargo.toml b/codex-rs/Cargo.toml
+index 8b5a799..236410a 100644
+--- a/codex-rs/Cargo.toml
++++ b/codex-rs/Cargo.toml
+@@ -583,6 +583,7 @@ opt-level = 0
+
+ [patch.crates-io]
+ i18n-embed-fl = { path = "ios-bridge/vendor/i18n-embed-fl-0.9.4" }
++libsqlite3-sys = { path = "third-party/libsqlite3-sys" }
+ # Uncomment to debug local changes.
+ # ratatui = { path = "../../ratatui" }
+ crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "45fecb9508105988f42fe6ff0441783ed3717f92" }

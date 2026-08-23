@@ -13,6 +13,25 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
+internal data class ApplyPatchApprovalResponse(
+    @SerialName("decision")
+    public val decision: ReviewDecision,
+)
+
+@Serializable
+internal enum class ApprovalsReviewer {
+    @SerialName("user") USER,
+    @SerialName("auto_review") AUTO_REVIEW,
+    @SerialName("guardian_subagent") GUARDIAN_SUBAGENT,
+}
+
+@Serializable
+internal data class AppsConfig(
+    @SerialName("_default")
+    public val _default: AppsDefaultConfig? = null,
+)
+
+@Serializable
 internal data class AppsDefaultConfig(
     @SerialName("approvals_reviewer")
     public val approvals_reviewer: ApprovalsReviewer? = null,
@@ -66,6 +85,8 @@ internal data class AppsReadParams(
     public val appIds: List<String>,
     @SerialName("includeTools")
     public val includeTools: Boolean? = null,
+    @SerialName("threadId")
+    public val threadId: String? = null,
 )
 
 @Serializable
@@ -95,6 +116,20 @@ internal typealias AutoCompactTokenLimitScope = JsonElement
 internal enum class AutoReviewDecisionSource {
     @SerialName("agent") AGENT,
 }
+
+@Serializable
+internal data class AutoReviewRequirements(
+    @SerialName("ignoreRules")
+    public val ignoreRules: List<String>? = null,
+    @SerialName("requiredOnModels")
+    public val requiredOnModels: List<String>? = null,
+)
+
+@Serializable
+internal data class BrowserUseRequirements(
+    @SerialName("disableAutoReview")
+    public val disableAutoReview: Boolean? = null,
+)
 
 @Serializable
 internal data class ByteRange(
@@ -166,6 +201,14 @@ internal data class ChatgptAuthTokensRefreshResponse(
 )
 
 @Serializable
+internal enum class CliAuthCredentialsStoreMode {
+    @SerialName("file") FILE,
+    @SerialName("keyring") KEYRING,
+    @SerialName("auto") AUTO,
+    @SerialName("ephemeral") EPHEMERAL,
+}
+
+@Serializable
 internal data class ClientInfo(
     @SerialName("name")
     public val name: String,
@@ -174,49 +217,3 @@ internal data class ClientInfo(
     @SerialName("title")
     public val title: String? = null,
 )
-
-@Serializable(with = ClientNotificationSerializer::class)
-internal sealed interface ClientNotification
-
-@Serializable
-internal data class ClientNotificationInitializedNotification(
-    @SerialName("method")
-    public val method: String = "initialized",
-) : ClientNotification {
-    init { require(method == "initialized") }
-}
-
-internal object ClientNotificationSerializer : JsonContentPolymorphicSerializer<ClientNotification>(ClientNotification::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ClientNotification> =
-        when (element.jsonObject["method"]?.jsonPrimitive?.content) {
-            "initialized" -> ClientNotificationInitializedNotification.serializer()
-            else -> error("Unknown ClientNotification method")
-        }
-}
-
-@Serializable(with = ClientRequestSerializer::class)
-internal sealed interface ClientRequest
-
-@Serializable
-internal data class ClientRequestInitializeRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: InitializeParams,
-    @SerialName("method")
-    public val method: String = "initialize",
-) : ClientRequest {
-    init { require(method == "initialize") }
-}
-
-@Serializable
-internal data class ClientRequestThreadStartRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ThreadStartParams,
-    @SerialName("method")
-    public val method: String = "thread/start",
-) : ClientRequest {
-    init { require(method == "thread/start") }
-}

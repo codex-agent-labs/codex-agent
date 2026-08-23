@@ -1,14 +1,14 @@
 {
-  "version": "0.145.0",
-  "releaseTag": "rust-v0.145.0",
+  "version": "0.149.0",
+  "releaseTag": "rust-v0.149.0",
   "distributions": [
     {
       "target": "macosArm64",
       "classifier": "app-server-macos-arm64",
       "asset": "codex-app-server-aarch64-apple-darwin.tar.gz",
-      "archiveSha256": "4a62b65e37fa2b16e0f77b11ff199f10e446ed46278c5178a86787d14c16fa2e",
+      "archiveSha256": "35892a576ec29edbbb766cfba002c57c7beea479c6c21715a134cab4a7352032",
       "archiveEntry": "codex-app-server-aarch64-apple-darwin",
-      "binarySha256": "98ff0c6e896b49db54066519c15fdfc01d8efe26985c7f433d0200ee3bc1c807",
+      "binarySha256": "b1d1a8c3146b16a01c057e9ecc2213b969a775ba76c424d812714a2911708de2",
       "executableName": "codex-app-server",
       "supervisorExecutableName": "codex-process-supervisor"
     },
@@ -16,9 +16,9 @@
       "target": "macosX64",
       "classifier": "app-server-macos-x64",
       "asset": "codex-app-server-x86_64-apple-darwin.tar.gz",
-      "archiveSha256": "ec6ebeb526601120ada65845fc64d79ae01179b1bfbb51449a0d9f06934b9606",
+      "archiveSha256": "12c4951f6e9c1acfb6c726a7cf59b3c9f152dd16e5b7475cfc2f435396fc3d1a",
       "archiveEntry": "codex-app-server-x86_64-apple-darwin",
-      "binarySha256": "4df0ee0934868973d05ca26cc195447c4a70ae45250360c04226d4104c62102f",
+      "binarySha256": "f5ec29cc4f35838e5811929710d0c6870638fda949c72e75cbbebc80b8f2406a",
       "executableName": "codex-app-server",
       "supervisorExecutableName": "codex-process-supervisor"
     },
@@ -26,9 +26,9 @@
       "target": "linuxArm64",
       "classifier": "app-server-linux-arm64",
       "asset": "codex-app-server-aarch64-unknown-linux-musl.tar.gz",
-      "archiveSha256": "3a185f6a1e2ec3ce7ebe9ea5ab23a81bfab75470337e66e235b881ca40ac8932",
+      "archiveSha256": "ab91c737ff50e5e1187582ffa316ba8b5341c250657c5c5d678a88b6dc7f4f71",
       "archiveEntry": "codex-app-server-aarch64-unknown-linux-musl",
-      "binarySha256": "9c5954b50520b68d7d181804965b554f09add95cc8fb0db6a7750111a1296b60",
+      "binarySha256": "96ac7e010cc38b90e66fc0dc67f5baa343b61f5471c6625bb2694d7991e2bbe0",
       "executableName": "codex-app-server",
       "supervisorExecutableName": "codex-process-supervisor"
     },
@@ -36,9 +36,9 @@
       "target": "linuxX64",
       "classifier": "app-server-linux-x64",
       "asset": "codex-app-server-x86_64-unknown-linux-musl.tar.gz",
-      "archiveSha256": "07e9dbfae80c47d5b48a5be4fbf26143fdb5ff647d4afa76805d3a4b81d29877",
+      "archiveSha256": "93b7b3969983901d5e94e8126c1aaaa4229a8eec7086d9d09e4ebbabdd812128",
       "archiveEntry": "codex-app-server-x86_64-unknown-linux-musl",
-      "binarySha256": "49dae43c3be16bc6fc0adb16859244f054a6382656738f1fc280ab3b390b1e49",
+      "binarySha256": "86650609ef15e4d5dea7313f50966de060164bc68c9f5f7c79de6827c9fb1c3e",
       "executableName": "codex-app-server",
       "supervisorExecutableName": "codex-process-supervisor"
     },
@@ -46,9 +46,9 @@
       "target": "mingwX64",
       "classifier": "app-server-windows-x64",
       "asset": "codex-app-server-x86_64-pc-windows-msvc.exe.zip",
-      "archiveSha256": "dfc57f87b9bc61d1d4503b7a60fbe5bae5f13a5283234c86a4c0da6c97a12961",
+      "archiveSha256": "252c91484c3dedfae353c22c5ccb0f529c97ed9abcac48c8471329aecaa24427",
       "archiveEntry": "codex-app-server-x86_64-pc-windows-msvc.exe",
-      "binarySha256": "5163c75ed88d460b35b03c8d8f4ef190b3bdd09971d7ac2bd90b48c435f1cf14",
+      "binarySha256": "d181a381eece22dd21f98a06006c03289fe1a705012b9ca8fb3596dc0d90ea61",
       "executableName": "codex-app-server.exe",
       "supervisorExecutableName": "codex-process-supervisor.exe"
     }

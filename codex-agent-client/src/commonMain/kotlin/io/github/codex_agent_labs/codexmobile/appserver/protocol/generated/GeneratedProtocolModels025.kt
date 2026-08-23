@@ -13,210 +13,214 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class ParsedCommandUnknownParsedCommand(
-    @SerialName("cmd")
-    public val cmd: String,
-    @SerialName("type")
-    public val type: String = "unknown",
-) : ParsedCommand {
-    init { require(type == "unknown") }
-}
-
-internal object ParsedCommandSerializer : JsonContentPolymorphicSerializer<ParsedCommand>(ParsedCommand::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ParsedCommand> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "read" -> ParsedCommandReadParsedCommand.serializer()
-            "list_files" -> ParsedCommandListFilesParsedCommand.serializer()
-            "search" -> ParsedCommandSearchParsedCommand.serializer()
-            "unknown" -> ParsedCommandUnknownParsedCommand.serializer()
-            else -> error("Unknown ParsedCommand type")
-        }
+internal enum class McpServerStatusDetail {
+    @SerialName("full") FULL,
+    @SerialName("toolsAndAuthOnly") TOOLS_AND_AUTH_ONLY,
 }
 
 @Serializable
-internal enum class PatchApplyStatus {
+internal data class McpServerStatusUpdatedNotification(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("status")
+    public val status: McpServerStartupState,
+    @SerialName("error")
+    public val error: String? = null,
+    @SerialName("failureReason")
+    public val failureReason: McpServerStartupFailureReason? = null,
+    @SerialName("threadId")
+    public val threadId: String? = null,
+)
+
+@Serializable
+internal data class McpServerToolCallParams(
+    @SerialName("server")
+    public val server: String,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("tool")
+    public val tool: String,
+    @SerialName("_meta")
+    public val _meta: JsonElement? = null,
+    @SerialName("arguments")
+    public val arguments: JsonElement? = null,
+)
+
+@Serializable
+internal data class McpServerToolCallResponse(
+    @SerialName("content")
+    public val content: List<JsonElement>,
+    @SerialName("_meta")
+    public val _meta: JsonElement? = null,
+    @SerialName("isError")
+    public val isError: Boolean? = null,
+    @SerialName("structuredContent")
+    public val structuredContent: JsonElement? = null,
+)
+
+@Serializable
+internal data class McpToolCallAppContext(
+    @SerialName("connectorId")
+    public val connectorId: String,
+    @SerialName("actionName")
+    public val actionName: String? = null,
+    @SerialName("appName")
+    public val appName: String? = null,
+    @SerialName("linkId")
+    public val linkId: String? = null,
+    @SerialName("resourceUri")
+    public val resourceUri: String? = null,
+)
+
+@Serializable
+internal data class McpToolCallError(
+    @SerialName("message")
+    public val message: String,
+)
+
+@Serializable
+internal data class McpToolCallProgressNotification(
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("message")
+    public val message: String,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+)
+
+@Serializable
+internal data class McpToolCallResult(
+    @SerialName("content")
+    public val content: List<JsonElement>,
+    @SerialName("_meta")
+    public val _meta: JsonElement? = null,
+    @SerialName("structuredContent")
+    public val structuredContent: JsonElement? = null,
+)
+
+@Serializable
+internal enum class McpToolCallStatus {
     @SerialName("inProgress") IN_PROGRESS,
     @SerialName("completed") COMPLETED,
     @SerialName("failed") FAILED,
-    @SerialName("declined") DECLINED,
-}
-
-@Serializable(with = PatchChangeKindSerializer::class)
-internal sealed interface PatchChangeKind
-
-@Serializable
-internal data class PatchChangeKindAddPatchChangeKind(
-    @SerialName("type")
-    public val type: String = "add",
-) : PatchChangeKind {
-    init { require(type == "add") }
 }
 
 @Serializable
-internal data class PatchChangeKindDeletePatchChangeKind(
-    @SerialName("type")
-    public val type: String = "delete",
-) : PatchChangeKind {
-    init { require(type == "delete") }
+internal data class MemoryCitation(
+    @SerialName("entries")
+    public val entries: List<MemoryCitationEntry>,
+    @SerialName("threadIds")
+    public val threadIds: List<String>,
+)
+
+@Serializable
+internal data class MemoryCitationEntry(
+    @SerialName("lineEnd")
+    public val lineEnd: Long,
+    @SerialName("lineStart")
+    public val lineStart: Long,
+    @SerialName("note")
+    public val note: String,
+    @SerialName("path")
+    public val path: String,
+)
+
+@Serializable
+internal enum class MergeStrategy {
+    @SerialName("replace") REPLACE,
+    @SerialName("upsert") UPSERT,
+}
+
+internal typealias MessagePhase = JsonElement
+
+@Serializable
+internal data class MigrationDetails(
+    @SerialName("commands")
+    public val commands: List<CommandMigration>? = null,
+    @SerialName("hooks")
+    public val hooks: List<HookMigration>? = null,
+    @SerialName("mcpServers")
+    public val mcpServers: List<McpServerMigration>? = null,
+    @SerialName("memory")
+    public val memory: List<String>? = null,
+    @SerialName("plugins")
+    public val plugins: List<PluginsMigration>? = null,
+    @SerialName("sessions")
+    public val sessions: List<SessionMigration>? = null,
+    @SerialName("skills")
+    public val skills: List<SkillMigration>? = null,
+    @SerialName("subagents")
+    public val subagents: List<SubagentMigration>? = null,
+)
+
+@Serializable
+internal enum class ModeKind {
+    @SerialName("plan") PLAN,
+    @SerialName("default") DEFAULT,
 }
 
 @Serializable
-internal data class PatchChangeKindUpdatePatchChangeKind(
-    @SerialName("move_path")
-    public val move_path: String? = null,
-    @SerialName("type")
-    public val type: String = "update",
-) : PatchChangeKind {
-    init { require(type == "update") }
-}
-
-internal object PatchChangeKindSerializer : JsonContentPolymorphicSerializer<PatchChangeKind>(PatchChangeKind::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<PatchChangeKind> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "add" -> PatchChangeKindAddPatchChangeKind.serializer()
-            "delete" -> PatchChangeKindDeletePatchChangeKind.serializer()
-            "update" -> PatchChangeKindUpdatePatchChangeKind.serializer()
-            else -> error("Unknown PatchChangeKind type")
-        }
-}
+internal data class Model(
+    @SerialName("defaultReasoningEffort")
+    public val defaultReasoningEffort: ReasoningEffort,
+    @SerialName("description")
+    public val description: String,
+    @SerialName("displayName")
+    public val displayName: String,
+    @SerialName("hidden")
+    public val hidden: Boolean,
+    @SerialName("id")
+    public val id: String,
+    @SerialName("isDefault")
+    public val isDefault: Boolean,
+    @SerialName("model")
+    public val model: String,
+    @SerialName("supportedReasoningEfforts")
+    public val supportedReasoningEfforts: List<ReasoningEffortOption>,
+    @SerialName("additionalSpeedTiers")
+    public val additionalSpeedTiers: List<String>? = null,
+    @SerialName("availabilityNux")
+    public val availabilityNux: ModelAvailabilityNux? = null,
+    @SerialName("defaultServiceTier")
+    public val defaultServiceTier: String? = null,
+    @SerialName("inputModalities")
+    public val inputModalities: List<InputModality>? = null,
+    @SerialName("modelSpecialty")
+    public val modelSpecialty: String? = null,
+    @SerialName("multiAgentVersion")
+    public val multiAgentVersion: MultiAgentVersion? = null,
+    @SerialName("serviceTiers")
+    public val serviceTiers: List<ModelServiceTier>? = null,
+    @SerialName("supportsPersonality")
+    public val supportsPersonality: Boolean? = null,
+    @SerialName("upgrade")
+    public val upgrade: String? = null,
+    @SerialName("upgradeInfo")
+    public val upgradeInfo: ModelUpgradeInfo? = null,
+)
 
 @Serializable
-internal enum class PermissionGrantScope {
-    @SerialName("turn") TURN,
-    @SerialName("session") SESSION,
-}
+internal data class ModelAvailabilityNux(
+    @SerialName("message")
+    public val message: String,
+)
 
 @Serializable
-internal data class PermissionProfileListParams(
+internal data class ModelListParams(
     @SerialName("cursor")
     public val cursor: String? = null,
-    @SerialName("cwd")
-    public val cwd: String? = null,
+    @SerialName("includeHidden")
+    public val includeHidden: Boolean? = null,
     @SerialName("limit")
     public val limit: Long? = null,
 )
 
 @Serializable
-internal data class PermissionProfileListResponse(
+internal data class ModelListResponse(
     @SerialName("data")
-    public val data: List<PermissionProfileSummary>,
+    public val data: List<Model>,
     @SerialName("nextCursor")
     public val nextCursor: String? = null,
-)
-
-@Serializable
-internal data class PermissionProfileSummary(
-    @SerialName("allowed")
-    public val allowed: Boolean,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("description")
-    public val description: String? = null,
-)
-
-@Serializable
-internal data class PermissionsRequestApprovalParams(
-    @SerialName("cwd")
-    public val cwd: AbsolutePathBuf,
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("permissions")
-    public val permissions: RequestPermissionProfile,
-    @SerialName("startedAtMs")
-    public val startedAtMs: Long,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("environmentId")
-    public val environmentId: String? = null,
-    @SerialName("reason")
-    public val reason: String? = null,
-)
-
-@Serializable
-internal data class PermissionsRequestApprovalResponse(
-    @SerialName("permissions")
-    public val permissions: GrantedPermissionProfile,
-    @SerialName("scope")
-    public val scope: PermissionGrantScope? = null,
-    @SerialName("strictAutoReview")
-    public val strictAutoReview: Boolean? = null,
-)
-
-@Serializable
-internal enum class Personality {
-    @SerialName("none") NONE,
-    @SerialName("friendly") FRIENDLY,
-    @SerialName("pragmatic") PRAGMATIC,
-}
-
-@Serializable
-internal data class PlanDeltaNotification(
-    @SerialName("delta")
-    public val delta: String,
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-)
-
-@Serializable
-internal enum class PlanType {
-    @SerialName("free") FREE,
-    @SerialName("go") GO,
-    @SerialName("plus") PLUS,
-    @SerialName("pro") PRO,
-    @SerialName("prolite") PROLITE,
-    @SerialName("team") TEAM,
-    @SerialName("self_serve_business_usage_based") SELF_SERVE_BUSINESS_USAGE_BASED,
-    @SerialName("business") BUSINESS,
-    @SerialName("enterprise_cbp_usage_based") ENTERPRISE_CBP_USAGE_BASED,
-    @SerialName("enterprise") ENTERPRISE,
-    @SerialName("edu") EDU,
-    @SerialName("unknown") UNKNOWN,
-}
-
-@Serializable
-internal enum class PluginAuthPolicy {
-    @SerialName("ON_INSTALL") ON_INSTALL,
-    @SerialName("ON_USE") ON_USE,
-}
-
-internal typealias PluginAvailability = JsonElement
-
-@Serializable
-internal data class PluginDetail(
-    @SerialName("appTemplates")
-    public val appTemplates: List<AppTemplateSummary>,
-    @SerialName("apps")
-    public val apps: List<AppSummary>,
-    @SerialName("hooks")
-    public val hooks: List<PluginHookSummary>,
-    @SerialName("marketplaceName")
-    public val marketplaceName: String,
-    @SerialName("mcpServers")
-    public val mcpServers: List<String>,
-    @SerialName("skills")
-    public val skills: List<SkillSummary>,
-    @SerialName("summary")
-    public val summary: PluginSummary,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("marketplacePath")
-    public val marketplacePath: AbsolutePathBuf? = null,
-    @SerialName("scheduledTasks")
-    public val scheduledTasks: List<ScheduledTaskSummary>? = null,
-    @SerialName("shareUrl")
-    public val shareUrl: String? = null,
-)
-
-@Serializable
-internal data class PluginHookSummary(
-    @SerialName("eventName")
-    public val eventName: HookEventName,
-    @SerialName("key")
-    public val key: String,
 )

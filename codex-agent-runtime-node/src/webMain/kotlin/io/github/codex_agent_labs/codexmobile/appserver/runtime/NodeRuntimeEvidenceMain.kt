@@ -112,8 +112,8 @@ private suspend fun officialAppServerProof() {
     )
     try {
         host.selectWorkspace(CodexPathWorkspaceSelection(workspace))
-        check(host.state.value is CodexHostState.Ready) {
-            "Node host did not become ready: ${host.state.value}"
+        check(host.lifecycleState.value is CodexHostState.Ready) {
+            "Node host did not become ready: ${host.lifecycleState.value}"
         }
     } finally {
         host.close()

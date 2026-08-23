@@ -40,6 +40,13 @@ class CodexPublicApiAdoptionTest {
                 failure = CodexFailure("test", "test", false),
             ).canStartTurn,
         )
+        assertTrue(
+            AgentConversationState(
+                AgentConversationStatus.FAILED,
+                ConversationId("thread-1"),
+                failure = CodexFailure("test", "test", false),
+            ).canReload,
+        )
     }
 
     @Test

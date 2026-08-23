@@ -58,11 +58,13 @@ internal class CodexAgentClient(
     internal val toolProvider: CodexToolProvider? = null,
     internal val pluginRequestTimeoutMillis: Long = 120_000,
     internal val emptyPluginCatalogRetryDelaysMillis: List<Long> = EMPTY_PLUGIN_CATALOG_RETRY_DELAYS_MILLIS,
+    installationRoots: CodexInstallationRoots = CodexInstallationRoots(),
     coroutineDispatcher: CoroutineDispatcher = Dispatchers.Default,
     fileSystem: AgentFileStore? = null,
 ) : AutoCloseable {
     internal val coroutineDispatcher = coroutineDispatcher
     internal val fileSystem = fileSystem
+    internal val ownedResources = fileSystem?.let { OwnedCodexResources(installationRoots, it) }
     internal val builtInToolDefinitions = toolProvider?.definitions().orEmpty().toList()
     internal val builtInToolsByName = builtInToolDefinitions.associateBy(BuiltInToolDefinition::name)
     internal val scope = CoroutineScope(SupervisorJob() + coroutineDispatcher)
@@ -140,6 +142,10 @@ internal class CodexAgentClient(
                 pluginCacheDirectory,
                 shellTranscriptDirectory,
                 turnInputMetadataDirectory,
+                installationRoots.userSkillsRoot,
+                installationRoots.workspaceSkillsRoot,
+                installationRoots.userHooksFile,
+                installationRoots.workspaceHooksFile,
             ).all { it == null },
         ) { "A file system is required when persistent agent directories are configured" }
     }
@@ -165,7 +171,8 @@ internal class CodexAgentClient(
     internal val events: Flow<AgentEvent> = eventsChannel.events
 
     internal suspend fun start(): Unit {
-        connection.ensureStarted()
+        val initialized = connection.ensureStarted()
+        ownedResources?.resolveCodexHome(initialized.codexHome)
     }
 
     internal suspend fun authenticate(
@@ -174,12 +181,24 @@ internal class CodexAgentClient(
     internal suspend fun cancelAuthentication() = cancelAuthenticationAction()
     internal suspend fun signOut() = signOutAction()
     internal suspend fun listModels(): List<AgentModel> = listModelsAction()
+    internal suspend fun readModelPreferences(workingDirectory: String): AgentModelPreferences =
+        readModelPreferencesAction(workingDirectory)
     internal suspend fun listSkills(
         workingDirectory: String,
         forceReload: Boolean = false,
     ): AgentSkillCatalog =
         listSkillsAction(workingDirectory, forceReload)
     internal suspend fun readSkill(path: String, offset: Long): AgentSkillChunk = readSkillAction(path, offset)
+    internal suspend fun installSkill(
+        directory: String,
+        scope: AgentInstallationScope,
+        workingDirectory: String,
+    ): AgentSkill = mutateExtension {
+        requireOwnedResources().installSkill(directory, scope) { listSkills(workingDirectory, forceReload = true) }
+    }
+    internal suspend fun uninstallSkill(skill: AgentSkill, workingDirectory: String): Unit = mutateExtension {
+        requireOwnedResources().uninstallSkill(skill) { listSkills(workingDirectory, forceReload = true) }
+    }
     internal suspend fun setSkillEnabled(path: String, isEnabled: Boolean) = mutateExtension {
         setSkillEnabledAction(path, isEnabled)
     }
@@ -221,8 +240,26 @@ internal class CodexAgentClient(
         forceReload: Boolean = false,
     ): List<AgentConnector> =
         listConnectorsAction(conversationId, forceReload)
-    internal suspend fun listMcpServers(): List<AgentMcpServer> = listMcpServersAction()
+    internal suspend fun listMcpServers(workingDirectory: String): List<AgentMcpServer> =
+        listMcpServersWithConfigurationAction(workingDirectory)
+    internal suspend fun addMcpServer(
+        configuration: AgentMcpServerConfiguration,
+        workingDirectory: String,
+    ): AgentMcpServer = mutateExtension { addMcpServerAction(configuration, workingDirectory) }
+    internal suspend fun removeMcpServer(server: AgentMcpServer, workingDirectory: String): Unit = mutateExtension {
+        removeMcpServerAction(server, workingDirectory)
+    }
     internal suspend fun listHooks(workingDirectory: String): AgentHookCatalog = listHooksAction(workingDirectory)
+    internal suspend fun installHook(
+        directory: String,
+        scope: AgentInstallationScope,
+        workingDirectory: String,
+    ): AgentHook = mutateExtension {
+        requireOwnedResources().installHook(directory, scope) { listHooks(workingDirectory) }
+    }
+    internal suspend fun uninstallHook(hook: AgentHook, workingDirectory: String): Unit = mutateExtension {
+        requireOwnedResources().uninstallHook(hook) { listHooks(workingDirectory) }
+    }
     internal suspend fun setHookEnabled(key: String, isEnabled: Boolean) = mutateExtension {
         setHookEnabledAction(key, isEnabled)
     }
@@ -233,7 +270,8 @@ internal class CodexAgentClient(
     internal suspend fun startMcpOauth(
         serverName: String,
         conversationId: ConversationId? = null,
-    ): String = startMcpOauthAction(serverName, conversationId)
+        onRequestEnqueued: (suspend () -> Unit)? = null,
+    ): String = startMcpOauthAction(serverName, conversationId, onRequestEnqueued)
     internal suspend fun listConversations(): List<AgentConversationSummary> = listConversationsAction()
     internal suspend fun readConversation(conversationId: ConversationId): AgentConversation = readConversationAction(conversationId)
     internal suspend fun renameConversation(conversationId: ConversationId, name: String) = renameConversationAction(conversationId, name)
@@ -278,6 +316,9 @@ internal class CodexAgentClient(
     internal suspend fun respondServerError(id: JsonElement, code: Int, message: String) = respondServerErrorAction(id, code, message)
     internal suspend fun handleNotification(notification: ServerNotification) = handleNotificationAction(notification)
     internal suspend fun emitAuthenticated() = emitAuthenticatedAction()
+
+    private fun requireOwnedResources(): OwnedCodexResources =
+        checkNotNull(ownedResources) { "Owned resource installation requires a file system" }
     internal suspend fun applyLoginCompletion(completion: LoginCompletion) = applyLoginCompletionAction(completion)
     internal suspend fun finishTurn(
         conversationId: ConversationId,

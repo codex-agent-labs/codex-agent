@@ -13,208 +13,208 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class HookMigration(
-    @SerialName("name")
-    public val name: String,
+internal data class FuzzyFileSearchSessionCompletedNotification(
+    @SerialName("sessionId")
+    public val sessionId: String,
 )
 
 @Serializable
-internal data class HookOutputEntry(
-    @SerialName("kind")
-    public val kind: HookOutputEntryKind,
-    @SerialName("text")
-    public val text: String,
+internal data class FuzzyFileSearchSessionUpdatedNotification(
+    @SerialName("files")
+    public val files: List<FuzzyFileSearchResult>,
+    @SerialName("query")
+    public val query: String,
+    @SerialName("sessionId")
+    public val sessionId: String,
 )
 
 @Serializable
-internal enum class HookOutputEntryKind {
-    @SerialName("warning") WARNING,
-    @SerialName("stop") STOP,
-    @SerialName("feedback") FEEDBACK,
-    @SerialName("context") CONTEXT,
-    @SerialName("error") ERROR,
-}
-
-@Serializable
-internal data class HookPromptFragment(
-    @SerialName("hookRunId")
-    public val hookRunId: String,
-    @SerialName("text")
-    public val text: String,
+internal data class GetAccountParams(
+    @SerialName("refreshToken")
+    public val refreshToken: Boolean? = null,
 )
 
 @Serializable
-internal enum class HookRunStatus {
-    @SerialName("running") RUNNING,
-    @SerialName("completed") COMPLETED,
-    @SerialName("failed") FAILED,
-    @SerialName("blocked") BLOCKED,
-    @SerialName("stopped") STOPPED,
-}
+internal data class GetAccountRateLimitsResponse(
+    @SerialName("rateLimits")
+    public val rateLimits: RateLimitSnapshot,
+    @SerialName("rateLimitResetCredits")
+    public val rateLimitResetCredits: RateLimitResetCreditsSummary? = null,
+    @SerialName("rateLimitsByLimitId")
+    public val rateLimitsByLimitId: Map<String, RateLimitSnapshot>? = null,
+)
 
 @Serializable
-internal data class HookRunSummary(
-    @SerialName("displayOrder")
-    public val displayOrder: Long,
-    @SerialName("entries")
-    public val entries: List<HookOutputEntry>,
-    @SerialName("eventName")
-    public val eventName: HookEventName,
-    @SerialName("executionMode")
-    public val executionMode: HookExecutionMode,
-    @SerialName("handlerType")
-    public val handlerType: HookHandlerType,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("scope")
-    public val scope: HookScope,
-    @SerialName("sourcePath")
-    public val sourcePath: AbsolutePathBuf,
-    @SerialName("startedAt")
-    public val startedAt: Long,
+internal data class GetAccountResponse(
+    @SerialName("requiresOpenaiAuth")
+    public val requiresOpenaiAuth: Boolean,
+    @SerialName("account")
+    public val account: Account? = null,
+)
+
+@Serializable
+internal data class GetAccountTokenUsageParams(
+    @SerialName("threadId")
+    public val threadId: String? = null,
+)
+
+@Serializable
+internal data class GetAccountTokenUsageResponse(
+    @SerialName("summary")
+    public val summary: AccountTokenUsageSummary,
+    @SerialName("dailyUsageBuckets")
+    public val dailyUsageBuckets: List<AccountTokenUsageDailyBucket>? = null,
+    @SerialName("threadUsage")
+    public val threadUsage: ThreadUsage? = null,
+)
+
+@Serializable
+internal data class GetWorkspaceMessagesResponse(
+    @SerialName("featureEnabled")
+    public val featureEnabled: Boolean,
+    @SerialName("messages")
+    public val messages: List<WorkspaceMessage>,
+)
+
+@Serializable
+internal data class GitInfo(
+    @SerialName("branch")
+    public val branch: String? = null,
+    @SerialName("originUrl")
+    public val originUrl: String? = null,
+    @SerialName("sha")
+    public val sha: String? = null,
+)
+
+@Serializable
+internal data class GrantedPermissionProfile(
+    @SerialName("fileSystem")
+    public val fileSystem: AdditionalFileSystemPermissions? = null,
+    @SerialName("network")
+    public val network: AdditionalNetworkPermissions? = null,
+)
+
+@Serializable
+internal data class GuardianApprovalReview(
     @SerialName("status")
-    public val status: HookRunStatus,
-    @SerialName("completedAt")
-    public val completedAt: Long? = null,
-    @SerialName("durationMs")
-    public val durationMs: Long? = null,
-    @SerialName("source")
-    public val source: HookSource? = null,
-    @SerialName("statusMessage")
-    public val statusMessage: String? = null,
+    public val status: GuardianApprovalReviewStatus,
+    @SerialName("rationale")
+    public val rationale: String? = null,
+    @SerialName("riskLevel")
+    public val riskLevel: GuardianRiskLevel? = null,
+    @SerialName("userAuthorization")
+    public val userAuthorization: GuardianUserAuthorization? = null,
 )
 
-@Serializable
-internal enum class HookScope {
-    @SerialName("thread") THREAD,
-    @SerialName("turn") TURN,
-}
+@Serializable(with = GuardianApprovalReviewActionSerializer::class)
+internal sealed interface GuardianApprovalReviewAction
 
 @Serializable
-internal enum class HookSource {
-    @SerialName("system") SYSTEM,
-    @SerialName("user") USER,
-    @SerialName("project") PROJECT,
-    @SerialName("mdm") MDM,
-    @SerialName("sessionFlags") SESSION_FLAGS,
-    @SerialName("plugin") PLUGIN,
-    @SerialName("cloudRequirements") CLOUD_REQUIREMENTS,
-    @SerialName("cloudManagedConfig") CLOUD_MANAGED_CONFIG,
-    @SerialName("legacyManagedConfigFile") LEGACY_MANAGED_CONFIG_FILE,
-    @SerialName("legacyManagedConfigMdm") LEGACY_MANAGED_CONFIG_MDM,
-    @SerialName("unknown") UNKNOWN,
-}
-
-@Serializable
-internal data class HookStartedNotification(
-    @SerialName("run")
-    public val run: HookRunSummary,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String? = null,
-)
-
-@Serializable
-internal enum class HookTrustStatus {
-    @SerialName("managed") MANAGED,
-    @SerialName("untrusted") UNTRUSTED,
-    @SerialName("trusted") TRUSTED,
-    @SerialName("modified") MODIFIED,
-}
-
-@Serializable
-internal data class HooksListEntry(
+internal data class GuardianApprovalReviewActionCommandGuardianApprovalReviewAction(
+    @SerialName("command")
+    public val command: String,
     @SerialName("cwd")
-    public val cwd: String,
-    @SerialName("errors")
-    public val errors: List<HookErrorInfo>,
-    @SerialName("hooks")
-    public val hooks: List<HookMetadata>,
-    @SerialName("warnings")
-    public val warnings: List<String>,
-)
-
-@Serializable
-internal data class HooksListParams(
-    @SerialName("cwds")
-    public val cwds: List<String>? = null,
-)
-
-@Serializable
-internal data class HooksListResponse(
-    @SerialName("data")
-    public val data: List<HooksListEntry>,
-)
-
-@Serializable
-internal enum class ImageDetail {
-    @SerialName("auto") AUTO,
-    @SerialName("low") LOW,
-    @SerialName("high") HIGH,
-    @SerialName("original") ORIGINAL,
+    public val cwd: AbsolutePathBuf,
+    @SerialName("source")
+    public val source: GuardianCommandSource,
+    @SerialName("type")
+    public val type: String = "command",
+) : GuardianApprovalReviewAction {
+    init { require(type == "command") }
 }
 
 @Serializable
-internal data class InitializeCapabilities(
-    @SerialName("experimentalApi")
-    public val experimentalApi: Boolean? = null,
-    @SerialName("mcpServerOpenaiFormElicitation")
-    public val mcpServerOpenaiFormElicitation: Boolean? = null,
-    @SerialName("optOutNotificationMethods")
-    public val optOutNotificationMethods: List<String>? = null,
-    @SerialName("requestAttestation")
-    public val requestAttestation: Boolean? = null,
-)
+internal data class GuardianApprovalReviewActionExecveGuardianApprovalReviewAction(
+    @SerialName("argv")
+    public val argv: List<String>,
+    @SerialName("cwd")
+    public val cwd: AbsolutePathBuf,
+    @SerialName("program")
+    public val program: String,
+    @SerialName("source")
+    public val source: GuardianCommandSource,
+    @SerialName("type")
+    public val type: String = "execve",
+) : GuardianApprovalReviewAction {
+    init { require(type == "execve") }
+}
 
 @Serializable
-internal data class InitializeParams(
-    @SerialName("clientInfo")
-    public val clientInfo: ClientInfo,
-    @SerialName("capabilities")
-    public val capabilities: InitializeCapabilities? = null,
-)
+internal data class GuardianApprovalReviewActionApplyPatchGuardianApprovalReviewAction(
+    @SerialName("cwd")
+    public val cwd: AbsolutePathBuf,
+    @SerialName("files")
+    public val files: List<AbsolutePathBuf>,
+    @SerialName("type")
+    public val type: String = "applyPatch",
+) : GuardianApprovalReviewAction {
+    init { require(type == "applyPatch") }
+}
 
 @Serializable
-internal data class InitializeResponse(
-    @SerialName("codexHome")
-    public val codexHome: AbsolutePathBuf,
-    @SerialName("platformFamily")
-    public val platformFamily: String,
-    @SerialName("platformOs")
-    public val platformOs: String,
-    @SerialName("userAgent")
-    public val userAgent: String,
-)
-
-internal typealias InputModality = JsonElement
-
-@Serializable
-internal data class InstalledApp(
-    @SerialName("callable")
-    public val callable: Boolean,
-    @SerialName("enabled")
-    public val enabled: Boolean,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("runtimeName")
-    public val runtimeName: String? = null,
-)
+internal data class GuardianApprovalReviewActionNetworkAccessGuardianApprovalReviewAction(
+    @SerialName("host")
+    public val host: String,
+    @SerialName("port")
+    public val port: Long,
+    @SerialName("protocol")
+    public val protocol: NetworkApprovalProtocol,
+    @SerialName("target")
+    public val target: String,
+    @SerialName("type")
+    public val type: String = "networkAccess",
+) : GuardianApprovalReviewAction {
+    init { require(type == "networkAccess") }
+}
 
 @Serializable
-internal data class InternalChatMessageMetadataPassthrough(
-    @SerialName("turn_id")
-    public val turn_id: String? = null,
-)
+internal data class GuardianApprovalReviewActionMcpToolCallGuardianApprovalReviewAction(
+    @SerialName("server")
+    public val server: String,
+    @SerialName("toolName")
+    public val toolName: String,
+    @SerialName("connectorId")
+    public val connectorId: String? = null,
+    @SerialName("connectorName")
+    public val connectorName: String? = null,
+    @SerialName("toolTitle")
+    public val toolTitle: String? = null,
+    @SerialName("type")
+    public val type: String = "mcpToolCall",
+) : GuardianApprovalReviewAction {
+    init { require(type == "mcpToolCall") }
+}
 
 @Serializable
-internal data class ItemCompletedNotification(
-    @SerialName("completedAtMs")
-    public val completedAtMs: Long,
-    @SerialName("item")
-    public val item: ThreadItem,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-)
+internal data class GuardianApprovalReviewActionRequestPermissionsGuardianApprovalReviewAction(
+    @SerialName("permissions")
+    public val permissions: RequestPermissionProfile,
+    @SerialName("reason")
+    public val reason: String? = null,
+    @SerialName("type")
+    public val type: String = "requestPermissions",
+) : GuardianApprovalReviewAction {
+    init { require(type == "requestPermissions") }
+}
+
+internal object GuardianApprovalReviewActionSerializer : JsonContentPolymorphicSerializer<GuardianApprovalReviewAction>(GuardianApprovalReviewAction::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<GuardianApprovalReviewAction> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "command" -> GuardianApprovalReviewActionCommandGuardianApprovalReviewAction.serializer()
+            "execve" -> GuardianApprovalReviewActionExecveGuardianApprovalReviewAction.serializer()
+            "applyPatch" -> GuardianApprovalReviewActionApplyPatchGuardianApprovalReviewAction.serializer()
+            "networkAccess" -> GuardianApprovalReviewActionNetworkAccessGuardianApprovalReviewAction.serializer()
+            "mcpToolCall" -> GuardianApprovalReviewActionMcpToolCallGuardianApprovalReviewAction.serializer()
+            "requestPermissions" -> GuardianApprovalReviewActionRequestPermissionsGuardianApprovalReviewAction.serializer()
+            else -> error("Unknown GuardianApprovalReviewAction type")
+        }
+}
+
+@Serializable
+internal enum class GuardianApprovalReviewStatus {
+    @SerialName("inProgress") IN_PROGRESS,
+    @SerialName("approved") APPROVED,
+    @SerialName("denied") DENIED,
+    @SerialName("timedOut") TIMED_OUT,
+    @SerialName("aborted") ABORTED,
+}

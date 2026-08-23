@@ -13,219 +13,207 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class ResponseItemAgentMessageResponseItem(
-    @SerialName("author")
-    public val author: String,
-    @SerialName("content")
-    public val content: List<AgentMessageInputContent>,
-    @SerialName("recipient")
-    public val recipient: String,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
+internal data class PluginSourceNpmPluginSource(
+    @SerialName("package")
+    public val package_: String,
+    @SerialName("registry")
+    public val registry: String? = null,
     @SerialName("type")
-    public val type: String = "agent_message",
-) : ResponseItem {
-    init { require(type == "agent_message") }
+    public val type: String = "npm",
+    @SerialName("version")
+    public val version: String? = null,
+) : PluginSource {
+    init { require(type == "npm") }
 }
 
 @Serializable
-internal data class ResponseItemReasoningResponseItem(
-    @SerialName("summary")
-    public val summary: List<ReasoningItemReasoningSummary>,
-    @SerialName("content")
-    public val content: List<ReasoningItemContent>? = null,
-    @SerialName("encrypted_content")
-    public val encrypted_content: String? = null,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
+internal data class PluginSourceRemotePluginSource(
     @SerialName("type")
-    public val type: String = "reasoning",
-) : ResponseItem {
-    init { require(type == "reasoning") }
+    public val type: String = "remote",
+) : PluginSource {
+    init { require(type == "remote") }
+}
+
+internal object PluginSourceSerializer : JsonContentPolymorphicSerializer<PluginSource>(PluginSource::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<PluginSource> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "local" -> PluginSourceLocalPluginSource.serializer()
+            "git" -> PluginSourceGitPluginSource.serializer()
+            "npm" -> PluginSourceNpmPluginSource.serializer()
+            "remote" -> PluginSourceRemotePluginSource.serializer()
+            else -> error("Unknown PluginSource type")
+        }
 }
 
 @Serializable
-internal data class ResponseItemLocalShellCallResponseItem(
-    @SerialName("action")
-    public val action: LocalShellAction,
-    @SerialName("status")
-    public val status: LocalShellStatus,
-    @SerialName("call_id")
-    public val call_id: String? = null,
+internal data class PluginSummary(
+    @SerialName("authPolicy")
+    public val authPolicy: PluginAuthPolicy,
+    @SerialName("enabled")
+    public val enabled: Boolean,
     @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("type")
-    public val type: String = "local_shell_call",
-) : ResponseItem {
-    init { require(type == "local_shell_call") }
-}
-
-@Serializable
-internal data class ResponseItemFunctionCallResponseItem(
-    @SerialName("arguments")
-    public val arguments: String,
-    @SerialName("call_id")
-    public val call_id: String,
+    public val id: String,
+    @SerialName("installPolicy")
+    public val installPolicy: PluginInstallPolicy,
+    @SerialName("installed")
+    public val installed: Boolean,
     @SerialName("name")
     public val name: String,
+    @SerialName("source")
+    public val source: PluginSource,
+    @SerialName("availability")
+    public val availability: PluginAvailability? = null,
+    @SerialName("disabledReason")
+    public val disabledReason: PluginDisabledReason? = null,
+    @SerialName("eligiblePlanTypes")
+    public val eligiblePlanTypes: List<String>? = null,
+    @SerialName("installPolicySource")
+    public val installPolicySource: PluginInstallPolicySource? = null,
+    @SerialName("installedAt")
+    public val installedAt: Long? = null,
+    @SerialName("interface")
+    public val interface_: PluginInterface? = null,
+    @SerialName("keywords")
+    public val keywords: List<String>? = null,
+    @SerialName("localVersion")
+    public val localVersion: String? = null,
+    @SerialName("mustShowInstallationInterstitial")
+    public val mustShowInstallationInterstitial: Boolean? = null,
+    @SerialName("remotePluginId")
+    public val remotePluginId: String? = null,
+    @SerialName("shareContext")
+    public val shareContext: PluginShareContext? = null,
+    @SerialName("version")
+    public val version: String? = null,
+)
+
+@Serializable
+internal data class PluginUninstallParams(
+    @SerialName("pluginId")
+    public val pluginId: String,
+)
+
+@Serializable
+internal class PluginUninstallResponse
+
+@Serializable
+internal data class PluginsMigration(
+    @SerialName("marketplaceName")
+    public val marketplaceName: String,
+    @SerialName("pluginNames")
+    public val pluginNames: List<String>,
+)
+
+@Serializable
+internal data class ProcessExitedNotification(
+    @SerialName("exitCode")
+    public val exitCode: Long,
+    @SerialName("processHandle")
+    public val processHandle: String,
+    @SerialName("stderr")
+    public val stderr: String,
+    @SerialName("stderrCapReached")
+    public val stderrCapReached: Boolean,
+    @SerialName("stdout")
+    public val stdout: String,
+    @SerialName("stdoutCapReached")
+    public val stdoutCapReached: Boolean,
+)
+
+@Serializable
+internal data class ProcessOutputDeltaNotification(
+    @SerialName("capReached")
+    public val capReached: Boolean,
+    @SerialName("deltaBase64")
+    public val deltaBase64: String,
+    @SerialName("processHandle")
+    public val processHandle: String,
+    @SerialName("stream")
+    public val stream: ProcessOutputStream,
+)
+
+internal typealias ProcessOutputStream = JsonElement
+
+@Serializable
+internal data class ProcessTerminalSize(
+    @SerialName("cols")
+    public val cols: Long,
+    @SerialName("rows")
+    public val rows: Long,
+)
+
+@Serializable
+internal data class Project(
+    @SerialName("createdAt")
+    public val createdAt: Long,
     @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("namespace")
-    public val namespace: String? = null,
-    @SerialName("type")
-    public val type: String = "function_call",
-) : ResponseItem {
-    init { require(type == "function_call") }
+    public val id: String,
+    @SerialName("metadata")
+    public val metadata: Map<String, String>,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("position")
+    public val position: Long,
+    @SerialName("roots")
+    public val roots: List<ProjectRoot>,
+    @SerialName("updatedAt")
+    public val updatedAt: Long,
+)
+
+@Serializable
+internal enum class ProjectChangeType {
+    @SerialName("created") CREATED,
+    @SerialName("updated") UPDATED,
+    @SerialName("deleted") DELETED,
 }
 
 @Serializable
-internal data class ResponseItemToolSearchCallResponseItem(
-    @SerialName("arguments")
-    public val arguments: JsonElement,
-    @SerialName("execution")
-    public val execution: String,
-    @SerialName("call_id")
-    public val call_id: String? = null,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("status")
-    public val status: String? = null,
-    @SerialName("type")
-    public val type: String = "tool_search_call",
-) : ResponseItem {
-    init { require(type == "tool_search_call") }
-}
+internal data class ProjectChangedNotification(
+    @SerialName("changeType")
+    public val changeType: ProjectChangeType,
+    @SerialName("projectId")
+    public val projectId: String,
+)
 
 @Serializable
-internal data class ResponseItemFunctionCallOutputResponseItem(
-    @SerialName("call_id")
-    public val call_id: String,
-    @SerialName("output")
-    public val output: FunctionCallOutputBody,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("type")
-    public val type: String = "function_call_output",
-) : ResponseItem {
-    init { require(type == "function_call_output") }
-}
+internal data class ProjectRoot(
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+)
 
 @Serializable
-internal data class ResponseItemCustomToolCallResponseItem(
-    @SerialName("call_id")
-    public val call_id: String,
+internal data class QueuedSubmission(
+    @SerialName("clientUserMessageId")
+    public val clientUserMessageId: String,
+    @SerialName("id")
+    public val id: String,
     @SerialName("input")
-    public val input: String,
-    @SerialName("name")
-    public val name: String,
+    public val input: List<UserInput>,
+)
+
+@Serializable
+internal enum class RateLimitReachedType {
+    @SerialName("rate_limit_reached") RATE_LIMIT_REACHED,
+    @SerialName("workspace_owner_credits_depleted") WORKSPACE_OWNER_CREDITS_DEPLETED,
+    @SerialName("workspace_member_credits_depleted") WORKSPACE_MEMBER_CREDITS_DEPLETED,
+    @SerialName("workspace_owner_usage_limit_reached") WORKSPACE_OWNER_USAGE_LIMIT_REACHED,
+    @SerialName("workspace_member_usage_limit_reached") WORKSPACE_MEMBER_USAGE_LIMIT_REACHED,
+}
+
+@Serializable
+internal data class RateLimitResetCredit(
+    @SerialName("grantedAt")
+    public val grantedAt: Long,
     @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("namespace")
-    public val namespace: String? = null,
+    public val id: String,
+    @SerialName("resetType")
+    public val resetType: RateLimitResetType,
     @SerialName("status")
-    public val status: String? = null,
-    @SerialName("type")
-    public val type: String = "custom_tool_call",
-) : ResponseItem {
-    init { require(type == "custom_tool_call") }
-}
-
-@Serializable
-internal data class ResponseItemCustomToolCallOutputResponseItem(
-    @SerialName("call_id")
-    public val call_id: String,
-    @SerialName("output")
-    public val output: FunctionCallOutputBody,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("name")
-    public val name: String? = null,
-    @SerialName("type")
-    public val type: String = "custom_tool_call_output",
-) : ResponseItem {
-    init { require(type == "custom_tool_call_output") }
-}
-
-@Serializable
-internal data class ResponseItemToolSearchOutputResponseItem(
-    @SerialName("execution")
-    public val execution: String,
-    @SerialName("status")
-    public val status: String,
-    @SerialName("tools")
-    public val tools: List<JsonElement>,
-    @SerialName("call_id")
-    public val call_id: String? = null,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("type")
-    public val type: String = "tool_search_output",
-) : ResponseItem {
-    init { require(type == "tool_search_output") }
-}
-
-@Serializable
-internal data class ResponseItemWebSearchCallResponseItem(
-    @SerialName("action")
-    public val action: ResponsesApiWebSearchAction? = null,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("status")
-    public val status: String? = null,
-    @SerialName("type")
-    public val type: String = "web_search_call",
-) : ResponseItem {
-    init { require(type == "web_search_call") }
-}
-
-@Serializable
-internal data class ResponseItemImageGenerationCallResponseItem(
-    @SerialName("result")
-    public val result: String,
-    @SerialName("status")
-    public val status: String,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("revised_prompt")
-    public val revised_prompt: String? = null,
-    @SerialName("type")
-    public val type: String = "image_generation_call",
-) : ResponseItem {
-    init { require(type == "image_generation_call") }
-}
-
-@Serializable
-internal data class ResponseItemCompactionResponseItem(
-    @SerialName("encrypted_content")
-    public val encrypted_content: String,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("type")
-    public val type: String = "compaction",
-) : ResponseItem {
-    init { require(type == "compaction") }
-}
+    public val status: RateLimitResetCreditStatus,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("expiresAt")
+    public val expiresAt: Long? = null,
+    @SerialName("title")
+    public val title: String? = null,
+)

@@ -12,6 +12,52 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+@Serializable(with = ClientNotificationSerializer::class)
+internal sealed interface ClientNotification
+
+@Serializable
+internal data class ClientNotificationInitializedNotification(
+    @SerialName("method")
+    public val method: String = "initialized",
+) : ClientNotification {
+    init { require(method == "initialized") }
+}
+
+internal object ClientNotificationSerializer : JsonContentPolymorphicSerializer<ClientNotification>(ClientNotification::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ClientNotification> =
+        when (element.jsonObject["method"]?.jsonPrimitive?.content) {
+            "initialized" -> ClientNotificationInitializedNotification.serializer()
+            else -> error("Unknown ClientNotification method")
+        }
+}
+
+@Serializable(with = ClientRequestSerializer::class)
+internal sealed interface ClientRequest
+
+@Serializable
+internal data class ClientRequestInitializeRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: InitializeParams,
+    @SerialName("method")
+    public val method: String = "initialize",
+) : ClientRequest {
+    init { require(method == "initialize") }
+}
+
+@Serializable
+internal data class ClientRequestThreadStartRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadStartParams,
+    @SerialName("method")
+    public val method: String = "thread/start",
+) : ClientRequest {
+    init { require(method == "thread/start") }
+}
+
 @Serializable
 internal data class ClientRequestThreadResumeRequest(
     @SerialName("id")
@@ -133,6 +179,18 @@ internal data class ClientRequestThreadMetadataUpdateRequest(
 }
 
 @Serializable
+internal data class ClientRequestThreadSectionMoveRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadSectionMoveParams,
+    @SerialName("method")
+    public val method: String = "thread/section/move",
+) : ClientRequest {
+    init { require(method == "thread/section/move") }
+}
+
+@Serializable
 internal data class ClientRequestThreadUnarchiveRequest(
     @SerialName("id")
     public val id: RequestId,
@@ -166,64 +224,4 @@ internal data class ClientRequestThreadShellCommandRequest(
     public val method: String = "thread/shellCommand",
 ) : ClientRequest {
     init { require(method == "thread/shellCommand") }
-}
-
-@Serializable
-internal data class ClientRequestThreadApproveGuardianDeniedActionRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ThreadApproveGuardianDeniedActionParams,
-    @SerialName("method")
-    public val method: String = "thread/approveGuardianDeniedAction",
-) : ClientRequest {
-    init { require(method == "thread/approveGuardianDeniedAction") }
-}
-
-@Serializable
-internal data class ClientRequestThreadRollbackRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ThreadRollbackParams,
-    @SerialName("method")
-    public val method: String = "thread/rollback",
-) : ClientRequest {
-    init { require(method == "thread/rollback") }
-}
-
-@Serializable
-internal data class ClientRequestThreadListRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ThreadListParams,
-    @SerialName("method")
-    public val method: String = "thread/list",
-) : ClientRequest {
-    init { require(method == "thread/list") }
-}
-
-@Serializable
-internal data class ClientRequestThreadLoadedListRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ThreadLoadedListParams,
-    @SerialName("method")
-    public val method: String = "thread/loaded/list",
-) : ClientRequest {
-    init { require(method == "thread/loaded/list") }
-}
-
-@Serializable
-internal data class ClientRequestThreadReadRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ThreadReadParams,
-    @SerialName("method")
-    public val method: String = "thread/read",
-) : ClientRequest {
-    init { require(method == "thread/read") }
 }

@@ -12,227 +12,213 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-@Serializable(with = GuardianApprovalReviewActionSerializer::class)
-internal sealed interface GuardianApprovalReviewAction
+@Serializable
+internal class FsCopyResponse
 
 @Serializable
-internal data class GuardianApprovalReviewActionCommandGuardianApprovalReviewAction(
-    @SerialName("command")
-    public val command: String,
-    @SerialName("cwd")
-    public val cwd: AbsolutePathBuf,
-    @SerialName("source")
-    public val source: GuardianCommandSource,
+internal data class FsCreateDirectoryParams(
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+    @SerialName("recursive")
+    public val recursive: Boolean? = null,
+)
+
+@Serializable
+internal class FsCreateDirectoryResponse
+
+@Serializable
+internal data class FsGetMetadataParams(
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+)
+
+@Serializable
+internal data class FsGetMetadataResponse(
+    @SerialName("createdAtMs")
+    public val createdAtMs: Long,
+    @SerialName("isDirectory")
+    public val isDirectory: Boolean,
+    @SerialName("isFile")
+    public val isFile: Boolean,
+    @SerialName("isSymlink")
+    public val isSymlink: Boolean,
+    @SerialName("modifiedAtMs")
+    public val modifiedAtMs: Long,
+)
+
+@Serializable
+internal data class FsReadDirectoryEntry(
+    @SerialName("fileName")
+    public val fileName: String,
+    @SerialName("isDirectory")
+    public val isDirectory: Boolean,
+    @SerialName("isFile")
+    public val isFile: Boolean,
+)
+
+@Serializable
+internal data class FsReadDirectoryParams(
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+)
+
+@Serializable
+internal data class FsReadDirectoryResponse(
+    @SerialName("entries")
+    public val entries: List<FsReadDirectoryEntry>,
+)
+
+@Serializable
+internal data class FsReadFileParams(
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+)
+
+@Serializable
+internal data class FsReadFileResponse(
+    @SerialName("dataBase64")
+    public val dataBase64: String,
+)
+
+@Serializable
+internal data class FsRemoveParams(
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+    @SerialName("force")
+    public val force: Boolean? = null,
+    @SerialName("recursive")
+    public val recursive: Boolean? = null,
+)
+
+@Serializable
+internal class FsRemoveResponse
+
+@Serializable
+internal data class FsUnwatchParams(
+    @SerialName("watchId")
+    public val watchId: String,
+)
+
+@Serializable
+internal class FsUnwatchResponse
+
+@Serializable
+internal data class FsWatchParams(
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+    @SerialName("watchId")
+    public val watchId: String,
+)
+
+@Serializable
+internal data class FsWatchResponse(
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+)
+
+@Serializable
+internal data class FsWriteFileParams(
+    @SerialName("dataBase64")
+    public val dataBase64: String,
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+)
+
+@Serializable
+internal class FsWriteFileResponse
+
+internal typealias FunctionCallOutputBody = JsonElement
+
+@Serializable(with = FunctionCallOutputContentItemSerializer::class)
+internal sealed interface FunctionCallOutputContentItem
+
+@Serializable
+internal data class FunctionCallOutputContentItemInputTextFunctionCallOutputContentItem(
+    @SerialName("text")
+    public val text: String,
     @SerialName("type")
-    public val type: String = "command",
-) : GuardianApprovalReviewAction {
-    init { require(type == "command") }
+    public val type: String = "input_text",
+) : FunctionCallOutputContentItem {
+    init { require(type == "input_text") }
 }
 
 @Serializable
-internal data class GuardianApprovalReviewActionExecveGuardianApprovalReviewAction(
-    @SerialName("argv")
-    public val argv: List<String>,
-    @SerialName("cwd")
-    public val cwd: AbsolutePathBuf,
-    @SerialName("program")
-    public val program: String,
-    @SerialName("source")
-    public val source: GuardianCommandSource,
+internal data class FunctionCallOutputContentItemInputImageFunctionCallOutputContentItem(
+    @SerialName("image_url")
+    public val image_url: String,
+    @SerialName("detail")
+    public val detail: ImageDetail? = null,
     @SerialName("type")
-    public val type: String = "execve",
-) : GuardianApprovalReviewAction {
-    init { require(type == "execve") }
+    public val type: String = "input_image",
+) : FunctionCallOutputContentItem {
+    init { require(type == "input_image") }
 }
 
 @Serializable
-internal data class GuardianApprovalReviewActionApplyPatchGuardianApprovalReviewAction(
-    @SerialName("cwd")
-    public val cwd: AbsolutePathBuf,
-    @SerialName("files")
-    public val files: List<AbsolutePathBuf>,
+internal data class FunctionCallOutputContentItemInputAudioFunctionCallOutputContentItem(
+    @SerialName("audio_url")
+    public val audio_url: String,
     @SerialName("type")
-    public val type: String = "applyPatch",
-) : GuardianApprovalReviewAction {
-    init { require(type == "applyPatch") }
+    public val type: String = "input_audio",
+) : FunctionCallOutputContentItem {
+    init { require(type == "input_audio") }
 }
 
 @Serializable
-internal data class GuardianApprovalReviewActionNetworkAccessGuardianApprovalReviewAction(
-    @SerialName("host")
-    public val host: String,
-    @SerialName("port")
-    public val port: Long,
-    @SerialName("protocol")
-    public val protocol: NetworkApprovalProtocol,
-    @SerialName("target")
-    public val target: String,
+internal data class FunctionCallOutputContentItemEncryptedContentFunctionCallOutputContentItem(
+    @SerialName("encrypted_content")
+    public val encrypted_content: String,
     @SerialName("type")
-    public val type: String = "networkAccess",
-) : GuardianApprovalReviewAction {
-    init { require(type == "networkAccess") }
+    public val type: String = "encrypted_content",
+) : FunctionCallOutputContentItem {
+    init { require(type == "encrypted_content") }
 }
 
-@Serializable
-internal data class GuardianApprovalReviewActionMcpToolCallGuardianApprovalReviewAction(
-    @SerialName("server")
-    public val server: String,
-    @SerialName("toolName")
-    public val toolName: String,
-    @SerialName("connectorId")
-    public val connectorId: String? = null,
-    @SerialName("connectorName")
-    public val connectorName: String? = null,
-    @SerialName("toolTitle")
-    public val toolTitle: String? = null,
-    @SerialName("type")
-    public val type: String = "mcpToolCall",
-) : GuardianApprovalReviewAction {
-    init { require(type == "mcpToolCall") }
-}
-
-@Serializable
-internal data class GuardianApprovalReviewActionRequestPermissionsGuardianApprovalReviewAction(
-    @SerialName("permissions")
-    public val permissions: RequestPermissionProfile,
-    @SerialName("reason")
-    public val reason: String? = null,
-    @SerialName("type")
-    public val type: String = "requestPermissions",
-) : GuardianApprovalReviewAction {
-    init { require(type == "requestPermissions") }
-}
-
-internal object GuardianApprovalReviewActionSerializer : JsonContentPolymorphicSerializer<GuardianApprovalReviewAction>(GuardianApprovalReviewAction::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<GuardianApprovalReviewAction> =
+internal object FunctionCallOutputContentItemSerializer : JsonContentPolymorphicSerializer<FunctionCallOutputContentItem>(FunctionCallOutputContentItem::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<FunctionCallOutputContentItem> =
         when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "command" -> GuardianApprovalReviewActionCommandGuardianApprovalReviewAction.serializer()
-            "execve" -> GuardianApprovalReviewActionExecveGuardianApprovalReviewAction.serializer()
-            "applyPatch" -> GuardianApprovalReviewActionApplyPatchGuardianApprovalReviewAction.serializer()
-            "networkAccess" -> GuardianApprovalReviewActionNetworkAccessGuardianApprovalReviewAction.serializer()
-            "mcpToolCall" -> GuardianApprovalReviewActionMcpToolCallGuardianApprovalReviewAction.serializer()
-            "requestPermissions" -> GuardianApprovalReviewActionRequestPermissionsGuardianApprovalReviewAction.serializer()
-            else -> error("Unknown GuardianApprovalReviewAction type")
+            "input_text" -> FunctionCallOutputContentItemInputTextFunctionCallOutputContentItem.serializer()
+            "input_image" -> FunctionCallOutputContentItemInputImageFunctionCallOutputContentItem.serializer()
+            "input_audio" -> FunctionCallOutputContentItemInputAudioFunctionCallOutputContentItem.serializer()
+            "encrypted_content" -> FunctionCallOutputContentItemEncryptedContentFunctionCallOutputContentItem.serializer()
+            else -> error("Unknown FunctionCallOutputContentItem type")
         }
 }
 
 @Serializable
-internal enum class GuardianApprovalReviewStatus {
-    @SerialName("inProgress") IN_PROGRESS,
-    @SerialName("approved") APPROVED,
-    @SerialName("denied") DENIED,
-    @SerialName("timedOut") TIMED_OUT,
-    @SerialName("aborted") ABORTED,
+internal enum class FuzzyFileSearchMatchType {
+    @SerialName("file") FILE,
+    @SerialName("directory") DIRECTORY,
 }
 
 @Serializable
-internal enum class GuardianCommandSource {
-    @SerialName("shell") SHELL,
-    @SerialName("unifiedExec") UNIFIED_EXEC,
-}
-
-@Serializable
-internal enum class GuardianRiskLevel {
-    @SerialName("low") LOW,
-    @SerialName("medium") MEDIUM,
-    @SerialName("high") HIGH,
-    @SerialName("critical") CRITICAL,
-}
-
-@Serializable
-internal enum class GuardianUserAuthorization {
-    @SerialName("unknown") UNKNOWN,
-    @SerialName("low") LOW,
-    @SerialName("medium") MEDIUM,
-    @SerialName("high") HIGH,
-}
-
-@Serializable
-internal data class GuardianWarningNotification(
-    @SerialName("message")
-    public val message: String,
-    @SerialName("threadId")
-    public val threadId: String,
+internal data class FuzzyFileSearchParams(
+    @SerialName("query")
+    public val query: String,
+    @SerialName("roots")
+    public val roots: List<String>,
+    @SerialName("cancellationToken")
+    public val cancellationToken: String? = null,
 )
 
 @Serializable
-internal data class HookCompletedNotification(
-    @SerialName("run")
-    public val run: HookRunSummary,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String? = null,
+internal data class FuzzyFileSearchResponse(
+    @SerialName("files")
+    public val files: List<FuzzyFileSearchResult>,
 )
 
 @Serializable
-internal data class HookErrorInfo(
-    @SerialName("message")
-    public val message: String,
+internal data class FuzzyFileSearchResult(
+    @SerialName("file_name")
+    public val file_name: String,
+    @SerialName("match_type")
+    public val match_type: FuzzyFileSearchMatchType,
     @SerialName("path")
     public val path: String,
-)
-
-@Serializable
-internal enum class HookEventName {
-    @SerialName("preToolUse") PRE_TOOL_USE,
-    @SerialName("permissionRequest") PERMISSION_REQUEST,
-    @SerialName("postToolUse") POST_TOOL_USE,
-    @SerialName("preCompact") PRE_COMPACT,
-    @SerialName("postCompact") POST_COMPACT,
-    @SerialName("sessionStart") SESSION_START,
-    @SerialName("sessionEnd") SESSION_END,
-    @SerialName("userPromptSubmit") USER_PROMPT_SUBMIT,
-    @SerialName("subagentStart") SUBAGENT_START,
-    @SerialName("subagentStop") SUBAGENT_STOP,
-    @SerialName("stop") STOP,
-}
-
-@Serializable
-internal enum class HookExecutionMode {
-    @SerialName("sync") SYNC,
-    @SerialName("async") ASYNC,
-}
-
-@Serializable
-internal enum class HookHandlerType {
-    @SerialName("command") COMMAND,
-    @SerialName("prompt") PROMPT,
-    @SerialName("agent") AGENT,
-}
-
-@Serializable
-internal data class HookMetadata(
-    @SerialName("currentHash")
-    public val currentHash: String,
-    @SerialName("displayOrder")
-    public val displayOrder: Long,
-    @SerialName("enabled")
-    public val enabled: Boolean,
-    @SerialName("eventName")
-    public val eventName: HookEventName,
-    @SerialName("handlerType")
-    public val handlerType: HookHandlerType,
-    @SerialName("isManaged")
-    public val isManaged: Boolean,
-    @SerialName("key")
-    public val key: String,
-    @SerialName("source")
-    public val source: HookSource,
-    @SerialName("sourcePath")
-    public val sourcePath: AbsolutePathBuf,
-    @SerialName("timeoutSec")
-    public val timeoutSec: Long,
-    @SerialName("trustStatus")
-    public val trustStatus: HookTrustStatus,
-    @SerialName("additionalContextLimit")
-    public val additionalContextLimit: Long? = null,
-    @SerialName("command")
-    public val command: String? = null,
-    @SerialName("matcher")
-    public val matcher: String? = null,
-    @SerialName("pluginId")
-    public val pluginId: String? = null,
-    @SerialName("statusMessage")
-    public val statusMessage: String? = null,
+    @SerialName("root")
+    public val root: String,
+    @SerialName("score")
+    public val score: Long,
+    @SerialName("indices")
+    public val indices: List<Long>? = null,
 )

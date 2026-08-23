@@ -146,7 +146,7 @@ internal suspend fun CodexAgentClient.listConnectorsAction(
     transform = ::parseConnector,
 )
 
-internal suspend fun CodexAgentClient.listMcpServersAction(): List<AgentMcpServer> =
+internal suspend fun CodexAgentClient.listMcpServerStatusesAction(): List<AgentMcpServer> =
     requestAllPages(
         AppServerClientMethods.McpServerStatusList,
         params = { ListMcpServerStatusParams(cursor = it) },

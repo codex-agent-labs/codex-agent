@@ -13,210 +13,232 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class ThreadItemSubAgentActivityThreadItem(
-    @SerialName("agentPath")
-    public val agentPath: String,
-    @SerialName("agentThreadId")
-    public val agentThreadId: String,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("kind")
-    public val kind: SubAgentActivityKind,
-    @SerialName("type")
-    public val type: String = "subAgentActivity",
-) : ThreadItem {
-    init { require(type == "subAgentActivity") }
+internal data class SkillMigration(
+    @SerialName("name")
+    public val name: String,
+)
+
+@Serializable
+internal enum class SkillScope {
+    @SerialName("user") USER,
+    @SerialName("repo") REPO,
+    @SerialName("system") SYSTEM,
+    @SerialName("admin") ADMIN,
 }
 
 @Serializable
-internal data class ThreadItemWebSearchThreadItem(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("query")
-    public val query: String,
-    @SerialName("action")
-    public val action: WebSearchAction? = null,
-    @SerialName("results")
-    public val results: List<JsonElement>? = null,
-    @SerialName("type")
-    public val type: String = "webSearch",
-) : ThreadItem {
-    init { require(type == "webSearch") }
-}
-
-@Serializable
-internal data class ThreadItemImageViewThreadItem(
-    @SerialName("id")
-    public val id: String,
+internal data class SkillSummary(
+    @SerialName("description")
+    public val description: String,
+    @SerialName("enabled")
+    public val enabled: Boolean,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("interface")
+    public val interface_: SkillInterface? = null,
     @SerialName("path")
-    public val path: LegacyAppPathString,
+    public val path: AbsolutePathBuf? = null,
+    @SerialName("shortDescription")
+    public val shortDescription: String? = null,
+)
+
+@Serializable
+internal data class SkillToolDependency(
     @SerialName("type")
-    public val type: String = "imageView",
-) : ThreadItem {
-    init { require(type == "imageView") }
+    public val type: String,
+    @SerialName("value")
+    public val value: String,
+    @SerialName("command")
+    public val command: String? = null,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("transport")
+    public val transport: String? = null,
+    @SerialName("url")
+    public val url: String? = null,
+)
+
+@Serializable
+internal class SkillsChangedNotification
+
+@Serializable
+internal data class SkillsConfigWriteParams(
+    @SerialName("enabled")
+    public val enabled: Boolean,
+    @SerialName("name")
+    public val name: String? = null,
+    @SerialName("path")
+    public val path: AbsolutePathBuf? = null,
+)
+
+@Serializable
+internal data class SkillsConfigWriteResponse(
+    @SerialName("effectiveEnabled")
+    public val effectiveEnabled: Boolean,
+)
+
+@Serializable
+internal data class SkillsExtraRootsSetParams(
+    @SerialName("extraRoots")
+    public val extraRoots: List<AbsolutePathBuf>,
+)
+
+@Serializable
+internal class SkillsExtraRootsSetResponse
+
+@Serializable
+internal data class SkillsListEntry(
+    @SerialName("cwd")
+    public val cwd: String,
+    @SerialName("errors")
+    public val errors: List<SkillErrorInfo>,
+    @SerialName("skills")
+    public val skills: List<SkillMetadata>,
+)
+
+@Serializable
+internal data class SkillsListParams(
+    @SerialName("cwds")
+    public val cwds: List<String>? = null,
+    @SerialName("forceReload")
+    public val forceReload: Boolean? = null,
+)
+
+@Serializable
+internal data class SkillsListResponse(
+    @SerialName("data")
+    public val data: List<SkillsListEntry>,
+)
+
+@Serializable
+internal enum class SortDirection {
+    @SerialName("asc") ASC,
+    @SerialName("desc") DESC,
 }
 
 @Serializable
-internal data class ThreadItemSleepThreadItem(
-    @SerialName("durationMs")
-    public val durationMs: Long,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("type")
-    public val type: String = "sleep",
-) : ThreadItem {
-    init { require(type == "sleep") }
-}
+internal data class SpendControlLimitSnapshot(
+    @SerialName("limit")
+    public val limit: String,
+    @SerialName("remainingPercent")
+    public val remainingPercent: Long,
+    @SerialName("resetsAt")
+    public val resetsAt: Long,
+    @SerialName("used")
+    public val used: String,
+)
 
 @Serializable
-internal data class ThreadItemImageGenerationThreadItem(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("result")
-    public val result: String,
-    @SerialName("status")
-    public val status: String,
-    @SerialName("revisedPrompt")
-    public val revisedPrompt: String? = null,
-    @SerialName("savedPath")
-    public val savedPath: AbsolutePathBuf? = null,
-    @SerialName("type")
-    public val type: String = "imageGeneration",
-) : ThreadItem {
-    init { require(type == "imageGeneration") }
-}
-
-@Serializable
-internal data class ThreadItemEnteredReviewModeThreadItem(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("review")
-    public val review: String,
-    @SerialName("type")
-    public val type: String = "enteredReviewMode",
-) : ThreadItem {
-    init { require(type == "enteredReviewMode") }
-}
-
-@Serializable
-internal data class ThreadItemExitedReviewModeThreadItem(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("review")
-    public val review: String,
-    @SerialName("type")
-    public val type: String = "exitedReviewMode",
-) : ThreadItem {
-    init { require(type == "exitedReviewMode") }
-}
-
-@Serializable
-internal data class ThreadItemContextCompactionThreadItem(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("type")
-    public val type: String = "contextCompaction",
-) : ThreadItem {
-    init { require(type == "contextCompaction") }
-}
-
-internal object ThreadItemSerializer : JsonContentPolymorphicSerializer<ThreadItem>(ThreadItem::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ThreadItem> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "userMessage" -> ThreadItemUserMessageThreadItem.serializer()
-            "hookPrompt" -> ThreadItemHookPromptThreadItem.serializer()
-            "agentMessage" -> ThreadItemAgentMessageThreadItem.serializer()
-            "plan" -> ThreadItemPlanThreadItem.serializer()
-            "reasoning" -> ThreadItemReasoningThreadItem.serializer()
-            "commandExecution" -> ThreadItemCommandExecutionThreadItem.serializer()
-            "fileChange" -> ThreadItemFileChangeThreadItem.serializer()
-            "mcpToolCall" -> ThreadItemMcpToolCallThreadItem.serializer()
-            "dynamicToolCall" -> ThreadItemDynamicToolCallThreadItem.serializer()
-            "collabAgentToolCall" -> ThreadItemCollabAgentToolCallThreadItem.serializer()
-            "subAgentActivity" -> ThreadItemSubAgentActivityThreadItem.serializer()
-            "webSearch" -> ThreadItemWebSearchThreadItem.serializer()
-            "imageView" -> ThreadItemImageViewThreadItem.serializer()
-            "sleep" -> ThreadItemSleepThreadItem.serializer()
-            "imageGeneration" -> ThreadItemImageGenerationThreadItem.serializer()
-            "enteredReviewMode" -> ThreadItemEnteredReviewModeThreadItem.serializer()
-            "exitedReviewMode" -> ThreadItemExitedReviewModeThreadItem.serializer()
-            "contextCompaction" -> ThreadItemContextCompactionThreadItem.serializer()
-            else -> error("Unknown ThreadItem type")
-        }
-}
-
-@Serializable
-internal data class ThreadItemEntry(
-    @SerialName("item")
-    public val item: ThreadItem,
+internal data class StrictReviewRequiredNotification(
+    @SerialName("startedAtMs")
+    public val startedAtMs: Long,
+    @SerialName("threadId")
+    public val threadId: String,
     @SerialName("turnId")
     public val turnId: String,
 )
 
-internal typealias ThreadListCwdFilter = JsonElement
-
 @Serializable
-internal data class ThreadListParams(
-    @SerialName("archived")
-    public val archived: Boolean? = null,
-    @SerialName("cursor")
-    public val cursor: String? = null,
-    @SerialName("cwd")
-    public val cwd: ThreadListCwdFilter? = null,
-    @SerialName("limit")
-    public val limit: Long? = null,
-    @SerialName("modelProviders")
-    public val modelProviders: List<String>? = null,
-    @SerialName("searchTerm")
-    public val searchTerm: String? = null,
-    @SerialName("sortDirection")
-    public val sortDirection: SortDirection? = null,
-    @SerialName("sortKey")
-    public val sortKey: ThreadSortKey? = null,
-    @SerialName("sourceKinds")
-    public val sourceKinds: List<ThreadSourceKind>? = null,
-    @SerialName("useStateDbOnly")
-    public val useStateDbOnly: Boolean? = null,
-)
-
-@Serializable
-internal data class ThreadListResponse(
-    @SerialName("data")
-    public val data: List<Thread>,
-    @SerialName("backwardsCursor")
-    public val backwardsCursor: String? = null,
-    @SerialName("nextCursor")
-    public val nextCursor: String? = null,
-)
-
-@Serializable
-internal data class ThreadLoadedListParams(
-    @SerialName("cursor")
-    public val cursor: String? = null,
-    @SerialName("limit")
-    public val limit: Long? = null,
-)
-
-@Serializable
-internal data class ThreadLoadedListResponse(
-    @SerialName("data")
-    public val data: List<String>,
-    @SerialName("nextCursor")
-    public val nextCursor: String? = null,
-)
-
-@Serializable
-internal enum class ThreadMemoryMode {
-    @SerialName("enabled") ENABLED,
-    @SerialName("disabled") DISABLED,
+internal enum class SubAgentActivityKind {
+    @SerialName("started") STARTED,
+    @SerialName("interacted") INTERACTED,
+    @SerialName("interrupted") INTERRUPTED,
 }
 
+internal typealias SubAgentSource = JsonElement
+
 @Serializable
-internal data class ThreadMetadataGitInfoUpdateParams(
-    @SerialName("branch")
-    public val branch: String? = null,
-    @SerialName("originUrl")
-    public val originUrl: String? = null,
-    @SerialName("sha")
-    public val sha: String? = null,
+internal data class SubagentMigration(
+    @SerialName("name")
+    public val name: String,
+)
+
+@Serializable
+internal data class TerminalInteractionNotification(
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("processId")
+    public val processId: String,
+    @SerialName("stdin")
+    public val stdin: String,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+)
+
+@Serializable
+internal data class TextElement(
+    @SerialName("byteRange")
+    public val byteRange: ByteRange,
+    @SerialName("placeholder")
+    public val placeholder: String? = null,
+)
+
+@Serializable
+internal data class TextPosition(
+    @SerialName("column")
+    public val column: Long,
+    @SerialName("line")
+    public val line: Long,
+)
+
+@Serializable
+internal data class TextRange(
+    @SerialName("end")
+    public val end: TextPosition,
+    @SerialName("start")
+    public val start: TextPosition,
+)
+
+@Serializable
+internal data class Thread(
+    @SerialName("cliVersion")
+    public val cliVersion: String,
+    @SerialName("createdAt")
+    public val createdAt: Long,
+    @SerialName("cwd")
+    public val cwd: AbsolutePathBuf,
+    @SerialName("ephemeral")
+    public val ephemeral: Boolean,
+    @SerialName("id")
+    public val id: String,
+    @SerialName("modelProvider")
+    public val modelProvider: String,
+    @SerialName("preview")
+    public val preview: String,
+    @SerialName("projectId")
+    public val projectId: String?,
+    @SerialName("sessionId")
+    public val sessionId: String,
+    @SerialName("source")
+    public val source: SessionSource,
+    @SerialName("status")
+    public val status: ThreadStatus,
+    @SerialName("turns")
+    public val turns: List<Turn>,
+    @SerialName("updatedAt")
+    public val updatedAt: Long,
+    @SerialName("agentNickname")
+    public val agentNickname: String? = null,
+    @SerialName("agentRole")
+    public val agentRole: String? = null,
+    @SerialName("forkedFromId")
+    public val forkedFromId: String? = null,
+    @SerialName("gitInfo")
+    public val gitInfo: GitInfo? = null,
+    @SerialName("name")
+    public val name: String? = null,
+    @SerialName("parentThreadId")
+    public val parentThreadId: String? = null,
+    @SerialName("path")
+    public val path: String? = null,
+    @SerialName("recencyAt")
+    public val recencyAt: Long? = null,
+    @SerialName("section")
+    public val section: ThreadSection? = null,
+    @SerialName("sectionEnteredAt")
+    public val sectionEnteredAt: Long? = null,
+    @SerialName("threadSource")
+    public val threadSource: ThreadSource? = null,
 )
