@@ -38,6 +38,8 @@ fun Project.registerIosAppleReleaseVerificationTasks(
     pinnedRustToolchain: String,
 ): IosAppleReleaseVerificationTasks {
     val swiftPackageArchiveName = "CodexAgent-${project.version}.xcframework.zip"
+    val swiftPackageUrl =
+        "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/v${project.version}/$swiftPackageArchiveName"
     val packageCodexAgentSwiftPackageBinary = tasks.register<Zip>("packageCodexAgentSwiftPackageBinary") {
         dependsOn(distribution.prepareCodexAgentReleaseXCFramework)
         archiveFileName.set(swiftPackageArchiveName)
@@ -148,6 +150,15 @@ fun Project.registerIosAppleReleaseVerificationTasks(
             }
             outputFile.set(swiftPackageChecksumFile)
         }
+    val updateCodexAgentSwiftPackageChecksum =
+        tasks.register<UpdateSwiftPackageChecksumTask>("updateCodexAgentSwiftPackageChecksum") {
+        dependsOn(packageCodexAgentSwiftPackageBinary, generateCodexAgentSwiftPackageChecksum)
+        archiveFile.set(packageCodexAgentSwiftPackageBinary.flatMap { it.archiveFile })
+        checksumFile.set(swiftPackageChecksumFile)
+        manifestFile.set(rootProject.layout.projectDirectory.file("Package.swift"))
+        expectedUrl.set(swiftPackageUrl)
+        repositoryDirectory.set(rootProject.layout.projectDirectory)
+    }
 
     val toolchain = tasks.named("verifyAppleToolchain")
     val candidateCommit = providers.gradleProperty("codexAgent.candidateCommit")
@@ -155,9 +166,7 @@ fun Project.registerIosAppleReleaseVerificationTasks(
         dependsOnSwiftPackageProofProducers(toolchain, generateCodexAgentSwiftPackageChecksum)
         expectedCommit.set(candidateCommit)
         version.set(project.version.toString())
-        expectedUrl.set(
-            "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/v${project.version}/$swiftPackageArchiveName",
-        )
+        expectedUrl.set(swiftPackageUrl)
         repositoryDirectory.set(rootProject.layout.projectDirectory)
         archiveFile.set(packageCodexAgentSwiftPackageBinary.flatMap { it.archiveFile })
         checksumFile.set(swiftPackageChecksumFile)
@@ -174,9 +183,8 @@ fun Project.registerIosAppleReleaseVerificationTasks(
             dependsOn(generateCodexAgentSwiftPackageChecksum)
             manifest.set(rootProject.layout.projectDirectory.file("Package.swift"))
             checksumFile.set(swiftPackageChecksumFile)
-            expectedUrl.set(
-                "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/v${project.version}/$swiftPackageArchiveName",
-            )
+            expectedUrl.set(swiftPackageUrl)
+            mustRunAfter(updateCodexAgentSwiftPackageChecksum)
         }
 
     return IosAppleReleaseVerificationTasks(

@@ -2,6 +2,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.Files
 import javax.inject.Inject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -102,20 +103,36 @@ private val COMMIT = Regex("[0-9a-f]{40}")
 private val CODEX_BINARY_TARGET = Regex(
     """(?s)(\.binaryTarget\s*\(\s*name\s*:\s*"CodexAgent"\s*,\s*url\s*:\s*")([^"]+)("\s*,\s*checksum\s*:\s*")([0-9a-f]{64})("\s*\))""",
 )
+private val SWIFT_CHECKSUM = Regex("[0-9a-f]{64}")
 
 private data class SwiftManifest(val checksum: String)
 
 private fun parseSwiftManifest(contents: String, expectedUrl: String): SwiftManifest {
+    val match = canonicalCodexBinaryTarget(contents, expectedUrl)
+    return SwiftManifest(match.groupValues[4])
+}
+
+internal fun replaceSwiftPackageChecksum(contents: String, expectedUrl: String, checksum: String): String {
+    check(SWIFT_CHECKSUM.matches(checksum)) { "SwiftPM checksum is malformed: $checksum" }
+    val checksumRange = canonicalCodexBinaryTarget(contents, expectedUrl).groups[4]?.range
+        ?: error("Canonical CodexAgent checksum capture is missing")
+    return contents.replaceRange(checksumRange, checksum)
+}
+
+private fun canonicalCodexBinaryTarget(contents: String, expectedUrl: String): MatchResult {
     val matches = CODEX_BINARY_TARGET.findAll(contents).toList()
     check(matches.size == 1) { "Package.swift must contain exactly one canonical CodexAgent binary target" }
     val match = matches.single()
     check(match.groupValues[2] == expectedUrl) { "SwiftPM release URL mismatch" }
-    return SwiftManifest(match.groupValues[4])
+    return match
 }
 
-private fun requireRootManifest(repository: File, manifest: File) {
+internal fun requireRootManifest(repository: File, manifest: File) {
+    check(!Files.isSymbolicLink(manifest.toPath())) {
+        "SwiftPM metadata task requires a regular root Package.swift"
+    }
     check(manifest.canonicalFile == repository.resolve("Package.swift").canonicalFile) {
-        "SwiftPM candidate proof must use the root Package.swift"
+        "SwiftPM metadata task must use the root Package.swift"
     }
 }
 

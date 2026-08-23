@@ -66,6 +66,30 @@ internal class SwiftPackageFixture(root: File, checksumMatches: Boolean = true) 
         return output
     }
 
+    fun update() {
+        project.tasks.register(
+            "updateChecksum${project.tasks.names.size}",
+            UpdateSwiftPackageChecksumTask::class.java,
+        ).get().apply {
+            archiveFile.set(archive)
+            checksumFile.set(checksum)
+            manifestFile.set(manifest)
+            expectedUrl.set(SWIFTPM_TEST_URL)
+            repositoryDirectory.set(repo)
+        }.update()
+    }
+
+    fun verify() {
+        project.tasks.register(
+            "verifyChecksum${project.tasks.names.size}",
+            VerifySwiftPackageBinaryTask::class.java,
+        ).get().apply {
+            this.manifest.set(this@SwiftPackageFixture.manifest)
+            checksumFile.set(checksum)
+            expectedUrl.set(SWIFTPM_TEST_URL)
+        }.verify()
+    }
+
     fun task(expected: String = commit, output: File = proof) = project.tasks.register(
         "recordProof${project.tasks.names.size}", RecordSwiftPackageProofTask::class.java,
     ).get().apply {
@@ -120,5 +144,5 @@ internal fun writeTestSwiftPackageProof(
     })
 }
 
-private const val SWIFTPM_TEST_URL =
+internal const val SWIFTPM_TEST_URL =
     "https://github.com/codex-agent-labs/codex-agent/releases/download/v0.2.0/CodexAgent-0.2.0.xcframework.zip"
