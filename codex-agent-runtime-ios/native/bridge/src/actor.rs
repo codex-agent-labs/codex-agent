@@ -30,7 +30,6 @@ pub(crate) async fn run_actor(
     event_tx: mpsc::Sender<BridgeEvent>,
     closing: Arc<AtomicBool>,
 ) {
-    // Keep command and server-event handling in one actor loop.
     loop {
         tokio::select! {
             command = command_rx.recv() => match command {

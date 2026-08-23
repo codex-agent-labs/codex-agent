@@ -11,6 +11,7 @@ plugins {
 
 val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toString()
 
+// Keep runtime API and native bridge verification in the same module.
 kotlin {
     explicitApi()
     sourceSets {
