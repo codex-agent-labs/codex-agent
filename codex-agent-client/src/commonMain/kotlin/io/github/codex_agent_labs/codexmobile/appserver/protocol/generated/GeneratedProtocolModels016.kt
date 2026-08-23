@@ -12,212 +12,214 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-@Serializable
-internal class FsUnwatchResponse
+internal typealias FileChangeApprovalDecision = JsonElement
 
 @Serializable
-internal data class FsWatchParams(
+internal data class FileChangeOutputDeltaNotification(
+    @SerialName("delta")
+    public val delta: String,
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+)
+
+@Serializable
+internal data class FileChangePatchUpdatedNotification(
+    @SerialName("changes")
+    public val changes: List<FileUpdateChange>,
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+)
+
+@Serializable
+internal data class FileChangeRequestApprovalParams(
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("startedAtMs")
+    public val startedAtMs: Long,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("grantRoot")
+    public val grantRoot: String? = null,
+    @SerialName("reason")
+    public val reason: String? = null,
+)
+
+@Serializable
+internal data class FileChangeRequestApprovalResponse(
+    @SerialName("decision")
+    public val decision: FileChangeApprovalDecision,
+)
+
+@Serializable
+internal enum class FileSystemAccessMode {
+    @SerialName("read") READ,
+    @SerialName("write") WRITE,
+    @SerialName("deny") DENY,
+}
+
+@Serializable(with = FileSystemPathSerializer::class)
+internal sealed interface FileSystemPath
+
+@Serializable
+internal data class FileSystemPathPathFileSystemPath(
     @SerialName("path")
-    public val path: AbsolutePathBuf,
+    public val path: LegacyAppPathString,
+    @SerialName("type")
+    public val type: String = "path",
+) : FileSystemPath {
+    init { require(type == "path") }
+}
+
+@Serializable
+internal data class FileSystemPathGlobPatternFileSystemPath(
+    @SerialName("pattern")
+    public val pattern: String,
+    @SerialName("type")
+    public val type: String = "glob_pattern",
+) : FileSystemPath {
+    init { require(type == "glob_pattern") }
+}
+
+@Serializable
+internal data class FileSystemPathSpecialFileSystemPath(
+    @SerialName("value")
+    public val value: FileSystemSpecialPath,
+    @SerialName("type")
+    public val type: String = "special",
+) : FileSystemPath {
+    init { require(type == "special") }
+}
+
+internal object FileSystemPathSerializer : JsonContentPolymorphicSerializer<FileSystemPath>(FileSystemPath::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<FileSystemPath> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "path" -> FileSystemPathPathFileSystemPath.serializer()
+            "glob_pattern" -> FileSystemPathGlobPatternFileSystemPath.serializer()
+            "special" -> FileSystemPathSpecialFileSystemPath.serializer()
+            else -> error("Unknown FileSystemPath type")
+        }
+}
+
+@Serializable
+internal data class FileSystemSandboxEntry(
+    @SerialName("access")
+    public val access: FileSystemAccessMode,
+    @SerialName("path")
+    public val path: FileSystemPath,
+)
+
+@Serializable(with = FileSystemSpecialPathSerializer::class)
+internal sealed interface FileSystemSpecialPath
+
+@Serializable
+internal data class FileSystemSpecialPathRootFileSystemSpecialPath(
+    @SerialName("kind")
+    public val kind: String = "root",
+) : FileSystemSpecialPath {
+    init { require(kind == "root") }
+}
+
+@Serializable
+internal data class FileSystemSpecialPathMinimalFileSystemSpecialPath(
+    @SerialName("kind")
+    public val kind: String = "minimal",
+) : FileSystemSpecialPath {
+    init { require(kind == "minimal") }
+}
+
+@Serializable
+internal data class FileSystemSpecialPathKindFileSystemSpecialPath(
+    @SerialName("kind")
+    public val kind: String = "project_roots",
+    @SerialName("subpath")
+    public val subpath: LegacyAppPathString? = null,
+) : FileSystemSpecialPath {
+    init { require(kind == "project_roots") }
+}
+
+@Serializable
+internal data class FileSystemSpecialPathTmpdirFileSystemSpecialPath(
+    @SerialName("kind")
+    public val kind: String = "tmpdir",
+) : FileSystemSpecialPath {
+    init { require(kind == "tmpdir") }
+}
+
+@Serializable
+internal data class FileSystemSpecialPathSlashTmpFileSystemSpecialPath(
+    @SerialName("kind")
+    public val kind: String = "slash_tmp",
+) : FileSystemSpecialPath {
+    init { require(kind == "slash_tmp") }
+}
+
+@Serializable
+internal data class FileSystemSpecialPathUnknown(
+    @SerialName("path")
+    public val path: String,
+    @SerialName("kind")
+    public val kind: String = "unknown",
+    @SerialName("subpath")
+    public val subpath: LegacyAppPathString? = null,
+) : FileSystemSpecialPath {
+    init { require(kind == "unknown") }
+}
+
+internal object FileSystemSpecialPathSerializer : JsonContentPolymorphicSerializer<FileSystemSpecialPath>(FileSystemSpecialPath::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<FileSystemSpecialPath> =
+        when (element.jsonObject["kind"]?.jsonPrimitive?.content) {
+            "root" -> FileSystemSpecialPathRootFileSystemSpecialPath.serializer()
+            "minimal" -> FileSystemSpecialPathMinimalFileSystemSpecialPath.serializer()
+            "project_roots" -> FileSystemSpecialPathKindFileSystemSpecialPath.serializer()
+            "tmpdir" -> FileSystemSpecialPathTmpdirFileSystemSpecialPath.serializer()
+            "slash_tmp" -> FileSystemSpecialPathSlashTmpFileSystemSpecialPath.serializer()
+            "unknown" -> FileSystemSpecialPathUnknown.serializer()
+            else -> error("Unknown FileSystemSpecialPath kind")
+        }
+}
+
+@Serializable
+internal data class FileUpdateChange(
+    @SerialName("diff")
+    public val diff: String,
+    @SerialName("kind")
+    public val kind: PatchChangeKind,
+    @SerialName("path")
+    public val path: String,
+)
+
+internal typealias ForcedChatgptWorkspaceIds = JsonElement
+
+@Serializable
+internal enum class ForcedLoginMethod {
+    @SerialName("chatgpt") CHATGPT,
+    @SerialName("api") API,
+}
+
+@Serializable
+internal data class FsChangedNotification(
+    @SerialName("changedPaths")
+    public val changedPaths: List<AbsolutePathBuf>,
     @SerialName("watchId")
     public val watchId: String,
 )
 
 @Serializable
-internal data class FsWatchResponse(
-    @SerialName("path")
-    public val path: AbsolutePathBuf,
-)
-
-@Serializable
-internal data class FsWriteFileParams(
-    @SerialName("dataBase64")
-    public val dataBase64: String,
-    @SerialName("path")
-    public val path: AbsolutePathBuf,
-)
-
-@Serializable
-internal class FsWriteFileResponse
-
-internal typealias FunctionCallOutputBody = JsonElement
-
-@Serializable(with = FunctionCallOutputContentItemSerializer::class)
-internal sealed interface FunctionCallOutputContentItem
-
-@Serializable
-internal data class FunctionCallOutputContentItemInputTextFunctionCallOutputContentItem(
-    @SerialName("text")
-    public val text: String,
-    @SerialName("type")
-    public val type: String = "input_text",
-) : FunctionCallOutputContentItem {
-    init { require(type == "input_text") }
-}
-
-@Serializable
-internal data class FunctionCallOutputContentItemInputImageFunctionCallOutputContentItem(
-    @SerialName("image_url")
-    public val image_url: String,
-    @SerialName("detail")
-    public val detail: ImageDetail? = null,
-    @SerialName("type")
-    public val type: String = "input_image",
-) : FunctionCallOutputContentItem {
-    init { require(type == "input_image") }
-}
-
-@Serializable
-internal data class FunctionCallOutputContentItemInputAudioFunctionCallOutputContentItem(
-    @SerialName("audio_url")
-    public val audio_url: String,
-    @SerialName("type")
-    public val type: String = "input_audio",
-) : FunctionCallOutputContentItem {
-    init { require(type == "input_audio") }
-}
-
-@Serializable
-internal data class FunctionCallOutputContentItemEncryptedContentFunctionCallOutputContentItem(
-    @SerialName("encrypted_content")
-    public val encrypted_content: String,
-    @SerialName("type")
-    public val type: String = "encrypted_content",
-) : FunctionCallOutputContentItem {
-    init { require(type == "encrypted_content") }
-}
-
-internal object FunctionCallOutputContentItemSerializer : JsonContentPolymorphicSerializer<FunctionCallOutputContentItem>(FunctionCallOutputContentItem::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<FunctionCallOutputContentItem> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "input_text" -> FunctionCallOutputContentItemInputTextFunctionCallOutputContentItem.serializer()
-            "input_image" -> FunctionCallOutputContentItemInputImageFunctionCallOutputContentItem.serializer()
-            "input_audio" -> FunctionCallOutputContentItemInputAudioFunctionCallOutputContentItem.serializer()
-            "encrypted_content" -> FunctionCallOutputContentItemEncryptedContentFunctionCallOutputContentItem.serializer()
-            else -> error("Unknown FunctionCallOutputContentItem type")
-        }
-}
-
-@Serializable
-internal enum class FuzzyFileSearchMatchType {
-    @SerialName("file") FILE,
-    @SerialName("directory") DIRECTORY,
-}
-
-@Serializable
-internal data class FuzzyFileSearchParams(
-    @SerialName("query")
-    public val query: String,
-    @SerialName("roots")
-    public val roots: List<String>,
-    @SerialName("cancellationToken")
-    public val cancellationToken: String? = null,
-)
-
-@Serializable
-internal data class FuzzyFileSearchResponse(
-    @SerialName("files")
-    public val files: List<FuzzyFileSearchResult>,
-)
-
-@Serializable
-internal data class FuzzyFileSearchResult(
-    @SerialName("file_name")
-    public val file_name: String,
-    @SerialName("match_type")
-    public val match_type: FuzzyFileSearchMatchType,
-    @SerialName("path")
-    public val path: String,
-    @SerialName("root")
-    public val root: String,
-    @SerialName("score")
-    public val score: Long,
-    @SerialName("indices")
-    public val indices: List<Long>? = null,
-)
-
-@Serializable
-internal data class FuzzyFileSearchSessionCompletedNotification(
-    @SerialName("sessionId")
-    public val sessionId: String,
-)
-
-@Serializable
-internal data class FuzzyFileSearchSessionUpdatedNotification(
-    @SerialName("files")
-    public val files: List<FuzzyFileSearchResult>,
-    @SerialName("query")
-    public val query: String,
-    @SerialName("sessionId")
-    public val sessionId: String,
-)
-
-@Serializable
-internal data class GetAccountParams(
-    @SerialName("refreshToken")
-    public val refreshToken: Boolean? = null,
-)
-
-@Serializable
-internal data class GetAccountRateLimitsResponse(
-    @SerialName("rateLimits")
-    public val rateLimits: RateLimitSnapshot,
-    @SerialName("rateLimitResetCredits")
-    public val rateLimitResetCredits: RateLimitResetCreditsSummary? = null,
-    @SerialName("rateLimitsByLimitId")
-    public val rateLimitsByLimitId: Map<String, RateLimitSnapshot>? = null,
-)
-
-@Serializable
-internal data class GetAccountResponse(
-    @SerialName("requiresOpenaiAuth")
-    public val requiresOpenaiAuth: Boolean,
-    @SerialName("account")
-    public val account: Account? = null,
-)
-
-@Serializable
-internal data class GetAccountTokenUsageResponse(
-    @SerialName("summary")
-    public val summary: AccountTokenUsageSummary,
-    @SerialName("dailyUsageBuckets")
-    public val dailyUsageBuckets: List<AccountTokenUsageDailyBucket>? = null,
-)
-
-@Serializable
-internal data class GetWorkspaceMessagesResponse(
-    @SerialName("featureEnabled")
-    public val featureEnabled: Boolean,
-    @SerialName("messages")
-    public val messages: List<WorkspaceMessage>,
-)
-
-@Serializable
-internal data class GitInfo(
-    @SerialName("branch")
-    public val branch: String? = null,
-    @SerialName("originUrl")
-    public val originUrl: String? = null,
-    @SerialName("sha")
-    public val sha: String? = null,
-)
-
-@Serializable
-internal data class GrantedPermissionProfile(
-    @SerialName("fileSystem")
-    public val fileSystem: AdditionalFileSystemPermissions? = null,
-    @SerialName("network")
-    public val network: AdditionalNetworkPermissions? = null,
-)
-
-@Serializable
-internal data class GuardianApprovalReview(
-    @SerialName("status")
-    public val status: GuardianApprovalReviewStatus,
-    @SerialName("rationale")
-    public val rationale: String? = null,
-    @SerialName("riskLevel")
-    public val riskLevel: GuardianRiskLevel? = null,
-    @SerialName("userAuthorization")
-    public val userAuthorization: GuardianUserAuthorization? = null,
+internal data class FsCopyParams(
+    @SerialName("destinationPath")
+    public val destinationPath: AbsolutePathBuf,
+    @SerialName("sourcePath")
+    public val sourcePath: AbsolutePathBuf,
+    @SerialName("recursive")
+    public val recursive: Boolean? = null,
 )

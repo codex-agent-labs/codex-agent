@@ -89,7 +89,8 @@ public class CodexHost private constructor(
     private val closeCompletion = CompletableDeferred<Throwable?>()
     private val activeTransitions = mutableSetOf<CompletableDeferred<Throwable?>>()
 
-    public val state: StateFlow<CodexHostState> = mutableState.asStateFlow()
+    public val lifecycleState: StateFlow<CodexHostState> = mutableState.asStateFlow()
+    internal val state: StateFlow<CodexHostState> = lifecycleState
 
     init {
         require(requestTimeoutMillis > 0) { "Request timeout must be positive" }

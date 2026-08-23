@@ -10,6 +10,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
 class ProtocolGeneratorSupportTest {
@@ -57,5 +58,32 @@ class ProtocolGeneratorSupportTest {
         assertTrue("internal data class AppServerRequestDescriptor" in content)
         assertTrue("internal class Model0" in content)
         assertFalse(Regex("(?m)^public\\s+").containsMatchIn(content))
+    }
+
+    @Test
+    fun nullableRouteParamsRetainTheirNamedType() {
+        val schema = buildJsonObject {
+            putJsonArray("anyOf") {
+                add(buildJsonObject { put("\$ref", "#/definitions/v2/GetAccountTokenUsageParams") })
+                add(buildJsonObject { put("type", "null") })
+            }
+        }
+
+        assertEquals("GetAccountTokenUsageParams?", schema.schemaTypeName())
+        assertEquals(
+            "GetAccountTokenUsageParams?",
+            "#[serde(default)] v2::NullableGetAccountTokenUsageParams".rustType(),
+        )
+        val models = ProtocolModels(
+            buildJsonObject {
+                putJsonObject("v2") {
+                    putJsonObject("GetAccountTokenUsageParams") { put("type", "object") }
+                }
+            },
+        )
+        assertEquals(
+            "GetAccountTokenUsageParams.serializer().nullable",
+            models.serializer("GetAccountTokenUsageParams?"),
+        )
     }
 }

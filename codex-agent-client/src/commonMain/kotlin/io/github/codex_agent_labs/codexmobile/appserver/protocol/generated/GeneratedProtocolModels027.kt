@@ -12,212 +12,219 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-@Serializable
-internal class PluginShareListParams
+@Serializable(with = ParsedCommandSerializer::class)
+internal sealed interface ParsedCommand
 
 @Serializable
-internal data class PluginShareListResponse(
-    @SerialName("data")
-    public val data: List<PluginShareListItem>,
-)
-
-@Serializable
-internal data class PluginSharePrincipal(
+internal data class ParsedCommandReadParsedCommand(
+    @SerialName("cmd")
+    public val cmd: String,
     @SerialName("name")
     public val name: String,
-    @SerialName("principalId")
-    public val principalId: String,
-    @SerialName("principalType")
-    public val principalType: PluginSharePrincipalType,
-    @SerialName("role")
-    public val role: PluginSharePrincipalRole,
-)
-
-@Serializable
-internal enum class PluginSharePrincipalRole {
-    @SerialName("reader") READER,
-    @SerialName("editor") EDITOR,
-    @SerialName("owner") OWNER,
-}
-
-@Serializable
-internal enum class PluginSharePrincipalType {
-    @SerialName("user") USER,
-    @SerialName("group") GROUP,
-    @SerialName("workspace") WORKSPACE,
-}
-
-@Serializable
-internal data class PluginShareSaveParams(
-    @SerialName("pluginPath")
-    public val pluginPath: AbsolutePathBuf,
-    @SerialName("discoverability")
-    public val discoverability: PluginShareDiscoverability? = null,
-    @SerialName("remotePluginId")
-    public val remotePluginId: String? = null,
-    @SerialName("shareTargets")
-    public val shareTargets: List<PluginShareTarget>? = null,
-)
-
-@Serializable
-internal data class PluginShareSaveResponse(
-    @SerialName("remotePluginId")
-    public val remotePluginId: String,
-    @SerialName("shareUrl")
-    public val shareUrl: String,
-)
-
-@Serializable
-internal data class PluginShareTarget(
-    @SerialName("principalId")
-    public val principalId: String,
-    @SerialName("principalType")
-    public val principalType: PluginSharePrincipalType,
-    @SerialName("role")
-    public val role: PluginShareTargetRole,
-)
-
-@Serializable
-internal enum class PluginShareTargetRole {
-    @SerialName("reader") READER,
-    @SerialName("editor") EDITOR,
-}
-
-@Serializable
-internal enum class PluginShareUpdateDiscoverability {
-    @SerialName("UNLISTED") UNLISTED,
-    @SerialName("PRIVATE") PRIVATE,
-    @SerialName("LISTED") LISTED,
-}
-
-@Serializable
-internal data class PluginShareUpdateTargetsParams(
-    @SerialName("discoverability")
-    public val discoverability: PluginShareUpdateDiscoverability,
-    @SerialName("remotePluginId")
-    public val remotePluginId: String,
-    @SerialName("shareTargets")
-    public val shareTargets: List<PluginShareTarget>,
-)
-
-@Serializable
-internal data class PluginShareUpdateTargetsResponse(
-    @SerialName("discoverability")
-    public val discoverability: PluginShareDiscoverability,
-    @SerialName("principals")
-    public val principals: List<PluginSharePrincipal>,
-)
-
-@Serializable
-internal data class PluginSkillReadParams(
-    @SerialName("remoteMarketplaceName")
-    public val remoteMarketplaceName: String,
-    @SerialName("remotePluginId")
-    public val remotePluginId: String,
-    @SerialName("skillName")
-    public val skillName: String,
-)
-
-@Serializable
-internal data class PluginSkillReadResponse(
-    @SerialName("contents")
-    public val contents: String? = null,
-)
-
-@Serializable(with = PluginSourceSerializer::class)
-internal sealed interface PluginSource
-
-@Serializable
-internal data class PluginSourceLocalPluginSource(
     @SerialName("path")
-    public val path: AbsolutePathBuf,
+    public val path: String,
     @SerialName("type")
-    public val type: String = "local",
-) : PluginSource {
-    init { require(type == "local") }
+    public val type: String = "read",
+) : ParsedCommand {
+    init { require(type == "read") }
 }
 
 @Serializable
-internal data class PluginSourceGitPluginSource(
-    @SerialName("url")
-    public val url: String,
+internal data class ParsedCommandListFilesParsedCommand(
+    @SerialName("cmd")
+    public val cmd: String,
     @SerialName("path")
     public val path: String? = null,
-    @SerialName("refName")
-    public val refName: String? = null,
-    @SerialName("sha")
-    public val sha: String? = null,
     @SerialName("type")
-    public val type: String = "git",
-) : PluginSource {
-    init { require(type == "git") }
+    public val type: String = "list_files",
+) : ParsedCommand {
+    init { require(type == "list_files") }
 }
 
 @Serializable
-internal data class PluginSourceNpmPluginSource(
-    @SerialName("package")
-    public val package_: String,
-    @SerialName("registry")
-    public val registry: String? = null,
+internal data class ParsedCommandSearchParsedCommand(
+    @SerialName("cmd")
+    public val cmd: String,
+    @SerialName("path")
+    public val path: String? = null,
+    @SerialName("query")
+    public val query: String? = null,
     @SerialName("type")
-    public val type: String = "npm",
-    @SerialName("version")
-    public val version: String? = null,
-) : PluginSource {
-    init { require(type == "npm") }
+    public val type: String = "search",
+) : ParsedCommand {
+    init { require(type == "search") }
 }
 
 @Serializable
-internal data class PluginSourceRemotePluginSource(
+internal data class ParsedCommandUnknownParsedCommand(
+    @SerialName("cmd")
+    public val cmd: String,
     @SerialName("type")
-    public val type: String = "remote",
-) : PluginSource {
-    init { require(type == "remote") }
+    public val type: String = "unknown",
+) : ParsedCommand {
+    init { require(type == "unknown") }
 }
 
-internal object PluginSourceSerializer : JsonContentPolymorphicSerializer<PluginSource>(PluginSource::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<PluginSource> =
+internal object ParsedCommandSerializer : JsonContentPolymorphicSerializer<ParsedCommand>(ParsedCommand::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ParsedCommand> =
         when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "local" -> PluginSourceLocalPluginSource.serializer()
-            "git" -> PluginSourceGitPluginSource.serializer()
-            "npm" -> PluginSourceNpmPluginSource.serializer()
-            "remote" -> PluginSourceRemotePluginSource.serializer()
-            else -> error("Unknown PluginSource type")
+            "read" -> ParsedCommandReadParsedCommand.serializer()
+            "list_files" -> ParsedCommandListFilesParsedCommand.serializer()
+            "search" -> ParsedCommandSearchParsedCommand.serializer()
+            "unknown" -> ParsedCommandUnknownParsedCommand.serializer()
+            else -> error("Unknown ParsedCommand type")
         }
 }
 
 @Serializable
-internal data class PluginSummary(
-    @SerialName("authPolicy")
-    public val authPolicy: PluginAuthPolicy,
-    @SerialName("enabled")
-    public val enabled: Boolean,
+internal enum class PatchApplyStatus {
+    @SerialName("inProgress") IN_PROGRESS,
+    @SerialName("completed") COMPLETED,
+    @SerialName("failed") FAILED,
+    @SerialName("declined") DECLINED,
+}
+
+@Serializable(with = PatchChangeKindSerializer::class)
+internal sealed interface PatchChangeKind
+
+@Serializable
+internal data class PatchChangeKindAddPatchChangeKind(
+    @SerialName("type")
+    public val type: String = "add",
+) : PatchChangeKind {
+    init { require(type == "add") }
+}
+
+@Serializable
+internal data class PatchChangeKindDeletePatchChangeKind(
+    @SerialName("type")
+    public val type: String = "delete",
+) : PatchChangeKind {
+    init { require(type == "delete") }
+}
+
+@Serializable
+internal data class PatchChangeKindUpdatePatchChangeKind(
+    @SerialName("move_path")
+    public val move_path: String? = null,
+    @SerialName("type")
+    public val type: String = "update",
+) : PatchChangeKind {
+    init { require(type == "update") }
+}
+
+internal object PatchChangeKindSerializer : JsonContentPolymorphicSerializer<PatchChangeKind>(PatchChangeKind::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<PatchChangeKind> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "add" -> PatchChangeKindAddPatchChangeKind.serializer()
+            "delete" -> PatchChangeKindDeletePatchChangeKind.serializer()
+            "update" -> PatchChangeKindUpdatePatchChangeKind.serializer()
+            else -> error("Unknown PatchChangeKind type")
+        }
+}
+
+internal typealias PathUri = String
+
+@Serializable
+internal enum class PermissionGrantScope {
+    @SerialName("turn") TURN,
+    @SerialName("session") SESSION,
+}
+
+@Serializable
+internal data class PermissionProfileListParams(
+    @SerialName("cursor")
+    public val cursor: String? = null,
+    @SerialName("cwd")
+    public val cwd: String? = null,
+    @SerialName("limit")
+    public val limit: Long? = null,
+)
+
+@Serializable
+internal data class PermissionProfileListResponse(
+    @SerialName("data")
+    public val data: List<PermissionProfileSummary>,
+    @SerialName("nextCursor")
+    public val nextCursor: String? = null,
+)
+
+@Serializable
+internal data class PermissionProfileSummary(
+    @SerialName("allowed")
+    public val allowed: Boolean,
     @SerialName("id")
     public val id: String,
-    @SerialName("installPolicy")
-    public val installPolicy: PluginInstallPolicy,
-    @SerialName("installed")
-    public val installed: Boolean,
-    @SerialName("name")
-    public val name: String,
-    @SerialName("source")
-    public val source: PluginSource,
-    @SerialName("availability")
-    public val availability: PluginAvailability? = null,
-    @SerialName("installPolicySource")
-    public val installPolicySource: PluginInstallPolicySource? = null,
-    @SerialName("interface")
-    public val interface_: PluginInterface? = null,
-    @SerialName("keywords")
-    public val keywords: List<String>? = null,
-    @SerialName("localVersion")
-    public val localVersion: String? = null,
-    @SerialName("mustShowInstallationInterstitial")
-    public val mustShowInstallationInterstitial: Boolean? = null,
-    @SerialName("remotePluginId")
-    public val remotePluginId: String? = null,
-    @SerialName("shareContext")
-    public val shareContext: PluginShareContext? = null,
-    @SerialName("version")
-    public val version: String? = null,
+    @SerialName("description")
+    public val description: String? = null,
 )
+
+@Serializable
+internal data class PermissionsRequestApprovalParams(
+    @SerialName("cwd")
+    public val cwd: AbsolutePathBuf,
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("permissions")
+    public val permissions: RequestPermissionProfile,
+    @SerialName("startedAtMs")
+    public val startedAtMs: Long,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("environmentId")
+    public val environmentId: String? = null,
+    @SerialName("reason")
+    public val reason: String? = null,
+)
+
+@Serializable
+internal data class PermissionsRequestApprovalResponse(
+    @SerialName("permissions")
+    public val permissions: GrantedPermissionProfile,
+    @SerialName("scope")
+    public val scope: PermissionGrantScope? = null,
+    @SerialName("strictAutoReview")
+    public val strictAutoReview: Boolean? = null,
+)
+
+@Serializable
+internal enum class Personality {
+    @SerialName("none") NONE,
+    @SerialName("friendly") FRIENDLY,
+    @SerialName("pragmatic") PRAGMATIC,
+}
+
+@Serializable
+internal data class PlanDeltaNotification(
+    @SerialName("delta")
+    public val delta: String,
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+)
+
+@Serializable
+internal enum class PlanType {
+    @SerialName("free") FREE,
+    @SerialName("go") GO,
+    @SerialName("plus") PLUS,
+    @SerialName("pro") PRO,
+    @SerialName("prolite") PROLITE,
+    @SerialName("team") TEAM,
+    @SerialName("self_serve_business_prolite") SELF_SERVE_BUSINESS_PROLITE,
+    @SerialName("self_serve_business_usage_based") SELF_SERVE_BUSINESS_USAGE_BASED,
+    @SerialName("business") BUSINESS,
+    @SerialName("ent26") ENT26,
+    @SerialName("enterprise_cbp_automation") ENTERPRISE_CBP_AUTOMATION,
+    @SerialName("enterprise_cbp_usage_based") ENTERPRISE_CBP_USAGE_BASED,
+    @SerialName("enterprise") ENTERPRISE,
+    @SerialName("edu") EDU,
+    @SerialName("edu_plus") EDU_PLUS,
+    @SerialName("edu_pro") EDU_PRO,
+    @SerialName("unknown") UNKNOWN,
+}

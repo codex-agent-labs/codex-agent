@@ -13,208 +13,216 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class ResponseItemCompactionTriggerResponseItem(
-    @SerialName("type")
-    public val type: String = "compaction_trigger",
-) : ResponseItem {
-    init { require(type == "compaction_trigger") }
+internal enum class RateLimitResetCreditStatus {
+    @SerialName("available") AVAILABLE,
+    @SerialName("redeeming") REDEEMING,
+    @SerialName("redeemed") REDEEMED,
+    @SerialName("unknown") UNKNOWN,
 }
 
 @Serializable
-internal data class ResponseItemContextCompactionResponseItem(
-    @SerialName("encrypted_content")
-    public val encrypted_content: String? = null,
-    @SerialName("id")
-    public val id: String? = null,
-    @SerialName("internal_chat_message_metadata_passthrough")
-    public val internal_chat_message_metadata_passthrough: InternalChatMessageMetadataPassthrough? = null,
-    @SerialName("type")
-    public val type: String = "context_compaction",
-) : ResponseItem {
-    init { require(type == "context_compaction") }
+internal data class RateLimitResetCreditsSummary(
+    @SerialName("availableCount")
+    public val availableCount: Long,
+    @SerialName("credits")
+    public val credits: List<RateLimitResetCredit>? = null,
+)
+
+@Serializable
+internal enum class RateLimitResetType {
+    @SerialName("codexRateLimits") CODEX_RATE_LIMITS,
+    @SerialName("unknown") UNKNOWN,
 }
 
 @Serializable
-internal data class ResponseItemOtherResponseItem(
-    @SerialName("type")
-    public val type: String = "other",
-) : ResponseItem {
-    init { require(type == "other") }
-}
-
-internal object ResponseItemSerializer : JsonContentPolymorphicSerializer<ResponseItem>(ResponseItem::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ResponseItem> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "message" -> ResponseItemMessageResponseItem.serializer()
-            "agent_message" -> ResponseItemAgentMessageResponseItem.serializer()
-            "reasoning" -> ResponseItemReasoningResponseItem.serializer()
-            "local_shell_call" -> ResponseItemLocalShellCallResponseItem.serializer()
-            "function_call" -> ResponseItemFunctionCallResponseItem.serializer()
-            "tool_search_call" -> ResponseItemToolSearchCallResponseItem.serializer()
-            "function_call_output" -> ResponseItemFunctionCallOutputResponseItem.serializer()
-            "custom_tool_call" -> ResponseItemCustomToolCallResponseItem.serializer()
-            "custom_tool_call_output" -> ResponseItemCustomToolCallOutputResponseItem.serializer()
-            "tool_search_output" -> ResponseItemToolSearchOutputResponseItem.serializer()
-            "web_search_call" -> ResponseItemWebSearchCallResponseItem.serializer()
-            "image_generation_call" -> ResponseItemImageGenerationCallResponseItem.serializer()
-            "compaction" -> ResponseItemCompactionResponseItem.serializer()
-            "compaction_trigger" -> ResponseItemCompactionTriggerResponseItem.serializer()
-            "context_compaction" -> ResponseItemContextCompactionResponseItem.serializer()
-            "other" -> ResponseItemOtherResponseItem.serializer()
-            else -> error("Unknown ResponseItem type")
-        }
-}
-
-@Serializable(with = ResponsesApiWebSearchActionSerializer::class)
-internal sealed interface ResponsesApiWebSearchAction
+internal data class RateLimitSnapshot(
+    @SerialName("credits")
+    public val credits: CreditsSnapshot? = null,
+    @SerialName("individualLimit")
+    public val individualLimit: SpendControlLimitSnapshot? = null,
+    @SerialName("limitId")
+    public val limitId: String? = null,
+    @SerialName("limitName")
+    public val limitName: String? = null,
+    @SerialName("planType")
+    public val planType: PlanType? = null,
+    @SerialName("primary")
+    public val primary: RateLimitWindow? = null,
+    @SerialName("rateLimitReachedType")
+    public val rateLimitReachedType: RateLimitReachedType? = null,
+    @SerialName("secondary")
+    public val secondary: RateLimitWindow? = null,
+    @SerialName("spendControlReached")
+    public val spendControlReached: Boolean? = null,
+)
 
 @Serializable
-internal data class ResponsesApiWebSearchActionSearchResponsesApiWebSearchAction(
-    @SerialName("queries")
-    public val queries: List<String>? = null,
-    @SerialName("query")
-    public val query: String? = null,
-    @SerialName("type")
-    public val type: String = "search",
-) : ResponsesApiWebSearchAction {
-    init { require(type == "search") }
-}
+internal data class RateLimitWindow(
+    @SerialName("usedPercent")
+    public val usedPercent: Long,
+    @SerialName("resetsAt")
+    public val resetsAt: Long? = null,
+    @SerialName("windowDurationMins")
+    public val windowDurationMins: Long? = null,
+)
 
 @Serializable
-internal data class ResponsesApiWebSearchActionOpenPageResponsesApiWebSearchAction(
-    @SerialName("type")
-    public val type: String = "open_page",
-    @SerialName("url")
-    public val url: String? = null,
-) : ResponsesApiWebSearchAction {
-    init { require(type == "open_page") }
-}
-
-@Serializable
-internal data class ResponsesApiWebSearchActionFindInPageResponsesApiWebSearchAction(
-    @SerialName("pattern")
-    public val pattern: String? = null,
-    @SerialName("type")
-    public val type: String = "find_in_page",
-    @SerialName("url")
-    public val url: String? = null,
-) : ResponsesApiWebSearchAction {
-    init { require(type == "find_in_page") }
-}
-
-@Serializable
-internal data class ResponsesApiWebSearchActionOtherResponsesApiWebSearchAction(
-    @SerialName("type")
-    public val type: String = "other",
-) : ResponsesApiWebSearchAction {
-    init { require(type == "other") }
-}
-
-internal object ResponsesApiWebSearchActionSerializer : JsonContentPolymorphicSerializer<ResponsesApiWebSearchAction>(ResponsesApiWebSearchAction::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ResponsesApiWebSearchAction> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "search" -> ResponsesApiWebSearchActionSearchResponsesApiWebSearchAction.serializer()
-            "open_page" -> ResponsesApiWebSearchActionOpenPageResponsesApiWebSearchAction.serializer()
-            "find_in_page" -> ResponsesApiWebSearchActionFindInPageResponsesApiWebSearchAction.serializer()
-            "other" -> ResponsesApiWebSearchActionOtherResponsesApiWebSearchAction.serializer()
-            else -> error("Unknown ResponsesApiWebSearchAction type")
-        }
-}
-
-internal typealias ReviewDecision = JsonElement
-
-@Serializable
-internal enum class ReviewDelivery {
-    @SerialName("inline") INLINE,
-    @SerialName("detached") DETACHED,
-}
-
-@Serializable
-internal data class ReviewStartParams(
-    @SerialName("target")
-    public val target: ReviewTarget,
+internal data class RawResponseCompletedNotification(
+    @SerialName("responseId")
+    public val responseId: String,
     @SerialName("threadId")
     public val threadId: String,
-    @SerialName("delivery")
-    public val delivery: ReviewDelivery? = null,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("usage")
+    public val usage: TokenUsageBreakdown? = null,
 )
 
 @Serializable
-internal data class ReviewStartResponse(
-    @SerialName("reviewThreadId")
-    public val reviewThreadId: String,
-    @SerialName("turn")
-    public val turn: Turn,
+internal data class RawResponseItemCompletedNotification(
+    @SerialName("item")
+    public val item: ResponseItem,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
 )
 
-@Serializable(with = ReviewTargetSerializer::class)
-internal sealed interface ReviewTarget
-
 @Serializable
-internal data class ReviewTargetUncommittedChangesReviewTarget(
-    @SerialName("type")
-    public val type: String = "uncommittedChanges",
-) : ReviewTarget {
-    init { require(type == "uncommittedChanges") }
+internal enum class RealtimeConversationVersion {
+    @SerialName("v1") V1,
+    @SerialName("v2") V2,
+    @SerialName("v3") V3,
 }
 
 @Serializable
-internal data class ReviewTargetBaseBranchReviewTarget(
-    @SerialName("branch")
-    public val branch: String,
-    @SerialName("type")
-    public val type: String = "baseBranch",
-) : ReviewTarget {
-    init { require(type == "baseBranch") }
+internal enum class RealtimeOutputModality {
+    @SerialName("text") TEXT,
+    @SerialName("audio") AUDIO,
 }
 
 @Serializable
-internal data class ReviewTargetCommitReviewTarget(
-    @SerialName("sha")
-    public val sha: String,
-    @SerialName("title")
-    public val title: String? = null,
-    @SerialName("type")
-    public val type: String = "commit",
-) : ReviewTarget {
-    init { require(type == "commit") }
+internal enum class RealtimeVoice {
+    @SerialName("alloy") ALLOY,
+    @SerialName("arbor") ARBOR,
+    @SerialName("ash") ASH,
+    @SerialName("ballad") BALLAD,
+    @SerialName("breeze") BREEZE,
+    @SerialName("cedar") CEDAR,
+    @SerialName("coral") CORAL,
+    @SerialName("cove") COVE,
+    @SerialName("echo") ECHO,
+    @SerialName("ember") EMBER,
+    @SerialName("juniper") JUNIPER,
+    @SerialName("maple") MAPLE,
+    @SerialName("marin") MARIN,
+    @SerialName("sage") SAGE,
+    @SerialName("shimmer") SHIMMER,
+    @SerialName("sol") SOL,
+    @SerialName("spruce") SPRUCE,
+    @SerialName("vale") VALE,
+    @SerialName("verse") VERSE,
 }
 
 @Serializable
-internal data class ReviewTargetCustomReviewTarget(
-    @SerialName("instructions")
-    public val instructions: String,
+internal data class RealtimeVoicesList(
+    @SerialName("defaultV1")
+    public val defaultV1: RealtimeVoice,
+    @SerialName("defaultV2")
+    public val defaultV2: RealtimeVoice,
+    @SerialName("v1")
+    public val v1: List<RealtimeVoice>,
+    @SerialName("v2")
+    public val v2: List<RealtimeVoice>,
+)
+
+internal typealias ReasoningEffort = String
+
+@Serializable
+internal data class ReasoningEffortOption(
+    @SerialName("description")
+    public val description: String,
+    @SerialName("reasoningEffort")
+    public val reasoningEffort: ReasoningEffort,
+)
+
+@Serializable(with = ReasoningItemContentSerializer::class)
+internal sealed interface ReasoningItemContent
+
+@Serializable
+internal data class ReasoningItemContentReasoningTextReasoningItemContent(
+    @SerialName("text")
+    public val text: String,
     @SerialName("type")
-    public val type: String = "custom",
-) : ReviewTarget {
-    init { require(type == "custom") }
+    public val type: String = "reasoning_text",
+) : ReasoningItemContent {
+    init { require(type == "reasoning_text") }
 }
 
-internal object ReviewTargetSerializer : JsonContentPolymorphicSerializer<ReviewTarget>(ReviewTarget::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ReviewTarget> =
+@Serializable
+internal data class ReasoningItemContentTextReasoningItemContent(
+    @SerialName("text")
+    public val text: String,
+    @SerialName("type")
+    public val type: String = "text",
+) : ReasoningItemContent {
+    init { require(type == "text") }
+}
+
+internal object ReasoningItemContentSerializer : JsonContentPolymorphicSerializer<ReasoningItemContent>(ReasoningItemContent::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ReasoningItemContent> =
         when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "uncommittedChanges" -> ReviewTargetUncommittedChangesReviewTarget.serializer()
-            "baseBranch" -> ReviewTargetBaseBranchReviewTarget.serializer()
-            "commit" -> ReviewTargetCommitReviewTarget.serializer()
-            "custom" -> ReviewTargetCustomReviewTarget.serializer()
-            else -> error("Unknown ReviewTarget type")
+            "reasoning_text" -> ReasoningItemContentReasoningTextReasoningItemContent.serializer()
+            "text" -> ReasoningItemContentTextReasoningItemContent.serializer()
+            else -> error("Unknown ReasoningItemContent type")
         }
 }
 
-@Serializable
-internal enum class SandboxMode {
-    @SerialName("read-only") READ_ONLY,
-    @SerialName("workspace-write") WORKSPACE_WRITE,
-    @SerialName("danger-full-access") DANGER_FULL_ACCESS,
-}
-
-@Serializable(with = SandboxPolicySerializer::class)
-internal sealed interface SandboxPolicy
+@Serializable(with = ReasoningItemReasoningSummarySerializer::class)
+internal sealed interface ReasoningItemReasoningSummary
 
 @Serializable
-internal data class SandboxPolicyDangerFullAccessSandboxPolicy(
+internal data class ReasoningItemReasoningSummarySummaryTextReasoningItemReasoningSummary(
+    @SerialName("text")
+    public val text: String,
     @SerialName("type")
-    public val type: String = "dangerFullAccess",
-) : SandboxPolicy {
-    init { require(type == "dangerFullAccess") }
+    public val type: String = "summary_text",
+) : ReasoningItemReasoningSummary {
+    init { require(type == "summary_text") }
 }
+
+internal object ReasoningItemReasoningSummarySerializer : JsonContentPolymorphicSerializer<ReasoningItemReasoningSummary>(ReasoningItemReasoningSummary::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ReasoningItemReasoningSummary> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "summary_text" -> ReasoningItemReasoningSummarySummaryTextReasoningItemReasoningSummary.serializer()
+            else -> error("Unknown ReasoningItemReasoningSummary type")
+        }
+}
+
+internal typealias ReasoningSummary = JsonElement
+
+@Serializable
+internal data class ReasoningSummaryPartAddedNotification(
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("summaryIndex")
+    public val summaryIndex: Long,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+)
+
+@Serializable
+internal data class ReasoningSummaryTextDeltaNotification(
+    @SerialName("delta")
+    public val delta: String,
+    @SerialName("itemId")
+    public val itemId: String,
+    @SerialName("summaryIndex")
+    public val summaryIndex: Long,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+)

@@ -85,21 +85,51 @@ public data class AgentPlanProgress(
 
 public enum class AgentHookTrustStatus { MANAGED, UNTRUSTED, TRUSTED, MODIFIED }
 
+public sealed interface AgentHookHandler {
+    public data class Command(
+        public val command: String,
+        public val isAsync: Boolean,
+    ) : AgentHookHandler
+
+    public data class McpTool(
+        public val server: String,
+        public val tool: String,
+    ) : AgentHookHandler
+
+    public data object Prompt : AgentHookHandler
+
+    public data object Agent : AgentHookHandler
+}
+
 public data class AgentHook(
     public val key: String,
     public val currentHash: String,
     public val isEnabled: Boolean,
     public val eventName: String,
-    public val handlerType: String,
+    public val handler: AgentHookHandler,
     public val isManaged: Boolean,
     public val source: String,
     public val sourcePath: String,
     public val timeoutSeconds: Long,
     public val trustStatus: AgentHookTrustStatus,
-    public val command: String? = null,
     public val matcher: String? = null,
     public val pluginId: String? = null,
     public val statusMessage: String? = null,
+    public val origin: AgentResourceOrigin = when {
+        pluginId != null || source == "PLUGIN" -> AgentResourceOrigin.PLUGIN
+        isManaged || source in setOf(
+            "SYSTEM",
+            "MDM",
+            "CLOUD_REQUIREMENTS",
+            "CLOUD_MANAGED_CONFIG",
+            "LEGACY_MANAGED_CONFIG_FILE",
+            "LEGACY_MANAGED_CONFIG_MDM",
+        ) -> AgentResourceOrigin.MANAGED
+        source == "USER" -> AgentResourceOrigin.USER
+        source == "PROJECT" -> AgentResourceOrigin.WORKSPACE
+        else -> AgentResourceOrigin.UNKNOWN
+    },
+    public val canUninstall: Boolean = false,
 )
 
 public data class AgentHookCatalog(

@@ -117,6 +117,7 @@ internal suspend fun CodexAgentClient.handleNotificationAction(notification: Ser
         is ServerNotificationMcpServerOauthLoginCompletedNotification -> eventsChannel.send(
             AgentEvent.McpOauthCompleted(
                 serverName = notification.params.name,
+                conversationId = notification.params.threadId?.let(::ConversationId),
                 success = notification.params.success,
                 error = notification.params.error,
             ),

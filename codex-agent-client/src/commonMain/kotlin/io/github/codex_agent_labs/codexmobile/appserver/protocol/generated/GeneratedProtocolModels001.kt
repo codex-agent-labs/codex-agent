@@ -65,6 +65,8 @@ internal data class AccountLoginCompletedNotification(
     public val error: String? = null,
     @SerialName("loginId")
     public val loginId: String? = null,
+    @SerialName("onboardingEntrypoint")
+    public val onboardingEntrypoint: DesktopOnboardingEntrypoint? = null,
 )
 
 @Serializable
@@ -164,6 +166,11 @@ internal data class AdditionalPermissionProfile(
 )
 
 @Serializable
+internal enum class AgentMessageDelivery {
+    @SerialName("async") ASYNC,
+}
+
+@Serializable
 internal data class AgentMessageDeltaNotification(
     @SerialName("delta")
     public val delta: String,
@@ -210,19 +217,3 @@ internal object AgentMessageInputContentSerializer : JsonContentPolymorphicSeria
 internal typealias AgentPath = String
 
 internal typealias AnalyticsConfig = JsonElement
-
-@Serializable
-internal data class AppBranding(
-    @SerialName("isDiscoverableApp")
-    public val isDiscoverableApp: Boolean,
-    @SerialName("category")
-    public val category: String? = null,
-    @SerialName("developer")
-    public val developer: String? = null,
-    @SerialName("privacyPolicy")
-    public val privacyPolicy: String? = null,
-    @SerialName("termsOfService")
-    public val termsOfService: String? = null,
-    @SerialName("website")
-    public val website: String? = null,
-)

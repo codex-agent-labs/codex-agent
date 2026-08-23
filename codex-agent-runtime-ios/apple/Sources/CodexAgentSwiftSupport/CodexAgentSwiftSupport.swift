@@ -1,13 +1,15 @@
 import CodexAgent
 import Foundation
 
-public extension CodexAgent {
+public extension CodexAuthentication {
     func authenticate() async throws {
         try await authenticate(method: CodexAuthenticationMethodChatGptBrowser())
     }
+}
 
-    func openConversation() async throws -> CodexConversation {
-        try await openConversation(
+public extension CodexConversations {
+    func open() async throws -> CodexConversation {
+        try await open(
             conversationId: nil,
             settings: AgentConversationSettings(
                 approvalPreset: .autoReview,

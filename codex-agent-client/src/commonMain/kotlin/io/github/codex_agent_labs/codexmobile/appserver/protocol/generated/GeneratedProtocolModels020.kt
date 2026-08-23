@@ -12,210 +12,213 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-@Serializable
-internal data class LoginAccountParamsAmazonBedrock(
-    @SerialName("apiKey")
-    public val apiKey: String,
-    @SerialName("region")
-    public val region: String,
-    @SerialName("type")
-    public val type: String = "amazonBedrock",
-) : LoginAccountParams {
-    init { require(type == "amazonBedrock") }
-}
-
-internal object LoginAccountParamsSerializer : JsonContentPolymorphicSerializer<LoginAccountParams>(LoginAccountParams::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<LoginAccountParams> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "apiKey" -> LoginAccountParamsApiKey.serializer()
-            "chatgpt" -> LoginAccountParamsChatgpt.serializer()
-            "chatgptDeviceCode" -> LoginAccountParamsChatgptDeviceCode.serializer()
-            "chatgptAuthTokens" -> LoginAccountParamsChatgptAuthTokens.serializer()
-            "amazonBedrock" -> LoginAccountParamsAmazonBedrock.serializer()
-            else -> error("Unknown LoginAccountParams type")
-        }
-}
-
-@Serializable(with = LoginAccountResponseSerializer::class)
-internal sealed interface LoginAccountResponse
-
-@Serializable
-internal data class LoginAccountResponseApiKey(
-    @SerialName("type")
-    public val type: String = "apiKey",
-) : LoginAccountResponse {
-    init { require(type == "apiKey") }
-}
-
-@Serializable
-internal data class LoginAccountResponseChatgpt(
-    @SerialName("authUrl")
-    public val authUrl: String,
-    @SerialName("loginId")
-    public val loginId: String,
-    @SerialName("type")
-    public val type: String = "chatgpt",
-) : LoginAccountResponse {
-    init { require(type == "chatgpt") }
-}
-
-@Serializable
-internal data class LoginAccountResponseChatgptDeviceCode(
-    @SerialName("loginId")
-    public val loginId: String,
-    @SerialName("userCode")
-    public val userCode: String,
-    @SerialName("verificationUrl")
-    public val verificationUrl: String,
-    @SerialName("type")
-    public val type: String = "chatgptDeviceCode",
-) : LoginAccountResponse {
-    init { require(type == "chatgptDeviceCode") }
-}
-
-@Serializable
-internal data class LoginAccountResponseChatgptAuthTokens(
-    @SerialName("type")
-    public val type: String = "chatgptAuthTokens",
-) : LoginAccountResponse {
-    init { require(type == "chatgptAuthTokens") }
-}
-
-@Serializable
-internal data class LoginAccountResponseAmazonBedrock(
-    @SerialName("type")
-    public val type: String = "amazonBedrock",
-) : LoginAccountResponse {
-    init { require(type == "amazonBedrock") }
-}
-
-internal object LoginAccountResponseSerializer : JsonContentPolymorphicSerializer<LoginAccountResponse>(LoginAccountResponse::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<LoginAccountResponse> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "apiKey" -> LoginAccountResponseApiKey.serializer()
-            "chatgpt" -> LoginAccountResponseChatgpt.serializer()
-            "chatgptDeviceCode" -> LoginAccountResponseChatgptDeviceCode.serializer()
-            "chatgptAuthTokens" -> LoginAccountResponseChatgptAuthTokens.serializer()
-            "amazonBedrock" -> LoginAccountResponseAmazonBedrock.serializer()
-            else -> error("Unknown LoginAccountResponse type")
+internal object HookMetadataSerializer : JsonContentPolymorphicSerializer<HookMetadata>(HookMetadata::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<HookMetadata> =
+        when (element.jsonObject["handlerType"]?.jsonPrimitive?.content) {
+            "command" -> HookMetadataCommand.serializer()
+            "mcpTool" -> HookMetadataMcpTool.serializer()
+            "prompt" -> HookMetadataPromptHookMetadata.serializer()
+            "agent" -> HookMetadataAgentHookMetadata.serializer()
+            else -> error("Unknown HookMetadata handlerType")
         }
 }
 
 @Serializable
-internal enum class LoginAppBrand {
-    @SerialName("codex") CODEX,
-    @SerialName("chatgpt") CHATGPT,
-}
-
-@Serializable
-internal class LogoutAccountResponse
-
-@Serializable
-internal data class ManagedHooksRequirements(
-    @SerialName("PermissionRequest")
-    public val PermissionRequest: List<ConfiguredHookMatcherGroup>,
-    @SerialName("PostCompact")
-    public val PostCompact: List<ConfiguredHookMatcherGroup>,
-    @SerialName("PostToolUse")
-    public val PostToolUse: List<ConfiguredHookMatcherGroup>,
-    @SerialName("PreCompact")
-    public val PreCompact: List<ConfiguredHookMatcherGroup>,
-    @SerialName("PreToolUse")
-    public val PreToolUse: List<ConfiguredHookMatcherGroup>,
-    @SerialName("SessionStart")
-    public val SessionStart: List<ConfiguredHookMatcherGroup>,
-    @SerialName("Stop")
-    public val Stop: List<ConfiguredHookMatcherGroup>,
-    @SerialName("SubagentStart")
-    public val SubagentStart: List<ConfiguredHookMatcherGroup>,
-    @SerialName("SubagentStop")
-    public val SubagentStop: List<ConfiguredHookMatcherGroup>,
-    @SerialName("UserPromptSubmit")
-    public val UserPromptSubmit: List<ConfiguredHookMatcherGroup>,
-    @SerialName("SessionEnd")
-    public val SessionEnd: List<ConfiguredHookMatcherGroup>? = null,
-    @SerialName("managedDir")
-    public val managedDir: String? = null,
-    @SerialName("windowsManagedDir")
-    public val windowsManagedDir: String? = null,
+internal data class HookMigration(
+    @SerialName("name")
+    public val name: String,
 )
 
 @Serializable
-internal data class MarketplaceAddParams(
+internal data class HookOutputEntry(
+    @SerialName("kind")
+    public val kind: HookOutputEntryKind,
+    @SerialName("text")
+    public val text: String,
+)
+
+@Serializable
+internal enum class HookOutputEntryKind {
+    @SerialName("warning") WARNING,
+    @SerialName("stop") STOP,
+    @SerialName("feedback") FEEDBACK,
+    @SerialName("context") CONTEXT,
+    @SerialName("error") ERROR,
+}
+
+@Serializable
+internal data class HookPromptFragment(
+    @SerialName("hookRunId")
+    public val hookRunId: String,
+    @SerialName("text")
+    public val text: String,
+)
+
+@Serializable
+internal enum class HookRunStatus {
+    @SerialName("running") RUNNING,
+    @SerialName("completed") COMPLETED,
+    @SerialName("failed") FAILED,
+    @SerialName("blocked") BLOCKED,
+    @SerialName("stopped") STOPPED,
+}
+
+@Serializable
+internal data class HookRunSummary(
+    @SerialName("displayOrder")
+    public val displayOrder: Long,
+    @SerialName("entries")
+    public val entries: List<HookOutputEntry>,
+    @SerialName("eventName")
+    public val eventName: HookEventName,
+    @SerialName("executionMode")
+    public val executionMode: HookExecutionMode,
+    @SerialName("handlerType")
+    public val handlerType: HookHandlerType,
+    @SerialName("id")
+    public val id: String,
+    @SerialName("scope")
+    public val scope: HookScope,
+    @SerialName("sourcePath")
+    public val sourcePath: AbsolutePathBuf,
+    @SerialName("startedAt")
+    public val startedAt: Long,
+    @SerialName("status")
+    public val status: HookRunStatus,
+    @SerialName("completedAt")
+    public val completedAt: Long? = null,
+    @SerialName("durationMs")
+    public val durationMs: Long? = null,
     @SerialName("source")
-    public val source: String,
-    @SerialName("refName")
-    public val refName: String? = null,
-    @SerialName("sparsePaths")
-    public val sparsePaths: List<String>? = null,
+    public val source: HookSource? = null,
+    @SerialName("statusMessage")
+    public val statusMessage: String? = null,
 )
 
 @Serializable
-internal data class MarketplaceAddResponse(
-    @SerialName("alreadyAdded")
-    public val alreadyAdded: Boolean,
-    @SerialName("installedRoot")
-    public val installedRoot: AbsolutePathBuf,
-    @SerialName("marketplaceName")
-    public val marketplaceName: String,
-)
-
-@Serializable
-internal data class MarketplaceInterface(
-    @SerialName("displayName")
-    public val displayName: String? = null,
-)
-
-@Serializable
-internal data class MarketplaceLoadErrorInfo(
-    @SerialName("marketplacePath")
-    public val marketplacePath: AbsolutePathBuf,
-    @SerialName("message")
-    public val message: String,
-)
-
-@Serializable
-internal data class MarketplaceRemoveParams(
-    @SerialName("marketplaceName")
-    public val marketplaceName: String,
-)
-
-@Serializable
-internal data class MarketplaceRemoveResponse(
-    @SerialName("marketplaceName")
-    public val marketplaceName: String,
-    @SerialName("installedRoot")
-    public val installedRoot: AbsolutePathBuf? = null,
-)
-
-@Serializable
-internal data class MarketplaceUpgradeErrorInfo(
-    @SerialName("marketplaceName")
-    public val marketplaceName: String,
-    @SerialName("message")
-    public val message: String,
-)
-
-@Serializable
-internal data class MarketplaceUpgradeParams(
-    @SerialName("marketplaceName")
-    public val marketplaceName: String? = null,
-)
-
-@Serializable
-internal data class MarketplaceUpgradeResponse(
-    @SerialName("errors")
-    public val errors: List<MarketplaceUpgradeErrorInfo>,
-    @SerialName("selectedMarketplaces")
-    public val selectedMarketplaces: List<String>,
-    @SerialName("upgradedRoots")
-    public val upgradedRoots: List<AbsolutePathBuf>,
-)
-
-@Serializable
-internal enum class McpAuthStatus {
-    @SerialName("unsupported") UNSUPPORTED,
-    @SerialName("notLoggedIn") NOT_LOGGED_IN,
-    @SerialName("bearerToken") BEARER_TOKEN,
-    @SerialName("oAuth") O_AUTH,
+internal enum class HookScope {
+    @SerialName("thread") THREAD,
+    @SerialName("turn") TURN,
 }
+
+@Serializable
+internal enum class HookSource {
+    @SerialName("system") SYSTEM,
+    @SerialName("user") USER,
+    @SerialName("project") PROJECT,
+    @SerialName("mdm") MDM,
+    @SerialName("sessionFlags") SESSION_FLAGS,
+    @SerialName("plugin") PLUGIN,
+    @SerialName("cloudRequirements") CLOUD_REQUIREMENTS,
+    @SerialName("cloudManagedConfig") CLOUD_MANAGED_CONFIG,
+    @SerialName("legacyManagedConfigFile") LEGACY_MANAGED_CONFIG_FILE,
+    @SerialName("legacyManagedConfigMdm") LEGACY_MANAGED_CONFIG_MDM,
+    @SerialName("unknown") UNKNOWN,
+}
+
+@Serializable
+internal data class HookStartedNotification(
+    @SerialName("run")
+    public val run: HookRunSummary,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String? = null,
+)
+
+@Serializable
+internal enum class HookTrustStatus {
+    @SerialName("managed") MANAGED,
+    @SerialName("untrusted") UNTRUSTED,
+    @SerialName("trusted") TRUSTED,
+    @SerialName("modified") MODIFIED,
+}
+
+@Serializable
+internal data class HooksListEntry(
+    @SerialName("cwd")
+    public val cwd: String,
+    @SerialName("errors")
+    public val errors: List<HookErrorInfo>,
+    @SerialName("hooks")
+    public val hooks: List<HookMetadata>,
+    @SerialName("warnings")
+    public val warnings: List<String>,
+)
+
+@Serializable
+internal data class HooksListParams(
+    @SerialName("cwds")
+    public val cwds: List<String>? = null,
+)
+
+@Serializable
+internal data class HooksListResponse(
+    @SerialName("data")
+    public val data: List<HooksListEntry>,
+)
+
+@Serializable
+internal enum class ImageDetail {
+    @SerialName("auto") AUTO,
+    @SerialName("low") LOW,
+    @SerialName("high") HIGH,
+    @SerialName("original") ORIGINAL,
+}
+
+@Serializable(with = ImageGenerationFailureSerializer::class)
+internal sealed interface ImageGenerationFailure
+
+@Serializable
+internal data class ImageGenerationFailureUsageLimitExceededImageGenerationFailure(
+    @SerialName("limitId")
+    public val limitId: String,
+    @SerialName("resetsAt")
+    public val resetsAt: Long? = null,
+    @SerialName("type")
+    public val type: String = "usageLimitExceeded",
+) : ImageGenerationFailure {
+    init { require(type == "usageLimitExceeded") }
+}
+
+internal object ImageGenerationFailureSerializer : JsonContentPolymorphicSerializer<ImageGenerationFailure>(ImageGenerationFailure::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ImageGenerationFailure> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "usageLimitExceeded" -> ImageGenerationFailureUsageLimitExceededImageGenerationFailure.serializer()
+            else -> error("Unknown ImageGenerationFailure type")
+        }
+}
+
+@Serializable
+internal data class InitializeCapabilities(
+    @SerialName("experimentalApi")
+    public val experimentalApi: Boolean? = null,
+    @SerialName("extensions")
+    public val extensions: JsonObject? = null,
+    @SerialName("mcpServerOpenaiFormElicitation")
+    public val mcpServerOpenaiFormElicitation: Boolean? = null,
+    @SerialName("optOutNotificationMethods")
+    public val optOutNotificationMethods: List<String>? = null,
+    @SerialName("requestAttestation")
+    public val requestAttestation: Boolean? = null,
+)
+
+@Serializable
+internal data class InitializeParams(
+    @SerialName("clientInfo")
+    public val clientInfo: ClientInfo,
+    @SerialName("capabilities")
+    public val capabilities: InitializeCapabilities? = null,
+)
+
+@Serializable
+internal data class InitializeResponse(
+    @SerialName("codexHome")
+    public val codexHome: AbsolutePathBuf,
+    @SerialName("platformFamily")
+    public val platformFamily: String,
+    @SerialName("platformOs")
+    public val platformOs: String,
+    @SerialName("userAgent")
+    public val userAgent: String,
+)

@@ -11,7 +11,9 @@ internal fun renderKotlin(
     GeneratedFile(
         "GeneratedProtocolDescriptors.kt",
         generatedHeader(
-            "import kotlinx.serialization.KSerializer\nimport kotlinx.serialization.builtins.serializer",
+            "import kotlinx.serialization.KSerializer\n" +
+                "import kotlinx.serialization.builtins.nullable\n" +
+                "import kotlinx.serialization.builtins.serializer",
         ) + buildString {
             appendLine("internal data class AppServerRequestDescriptor(")
             appendLine("    public val method: String,")
@@ -57,7 +59,9 @@ internal fun renderKotlin(
     GeneratedFile(
         "GeneratedProtocolClientMethods.kt",
         generatedHeader(
-            "import kotlinx.serialization.KSerializer\nimport kotlinx.serialization.builtins.serializer",
+            "import kotlinx.serialization.KSerializer\n" +
+                "import kotlinx.serialization.builtins.nullable\n" +
+                "import kotlinx.serialization.builtins.serializer",
         ) + buildString { appendMethodObject("AppServerClientMethods", "clientRequests", client, models) },
     ),
 )
@@ -95,8 +99,13 @@ internal fun StringBuilder.appendMethodObject(
         val response = checkNotNull(route.responseType)
         appendLine("    public data object ${route.method.kotlinTypeName()} : AppServerMethod<${route.paramsType}, $response> {")
         append("        override val descriptor = AppServerProtocolDescriptors.$descriptorMap.getValue(\"${route.method.escape()}\"); ")
-        append("override val paramsSerializer = ${models.serializer(route.paramsType)}; ")
-        appendLine("override val responseSerializer = ${models.serializer(response)} }")
+        append(
+            "override val paramsSerializer: KSerializer<${route.paramsType}> = " +
+                "${models.serializer(route.paramsType)}; ",
+        )
+        appendLine(
+            "override val responseSerializer: KSerializer<$response> = ${models.serializer(response)} }",
+        )
         appendLine()
     }
     appendLine("}")

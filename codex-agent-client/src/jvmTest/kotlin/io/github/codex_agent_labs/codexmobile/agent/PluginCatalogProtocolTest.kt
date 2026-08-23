@@ -80,6 +80,25 @@ class PluginCatalogProtocolTest : SkillsPluginsProtocolTestBase() {
                         }
                     },
                 )
+                "config/read" -> server.respond(
+                    message.id,
+                    buildJsonObject {
+                        putJsonObject("config") {
+                            putJsonObject("mcp_servers") {
+                                putJsonObject("drive") { put("url", "https://mcp.example.com") }
+                            }
+                        }
+                        putJsonObject("origins") {
+                            putJsonObject("mcp_servers.drive.url") {
+                                putJsonObject("name") {
+                                    put("type", "user")
+                                    put("file", "/tmp/config.toml")
+                                }
+                                put("version", "1")
+                            }
+                        }
+                    },
+                )
                 "mcpServer/oauth/login" -> server.respond(
                     message.id,
                     buildJsonObject { put("authorizationUrl", "https://accounts.example.com/oauth") },
@@ -102,7 +121,7 @@ class PluginCatalogProtocolTest : SkillsPluginsProtocolTestBase() {
             client.uninstallPlugin(plugin.reference)
             client.setPluginEnabled(plugin.reference.id, true)
             assertTrue(client.listConnectors().single().isAccessible)
-            assertEquals("drive", client.listMcpServers().single().name)
+            assertEquals("drive", client.listMcpServers("/workspace").single().name)
             assertEquals("https://accounts.example.com/oauth", client.startMcpOauth("drive"))
             assertEquals(true, skillWrite)
             assertEquals("plugins.drive@openai-curated.enabled", pluginWrite)

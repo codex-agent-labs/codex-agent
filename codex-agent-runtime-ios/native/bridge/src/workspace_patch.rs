@@ -10,9 +10,12 @@ use codex_exec_server::ExecutorFileSystemFuture;
 use codex_exec_server::FileMetadata;
 use codex_exec_server::FileSystemReadStream;
 use codex_exec_server::FileSystemSandboxContext;
+use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::LocalFileSystem;
 use codex_exec_server::ReadDirectoryEntry;
+use codex_exec_server::ReadFileOptions;
 use codex_exec_server::RemoveOptions;
+use codex_exec_server::WriteFileOptions;
 use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 use serde_json::Value;
@@ -139,18 +142,28 @@ impl ExecutorFileSystem for WorkspaceFileSystem {
     fn read_file<'a>(
         &'a self,
         path: &'a PathUri,
+        options: ReadFileOptions,
         _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, Vec<u8>> {
         Box::pin(async move {
             let path = self.existing_uri(path)?;
-            let metadata = self.inner.get_metadata(&path, None).await?;
+            let metadata = self
+                .inner
+                .get_metadata(
+                    &path,
+                    GetMetadataOptions {
+                        follow_symlinks: options.follow_symlinks,
+                    },
+                    None,
+                )
+                .await?;
             if !metadata.is_file || metadata.size > MAX_FILE_BYTES {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "apply_patch requires files no larger than 4 MiB",
                 ));
             }
-            self.inner.read_file(&path, None).await
+            self.inner.read_file(&path, options, None).await
         })
     }
 
@@ -169,6 +182,7 @@ impl ExecutorFileSystem for WorkspaceFileSystem {
         &'a self,
         path: &'a PathUri,
         contents: Vec<u8>,
+        _options: WriteFileOptions,
         _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(async move {
@@ -201,11 +215,12 @@ impl ExecutorFileSystem for WorkspaceFileSystem {
     fn get_metadata<'a>(
         &'a self,
         path: &'a PathUri,
+        options: GetMetadataOptions,
         _sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
         Box::pin(async move {
             let path = self.existing_uri(path)?;
-            self.inner.get_metadata(&path, None).await
+            self.inner.get_metadata(&path, options, None).await
         })
     }
 

@@ -13,208 +13,233 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class ItemGuardianApprovalReviewCompletedNotification(
-    @SerialName("action")
-    public val action: GuardianApprovalReviewAction,
-    @SerialName("completedAtMs")
-    public val completedAtMs: Long,
-    @SerialName("decisionSource")
-    public val decisionSource: AutoReviewDecisionSource,
-    @SerialName("review")
-    public val review: GuardianApprovalReview,
-    @SerialName("reviewId")
-    public val reviewId: String,
-    @SerialName("startedAtMs")
-    public val startedAtMs: Long,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("targetItemId")
-    public val targetItemId: String? = null,
-)
+internal enum class GuardianCommandSource {
+    @SerialName("shell") SHELL,
+    @SerialName("unifiedExec") UNIFIED_EXEC,
+}
 
 @Serializable
-internal data class ItemGuardianApprovalReviewStartedNotification(
-    @SerialName("action")
-    public val action: GuardianApprovalReviewAction,
-    @SerialName("review")
-    public val review: GuardianApprovalReview,
-    @SerialName("reviewId")
-    public val reviewId: String,
-    @SerialName("startedAtMs")
-    public val startedAtMs: Long,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("targetItemId")
-    public val targetItemId: String? = null,
-)
+internal enum class GuardianRiskLevel {
+    @SerialName("low") LOW,
+    @SerialName("medium") MEDIUM,
+    @SerialName("high") HIGH,
+    @SerialName("critical") CRITICAL,
+}
 
 @Serializable
-internal data class ItemStartedNotification(
-    @SerialName("item")
-    public val item: ThreadItem,
-    @SerialName("startedAtMs")
-    public val startedAtMs: Long,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-)
+internal enum class GuardianUserAuthorization {
+    @SerialName("unknown") UNKNOWN,
+    @SerialName("low") LOW,
+    @SerialName("medium") MEDIUM,
+    @SerialName("high") HIGH,
+}
 
 @Serializable
-internal data class JSONRPCError(
-    @SerialName("error")
-    public val error: JSONRPCErrorError,
-    @SerialName("id")
-    public val id: RequestId,
-)
-
-@Serializable
-internal data class JSONRPCErrorError(
-    @SerialName("code")
-    public val code: Long,
+internal data class GuardianWarningNotification(
     @SerialName("message")
     public val message: String,
-    @SerialName("data")
-    public val data: JsonElement? = null,
-)
-
-internal typealias JSONRPCMessage = JsonElement
-
-@Serializable
-internal data class JSONRPCNotification(
-    @SerialName("method")
-    public val method: String,
-    @SerialName("params")
-    public val params: JsonElement? = null,
-)
-
-@Serializable
-internal data class JSONRPCRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("method")
-    public val method: String,
-    @SerialName("params")
-    public val params: JsonElement? = null,
-    @SerialName("trace")
-    public val trace: W3cTraceContext? = null,
-)
-
-@Serializable
-internal data class JSONRPCResponse(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("result")
-    public val result: JsonElement,
-)
-
-internal typealias LegacyAppPathString = String
-
-@Serializable
-internal data class ListMcpServerStatusParams(
-    @SerialName("cursor")
-    public val cursor: String? = null,
-    @SerialName("detail")
-    public val detail: McpServerStatusDetail? = null,
-    @SerialName("limit")
-    public val limit: Long? = null,
     @SerialName("threadId")
-    public val threadId: String? = null,
+    public val threadId: String,
 )
 
 @Serializable
-internal data class ListMcpServerStatusResponse(
-    @SerialName("data")
-    public val data: List<McpServerStatus>,
-    @SerialName("nextCursor")
-    public val nextCursor: String? = null,
+internal data class HookCompletedNotification(
+    @SerialName("run")
+    public val run: HookRunSummary,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String? = null,
 )
 
-@Serializable(with = LocalShellActionSerializer::class)
-internal sealed interface LocalShellAction
+@Serializable
+internal data class HookErrorInfo(
+    @SerialName("message")
+    public val message: String,
+    @SerialName("path")
+    public val path: String,
+)
 
 @Serializable
-internal data class LocalShellActionExecLocalShellAction(
+internal enum class HookEventName {
+    @SerialName("preToolUse") PRE_TOOL_USE,
+    @SerialName("permissionRequest") PERMISSION_REQUEST,
+    @SerialName("postToolUse") POST_TOOL_USE,
+    @SerialName("preCompact") PRE_COMPACT,
+    @SerialName("postCompact") POST_COMPACT,
+    @SerialName("sessionStart") SESSION_START,
+    @SerialName("sessionEnd") SESSION_END,
+    @SerialName("userPromptSubmit") USER_PROMPT_SUBMIT,
+    @SerialName("subagentStart") SUBAGENT_START,
+    @SerialName("subagentStop") SUBAGENT_STOP,
+    @SerialName("stop") STOP,
+}
+
+@Serializable
+internal enum class HookExecutionMode {
+    @SerialName("sync") SYNC,
+    @SerialName("async") ASYNC,
+}
+
+@Serializable
+internal enum class HookHandlerType {
+    @SerialName("command") COMMAND,
+    @SerialName("mcpTool") MCP_TOOL,
+    @SerialName("prompt") PROMPT,
+    @SerialName("agent") AGENT,
+}
+
+@Serializable(with = HookMetadataSerializer::class)
+internal sealed interface HookMetadata
+
+@Serializable
+internal data class HookMetadataCommand(
+    @SerialName("currentHash")
+    public val currentHash: String,
+    @SerialName("displayOrder")
+    public val displayOrder: Long,
+    @SerialName("enabled")
+    public val enabled: Boolean,
+    @SerialName("eventName")
+    public val eventName: HookEventName,
+    @SerialName("isManaged")
+    public val isManaged: Boolean,
+    @SerialName("key")
+    public val key: String,
+    @SerialName("source")
+    public val source: HookSource,
+    @SerialName("sourcePath")
+    public val sourcePath: AbsolutePathBuf,
+    @SerialName("timeoutSec")
+    public val timeoutSec: Long,
+    @SerialName("trustStatus")
+    public val trustStatus: HookTrustStatus,
     @SerialName("command")
-    public val command: List<String>,
-    @SerialName("env")
-    public val env: Map<String, String>? = null,
-    @SerialName("timeout_ms")
-    public val timeout_ms: Long? = null,
-    @SerialName("type")
-    public val type: String = "exec",
-    @SerialName("user")
-    public val user: String? = null,
-    @SerialName("working_directory")
-    public val working_directory: String? = null,
-) : LocalShellAction {
-    init { require(type == "exec") }
-}
-
-internal object LocalShellActionSerializer : JsonContentPolymorphicSerializer<LocalShellAction>(LocalShellAction::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<LocalShellAction> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "exec" -> LocalShellActionExecLocalShellAction.serializer()
-            else -> error("Unknown LocalShellAction type")
-        }
+    public val command: String,
+    @SerialName("additionalContextLimit")
+    public val additionalContextLimit: Long? = null,
+    @SerialName("matcher")
+    public val matcher: String? = null,
+    @SerialName("pluginId")
+    public val pluginId: String? = null,
+    @SerialName("statusMessage")
+    public val statusMessage: String? = null,
+    @SerialName("async")
+    public val async: Boolean? = null,
+    @SerialName("handlerType")
+    public val handlerType: String = "command",
+) : HookMetadata {
+    init { require(handlerType == "command") }
 }
 
 @Serializable
-internal enum class LocalShellStatus {
-    @SerialName("completed") COMPLETED,
-    @SerialName("in_progress") IN_PROGRESS,
-    @SerialName("incomplete") INCOMPLETE,
-}
-
-@Serializable(with = LoginAccountParamsSerializer::class)
-internal sealed interface LoginAccountParams
-
-@Serializable
-internal data class LoginAccountParamsApiKey(
-    @SerialName("apiKey")
-    public val apiKey: String,
-    @SerialName("type")
-    public val type: String = "apiKey",
-) : LoginAccountParams {
-    init { require(type == "apiKey") }
-}
-
-@Serializable
-internal data class LoginAccountParamsChatgpt(
-    @SerialName("appBrand")
-    public val appBrand: LoginAppBrand? = null,
-    @SerialName("codexStreamlinedLogin")
-    public val codexStreamlinedLogin: Boolean? = null,
-    @SerialName("type")
-    public val type: String = "chatgpt",
-    @SerialName("useHostedLoginSuccessPage")
-    public val useHostedLoginSuccessPage: Boolean? = null,
-) : LoginAccountParams {
-    init { require(type == "chatgpt") }
-}
-
-@Serializable
-internal data class LoginAccountParamsChatgptDeviceCode(
-    @SerialName("type")
-    public val type: String = "chatgptDeviceCode",
-) : LoginAccountParams {
-    init { require(type == "chatgptDeviceCode") }
+internal data class HookMetadataMcpTool(
+    @SerialName("currentHash")
+    public val currentHash: String,
+    @SerialName("displayOrder")
+    public val displayOrder: Long,
+    @SerialName("enabled")
+    public val enabled: Boolean,
+    @SerialName("eventName")
+    public val eventName: HookEventName,
+    @SerialName("isManaged")
+    public val isManaged: Boolean,
+    @SerialName("key")
+    public val key: String,
+    @SerialName("source")
+    public val source: HookSource,
+    @SerialName("sourcePath")
+    public val sourcePath: AbsolutePathBuf,
+    @SerialName("timeoutSec")
+    public val timeoutSec: Long,
+    @SerialName("trustStatus")
+    public val trustStatus: HookTrustStatus,
+    @SerialName("server")
+    public val server: String,
+    @SerialName("tool")
+    public val tool: String,
+    @SerialName("additionalContextLimit")
+    public val additionalContextLimit: Long? = null,
+    @SerialName("matcher")
+    public val matcher: String? = null,
+    @SerialName("pluginId")
+    public val pluginId: String? = null,
+    @SerialName("statusMessage")
+    public val statusMessage: String? = null,
+    @SerialName("handlerType")
+    public val handlerType: String = "mcpTool",
+) : HookMetadata {
+    init { require(handlerType == "mcpTool") }
 }
 
 @Serializable
-internal data class LoginAccountParamsChatgptAuthTokens(
-    @SerialName("accessToken")
-    public val accessToken: String,
-    @SerialName("chatgptAccountId")
-    public val chatgptAccountId: String,
-    @SerialName("chatgptPlanType")
-    public val chatgptPlanType: String? = null,
-    @SerialName("type")
-    public val type: String = "chatgptAuthTokens",
-) : LoginAccountParams {
-    init { require(type == "chatgptAuthTokens") }
+internal data class HookMetadataPromptHookMetadata(
+    @SerialName("currentHash")
+    public val currentHash: String,
+    @SerialName("displayOrder")
+    public val displayOrder: Long,
+    @SerialName("enabled")
+    public val enabled: Boolean,
+    @SerialName("eventName")
+    public val eventName: HookEventName,
+    @SerialName("isManaged")
+    public val isManaged: Boolean,
+    @SerialName("key")
+    public val key: String,
+    @SerialName("source")
+    public val source: HookSource,
+    @SerialName("sourcePath")
+    public val sourcePath: AbsolutePathBuf,
+    @SerialName("timeoutSec")
+    public val timeoutSec: Long,
+    @SerialName("trustStatus")
+    public val trustStatus: HookTrustStatus,
+    @SerialName("additionalContextLimit")
+    public val additionalContextLimit: Long? = null,
+    @SerialName("matcher")
+    public val matcher: String? = null,
+    @SerialName("pluginId")
+    public val pluginId: String? = null,
+    @SerialName("statusMessage")
+    public val statusMessage: String? = null,
+    @SerialName("handlerType")
+    public val handlerType: String = "prompt",
+) : HookMetadata {
+    init { require(handlerType == "prompt") }
+}
+
+@Serializable
+internal data class HookMetadataAgentHookMetadata(
+    @SerialName("currentHash")
+    public val currentHash: String,
+    @SerialName("displayOrder")
+    public val displayOrder: Long,
+    @SerialName("enabled")
+    public val enabled: Boolean,
+    @SerialName("eventName")
+    public val eventName: HookEventName,
+    @SerialName("isManaged")
+    public val isManaged: Boolean,
+    @SerialName("key")
+    public val key: String,
+    @SerialName("source")
+    public val source: HookSource,
+    @SerialName("sourcePath")
+    public val sourcePath: AbsolutePathBuf,
+    @SerialName("timeoutSec")
+    public val timeoutSec: Long,
+    @SerialName("trustStatus")
+    public val trustStatus: HookTrustStatus,
+    @SerialName("additionalContextLimit")
+    public val additionalContextLimit: Long? = null,
+    @SerialName("matcher")
+    public val matcher: String? = null,
+    @SerialName("pluginId")
+    public val pluginId: String? = null,
+    @SerialName("statusMessage")
+    public val statusMessage: String? = null,
+    @SerialName("handlerType")
+    public val handlerType: String = "agent",
+) : HookMetadata {
+    init { require(handlerType == "agent") }
 }

@@ -1,7 +1,7 @@
 {
     "formatVersion": 1,
     "generatorVersion": "3",
-    "schemaSha256": "8039a1222460b3846a3688c61eb4b2626b451d61b9c2b36b83fea0ce341ce0be",
+    "schemaSha256": "02a4c63a638fdae4a5f6c3ad32a41a377b642c66f3abc84f6fc47c7f3d6074df",
     "clientRequests": [
         {
             "method": "account/login/cancel",
@@ -56,7 +56,7 @@
         {
             "method": "account/usage/read",
             "variant": "Account/usage/readRequest",
-            "paramsType": "Unit",
+            "paramsType": "GetAccountTokenUsageParams?",
             "responseType": "GetAccountTokenUsageResponse",
             "serialization": "None"
         },
@@ -150,7 +150,7 @@
             "variant": "ConfigRequirements/readRequest",
             "paramsType": "Unit",
             "responseType": "ConfigRequirementsReadResponse",
-            "serialization": "global(\"config\")"
+            "serialization": "global_shared_read(\"config\")"
         },
         {
             "method": "experimentalFeature/enablement/set",
@@ -171,7 +171,7 @@
             "variant": "ExternalAgentConfig/detectRequest",
             "paramsType": "ExternalAgentConfigDetectParams",
             "responseType": "ExternalAgentConfigDetectResponse",
-            "serialization": "global(\"config\")"
+            "serialization": "global(\"external-agent-detect\")"
         },
         {
             "method": "externalAgentConfig/import",
@@ -186,6 +186,13 @@
             "paramsType": "Unit",
             "responseType": "ExternalAgentConfigImportHistoriesReadResponse",
             "serialization": "global_shared_read(\"config\")"
+        },
+        {
+            "method": "externalAgentConfig/import/recordHistory",
+            "variant": "ExternalAgentConfig/import/recordHistoryRequest",
+            "paramsType": "ExternalAgentConfigImportHistoryRecordParams",
+            "responseType": "ExternalAgentConfigImportHistoryRecordResponse",
+            "serialization": "global(\"config\")"
         },
         {
             "method": "feedback/upload",
@@ -269,7 +276,7 @@
             "variant": "Hooks/listRequest",
             "paramsType": "HooksListParams",
             "responseType": "HooksListResponse",
-            "serialization": "global(\"config\")"
+            "serialization": "global_shared_read(\"config\")"
         },
         {
             "method": "initialize",
@@ -537,7 +544,8 @@
             "variant": "Thread/metadata/updateRequest",
             "paramsType": "ThreadMetadataUpdateParams",
             "responseType": "ThreadMetadataUpdateResponse",
-            "serialization": "thread_id(params.thread_id)"
+            "serialization": "thread_id(params.thread_id)",
+            "inspectParams": true
         },
         {
             "method": "thread/name/set",
@@ -569,6 +577,13 @@
             "serialization": "thread_id(params.thread_id)"
         },
         {
+            "method": "thread/section/move",
+            "variant": "Thread/section/moveRequest",
+            "paramsType": "ThreadSectionMoveParams",
+            "responseType": "ThreadSectionMoveResponse",
+            "serialization": "thread_id(params.thread_id)"
+        },
+        {
             "method": "thread/shellCommand",
             "variant": "Thread/shellCommandRequest",
             "paramsType": "ThreadShellCommandParams",
@@ -596,6 +611,34 @@
             "paramsType": "ThreadUnsubscribeParams",
             "responseType": "ThreadUnsubscribeResponse",
             "serialization": "thread_id(params.thread_id)"
+        },
+        {
+            "method": "threadSection/create",
+            "variant": "ThreadSection/createRequest",
+            "paramsType": "ThreadSectionCreateParams",
+            "responseType": "ThreadSectionCreateResponse",
+            "serialization": "global(\"thread-sections\")"
+        },
+        {
+            "method": "threadSection/delete",
+            "variant": "ThreadSection/deleteRequest",
+            "paramsType": "ThreadSectionDeleteParams",
+            "responseType": "ThreadSectionDeleteResponse",
+            "serialization": "global(\"thread-sections\")"
+        },
+        {
+            "method": "threadSection/list",
+            "variant": "ThreadSection/listRequest",
+            "paramsType": "ThreadSectionListParams",
+            "responseType": "ThreadSectionListResponse",
+            "serialization": "global_shared_read(\"thread-sections\")"
+        },
+        {
+            "method": "threadSection/update",
+            "variant": "ThreadSection/updateRequest",
+            "paramsType": "ThreadSectionUpdateParams",
+            "responseType": "ThreadSectionUpdateResponse",
+            "serialization": "global(\"thread-sections\")"
         },
         {
             "method": "turn/interrupt",
@@ -717,6 +760,11 @@
             "method": "app/list/updated",
             "variant": "App/list/updatedNotification",
             "paramsType": "AppListUpdatedNotification"
+        },
+        {
+            "method": "autoApprovalReview/strictReviewRequired",
+            "variant": "AutoApprovalReview/strictReviewRequiredNotification",
+            "paramsType": "StrictReviewRequiredNotification"
         },
         {
             "method": "command/exec/outputDelta",
@@ -884,6 +932,11 @@
             "paramsType": "ProcessOutputDeltaNotification"
         },
         {
+            "method": "project/changed",
+            "variant": "Project/changedNotification",
+            "paramsType": "ProjectChangedNotification"
+        },
+        {
             "method": "remoteControl/status/changed",
             "variant": "RemoteControl/status/changedNotification",
             "paramsType": "RemoteControlStatusChangedNotification"
@@ -944,6 +997,16 @@
             "paramsType": "ThreadNameUpdatedNotification"
         },
         {
+            "method": "thread/project/updated",
+            "variant": "Thread/project/updatedNotification",
+            "paramsType": "ThreadProjectUpdatedNotification"
+        },
+        {
+            "method": "thread/queue/changed",
+            "variant": "Thread/queue/changedNotification",
+            "paramsType": "ThreadQueueChangedNotification"
+        },
+        {
             "method": "thread/realtime/closed",
             "variant": "Thread/realtime/closedNotification",
             "paramsType": "ThreadRealtimeClosedNotification"
@@ -982,6 +1045,11 @@
             "method": "thread/realtime/transcript/done",
             "variant": "Thread/realtime/transcript/doneNotification",
             "paramsType": "ThreadRealtimeTranscriptDoneNotification"
+        },
+        {
+            "method": "thread/reverted",
+            "variant": "Thread/revertedNotification",
+            "paramsType": "ThreadRevertedNotification"
         },
         {
             "method": "thread/settings/updated",

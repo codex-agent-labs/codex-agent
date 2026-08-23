@@ -13,207 +13,209 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class PluginUninstallParams(
-    @SerialName("pluginId")
-    public val pluginId: String,
-)
+internal enum class PluginAuthPolicy {
+    @SerialName("ON_INSTALL") ON_INSTALL,
+    @SerialName("ON_USE") ON_USE,
+}
+
+internal typealias PluginAvailability = JsonElement
 
 @Serializable
-internal class PluginUninstallResponse
-
-@Serializable
-internal data class PluginsMigration(
+internal data class PluginDetail(
+    @SerialName("appTemplates")
+    public val appTemplates: List<AppTemplateSummary>,
+    @SerialName("apps")
+    public val apps: List<AppSummary>,
+    @SerialName("hooks")
+    public val hooks: List<PluginHookSummary>,
     @SerialName("marketplaceName")
     public val marketplaceName: String,
-    @SerialName("pluginNames")
-    public val pluginNames: List<String>,
-)
-
-@Serializable
-internal data class ProcessExitedNotification(
-    @SerialName("exitCode")
-    public val exitCode: Long,
-    @SerialName("processHandle")
-    public val processHandle: String,
-    @SerialName("stderr")
-    public val stderr: String,
-    @SerialName("stderrCapReached")
-    public val stderrCapReached: Boolean,
-    @SerialName("stdout")
-    public val stdout: String,
-    @SerialName("stdoutCapReached")
-    public val stdoutCapReached: Boolean,
-)
-
-@Serializable
-internal data class ProcessOutputDeltaNotification(
-    @SerialName("capReached")
-    public val capReached: Boolean,
-    @SerialName("deltaBase64")
-    public val deltaBase64: String,
-    @SerialName("processHandle")
-    public val processHandle: String,
-    @SerialName("stream")
-    public val stream: ProcessOutputStream,
-)
-
-internal typealias ProcessOutputStream = JsonElement
-
-@Serializable
-internal data class ProcessTerminalSize(
-    @SerialName("cols")
-    public val cols: Long,
-    @SerialName("rows")
-    public val rows: Long,
-)
-
-@Serializable
-internal enum class RateLimitReachedType {
-    @SerialName("rate_limit_reached") RATE_LIMIT_REACHED,
-    @SerialName("workspace_owner_credits_depleted") WORKSPACE_OWNER_CREDITS_DEPLETED,
-    @SerialName("workspace_member_credits_depleted") WORKSPACE_MEMBER_CREDITS_DEPLETED,
-    @SerialName("workspace_owner_usage_limit_reached") WORKSPACE_OWNER_USAGE_LIMIT_REACHED,
-    @SerialName("workspace_member_usage_limit_reached") WORKSPACE_MEMBER_USAGE_LIMIT_REACHED,
-}
-
-@Serializable
-internal data class RateLimitResetCredit(
-    @SerialName("grantedAt")
-    public val grantedAt: Long,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("resetType")
-    public val resetType: RateLimitResetType,
-    @SerialName("status")
-    public val status: RateLimitResetCreditStatus,
+    @SerialName("mcpServers")
+    public val mcpServers: List<String>,
+    @SerialName("skills")
+    public val skills: List<SkillSummary>,
+    @SerialName("summary")
+    public val summary: PluginSummary,
     @SerialName("description")
     public val description: String? = null,
-    @SerialName("expiresAt")
-    public val expiresAt: Long? = null,
-    @SerialName("title")
-    public val title: String? = null,
+    @SerialName("marketplacePath")
+    public val marketplacePath: AbsolutePathBuf? = null,
+    @SerialName("scheduledTasks")
+    public val scheduledTasks: List<ScheduledTaskSummary>? = null,
+    @SerialName("shareUrl")
+    public val shareUrl: String? = null,
 )
 
 @Serializable
-internal enum class RateLimitResetCreditStatus {
-    @SerialName("available") AVAILABLE,
-    @SerialName("redeeming") REDEEMING,
-    @SerialName("redeemed") REDEEMED,
+internal enum class PluginDisabledReason {
+    @SerialName("disabled_by_admin") DISABLED_BY_ADMIN,
+    @SerialName("plan_not_eligible") PLAN_NOT_ELIGIBLE,
+    @SerialName("required_app_unavailable") REQUIRED_APP_UNAVAILABLE,
     @SerialName("unknown") UNKNOWN,
 }
 
 @Serializable
-internal data class RateLimitResetCreditsSummary(
-    @SerialName("availableCount")
-    public val availableCount: Long,
-    @SerialName("credits")
-    public val credits: List<RateLimitResetCredit>? = null,
+internal data class PluginHookSummary(
+    @SerialName("eventName")
+    public val eventName: HookEventName,
+    @SerialName("key")
+    public val key: String,
 )
 
 @Serializable
-internal enum class RateLimitResetType {
-    @SerialName("codexRateLimits") CODEX_RATE_LIMITS,
-    @SerialName("unknown") UNKNOWN,
+internal data class PluginInstallParams(
+    @SerialName("pluginName")
+    public val pluginName: String,
+    @SerialName("installAttemptId")
+    public val installAttemptId: String? = null,
+    @SerialName("marketplacePath")
+    public val marketplacePath: AbsolutePathBuf? = null,
+    @SerialName("remoteMarketplaceName")
+    public val remoteMarketplaceName: String? = null,
+)
+
+@Serializable
+internal enum class PluginInstallPolicy {
+    @SerialName("NOT_AVAILABLE") NOT_AVAILABLE,
+    @SerialName("AVAILABLE") AVAILABLE,
+    @SerialName("INSTALLED_BY_DEFAULT") INSTALLED_BY_DEFAULT,
 }
 
 @Serializable
-internal data class RateLimitSnapshot(
-    @SerialName("credits")
-    public val credits: CreditsSnapshot? = null,
-    @SerialName("individualLimit")
-    public val individualLimit: SpendControlLimitSnapshot? = null,
-    @SerialName("limitId")
-    public val limitId: String? = null,
-    @SerialName("limitName")
-    public val limitName: String? = null,
-    @SerialName("planType")
-    public val planType: PlanType? = null,
-    @SerialName("primary")
-    public val primary: RateLimitWindow? = null,
-    @SerialName("rateLimitReachedType")
-    public val rateLimitReachedType: RateLimitReachedType? = null,
-    @SerialName("secondary")
-    public val secondary: RateLimitWindow? = null,
-    @SerialName("spendControlReached")
-    public val spendControlReached: Boolean? = null,
-)
-
-@Serializable
-internal data class RateLimitWindow(
-    @SerialName("usedPercent")
-    public val usedPercent: Long,
-    @SerialName("resetsAt")
-    public val resetsAt: Long? = null,
-    @SerialName("windowDurationMins")
-    public val windowDurationMins: Long? = null,
-)
-
-@Serializable
-internal data class RawResponseCompletedNotification(
-    @SerialName("responseId")
-    public val responseId: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("usage")
-    public val usage: TokenUsageBreakdown? = null,
-)
-
-@Serializable
-internal data class RawResponseItemCompletedNotification(
-    @SerialName("item")
-    public val item: ResponseItem,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-)
-
-@Serializable
-internal enum class RealtimeConversationVersion {
-    @SerialName("v1") V1,
-    @SerialName("v2") V2,
-    @SerialName("v3") V3,
+internal enum class PluginInstallPolicySource {
+    @SerialName("WORKSPACE_SETTING") WORKSPACE_SETTING,
+    @SerialName("IMPLICIT_CANONICAL_APP") IMPLICIT_CANONICAL_APP,
 }
 
 @Serializable
-internal enum class RealtimeOutputModality {
-    @SerialName("text") TEXT,
-    @SerialName("audio") AUDIO,
+internal data class PluginInstallResponse(
+    @SerialName("appsNeedingAuth")
+    public val appsNeedingAuth: List<AppSummary>,
+    @SerialName("authPolicy")
+    public val authPolicy: PluginAuthPolicy,
+)
+
+@Serializable
+internal data class PluginInstalledParams(
+    @SerialName("cwds")
+    public val cwds: List<AbsolutePathBuf>? = null,
+    @SerialName("installSuggestionPluginNames")
+    public val installSuggestionPluginNames: List<String>? = null,
+)
+
+@Serializable
+internal data class PluginInstalledResponse(
+    @SerialName("marketplaces")
+    public val marketplaces: List<PluginMarketplaceEntry>,
+    @SerialName("marketplaceLoadErrors")
+    public val marketplaceLoadErrors: List<MarketplaceLoadErrorInfo>? = null,
+)
+
+@Serializable
+internal data class PluginInterface(
+    @SerialName("capabilities")
+    public val capabilities: List<String>,
+    @SerialName("screenshotUrls")
+    public val screenshotUrls: List<String>,
+    @SerialName("screenshots")
+    public val screenshots: List<AbsolutePathBuf>,
+    @SerialName("brandColor")
+    public val brandColor: String? = null,
+    @SerialName("category")
+    public val category: String? = null,
+    @SerialName("composerIcon")
+    public val composerIcon: AbsolutePathBuf? = null,
+    @SerialName("composerIconUrl")
+    public val composerIconUrl: String? = null,
+    @SerialName("defaultPrompt")
+    public val defaultPrompt: List<String>? = null,
+    @SerialName("developerName")
+    public val developerName: String? = null,
+    @SerialName("displayName")
+    public val displayName: String? = null,
+    @SerialName("logo")
+    public val logo: AbsolutePathBuf? = null,
+    @SerialName("logoDark")
+    public val logoDark: AbsolutePathBuf? = null,
+    @SerialName("logoUrl")
+    public val logoUrl: String? = null,
+    @SerialName("logoUrlDark")
+    public val logoUrlDark: String? = null,
+    @SerialName("longDescription")
+    public val longDescription: String? = null,
+    @SerialName("privacyPolicyUrl")
+    public val privacyPolicyUrl: String? = null,
+    @SerialName("shortDescription")
+    public val shortDescription: String? = null,
+    @SerialName("termsOfServiceUrl")
+    public val termsOfServiceUrl: String? = null,
+    @SerialName("websiteUrl")
+    public val websiteUrl: String? = null,
+)
+
+@Serializable
+internal enum class PluginListMarketplaceKind {
+    @SerialName("local") LOCAL,
+    @SerialName("vertical") VERTICAL,
+    @SerialName("workspace-directory") WORKSPACE_DIRECTORY,
+    @SerialName("shared-with-me") SHARED_WITH_ME,
+    @SerialName("created-by-me-remote") CREATED_BY_ME_REMOTE,
 }
 
 @Serializable
-internal enum class RealtimeVoice {
-    @SerialName("alloy") ALLOY,
-    @SerialName("arbor") ARBOR,
-    @SerialName("ash") ASH,
-    @SerialName("ballad") BALLAD,
-    @SerialName("breeze") BREEZE,
-    @SerialName("cedar") CEDAR,
-    @SerialName("coral") CORAL,
-    @SerialName("cove") COVE,
-    @SerialName("echo") ECHO,
-    @SerialName("ember") EMBER,
-    @SerialName("juniper") JUNIPER,
-    @SerialName("maple") MAPLE,
-    @SerialName("marin") MARIN,
-    @SerialName("sage") SAGE,
-    @SerialName("shimmer") SHIMMER,
-    @SerialName("sol") SOL,
-    @SerialName("spruce") SPRUCE,
-    @SerialName("vale") VALE,
-    @SerialName("verse") VERSE,
-}
+internal data class PluginListParams(
+    @SerialName("cwds")
+    public val cwds: List<AbsolutePathBuf>? = null,
+    @SerialName("forceRefetch")
+    public val forceRefetch: Boolean? = null,
+    @SerialName("marketplaceKinds")
+    public val marketplaceKinds: List<PluginListMarketplaceKind>? = null,
+)
 
 @Serializable
-internal data class RealtimeVoicesList(
-    @SerialName("defaultV1")
-    public val defaultV1: RealtimeVoice,
-    @SerialName("defaultV2")
-    public val defaultV2: RealtimeVoice,
-    @SerialName("v1")
-    public val v1: List<RealtimeVoice>,
-    @SerialName("v2")
-    public val v2: List<RealtimeVoice>,
+internal data class PluginListResponse(
+    @SerialName("marketplaces")
+    public val marketplaces: List<PluginMarketplaceEntry>,
+    @SerialName("featuredPluginIds")
+    public val featuredPluginIds: List<String>? = null,
+    @SerialName("marketplaceLoadErrors")
+    public val marketplaceLoadErrors: List<MarketplaceLoadErrorInfo>? = null,
+)
+
+@Serializable
+internal data class PluginMarketplaceEntry(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("plugins")
+    public val plugins: List<PluginSummary>,
+    @SerialName("interface")
+    public val interface_: MarketplaceInterface? = null,
+    @SerialName("path")
+    public val path: AbsolutePathBuf? = null,
+)
+
+@Serializable
+internal data class PluginReadParams(
+    @SerialName("pluginName")
+    public val pluginName: String,
+    @SerialName("marketplacePath")
+    public val marketplacePath: AbsolutePathBuf? = null,
+    @SerialName("remoteMarketplaceName")
+    public val remoteMarketplaceName: String? = null,
+)
+
+@Serializable
+internal data class PluginReadResponse(
+    @SerialName("plugin")
+    public val plugin: PluginDetail,
+)
+
+@Serializable
+internal data class PluginSearchResult(
+    @SerialName("marketplaceName")
+    public val marketplaceName: String,
+    @SerialName("plugin")
+    public val plugin: PluginSummary,
+    @SerialName("marketplacePath")
+    public val marketplacePath: AbsolutePathBuf? = null,
 )

@@ -16,7 +16,9 @@ internal class ProtocolModels(root: JsonObject) {
     }
     private val kinds = definitions.mapValues { (_, schema) -> kind(schema) }
 
-    fun serializer(type: String): String = when (type) {
+    fun serializer(type: String): String = if (type.endsWith('?')) {
+        serializer(type.dropLast(1)) + ".nullable"
+    } else when (type) {
         "Unit" -> "Unit.serializer()"
         else -> when (kinds[type]) {
             ModelKind.JSON -> "kotlinx.serialization.json.JsonElement.serializer()"

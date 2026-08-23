@@ -13,6 +13,185 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
+internal enum class CollabAgentTool {
+    @SerialName("spawnAgent") SPAWN_AGENT,
+    @SerialName("sendInput") SEND_INPUT,
+    @SerialName("resumeAgent") RESUME_AGENT,
+    @SerialName("wait") WAIT,
+    @SerialName("closeAgent") CLOSE_AGENT,
+}
+
+@Serializable
+internal enum class CollabAgentToolCallStatus {
+    @SerialName("inProgress") IN_PROGRESS,
+    @SerialName("completed") COMPLETED,
+    @SerialName("failed") FAILED,
+}
+
+@Serializable
+internal data class CollaborationMode(
+    @SerialName("mode")
+    public val mode: ModeKind,
+    @SerialName("settings")
+    public val settings: Settings,
+)
+
+@Serializable
+internal data class CollaborationModeMask(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("mode")
+    public val mode: ModeKind? = null,
+    @SerialName("model")
+    public val model: String? = null,
+    @SerialName("reasoning_effort")
+    public val reasoning_effort: ReasoningEffort? = null,
+)
+
+@Serializable(with = CommandActionSerializer::class)
+internal sealed interface CommandAction
+
+@Serializable
+internal data class CommandActionReadCommandAction(
+    @SerialName("command")
+    public val command: String,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("path")
+    public val path: LegacyAppPathString,
+    @SerialName("type")
+    public val type: String = "read",
+) : CommandAction {
+    init { require(type == "read") }
+}
+
+@Serializable
+internal data class CommandActionListFilesCommandAction(
+    @SerialName("command")
+    public val command: String,
+    @SerialName("path")
+    public val path: String? = null,
+    @SerialName("type")
+    public val type: String = "listFiles",
+) : CommandAction {
+    init { require(type == "listFiles") }
+}
+
+@Serializable
+internal data class CommandActionSearchCommandAction(
+    @SerialName("command")
+    public val command: String,
+    @SerialName("path")
+    public val path: String? = null,
+    @SerialName("query")
+    public val query: String? = null,
+    @SerialName("type")
+    public val type: String = "search",
+) : CommandAction {
+    init { require(type == "search") }
+}
+
+@Serializable
+internal data class CommandActionUnknownCommandAction(
+    @SerialName("command")
+    public val command: String,
+    @SerialName("type")
+    public val type: String = "unknown",
+) : CommandAction {
+    init { require(type == "unknown") }
+}
+
+internal object CommandActionSerializer : JsonContentPolymorphicSerializer<CommandAction>(CommandAction::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<CommandAction> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "read" -> CommandActionReadCommandAction.serializer()
+            "listFiles" -> CommandActionListFilesCommandAction.serializer()
+            "search" -> CommandActionSearchCommandAction.serializer()
+            "unknown" -> CommandActionUnknownCommandAction.serializer()
+            else -> error("Unknown CommandAction type")
+        }
+}
+
+@Serializable
+internal data class CommandExecOutputDeltaNotification(
+    @SerialName("capReached")
+    public val capReached: Boolean,
+    @SerialName("deltaBase64")
+    public val deltaBase64: String,
+    @SerialName("processId")
+    public val processId: String,
+    @SerialName("stream")
+    public val stream: CommandExecOutputStream,
+)
+
+internal typealias CommandExecOutputStream = JsonElement
+
+@Serializable
+internal data class CommandExecParams(
+    @SerialName("command")
+    public val command: List<String>,
+    @SerialName("cwd")
+    public val cwd: String? = null,
+    @SerialName("disableOutputCap")
+    public val disableOutputCap: Boolean? = null,
+    @SerialName("disableTimeout")
+    public val disableTimeout: Boolean? = null,
+    @SerialName("env")
+    public val env: Map<String, String?>? = null,
+    @SerialName("outputBytesCap")
+    public val outputBytesCap: Long? = null,
+    @SerialName("processId")
+    public val processId: String? = null,
+    @SerialName("sandboxPolicy")
+    public val sandboxPolicy: SandboxPolicy? = null,
+    @SerialName("size")
+    public val size: CommandExecTerminalSize? = null,
+    @SerialName("streamStdin")
+    public val streamStdin: Boolean? = null,
+    @SerialName("streamStdoutStderr")
+    public val streamStdoutStderr: Boolean? = null,
+    @SerialName("timeoutMs")
+    public val timeoutMs: Long? = null,
+    @SerialName("tty")
+    public val tty: Boolean? = null,
+)
+
+@Serializable
+internal data class CommandExecResizeParams(
+    @SerialName("processId")
+    public val processId: String,
+    @SerialName("size")
+    public val size: CommandExecTerminalSize,
+)
+
+@Serializable
+internal class CommandExecResizeResponse
+
+@Serializable
+internal data class CommandExecResponse(
+    @SerialName("exitCode")
+    public val exitCode: Long,
+    @SerialName("stderr")
+    public val stderr: String,
+    @SerialName("stdout")
+    public val stdout: String,
+)
+
+@Serializable
+internal data class CommandExecTerminalSize(
+    @SerialName("cols")
+    public val cols: Long,
+    @SerialName("rows")
+    public val rows: Long,
+)
+
+@Serializable
+internal data class CommandExecTerminateParams(
+    @SerialName("processId")
+    public val processId: String,
+)
+
+@Serializable
 internal class CommandExecTerminateResponse
 
 @Serializable
@@ -41,188 +220,3 @@ internal data class CommandExecutionOutputDeltaNotification(
     @SerialName("turnId")
     public val turnId: String,
 )
-
-@Serializable
-internal data class CommandExecutionRequestApprovalParams(
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("startedAtMs")
-    public val startedAtMs: Long,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("approvalId")
-    public val approvalId: String? = null,
-    @SerialName("command")
-    public val command: String? = null,
-    @SerialName("commandActions")
-    public val commandActions: List<CommandAction>? = null,
-    @SerialName("cwd")
-    public val cwd: LegacyAppPathString? = null,
-    @SerialName("environmentId")
-    public val environmentId: String? = null,
-    @SerialName("networkApprovalContext")
-    public val networkApprovalContext: NetworkApprovalContext? = null,
-    @SerialName("proposedExecpolicyAmendment")
-    public val proposedExecpolicyAmendment: List<String>? = null,
-    @SerialName("proposedNetworkPolicyAmendments")
-    public val proposedNetworkPolicyAmendments: List<NetworkPolicyAmendment>? = null,
-    @SerialName("reason")
-    public val reason: String? = null,
-)
-
-@Serializable
-internal data class CommandExecutionRequestApprovalResponse(
-    @SerialName("decision")
-    public val decision: CommandExecutionApprovalDecision,
-)
-
-@Serializable
-internal enum class CommandExecutionSource {
-    @SerialName("agent") AGENT,
-    @SerialName("userShell") USER_SHELL,
-    @SerialName("unifiedExecStartup") UNIFIED_EXEC_STARTUP,
-    @SerialName("unifiedExecInteraction") UNIFIED_EXEC_INTERACTION,
-}
-
-@Serializable
-internal enum class CommandExecutionStatus {
-    @SerialName("inProgress") IN_PROGRESS,
-    @SerialName("completed") COMPLETED,
-    @SerialName("failed") FAILED,
-    @SerialName("declined") DECLINED,
-}
-
-@Serializable
-internal data class CommandMigration(
-    @SerialName("name")
-    public val name: String,
-)
-
-@Serializable
-internal data class ComputerUseRequirements(
-    @SerialName("allowLockedComputerUse")
-    public val allowLockedComputerUse: Boolean? = null,
-)
-
-internal typealias Config = JsonElement
-
-@Serializable
-internal data class ConfigBatchWriteParams(
-    @SerialName("edits")
-    public val edits: List<ConfigEdit>,
-    @SerialName("expectedVersion")
-    public val expectedVersion: String? = null,
-    @SerialName("filePath")
-    public val filePath: String? = null,
-    @SerialName("reloadUserConfig")
-    public val reloadUserConfig: Boolean? = null,
-)
-
-@Serializable
-internal data class ConfigEdit(
-    @SerialName("keyPath")
-    public val keyPath: String,
-    @SerialName("mergeStrategy")
-    public val mergeStrategy: MergeStrategy,
-    @SerialName("value")
-    public val value: JsonElement,
-)
-
-@Serializable
-internal data class ConfigLayer(
-    @SerialName("config")
-    public val config: JsonElement,
-    @SerialName("name")
-    public val name: ConfigLayerSource,
-    @SerialName("version")
-    public val version: String,
-    @SerialName("disabledReason")
-    public val disabledReason: String? = null,
-)
-
-@Serializable
-internal data class ConfigLayerMetadata(
-    @SerialName("name")
-    public val name: ConfigLayerSource,
-    @SerialName("version")
-    public val version: String,
-)
-
-@Serializable(with = ConfigLayerSourceSerializer::class)
-internal sealed interface ConfigLayerSource
-
-@Serializable
-internal data class ConfigLayerSourceMdmConfigLayerSource(
-    @SerialName("domain")
-    public val domain: String,
-    @SerialName("key")
-    public val key: String,
-    @SerialName("type")
-    public val type: String = "mdm",
-) : ConfigLayerSource {
-    init { require(type == "mdm") }
-}
-
-@Serializable
-internal data class ConfigLayerSourceSystemConfigLayerSource(
-    @SerialName("file")
-    public val file: AbsolutePathBuf,
-    @SerialName("type")
-    public val type: String = "system",
-) : ConfigLayerSource {
-    init { require(type == "system") }
-}
-
-@Serializable
-internal data class ConfigLayerSourceEnterpriseManagedConfigLayerSource(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("name")
-    public val name: String,
-    @SerialName("type")
-    public val type: String = "enterpriseManaged",
-) : ConfigLayerSource {
-    init { require(type == "enterpriseManaged") }
-}
-
-@Serializable
-internal data class ConfigLayerSourceUserConfigLayerSource(
-    @SerialName("file")
-    public val file: AbsolutePathBuf,
-    @SerialName("profile")
-    public val profile: String? = null,
-    @SerialName("type")
-    public val type: String = "user",
-) : ConfigLayerSource {
-    init { require(type == "user") }
-}
-
-@Serializable
-internal data class ConfigLayerSourceProjectConfigLayerSource(
-    @SerialName("dotCodexFolder")
-    public val dotCodexFolder: AbsolutePathBuf,
-    @SerialName("type")
-    public val type: String = "project",
-) : ConfigLayerSource {
-    init { require(type == "project") }
-}
-
-@Serializable
-internal data class ConfigLayerSourceSessionFlagsConfigLayerSource(
-    @SerialName("type")
-    public val type: String = "sessionFlags",
-) : ConfigLayerSource {
-    init { require(type == "sessionFlags") }
-}
-
-@Serializable
-internal data class ConfigLayerSourceLegacyManagedConfigTomlFromFileConfigLayerSource(
-    @SerialName("file")
-    public val file: AbsolutePathBuf,
-    @SerialName("type")
-    public val type: String = "legacyManagedConfigTomlFromFile",
-) : ConfigLayerSource {
-    init { require(type == "legacyManagedConfigTomlFromFile") }
-}

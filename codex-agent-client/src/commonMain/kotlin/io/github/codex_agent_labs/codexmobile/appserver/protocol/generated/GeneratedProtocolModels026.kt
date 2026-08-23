@@ -13,211 +13,211 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class PluginInstallParams(
-    @SerialName("pluginName")
-    public val pluginName: String,
-    @SerialName("marketplacePath")
-    public val marketplacePath: AbsolutePathBuf? = null,
-    @SerialName("remoteMarketplaceName")
-    public val remoteMarketplaceName: String? = null,
+internal class ModelProviderCapabilitiesReadParams
+
+@Serializable
+internal data class ModelProviderCapabilitiesReadResponse(
+    @SerialName("imageGeneration")
+    public val imageGeneration: Boolean,
+    @SerialName("namespaceTools")
+    public val namespaceTools: Boolean,
+    @SerialName("webSearch")
+    public val webSearch: Boolean,
 )
 
 @Serializable
-internal enum class PluginInstallPolicy {
-    @SerialName("NOT_AVAILABLE") NOT_AVAILABLE,
-    @SerialName("AVAILABLE") AVAILABLE,
-    @SerialName("INSTALLED_BY_DEFAULT") INSTALLED_BY_DEFAULT,
+internal enum class ModelRerouteReason {
+    @SerialName("highRiskCyberActivity") HIGH_RISK_CYBER_ACTIVITY,
 }
 
 @Serializable
-internal enum class PluginInstallPolicySource {
-    @SerialName("WORKSPACE_SETTING") WORKSPACE_SETTING,
-    @SerialName("IMPLICIT_CANONICAL_APP") IMPLICIT_CANONICAL_APP,
-}
-
-@Serializable
-internal data class PluginInstallResponse(
-    @SerialName("appsNeedingAuth")
-    public val appsNeedingAuth: List<AppSummary>,
-    @SerialName("authPolicy")
-    public val authPolicy: PluginAuthPolicy,
+internal data class ModelReroutedNotification(
+    @SerialName("fromModel")
+    public val fromModel: String,
+    @SerialName("reason")
+    public val reason: ModelRerouteReason,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("toModel")
+    public val toModel: String,
+    @SerialName("turnId")
+    public val turnId: String,
 )
 
 @Serializable
-internal data class PluginInstalledParams(
-    @SerialName("cwds")
-    public val cwds: List<AbsolutePathBuf>? = null,
-    @SerialName("installSuggestionPluginNames")
-    public val installSuggestionPluginNames: List<String>? = null,
+internal data class ModelSafetyBufferingUpdatedNotification(
+    @SerialName("model")
+    public val model: String,
+    @SerialName("reasons")
+    public val reasons: List<String>,
+    @SerialName("showBufferingUi")
+    public val showBufferingUi: Boolean,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("useCases")
+    public val useCases: List<String>,
+    @SerialName("fasterModel")
+    public val fasterModel: String? = null,
 )
 
 @Serializable
-internal data class PluginInstalledResponse(
-    @SerialName("marketplaces")
-    public val marketplaces: List<PluginMarketplaceEntry>,
-    @SerialName("marketplaceLoadErrors")
-    public val marketplaceLoadErrors: List<MarketplaceLoadErrorInfo>? = null,
-)
-
-@Serializable
-internal data class PluginInterface(
-    @SerialName("capabilities")
-    public val capabilities: List<String>,
-    @SerialName("screenshotUrls")
-    public val screenshotUrls: List<String>,
-    @SerialName("screenshots")
-    public val screenshots: List<AbsolutePathBuf>,
-    @SerialName("brandColor")
-    public val brandColor: String? = null,
-    @SerialName("category")
-    public val category: String? = null,
-    @SerialName("composerIcon")
-    public val composerIcon: AbsolutePathBuf? = null,
-    @SerialName("composerIconUrl")
-    public val composerIconUrl: String? = null,
-    @SerialName("defaultPrompt")
-    public val defaultPrompt: List<String>? = null,
-    @SerialName("developerName")
-    public val developerName: String? = null,
-    @SerialName("displayName")
-    public val displayName: String? = null,
-    @SerialName("logo")
-    public val logo: AbsolutePathBuf? = null,
-    @SerialName("logoDark")
-    public val logoDark: AbsolutePathBuf? = null,
-    @SerialName("logoUrl")
-    public val logoUrl: String? = null,
-    @SerialName("logoUrlDark")
-    public val logoUrlDark: String? = null,
-    @SerialName("longDescription")
-    public val longDescription: String? = null,
-    @SerialName("privacyPolicyUrl")
-    public val privacyPolicyUrl: String? = null,
-    @SerialName("shortDescription")
-    public val shortDescription: String? = null,
-    @SerialName("termsOfServiceUrl")
-    public val termsOfServiceUrl: String? = null,
-    @SerialName("websiteUrl")
-    public val websiteUrl: String? = null,
-)
-
-@Serializable
-internal enum class PluginListMarketplaceKind {
-    @SerialName("local") LOCAL,
-    @SerialName("vertical") VERTICAL,
-    @SerialName("workspace-directory") WORKSPACE_DIRECTORY,
-    @SerialName("shared-with-me") SHARED_WITH_ME,
-    @SerialName("created-by-me-remote") CREATED_BY_ME_REMOTE,
-}
-
-@Serializable
-internal data class PluginListParams(
-    @SerialName("cwds")
-    public val cwds: List<AbsolutePathBuf>? = null,
-    @SerialName("marketplaceKinds")
-    public val marketplaceKinds: List<PluginListMarketplaceKind>? = null,
-)
-
-@Serializable
-internal data class PluginListResponse(
-    @SerialName("marketplaces")
-    public val marketplaces: List<PluginMarketplaceEntry>,
-    @SerialName("featuredPluginIds")
-    public val featuredPluginIds: List<String>? = null,
-    @SerialName("marketplaceLoadErrors")
-    public val marketplaceLoadErrors: List<MarketplaceLoadErrorInfo>? = null,
-)
-
-@Serializable
-internal data class PluginMarketplaceEntry(
+internal data class ModelServiceTier(
+    @SerialName("description")
+    public val description: String,
+    @SerialName("id")
+    public val id: String,
     @SerialName("name")
     public val name: String,
-    @SerialName("plugins")
-    public val plugins: List<PluginSummary>,
-    @SerialName("interface")
-    public val interface_: MarketplaceInterface? = null,
-    @SerialName("path")
-    public val path: AbsolutePathBuf? = null,
 )
 
 @Serializable
-internal data class PluginReadParams(
-    @SerialName("pluginName")
-    public val pluginName: String,
-    @SerialName("marketplacePath")
-    public val marketplacePath: AbsolutePathBuf? = null,
-    @SerialName("remoteMarketplaceName")
-    public val remoteMarketplaceName: String? = null,
+internal data class ModelUpgradeInfo(
+    @SerialName("model")
+    public val model: String,
+    @SerialName("migrationMarkdown")
+    public val migrationMarkdown: String? = null,
+    @SerialName("modelLink")
+    public val modelLink: String? = null,
+    @SerialName("retirementAt")
+    public val retirementAt: Long? = null,
+    @SerialName("upgradeCopy")
+    public val upgradeCopy: String? = null,
 )
 
 @Serializable
-internal data class PluginReadResponse(
-    @SerialName("plugin")
-    public val plugin: PluginDetail,
-)
-
-@Serializable
-internal data class PluginShareCheckoutParams(
-    @SerialName("remotePluginId")
-    public val remotePluginId: String,
-)
-
-@Serializable
-internal data class PluginShareCheckoutResponse(
-    @SerialName("marketplaceName")
-    public val marketplaceName: String,
-    @SerialName("marketplacePath")
-    public val marketplacePath: AbsolutePathBuf,
-    @SerialName("pluginId")
-    public val pluginId: String,
-    @SerialName("pluginName")
-    public val pluginName: String,
-    @SerialName("pluginPath")
-    public val pluginPath: AbsolutePathBuf,
-    @SerialName("remotePluginId")
-    public val remotePluginId: String,
-    @SerialName("remoteVersion")
-    public val remoteVersion: String? = null,
-)
-
-@Serializable
-internal data class PluginShareContext(
-    @SerialName("remotePluginId")
-    public val remotePluginId: String,
-    @SerialName("creatorAccountUserId")
-    public val creatorAccountUserId: String? = null,
-    @SerialName("creatorName")
-    public val creatorName: String? = null,
-    @SerialName("discoverability")
-    public val discoverability: PluginShareDiscoverability? = null,
-    @SerialName("remoteVersion")
-    public val remoteVersion: String? = null,
-    @SerialName("sharePrincipals")
-    public val sharePrincipals: List<PluginSharePrincipal>? = null,
-    @SerialName("shareUrl")
-    public val shareUrl: String? = null,
-)
-
-@Serializable
-internal data class PluginShareDeleteParams(
-    @SerialName("remotePluginId")
-    public val remotePluginId: String,
-)
-
-@Serializable
-internal class PluginShareDeleteResponse
-
-@Serializable
-internal enum class PluginShareDiscoverability {
-    @SerialName("LISTED") LISTED,
-    @SerialName("UNLISTED") UNLISTED,
-    @SerialName("PRIVATE") PRIVATE,
+internal enum class ModelVerification {
+    @SerialName("trustedAccessForCyber") TRUSTED_ACCESS_FOR_CYBER,
 }
 
 @Serializable
-internal data class PluginShareListItem(
-    @SerialName("plugin")
-    public val plugin: PluginSummary,
-    @SerialName("localPluginPath")
-    public val localPluginPath: AbsolutePathBuf? = null,
+internal data class ModelVerificationNotification(
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("verifications")
+    public val verifications: List<ModelVerification>,
+)
+
+@Serializable
+internal data class ModelsRequirements(
+    @SerialName("newThread")
+    public val newThread: NewThreadModelDefaults? = null,
+)
+
+internal typealias MultiAgentMode = JsonElement
+
+@Serializable
+internal enum class MultiAgentVersion {
+    @SerialName("disabled") DISABLED,
+    @SerialName("v1") V1,
+    @SerialName("v2") V2,
+}
+
+@Serializable
+internal enum class NetworkAccess {
+    @SerialName("restricted") RESTRICTED,
+    @SerialName("enabled") ENABLED,
+}
+
+@Serializable
+internal data class NetworkApprovalContext(
+    @SerialName("host")
+    public val host: String,
+    @SerialName("protocol")
+    public val protocol: NetworkApprovalProtocol,
+)
+
+@Serializable
+internal enum class NetworkApprovalProtocol {
+    @SerialName("http") HTTP,
+    @SerialName("https") HTTPS,
+    @SerialName("socks5Tcp") SOCKS5_TCP,
+    @SerialName("socks5Udp") SOCKS5_UDP,
+}
+
+@Serializable
+internal enum class NetworkDomainPermission {
+    @SerialName("allow") ALLOW,
+    @SerialName("deny") DENY,
+}
+
+@Serializable
+internal data class NetworkPolicyAmendment(
+    @SerialName("action")
+    public val action: NetworkPolicyRuleAction,
+    @SerialName("host")
+    public val host: String,
+)
+
+@Serializable
+internal enum class NetworkPolicyRuleAction {
+    @SerialName("allow") ALLOW,
+    @SerialName("deny") DENY,
+}
+
+@Serializable
+internal data class NetworkRequirements(
+    @SerialName("allowLocalBinding")
+    public val allowLocalBinding: Boolean? = null,
+    @SerialName("allowUnixSockets")
+    public val allowUnixSockets: List<String>? = null,
+    @SerialName("allowUpstreamProxy")
+    public val allowUpstreamProxy: Boolean? = null,
+    @SerialName("allowedDomains")
+    public val allowedDomains: List<String>? = null,
+    @SerialName("dangerouslyAllowAllUnixSockets")
+    public val dangerouslyAllowAllUnixSockets: Boolean? = null,
+    @SerialName("dangerouslyAllowNonLoopbackProxy")
+    public val dangerouslyAllowNonLoopbackProxy: Boolean? = null,
+    @SerialName("deniedDomains")
+    public val deniedDomains: List<String>? = null,
+    @SerialName("domains")
+    public val domains: Map<String, NetworkDomainPermission>? = null,
+    @SerialName("enabled")
+    public val enabled: Boolean? = null,
+    @SerialName("httpPort")
+    public val httpPort: Long? = null,
+    @SerialName("managedAllowedDomainsOnly")
+    public val managedAllowedDomainsOnly: Boolean? = null,
+    @SerialName("socksPort")
+    public val socksPort: Long? = null,
+    @SerialName("unixSockets")
+    public val unixSockets: Map<String, NetworkUnixSocketPermission>? = null,
+)
+
+@Serializable
+internal enum class NetworkUnixSocketPermission {
+    @SerialName("allow") ALLOW,
+    @SerialName("deny") DENY,
+}
+
+@Serializable
+internal data class NewThreadModelDefaults(
+    @SerialName("model")
+    public val model: String? = null,
+    @SerialName("modelReasoningEffort")
+    public val modelReasoningEffort: ReasoningEffort? = null,
+    @SerialName("serviceTier")
+    public val serviceTier: String? = null,
+)
+
+@Serializable
+internal enum class NonSteerableTurnKind {
+    @SerialName("review") REVIEW,
+    @SerialName("compact") COMPACT,
+}
+
+internal typealias NullableGetAccountTokenUsageParams = JsonElement
+
+@Serializable
+internal data class OverriddenMetadata(
+    @SerialName("effectiveValue")
+    public val effectiveValue: JsonElement,
+    @SerialName("message")
+    public val message: String,
+    @SerialName("overridingLayer")
+    public val overridingLayer: ConfigLayerMetadata,
 )

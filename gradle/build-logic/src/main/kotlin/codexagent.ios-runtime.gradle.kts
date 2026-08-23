@@ -3,9 +3,9 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
 
-private val codexRevision = "25af12f7e61572b0bc18ddb1008be543b91519b0"
-private val codexArchiveSha256 = "42f627a7b32db41582c73a8eafd9ec4b35d6c3ff81bd3d4455cfd6224d79d329"
-private val codexCargoLockSha256 = "e0843448b5767ff36a2a3b15212feb480cd4eaafe8a0c0ca08547e3c7da03a05"
+private val codexRevision = "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0"
+private val codexArchiveSha256 = "6481974e9740023493eda1f240005cb1507d6969f79d6f6aa97092f967f3f0fc"
+private val codexCargoLockSha256 = "0c32858e9c47d0acf82735c8620c96840a5381152eec63acad15d1acadb9edad"
 private val resolvedCargoLockSha256 = layout.projectDirectory.file("native/provenance.json").asFile
     .readReleaseObject().releaseString("preparedCargoLockSha256")
 private val libsqlite3SysVersion = "0.37.0"

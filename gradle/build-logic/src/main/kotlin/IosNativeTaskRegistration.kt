@@ -51,7 +51,7 @@ fun Project.registerIosNativeTasks(configuration: IosNativeTaskConfiguration): I
         "cHeaderSha256" to cHeaderFile,
     )
     val pinnedCodexArchive = tasks.register<PreparePinnedArchiveTask>("preparePinnedCodexIosArchive") {
-        sourceUrl.set("https://github.com/openai/codex/archive/${configuration.codexRevision}.tar.gz")
+        sourceUrl.set("https://api.github.com/repos/openai/codex/tarball/${configuration.codexRevision}")
         expectedSha256.set(configuration.codexArchiveSha256)
         providers.gradleProperty("codexAgent.codexIosArchiveFile").orNull?.let { path ->
             localArchive.set(rootProject.layout.projectDirectory.file(path))

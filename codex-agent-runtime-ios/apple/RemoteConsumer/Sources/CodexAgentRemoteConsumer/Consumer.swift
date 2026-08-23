@@ -20,7 +20,7 @@ public func makeCodexHost(
 public func observeCodexHost(
     _ host: CodexHost
 ) -> AsyncStream<any CodexHostState> {
-    host.states
+    host.lifecycleStates
 }
 
 public func openConversationAndSend(
@@ -28,9 +28,9 @@ public func openConversationAndSend(
     using ready: CodexHostStateReady
 ) async throws -> CodexConversation {
     let agent = ready.agent
-    _ = agent.authenticationStates
-    _ = agent.activeConversations
-    let conversation = try await agent.openConversation()
+    _ = agent.authentication.states
+    _ = agent.conversations.activeConversations
+    let conversation = try await agent.conversations.open()
     _ = conversation.states
     try await conversation.send(prompt)
     return conversation
@@ -41,9 +41,9 @@ public func authenticate(
     method: (any CodexAuthenticationMethod)? = nil
 ) async throws {
     if let method {
-        try await ready.agent.authenticate(method: method)
+        try await ready.agent.authentication.authenticate(method: method)
     } else {
-        try await ready.agent.authenticate()
+        try await ready.agent.authentication.authenticate()
     }
 }
 
@@ -51,7 +51,7 @@ private func compileAdvancedConversationOperations(
     _ agent: CodexAgent,
     prompt: String
 ) async throws {
-    let conversation = try await agent.openConversation(
+    let conversation = try await agent.conversations.open(
         conversationId: nil,
         settings: AgentConversationSettings(
             approvalPreset: .strict,

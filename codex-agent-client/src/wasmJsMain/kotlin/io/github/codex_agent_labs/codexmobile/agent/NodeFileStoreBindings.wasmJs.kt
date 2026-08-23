@@ -8,11 +8,24 @@ import kotlin.js.JsAny
 @JsName("statSync")
 internal external fun nodeStatSync(path: String): NodeFileStats
 
+@JsName("lstatSync")
+internal external fun nodeLstatSync(path: String): NodeFileStats
+
 internal external interface NodeFileStats : JsAny {
     val size: Double
 
     fun isFile(): Boolean
+
+    fun isDirectory(): Boolean
+
+    fun isSymbolicLink(): Boolean
 }
+
+@JsName("readdirSync")
+internal external fun nodeReadDirectorySync(path: String): JsAny
+
+@JsName("realpathSync")
+internal external fun nodeRealPathSync(path: String): String
 
 @JsName("readFileSync")
 internal external fun nodeReadFileSync(path: String, encoding: String): String
@@ -22,6 +35,9 @@ internal external fun nodeReadBufferSync(path: String): JsAny
 
 @JsName("writeFileSync")
 internal external fun nodeWriteFileSync(path: String, value: String, encoding: String)
+
+@JsName("writeFileSync")
+internal external fun nodeWriteBufferSync(path: String, value: JsAny)
 
 @JsName("mkdirSync")
 internal external fun nodeMkdirSync(path: String, options: JsAny)

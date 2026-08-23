@@ -12,213 +12,213 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+internal typealias ConsumeAccountRateLimitResetCreditOutcome = JsonElement
+
 @Serializable
-internal data class DynamicToolSpecNamespaceDynamicToolSpec(
-    @SerialName("description")
-    public val description: String,
-    @SerialName("name")
-    public val name: String,
-    @SerialName("tools")
-    public val tools: List<DynamicToolNamespaceTool>,
+internal data class ConsumeAccountRateLimitResetCreditParams(
+    @SerialName("idempotencyKey")
+    public val idempotencyKey: String,
+    @SerialName("creditId")
+    public val creditId: String? = null,
+)
+
+@Serializable
+internal data class ConsumeAccountRateLimitResetCreditResponse(
+    @SerialName("outcome")
+    public val outcome: ConsumeAccountRateLimitResetCreditOutcome,
+)
+
+@Serializable(with = ContentItemSerializer::class)
+internal sealed interface ContentItem
+
+@Serializable
+internal data class ContentItemInputTextContentItem(
+    @SerialName("text")
+    public val text: String,
     @SerialName("type")
-    public val type: String = "namespace",
-) : DynamicToolSpec {
-    init { require(type == "namespace") }
+    public val type: String = "input_text",
+) : ContentItem {
+    init { require(type == "input_text") }
 }
 
-internal object DynamicToolSpecSerializer : JsonContentPolymorphicSerializer<DynamicToolSpec>(DynamicToolSpec::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<DynamicToolSpec> =
+@Serializable
+internal data class ContentItemInputImageContentItem(
+    @SerialName("image_url")
+    public val image_url: String,
+    @SerialName("detail")
+    public val detail: ImageDetail? = null,
+    @SerialName("type")
+    public val type: String = "input_image",
+) : ContentItem {
+    init { require(type == "input_image") }
+}
+
+@Serializable
+internal data class ContentItemInputAudioContentItem(
+    @SerialName("audio_url")
+    public val audio_url: String,
+    @SerialName("type")
+    public val type: String = "input_audio",
+) : ContentItem {
+    init { require(type == "input_audio") }
+}
+
+@Serializable
+internal data class ContentItemOutputTextContentItem(
+    @SerialName("text")
+    public val text: String,
+    @SerialName("type")
+    public val type: String = "output_text",
+) : ContentItem {
+    init { require(type == "output_text") }
+}
+
+internal object ContentItemSerializer : JsonContentPolymorphicSerializer<ContentItem>(ContentItem::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ContentItem> =
         when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "function" -> DynamicToolSpecFunctionDynamicToolSpec.serializer()
-            "namespace" -> DynamicToolSpecNamespaceDynamicToolSpec.serializer()
-            else -> error("Unknown DynamicToolSpec type")
+            "input_text" -> ContentItemInputTextContentItem.serializer()
+            "input_image" -> ContentItemInputImageContentItem.serializer()
+            "input_audio" -> ContentItemInputAudioContentItem.serializer()
+            "output_text" -> ContentItemOutputTextContentItem.serializer()
+            else -> error("Unknown ContentItem type")
         }
 }
 
 @Serializable
-internal data class EnvironmentConnectionNotification(
-    @SerialName("environmentId")
-    public val environmentId: String,
-    @SerialName("threadId")
-    public val threadId: String,
-)
-
-@Serializable
-internal data class ErrorNotification(
-    @SerialName("error")
-    public val error: TurnError,
+internal data class ContextCompactedNotification(
     @SerialName("threadId")
     public val threadId: String,
     @SerialName("turnId")
     public val turnId: String,
-    @SerialName("willRetry")
-    public val willRetry: Boolean,
 )
 
 @Serializable
-internal data class ExecCommandApprovalParams(
+internal enum class ConversationTextRole {
+    @SerialName("user") USER,
+    @SerialName("developer") DEVELOPER,
+    @SerialName("assistant") ASSISTANT,
+}
+
+@Serializable
+internal data class CreditsSnapshot(
+    @SerialName("hasCredits")
+    public val hasCredits: Boolean,
+    @SerialName("unlimited")
+    public val unlimited: Boolean,
+    @SerialName("balance")
+    public val balance: String? = null,
+)
+
+@Serializable
+internal data class DeprecationNoticeNotification(
+    @SerialName("summary")
+    public val summary: String,
+    @SerialName("details")
+    public val details: String? = null,
+)
+
+@Serializable
+internal enum class DesktopOnboardingEntrypoint {
+    @SerialName("life_sciences") LIFE_SCIENCES,
+}
+
+@Serializable(with = DynamicToolCallOutputContentItemSerializer::class)
+internal sealed interface DynamicToolCallOutputContentItem
+
+@Serializable
+internal data class DynamicToolCallOutputContentItemInputTextDynamicToolCallOutputContentItem(
+    @SerialName("text")
+    public val text: String,
+    @SerialName("type")
+    public val type: String = "inputText",
+) : DynamicToolCallOutputContentItem {
+    init { require(type == "inputText") }
+}
+
+@Serializable
+internal data class DynamicToolCallOutputContentItemInputImageDynamicToolCallOutputContentItem(
+    @SerialName("imageUrl")
+    public val imageUrl: String,
+    @SerialName("type")
+    public val type: String = "inputImage",
+) : DynamicToolCallOutputContentItem {
+    init { require(type == "inputImage") }
+}
+
+@Serializable
+internal data class DynamicToolCallOutputContentItemInputAudioDynamicToolCallOutputContentItem(
+    @SerialName("audioUrl")
+    public val audioUrl: String,
+    @SerialName("type")
+    public val type: String = "inputAudio",
+) : DynamicToolCallOutputContentItem {
+    init { require(type == "inputAudio") }
+}
+
+internal object DynamicToolCallOutputContentItemSerializer : JsonContentPolymorphicSerializer<DynamicToolCallOutputContentItem>(DynamicToolCallOutputContentItem::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<DynamicToolCallOutputContentItem> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "inputText" -> DynamicToolCallOutputContentItemInputTextDynamicToolCallOutputContentItem.serializer()
+            "inputImage" -> DynamicToolCallOutputContentItemInputImageDynamicToolCallOutputContentItem.serializer()
+            "inputAudio" -> DynamicToolCallOutputContentItemInputAudioDynamicToolCallOutputContentItem.serializer()
+            else -> error("Unknown DynamicToolCallOutputContentItem type")
+        }
+}
+
+@Serializable
+internal data class DynamicToolCallParams(
+    @SerialName("arguments")
+    public val arguments: JsonElement,
     @SerialName("callId")
     public val callId: String,
-    @SerialName("command")
-    public val command: List<String>,
-    @SerialName("conversationId")
-    public val conversationId: ThreadId,
-    @SerialName("cwd")
-    public val cwd: String,
-    @SerialName("parsedCmd")
-    public val parsedCmd: List<ParsedCommand>,
-    @SerialName("approvalId")
-    public val approvalId: String? = null,
-    @SerialName("reason")
-    public val reason: String? = null,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("tool")
+    public val tool: String,
+    @SerialName("turnId")
+    public val turnId: String,
+    @SerialName("namespace")
+    public val namespace: String? = null,
 )
 
 @Serializable
-internal data class ExecCommandApprovalResponse(
-    @SerialName("decision")
-    public val decision: ReviewDecision,
+internal data class DynamicToolCallResponse(
+    @SerialName("contentItems")
+    public val contentItems: List<DynamicToolCallOutputContentItem>,
+    @SerialName("success")
+    public val success: Boolean,
 )
 
 @Serializable
-internal data class ExperimentalFeature(
-    @SerialName("defaultEnabled")
-    public val defaultEnabled: Boolean,
-    @SerialName("enabled")
-    public val enabled: Boolean,
+internal enum class DynamicToolCallStatus {
+    @SerialName("inProgress") IN_PROGRESS,
+    @SerialName("completed") COMPLETED,
+    @SerialName("failed") FAILED,
+}
+
+@Serializable(with = DynamicToolNamespaceToolSerializer::class)
+internal sealed interface DynamicToolNamespaceTool
+
+@Serializable
+internal data class DynamicToolNamespaceToolFunctionDynamicToolNamespaceTool(
+    @SerialName("description")
+    public val description: String,
+    @SerialName("inputSchema")
+    public val inputSchema: JsonElement,
     @SerialName("name")
     public val name: String,
-    @SerialName("stage")
-    public val stage: ExperimentalFeatureStage,
-    @SerialName("announcement")
-    public val announcement: String? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("displayName")
-    public val displayName: String? = null,
-)
+    @SerialName("deferLoading")
+    public val deferLoading: Boolean? = null,
+    @SerialName("type")
+    public val type: String = "function",
+) : DynamicToolNamespaceTool {
+    init { require(type == "function") }
+}
 
-@Serializable
-internal data class ExperimentalFeatureEnablementSetParams(
-    @SerialName("enablement")
-    public val enablement: Map<String, Boolean>,
-)
-
-@Serializable
-internal data class ExperimentalFeatureEnablementSetResponse(
-    @SerialName("enablement")
-    public val enablement: Map<String, Boolean>,
-)
-
-@Serializable
-internal data class ExperimentalFeatureListParams(
-    @SerialName("cursor")
-    public val cursor: String? = null,
-    @SerialName("limit")
-    public val limit: Long? = null,
-    @SerialName("threadId")
-    public val threadId: String? = null,
-)
-
-@Serializable
-internal data class ExperimentalFeatureListResponse(
-    @SerialName("data")
-    public val data: List<ExperimentalFeature>,
-    @SerialName("nextCursor")
-    public val nextCursor: String? = null,
-)
-
-internal typealias ExperimentalFeatureStage = JsonElement
-
-@Serializable
-internal data class ExternalAgentConfigDetectParams(
-    @SerialName("cwds")
-    public val cwds: List<String>? = null,
-    @SerialName("includeHome")
-    public val includeHome: Boolean? = null,
-    @SerialName("migrationSource")
-    public val migrationSource: String? = null,
-    @SerialName("source")
-    public val source: String? = null,
-)
-
-@Serializable
-internal data class ExternalAgentConfigDetectResponse(
-    @SerialName("items")
-    public val items: List<ExternalAgentConfigMigrationItem>,
-)
-
-@Serializable
-internal data class ExternalAgentConfigImportCompletedNotification(
-    @SerialName("importId")
-    public val importId: String,
-    @SerialName("itemTypeResults")
-    public val itemTypeResults: List<ExternalAgentConfigImportTypeResult>,
-)
-
-@Serializable
-internal data class ExternalAgentConfigImportHistoriesReadResponse(
-    @SerialName("connectors")
-    public val connectors: List<ExternalAgentImportedConnectorCandidate>,
-    @SerialName("data")
-    public val data: List<ExternalAgentConfigImportHistory>,
-)
-
-@Serializable
-internal data class ExternalAgentConfigImportHistory(
-    @SerialName("completedAtMs")
-    public val completedAtMs: Long,
-    @SerialName("failures")
-    public val failures: List<ExternalAgentConfigImportItemTypeFailure>,
-    @SerialName("importId")
-    public val importId: String,
-    @SerialName("successes")
-    public val successes: List<ExternalAgentConfigImportItemTypeSuccess>,
-)
-
-@Serializable
-internal data class ExternalAgentConfigImportItemTypeFailure(
-    @SerialName("failureStage")
-    public val failureStage: String,
-    @SerialName("itemType")
-    public val itemType: ExternalAgentConfigMigrationItemType,
-    @SerialName("message")
-    public val message: String,
-    @SerialName("cwd")
-    public val cwd: String? = null,
-    @SerialName("errorType")
-    public val errorType: String? = null,
-    @SerialName("source")
-    public val source: String? = null,
-    @SerialName("subErrorType")
-    public val subErrorType: String? = null,
-)
-
-@Serializable
-internal data class ExternalAgentConfigImportItemTypeSuccess(
-    @SerialName("itemType")
-    public val itemType: ExternalAgentConfigMigrationItemType,
-    @SerialName("cwd")
-    public val cwd: String? = null,
-    @SerialName("source")
-    public val source: String? = null,
-    @SerialName("target")
-    public val target: String? = null,
-)
-
-@Serializable
-internal data class ExternalAgentConfigImportParams(
-    @SerialName("migrationItems")
-    public val migrationItems: List<ExternalAgentConfigMigrationItem>,
-    @SerialName("migrationSource")
-    public val migrationSource: String? = null,
-    @SerialName("source")
-    public val source: String? = null,
-)
-
-@Serializable
-internal data class ExternalAgentConfigImportProgressNotification(
-    @SerialName("importId")
-    public val importId: String,
-    @SerialName("itemTypeResults")
-    public val itemTypeResults: List<ExternalAgentConfigImportTypeResult>,
-)
+internal object DynamicToolNamespaceToolSerializer : JsonContentPolymorphicSerializer<DynamicToolNamespaceTool>(DynamicToolNamespaceTool::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<DynamicToolNamespaceTool> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "function" -> DynamicToolNamespaceToolFunctionDynamicToolNamespaceTool.serializer()
+            else -> error("Unknown DynamicToolNamespaceTool type")
+        }
+}

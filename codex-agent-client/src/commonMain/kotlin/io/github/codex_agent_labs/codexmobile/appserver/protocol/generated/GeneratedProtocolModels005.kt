@@ -13,6 +13,114 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
+internal data class ClientRequestThreadApproveGuardianDeniedActionRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadApproveGuardianDeniedActionParams,
+    @SerialName("method")
+    public val method: String = "thread/approveGuardianDeniedAction",
+) : ClientRequest {
+    init { require(method == "thread/approveGuardianDeniedAction") }
+}
+
+@Serializable
+internal data class ClientRequestThreadRollbackRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadRollbackParams,
+    @SerialName("method")
+    public val method: String = "thread/rollback",
+) : ClientRequest {
+    init { require(method == "thread/rollback") }
+}
+
+@Serializable
+internal data class ClientRequestThreadListRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadListParams,
+    @SerialName("method")
+    public val method: String = "thread/list",
+) : ClientRequest {
+    init { require(method == "thread/list") }
+}
+
+@Serializable
+internal data class ClientRequestThreadSectionListRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadSectionListParams,
+    @SerialName("method")
+    public val method: String = "threadSection/list",
+) : ClientRequest {
+    init { require(method == "threadSection/list") }
+}
+
+@Serializable
+internal data class ClientRequestThreadSectionCreateRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadSectionCreateParams,
+    @SerialName("method")
+    public val method: String = "threadSection/create",
+) : ClientRequest {
+    init { require(method == "threadSection/create") }
+}
+
+@Serializable
+internal data class ClientRequestThreadSectionUpdateRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadSectionUpdateParams,
+    @SerialName("method")
+    public val method: String = "threadSection/update",
+) : ClientRequest {
+    init { require(method == "threadSection/update") }
+}
+
+@Serializable
+internal data class ClientRequestThreadSectionDeleteRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadSectionDeleteParams,
+    @SerialName("method")
+    public val method: String = "threadSection/delete",
+) : ClientRequest {
+    init { require(method == "threadSection/delete") }
+}
+
+@Serializable
+internal data class ClientRequestThreadLoadedListRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadLoadedListParams,
+    @SerialName("method")
+    public val method: String = "thread/loaded/list",
+) : ClientRequest {
+    init { require(method == "thread/loaded/list") }
+}
+
+@Serializable
+internal data class ClientRequestThreadReadRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ThreadReadParams,
+    @SerialName("method")
+    public val method: String = "thread/read",
+) : ClientRequest {
+    init { require(method == "thread/read") }
+}
+
+@Serializable
 internal data class ClientRequestThreadInjectItemsRequest(
     @SerialName("id")
     public val id: RequestId,
@@ -118,112 +226,4 @@ internal data class ClientRequestPluginInstalledRequest(
     public val method: String = "plugin/installed",
 ) : ClientRequest {
     init { require(method == "plugin/installed") }
-}
-
-@Serializable
-internal data class ClientRequestPluginReadRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: PluginReadParams,
-    @SerialName("method")
-    public val method: String = "plugin/read",
-) : ClientRequest {
-    init { require(method == "plugin/read") }
-}
-
-@Serializable
-internal data class ClientRequestPluginSkillReadRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: PluginSkillReadParams,
-    @SerialName("method")
-    public val method: String = "plugin/skill/read",
-) : ClientRequest {
-    init { require(method == "plugin/skill/read") }
-}
-
-@Serializable
-internal data class ClientRequestPluginShareSaveRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: PluginShareSaveParams,
-    @SerialName("method")
-    public val method: String = "plugin/share/save",
-) : ClientRequest {
-    init { require(method == "plugin/share/save") }
-}
-
-@Serializable
-internal data class ClientRequestPluginShareUpdateTargetsRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: PluginShareUpdateTargetsParams,
-    @SerialName("method")
-    public val method: String = "plugin/share/updateTargets",
-) : ClientRequest {
-    init { require(method == "plugin/share/updateTargets") }
-}
-
-@Serializable
-internal data class ClientRequestPluginShareListRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: PluginShareListParams,
-    @SerialName("method")
-    public val method: String = "plugin/share/list",
-) : ClientRequest {
-    init { require(method == "plugin/share/list") }
-}
-
-@Serializable
-internal data class ClientRequestPluginShareCheckoutRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: PluginShareCheckoutParams,
-    @SerialName("method")
-    public val method: String = "plugin/share/checkout",
-) : ClientRequest {
-    init { require(method == "plugin/share/checkout") }
-}
-
-@Serializable
-internal data class ClientRequestPluginShareDeleteRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: PluginShareDeleteParams,
-    @SerialName("method")
-    public val method: String = "plugin/share/delete",
-) : ClientRequest {
-    init { require(method == "plugin/share/delete") }
-}
-
-@Serializable
-internal data class ClientRequestAppReadRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: AppsReadParams,
-    @SerialName("method")
-    public val method: String = "app/read",
-) : ClientRequest {
-    init { require(method == "app/read") }
-}
-
-@Serializable
-internal data class ClientRequestAppListRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: AppsListParams,
-    @SerialName("method")
-    public val method: String = "app/list",
-) : ClientRequest {
-    init { require(method == "app/list") }
 }

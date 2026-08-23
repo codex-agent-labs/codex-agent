@@ -51,54 +51,62 @@ internal class InteractionController(
 ) {
     private val lock = Mutex()
     private val mutableState = MutableStateFlow(AgentInteractionState())
+    private val mutableApprovals = MutableStateFlow<List<AgentPendingApproval>>(emptyList())
+    private val mutableElicitations = MutableStateFlow<List<AgentPendingElicitation>>(emptyList())
     private val presentations = mutableMapOf<String, CodexAuthorizationPresentation>()
     private var closed = false
 
     internal val state: StateFlow<AgentInteractionState> = mutableState.asStateFlow()
+    internal val approvals: StateFlow<List<AgentPendingApproval>> = mutableApprovals.asStateFlow()
+    internal val elicitations: StateFlow<List<AgentPendingElicitation>> = mutableElicitations.asStateFlow()
 
     private val observation: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         client.events.collect(::process)
     }
 
-    internal suspend fun resolveApproval(requestId: String, decision: AgentApprovalDecision) {
-        beginResolution<AgentPendingApproval>(requestId)
+    internal suspend fun resolveApproval(approval: AgentPendingApproval, decision: AgentApprovalDecision) {
+        beginResolution(approval)
         try {
-            client.resolveApproval(requestId, decision)
+            client.resolveApproval(approval.requestId, decision)
         } catch (error: Throwable) {
             if (error is CancellationException) {
                 withContext(NonCancellable) {
-                    runCatching { finishResolution(requestId, succeeded = false) }
+                    runCatching { finishResolution(approval, succeeded = false) }
                 }
                 throw error
             }
             val exception = error.asCodexOperationException("approval_resolution_failed", "Could not resolve approval")
             withContext(NonCancellable) {
-                runCatching { finishResolution(requestId, exception.failure, succeeded = false) }
+                runCatching { finishResolution(approval, exception.failure, succeeded = false) }
             }
             throw exception
         }
         finishPublicResolution(
-            requestId,
+            approval,
             "approval_resolution_failed",
             "Could not resolve approval",
         )
     }
 
-    internal suspend fun resolveElicitation(requestId: String, response: AgentElicitationResponse) {
+    internal suspend fun resolveElicitation(
+        pendingElicitation: AgentPendingElicitation,
+        response: AgentElicitationResponse,
+    ) {
         val snapshot = response.snapshot()
         val elicitation = lock.withLock {
-            (mutableState.value.pending.find { it.requestId == requestId } as? AgentPendingElicitation)
-                ?.elicitation
-                ?: error("Elicitation is no longer pending")
+            check(mutableState.value.pending.any { it === pendingElicitation }) {
+                "Elicitation is no longer pending"
+            }
+            pendingElicitation.elicitation
         }
         require(elicitation.accepts(snapshot)) { "Elicitation response is invalid" }
-        beginResolution<AgentPendingElicitation>(requestId)
+        beginResolution(pendingElicitation)
         try {
-            client.resolveElicitation(requestId, snapshot)
+            client.resolveElicitation(pendingElicitation.requestId, snapshot)
         } catch (error: Throwable) {
             if (error is CancellationException) {
                 withContext(NonCancellable) {
-                    runCatching { finishResolution(requestId, succeeded = false) }
+                    runCatching { finishResolution(pendingElicitation, succeeded = false) }
                 }
                 throw error
             }
@@ -107,24 +115,24 @@ internal class InteractionController(
                 "Could not resolve elicitation",
             )
             withContext(NonCancellable) {
-                runCatching { finishResolution(requestId, exception.failure, succeeded = false) }
+                runCatching { finishResolution(pendingElicitation, exception.failure, succeeded = false) }
             }
             throw exception
         }
         finishPublicResolution(
-            requestId,
+            pendingElicitation,
             "elicitation_resolution_failed",
             "Could not resolve elicitation",
         )
     }
 
-    internal suspend fun openUrl(requestId: String) {
+    internal suspend fun openUrl(elicitation: AgentPendingElicitation) {
         val url = lock.withLock {
             check(!closed) { "Interactions are closed" }
-            val pending = mutableState.value.pending.find { it.requestId == requestId }
-                as? AgentPendingElicitation
-                ?: error("URL elicitation is no longer pending")
-            pending.elicitation.url ?: error("Elicitation does not contain a URL")
+            check(mutableState.value.pending.any { it === elicitation }) {
+                "URL elicitation is no longer pending"
+            }
+            elicitation.elicitation.url ?: error("Elicitation does not contain a URL")
         }
         val opener = authorizationBrowser ?: error("An authorization browser is required")
         val opened = try {
@@ -135,9 +143,9 @@ internal class InteractionController(
                 "Could not open elicitation URL",
             )
             lock.withLock {
-                mutableState.value = mutableState.value.copy(
-                    failure = exception.failure,
-                )
+                if (!closed && mutableState.value.pending.any { it === elicitation }) {
+                    publishState(mutableState.value.copy(failure = exception.failure))
+                }
             }
             throw exception
         }
@@ -146,11 +154,11 @@ internal class InteractionController(
             try {
                 var closeOpened = false
                 val previous = lock.withLock {
-                    if (closed || mutableState.value.pending.none { it.requestId == requestId }) {
+                    if (closed || mutableState.value.pending.none { it === elicitation }) {
                         closeOpened = true
                         null
                     } else {
-                        presentations.put(requestId, opened)
+                        presentations.put(elicitation.requestId, opened)
                     }
                 }
                 if (closeOpened) opened.close()
@@ -165,7 +173,11 @@ internal class InteractionController(
                 "Could not update the elicitation URL",
             )
             withContext(NonCancellable) {
-                lock.withLock { mutableState.value = mutableState.value.copy(failure = exception.failure) }
+                lock.withLock {
+                    if (!closed && mutableState.value.pending.any { it === elicitation }) {
+                        publishState(mutableState.value.copy(failure = exception.failure))
+                    }
+                }
             }
             throw exception
         }
@@ -184,40 +196,42 @@ internal class InteractionController(
             observation.cancel()
             val result = presentations.values.toList()
             presentations.clear()
+            publishState(AgentInteractionState())
             result
         }
         observation.join()
         completeCleanup(owned.map { presentation -> { presentation.close() } })
     }
 
-    private suspend inline fun <reified T : AgentPendingInteraction> beginResolution(requestId: String) {
+    private suspend fun beginResolution(interaction: AgentPendingInteraction) {
         lock.withLock {
             val current = mutableState.value
             check(!closed) { "Interactions are closed" }
-            check(requestId !in current.resolvingRequestIds) { "Interaction is already resolving" }
-            check(current.pending.find { it.requestId == requestId } is T) {
-                "Interaction is no longer pending or has another type"
+            check(interaction.requestId !in current.resolvingRequestIds) { "Interaction is already resolving" }
+            check(current.pending.any { it === interaction }) {
+                "Interaction is no longer pending"
             }
-            mutableState.value = current.copy(
-                resolvingRequestIds = current.resolvingRequestIds + requestId,
+            publishState(current.copy(
+                resolvingRequestIds = current.resolvingRequestIds + interaction.requestId,
                 failure = null,
-            )
+            ))
         }
     }
 
     private suspend fun finishResolution(
-        requestId: String,
+        interaction: AgentPendingInteraction,
         failure: CodexFailure? = null,
         succeeded: Boolean,
     ) {
         val presentation = lock.withLock {
             val current = mutableState.value
-            mutableState.value = current.copy(
-                pending = if (succeeded) current.pending.filterNot { it.requestId == requestId } else current.pending,
-                resolvingRequestIds = current.resolvingRequestIds - requestId,
+            if (closed || current.pending.none { it === interaction }) return
+            publishState(current.copy(
+                pending = if (succeeded) current.pending.filterNot { it === interaction } else current.pending,
+                resolvingRequestIds = current.resolvingRequestIds - interaction.requestId,
                 failure = failure,
-            )
-            presentations.remove(requestId)
+            ))
+            presentations.remove(interaction.requestId)
         }
         presentation?.close()
     }
@@ -255,7 +269,7 @@ internal class InteractionController(
                 "Could not close an interaction presentation",
             ).failure
             lock.withLock {
-                if (!closed) mutableState.value = mutableState.value.copy(failure = failure)
+                if (!closed) publishState(mutableState.value.copy(failure = failure))
             }
         }
     }
@@ -263,10 +277,10 @@ internal class InteractionController(
     private fun add(interaction: AgentPendingInteraction) {
         val current = mutableState.value
         if (current.pending.none { it.requestId == interaction.requestId }) {
-            mutableState.value = current.copy(
+            publishState(current.copy(
                 pending = current.pending + interaction,
                 failure = null,
-            )
+            ))
         }
     }
 
@@ -275,33 +289,36 @@ internal class InteractionController(
         val ids = current.pending.filter { it.conversationId == conversationId }
             .mapTo(mutableSetOf()) { it.requestId }
         if (ids.isEmpty()) return emptyList()
-        mutableState.value = current.copy(
+        publishState(current.copy(
             pending = current.pending.filterNot { it.requestId in ids },
             resolvingRequestIds = current.resolvingRequestIds - ids,
-        )
+        ))
         return ids.mapNotNull(presentations::remove)
     }
 
     private suspend fun finishPublicResolution(
-        requestId: String,
+        interaction: AgentPendingInteraction,
         code: String,
         fallback: String,
     ) {
         var cleanupFailure: Throwable? = null
         withContext(NonCancellable) {
             try {
-                finishResolution(requestId, succeeded = true)
+                finishResolution(interaction, succeeded = true)
             } catch (error: Throwable) {
                 cleanupFailure = error
             }
         }
         cleanupFailure?.let { error ->
             val exception = error.asCodexOperationException(code, fallback)
-            withContext(NonCancellable) {
-                lock.withLock { mutableState.value = mutableState.value.copy(failure = exception.failure) }
-            }
             throw exception
         }
         currentCoroutineContext().ensureActive()
+    }
+
+    private fun publishState(state: AgentInteractionState) {
+        mutableState.value = state
+        mutableApprovals.value = state.pending.filterIsInstance<AgentPendingApproval>()
+        mutableElicitations.value = state.pending.filterIsInstance<AgentPendingElicitation>()
     }
 }

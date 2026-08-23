@@ -1,26 +1,36 @@
 import CodexAgent
 
 public extension CodexHost {
-    var states: AsyncStream<any CodexHostState> {
-        codexStateStream(state) { $0 as? any CodexHostState }
+    var lifecycleStates: AsyncStream<any CodexHostState> {
+        codexStateStream(lifecycleState) { $0 as? any CodexHostState }
     }
 }
 
-public extension CodexAgent {
-    var authenticationStates: AsyncStream<AgentAuthenticationState> {
-        codexStateStream(authenticationState) { $0 as? AgentAuthenticationState }
+public extension CodexAuthentication {
+    var states: AsyncStream<AgentAuthenticationState> {
+        codexStateStream(state) { $0 as? AgentAuthenticationState }
+    }
+}
+
+public extension CodexInteractions {
+    var states: AsyncStream<AgentInteractionState> {
+        codexStateStream(state) { $0 as? AgentInteractionState }
+    }
+}
+
+public extension CodexIntegrationAuthorization {
+    var states: AsyncStream<AgentIntegrationAuthorizationState> {
+        codexStateStream(state) { $0 as? AgentIntegrationAuthorizationState }
     }
 
-    var interactionStates: AsyncStream<AgentInteractionState> {
-        codexStateStream(interactionState) { $0 as? AgentInteractionState }
+    var activeIntegrations: AsyncStream<(any AgentIntegration)?> {
+        codexOptionalStateStream(active) { $0 as? any AgentIntegration }
     }
+}
 
-    var integrationAuthorizationStates: AsyncStream<AgentIntegrationAuthorizationState> {
-        codexStateStream(integrationAuthorizationState) { $0 as? AgentIntegrationAuthorizationState }
-    }
-
+public extension CodexConversations {
     var activeConversations: AsyncStream<CodexConversation?> {
-        codexOptionalStateStream(activeConversation, as: CodexConversation.self)
+        codexOptionalStateStream(active) { $0 as? CodexConversation }
     }
 }
 
@@ -51,14 +61,17 @@ private func codexStateStream<Element>(
     }
 }
 
-private func codexOptionalStateStream<Element: AnyObject>(
+private func codexOptionalStateStream<Element>(
     _ state: any Kotlinx_coroutines_coreStateFlow,
-    as _: Element.Type
+    cast: @escaping (Any) -> Element?
 ) -> AsyncStream<Element?> {
     codexAsyncStream { yield in
         let observation = CodexStateObservation(state: state) { value in
-            guard value == nil || value is Element else { return }
-            yield(value as? Element)
+            guard let value else {
+                yield(nil)
+                return
+            }
+            if let element = cast(value) { yield(element) }
         }
         return observation.close
     }

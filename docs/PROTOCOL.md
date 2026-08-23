@@ -1,16 +1,16 @@
 # Protocol provenance
 
-The client is generated from OpenAI Codex App Server `0.145.0` at upstream tag
-`rust-v0.145.0`, tag object `1635de866c61d1b76e50b31928ee6d61482435a8`,
-and revision `25af12f7e61572b0bc18ddb1008be543b91519b0`.
+The client is generated from OpenAI Codex App Server `0.149.0` at upstream tag
+`rust-v0.149.0`, tag object `a4e15bf371341b067c8278d3b70b1a8c7b3d793e`,
+and revision `758ef40f50c1a458425c7cfbf1eb12cbc07af0b0`.
 
 The authoritative provenance, input Git blobs, SHA-256 digests, generator
 version, and generated-output digests are recorded in
 `codex-agent-client/protocol/schema/provenance.json`. The checked-in stable-v2
 schema digest is
-`32b26f2ab3fb7a4a409db958f438f48b0ef106e3a01468f8618fdf65bc823cc4`;
+`9b3de71a5a2ffc980b792a18aa8f8dec3f85f48829560222a0264fe494b679a9`;
 the complete schema digest is
-`8039a1222460b3846a3688c61eb4b2626b451d61b9c2b36b83fea0ce341ce0be`.
+`02a4c63a638fdae4a5f6c3ad32a41a377b642c66f3abc84f6fc47c7f3d6074df`.
 
 `./gradlew :codex-agent-client:verifyProtocolSource` verifies those inputs and
 all generated outputs. To regenerate, check out the recorded Codex revision and

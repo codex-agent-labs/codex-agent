@@ -85,11 +85,12 @@ private func compileTypedObservationSurface(
     agent: CodexAgent,
     conversation: CodexConversation
 ) {
-    let _: AsyncStream<any CodexHostState> = host.states
-    let _: AsyncStream<AgentAuthenticationState> = agent.authenticationStates
-    let _: AsyncStream<AgentInteractionState> = agent.interactionStates
-    let _: AsyncStream<AgentIntegrationAuthorizationState> = agent.integrationAuthorizationStates
-    let _: AsyncStream<CodexConversation?> = agent.activeConversations
+    let _: AsyncStream<any CodexHostState> = host.lifecycleStates
+    let _: AsyncStream<AgentAuthenticationState> = agent.authentication.states
+    let _: AsyncStream<AgentInteractionState> = agent.interactions.states
+    let _: AsyncStream<AgentIntegrationAuthorizationState> = agent.integrationAuthorization.states
+    let _: AsyncStream<(any AgentIntegration)?> = agent.integrationAuthorization.activeIntegrations
+    let _: AsyncStream<CodexConversation?> = agent.conversations.activeConversations
     let _: AsyncStream<AgentConversationState> = conversation.states
 }
 
@@ -97,10 +98,10 @@ private func compileSimpleAndAdvancedOperations(
     agent: CodexAgent,
     conversation: CodexConversation
 ) async throws {
-    try await agent.authenticate()
-    try await agent.authenticate(method: CodexAuthenticationMethodChatGptDeviceCode())
-    _ = try await agent.openConversation()
-    _ = try await agent.openConversation(
+    try await agent.authentication.authenticate()
+    try await agent.authentication.authenticate(method: CodexAuthenticationMethodChatGptDeviceCode())
+    _ = try await agent.conversations.open()
+    _ = try await agent.conversations.open(
         conversationId: nil,
         settings: AgentConversationSettings(
             approvalPreset: .strict,
@@ -117,21 +118,34 @@ private func compileCapabilitiesMutationsAndElicitation(
     skill: AgentSkill,
     hook: AgentHook,
     pluginReference: AgentPluginReference,
-    plugin: AgentPluginSummary,
+    approval: AgentPendingApproval,
+    pendingElicitation: AgentPendingElicitation,
+    integration: any AgentIntegration,
     elicitation: AgentElicitation
 ) async throws {
-    let _: Set<CodexRuntimeFeature> = agent.features
+    _ = agent.skills.isAvailable
+    _ = agent.hooks.isAvailable
+    _ = agent.plugins.isAvailable
+    _ = agent.connectors.isAvailable
+    _ = agent.mcpServers.isAvailable
     let _: AgentConversationStatus = .closed
     _ = conversationState.canStartTurn
     _ = conversationState.canReload
     _ = conversationState.canCancelTurn
 
-    try await agent.setSkillEnabled(skill: skill, isEnabled: true)
-    try await agent.setHookEnabled(hook: hook, isEnabled: true)
-    try await agent.trustHook(hook: hook)
-    _ = try await agent.installPlugin(plugin: pluginReference)
-    try await agent.uninstallPlugin(plugin: pluginReference)
-    try await agent.setPluginEnabled(plugin: plugin, isEnabled: true)
+    _ = try await agent.skills.install(directory: "/tmp/skill", scope: .user)
+    try await agent.skills.uninstall(skill: skill)
+    let installedHook = try await agent.hooks.install(directory: "/tmp/hook", scope: .workspace)
+    try await agent.hooks.trust(hook: installedHook)
+    try await agent.hooks.uninstall(hook: hook)
+    _ = try await agent.plugins.install(plugin: pluginReference)
+    try await agent.plugins.uninstall(plugin: pluginReference)
+    try await agent.interactions.resolve(approval: approval, decision: .accept)
+    try await agent.interactions.resolve(
+        elicitation: pendingElicitation,
+        response: AgentElicitationResponse.decline()
+    )
+    try await agent.integrationAuthorization.authorize(target: integration)
 
     let initial = elicitation.initialValues()
     let validation = elicitation.validate(content: initial)

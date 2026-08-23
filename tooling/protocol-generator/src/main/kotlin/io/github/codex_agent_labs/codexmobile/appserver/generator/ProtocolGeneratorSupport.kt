@@ -65,17 +65,17 @@ internal fun updateProvenance(
                 existingInputs + listOf(
                     provenanceInput(
                         completeSchemaPath,
-                        "b7526b080da1487feb2bd5d1d5f8908b00ef1b88",
+                        "6802d1635345501032a4010552fda8372ec9396a",
                         schema,
                     ),
                     provenanceInput(
                         threadPath,
-                        "367a4a64c8f22552ecb964b9af07a4b81ab097a2",
+                        "75fe5091b188f1f2fc601fadd169dc737cba31bd",
                         thread,
                     ),
                     provenanceInput(
                         turnPath,
-                        "af99b4b2e72501c50795df51481f32f11111f0a9",
+                        "0b2c092ec83a7c4c29827ad8c735db73ee61142a",
                         turn,
                     ),
                 ),
@@ -83,7 +83,7 @@ internal fun updateProvenance(
         )
         put(
             "completeSchemaExtraction",
-            JsonPrimitive("git show rust-v0.145.0:$completeSchemaPath"),
+            JsonPrimitive("git show rust-v0.149.0:$completeSchemaPath"),
         )
         put("generator", buildJsonObject {
             put("version", GENERATOR_VERSION)

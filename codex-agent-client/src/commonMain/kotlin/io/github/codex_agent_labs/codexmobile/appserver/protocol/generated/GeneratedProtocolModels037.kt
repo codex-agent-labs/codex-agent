@@ -12,222 +12,218 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-@Serializable(with = ServerRequestSerializer::class)
-internal sealed interface ServerRequest
-
 @Serializable
-internal data class ServerRequestItemCommandExecutionRequestApprovalRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationAutoApprovalReviewStrictReviewRequiredNotification(
     @SerialName("params")
-    public val params: CommandExecutionRequestApprovalParams,
+    public val params: StrictReviewRequiredNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "item/commandExecution/requestApproval",
-) : ServerRequest {
-    init { require(method == "item/commandExecution/requestApproval") }
+    public val method: String = "autoApprovalReview/strictReviewRequired",
+) : ServerNotification {
+    init { require(method == "autoApprovalReview/strictReviewRequired") }
 }
 
 @Serializable
-internal data class ServerRequestItemFileChangeRequestApprovalRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationItemCompletedNotification(
     @SerialName("params")
-    public val params: FileChangeRequestApprovalParams,
+    public val params: ItemCompletedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "item/fileChange/requestApproval",
-) : ServerRequest {
-    init { require(method == "item/fileChange/requestApproval") }
+    public val method: String = "item/completed",
+) : ServerNotification {
+    init { require(method == "item/completed") }
 }
 
 @Serializable
-internal data class ServerRequestItemToolRequestUserInputRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationItemAgentMessageDeltaNotification(
     @SerialName("params")
-    public val params: ToolRequestUserInputParams,
+    public val params: AgentMessageDeltaNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "item/tool/requestUserInput",
-) : ServerRequest {
-    init { require(method == "item/tool/requestUserInput") }
+    public val method: String = "item/agentMessage/delta",
+) : ServerNotification {
+    init { require(method == "item/agentMessage/delta") }
 }
 
 @Serializable
-internal data class ServerRequestMcpServerElicitationRequestRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationItemPlanDeltaNotification(
     @SerialName("params")
-    public val params: McpServerElicitationRequestParams,
+    public val params: PlanDeltaNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "mcpServer/elicitation/request",
-) : ServerRequest {
-    init { require(method == "mcpServer/elicitation/request") }
+    public val method: String = "item/plan/delta",
+) : ServerNotification {
+    init { require(method == "item/plan/delta") }
 }
 
 @Serializable
-internal data class ServerRequestItemPermissionsRequestApprovalRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationCommandExecOutputDeltaNotification(
     @SerialName("params")
-    public val params: PermissionsRequestApprovalParams,
+    public val params: CommandExecOutputDeltaNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "item/permissions/requestApproval",
-) : ServerRequest {
-    init { require(method == "item/permissions/requestApproval") }
+    public val method: String = "command/exec/outputDelta",
+) : ServerNotification {
+    init { require(method == "command/exec/outputDelta") }
 }
 
 @Serializable
-internal data class ServerRequestItemToolCallRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationProcessOutputDeltaNotification(
     @SerialName("params")
-    public val params: DynamicToolCallParams,
+    public val params: ProcessOutputDeltaNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "item/tool/call",
-) : ServerRequest {
-    init { require(method == "item/tool/call") }
+    public val method: String = "process/outputDelta",
+) : ServerNotification {
+    init { require(method == "process/outputDelta") }
 }
 
 @Serializable
-internal data class ServerRequestAccountChatgptAuthTokensRefreshRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationProcessExitedNotification(
     @SerialName("params")
-    public val params: ChatgptAuthTokensRefreshParams,
+    public val params: ProcessExitedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "account/chatgptAuthTokens/refresh",
-) : ServerRequest {
-    init { require(method == "account/chatgptAuthTokens/refresh") }
+    public val method: String = "process/exited",
+) : ServerNotification {
+    init { require(method == "process/exited") }
 }
 
 @Serializable
-internal data class ServerRequestAttestationGenerateRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationItemCommandExecutionOutputDeltaNotification(
     @SerialName("params")
-    public val params: AttestationGenerateParams,
+    public val params: CommandExecutionOutputDeltaNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "attestation/generate",
-) : ServerRequest {
-    init { require(method == "attestation/generate") }
+    public val method: String = "item/commandExecution/outputDelta",
+) : ServerNotification {
+    init { require(method == "item/commandExecution/outputDelta") }
 }
 
 @Serializable
-internal data class ServerRequestApplyPatchApprovalRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationItemCommandExecutionTerminalInteractionNotification(
     @SerialName("params")
-    public val params: ApplyPatchApprovalParams,
+    public val params: TerminalInteractionNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "applyPatchApproval",
-) : ServerRequest {
-    init { require(method == "applyPatchApproval") }
+    public val method: String = "item/commandExecution/terminalInteraction",
+) : ServerNotification {
+    init { require(method == "item/commandExecution/terminalInteraction") }
 }
 
 @Serializable
-internal data class ServerRequestExecCommandApprovalRequest(
-    @SerialName("id")
-    public val id: RequestId,
+internal data class ServerNotificationItemFileChangeOutputDeltaNotification(
     @SerialName("params")
-    public val params: ExecCommandApprovalParams,
+    public val params: FileChangeOutputDeltaNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "execCommandApproval",
-) : ServerRequest {
-    init { require(method == "execCommandApproval") }
-}
-
-internal object ServerRequestSerializer : JsonContentPolymorphicSerializer<ServerRequest>(ServerRequest::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ServerRequest> =
-        when (element.jsonObject["method"]?.jsonPrimitive?.content) {
-            "item/commandExecution/requestApproval" -> ServerRequestItemCommandExecutionRequestApprovalRequest.serializer()
-            "item/fileChange/requestApproval" -> ServerRequestItemFileChangeRequestApprovalRequest.serializer()
-            "item/tool/requestUserInput" -> ServerRequestItemToolRequestUserInputRequest.serializer()
-            "mcpServer/elicitation/request" -> ServerRequestMcpServerElicitationRequestRequest.serializer()
-            "item/permissions/requestApproval" -> ServerRequestItemPermissionsRequestApprovalRequest.serializer()
-            "item/tool/call" -> ServerRequestItemToolCallRequest.serializer()
-            "account/chatgptAuthTokens/refresh" -> ServerRequestAccountChatgptAuthTokensRefreshRequest.serializer()
-            "attestation/generate" -> ServerRequestAttestationGenerateRequest.serializer()
-            "applyPatchApproval" -> ServerRequestApplyPatchApprovalRequest.serializer()
-            "execCommandApproval" -> ServerRequestExecCommandApprovalRequest.serializer()
-            else -> error("Unknown ServerRequest method")
-        }
+    public val method: String = "item/fileChange/outputDelta",
+) : ServerNotification {
+    init { require(method == "item/fileChange/outputDelta") }
 }
 
 @Serializable
-internal data class ServerRequestResolvedNotification(
-    @SerialName("requestId")
-    public val requestId: RequestId,
-    @SerialName("threadId")
-    public val threadId: String,
-)
+internal data class ServerNotificationItemFileChangePatchUpdatedNotification(
+    @SerialName("params")
+    public val params: FileChangePatchUpdatedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "item/fileChange/patchUpdated",
+) : ServerNotification {
+    init { require(method == "item/fileChange/patchUpdated") }
+}
 
 @Serializable
-internal data class SessionMigration(
-    @SerialName("cwd")
-    public val cwd: String,
-    @SerialName("path")
-    public val path: String,
-    @SerialName("title")
-    public val title: String? = null,
-)
-
-internal typealias SessionSource = JsonElement
-
-@Serializable
-internal data class Settings(
-    @SerialName("model")
-    public val model: String,
-    @SerialName("developer_instructions")
-    public val developer_instructions: String? = null,
-    @SerialName("reasoning_effort")
-    public val reasoning_effort: ReasoningEffort? = null,
-)
+internal data class ServerNotificationServerRequestResolvedNotification(
+    @SerialName("params")
+    public val params: ServerRequestResolvedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "serverRequest/resolved",
+) : ServerNotification {
+    init { require(method == "serverRequest/resolved") }
+}
 
 @Serializable
-internal data class SkillDependencies(
-    @SerialName("tools")
-    public val tools: List<SkillToolDependency>,
-)
+internal data class ServerNotificationItemMcpToolCallProgressNotification(
+    @SerialName("params")
+    public val params: McpToolCallProgressNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "item/mcpToolCall/progress",
+) : ServerNotification {
+    init { require(method == "item/mcpToolCall/progress") }
+}
 
 @Serializable
-internal data class SkillErrorInfo(
-    @SerialName("message")
-    public val message: String,
-    @SerialName("path")
-    public val path: String,
-)
+internal data class ServerNotificationMcpServerOauthLoginCompletedNotification(
+    @SerialName("params")
+    public val params: McpServerOauthLoginCompletedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "mcpServer/oauthLogin/completed",
+) : ServerNotification {
+    init { require(method == "mcpServer/oauthLogin/completed") }
+}
 
 @Serializable
-internal data class SkillInterface(
-    @SerialName("brandColor")
-    public val brandColor: String? = null,
-    @SerialName("defaultPrompt")
-    public val defaultPrompt: String? = null,
-    @SerialName("displayName")
-    public val displayName: String? = null,
-    @SerialName("iconLarge")
-    public val iconLarge: AbsolutePathBuf? = null,
-    @SerialName("iconSmall")
-    public val iconSmall: AbsolutePathBuf? = null,
-    @SerialName("shortDescription")
-    public val shortDescription: String? = null,
-)
+internal data class ServerNotificationMcpServerStartupStatusUpdatedNotification(
+    @SerialName("params")
+    public val params: McpServerStatusUpdatedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "mcpServer/startupStatus/updated",
+) : ServerNotification {
+    init { require(method == "mcpServer/startupStatus/updated") }
+}
 
 @Serializable
-internal data class SkillMetadata(
-    @SerialName("description")
-    public val description: String,
-    @SerialName("enabled")
-    public val enabled: Boolean,
-    @SerialName("name")
-    public val name: String,
-    @SerialName("path")
-    public val path: AbsolutePathBuf,
-    @SerialName("scope")
-    public val scope: SkillScope,
-    @SerialName("dependencies")
-    public val dependencies: SkillDependencies? = null,
-    @SerialName("interface")
-    public val interface_: SkillInterface? = null,
-    @SerialName("shortDescription")
-    public val shortDescription: String? = null,
-)
+internal data class ServerNotificationAccountUpdatedNotification(
+    @SerialName("params")
+    public val params: AccountUpdatedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "account/updated",
+) : ServerNotification {
+    init { require(method == "account/updated") }
+}
+
+@Serializable
+internal data class ServerNotificationAccountRateLimitsUpdatedNotification(
+    @SerialName("params")
+    public val params: AccountRateLimitsUpdatedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "account/rateLimits/updated",
+) : ServerNotification {
+    init { require(method == "account/rateLimits/updated") }
+}
+
+@Serializable
+internal data class ServerNotificationAppListUpdatedNotification(
+    @SerialName("params")
+    public val params: AppListUpdatedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "app/list/updated",
+) : ServerNotification {
+    init { require(method == "app/list/updated") }
+}

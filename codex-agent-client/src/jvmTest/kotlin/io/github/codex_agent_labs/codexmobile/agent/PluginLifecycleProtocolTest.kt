@@ -89,6 +89,7 @@ class PluginLifecycleProtocolTest : SkillsPluginsProtocolTestBase() {
         val elicitation = parseUserInputRequest(
             "9",
             ToolRequestUserInputParams(
+                isBlocking = true,
                 itemId = "item-1",
                 threadId = "thread-1",
                 turnId = "turn-1",

@@ -13,211 +13,224 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class ModelSafetyBufferingUpdatedNotification(
-    @SerialName("model")
-    public val model: String,
-    @SerialName("reasons")
-    public val reasons: List<String>,
-    @SerialName("showBufferingUi")
-    public val showBufferingUi: Boolean,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("useCases")
-    public val useCases: List<String>,
-    @SerialName("fasterModel")
-    public val fasterModel: String? = null,
-)
-
-@Serializable
-internal data class ModelServiceTier(
+internal data class McpElicitationUntitledSingleSelectEnumSchema(
+    @SerialName("enum")
+    public val enum: List<String>,
+    @SerialName("type")
+    public val type: McpElicitationStringType,
+    @SerialName("default")
+    public val default: String? = null,
     @SerialName("description")
-    public val description: String,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("name")
-    public val name: String,
+    public val description: String? = null,
+    @SerialName("title")
+    public val title: String? = null,
 )
 
 @Serializable
-internal data class ModelUpgradeInfo(
-    @SerialName("model")
-    public val model: String,
-    @SerialName("migrationMarkdown")
-    public val migrationMarkdown: String? = null,
-    @SerialName("modelLink")
-    public val modelLink: String? = null,
-    @SerialName("upgradeCopy")
-    public val upgradeCopy: String? = null,
+internal data class McpResourceReadParams(
+    @SerialName("server")
+    public val server: String,
+    @SerialName("uri")
+    public val uri: String,
+    @SerialName("connectorId")
+    public val connectorId: String? = null,
+    @SerialName("originCallId")
+    public val originCallId: String? = null,
+    @SerialName("threadId")
+    public val threadId: String? = null,
 )
 
 @Serializable
-internal enum class ModelVerification {
-    @SerialName("trustedAccessForCyber") TRUSTED_ACCESS_FOR_CYBER,
+internal data class McpResourceReadResponse(
+    @SerialName("contents")
+    public val contents: List<ResourceContent>,
+    @SerialName("originCallId")
+    public val originCallId: String? = null,
+)
+
+@Serializable
+internal enum class McpServerElicitationAction {
+    @SerialName("accept") ACCEPT,
+    @SerialName("decline") DECLINE,
+    @SerialName("cancel") CANCEL,
 }
 
+@Serializable(with = McpServerElicitationRequestParamsSerializer::class)
+internal sealed interface McpServerElicitationRequestParams
+
 @Serializable
-internal data class ModelVerificationNotification(
+internal data class McpServerElicitationRequestParamsForm(
+    @SerialName("serverName")
+    public val serverName: String,
     @SerialName("threadId")
     public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("verifications")
-    public val verifications: List<ModelVerification>,
-)
-
-@Serializable
-internal data class ModelsRequirements(
-    @SerialName("newThread")
-    public val newThread: NewThreadModelDefaults? = null,
-)
-
-internal typealias MultiAgentMode = JsonElement
-
-@Serializable
-internal enum class NetworkAccess {
-    @SerialName("restricted") RESTRICTED,
-    @SerialName("enabled") ENABLED,
-}
-
-@Serializable
-internal data class NetworkApprovalContext(
-    @SerialName("host")
-    public val host: String,
-    @SerialName("protocol")
-    public val protocol: NetworkApprovalProtocol,
-)
-
-@Serializable
-internal enum class NetworkApprovalProtocol {
-    @SerialName("http") HTTP,
-    @SerialName("https") HTTPS,
-    @SerialName("socks5Tcp") SOCKS5_TCP,
-    @SerialName("socks5Udp") SOCKS5_UDP,
-}
-
-@Serializable
-internal enum class NetworkDomainPermission {
-    @SerialName("allow") ALLOW,
-    @SerialName("deny") DENY,
-}
-
-@Serializable
-internal data class NetworkPolicyAmendment(
-    @SerialName("action")
-    public val action: NetworkPolicyRuleAction,
-    @SerialName("host")
-    public val host: String,
-)
-
-@Serializable
-internal enum class NetworkPolicyRuleAction {
-    @SerialName("allow") ALLOW,
-    @SerialName("deny") DENY,
-}
-
-@Serializable
-internal data class NetworkRequirements(
-    @SerialName("allowLocalBinding")
-    public val allowLocalBinding: Boolean? = null,
-    @SerialName("allowUnixSockets")
-    public val allowUnixSockets: List<String>? = null,
-    @SerialName("allowUpstreamProxy")
-    public val allowUpstreamProxy: Boolean? = null,
-    @SerialName("allowedDomains")
-    public val allowedDomains: List<String>? = null,
-    @SerialName("dangerouslyAllowAllUnixSockets")
-    public val dangerouslyAllowAllUnixSockets: Boolean? = null,
-    @SerialName("dangerouslyAllowNonLoopbackProxy")
-    public val dangerouslyAllowNonLoopbackProxy: Boolean? = null,
-    @SerialName("deniedDomains")
-    public val deniedDomains: List<String>? = null,
-    @SerialName("domains")
-    public val domains: Map<String, NetworkDomainPermission>? = null,
-    @SerialName("enabled")
-    public val enabled: Boolean? = null,
-    @SerialName("httpPort")
-    public val httpPort: Long? = null,
-    @SerialName("managedAllowedDomainsOnly")
-    public val managedAllowedDomainsOnly: Boolean? = null,
-    @SerialName("socksPort")
-    public val socksPort: Long? = null,
-    @SerialName("unixSockets")
-    public val unixSockets: Map<String, NetworkUnixSocketPermission>? = null,
-)
-
-@Serializable
-internal enum class NetworkUnixSocketPermission {
-    @SerialName("allow") ALLOW,
-    @SerialName("deny") DENY,
-}
-
-@Serializable
-internal data class NewThreadModelDefaults(
-    @SerialName("model")
-    public val model: String? = null,
-    @SerialName("modelReasoningEffort")
-    public val modelReasoningEffort: ReasoningEffort? = null,
-    @SerialName("serviceTier")
-    public val serviceTier: String? = null,
-)
-
-@Serializable
-internal enum class NonSteerableTurnKind {
-    @SerialName("review") REVIEW,
-    @SerialName("compact") COMPACT,
-}
-
-@Serializable
-internal data class OverriddenMetadata(
-    @SerialName("effectiveValue")
-    public val effectiveValue: JsonElement,
     @SerialName("message")
     public val message: String,
-    @SerialName("overridingLayer")
-    public val overridingLayer: ConfigLayerMetadata,
+    @SerialName("requestedSchema")
+    public val requestedSchema: McpElicitationSchema,
+    @SerialName("turnId")
+    public val turnId: String? = null,
+    @SerialName("_meta")
+    public val _meta: JsonElement? = null,
+    @SerialName("mode")
+    public val mode: String = "form",
+) : McpServerElicitationRequestParams {
+    init { require(mode == "form") }
+}
+
+@Serializable
+internal data class McpServerElicitationRequestParamsOpenaiForm(
+    @SerialName("serverName")
+    public val serverName: String,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("message")
+    public val message: String,
+    @SerialName("requestedSchema")
+    public val requestedSchema: JsonElement,
+    @SerialName("turnId")
+    public val turnId: String? = null,
+    @SerialName("_meta")
+    public val _meta: JsonElement? = null,
+    @SerialName("mode")
+    public val mode: String = "openai/form",
+) : McpServerElicitationRequestParams {
+    init { require(mode == "openai/form") }
+}
+
+@Serializable
+internal data class McpServerElicitationRequestParamsUrl(
+    @SerialName("serverName")
+    public val serverName: String,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("elicitationId")
+    public val elicitationId: String,
+    @SerialName("message")
+    public val message: String,
+    @SerialName("url")
+    public val url: String,
+    @SerialName("turnId")
+    public val turnId: String? = null,
+    @SerialName("_meta")
+    public val _meta: JsonElement? = null,
+    @SerialName("mode")
+    public val mode: String = "url",
+) : McpServerElicitationRequestParams {
+    init { require(mode == "url") }
+}
+
+internal object McpServerElicitationRequestParamsSerializer : JsonContentPolymorphicSerializer<McpServerElicitationRequestParams>(McpServerElicitationRequestParams::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<McpServerElicitationRequestParams> =
+        when (element.jsonObject["mode"]?.jsonPrimitive?.content) {
+            "form" -> McpServerElicitationRequestParamsForm.serializer()
+            "openai/form" -> McpServerElicitationRequestParamsOpenaiForm.serializer()
+            "url" -> McpServerElicitationRequestParamsUrl.serializer()
+            else -> error("Unknown McpServerElicitationRequestParams mode")
+        }
+}
+
+@Serializable
+internal data class McpServerElicitationRequestResponse(
+    @SerialName("action")
+    public val action: McpServerElicitationAction,
+    @SerialName("_meta")
+    public val _meta: JsonElement? = null,
+    @SerialName("content")
+    public val content: JsonElement? = null,
 )
 
-@Serializable(with = ParsedCommandSerializer::class)
-internal sealed interface ParsedCommand
-
 @Serializable
-internal data class ParsedCommandReadParsedCommand(
-    @SerialName("cmd")
-    public val cmd: String,
+internal data class McpServerInfo(
     @SerialName("name")
     public val name: String,
-    @SerialName("path")
-    public val path: String,
-    @SerialName("type")
-    public val type: String = "read",
-) : ParsedCommand {
-    init { require(type == "read") }
+    @SerialName("version")
+    public val version: String,
+    @SerialName("description")
+    public val description: String? = null,
+    @SerialName("icons")
+    public val icons: List<JsonElement>? = null,
+    @SerialName("title")
+    public val title: String? = null,
+    @SerialName("websiteUrl")
+    public val websiteUrl: String? = null,
+)
+
+@Serializable
+internal data class McpServerMigration(
+    @SerialName("name")
+    public val name: String,
+)
+
+@Serializable
+internal enum class McpServerOauthClientRegistration {
+    @SerialName("auto") AUTO,
+    @SerialName("cimd") CIMD,
+    @SerialName("dcr") DCR,
 }
 
 @Serializable
-internal data class ParsedCommandListFilesParsedCommand(
-    @SerialName("cmd")
-    public val cmd: String,
-    @SerialName("path")
-    public val path: String? = null,
-    @SerialName("type")
-    public val type: String = "list_files",
-) : ParsedCommand {
-    init { require(type == "list_files") }
+internal data class McpServerOauthLoginCompletedNotification(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("success")
+    public val success: Boolean,
+    @SerialName("error")
+    public val error: String? = null,
+    @SerialName("threadId")
+    public val threadId: String? = null,
+)
+
+@Serializable
+internal data class McpServerOauthLoginParams(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("clientRegistration")
+    public val clientRegistration: McpServerOauthClientRegistration? = null,
+    @SerialName("scopes")
+    public val scopes: List<String>? = null,
+    @SerialName("threadId")
+    public val threadId: String? = null,
+    @SerialName("timeoutSecs")
+    public val timeoutSecs: Long? = null,
+)
+
+@Serializable
+internal data class McpServerOauthLoginResponse(
+    @SerialName("authorizationUrl")
+    public val authorizationUrl: String,
+)
+
+@Serializable
+internal class McpServerRefreshResponse
+
+@Serializable
+internal enum class McpServerStartupFailureReason {
+    @SerialName("reauthenticationRequired") REAUTHENTICATION_REQUIRED,
 }
 
 @Serializable
-internal data class ParsedCommandSearchParsedCommand(
-    @SerialName("cmd")
-    public val cmd: String,
-    @SerialName("path")
-    public val path: String? = null,
-    @SerialName("query")
-    public val query: String? = null,
-    @SerialName("type")
-    public val type: String = "search",
-) : ParsedCommand {
-    init { require(type == "search") }
+internal enum class McpServerStartupState {
+    @SerialName("starting") STARTING,
+    @SerialName("ready") READY,
+    @SerialName("failed") FAILED,
+    @SerialName("cancelled") CANCELLED,
 }
+
+@Serializable
+internal data class McpServerStatus(
+    @SerialName("authStatus")
+    public val authStatus: McpAuthStatus,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("resourceTemplates")
+    public val resourceTemplates: List<ResourceTemplate>,
+    @SerialName("resources")
+    public val resources: List<Resource>,
+    @SerialName("tools")
+    public val tools: Map<String, Tool>,
+    @SerialName("pluginId")
+    public val pluginId: String? = null,
+    @SerialName("serverInfo")
+    public val serverInfo: McpServerInfo? = null,
+)

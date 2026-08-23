@@ -13,217 +13,207 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class McpResourceReadResponse(
-    @SerialName("contents")
-    public val contents: List<ResourceContent>,
-)
-
-@Serializable
-internal enum class McpServerElicitationAction {
-    @SerialName("accept") ACCEPT,
-    @SerialName("decline") DECLINE,
-    @SerialName("cancel") CANCEL,
-}
-
-@Serializable(with = McpServerElicitationRequestParamsSerializer::class)
-internal sealed interface McpServerElicitationRequestParams
-
-@Serializable
-internal data class McpServerElicitationRequestParamsForm(
-    @SerialName("serverName")
-    public val serverName: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("message")
-    public val message: String,
-    @SerialName("requestedSchema")
-    public val requestedSchema: McpElicitationSchema,
-    @SerialName("turnId")
-    public val turnId: String? = null,
-    @SerialName("_meta")
-    public val _meta: JsonElement? = null,
-    @SerialName("mode")
-    public val mode: String = "form",
-) : McpServerElicitationRequestParams {
-    init { require(mode == "form") }
+internal data class LoginAccountParamsChatgptDeviceCode(
+    @SerialName("type")
+    public val type: String = "chatgptDeviceCode",
+) : LoginAccountParams {
+    init { require(type == "chatgptDeviceCode") }
 }
 
 @Serializable
-internal data class McpServerElicitationRequestParamsOpenaiForm(
-    @SerialName("serverName")
-    public val serverName: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("message")
-    public val message: String,
-    @SerialName("requestedSchema")
-    public val requestedSchema: JsonElement,
-    @SerialName("turnId")
-    public val turnId: String? = null,
-    @SerialName("_meta")
-    public val _meta: JsonElement? = null,
-    @SerialName("mode")
-    public val mode: String = "openai/form",
-) : McpServerElicitationRequestParams {
-    init { require(mode == "openai/form") }
+internal data class LoginAccountParamsChatgptAuthTokens(
+    @SerialName("accessToken")
+    public val accessToken: String,
+    @SerialName("chatgptAccountId")
+    public val chatgptAccountId: String,
+    @SerialName("chatgptPlanType")
+    public val chatgptPlanType: String? = null,
+    @SerialName("type")
+    public val type: String = "chatgptAuthTokens",
+) : LoginAccountParams {
+    init { require(type == "chatgptAuthTokens") }
 }
 
 @Serializable
-internal data class McpServerElicitationRequestParamsUrl(
-    @SerialName("serverName")
-    public val serverName: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("elicitationId")
-    public val elicitationId: String,
-    @SerialName("message")
-    public val message: String,
-    @SerialName("url")
-    public val url: String,
-    @SerialName("turnId")
-    public val turnId: String? = null,
-    @SerialName("_meta")
-    public val _meta: JsonElement? = null,
-    @SerialName("mode")
-    public val mode: String = "url",
-) : McpServerElicitationRequestParams {
-    init { require(mode == "url") }
+internal data class LoginAccountParamsAmazonBedrock(
+    @SerialName("apiKey")
+    public val apiKey: String,
+    @SerialName("region")
+    public val region: String,
+    @SerialName("type")
+    public val type: String = "amazonBedrock",
+) : LoginAccountParams {
+    init { require(type == "amazonBedrock") }
 }
 
-internal object McpServerElicitationRequestParamsSerializer : JsonContentPolymorphicSerializer<McpServerElicitationRequestParams>(McpServerElicitationRequestParams::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<McpServerElicitationRequestParams> =
-        when (element.jsonObject["mode"]?.jsonPrimitive?.content) {
-            "form" -> McpServerElicitationRequestParamsForm.serializer()
-            "openai/form" -> McpServerElicitationRequestParamsOpenaiForm.serializer()
-            "url" -> McpServerElicitationRequestParamsUrl.serializer()
-            else -> error("Unknown McpServerElicitationRequestParams mode")
+internal object LoginAccountParamsSerializer : JsonContentPolymorphicSerializer<LoginAccountParams>(LoginAccountParams::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<LoginAccountParams> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "apiKey" -> LoginAccountParamsApiKey.serializer()
+            "chatgpt" -> LoginAccountParamsChatgpt.serializer()
+            "chatgptDeviceCode" -> LoginAccountParamsChatgptDeviceCode.serializer()
+            "chatgptAuthTokens" -> LoginAccountParamsChatgptAuthTokens.serializer()
+            "amazonBedrock" -> LoginAccountParamsAmazonBedrock.serializer()
+            else -> error("Unknown LoginAccountParams type")
+        }
+}
+
+@Serializable(with = LoginAccountResponseSerializer::class)
+internal sealed interface LoginAccountResponse
+
+@Serializable
+internal data class LoginAccountResponseApiKey(
+    @SerialName("type")
+    public val type: String = "apiKey",
+) : LoginAccountResponse {
+    init { require(type == "apiKey") }
+}
+
+@Serializable
+internal data class LoginAccountResponseChatgpt(
+    @SerialName("authUrl")
+    public val authUrl: String,
+    @SerialName("loginId")
+    public val loginId: String,
+    @SerialName("type")
+    public val type: String = "chatgpt",
+) : LoginAccountResponse {
+    init { require(type == "chatgpt") }
+}
+
+@Serializable
+internal data class LoginAccountResponseChatgptDeviceCode(
+    @SerialName("loginId")
+    public val loginId: String,
+    @SerialName("userCode")
+    public val userCode: String,
+    @SerialName("verificationUrl")
+    public val verificationUrl: String,
+    @SerialName("type")
+    public val type: String = "chatgptDeviceCode",
+) : LoginAccountResponse {
+    init { require(type == "chatgptDeviceCode") }
+}
+
+@Serializable
+internal data class LoginAccountResponseChatgptAuthTokens(
+    @SerialName("type")
+    public val type: String = "chatgptAuthTokens",
+) : LoginAccountResponse {
+    init { require(type == "chatgptAuthTokens") }
+}
+
+@Serializable
+internal data class LoginAccountResponseAmazonBedrock(
+    @SerialName("type")
+    public val type: String = "amazonBedrock",
+) : LoginAccountResponse {
+    init { require(type == "amazonBedrock") }
+}
+
+internal object LoginAccountResponseSerializer : JsonContentPolymorphicSerializer<LoginAccountResponse>(LoginAccountResponse::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<LoginAccountResponse> =
+        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
+            "apiKey" -> LoginAccountResponseApiKey.serializer()
+            "chatgpt" -> LoginAccountResponseChatgpt.serializer()
+            "chatgptDeviceCode" -> LoginAccountResponseChatgptDeviceCode.serializer()
+            "chatgptAuthTokens" -> LoginAccountResponseChatgptAuthTokens.serializer()
+            "amazonBedrock" -> LoginAccountResponseAmazonBedrock.serializer()
+            else -> error("Unknown LoginAccountResponse type")
         }
 }
 
 @Serializable
-internal data class McpServerElicitationRequestResponse(
-    @SerialName("action")
-    public val action: McpServerElicitationAction,
-    @SerialName("_meta")
-    public val _meta: JsonElement? = null,
-    @SerialName("content")
-    public val content: JsonElement? = null,
-)
-
-@Serializable
-internal data class McpServerInfo(
-    @SerialName("name")
-    public val name: String,
-    @SerialName("version")
-    public val version: String,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("icons")
-    public val icons: List<JsonElement>? = null,
-    @SerialName("title")
-    public val title: String? = null,
-    @SerialName("websiteUrl")
-    public val websiteUrl: String? = null,
-)
-
-@Serializable
-internal data class McpServerMigration(
-    @SerialName("name")
-    public val name: String,
-)
-
-@Serializable
-internal data class McpServerOauthLoginCompletedNotification(
-    @SerialName("name")
-    public val name: String,
-    @SerialName("success")
-    public val success: Boolean,
-    @SerialName("error")
-    public val error: String? = null,
-    @SerialName("threadId")
-    public val threadId: String? = null,
-)
-
-@Serializable
-internal data class McpServerOauthLoginParams(
-    @SerialName("name")
-    public val name: String,
-    @SerialName("scopes")
-    public val scopes: List<String>? = null,
-    @SerialName("threadId")
-    public val threadId: String? = null,
-    @SerialName("timeoutSecs")
-    public val timeoutSecs: Long? = null,
-)
-
-@Serializable
-internal data class McpServerOauthLoginResponse(
-    @SerialName("authorizationUrl")
-    public val authorizationUrl: String,
-)
-
-@Serializable
-internal class McpServerRefreshResponse
-
-@Serializable
-internal enum class McpServerStartupFailureReason {
-    @SerialName("reauthenticationRequired") REAUTHENTICATION_REQUIRED,
+internal enum class LoginAppBrand {
+    @SerialName("codex") CODEX,
+    @SerialName("chatgpt") CHATGPT,
 }
 
 @Serializable
-internal enum class McpServerStartupState {
-    @SerialName("starting") STARTING,
-    @SerialName("ready") READY,
-    @SerialName("failed") FAILED,
-    @SerialName("cancelled") CANCELLED,
-}
+internal class LogoutAccountResponse
 
 @Serializable
-internal data class McpServerStatus(
-    @SerialName("authStatus")
-    public val authStatus: McpAuthStatus,
-    @SerialName("name")
-    public val name: String,
-    @SerialName("resourceTemplates")
-    public val resourceTemplates: List<ResourceTemplate>,
-    @SerialName("resources")
-    public val resources: List<Resource>,
-    @SerialName("tools")
-    public val tools: Map<String, Tool>,
-    @SerialName("serverInfo")
-    public val serverInfo: McpServerInfo? = null,
+internal data class ManagedHooksRequirements(
+    @SerialName("PermissionRequest")
+    public val PermissionRequest: List<ConfiguredHookMatcherGroup>,
+    @SerialName("PostCompact")
+    public val PostCompact: List<ConfiguredHookMatcherGroup>,
+    @SerialName("PostToolUse")
+    public val PostToolUse: List<ConfiguredHookMatcherGroup>,
+    @SerialName("PreCompact")
+    public val PreCompact: List<ConfiguredHookMatcherGroup>,
+    @SerialName("PreToolUse")
+    public val PreToolUse: List<ConfiguredHookMatcherGroup>,
+    @SerialName("SessionStart")
+    public val SessionStart: List<ConfiguredHookMatcherGroup>,
+    @SerialName("Stop")
+    public val Stop: List<ConfiguredHookMatcherGroup>,
+    @SerialName("SubagentStart")
+    public val SubagentStart: List<ConfiguredHookMatcherGroup>,
+    @SerialName("SubagentStop")
+    public val SubagentStop: List<ConfiguredHookMatcherGroup>,
+    @SerialName("UserPromptSubmit")
+    public val UserPromptSubmit: List<ConfiguredHookMatcherGroup>,
+    @SerialName("SessionEnd")
+    public val SessionEnd: List<ConfiguredHookMatcherGroup>? = null,
+    @SerialName("managedDir")
+    public val managedDir: String? = null,
+    @SerialName("windowsManagedDir")
+    public val windowsManagedDir: String? = null,
 )
 
 @Serializable
-internal enum class McpServerStatusDetail {
-    @SerialName("full") FULL,
-    @SerialName("toolsAndAuthOnly") TOOLS_AND_AUTH_ONLY,
-}
-
-@Serializable
-internal data class McpServerStatusUpdatedNotification(
-    @SerialName("name")
-    public val name: String,
-    @SerialName("status")
-    public val status: McpServerStartupState,
-    @SerialName("error")
-    public val error: String? = null,
-    @SerialName("failureReason")
-    public val failureReason: McpServerStartupFailureReason? = null,
-    @SerialName("threadId")
-    public val threadId: String? = null,
+internal data class MarketplaceAddParams(
+    @SerialName("source")
+    public val source: String,
+    @SerialName("refName")
+    public val refName: String? = null,
+    @SerialName("sparsePaths")
+    public val sparsePaths: List<String>? = null,
 )
 
 @Serializable
-internal data class McpServerToolCallParams(
-    @SerialName("server")
-    public val server: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("tool")
-    public val tool: String,
-    @SerialName("_meta")
-    public val _meta: JsonElement? = null,
-    @SerialName("arguments")
-    public val arguments: JsonElement? = null,
+internal data class MarketplaceAddResponse(
+    @SerialName("alreadyAdded")
+    public val alreadyAdded: Boolean,
+    @SerialName("installedRoot")
+    public val installedRoot: AbsolutePathBuf,
+    @SerialName("marketplaceName")
+    public val marketplaceName: String,
+)
+
+@Serializable
+internal data class MarketplaceInterface(
+    @SerialName("displayName")
+    public val displayName: String? = null,
+)
+
+@Serializable
+internal data class MarketplaceLoadErrorInfo(
+    @SerialName("marketplacePath")
+    public val marketplacePath: AbsolutePathBuf,
+    @SerialName("message")
+    public val message: String,
+)
+
+@Serializable
+internal data class MarketplaceRemoveParams(
+    @SerialName("marketplaceName")
+    public val marketplaceName: String,
+)
+
+@Serializable
+internal data class MarketplaceRemoveResponse(
+    @SerialName("marketplaceName")
+    public val marketplaceName: String,
+    @SerialName("installedRoot")
+    public val installedRoot: AbsolutePathBuf? = null,
+)
+
+@Serializable
+internal data class MarketplaceUpgradeErrorInfo(
+    @SerialName("marketplaceName")
+    public val marketplaceName: String,
+    @SerialName("message")
+    public val message: String,
 )

@@ -80,7 +80,7 @@ class IosCodexRuntimeTest {
                     host.selectWorkspace(
                         IosCodexWorkspaceSelection(NSURL.fileURLWithPath(test.workspace)),
                     )
-                    assertIs<CodexHostState.Ready>(host.state.value)
+                    assertIs<CodexHostState.Ready>(host.lifecycleState.value)
                 } finally {
                     host.close()
                     scope.cancel()

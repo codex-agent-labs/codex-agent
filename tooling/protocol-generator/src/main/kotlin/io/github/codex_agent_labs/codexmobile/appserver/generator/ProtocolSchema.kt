@@ -1,5 +1,6 @@
 package io.github.codex_agent_labs.codexmobile.appserver.generator
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -184,10 +185,25 @@ internal fun field(body: String, name: String): String? = Regex("(?m)^\\s*$name:
 internal fun String.rustType(): String = replace(Regex("#\\[[^]]+]\\s*"), "")
     .removePrefix("v1::")
     .removePrefix("v2::")
-    .let { if (it == "()" || it == "Option<()>") "Unit" else it }
+    .let { type ->
+        when {
+            type == "()" || type == "Option<()>" -> "Unit"
+            type.startsWith("Nullable") -> type.removePrefix("Nullable") + "?"
+            else -> type
+        }
+    }
 
-internal fun JsonObject.schemaTypeName(): String = get("\$ref")?.jsonPrimitive?.content
-    ?.removePrefix("#/definitions/")
-    ?.substringAfterLast('/')
-    ?.also { check(it.isNotBlank()) { "Empty schema reference" } }
-    ?: if (get("type")?.jsonPrimitive?.content == "null") "Unit" else error("Route params have no named type")
+internal fun JsonObject.schemaTypeName(): String {
+    get("\$ref")?.jsonPrimitive?.content?.let { reference ->
+        return reference.removePrefix("#/definitions/").substringAfterLast('/')
+            .also { check(it.isNotBlank()) { "Empty schema reference" } }
+    }
+    if (get("type")?.jsonPrimitive?.content == "null") return "Unit"
+    val variants = (get("anyOf") ?: get("oneOf")) as? JsonArray
+    val nonNull = variants?.mapNotNull { it as? JsonObject }
+        ?.filterNot { it.get("type")?.jsonPrimitive?.content == "null" }
+    if (variants != null && nonNull?.size == 1 && nonNull.size < variants.size) {
+        return nonNull.single().schemaTypeName().nullableIf(true)
+    }
+    error("Route params have no named type")
+}

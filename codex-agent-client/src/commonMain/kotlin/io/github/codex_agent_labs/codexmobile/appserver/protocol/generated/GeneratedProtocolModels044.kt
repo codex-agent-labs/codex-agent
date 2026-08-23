@@ -12,208 +12,217 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-internal object ThreadStatusSerializer : JsonContentPolymorphicSerializer<ThreadStatus>(ThreadStatus::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ThreadStatus> =
+@Serializable
+internal data class ThreadItemSubAgentActivityThreadItem(
+    @SerialName("agentPath")
+    public val agentPath: String,
+    @SerialName("agentThreadId")
+    public val agentThreadId: String,
+    @SerialName("id")
+    public val id: String,
+    @SerialName("kind")
+    public val kind: SubAgentActivityKind,
+    @SerialName("type")
+    public val type: String = "subAgentActivity",
+) : ThreadItem {
+    init { require(type == "subAgentActivity") }
+}
+
+@Serializable
+internal data class ThreadItemWebSearchThreadItem(
+    @SerialName("id")
+    public val id: String,
+    @SerialName("query")
+    public val query: String,
+    @SerialName("action")
+    public val action: WebSearchAction? = null,
+    @SerialName("results")
+    public val results: List<JsonElement>? = null,
+    @SerialName("type")
+    public val type: String = "webSearch",
+) : ThreadItem {
+    init { require(type == "webSearch") }
+}
+
+@Serializable
+internal data class ThreadItemImageViewThreadItem(
+    @SerialName("id")
+    public val id: String,
+    @SerialName("path")
+    public val path: LegacyAppPathString,
+    @SerialName("type")
+    public val type: String = "imageView",
+) : ThreadItem {
+    init { require(type == "imageView") }
+}
+
+@Serializable
+internal data class ThreadItemSleepThreadItem(
+    @SerialName("durationMs")
+    public val durationMs: Long,
+    @SerialName("id")
+    public val id: String,
+    @SerialName("type")
+    public val type: String = "sleep",
+) : ThreadItem {
+    init { require(type == "sleep") }
+}
+
+@Serializable
+internal data class ThreadItemImageGenerationThreadItem(
+    @SerialName("id")
+    public val id: String,
+    @SerialName("result")
+    public val result: String,
+    @SerialName("status")
+    public val status: String,
+    @SerialName("failure")
+    public val failure: ImageGenerationFailure? = null,
+    @SerialName("revisedPrompt")
+    public val revisedPrompt: String? = null,
+    @SerialName("savedPath")
+    public val savedPath: AbsolutePathBuf? = null,
+    @SerialName("transparentBackground")
+    public val transparentBackground: Boolean? = null,
+    @SerialName("type")
+    public val type: String = "imageGeneration",
+) : ThreadItem {
+    init { require(type == "imageGeneration") }
+}
+
+@Serializable
+internal data class ThreadItemEnteredReviewModeThreadItem(
+    @SerialName("id")
+    public val id: String,
+    @SerialName("review")
+    public val review: String,
+    @SerialName("type")
+    public val type: String = "enteredReviewMode",
+) : ThreadItem {
+    init { require(type == "enteredReviewMode") }
+}
+
+@Serializable
+internal data class ThreadItemExitedReviewModeThreadItem(
+    @SerialName("id")
+    public val id: String,
+    @SerialName("review")
+    public val review: String,
+    @SerialName("type")
+    public val type: String = "exitedReviewMode",
+) : ThreadItem {
+    init { require(type == "exitedReviewMode") }
+}
+
+@Serializable
+internal data class ThreadItemContextCompactionThreadItem(
+    @SerialName("id")
+    public val id: String,
+    @SerialName("type")
+    public val type: String = "contextCompaction",
+) : ThreadItem {
+    init { require(type == "contextCompaction") }
+}
+
+internal object ThreadItemSerializer : JsonContentPolymorphicSerializer<ThreadItem>(ThreadItem::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ThreadItem> =
         when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "notLoaded" -> ThreadStatusNotLoadedThreadStatus.serializer()
-            "idle" -> ThreadStatusIdleThreadStatus.serializer()
-            "systemError" -> ThreadStatusSystemErrorThreadStatus.serializer()
-            "active" -> ThreadStatusActiveThreadStatus.serializer()
-            else -> error("Unknown ThreadStatus type")
+            "userMessage" -> ThreadItemUserMessageThreadItem.serializer()
+            "hookPrompt" -> ThreadItemHookPromptThreadItem.serializer()
+            "agentMessage" -> ThreadItemAgentMessageThreadItem.serializer()
+            "plan" -> ThreadItemPlanThreadItem.serializer()
+            "reasoning" -> ThreadItemReasoningThreadItem.serializer()
+            "commandExecution" -> ThreadItemCommandExecutionThreadItem.serializer()
+            "fileChange" -> ThreadItemFileChangeThreadItem.serializer()
+            "mcpToolCall" -> ThreadItemMcpToolCallThreadItem.serializer()
+            "dynamicToolCall" -> ThreadItemDynamicToolCallThreadItem.serializer()
+            "collabAgentToolCall" -> ThreadItemCollabAgentToolCallThreadItem.serializer()
+            "subAgentActivity" -> ThreadItemSubAgentActivityThreadItem.serializer()
+            "webSearch" -> ThreadItemWebSearchThreadItem.serializer()
+            "imageView" -> ThreadItemImageViewThreadItem.serializer()
+            "sleep" -> ThreadItemSleepThreadItem.serializer()
+            "imageGeneration" -> ThreadItemImageGenerationThreadItem.serializer()
+            "enteredReviewMode" -> ThreadItemEnteredReviewModeThreadItem.serializer()
+            "exitedReviewMode" -> ThreadItemExitedReviewModeThreadItem.serializer()
+            "contextCompaction" -> ThreadItemContextCompactionThreadItem.serializer()
+            else -> error("Unknown ThreadItem type")
         }
 }
 
 @Serializable
-internal data class ThreadStatusChangedNotification(
-    @SerialName("status")
-    public val status: ThreadStatus,
-    @SerialName("threadId")
-    public val threadId: String,
-)
-
-@Serializable
-internal data class ThreadTokenUsage(
-    @SerialName("last")
-    public val last: TokenUsageBreakdown,
-    @SerialName("total")
-    public val total: TokenUsageBreakdown,
-    @SerialName("modelContextWindow")
-    public val modelContextWindow: Long? = null,
-)
-
-@Serializable
-internal data class ThreadTokenUsageUpdatedNotification(
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("tokenUsage")
-    public val tokenUsage: ThreadTokenUsage,
+internal data class ThreadItemEntry(
+    @SerialName("item")
+    public val item: ThreadItem,
     @SerialName("turnId")
     public val turnId: String,
 )
 
+internal typealias ThreadListCwdFilter = JsonElement
+
 @Serializable
-internal data class ThreadUnarchiveParams(
-    @SerialName("threadId")
-    public val threadId: String,
+internal data class ThreadListParams(
+    @SerialName("archived")
+    public val archived: Boolean? = null,
+    @SerialName("cursor")
+    public val cursor: String? = null,
+    @SerialName("cwd")
+    public val cwd: ThreadListCwdFilter? = null,
+    @SerialName("limit")
+    public val limit: Long? = null,
+    @SerialName("modelProviders")
+    public val modelProviders: List<String>? = null,
+    @SerialName("searchTerm")
+    public val searchTerm: String? = null,
+    @SerialName("sectionId")
+    public val sectionId: String? = null,
+    @SerialName("sortDirection")
+    public val sortDirection: SortDirection? = null,
+    @SerialName("sortKey")
+    public val sortKey: ThreadSortKey? = null,
+    @SerialName("sourceKinds")
+    public val sourceKinds: List<ThreadSourceKind>? = null,
+    @SerialName("useStateDbOnly")
+    public val useStateDbOnly: Boolean? = null,
 )
 
 @Serializable
-internal data class ThreadUnarchiveResponse(
-    @SerialName("thread")
-    public val thread: Thread,
+internal data class ThreadListResponse(
+    @SerialName("data")
+    public val data: List<Thread>,
+    @SerialName("backwardsCursor")
+    public val backwardsCursor: String? = null,
+    @SerialName("nextCursor")
+    public val nextCursor: String? = null,
 )
 
 @Serializable
-internal data class ThreadUnarchivedNotification(
-    @SerialName("threadId")
-    public val threadId: String,
+internal data class ThreadLoadedListParams(
+    @SerialName("cursor")
+    public val cursor: String? = null,
+    @SerialName("limit")
+    public val limit: Long? = null,
 )
 
 @Serializable
-internal data class ThreadUnsubscribeParams(
-    @SerialName("threadId")
-    public val threadId: String,
+internal data class ThreadLoadedListResponse(
+    @SerialName("data")
+    public val data: List<String>,
+    @SerialName("nextCursor")
+    public val nextCursor: String? = null,
 )
 
 @Serializable
-internal data class ThreadUnsubscribeResponse(
-    @SerialName("status")
-    public val status: ThreadUnsubscribeStatus,
-)
-
-@Serializable
-internal enum class ThreadUnsubscribeStatus {
-    @SerialName("notLoaded") NOT_LOADED,
-    @SerialName("notSubscribed") NOT_SUBSCRIBED,
-    @SerialName("unsubscribed") UNSUBSCRIBED,
+internal enum class ThreadMemoryMode {
+    @SerialName("enabled") ENABLED,
+    @SerialName("disabled") DISABLED,
 }
 
 @Serializable
-internal data class TokenUsageBreakdown(
-    @SerialName("cachedInputTokens")
-    public val cachedInputTokens: Long,
-    @SerialName("inputTokens")
-    public val inputTokens: Long,
-    @SerialName("outputTokens")
-    public val outputTokens: Long,
-    @SerialName("reasoningOutputTokens")
-    public val reasoningOutputTokens: Long,
-    @SerialName("totalTokens")
-    public val totalTokens: Long,
-    @SerialName("cacheWriteInputTokens")
-    public val cacheWriteInputTokens: Long? = null,
-)
-
-@Serializable
-internal data class Tool(
-    @SerialName("inputSchema")
-    public val inputSchema: JsonElement,
-    @SerialName("name")
-    public val name: String,
-    @SerialName("_meta")
-    public val _meta: JsonElement? = null,
-    @SerialName("annotations")
-    public val annotations: JsonElement? = null,
-    @SerialName("description")
-    public val description: String? = null,
-    @SerialName("icons")
-    public val icons: List<JsonElement>? = null,
-    @SerialName("outputSchema")
-    public val outputSchema: JsonElement? = null,
-    @SerialName("title")
-    public val title: String? = null,
-)
-
-@Serializable
-internal data class ToolRequestUserInputAnswer(
-    @SerialName("answers")
-    public val answers: List<String>,
-)
-
-@Serializable
-internal data class ToolRequestUserInputOption(
-    @SerialName("description")
-    public val description: String,
-    @SerialName("label")
-    public val label: String,
-)
-
-@Serializable
-internal data class ToolRequestUserInputParams(
-    @SerialName("itemId")
-    public val itemId: String,
-    @SerialName("questions")
-    public val questions: List<ToolRequestUserInputQuestion>,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
-    @SerialName("autoResolutionMs")
-    public val autoResolutionMs: Long? = null,
-)
-
-@Serializable
-internal data class ToolRequestUserInputQuestion(
-    @SerialName("header")
-    public val header: String,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("question")
-    public val question: String,
-    @SerialName("isOther")
-    public val isOther: Boolean? = null,
-    @SerialName("isSecret")
-    public val isSecret: Boolean? = null,
-    @SerialName("options")
-    public val options: List<ToolRequestUserInputOption>? = null,
-)
-
-@Serializable
-internal data class ToolRequestUserInputResponse(
-    @SerialName("answers")
-    public val answers: Map<String, ToolRequestUserInputAnswer>,
-)
-
-@Serializable
-internal data class ToolsV2(
-    @SerialName("web_search")
-    public val web_search: WebSearchToolConfig? = null,
-)
-
-@Serializable
-internal data class Turn(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("items")
-    public val items: List<ThreadItem>,
-    @SerialName("status")
-    public val status: TurnStatus,
-    @SerialName("completedAt")
-    public val completedAt: Long? = null,
-    @SerialName("durationMs")
-    public val durationMs: Long? = null,
-    @SerialName("error")
-    public val error: TurnError? = null,
-    @SerialName("itemsView")
-    public val itemsView: TurnItemsView? = null,
-    @SerialName("startedAt")
-    public val startedAt: Long? = null,
-)
-
-@Serializable
-internal data class TurnCompletedNotification(
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turn")
-    public val turn: Turn,
-)
-
-@Serializable
-internal data class TurnDiffUpdatedNotification(
-    @SerialName("diff")
-    public val diff: String,
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("turnId")
-    public val turnId: String,
+internal data class ThreadMetadataGitInfoUpdateParams(
+    @SerialName("branch")
+    public val branch: String? = null,
+    @SerialName("originUrl")
+    public val originUrl: String? = null,
+    @SerialName("sha")
+    public val sha: String? = null,
 )

@@ -13,6 +13,114 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
+internal data class ClientRequestWindowsSandboxSetupStartRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: WindowsSandboxSetupStartParams,
+    @SerialName("method")
+    public val method: String = "windowsSandbox/setupStart",
+) : ClientRequest {
+    init { require(method == "windowsSandbox/setupStart") }
+}
+
+@Serializable
+internal data class ClientRequestWindowsSandboxReadinessRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("method")
+    public val method: String = "windowsSandbox/readiness",
+    @SerialName("params")
+    public val params: JsonElement? = null,
+) : ClientRequest {
+    init { require(method == "windowsSandbox/readiness") }
+}
+
+@Serializable
+internal data class ClientRequestAccountLoginStartRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: LoginAccountParams,
+    @SerialName("method")
+    public val method: String = "account/login/start",
+) : ClientRequest {
+    init { require(method == "account/login/start") }
+}
+
+@Serializable
+internal data class ClientRequestAccountLoginCancelRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: CancelLoginAccountParams,
+    @SerialName("method")
+    public val method: String = "account/login/cancel",
+) : ClientRequest {
+    init { require(method == "account/login/cancel") }
+}
+
+@Serializable
+internal data class ClientRequestAccountLogoutRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("method")
+    public val method: String = "account/logout",
+    @SerialName("params")
+    public val params: JsonElement? = null,
+) : ClientRequest {
+    init { require(method == "account/logout") }
+}
+
+@Serializable
+internal data class ClientRequestAccountRateLimitsReadRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("method")
+    public val method: String = "account/rateLimits/read",
+    @SerialName("params")
+    public val params: JsonElement? = null,
+) : ClientRequest {
+    init { require(method == "account/rateLimits/read") }
+}
+
+@Serializable
+internal data class ClientRequestAccountRateLimitResetCreditConsumeRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ConsumeAccountRateLimitResetCreditParams,
+    @SerialName("method")
+    public val method: String = "account/rateLimitResetCredit/consume",
+) : ClientRequest {
+    init { require(method == "account/rateLimitResetCredit/consume") }
+}
+
+@Serializable
+internal data class ClientRequestAccountUsageReadRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("method")
+    public val method: String = "account/usage/read",
+    @SerialName("params")
+    public val params: GetAccountTokenUsageParams? = null,
+) : ClientRequest {
+    init { require(method == "account/usage/read") }
+}
+
+@Serializable
+internal data class ClientRequestAccountWorkspaceMessagesReadRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("method")
+    public val method: String = "account/workspaceMessages/read",
+    @SerialName("params")
+    public val params: JsonElement? = null,
+) : ClientRequest {
+    init { require(method == "account/workspaceMessages/read") }
+}
+
+@Serializable
 internal data class ClientRequestAccountSendAddCreditsNudgeEmailRequest(
     @SerialName("id")
     public val id: RequestId,
@@ -118,172 +226,4 @@ internal data class ClientRequestExternalAgentConfigImportRequest(
     public val method: String = "externalAgentConfig/import",
 ) : ClientRequest {
     init { require(method == "externalAgentConfig/import") }
-}
-
-@Serializable
-internal data class ClientRequestExternalAgentConfigImportReadHistoriesRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("method")
-    public val method: String = "externalAgentConfig/import/readHistories",
-    @SerialName("params")
-    public val params: JsonElement? = null,
-) : ClientRequest {
-    init { require(method == "externalAgentConfig/import/readHistories") }
-}
-
-@Serializable
-internal data class ClientRequestConfigValueWriteRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ConfigValueWriteParams,
-    @SerialName("method")
-    public val method: String = "config/value/write",
-) : ClientRequest {
-    init { require(method == "config/value/write") }
-}
-
-@Serializable
-internal data class ClientRequestConfigBatchWriteRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: ConfigBatchWriteParams,
-    @SerialName("method")
-    public val method: String = "config/batchWrite",
-) : ClientRequest {
-    init { require(method == "config/batchWrite") }
-}
-
-@Serializable
-internal data class ClientRequestConfigRequirementsReadRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("method")
-    public val method: String = "configRequirements/read",
-    @SerialName("params")
-    public val params: JsonElement? = null,
-) : ClientRequest {
-    init { require(method == "configRequirements/read") }
-}
-
-@Serializable
-internal data class ClientRequestAccountReadRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: GetAccountParams,
-    @SerialName("method")
-    public val method: String = "account/read",
-) : ClientRequest {
-    init { require(method == "account/read") }
-}
-
-@Serializable
-internal data class ClientRequestFuzzyFileSearchRequest(
-    @SerialName("id")
-    public val id: RequestId,
-    @SerialName("params")
-    public val params: FuzzyFileSearchParams,
-    @SerialName("method")
-    public val method: String = "fuzzyFileSearch",
-) : ClientRequest {
-    init { require(method == "fuzzyFileSearch") }
-}
-
-internal object ClientRequestSerializer : JsonContentPolymorphicSerializer<ClientRequest>(ClientRequest::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ClientRequest> =
-        when (element.jsonObject["method"]?.jsonPrimitive?.content) {
-            "initialize" -> ClientRequestInitializeRequest.serializer()
-            "thread/start" -> ClientRequestThreadStartRequest.serializer()
-            "thread/resume" -> ClientRequestThreadResumeRequest.serializer()
-            "thread/fork" -> ClientRequestThreadForkRequest.serializer()
-            "thread/archive" -> ClientRequestThreadArchiveRequest.serializer()
-            "thread/delete" -> ClientRequestThreadDeleteRequest.serializer()
-            "thread/unsubscribe" -> ClientRequestThreadUnsubscribeRequest.serializer()
-            "thread/name/set" -> ClientRequestThreadNameSetRequest.serializer()
-            "thread/goal/set" -> ClientRequestThreadGoalSetRequest.serializer()
-            "thread/goal/get" -> ClientRequestThreadGoalGetRequest.serializer()
-            "thread/goal/clear" -> ClientRequestThreadGoalClearRequest.serializer()
-            "thread/metadata/update" -> ClientRequestThreadMetadataUpdateRequest.serializer()
-            "thread/unarchive" -> ClientRequestThreadUnarchiveRequest.serializer()
-            "thread/compact/start" -> ClientRequestThreadCompactStartRequest.serializer()
-            "thread/shellCommand" -> ClientRequestThreadShellCommandRequest.serializer()
-            "thread/approveGuardianDeniedAction" -> ClientRequestThreadApproveGuardianDeniedActionRequest.serializer()
-            "thread/rollback" -> ClientRequestThreadRollbackRequest.serializer()
-            "thread/list" -> ClientRequestThreadListRequest.serializer()
-            "thread/loaded/list" -> ClientRequestThreadLoadedListRequest.serializer()
-            "thread/read" -> ClientRequestThreadReadRequest.serializer()
-            "thread/inject_items" -> ClientRequestThreadInjectItemsRequest.serializer()
-            "skills/list" -> ClientRequestSkillsListRequest.serializer()
-            "skills/extraRoots/set" -> ClientRequestSkillsExtraRootsSetRequest.serializer()
-            "hooks/list" -> ClientRequestHooksListRequest.serializer()
-            "marketplace/add" -> ClientRequestMarketplaceAddRequest.serializer()
-            "marketplace/remove" -> ClientRequestMarketplaceRemoveRequest.serializer()
-            "marketplace/upgrade" -> ClientRequestMarketplaceUpgradeRequest.serializer()
-            "plugin/list" -> ClientRequestPluginListRequest.serializer()
-            "plugin/installed" -> ClientRequestPluginInstalledRequest.serializer()
-            "plugin/read" -> ClientRequestPluginReadRequest.serializer()
-            "plugin/skill/read" -> ClientRequestPluginSkillReadRequest.serializer()
-            "plugin/share/save" -> ClientRequestPluginShareSaveRequest.serializer()
-            "plugin/share/updateTargets" -> ClientRequestPluginShareUpdateTargetsRequest.serializer()
-            "plugin/share/list" -> ClientRequestPluginShareListRequest.serializer()
-            "plugin/share/checkout" -> ClientRequestPluginShareCheckoutRequest.serializer()
-            "plugin/share/delete" -> ClientRequestPluginShareDeleteRequest.serializer()
-            "app/read" -> ClientRequestAppReadRequest.serializer()
-            "app/list" -> ClientRequestAppListRequest.serializer()
-            "app/installed" -> ClientRequestAppInstalledRequest.serializer()
-            "fs/readFile" -> ClientRequestFsReadFileRequest.serializer()
-            "fs/writeFile" -> ClientRequestFsWriteFileRequest.serializer()
-            "fs/createDirectory" -> ClientRequestFsCreateDirectoryRequest.serializer()
-            "fs/getMetadata" -> ClientRequestFsGetMetadataRequest.serializer()
-            "fs/readDirectory" -> ClientRequestFsReadDirectoryRequest.serializer()
-            "fs/remove" -> ClientRequestFsRemoveRequest.serializer()
-            "fs/copy" -> ClientRequestFsCopyRequest.serializer()
-            "fs/watch" -> ClientRequestFsWatchRequest.serializer()
-            "fs/unwatch" -> ClientRequestFsUnwatchRequest.serializer()
-            "skills/config/write" -> ClientRequestSkillsConfigWriteRequest.serializer()
-            "plugin/install" -> ClientRequestPluginInstallRequest.serializer()
-            "plugin/uninstall" -> ClientRequestPluginUninstallRequest.serializer()
-            "turn/start" -> ClientRequestTurnStartRequest.serializer()
-            "turn/steer" -> ClientRequestTurnSteerRequest.serializer()
-            "turn/interrupt" -> ClientRequestTurnInterruptRequest.serializer()
-            "review/start" -> ClientRequestReviewStartRequest.serializer()
-            "model/list" -> ClientRequestModelListRequest.serializer()
-            "modelProvider/capabilities/read" -> ClientRequestModelProviderCapabilitiesReadRequest.serializer()
-            "experimentalFeature/list" -> ClientRequestExperimentalFeatureListRequest.serializer()
-            "permissionProfile/list" -> ClientRequestPermissionProfileListRequest.serializer()
-            "experimentalFeature/enablement/set" -> ClientRequestExperimentalFeatureEnablementSetRequest.serializer()
-            "mcpServer/oauth/login" -> ClientRequestMcpServerOauthLoginRequest.serializer()
-            "config/mcpServer/reload" -> ClientRequestConfigMcpServerReloadRequest.serializer()
-            "mcpServerStatus/list" -> ClientRequestMcpServerStatusListRequest.serializer()
-            "mcpServer/resource/read" -> ClientRequestMcpServerResourceReadRequest.serializer()
-            "mcpServer/tool/call" -> ClientRequestMcpServerToolCallRequest.serializer()
-            "windowsSandbox/setupStart" -> ClientRequestWindowsSandboxSetupStartRequest.serializer()
-            "windowsSandbox/readiness" -> ClientRequestWindowsSandboxReadinessRequest.serializer()
-            "account/login/start" -> ClientRequestAccountLoginStartRequest.serializer()
-            "account/login/cancel" -> ClientRequestAccountLoginCancelRequest.serializer()
-            "account/logout" -> ClientRequestAccountLogoutRequest.serializer()
-            "account/rateLimits/read" -> ClientRequestAccountRateLimitsReadRequest.serializer()
-            "account/rateLimitResetCredit/consume" -> ClientRequestAccountRateLimitResetCreditConsumeRequest.serializer()
-            "account/usage/read" -> ClientRequestAccountUsageReadRequest.serializer()
-            "account/workspaceMessages/read" -> ClientRequestAccountWorkspaceMessagesReadRequest.serializer()
-            "account/sendAddCreditsNudgeEmail" -> ClientRequestAccountSendAddCreditsNudgeEmailRequest.serializer()
-            "feedback/upload" -> ClientRequestFeedbackUploadRequest.serializer()
-            "command/exec" -> ClientRequestCommandExecRequest.serializer()
-            "command/exec/write" -> ClientRequestCommandExecWriteRequest.serializer()
-            "command/exec/terminate" -> ClientRequestCommandExecTerminateRequest.serializer()
-            "command/exec/resize" -> ClientRequestCommandExecResizeRequest.serializer()
-            "config/read" -> ClientRequestConfigReadRequest.serializer()
-            "externalAgentConfig/detect" -> ClientRequestExternalAgentConfigDetectRequest.serializer()
-            "externalAgentConfig/import" -> ClientRequestExternalAgentConfigImportRequest.serializer()
-            "externalAgentConfig/import/readHistories" -> ClientRequestExternalAgentConfigImportReadHistoriesRequest.serializer()
-            "config/value/write" -> ClientRequestConfigValueWriteRequest.serializer()
-            "config/batchWrite" -> ClientRequestConfigBatchWriteRequest.serializer()
-            "configRequirements/read" -> ClientRequestConfigRequirementsReadRequest.serializer()
-            "account/read" -> ClientRequestAccountReadRequest.serializer()
-            "fuzzyFileSearch" -> ClientRequestFuzzyFileSearchRequest.serializer()
-            else -> error("Unknown ClientRequest method")
-        }
 }

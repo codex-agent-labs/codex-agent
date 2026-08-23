@@ -7,10 +7,10 @@ is allowed.
 
 ## Architecture
 
-The module builds OpenAI Codex `0.145.0` from revision
-`25af12f7e61572b0bc18ddb1008be543b91519b0` with Rust `1.95.0`. The source
+The module builds OpenAI Codex `0.149.0` from revision
+`758ef40f50c1a458425c7cfbf1eb12cbc07af0b0` with Rust `1.95.0`. The source
 archive is verified against SHA-256
-`42f627a7b32db41582c73a8eafd9ec4b35d6c3ff81bd3d4455cfd6224d79d329`
+`6481974e9740023493eda1f240005cb1507d6969f79d6f6aa97092f967f3f0fc`
 before extraction. Full provenance is in `native/provenance.json`.
 That record also fixes the archive byte count and SHA-256 values for the
 upstream `Cargo.lock`, adapter patch, bridge manifest/source, and public C
@@ -88,14 +88,16 @@ elicitation URLs. It does not provide a second client, authentication session,
 host coordinator, event broadcaster, or reducer.
 
 `CodexAgentObservation` provides typed, cancellation-safe `AsyncStream` views
-of the same public Kotlin state: `CodexHost.states`, the four `CodexAgent`
-streams, and `CodexConversation.states`. Terminating a Swift task closes its
-Kotlin collection token, so an abandoned stream does not retain a collector.
-There is no parallel Swift state model.
+of the same public Kotlin state: `CodexHost.lifecycleStates`, each stateful
+agent resource's `states`, `CodexConversations.activeConversations`, and
+`CodexConversation.states`. Terminating a Swift task closes its Kotlin
+collection token, so an abandoned stream does not retain a collector. There is
+no parallel Swift state model.
 
 `CodexAgentSwiftSupport` adds only the default operations that Kotlin default
-arguments cannot express naturally in Swift: `agent.authenticate()`,
-`agent.openConversation()`, and `conversation.send(_:)`. It also exposes
+arguments cannot express naturally in Swift:
+`agent.authentication.authenticate()`,
+`agent.conversations.open()`, and `conversation.send(_:)`. It also exposes
 `Error.codexFailure` for the stable failure carried by a thrown
 `CodexOperationException`. Advanced generated overloads remain available.
 
@@ -114,9 +116,10 @@ let host = CodexHost(
 )
 try await host.start()
 
-for await state in host.states {
+for await state in host.lifecycleStates {
     guard let ready = state as? CodexHostStateReady else { continue }
-    let conversation = try await ready.agent.openConversation()
+    try await ready.agent.authentication.authenticate()
+    let conversation = try await ready.agent.conversations.open()
     try await conversation.send("Hello")
     break
 }

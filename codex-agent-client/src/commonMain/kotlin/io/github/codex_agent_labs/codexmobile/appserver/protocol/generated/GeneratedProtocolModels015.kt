@@ -12,213 +12,210 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-internal object FileSystemPathSerializer : JsonContentPolymorphicSerializer<FileSystemPath>(FileSystemPath::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<FileSystemPath> =
+@Serializable
+internal data class ExternalAgentConfigImportHistoryRecordTypeResultParams(
+    @SerialName("failures")
+    public val failures: List<ExternalAgentConfigImportItemTypeFailure>,
+    @SerialName("itemType")
+    public val itemType: ExternalAgentConfigMigrationItemType,
+    @SerialName("successes")
+    public val successes: List<ExternalAgentConfigImportHistoryRecordSuccessParams>,
+)
+
+@Serializable
+internal data class ExternalAgentConfigImportItemTypeFailure(
+    @SerialName("failureStage")
+    public val failureStage: String,
+    @SerialName("itemType")
+    public val itemType: ExternalAgentConfigMigrationItemType,
+    @SerialName("message")
+    public val message: String,
+    @SerialName("cwd")
+    public val cwd: String? = null,
+    @SerialName("errorType")
+    public val errorType: String? = null,
+    @SerialName("source")
+    public val source: String? = null,
+    @SerialName("subErrorType")
+    public val subErrorType: String? = null,
+)
+
+@Serializable
+internal data class ExternalAgentConfigImportItemTypeSuccess(
+    @SerialName("itemType")
+    public val itemType: ExternalAgentConfigMigrationItemType,
+    @SerialName("cwd")
+    public val cwd: String? = null,
+    @SerialName("source")
+    public val source: String? = null,
+    @SerialName("target")
+    public val target: String? = null,
+    @SerialName("title")
+    public val title: String? = null,
+)
+
+@Serializable
+internal data class ExternalAgentConfigImportParams(
+    @SerialName("migrationItems")
+    public val migrationItems: List<ExternalAgentConfigMigrationItem>,
+    @SerialName("migrationSource")
+    public val migrationSource: String? = null,
+    @SerialName("providerId")
+    public val providerId: String? = null,
+    @SerialName("source")
+    public val source: String? = null,
+)
+
+@Serializable
+internal data class ExternalAgentConfigImportProgressNotification(
+    @SerialName("importId")
+    public val importId: String,
+    @SerialName("itemTypeResults")
+    public val itemTypeResults: List<ExternalAgentConfigImportTypeResult>,
+)
+
+@Serializable
+internal data class ExternalAgentConfigImportResponse(
+    @SerialName("importId")
+    public val importId: String,
+)
+
+@Serializable
+internal data class ExternalAgentConfigImportTypeResult(
+    @SerialName("failures")
+    public val failures: List<ExternalAgentConfigImportItemTypeFailure>,
+    @SerialName("itemType")
+    public val itemType: ExternalAgentConfigMigrationItemType,
+    @SerialName("successes")
+    public val successes: List<ExternalAgentConfigImportItemTypeSuccess>,
+)
+
+@Serializable
+internal data class ExternalAgentConfigMigrationItem(
+    @SerialName("description")
+    public val description: String,
+    @SerialName("itemType")
+    public val itemType: ExternalAgentConfigMigrationItemType,
+    @SerialName("cwd")
+    public val cwd: String? = null,
+    @SerialName("details")
+    public val details: MigrationDetails? = null,
+)
+
+@Serializable
+internal enum class ExternalAgentConfigMigrationItemType {
+    @SerialName("AGENTS_MD") AGENTS_MD,
+    @SerialName("CONFIG") CONFIG,
+    @SerialName("SKILLS") SKILLS,
+    @SerialName("PLUGINS") PLUGINS,
+    @SerialName("MCP_SERVER_CONFIG") MCP_SERVER_CONFIG,
+    @SerialName("SUBAGENTS") SUBAGENTS,
+    @SerialName("HOOKS") HOOKS,
+    @SerialName("COMMANDS") COMMANDS,
+    @SerialName("MEMORY") MEMORY,
+    @SerialName("SESSIONS") SESSIONS,
+}
+
+@Serializable
+internal data class ExternalAgentDetectedConnectorCandidate(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("sessionCount")
+    public val sessionCount: Long,
+    @SerialName("source")
+    public val source: ExternalAgentDetectedConnectorSource,
+)
+
+@Serializable
+internal enum class ExternalAgentDetectedConnectorSource {
+    @SerialName("remoteMcpServersConfig") REMOTE_MCP_SERVERS_CONFIG,
+    @SerialName("sessionToolUse") SESSION_TOOL_USE,
+}
+
+@Serializable
+internal data class ExternalAgentImportedConnectorCandidate(
+    @SerialName("name")
+    public val name: String,
+    @SerialName("sessionCount")
+    public val sessionCount: Long,
+    @SerialName("source")
+    public val source: ExternalAgentImportedConnectorSource,
+)
+
+@Serializable
+internal enum class ExternalAgentImportedConnectorSource {
+    @SerialName("remoteMcpServersConfig") REMOTE_MCP_SERVERS_CONFIG,
+}
+
+@Serializable
+internal data class FeedbackRequirements(
+    @SerialName("enabled")
+    public val enabled: Boolean? = null,
+)
+
+@Serializable
+internal data class FeedbackUploadParams(
+    @SerialName("classification")
+    public val classification: String,
+    @SerialName("extraLogFiles")
+    public val extraLogFiles: List<String>? = null,
+    @SerialName("includeLogs")
+    public val includeLogs: Boolean? = null,
+    @SerialName("reason")
+    public val reason: String? = null,
+    @SerialName("tags")
+    public val tags: Map<String, String>? = null,
+    @SerialName("threadId")
+    public val threadId: String? = null,
+)
+
+@Serializable
+internal data class FeedbackUploadResponse(
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable(with = FileChangeSerializer::class)
+internal sealed interface FileChange
+
+@Serializable
+internal data class FileChangeAddFileChange(
+    @SerialName("content")
+    public val content: String,
+    @SerialName("type")
+    public val type: String = "add",
+) : FileChange {
+    init { require(type == "add") }
+}
+
+@Serializable
+internal data class FileChangeDeleteFileChange(
+    @SerialName("content")
+    public val content: String,
+    @SerialName("type")
+    public val type: String = "delete",
+) : FileChange {
+    init { require(type == "delete") }
+}
+
+@Serializable
+internal data class FileChangeUpdateFileChange(
+    @SerialName("unified_diff")
+    public val unified_diff: String,
+    @SerialName("move_path")
+    public val move_path: String? = null,
+    @SerialName("type")
+    public val type: String = "update",
+) : FileChange {
+    init { require(type == "update") }
+}
+
+internal object FileChangeSerializer : JsonContentPolymorphicSerializer<FileChange>(FileChange::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<FileChange> =
         when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "path" -> FileSystemPathPathFileSystemPath.serializer()
-            "glob_pattern" -> FileSystemPathGlobPatternFileSystemPath.serializer()
-            "special" -> FileSystemPathSpecialFileSystemPath.serializer()
-            else -> error("Unknown FileSystemPath type")
+            "add" -> FileChangeAddFileChange.serializer()
+            "delete" -> FileChangeDeleteFileChange.serializer()
+            "update" -> FileChangeUpdateFileChange.serializer()
+            else -> error("Unknown FileChange type")
         }
 }
-
-@Serializable
-internal data class FileSystemSandboxEntry(
-    @SerialName("access")
-    public val access: FileSystemAccessMode,
-    @SerialName("path")
-    public val path: FileSystemPath,
-)
-
-@Serializable(with = FileSystemSpecialPathSerializer::class)
-internal sealed interface FileSystemSpecialPath
-
-@Serializable
-internal data class FileSystemSpecialPathRootFileSystemSpecialPath(
-    @SerialName("kind")
-    public val kind: String = "root",
-) : FileSystemSpecialPath {
-    init { require(kind == "root") }
-}
-
-@Serializable
-internal data class FileSystemSpecialPathMinimalFileSystemSpecialPath(
-    @SerialName("kind")
-    public val kind: String = "minimal",
-) : FileSystemSpecialPath {
-    init { require(kind == "minimal") }
-}
-
-@Serializable
-internal data class FileSystemSpecialPathKindFileSystemSpecialPath(
-    @SerialName("kind")
-    public val kind: String = "project_roots",
-    @SerialName("subpath")
-    public val subpath: LegacyAppPathString? = null,
-) : FileSystemSpecialPath {
-    init { require(kind == "project_roots") }
-}
-
-@Serializable
-internal data class FileSystemSpecialPathTmpdirFileSystemSpecialPath(
-    @SerialName("kind")
-    public val kind: String = "tmpdir",
-) : FileSystemSpecialPath {
-    init { require(kind == "tmpdir") }
-}
-
-@Serializable
-internal data class FileSystemSpecialPathSlashTmpFileSystemSpecialPath(
-    @SerialName("kind")
-    public val kind: String = "slash_tmp",
-) : FileSystemSpecialPath {
-    init { require(kind == "slash_tmp") }
-}
-
-@Serializable
-internal data class FileSystemSpecialPathUnknown(
-    @SerialName("path")
-    public val path: String,
-    @SerialName("kind")
-    public val kind: String = "unknown",
-    @SerialName("subpath")
-    public val subpath: LegacyAppPathString? = null,
-) : FileSystemSpecialPath {
-    init { require(kind == "unknown") }
-}
-
-internal object FileSystemSpecialPathSerializer : JsonContentPolymorphicSerializer<FileSystemSpecialPath>(FileSystemSpecialPath::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<FileSystemSpecialPath> =
-        when (element.jsonObject["kind"]?.jsonPrimitive?.content) {
-            "root" -> FileSystemSpecialPathRootFileSystemSpecialPath.serializer()
-            "minimal" -> FileSystemSpecialPathMinimalFileSystemSpecialPath.serializer()
-            "project_roots" -> FileSystemSpecialPathKindFileSystemSpecialPath.serializer()
-            "tmpdir" -> FileSystemSpecialPathTmpdirFileSystemSpecialPath.serializer()
-            "slash_tmp" -> FileSystemSpecialPathSlashTmpFileSystemSpecialPath.serializer()
-            "unknown" -> FileSystemSpecialPathUnknown.serializer()
-            else -> error("Unknown FileSystemSpecialPath kind")
-        }
-}
-
-@Serializable
-internal data class FileUpdateChange(
-    @SerialName("diff")
-    public val diff: String,
-    @SerialName("kind")
-    public val kind: PatchChangeKind,
-    @SerialName("path")
-    public val path: String,
-)
-
-internal typealias ForcedChatgptWorkspaceIds = JsonElement
-
-@Serializable
-internal enum class ForcedLoginMethod {
-    @SerialName("chatgpt") CHATGPT,
-    @SerialName("api") API,
-}
-
-@Serializable
-internal data class FsChangedNotification(
-    @SerialName("changedPaths")
-    public val changedPaths: List<AbsolutePathBuf>,
-    @SerialName("watchId")
-    public val watchId: String,
-)
-
-@Serializable
-internal data class FsCopyParams(
-    @SerialName("destinationPath")
-    public val destinationPath: AbsolutePathBuf,
-    @SerialName("sourcePath")
-    public val sourcePath: AbsolutePathBuf,
-    @SerialName("recursive")
-    public val recursive: Boolean? = null,
-)
-
-@Serializable
-internal class FsCopyResponse
-
-@Serializable
-internal data class FsCreateDirectoryParams(
-    @SerialName("path")
-    public val path: AbsolutePathBuf,
-    @SerialName("recursive")
-    public val recursive: Boolean? = null,
-)
-
-@Serializable
-internal class FsCreateDirectoryResponse
-
-@Serializable
-internal data class FsGetMetadataParams(
-    @SerialName("path")
-    public val path: AbsolutePathBuf,
-)
-
-@Serializable
-internal data class FsGetMetadataResponse(
-    @SerialName("createdAtMs")
-    public val createdAtMs: Long,
-    @SerialName("isDirectory")
-    public val isDirectory: Boolean,
-    @SerialName("isFile")
-    public val isFile: Boolean,
-    @SerialName("isSymlink")
-    public val isSymlink: Boolean,
-    @SerialName("modifiedAtMs")
-    public val modifiedAtMs: Long,
-)
-
-@Serializable
-internal data class FsReadDirectoryEntry(
-    @SerialName("fileName")
-    public val fileName: String,
-    @SerialName("isDirectory")
-    public val isDirectory: Boolean,
-    @SerialName("isFile")
-    public val isFile: Boolean,
-)
-
-@Serializable
-internal data class FsReadDirectoryParams(
-    @SerialName("path")
-    public val path: AbsolutePathBuf,
-)
-
-@Serializable
-internal data class FsReadDirectoryResponse(
-    @SerialName("entries")
-    public val entries: List<FsReadDirectoryEntry>,
-)
-
-@Serializable
-internal data class FsReadFileParams(
-    @SerialName("path")
-    public val path: AbsolutePathBuf,
-)
-
-@Serializable
-internal data class FsReadFileResponse(
-    @SerialName("dataBase64")
-    public val dataBase64: String,
-)
-
-@Serializable
-internal data class FsRemoveParams(
-    @SerialName("path")
-    public val path: AbsolutePathBuf,
-    @SerialName("force")
-    public val force: Boolean? = null,
-    @SerialName("recursive")
-    public val recursive: Boolean? = null,
-)
-
-@Serializable
-internal class FsRemoveResponse
-
-@Serializable
-internal data class FsUnwatchParams(
-    @SerialName("watchId")
-    public val watchId: String,
-)

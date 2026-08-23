@@ -12,214 +12,226 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+@Serializable(with = ServerRequestSerializer::class)
+internal sealed interface ServerRequest
+
 @Serializable
-internal enum class ThreadHistoryMode {
-    @SerialName("legacy") LEGACY,
-    @SerialName("paginated") PAGINATED,
+internal data class ServerRequestItemCommandExecutionRequestApprovalRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: CommandExecutionRequestApprovalParams,
+    @SerialName("method")
+    public val method: String = "item/commandExecution/requestApproval",
+) : ServerRequest {
+    init { require(method == "item/commandExecution/requestApproval") }
 }
 
-internal typealias ThreadId = String
+@Serializable
+internal data class ServerRequestItemFileChangeRequestApprovalRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: FileChangeRequestApprovalParams,
+    @SerialName("method")
+    public val method: String = "item/fileChange/requestApproval",
+) : ServerRequest {
+    init { require(method == "item/fileChange/requestApproval") }
+}
 
 @Serializable
-internal data class ThreadInjectItemsParams(
-    @SerialName("items")
-    public val items: List<JsonElement>,
+internal data class ServerRequestItemToolRequestUserInputRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ToolRequestUserInputParams,
+    @SerialName("method")
+    public val method: String = "item/tool/requestUserInput",
+) : ServerRequest {
+    init { require(method == "item/tool/requestUserInput") }
+}
+
+@Serializable
+internal data class ServerRequestMcpServerElicitationRequestRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: McpServerElicitationRequestParams,
+    @SerialName("method")
+    public val method: String = "mcpServer/elicitation/request",
+) : ServerRequest {
+    init { require(method == "mcpServer/elicitation/request") }
+}
+
+@Serializable
+internal data class ServerRequestItemPermissionsRequestApprovalRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: PermissionsRequestApprovalParams,
+    @SerialName("method")
+    public val method: String = "item/permissions/requestApproval",
+) : ServerRequest {
+    init { require(method == "item/permissions/requestApproval") }
+}
+
+@Serializable
+internal data class ServerRequestItemToolCallRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: DynamicToolCallParams,
+    @SerialName("method")
+    public val method: String = "item/tool/call",
+) : ServerRequest {
+    init { require(method == "item/tool/call") }
+}
+
+@Serializable
+internal data class ServerRequestAccountChatgptAuthTokensRefreshRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ChatgptAuthTokensRefreshParams,
+    @SerialName("method")
+    public val method: String = "account/chatgptAuthTokens/refresh",
+) : ServerRequest {
+    init { require(method == "account/chatgptAuthTokens/refresh") }
+}
+
+@Serializable
+internal data class ServerRequestAttestationGenerateRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: AttestationGenerateParams,
+    @SerialName("method")
+    public val method: String = "attestation/generate",
+) : ServerRequest {
+    init { require(method == "attestation/generate") }
+}
+
+@Serializable
+internal data class ServerRequestApplyPatchApprovalRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ApplyPatchApprovalParams,
+    @SerialName("method")
+    public val method: String = "applyPatchApproval",
+) : ServerRequest {
+    init { require(method == "applyPatchApproval") }
+}
+
+@Serializable
+internal data class ServerRequestExecCommandApprovalRequest(
+    @SerialName("id")
+    public val id: RequestId,
+    @SerialName("params")
+    public val params: ExecCommandApprovalParams,
+    @SerialName("method")
+    public val method: String = "execCommandApproval",
+) : ServerRequest {
+    init { require(method == "execCommandApproval") }
+}
+
+internal object ServerRequestSerializer : JsonContentPolymorphicSerializer<ServerRequest>(ServerRequest::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ServerRequest> =
+        when (element.jsonObject["method"]?.jsonPrimitive?.content) {
+            "item/commandExecution/requestApproval" -> ServerRequestItemCommandExecutionRequestApprovalRequest.serializer()
+            "item/fileChange/requestApproval" -> ServerRequestItemFileChangeRequestApprovalRequest.serializer()
+            "item/tool/requestUserInput" -> ServerRequestItemToolRequestUserInputRequest.serializer()
+            "mcpServer/elicitation/request" -> ServerRequestMcpServerElicitationRequestRequest.serializer()
+            "item/permissions/requestApproval" -> ServerRequestItemPermissionsRequestApprovalRequest.serializer()
+            "item/tool/call" -> ServerRequestItemToolCallRequest.serializer()
+            "account/chatgptAuthTokens/refresh" -> ServerRequestAccountChatgptAuthTokensRefreshRequest.serializer()
+            "attestation/generate" -> ServerRequestAttestationGenerateRequest.serializer()
+            "applyPatchApproval" -> ServerRequestApplyPatchApprovalRequest.serializer()
+            "execCommandApproval" -> ServerRequestExecCommandApprovalRequest.serializer()
+            else -> error("Unknown ServerRequest method")
+        }
+}
+
+@Serializable
+internal data class ServerRequestResolvedNotification(
+    @SerialName("requestId")
+    public val requestId: RequestId,
     @SerialName("threadId")
     public val threadId: String,
 )
 
 @Serializable
-internal class ThreadInjectItemsResponse
-
-@Serializable(with = ThreadItemSerializer::class)
-internal sealed interface ThreadItem
-
-@Serializable
-internal data class ThreadItemUserMessageThreadItem(
-    @SerialName("content")
-    public val content: List<UserInput>,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("clientId")
-    public val clientId: String? = null,
-    @SerialName("type")
-    public val type: String = "userMessage",
-) : ThreadItem {
-    init { require(type == "userMessage") }
-}
-
-@Serializable
-internal data class ThreadItemHookPromptThreadItem(
-    @SerialName("fragments")
-    public val fragments: List<HookPromptFragment>,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("type")
-    public val type: String = "hookPrompt",
-) : ThreadItem {
-    init { require(type == "hookPrompt") }
-}
-
-@Serializable
-internal data class ThreadItemAgentMessageThreadItem(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("text")
-    public val text: String,
-    @SerialName("memoryCitation")
-    public val memoryCitation: MemoryCitation? = null,
-    @SerialName("phase")
-    public val phase: MessagePhase? = null,
-    @SerialName("type")
-    public val type: String = "agentMessage",
-) : ThreadItem {
-    init { require(type == "agentMessage") }
-}
-
-@Serializable
-internal data class ThreadItemPlanThreadItem(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("text")
-    public val text: String,
-    @SerialName("type")
-    public val type: String = "plan",
-) : ThreadItem {
-    init { require(type == "plan") }
-}
-
-@Serializable
-internal data class ThreadItemReasoningThreadItem(
-    @SerialName("id")
-    public val id: String,
-    @SerialName("content")
-    public val content: List<String>? = null,
-    @SerialName("summary")
-    public val summary: List<String>? = null,
-    @SerialName("type")
-    public val type: String = "reasoning",
-) : ThreadItem {
-    init { require(type == "reasoning") }
-}
-
-@Serializable
-internal data class ThreadItemCommandExecutionThreadItem(
-    @SerialName("command")
-    public val command: String,
-    @SerialName("commandActions")
-    public val commandActions: List<CommandAction>,
+internal data class SessionMigration(
     @SerialName("cwd")
-    public val cwd: LegacyAppPathString,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("status")
-    public val status: CommandExecutionStatus,
-    @SerialName("aggregatedOutput")
-    public val aggregatedOutput: String? = null,
-    @SerialName("durationMs")
-    public val durationMs: Long? = null,
-    @SerialName("exitCode")
-    public val exitCode: Long? = null,
-    @SerialName("processId")
-    public val processId: String? = null,
-    @SerialName("source")
-    public val source: CommandExecutionSource? = null,
-    @SerialName("type")
-    public val type: String = "commandExecution",
-) : ThreadItem {
-    init { require(type == "commandExecution") }
-}
+    public val cwd: String,
+    @SerialName("path")
+    public val path: String,
+    @SerialName("title")
+    public val title: String? = null,
+)
+
+internal typealias SessionSource = JsonElement
 
 @Serializable
-internal data class ThreadItemFileChangeThreadItem(
-    @SerialName("changes")
-    public val changes: List<FileUpdateChange>,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("status")
-    public val status: PatchApplyStatus,
-    @SerialName("type")
-    public val type: String = "fileChange",
-) : ThreadItem {
-    init { require(type == "fileChange") }
-}
-
-@Serializable
-internal data class ThreadItemMcpToolCallThreadItem(
-    @SerialName("arguments")
-    public val arguments: JsonElement,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("server")
-    public val server: String,
-    @SerialName("status")
-    public val status: McpToolCallStatus,
-    @SerialName("tool")
-    public val tool: String,
-    @SerialName("appContext")
-    public val appContext: McpToolCallAppContext? = null,
-    @SerialName("durationMs")
-    public val durationMs: Long? = null,
-    @SerialName("error")
-    public val error: McpToolCallError? = null,
-    @SerialName("mcpAppResourceUri")
-    public val mcpAppResourceUri: String? = null,
-    @SerialName("pluginId")
-    public val pluginId: String? = null,
-    @SerialName("result")
-    public val result: McpToolCallResult? = null,
-    @SerialName("type")
-    public val type: String = "mcpToolCall",
-) : ThreadItem {
-    init { require(type == "mcpToolCall") }
-}
-
-@Serializable
-internal data class ThreadItemDynamicToolCallThreadItem(
-    @SerialName("arguments")
-    public val arguments: JsonElement,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("status")
-    public val status: DynamicToolCallStatus,
-    @SerialName("tool")
-    public val tool: String,
-    @SerialName("contentItems")
-    public val contentItems: List<DynamicToolCallOutputContentItem>? = null,
-    @SerialName("durationMs")
-    public val durationMs: Long? = null,
-    @SerialName("namespace")
-    public val namespace: String? = null,
-    @SerialName("success")
-    public val success: Boolean? = null,
-    @SerialName("type")
-    public val type: String = "dynamicToolCall",
-) : ThreadItem {
-    init { require(type == "dynamicToolCall") }
-}
-
-@Serializable
-internal data class ThreadItemCollabAgentToolCallThreadItem(
-    @SerialName("agentsStates")
-    public val agentsStates: Map<String, CollabAgentState>,
-    @SerialName("id")
-    public val id: String,
-    @SerialName("receiverThreadIds")
-    public val receiverThreadIds: List<String>,
-    @SerialName("senderThreadId")
-    public val senderThreadId: String,
-    @SerialName("status")
-    public val status: CollabAgentToolCallStatus,
-    @SerialName("tool")
-    public val tool: CollabAgentTool,
+internal data class Settings(
     @SerialName("model")
-    public val model: String? = null,
-    @SerialName("prompt")
-    public val prompt: String? = null,
-    @SerialName("reasoningEffort")
-    public val reasoningEffort: ReasoningEffort? = null,
-    @SerialName("type")
-    public val type: String = "collabAgentToolCall",
-) : ThreadItem {
-    init { require(type == "collabAgentToolCall") }
-}
+    public val model: String,
+    @SerialName("developer_instructions")
+    public val developer_instructions: String? = null,
+    @SerialName("reasoning_effort")
+    public val reasoning_effort: ReasoningEffort? = null,
+)
+
+@Serializable
+internal data class SkillDependencies(
+    @SerialName("tools")
+    public val tools: List<SkillToolDependency>,
+)
+
+@Serializable
+internal data class SkillErrorInfo(
+    @SerialName("message")
+    public val message: String,
+    @SerialName("path")
+    public val path: String,
+)
+
+@Serializable
+internal data class SkillInterface(
+    @SerialName("brandColor")
+    public val brandColor: String? = null,
+    @SerialName("defaultPrompt")
+    public val defaultPrompt: String? = null,
+    @SerialName("displayName")
+    public val displayName: String? = null,
+    @SerialName("iconLarge")
+    public val iconLarge: AbsolutePathBuf? = null,
+    @SerialName("iconLargeUrl")
+    public val iconLargeUrl: String? = null,
+    @SerialName("iconSmall")
+    public val iconSmall: AbsolutePathBuf? = null,
+    @SerialName("iconSmallUrl")
+    public val iconSmallUrl: String? = null,
+    @SerialName("shortDescription")
+    public val shortDescription: String? = null,
+)
+
+@Serializable
+internal data class SkillMetadata(
+    @SerialName("description")
+    public val description: String,
+    @SerialName("enabled")
+    public val enabled: Boolean,
+    @SerialName("name")
+    public val name: String,
+    @SerialName("path")
+    public val path: AbsolutePathBuf,
+    @SerialName("scope")
+    public val scope: SkillScope,
+    @SerialName("dependencies")
+    public val dependencies: SkillDependencies? = null,
+    @SerialName("interface")
+    public val interface_: SkillInterface? = null,
+    @SerialName("shortDescription")
+    public val shortDescription: String? = null,
+)

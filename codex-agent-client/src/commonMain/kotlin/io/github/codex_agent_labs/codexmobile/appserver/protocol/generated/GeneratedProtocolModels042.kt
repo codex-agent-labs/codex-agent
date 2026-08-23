@@ -13,175 +13,72 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class ThreadMetadataUpdateParams(
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("gitInfo")
-    public val gitInfo: ThreadMetadataGitInfoUpdateParams? = null,
-)
-
-@Serializable
-internal data class ThreadMetadataUpdateResponse(
-    @SerialName("thread")
-    public val thread: Thread,
-)
-
-@Serializable
-internal data class ThreadNameUpdatedNotification(
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("threadName")
-    public val threadName: String? = null,
-)
-
-@Serializable
-internal data class ThreadReadParams(
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("includeTurns")
-    public val includeTurns: Boolean? = null,
-)
-
-@Serializable
-internal data class ThreadReadResponse(
-    @SerialName("thread")
-    public val thread: Thread,
-)
-
-@Serializable
-internal data class ThreadRealtimeAudioChunk(
-    @SerialName("data")
-    public val data: String,
-    @SerialName("numChannels")
-    public val numChannels: Long,
-    @SerialName("sampleRate")
-    public val sampleRate: Long,
-    @SerialName("itemId")
-    public val itemId: String? = null,
-    @SerialName("samplesPerChannel")
-    public val samplesPerChannel: Long? = null,
-)
-
-@Serializable
-internal data class ThreadRealtimeClosedNotification(
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("reason")
-    public val reason: String? = null,
-)
-
-@Serializable
-internal data class ThreadRealtimeErrorNotification(
-    @SerialName("message")
-    public val message: String,
-    @SerialName("threadId")
-    public val threadId: String,
-)
-
-@Serializable
-internal data class ThreadRealtimeInitialItem(
-    @SerialName("role")
-    public val role: ConversationTextRole,
-    @SerialName("text")
-    public val text: String,
-)
-
-@Serializable
-internal data class ThreadRealtimeItemAddedNotification(
-    @SerialName("item")
-    public val item: JsonElement,
-    @SerialName("threadId")
-    public val threadId: String,
-)
-
-@Serializable
-internal data class ThreadRealtimeOutputAudioDeltaNotification(
-    @SerialName("audio")
-    public val audio: ThreadRealtimeAudioChunk,
-    @SerialName("threadId")
-    public val threadId: String,
-)
-
-@Serializable
-internal data class ThreadRealtimeSdpNotification(
-    @SerialName("sdp")
-    public val sdp: String,
-    @SerialName("threadId")
-    public val threadId: String,
-)
-
-@Serializable(with = ThreadRealtimeStartTransportSerializer::class)
-internal sealed interface ThreadRealtimeStartTransport
-
-@Serializable
-internal data class ThreadRealtimeStartTransportWebsocketThreadRealtimeStartTransport(
-    @SerialName("type")
-    public val type: String = "websocket",
-) : ThreadRealtimeStartTransport {
-    init { require(type == "websocket") }
+internal enum class ThreadActiveFlag {
+    @SerialName("waitingOnApproval") WAITING_ON_APPROVAL,
+    @SerialName("waitingOnUserInput") WAITING_ON_USER_INPUT,
 }
 
 @Serializable
-internal data class ThreadRealtimeStartTransportWebrtcThreadRealtimeStartTransport(
-    @SerialName("sdp")
-    public val sdp: String,
-    @SerialName("type")
-    public val type: String = "webrtc",
-) : ThreadRealtimeStartTransport {
-    init { require(type == "webrtc") }
-}
-
-internal object ThreadRealtimeStartTransportSerializer : JsonContentPolymorphicSerializer<ThreadRealtimeStartTransport>(ThreadRealtimeStartTransport::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ThreadRealtimeStartTransport> =
-        when (element.jsonObject["type"]?.jsonPrimitive?.content) {
-            "websocket" -> ThreadRealtimeStartTransportWebsocketThreadRealtimeStartTransport.serializer()
-            "webrtc" -> ThreadRealtimeStartTransportWebrtcThreadRealtimeStartTransport.serializer()
-            else -> error("Unknown ThreadRealtimeStartTransport type")
-        }
-}
-
-@Serializable
-internal data class ThreadRealtimeStartedNotification(
-    @SerialName("threadId")
-    public val threadId: String,
-    @SerialName("version")
-    public val version: RealtimeConversationVersion,
-    @SerialName("realtimeSessionId")
-    public val realtimeSessionId: String? = null,
-)
-
-@Serializable
-internal data class ThreadRealtimeTranscriptDeltaNotification(
-    @SerialName("delta")
-    public val delta: String,
-    @SerialName("role")
-    public val role: String,
+internal data class ThreadApproveGuardianDeniedActionParams(
+    @SerialName("event")
+    public val event: JsonElement,
     @SerialName("threadId")
     public val threadId: String,
 )
 
 @Serializable
-internal data class ThreadRealtimeTranscriptDoneNotification(
-    @SerialName("role")
-    public val role: String,
-    @SerialName("text")
-    public val text: String,
+internal class ThreadApproveGuardianDeniedActionResponse
+
+@Serializable
+internal data class ThreadArchiveParams(
     @SerialName("threadId")
     public val threadId: String,
 )
 
 @Serializable
-internal data class ThreadResumeInitialTurnsPageParams(
-    @SerialName("itemsView")
-    public val itemsView: TurnItemsView? = null,
-    @SerialName("limit")
-    public val limit: Long? = null,
-    @SerialName("sortDirection")
-    public val sortDirection: SortDirection? = null,
+internal class ThreadArchiveResponse
+
+@Serializable
+internal data class ThreadArchivedNotification(
+    @SerialName("threadId")
+    public val threadId: String,
 )
 
 @Serializable
-internal data class ThreadResumeParams(
+internal data class ThreadClosedNotification(
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ThreadCompactStartParams(
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal class ThreadCompactStartResponse
+
+@Serializable
+internal data class ThreadDeleteParams(
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal class ThreadDeleteResponse
+
+@Serializable
+internal data class ThreadDeletedNotification(
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal class ThreadExtra
+
+@Serializable
+internal data class ThreadForkParams(
     @SerialName("threadId")
     public val threadId: String,
     @SerialName("approvalPolicy")
@@ -196,20 +93,24 @@ internal data class ThreadResumeParams(
     public val cwd: String? = null,
     @SerialName("developerInstructions")
     public val developerInstructions: String? = null,
+    @SerialName("ephemeral")
+    public val ephemeral: Boolean? = null,
+    @SerialName("lastTurnId")
+    public val lastTurnId: String? = null,
     @SerialName("model")
     public val model: String? = null,
     @SerialName("modelProvider")
     public val modelProvider: String? = null,
-    @SerialName("personality")
-    public val personality: Personality? = null,
     @SerialName("sandbox")
     public val sandbox: SandboxMode? = null,
     @SerialName("serviceTier")
     public val serviceTier: String? = null,
+    @SerialName("threadSource")
+    public val threadSource: ThreadSource? = null,
 )
 
 @Serializable
-internal data class ThreadResumeResponse(
+internal data class ThreadForkResponse(
     @SerialName("approvalPolicy")
     public val approvalPolicy: AskForApproval,
     @SerialName("approvalsReviewer")
@@ -230,4 +131,92 @@ internal data class ThreadResumeResponse(
     public val reasoningEffort: ReasoningEffort? = null,
     @SerialName("serviceTier")
     public val serviceTier: String? = null,
+)
+
+@Serializable
+internal data class ThreadGoal(
+    @SerialName("createdAt")
+    public val createdAt: Long,
+    @SerialName("objective")
+    public val objective: String,
+    @SerialName("status")
+    public val status: ThreadGoalStatus,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("timeUsedSeconds")
+    public val timeUsedSeconds: Long,
+    @SerialName("tokensUsed")
+    public val tokensUsed: Long,
+    @SerialName("updatedAt")
+    public val updatedAt: Long,
+    @SerialName("tokenBudget")
+    public val tokenBudget: Long? = null,
+)
+
+@Serializable
+internal data class ThreadGoalClearParams(
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ThreadGoalClearResponse(
+    @SerialName("cleared")
+    public val cleared: Boolean,
+)
+
+@Serializable
+internal data class ThreadGoalClearedNotification(
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ThreadGoalGetParams(
+    @SerialName("threadId")
+    public val threadId: String,
+)
+
+@Serializable
+internal data class ThreadGoalGetResponse(
+    @SerialName("goal")
+    public val goal: ThreadGoal? = null,
+)
+
+@Serializable
+internal data class ThreadGoalSetParams(
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("objective")
+    public val objective: String? = null,
+    @SerialName("status")
+    public val status: ThreadGoalStatus? = null,
+    @SerialName("tokenBudget")
+    public val tokenBudget: Long? = null,
+)
+
+@Serializable
+internal data class ThreadGoalSetResponse(
+    @SerialName("goal")
+    public val goal: ThreadGoal,
+)
+
+@Serializable
+internal enum class ThreadGoalStatus {
+    @SerialName("active") ACTIVE,
+    @SerialName("paused") PAUSED,
+    @SerialName("blocked") BLOCKED,
+    @SerialName("usageLimited") USAGE_LIMITED,
+    @SerialName("budgetLimited") BUDGET_LIMITED,
+    @SerialName("complete") COMPLETE,
+}
+
+@Serializable
+internal data class ThreadGoalUpdatedNotification(
+    @SerialName("goal")
+    public val goal: ThreadGoal,
+    @SerialName("threadId")
+    public val threadId: String,
+    @SerialName("turnId")
+    public val turnId: String? = null,
 )

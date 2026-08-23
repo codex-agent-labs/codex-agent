@@ -59,7 +59,7 @@ class IosCodexRuntimeMetricsTest {
                 } else {
                     host.start()
                 }
-                check(host.state.value is CodexHostState.Ready)
+                check(host.lifecycleState.value is CodexHostState.Ready)
                 val startupMillis = startMark.elapsedNow().inWholeMilliseconds
                 assertTrue(startupMillis < 30_000, "startup took ${startupMillis}ms")
                 if (iteration == 0) {

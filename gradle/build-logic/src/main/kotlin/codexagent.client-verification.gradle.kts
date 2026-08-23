@@ -16,8 +16,8 @@ val verifyProtocolSource = tasks.register<VerifyProtocolSourceTask>("verifyProto
             "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated",
         ),
     )
-    expectedSchemaSha256.set("32b26f2ab3fb7a4a409db958f438f48b0ef106e3a01468f8618fdf65bc823cc4")
-    expectedCompleteSchemaSha256.set("8039a1222460b3846a3688c61eb4b2626b451d61b9c2b36b83fea0ce341ce0be")
+    expectedSchemaSha256.set("9b3de71a5a2ffc980b792a18aa8f8dec3f85f48829560222a0264fe494b679a9")
+    expectedCompleteSchemaSha256.set("02a4c63a638fdae4a5f6c3ad32a41a377b642c66f3abc84f6fc47c7f3d6074df")
 }
 
 tasks.register("updateProtocol") {

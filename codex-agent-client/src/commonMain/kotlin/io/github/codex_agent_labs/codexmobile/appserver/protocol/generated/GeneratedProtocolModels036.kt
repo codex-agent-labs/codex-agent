@@ -13,222 +13,217 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-internal data class ServerNotificationFuzzyFileSearchSessionCompletedNotification(
+internal data class ServerNotificationThreadGoalUpdatedNotification(
     @SerialName("params")
-    public val params: FuzzyFileSearchSessionCompletedNotification,
+    public val params: ThreadGoalUpdatedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "fuzzyFileSearch/sessionCompleted",
+    public val method: String = "thread/goal/updated",
 ) : ServerNotification {
-    init { require(method == "fuzzyFileSearch/sessionCompleted") }
+    init { require(method == "thread/goal/updated") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadRealtimeStartedNotification(
+internal data class ServerNotificationThreadGoalClearedNotification(
     @SerialName("params")
-    public val params: ThreadRealtimeStartedNotification,
+    public val params: ThreadGoalClearedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "thread/realtime/started",
+    public val method: String = "thread/goal/cleared",
 ) : ServerNotification {
-    init { require(method == "thread/realtime/started") }
+    init { require(method == "thread/goal/cleared") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadRealtimeItemAddedNotification(
+internal data class ServerNotificationThreadQueueChangedNotification(
     @SerialName("params")
-    public val params: ThreadRealtimeItemAddedNotification,
+    public val params: ThreadQueueChangedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "thread/realtime/itemAdded",
+    public val method: String = "thread/queue/changed",
 ) : ServerNotification {
-    init { require(method == "thread/realtime/itemAdded") }
+    init { require(method == "thread/queue/changed") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadRealtimeTranscriptDeltaNotification(
+internal data class ServerNotificationProjectChangedNotification(
     @SerialName("params")
-    public val params: ThreadRealtimeTranscriptDeltaNotification,
+    public val params: ProjectChangedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "thread/realtime/transcript/delta",
+    public val method: String = "project/changed",
 ) : ServerNotification {
-    init { require(method == "thread/realtime/transcript/delta") }
+    init { require(method == "project/changed") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadRealtimeTranscriptDoneNotification(
+internal data class ServerNotificationThreadProjectUpdatedNotification(
     @SerialName("params")
-    public val params: ThreadRealtimeTranscriptDoneNotification,
+    public val params: ThreadProjectUpdatedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "thread/realtime/transcript/done",
+    public val method: String = "thread/project/updated",
 ) : ServerNotification {
-    init { require(method == "thread/realtime/transcript/done") }
+    init { require(method == "thread/project/updated") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadRealtimeOutputAudioDeltaNotification(
+internal data class ServerNotificationThreadEnvironmentConnectedNotification(
     @SerialName("params")
-    public val params: ThreadRealtimeOutputAudioDeltaNotification,
+    public val params: EnvironmentConnectionNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "thread/realtime/outputAudio/delta",
+    public val method: String = "thread/environment/connected",
 ) : ServerNotification {
-    init { require(method == "thread/realtime/outputAudio/delta") }
+    init { require(method == "thread/environment/connected") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadRealtimeSdpNotification(
+internal data class ServerNotificationThreadEnvironmentDisconnectedNotification(
     @SerialName("params")
-    public val params: ThreadRealtimeSdpNotification,
+    public val params: EnvironmentConnectionNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "thread/realtime/sdp",
+    public val method: String = "thread/environment/disconnected",
 ) : ServerNotification {
-    init { require(method == "thread/realtime/sdp") }
+    init { require(method == "thread/environment/disconnected") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadRealtimeErrorNotification(
+internal data class ServerNotificationThreadSettingsUpdatedNotification(
     @SerialName("params")
-    public val params: ThreadRealtimeErrorNotification,
+    public val params: ThreadSettingsUpdatedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "thread/realtime/error",
+    public val method: String = "thread/settings/updated",
 ) : ServerNotification {
-    init { require(method == "thread/realtime/error") }
+    init { require(method == "thread/settings/updated") }
 }
 
 @Serializable
-internal data class ServerNotificationThreadRealtimeClosedNotification(
+internal data class ServerNotificationThreadTokenUsageUpdatedNotification(
     @SerialName("params")
-    public val params: ThreadRealtimeClosedNotification,
+    public val params: ThreadTokenUsageUpdatedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "thread/realtime/closed",
+    public val method: String = "thread/tokenUsage/updated",
 ) : ServerNotification {
-    init { require(method == "thread/realtime/closed") }
+    init { require(method == "thread/tokenUsage/updated") }
 }
 
 @Serializable
-internal data class ServerNotificationWindowsWorldWritableWarningNotification(
+internal data class ServerNotificationTurnStartedNotification(
     @SerialName("params")
-    public val params: WindowsWorldWritableWarningNotification,
+    public val params: TurnStartedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "windows/worldWritableWarning",
+    public val method: String = "turn/started",
 ) : ServerNotification {
-    init { require(method == "windows/worldWritableWarning") }
+    init { require(method == "turn/started") }
 }
 
 @Serializable
-internal data class ServerNotificationWindowsSandboxSetupCompletedNotification(
+internal data class ServerNotificationHookStartedNotification(
     @SerialName("params")
-    public val params: WindowsSandboxSetupCompletedNotification,
+    public val params: HookStartedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "windowsSandbox/setupCompleted",
+    public val method: String = "hook/started",
 ) : ServerNotification {
-    init { require(method == "windowsSandbox/setupCompleted") }
+    init { require(method == "hook/started") }
 }
 
 @Serializable
-internal data class ServerNotificationAccountLoginCompletedNotification(
+internal data class ServerNotificationTurnCompletedNotification(
     @SerialName("params")
-    public val params: AccountLoginCompletedNotification,
+    public val params: TurnCompletedNotification,
     @SerialName("emittedAtMs")
     public val emittedAtMs: Long? = null,
     @SerialName("method")
-    public val method: String = "account/login/completed",
+    public val method: String = "turn/completed",
 ) : ServerNotification {
-    init { require(method == "account/login/completed") }
+    init { require(method == "turn/completed") }
 }
 
-internal object ServerNotificationSerializer : JsonContentPolymorphicSerializer<ServerNotification>(ServerNotification::class) {
-    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ServerNotification> =
-        when (element.jsonObject["method"]?.jsonPrimitive?.content) {
-            "error" -> ServerNotificationErrorNotification.serializer()
-            "thread/started" -> ServerNotificationThreadStartedNotification.serializer()
-            "thread/status/changed" -> ServerNotificationThreadStatusChangedNotification.serializer()
-            "thread/archived" -> ServerNotificationThreadArchivedNotification.serializer()
-            "thread/deleted" -> ServerNotificationThreadDeletedNotification.serializer()
-            "thread/unarchived" -> ServerNotificationThreadUnarchivedNotification.serializer()
-            "thread/closed" -> ServerNotificationThreadClosedNotification.serializer()
-            "skills/changed" -> ServerNotificationSkillsChangedNotification.serializer()
-            "thread/name/updated" -> ServerNotificationThreadNameUpdatedNotification.serializer()
-            "thread/goal/updated" -> ServerNotificationThreadGoalUpdatedNotification.serializer()
-            "thread/goal/cleared" -> ServerNotificationThreadGoalClearedNotification.serializer()
-            "thread/environment/connected" -> ServerNotificationThreadEnvironmentConnectedNotification.serializer()
-            "thread/environment/disconnected" -> ServerNotificationThreadEnvironmentDisconnectedNotification.serializer()
-            "thread/settings/updated" -> ServerNotificationThreadSettingsUpdatedNotification.serializer()
-            "thread/tokenUsage/updated" -> ServerNotificationThreadTokenUsageUpdatedNotification.serializer()
-            "turn/started" -> ServerNotificationTurnStartedNotification.serializer()
-            "hook/started" -> ServerNotificationHookStartedNotification.serializer()
-            "turn/completed" -> ServerNotificationTurnCompletedNotification.serializer()
-            "hook/completed" -> ServerNotificationHookCompletedNotification.serializer()
-            "turn/diff/updated" -> ServerNotificationTurnDiffUpdatedNotification.serializer()
-            "turn/plan/updated" -> ServerNotificationTurnPlanUpdatedNotification.serializer()
-            "item/started" -> ServerNotificationItemStartedNotification.serializer()
-            "item/autoApprovalReview/started" -> ServerNotificationItemAutoApprovalReviewStartedNotification.serializer()
-            "item/autoApprovalReview/completed" -> ServerNotificationItemAutoApprovalReviewCompletedNotification.serializer()
-            "item/completed" -> ServerNotificationItemCompletedNotification.serializer()
-            "item/agentMessage/delta" -> ServerNotificationItemAgentMessageDeltaNotification.serializer()
-            "item/plan/delta" -> ServerNotificationItemPlanDeltaNotification.serializer()
-            "command/exec/outputDelta" -> ServerNotificationCommandExecOutputDeltaNotification.serializer()
-            "process/outputDelta" -> ServerNotificationProcessOutputDeltaNotification.serializer()
-            "process/exited" -> ServerNotificationProcessExitedNotification.serializer()
-            "item/commandExecution/outputDelta" -> ServerNotificationItemCommandExecutionOutputDeltaNotification.serializer()
-            "item/commandExecution/terminalInteraction" -> ServerNotificationItemCommandExecutionTerminalInteractionNotification.serializer()
-            "item/fileChange/outputDelta" -> ServerNotificationItemFileChangeOutputDeltaNotification.serializer()
-            "item/fileChange/patchUpdated" -> ServerNotificationItemFileChangePatchUpdatedNotification.serializer()
-            "serverRequest/resolved" -> ServerNotificationServerRequestResolvedNotification.serializer()
-            "item/mcpToolCall/progress" -> ServerNotificationItemMcpToolCallProgressNotification.serializer()
-            "mcpServer/oauthLogin/completed" -> ServerNotificationMcpServerOauthLoginCompletedNotification.serializer()
-            "mcpServer/startupStatus/updated" -> ServerNotificationMcpServerStartupStatusUpdatedNotification.serializer()
-            "account/updated" -> ServerNotificationAccountUpdatedNotification.serializer()
-            "account/rateLimits/updated" -> ServerNotificationAccountRateLimitsUpdatedNotification.serializer()
-            "app/list/updated" -> ServerNotificationAppListUpdatedNotification.serializer()
-            "remoteControl/status/changed" -> ServerNotificationRemoteControlStatusChangedNotification.serializer()
-            "externalAgentConfig/import/progress" -> ServerNotificationExternalAgentConfigImportProgressNotification.serializer()
-            "externalAgentConfig/import/completed" -> ServerNotificationExternalAgentConfigImportCompletedNotification.serializer()
-            "fs/changed" -> ServerNotificationFsChangedNotification.serializer()
-            "item/reasoning/summaryTextDelta" -> ServerNotificationItemReasoningSummaryTextDeltaNotification.serializer()
-            "item/reasoning/summaryPartAdded" -> ServerNotificationItemReasoningSummaryPartAddedNotification.serializer()
-            "item/reasoning/textDelta" -> ServerNotificationItemReasoningTextDeltaNotification.serializer()
-            "thread/compacted" -> ServerNotificationThreadCompactedNotification.serializer()
-            "model/rerouted" -> ServerNotificationModelReroutedNotification.serializer()
-            "model/verification" -> ServerNotificationModelVerificationNotification.serializer()
-            "turn/moderationMetadata" -> ServerNotificationTurnModerationMetadataNotification.serializer()
-            "model/safetyBuffering/updated" -> ServerNotificationModelSafetyBufferingUpdatedNotification.serializer()
-            "warning" -> ServerNotificationWarningNotification.serializer()
-            "guardianWarning" -> ServerNotificationGuardianWarningNotification.serializer()
-            "deprecationNotice" -> ServerNotificationDeprecationNoticeNotification.serializer()
-            "configWarning" -> ServerNotificationConfigWarningNotification.serializer()
-            "fuzzyFileSearch/sessionUpdated" -> ServerNotificationFuzzyFileSearchSessionUpdatedNotification.serializer()
-            "fuzzyFileSearch/sessionCompleted" -> ServerNotificationFuzzyFileSearchSessionCompletedNotification.serializer()
-            "thread/realtime/started" -> ServerNotificationThreadRealtimeStartedNotification.serializer()
-            "thread/realtime/itemAdded" -> ServerNotificationThreadRealtimeItemAddedNotification.serializer()
-            "thread/realtime/transcript/delta" -> ServerNotificationThreadRealtimeTranscriptDeltaNotification.serializer()
-            "thread/realtime/transcript/done" -> ServerNotificationThreadRealtimeTranscriptDoneNotification.serializer()
-            "thread/realtime/outputAudio/delta" -> ServerNotificationThreadRealtimeOutputAudioDeltaNotification.serializer()
-            "thread/realtime/sdp" -> ServerNotificationThreadRealtimeSdpNotification.serializer()
-            "thread/realtime/error" -> ServerNotificationThreadRealtimeErrorNotification.serializer()
-            "thread/realtime/closed" -> ServerNotificationThreadRealtimeClosedNotification.serializer()
-            "windows/worldWritableWarning" -> ServerNotificationWindowsWorldWritableWarningNotification.serializer()
-            "windowsSandbox/setupCompleted" -> ServerNotificationWindowsSandboxSetupCompletedNotification.serializer()
-            "account/login/completed" -> ServerNotificationAccountLoginCompletedNotification.serializer()
-            else -> error("Unknown ServerNotification method")
-        }
+@Serializable
+internal data class ServerNotificationHookCompletedNotification(
+    @SerialName("params")
+    public val params: HookCompletedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "hook/completed",
+) : ServerNotification {
+    init { require(method == "hook/completed") }
+}
+
+@Serializable
+internal data class ServerNotificationTurnDiffUpdatedNotification(
+    @SerialName("params")
+    public val params: TurnDiffUpdatedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "turn/diff/updated",
+) : ServerNotification {
+    init { require(method == "turn/diff/updated") }
+}
+
+@Serializable
+internal data class ServerNotificationTurnPlanUpdatedNotification(
+    @SerialName("params")
+    public val params: TurnPlanUpdatedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "turn/plan/updated",
+) : ServerNotification {
+    init { require(method == "turn/plan/updated") }
+}
+
+@Serializable
+internal data class ServerNotificationItemStartedNotification(
+    @SerialName("params")
+    public val params: ItemStartedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "item/started",
+) : ServerNotification {
+    init { require(method == "item/started") }
+}
+
+@Serializable
+internal data class ServerNotificationItemAutoApprovalReviewStartedNotification(
+    @SerialName("params")
+    public val params: ItemGuardianApprovalReviewStartedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "item/autoApprovalReview/started",
+) : ServerNotification {
+    init { require(method == "item/autoApprovalReview/started") }
+}
+
+@Serializable
+internal data class ServerNotificationItemAutoApprovalReviewCompletedNotification(
+    @SerialName("params")
+    public val params: ItemGuardianApprovalReviewCompletedNotification,
+    @SerialName("emittedAtMs")
+    public val emittedAtMs: Long? = null,
+    @SerialName("method")
+    public val method: String = "item/autoApprovalReview/completed",
+) : ServerNotification {
+    init { require(method == "item/autoApprovalReview/completed") }
 }

@@ -99,6 +99,7 @@ pub(crate) async fn start_app_server(paths: &RuntimePaths) -> Result<InProcessAp
     let state_db = init_state_db(config.as_ref())
         .await
         .ok_or_else(|| "Codex state database is unavailable".to_string())?;
+    let http_client_factory = config.http_client_factory();
     InProcessAppServerClient::start_uninitialized(InProcessClientStartArgs {
         arg0_paths: Arg0DispatchPaths::default(),
         config,
@@ -111,7 +112,9 @@ pub(crate) async fn start_app_server(paths: &RuntimePaths) -> Result<InProcessAp
         state_db: Some(state_db),
         // Files are exposed only through the workspace-confined dynamic tools below.
         // With no execution environment, Codex cannot advertise process-backed tools.
-        environment_manager: Arc::new(EnvironmentManager::without_environments()),
+        environment_manager: Arc::new(EnvironmentManager::without_environments(
+            http_client_factory,
+        )),
         config_warnings: Vec::new(),
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: false,

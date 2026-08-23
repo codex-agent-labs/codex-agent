@@ -1,10 +1,10 @@
 # Third-party notices
 
 `codex-agent-runtime-android` packages and `codex-agent-runtime-ios` statically
-embeds Codex App Server `0.145.0`, built from OpenAI Codex revision
-`25af12f7e61572b0bc18ddb1008be543b91519b0` and licensed under Apache-2.0. The
+embeds Codex App Server `0.149.0`, built from OpenAI Codex revision
+`758ef40f50c1a458425c7cfbf1eb12cbc07af0b0` and licensed under Apache-2.0. The
 iOS source archive SHA-256 is
-`42f627a7b32db41582c73a8eafd9ec4b35d6c3ff81bd3d4455cfd6224d79d329`.
+`6481974e9740023493eda1f240005cb1507d6969f79d6f6aa97092f967f3f0fc`.
 The upstream licence and notice are included in the Android AAR and staged
 Apple package as `openai-codex-LICENSE.txt` and `openai-codex-NOTICE.txt`.
 

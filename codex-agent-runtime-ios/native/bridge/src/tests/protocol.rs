@@ -34,7 +34,11 @@ use super::*;
 
     #[test]
     fn runtime_has_no_process_environment() {
-        let manager = EnvironmentManager::without_environments();
+        let manager = EnvironmentManager::without_environments(
+            codex_http_client::HttpClientFactory::new(
+                codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+            ),
+        );
         assert!(manager.default_environment().is_none());
         assert!(manager.try_local_environment().is_none());
     }
