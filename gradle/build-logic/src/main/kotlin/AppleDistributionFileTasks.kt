@@ -11,6 +11,7 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
+import org.gradle.api.provider.Property
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
@@ -20,7 +21,6 @@ import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecOperations
-import org.gradle.work.DisableCachingByDefault
 
 internal fun deleteReleaseTree(file: File) {
     if (!Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)) return
@@ -148,7 +148,7 @@ private fun moveReleaseFile(source: File, target: File) {
     }
 }
 
-@DisableCachingByDefault(because = "Normalizes static archives with the selected Apple toolchain")
+@CacheableTask
 abstract class PrepareCodexAgentReleaseXCFrameworkTask @Inject constructor(
     private val processes: ExecOperations,
 ) : DefaultTask() {
@@ -156,6 +156,7 @@ abstract class PrepareCodexAgentReleaseXCFrameworkTask @Inject constructor(
     abstract val assembledXCFrameworkDirectory: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val privacyManifest: RegularFileProperty
     @get:org.gradle.api.tasks.Input abstract val forbiddenAbsolutePathPrefixes: ListProperty<String>
+    @get:org.gradle.api.tasks.Input abstract val appleToolchainIdentity: Property<String>
     @get:OutputDirectory abstract val releaseXCFrameworkDirectory: DirectoryProperty
 
     @TaskAction fun prepare() {

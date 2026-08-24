@@ -21,6 +21,7 @@ data class IosAppleDistributionTasks(
 fun Project.registerIosAppleDistributionTasks(
     expectedSwiftTestCount: Int,
     pinnedRustToolchain: String,
+    appleFrameworkToolchainIdentity: Provider<String>,
     importedDeviceFramework: TaskProvider<ImportCodexAgentFrameworkTask>?,
     importedSimulatorFramework: TaskProvider<ImportCodexAgentFrameworkTask>?,
 ): IosAppleDistributionTasks {
@@ -42,6 +43,7 @@ fun Project.registerIosAppleDistributionTasks(
             dependsOn(importedDeviceFramework, importedSimulatorFramework)
             deviceFrameworkDirectory.set(importedDeviceFramework.flatMap { it.importedFrameworkDirectory })
             simulatorFrameworkDirectory.set(importedSimulatorFramework.flatMap { it.importedFrameworkDirectory })
+            appleToolchainIdentity.set(appleFrameworkToolchainIdentity)
             xcframeworkDirectory.set(assembledXCFrameworkDirectory)
         }
     } else {
@@ -53,6 +55,7 @@ fun Project.registerIosAppleDistributionTasks(
             this.assembledXCFrameworkDirectory.set(assembledXCFrameworkDirectory)
             privacyManifest.set(privacyManifestFile)
             forbiddenAbsolutePathPrefixes.set(iosReleaseAbsolutePathPrefixes(pinnedRustToolchain))
+            appleToolchainIdentity.set(appleFrameworkToolchainIdentity)
             this.releaseXCFrameworkDirectory.set(releaseXCFrameworkDirectory)
         }
 

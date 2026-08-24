@@ -96,8 +96,8 @@ SUPPORT_DEPENDENCIES = {
     ),
     "ios-package": (("ios-framework-device", "build"), ("ios-framework-simulator", "build")),
     "ios-privacy-metrics": (
-        ("ios-kotlin-tests", "test"), ("ios-swift-tests", "test"),
-        ("ios-package", "build"), ("ios-package", "metadata"),
+        ("ios-framework-device", "build"),
+        ("ios-framework-simulator", "build"),
     ),
 }
 

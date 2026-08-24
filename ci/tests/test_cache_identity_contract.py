@@ -107,6 +107,30 @@ class CacheIdentityContractTest(unittest.TestCase):
         )
         self.assertEqual(1, repair_step.count('>> "$GITHUB_STEP_SUMMARY"'))
 
+    def test_reused_apple_rust_slices_are_imported_before_transport_or_restaging(self) -> None:
+        lane = (REPOSITORY / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
+        start = lane.index("Validate reused Apple Rust slice")
+        end = lane.index("Transport selected production reuse to downstream jobs")
+        validation = lane[start:end]
+        self.assertLess(start, end)
+        for value in (
+            "steps.reuse.outputs.reused == 'true'",
+            "steps.production.outputs.reused == 'true'",
+            "FULL_REUSED: ${{ steps.reuse.outputs.reused }}",
+            'mode=production\n        [ "$FULL_REUSED" != true ] || mode=full',
+            '-PcodexAgent.candidateCommit="$VALIDATION_COMMIT"',
+            "build/ci/reuse/$mode/payload/codex-agent-runtime-ios/build/apple-slice-exports",
+            "ios-rust-device)\n            task=importCodexAgentIosArm64RustSlice\n"
+            "            property=codexAgent.iosDeviceRustEvidenceDirectory",
+            "ios-rust-simulator)\n            task=importCodexAgentIosSimulatorArm64RustSlice\n"
+            "            property=codexAgent.iosSimulatorRustEvidenceDirectory",
+        ):
+            self.assertIn(value, validation)
+        for later in ("cp -R build/ci/reuse/production", "id: production-execution", "python3 ci/stage.py", "id: identity"):
+            self.assertLess(start, lane.index(later, start))
+        for forbidden in ("continue-on-error", "exportCodexAgent", "buildCodexIos", "cargo "):
+            self.assertNotIn(forbidden, validation)
+
 
 if __name__ == "__main__":
     unittest.main()

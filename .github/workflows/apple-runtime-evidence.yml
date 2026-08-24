@@ -358,7 +358,7 @@ jobs:
 
   privacy-metrics:
     if: always() && needs.select.outputs.privacy == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
-    needs: [select, framework-device, framework-simulator, package, kotlin-tests, swift-tests]
+    needs: [select, framework-device, framework-simulator]
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -366,21 +366,6 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
-      - if: needs.kotlin-tests.outputs.artifact_name != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ${{ needs.kotlin-tests.outputs.artifact_name }}
-          path: build/ci/privacy-inputs/kotlin
-      - if: needs.swift-tests.outputs.artifact_name != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ${{ needs.swift-tests.outputs.artifact_name }}
-          path: build/ci/privacy-inputs/swift
-      - if: needs.package.outputs.artifact_name != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ${{ needs.package.outputs.artifact_name }}
-          path: build/ci/privacy-inputs/package
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.framework-device.outputs.artifact_name }}

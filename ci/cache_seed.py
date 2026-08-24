@@ -14,7 +14,12 @@ from pathlib import Path, PurePosixPath
 
 OID = re.compile(r"[0-9a-f]{40}")
 KEY = re.compile(r"[A-Za-z0-9_.-]+")
-CARGO_PRODUCER_LANES = {"ios-native-tests", "ios-rust-device", "ios-rust-simulator"}
+CARGO_PRODUCER_LANES = {"ios-native-tests"}
+SCCACHE_VERSIONS = {
+    "ios-native-tests": "codex-agent-rust-v1-ios-native-tests",
+    "ios-rust-device": "codex-agent-rust-v1-ios-rust-device",
+    "ios-rust-simulator": "codex-agent-rust-v1-ios-rust-simulator",
+}
 CACHE_PATHS = {
     "kmp": {
         "gradle": (".gradle/caches/modules-2",),
@@ -82,6 +87,20 @@ def active_lanes(
     return sorted(active)
 
 
+def elected_lane(
+    plan: dict[str, object], runner_os: str, expected_arch: str, kind: str
+) -> str | None:
+    lanes = active_lanes(plan, runner_os, expected_arch, kind)
+    if (
+        kind == "kmp"
+        and runner_os == "macOS"
+        and expected_arch == "ARM64"
+        and "ios-package" in lanes
+    ):
+        return "ios-package"
+    return lanes[0] if lanes else None
+
+
 def require_oid(value: object, label: str) -> str:
     if not isinstance(value, str) or not OID.fullmatch(value):
         raise ValueError(f"Invalid {label}")
@@ -141,8 +160,11 @@ def policy(arguments: argparse.Namespace) -> dict[str, object]:
         raise ValueError(f"Unknown lane: {arguments.lane}")
     if plan["validationCommit"] != arguments.validation_commit:
         raise ValueError("Validation commit does not match the impact plan")
-    writers = active_lanes(plan, arguments.runner_os, arguments.runner_arch, "kmp")
-    rust_writers = active_lanes(plan, arguments.runner_os, arguments.runner_arch, "cargo")
+    active = active_lanes(plan, arguments.runner_os, arguments.runner_arch, "kmp")
+    writer = elected_lane(plan, arguments.runner_os, arguments.runner_arch, "kmp")
+    rust_writer = elected_lane(plan, arguments.runner_os, arguments.runner_arch, "cargo")
+    writers = [writer] if writer is not None else []
+    rust_writers = [rust_writer] if rust_writer is not None else []
     event = os.environ.get("GITHUB_EVENT_NAME", "")
     pull = os.environ.get("PR_NUMBER", "")
     sha_matches = os.environ.get("GITHUB_SHA") == arguments.validation_commit
@@ -162,6 +184,12 @@ def policy(arguments: argparse.Namespace) -> dict[str, object]:
     result: dict[str, object] = {
         "write": bool(authoritative_pr and writers and arguments.lane == writers[0]),
         "rust-write": bool(authoritative_pr and rust_writers and arguments.lane == rust_writers[0]),
+        "sccache-write": bool(
+            authoritative_pr
+            and arguments.lane in active
+            and arguments.lane in SCCACHE_VERSIONS
+        ),
+        "sccache-version": SCCACHE_VERSIONS.get(arguments.lane, "codex-agent-rust-v1"),
         "seed": bool(
             (authoritative_pr or authoritative_merge_group)
             and writers
@@ -280,8 +308,8 @@ def create(arguments: argparse.Namespace) -> dict[str, object]:
         or arguments.event not in {"pull_request", "merge_group"}
     ):
         raise ValueError("Cache seed identity does not match the impact plan")
-    elected = active_lanes(plan, arguments.runner_os, arguments.runner_arch, arguments.kind)
-    if not elected or elected[0] != arguments.lane:
+    elected = elected_lane(plan, arguments.runner_os, arguments.runner_arch, arguments.kind)
+    if elected != arguments.lane:
         raise ValueError("Cache seed was not produced by the elected lane")
     expected_name = artifact_name(arguments.kind, arguments.runner_os, arguments.runner_arch, tree)
     if arguments.artifact_name != expected_name:
@@ -360,10 +388,9 @@ def seed_source(
         or aggregate.get("result") != "passed"
     ):
         raise ValueError("Cache seed source metadata does not match the validated tree")
-    lanes = active_lanes(plan, runner_os, runner_arch, kind)
-    if not lanes:
+    lane = elected_lane(plan, runner_os, runner_arch, kind)
+    if lane is None:
         return {"available": False}
-    lane = lanes[0]
     promotion_lanes = promotion.get("lanes")
     aggregate_lanes = aggregate.get("lanes")
     if not isinstance(promotion_lanes, dict) or not isinstance(aggregate_lanes, dict):

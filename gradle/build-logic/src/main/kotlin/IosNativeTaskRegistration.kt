@@ -128,6 +128,11 @@ fun Project.registerIosNativeTasks(configuration: IosNativeTaskConfiguration): I
     val appleToolchainIdentities = appleRustSliceSpecs.associate { spec ->
         spec.target to appleSdkToolchainIdentity(spec.target)
     }
+    val appleFrameworkToolchainIdentity =
+        appleToolchainIdentities.getValue(IOS_DEVICE_RUST_TARGET)
+            .zip(appleToolchainIdentities.getValue(IOS_SIMULATOR_RUST_TARGET)) { device, simulator ->
+                "[$IOS_DEVICE_RUST_TARGET]\n$device\n[$IOS_SIMULATOR_RUST_TARGET]\n$simulator"
+            }
     val releaseAbsolutePathPrefixes = iosReleaseAbsolutePathPrefixes(rustSysroot)
     val releaseRustPathRemappings = releaseAbsolutePathPrefixes.map { prefixes ->
         remapIosReleasePaths(prefixes, configuration.pinnedReleaseRustPathRemapPolicy)
@@ -280,5 +285,6 @@ fun Project.registerIosNativeTasks(configuration: IosNativeTaskConfiguration): I
         iosSimulatorArm64RustArchive = selected.simulatorArchive,
         prepareCodexAgentIosArm64RustSlice = selected.prepareDevice,
         prepareCodexAgentIosSimulatorArm64RustSlice = selected.prepareSimulator,
+        appleFrameworkToolchainIdentity = appleFrameworkToolchainIdentity,
     )
 }

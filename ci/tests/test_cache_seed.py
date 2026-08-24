@@ -55,11 +55,11 @@ class CacheSeedTest(unittest.TestCase):
     def write_plan(self) -> None:
         self.plan_path.write_text(json.dumps(self.plan), encoding="utf-8")
 
-    def write_promotion(self, source_commit: str) -> None:
+    def write_promotion(self, source_commit: str, lane: str = "android") -> None:
         summary = {
             "runId": 71,
             "runAttempt": 2,
-            "artifactName": f"codex-agent-ci-android-{TREE}",
+            "artifactName": f"codex-agent-ci-{lane}-{TREE}",
             "validationCommit": source_commit,
             "validationTree": TREE,
             "result": "passed",
@@ -71,7 +71,7 @@ class CacheSeedTest(unittest.TestCase):
             "validationCommit": COMMIT,
             "validationTree": TREE,
             "impactPlan": "impact-plan.json",
-            "lanes": {"android": summary},
+            "lanes": {lane: summary},
             "result": "passed",
         }
         promotion = {
@@ -88,14 +88,14 @@ class CacheSeedTest(unittest.TestCase):
             "promotedAggregateArtifactName": f"codex-agent-promoted-validation-{'4' * 40}",
             "promotedInventoryArtifactName": f"codex-agent-promoted-inventories-{'4' * 40}",
             "lanes": {
-                "android": {
+                lane: {
                     "sourceKind": "validation",
                     "sourceRunId": 71,
                     "sourceRunAttempt": 2,
                     "sourceArtifactName": summary["artifactName"],
                     "sourcePromotionRunId": None,
                     "sourcePromotionCommit": None,
-                    "promotedArtifactName": f"codex-agent-promoted-android-{'4' * 40}",
+                    "promotedArtifactName": f"codex-agent-promoted-{lane}-{'4' * 40}",
                 },
             },
         }
@@ -107,25 +107,31 @@ class CacheSeedTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
-    def create_kmp(self, output: Path) -> dict[str, object]:
+    def create_kmp(
+        self,
+        output: Path,
+        lane: str = "android",
+        runner_os: str = "Linux",
+        runner_arch: str = "X64",
+    ) -> dict[str, object]:
         return create(Namespace(
             plan=self.plan_path,
             root=output,
             home=self.home,
             kind="kmp",
-            artifact_name=artifact_name("kmp", "Linux", "X64", TREE),
+            artifact_name=artifact_name("kmp", runner_os, runner_arch, TREE),
             repository=REPO,
             event=self.plan["event"],
             validation_commit=self.plan["validationCommit"],
             validation_tree=TREE,
             run_id="71",
             run_attempt="2",
-            lane="android",
-            runner_os="Linux",
-            runner_arch="X64",
+            lane=lane,
+            runner_os=runner_os,
+            runner_arch=runner_arch,
             cache_key=[
-                "gradle=gradle-main-dependencies-v1-Linux-X64-abc",
-                "konan=konan-main-v2-Linux-X64-none-abc",
+                f"gradle=gradle-main-dependencies-v1-{runner_os}-{runner_arch}-abc",
+                f"konan=konan-main-v2-{runner_os}-{runner_arch}-none-abc",
             ],
         ))
 
@@ -362,11 +368,16 @@ class CacheSeedTest(unittest.TestCase):
         self.assertTrue(result["write"])
         self.assertTrue(result["seed"])
 
-    def test_policy_elects_cargo_writer_from_producer_lanes(self) -> None:
+    def test_policy_isolates_cargo_and_sccache_writers(self) -> None:
+        namespaces = {
+            "ios-native-tests": "codex-agent-rust-v1-ios-native-tests",
+            "ios-rust-device": "codex-agent-rust-v1-ios-rust-device",
+            "ios-rust-simulator": "codex-agent-rust-v1-ios-rust-simulator",
+        }
         self.plan["event"] = "pull_request"
         self.plan["lanes"] = {
-            "ios-kotlin-tests": {"build": False, "test": True, "metadata": False},
-            "ios-rust-simulator": {"build": True, "test": False, "metadata": False},
+            lane: {"build": True, "test": False, "metadata": False}
+            for lane in (*namespaces, "ios-framework-device", "ios-package")
         }
         self.write_plan()
         environment = {
@@ -376,18 +387,110 @@ class CacheSeedTest(unittest.TestCase):
             "GITHUB_REF": "refs/pull/7/merge",
             "PR_NUMBER": "7",
         }
-        arguments = Namespace(
+
+        def evaluate(lane: str, values: dict[str, str] = environment) -> dict[str, object]:
+            arguments = Namespace(
+                plan=self.plan_path,
+                lane=lane,
+                validation_commit=COMMIT,
+                runner_os="macOS",
+                runner_arch="ARM64",
+                github_output=None,
+            )
+            with patch.dict(os.environ, values, clear=True):
+                return policy(arguments)
+
+        active = (*namespaces, "ios-framework-device", "ios-package")
+        results = {lane: evaluate(lane) for lane in active}
+        self.assertEqual(
+            ["ios-package"],
+            [lane for lane, result in results.items() if result["write"]],
+        )
+        self.assertEqual(
+            ["ios-package"],
+            [lane for lane, result in results.items() if result["seed"]],
+        )
+        self.assertEqual(
+            ["ios-native-tests"],
+            [lane for lane, result in results.items() if result["rust-write"]],
+        )
+        self.assertEqual(
+            ["ios-native-tests"],
+            [lane for lane, result in results.items() if result["rust-seed"]],
+        )
+        self.assertEqual(set(namespaces), {lane for lane, result in results.items() if result["sccache-write"]})
+        self.assertEqual(namespaces, {lane: results[lane]["sccache-version"] for lane in namespaces})
+        self.assertEqual(len(namespaces), len({results[lane]["sccache-version"] for lane in namespaces}))
+
+        framework = results["ios-framework-device"]
+        self.assertFalse(framework["sccache-write"])
+        self.assertEqual("codex-agent-rust-v1", framework["sccache-version"])
+
+        self.plan["lanes"]["ios-package"]["build"] = False
+        self.write_plan()
+        fallback = evaluate("ios-framework-device")
+        self.assertTrue(fallback["write"])
+        self.assertTrue(fallback["seed"])
+        self.plan["lanes"]["ios-package"]["build"] = True
+
+        self.plan["lanes"]["ios-rust-simulator"]["build"] = False
+        self.write_plan()
+        self.assertFalse(evaluate("ios-rust-simulator")["sccache-write"])
+
+        self.plan["lanes"]["ios-rust-simulator"]["build"] = True
+        self.write_plan()
+        for override in (
+            {"GITHUB_REF": "refs/heads/main"},
+            {"GITHUB_SHA": "3" * 40},
+            {"GITHUB_REPOSITORY": "other/repository"},
+            {"GITHUB_EVENT_NAME": "push"},
+            {"PR_NUMBER": ""},
+        ):
+            untrusted = environment | override
+            for lane in active:
+                result = evaluate(lane, untrusted)
+                self.assertFalse(result["write"])
+                self.assertFalse(result["seed"])
+                self.assertFalse(result["rust-write"])
+                self.assertFalse(result["rust-seed"])
+                self.assertFalse(result["sccache-write"])
+
+        self.plan["event"] = "merge_group"
+        self.write_plan()
+        merge = environment | {
+            "GITHUB_EVENT_NAME": "merge_group",
+            "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-7-deadbeef",
+            "PR_NUMBER": "",
+        }
+        native = evaluate("ios-native-tests", merge)
+        self.assertTrue(native["rust-seed"])
+        self.assertFalse(native["rust-write"])
+        self.assertFalse(native["sccache-write"])
+        package = evaluate("ios-package", merge)
+        self.assertTrue(package["seed"])
+        self.assertFalse(package["write"])
+
+    def test_macos_kmp_seed_uses_the_elected_package_source(self) -> None:
+        self.plan["lanes"] = {
+            lane: {"build": True, "test": False, "metadata": False}
+            for lane in ("ios-framework-device", "ios-package")
+        }
+        self.write_plan()
+        self.write_promotion(COMMIT, "ios-package")
+        seed = self.root / "macos-seed"
+        manifest = self.create_kmp(seed, "ios-package", "macOS", "ARM64")
+        self.assertEqual("ios-package", manifest["lane"])
+
+        selected = source(Namespace(
             plan=self.plan_path,
-            lane="ios-rust-simulator",
-            validation_commit=COMMIT,
+            promotion_plan=self.promotion_path,
+            aggregate=self.aggregate_path,
+            kind="kmp",
             runner_os="macOS",
             runner_arch="ARM64",
             github_output=None,
-        )
-        with patch.dict(os.environ, environment, clear=True):
-            result = policy(arguments)
-        self.assertTrue(result["rust-write"])
-        self.assertTrue(result["rust-seed"])
+        ))
+        self.assertEqual("ios-package", selected["lane"])
 
     def test_identical_tree_merge_group_promotes_pr_source_seed_without_product_job(self) -> None:
         pr_commit = "3" * 40
@@ -432,12 +535,30 @@ class CacheSeedTest(unittest.TestCase):
         lane = (REPOSITORY / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
         kmp = (REPOSITORY / ".github/actions/setup-kmp/action.yml").read_text(encoding="utf-8")
         sccache = (REPOSITORY / ".github/actions/setup-sccache/action.yml").read_text(encoding="utf-8")
+        cargo_task = (REPOSITORY / "gradle/build-logic/src/main/kotlin/PinnedCargoTask.kt").read_text(encoding="utf-8")
         promotion = (REPOSITORY / ".github/workflows/promote.yml").read_text(encoding="utf-8")
         self.assertIn("ci/cache_seed.py policy", lane)
         self.assertIn("GITHUB_EVENT_NAME", lane)
         self.assertIn("gradle-main-dependencies-v1", kmp)
         self.assertIn("konan-main-v2", kmp)
         self.assertIn("cargo-main-dependencies-v1", sccache)
+        self.assertIn("write: ${{ steps.cache-policy.outputs.rust-write }}", lane)
+        self.assertIn("sccache-write: ${{ steps.cache-policy.outputs.sccache-write }}", lane)
+        self.assertIn("version: ${{ steps.cache-policy.outputs.sccache-version }}", lane)
+        self.assertIn("SCCACHE_IGNORE_SERVER_IO_ERROR=1", sccache)
+        self.assertIn('"SCCACHE_IGNORE_SERVER_IO_ERROR"', cargo_task)
+        self.assertIn('test "$actual" = "$expected"', sccache)
+        setup = lane[lane.index("    - id: setup-sccache"):lane.index("    - id: environment")]
+        self.assertIn("continue-on-error: true", setup)
+        self.assertIn("steps.setup-sccache.outcome == 'failure'", setup)
+        for name in (
+            "SCCACHE_GHA_ENABLED", "SCCACHE_GHA_VERSION", "SCCACHE_GHA_RW_MODE",
+            "SCCACHE_IGNORE_SERVER_IO_ERROR", "RUSTC_WRAPPER",
+        ):
+            self.assertIn(f"printf '{name}=\\n'", setup)
+        for step in ("cargo-main-read", "cargo-pr-read", "cargo-pr-write"):
+            section = sccache[sccache.index(f"    - id: {step}"):]
+            self.assertIn("continue-on-error: true", section.split("\n    - id:", 1)[0])
         self.assertIn("actions/cache/save@", promotion)
         for path in (
             "~/.gradle/caches/modules-2",

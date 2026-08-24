@@ -4,6 +4,7 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.nio.file.attribute.PosixFileAttributeView
 import java.security.MessageDigest
 import java.util.zip.ZipFile
 import javax.xml.XMLConstants
@@ -52,6 +53,22 @@ internal fun File.atomicWriteJson(value: JsonElement) {
         Files.move(temporary, toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
     } catch (_: AtomicMoveNotSupportedException) {
         Files.move(temporary, toPath(), REPLACE_EXISTING)
+    }
+}
+
+internal fun File.atomicReplaceTextIfChanged(contents: String) {
+    val bytes = contents.toByteArray()
+    if (isFile && readBytes().contentEquals(bytes)) return
+    parentFile.mkdirs()
+    val permissions = Files.getFileAttributeView(toPath(), PosixFileAttributeView::class.java)
+        ?.readAttributes()?.permissions()
+    val temporary = Files.createTempFile(parentFile.toPath(), ".$name-", ".tmp")
+    try {
+        Files.write(temporary, bytes)
+        permissions?.let { Files.setPosixFilePermissions(temporary, it) }
+        Files.move(temporary, toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+    } finally {
+        Files.deleteIfExists(temporary)
     }
 }
 

@@ -14,6 +14,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -63,6 +64,39 @@ abstract class VerifySwiftPackageBinaryTask : DefaultTask() {
         check(contents.contains("checksum: \"$checksum\"")) {
             "SwiftPM binary checksum mismatch: Package.swift must use $checksum"
         }
+    }
+}
+
+@DisableCachingByDefault(because = "Explicitly updates source-controlled Swift package metadata")
+abstract class UpdateSwiftPackageChecksumTask : DefaultTask() {
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val archiveFile: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val checksumFile: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val manifestFile: RegularFileProperty
+    @get:Input abstract val expectedUrl: Property<String>
+    @get:Internal abstract val repositoryDirectory: DirectoryProperty
+
+    init {
+        group = "release"
+        description = "Updates the root Package.swift checksum from the local Swift package archive."
+    }
+
+    @TaskAction
+    fun update() {
+        val repository = repositoryDirectory.get().asFile.canonicalFile
+        val manifest = manifestFile.get().asFile
+        requireRootManifest(repository, manifest)
+        val archive = archiveFile.get().asFile
+        val checksum = checksumFile.get().asFile.readText().trim()
+        check(Regex("[0-9a-f]{64}").matches(checksum)) { "Generated SwiftPM checksum is malformed" }
+        check(URI(expectedUrl.get()).path.substringAfterLast('/') == archive.name) {
+            "SwiftPM release URL filename does not match the local archive"
+        }
+        check(archive.releaseDigest() == checksum) {
+            "Generated SwiftPM checksum does not match the local archive"
+        }
+        manifest.atomicReplaceTextIfChanged(
+            replaceSwiftPackageChecksum(manifest.readText(), expectedUrl.get(), checksum),
+        )
     }
 }
 
