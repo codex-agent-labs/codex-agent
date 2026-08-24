@@ -1,5 +1,6 @@
 package io.github.codex_agent_labs.codexmobile.appserver.runtime
 
+import io.github.codex_agent_labs.codexmobile.appserver.runtime.host.closeAfter
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CompletableDeferred
@@ -36,7 +37,33 @@ private object JsNodeHost : NodeHost {
     override fun exists(path: String): Boolean = fs.existsSync(path) as Boolean
     override fun fileSize(path: String): Long = (fs.statSync(path).size as Number).toLong()
     override fun readBytes(path: String): ByteArray = dynamicToByteArray(fs.readFileSync(path))
+    override fun readFileSnapshot(path: String, maxBytes: Long): ByteArray {
+        require(maxBytes in 0..Int.MAX_VALUE.toLong()) { "File snapshot limit is invalid" }
+        val before = fs.lstatSync(path)
+        require(before.isFile() == true && before.isSymbolicLink() != true &&
+            (before.size as Number).toLong() <= maxBytes) { "File snapshot is unavailable" }
+        val descriptor = fs.openSync(path, "r") as Int
+        return closeAfter({ fs.closeSync(descriptor) }) {
+            val opened = fs.fstatSync(descriptor)
+            require(opened.isFile() == true && opened.dev == before.dev && opened.ino == before.ino &&
+                (opened.size as Number).toLong() <= maxBytes) { "File changed while being opened" }
+            val capacity = minOf((opened.size as Number).toLong() + 1, maxBytes + 1).toInt()
+            val buffer: dynamic = js("Buffer.alloc(capacity)")
+            var total = 0
+            while (total < capacity) {
+                val read = fs.readSync(descriptor, buffer, total, capacity - total, null) as Int
+                if (read == 0) break
+                total += read
+            }
+            val after = fs.fstatSync(descriptor)
+            require(total.toLong() <= maxBytes && after.dev == opened.dev && after.ino == opened.ino &&
+                (after.size as Number).toLong() == total.toLong()) { "File changed while being read" }
+            dynamicToByteArray(buffer.subarray(0, total))
+        }
+    }
     override fun writeBytes(path: String, bytes: ByteArray): Unit = fs.writeFileSync(path, bytes)
+    override fun writeNewBytes(path: String, bytes: ByteArray): Unit =
+        fs.writeFileSync(path, bytes, js("({ flag: 'wx' })"))
     override fun inflateRaw(bytes: ByteArray, maxOutputLength: Int): ByteArray {
         val zlib: dynamic = js("require('node:zlib')")
         val options: dynamic = js("({})")
@@ -44,9 +71,13 @@ private object JsNodeHost : NodeHost {
         return dynamicToByteArray(zlib.inflateRawSync(bytes, options))
     }
     override fun createDirectories(path: String): Unit = fs.mkdirSync(path, js("({ recursive: true })"))
+    override fun createDirectory(path: String): Unit = fs.mkdirSync(path)
     override fun list(path: String): List<String> = (fs.readdirSync(path) as Array<String>).toList()
     override fun move(source: String, destination: String): Unit = fs.renameSync(source, destination)
+    override fun atomicReplace(source: String, destination: String): Unit = fs.renameSync(source, destination)
     override fun removePath(path: String): Unit = fs.rmSync(path, js("({ recursive: true, force: true })"))
+    override fun removeFile(path: String): Unit = fs.rmSync(path, js("({ force: true })"))
+    override fun createSymbolicLink(path: String, target: String): Unit = fs.symlinkSync(target, path)
     override fun requireExecutable(path: String) {
         if (platform != "win32") fs.accessSync(path, fs.constants.X_OK)
     }

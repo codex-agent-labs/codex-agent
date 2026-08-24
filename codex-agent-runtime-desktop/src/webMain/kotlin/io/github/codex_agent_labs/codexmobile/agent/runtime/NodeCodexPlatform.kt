@@ -21,6 +21,14 @@ import io.github.codex_agent_labs.codexmobile.appserver.runtime.host.RuntimeBund
 import okio.Path
 import okio.Path.Companion.toPath
 
+/**
+ * Node support for [io.github.codex_agent_labs.codexmobile.agent.CodexHost].
+ *
+ * The caller must verify the signed Maven classifier artifact (or independently
+ * authenticate those exact bytes) before placing it in `bundleDirectory`, and
+ * must keep that directory non-attacker-writable. This runtime verifies content
+ * and cache integrity, not the artifact signature.
+ */
 public class NodeCodexPlatform(
     bundleDirectory: Path,
     dataDirectory: Path,

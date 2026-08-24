@@ -28,6 +28,11 @@ import okio.Path.Companion.toPath
  * A `null` `storageRoots` uses `dataDirectory/cache` and
  * `dataDirectory/state`. Pass [CodexStorageRoots] explicitly to override those
  * roots; an empty value disables client cache and state persistence.
+ *
+ * The caller must verify the signed Maven classifier artifact (or independently
+ * authenticate those exact bytes) before placing it in `bundleDirectory`, and
+ * must keep that directory non-attacker-writable. This runtime verifies content
+ * and cache integrity, not the artifact signature.
  */
 public class DesktopCodexPlatform public constructor(
     bundleDirectory: Path,

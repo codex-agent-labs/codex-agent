@@ -592,6 +592,36 @@ class RealImpactPlanTest(unittest.TestCase):
         )
         self.assertEqual(set(), matching_lanes("production", common_desktop_test))
         self.assertEqual(set(), matching_lanes("metadata", common_desktop_test))
+        shared_host_policy_test = (
+            "codex-agent-runtime-desktop/src/commonTest/kotlin/"
+            "io/github/codex_agent_labs/codexmobile/appserver/runtime/host/SharedHostPolicyTest.kt"
+        )
+        self.assertEqual(
+            matching_lanes("test", common_desktop_test),
+            matching_lanes("test", shared_host_policy_test),
+        )
+        desktop_host_files_test = (
+            "codex-agent-runtime-desktop/src/desktopTest/kotlin/"
+            "io/github/codex_agent_labs/codexmobile/appserver/runtime/host/DesktopHostFilesSecurityTest.kt"
+        )
+        self.assertEqual(
+            {
+                "portable", "desktop-macos-arm64", "desktop-macos-x64",
+                "desktop-linux-arm64", "desktop-linux-x64", "desktop-windows-x64",
+            },
+            matching_lanes("test", desktop_host_files_test),
+        )
+        web_host_files_test = (
+            "codex-agent-runtime-desktop/src/webTest/kotlin/"
+            "io/github/codex_agent_labs/codexmobile/appserver/runtime/NodeHostFilesSecurityTest.kt"
+        )
+        self.assertEqual(
+            {"portable", "node-js", "node-wasm"},
+            matching_lanes("test", web_host_files_test),
+        )
+        for test_path in (shared_host_policy_test, desktop_host_files_test, web_host_files_test):
+            self.assertEqual(set(), matching_lanes("production", test_path))
+            self.assertEqual(set(), matching_lanes("metadata", test_path))
         self.assertEqual(
             {"portable", "consumer-common", "consumer-desktop"},
             matching_lanes(

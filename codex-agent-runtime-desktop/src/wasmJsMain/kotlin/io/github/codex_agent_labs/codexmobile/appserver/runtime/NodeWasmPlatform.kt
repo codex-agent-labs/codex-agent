@@ -2,6 +2,7 @@
 
 package io.github.codex_agent_labs.codexmobile.appserver.runtime
 
+import io.github.codex_agent_labs.codexmobile.appserver.runtime.host.closeAfter
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.js.JsAny
@@ -37,15 +38,47 @@ private object WasmNodeHost : NodeHost {
     override fun exists(path: String): Boolean = wasmFsExistsSync(path)
     override fun fileSize(path: String): Long = wasmFsSize(path).toLong()
     override fun readBytes(path: String): ByteArray = wasmToByteArray(wasmFsReadFileSync(path))
+    override fun readFileSnapshot(path: String, maxBytes: Long): ByteArray {
+        require(maxBytes in 0..Int.MAX_VALUE.toLong()) { "File snapshot limit is invalid" }
+        val before = wasmFsLstatSync(path)
+        require(before.isFile() && !before.isSymbolicLink() && before.size.toLong() <= maxBytes) {
+            "File snapshot is unavailable"
+        }
+        val descriptor = wasmFsOpenSync(path)
+        return closeAfter({ wasmFsCloseSync(descriptor) }) {
+            val opened = wasmFsStatDescriptorSync(descriptor)
+            require(opened.isFile() && opened.dev == before.dev && opened.ino == before.ino &&
+                opened.size.toLong() <= maxBytes) { "File changed while being opened" }
+            val capacity = minOf(opened.size.toLong() + 1, maxBytes + 1).toInt()
+            val buffer = wasmBufferAllocate(capacity)
+            var total = 0
+            while (total < capacity) {
+                val read = wasmFsReadSync(descriptor, buffer, total, capacity - total)
+                if (read == 0) break
+                total += read
+            }
+            val after = wasmFsStatDescriptorSync(descriptor)
+            require(total.toLong() <= maxBytes && after.dev == opened.dev && after.ino == opened.ino &&
+                after.size.toLong() == total.toLong()) { "File changed while being read" }
+            ByteArray(total) { index -> wasmBufferByte(buffer, index).toByte() }
+        }
+    }
     override fun writeBytes(path: String, bytes: ByteArray): Unit = wasmFsWriteBytes(path, bytes.toWasmBuffer())
+    override fun writeNewBytes(path: String, bytes: ByteArray): Unit =
+        wasmFsWriteNewBytes(path, bytes.toWasmBuffer())
     override fun inflateRaw(bytes: ByteArray, maxOutputLength: Int): ByteArray =
         wasmToByteArray(wasmInflateRaw(bytes.toWasmBuffer(), maxOutputLength))
     override fun createDirectories(path: String): Unit = wasmFsMkdirRecursive(path)
+    override fun createDirectory(path: String): Unit = mkdirSync(path)
     override fun list(path: String): List<String> = wasmFsReadDirectory(path).let { entries ->
         List(wasmArrayLength(entries)) { wasmArrayString(entries, it) }
     }
     override fun move(source: String, destination: String): Unit = wasmFsRenameSync(source, destination)
+    override fun atomicReplace(source: String, destination: String): Unit =
+        wasmFsRenameSync(source, destination)
     override fun removePath(path: String): Unit = wasmFsRmSync(path, wasmRemoveOptions())
+    override fun removeFile(path: String): Unit = wasmFsRmSync(path, wasmRemoveFileOptions())
+    override fun createSymbolicLink(path: String, target: String): Unit = symlinkSync(target, path)
     override fun requireExecutable(path: String) {
         if (platform != "win32") wasmFsAccessSync(path, 1)
     }

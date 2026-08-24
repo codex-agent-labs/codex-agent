@@ -10,6 +10,8 @@ import kotlin.js.toJsString
 
 internal external interface WasmNodeStats : JsAny {
     val size: Double
+    val dev: Double
+    val ino: Double
     fun isFile(): Boolean
     fun isDirectory(): Boolean
     fun isSymbolicLink(): Boolean
@@ -27,6 +29,11 @@ internal fun wasmFsExistsSync(path: String): Boolean = existsSync(path)
 internal fun wasmFsSize(path: String): Double = statSync(path).size
 internal fun wasmFsAccessSync(path: String, mode: Int): Unit = accessSync(path, mode)
 internal fun wasmFsReadFileSync(path: String): JsAny = readFileSync(path)
+internal fun wasmFsOpenSync(path: String): Int = openSync(path, "r")
+internal fun wasmFsStatDescriptorSync(descriptor: Int): WasmNodeStats = fstatSync(descriptor)
+internal fun wasmFsReadSync(descriptor: Int, buffer: JsAny, offset: Int, length: Int): Int =
+    readSync(descriptor, buffer, offset, length, null)
+internal fun wasmFsCloseSync(descriptor: Int): Unit = closeSync(descriptor)
 internal fun wasmFsWriteFileSync(path: String, value: String): Unit =
     writeFileSync(path, value.toJsString())
 internal fun wasmFsChmodSync(path: String, mode: Int): Unit = chmodSync(path, mode)
@@ -38,6 +45,8 @@ internal fun wasmFsReadDirectory(path: String): JsAny = readdirSync(path)
 internal fun wasmArrayLength(value: JsAny): Int = js("value.length")
 internal fun wasmArrayString(value: JsAny, index: Int): String = js("value[index]")
 internal fun wasmFsWriteBytes(path: String, bytes: JsAny): Unit = writeFileSync(path, bytes)
+internal fun wasmFsWriteNewBytes(path: String, bytes: JsAny): Unit =
+    writeFileSync(path, bytes, wasmWriteNewOptions())
 internal fun wasmInflateRaw(bytes: JsAny, maxOutputLength: Int): JsAny =
     inflateRawSync(bytes, wasmInflateOptions(maxOutputLength))
 internal fun wasmPathIsAbsolute(path: String): Boolean = isAbsolute(path)
@@ -57,7 +66,9 @@ internal fun wasmSpawnOptions(workingDirectory: String, detached: Boolean): JsAn
     js("({ cwd: workingDirectory, detached: detached, shell: false, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] })")
 
 internal fun wasmRemoveOptions(): JsAny = js("({ recursive: true, force: true })")
+internal fun wasmRemoveFileOptions(): JsAny = js("({ force: true })")
 internal fun wasmMkdirOptions(): JsAny = js("({ recursive: true })")
+internal fun wasmWriteNewOptions(): JsAny = js("({ flag: 'wx' })")
 internal fun wasmInflateOptions(maxOutputLength: Int): JsAny = js("({ maxOutputLength })")
 internal fun wasmProcessPlatform(): String = js("process.platform")
 internal fun wasmProcessArchitecture(): String = js("process.arch")

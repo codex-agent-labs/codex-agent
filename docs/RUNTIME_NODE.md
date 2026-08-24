@@ -57,9 +57,21 @@ classifier; applications use `NodeCodexPlatform` with `CodexHost`.
 
 ## Security and lifecycle
 
-Before starting, the runtime requires canonical absolute paths, rejects
-symbolic links, verifies the workspace and file names, and checks the packaged
-binary identities against the pinned distribution manifest.
+Before starting, the runtime requires absolute paths, captures canonical bundle
+and data roots, rejects symbolic links for the classifier ZIP, managed runtime
+directories, and persisted selection entry, canonicalizes the selected
+workspace, verifies file names, checks the App Server against the compiled
+distribution pin, and checks every packaged member against the internal
+manifest.
+
+The caller establishes the bundle directory as an authenticated-delivery
+boundary: verify the signed Maven classifier artifact (or independently
+authenticate those exact bytes) before copying it, and keep the directory
+non-attacker-writable. The runtime does not verify the artifact signature. The
+compiled library pins the App Server hash; authenticated classifier delivery
+authenticates the supervisor and legal files, while the strict internal
+manifest binds and re-verifies every member. A self-consistent manifest alone
+does not authenticate a replacement classifier.
 
 The supervisor launches only the configured App Server and owns its complete
 process tree. Closing or restarting the runtime therefore cannot leave an App

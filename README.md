@@ -79,6 +79,15 @@ adapter at the directory containing the ZIP; it selects the current target,
 verifies every member, installs it atomically into the versioned data cache, and
 repairs a corrupt cache before starting the host:
 
+The caller establishes the bundle directory as an authenticated-delivery
+boundary: verify the signed Maven classifier artifact (or independently
+authenticate those exact bytes) before copying it, and keep the directory
+non-attacker-writable. The runtime does not verify the artifact signature. The
+compiled library pins the App Server hash; authenticated classifier delivery
+authenticates the supervisor and legal files, while the internal manifest binds
+and re-verifies every installed member. A self-consistent manifest is not a
+substitute for artifact authentication.
+
 ```kotlin
 val platform = DesktopCodexPlatform(
     bundleDirectory = bundledClassifiers.toPath(),

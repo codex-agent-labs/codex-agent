@@ -34,12 +34,15 @@ internal data class RuntimeZipMember(
 )
 
 internal fun parseRuntimeBundleManifest(bytes: ByteArray): RuntimeBundleManifest {
-    require(bytes.size in 1..MAX_MANIFEST_BYTES) { "Runtime manifest size is invalid" }
+    require(bytes.size in 1..MAX_RUNTIME_MANIFEST_BYTES) { "Runtime manifest size is invalid" }
     val root = Json.parseToJsonElement(bytes.decodeToString()).jsonObject
     require(root.keys == setOf(
         "schemaVersion", "libraryVersion", "appServerVersion", "target", "classifier", "members",
     )) { "Runtime manifest fields are invalid" }
-    fun string(name: String): String = root.getValue(name).jsonPrimitive.content
+    fun string(name: String): String = root.getValue(name).jsonPrimitive.let { value ->
+        require(value.isString) { "Runtime manifest field '$name' must be a string" }
+        value.content
+    }
     val schemaVersion = root.getValue("schemaVersion").jsonPrimitive
     require(!schemaVersion.isString && schemaVersion.content == "1") {
         "Unsupported runtime manifest schema"
@@ -53,9 +56,15 @@ internal fun parseRuntimeBundleManifest(bytes: ByteArray): RuntimeBundleManifest
         val executable = member.getValue("executable").jsonPrimitive
         require(!size.isString && !executable.isString) { "Runtime manifest member types are invalid" }
         RuntimeBundleMember(
-            name = member.getValue("name").jsonPrimitive.content,
+            name = member.getValue("name").jsonPrimitive.let { name ->
+                require(name.isString) { "Runtime manifest member name must be a string" }
+                name.content
+            },
             size = size.content.toLong(),
-            sha256 = member.getValue("sha256").jsonPrimitive.content,
+            sha256 = member.getValue("sha256").jsonPrimitive.let { sha256 ->
+                require(sha256.isString) { "Runtime manifest member checksum must be a string" }
+                sha256.content
+            },
             executable = executable.boolean,
         )
     }
@@ -108,8 +117,13 @@ internal fun inspectRuntimeZip(bytes: ByteArray): List<RuntimeZipMember> {
             require(diskStart == 0 && compressedSize <= MAX_ARCHIVE_BYTES.toLong() && size <= MAX_MEMBER_BYTES) {
                 "Runtime ZIP entry size is invalid"
             }
+            require(compression != STORED || compressedSize == size) {
+                "Runtime ZIP stored entry size is invalid"
+            }
             val name = bytes.ascii(cursor + CENTRAL_HEADER_BYTES, nameSize)
-            require(name.isSafeRootMember() && names.add(name)) { "Runtime ZIP has an unsafe or duplicate member" }
+            require(name.isSafeRuntimeMemberName() && names.add(name)) {
+                "Runtime ZIP has an unsafe or duplicate member"
+            }
             require((externalAttributes ushr 16).toInt() and FILE_TYPE_MASK != SYMLINK_TYPE) {
                 "Runtime ZIP symbolic links are forbidden"
             }
@@ -121,6 +135,9 @@ internal fun inspectRuntimeZip(bytes: ByteArray): List<RuntimeZipMember> {
         }
     }
     require(cursor == eocd) { "Runtime ZIP central directory length is invalid" }
+    require(result.sumOf(RuntimeZipMember::size) <= MAX_RUNTIME_UNCOMPRESSED_BYTES) {
+        "Runtime ZIP uncompressed size is invalid"
+    }
     return result
 }
 
@@ -148,7 +165,7 @@ private fun validateLocalEntry(
     return end
 }
 
-private fun String.isSafeRootMember(): Boolean =
+internal fun String.isSafeRuntimeMemberName(): Boolean =
     isNotBlank() && this != "." && this != ".." && '/' !in this && '\\' !in this && ':' !in this
 
 private fun ByteArray.ascii(offset: Int, size: Int): String {
@@ -175,9 +192,10 @@ private const val MIN_EOCD_BYTES = 22
 private const val MAX_EOCD_BYTES = 65_557
 private const val CENTRAL_HEADER_BYTES = 46
 private const val LOCAL_HEADER_BYTES = 30
-private const val MAX_MANIFEST_BYTES = 64 * 1024
+internal const val MAX_RUNTIME_MANIFEST_BYTES = 64 * 1024
 private const val MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 internal const val MAX_RUNTIME_ARCHIVE_BYTES = MAX_ARCHIVE_BYTES.toLong()
+internal const val MAX_RUNTIME_UNCOMPRESSED_BYTES = MAX_RUNTIME_ARCHIVE_BYTES
 private const val MAX_MEMBER_BYTES = 384L * 1024 * 1024
 private const val MAX_MEMBERS = 16
 private const val EOCD_SIGNATURE = 0x06054b50L

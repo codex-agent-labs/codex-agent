@@ -41,12 +41,18 @@ internal interface NodeHost : NodeProcessLauncher {
     fun exists(path: String): Boolean
     fun fileSize(path: String): Long
     fun readBytes(path: String): ByteArray
+    fun readFileSnapshot(path: String, maxBytes: Long): ByteArray
     fun writeBytes(path: String, bytes: ByteArray)
+    fun writeNewBytes(path: String, bytes: ByteArray)
     fun inflateRaw(bytes: ByteArray, maxOutputLength: Int): ByteArray
     fun createDirectories(path: String)
+    fun createDirectory(path: String)
     fun list(path: String): List<String>
     fun move(source: String, destination: String)
+    fun atomicReplace(source: String, destination: String)
     fun removePath(path: String)
+    fun removeFile(path: String)
+    fun createSymbolicLink(path: String, target: String)
     fun requireExecutable(path: String)
     fun makeExecutable(path: String)
     fun openUrl(url: String)
