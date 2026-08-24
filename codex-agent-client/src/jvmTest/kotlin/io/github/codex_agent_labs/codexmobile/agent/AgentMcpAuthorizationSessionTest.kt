@@ -599,7 +599,7 @@ class IntegrationAuthorizationControllerTest {
                 "mcpServer/oauthLogin/completed",
                 completion(drive.name, success = false, error = "stale", threadId = conversationId.value),
             )
-            repeat(10) { yield() }
+            authorization.awaitNoPendingMcpTerminal(drive.name, conversationId)
 
             val retry = async { authorization.authorizeMcpServer(drive, conversationId) }
             val (retryRequestId, retryServer) = withTimeout(1_000) { requests.receive() }

@@ -362,6 +362,7 @@ class AgentMcpConfigurationTest {
         }
         val client = CodexAgentClient({ runtime }, requestTimeoutMillis = 100)
         try {
+            client.connection.ensureStarted(timeoutMillis = 1_000)
             assertFailsWith<AgentResourceInstallationException> {
                 client.addMcpServer(
                     AgentMcpServerConfiguration("ambiguous", AgentMcpTransport.Stdio("mcp")),
