@@ -1,6 +1,9 @@
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentHook
+import io.github.codex_agent_labs.codexmobile.agent.AgentInteractionState
 import io.github.codex_agent_labs.codexmobile.agent.AgentInstallationScope
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpServer
+import io.github.codex_agent_labs.codexmobile.agent.AgentPendingInteraction
 import io.github.codex_agent_labs.codexmobile.agent.AgentPluginReference
 import io.github.codex_agent_labs.codexmobile.agent.AgentPluginSummary
 import io.github.codex_agent_labs.codexmobile.agent.AgentSkill
@@ -11,6 +14,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexConversation
 import io.github.codex_agent_labs.codexmobile.agent.CodexHost
 import io.github.codex_agent_labs.codexmobile.agent.CodexHostState
 import io.github.codex_agent_labs.codexmobile.agent.CodexPlatform
+import io.github.codex_agent_labs.codexmobile.agent.isResolving
 import kotlinx.coroutines.CoroutineScope
 
 fun publicHost(
@@ -34,6 +38,23 @@ fun supportsSkills(agent: CodexAgent): Boolean = agent.skills.isAvailable
 
 fun conversationActions(state: AgentConversationState): Triple<Boolean, Boolean, Boolean> =
     Triple(state.canStartTurn, state.canReload, state.canCancelTurn)
+
+fun convenienceFlags(
+    agent: CodexAgent,
+    conversation: CodexConversation,
+    mcpServer: AgentMcpServer,
+    hook: AgentHook,
+    interactions: AgentInteractionState,
+    interaction: AgentPendingInteraction,
+): List<Boolean> = listOf(
+    agent.authentication.isAuthenticated.value,
+    agent.authentication.isAuthenticating.value,
+    conversation.isTurnActive.value,
+    agent.integrationAuthorization.isAuthorizing.value,
+    mcpServer.isAuthorized,
+    hook.canTrust,
+    interactions.isResolving(interaction),
+)
 
 suspend fun installExtensions(
     agent: CodexAgent,

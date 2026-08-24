@@ -50,6 +50,57 @@ class CodexPublicApiAdoptionTest {
     }
 
     @Test
+    fun resourceConveniencePropertiesCoverEveryStatus() {
+        AgentMcpAuthStatus.entries.forEach { status ->
+            val server = AgentMcpServer("server", "Server", status)
+            assertEquals(
+                status == AgentMcpAuthStatus.BEARER_TOKEN || status == AgentMcpAuthStatus.OAUTH,
+                server.isAuthorized,
+                status.name,
+            )
+        }
+
+        AgentHookTrustStatus.entries.forEach { status ->
+            val hook = AgentHook(
+                key = "hook",
+                currentHash = "hash",
+                isEnabled = true,
+                eventName = "SessionStart",
+                handler = AgentHookHandler.Command("echo ready", isAsync = false),
+                isManaged = false,
+                source = "USER",
+                sourcePath = "/hooks.json",
+                timeoutSeconds = 10,
+                trustStatus = status,
+            )
+            assertEquals(
+                status == AgentHookTrustStatus.UNTRUSTED || status == AgentHookTrustStatus.MODIFIED,
+                hook.canTrust,
+                status.name,
+            )
+        }
+    }
+
+    @Test
+    fun interactionResolutionRequiresTheOwnedPendingInstance() {
+        val approval = AgentPendingApproval(
+            requestId = "request-1",
+            conversationId = ConversationId("thread-1"),
+            title = "Approve",
+            details = "Details",
+        )
+        val resolving = AgentInteractionState(
+            pending = listOf(approval),
+            resolvingRequestIds = setOf(approval.requestId),
+        )
+
+        assertTrue(resolving.isResolving(approval))
+        assertFalse(resolving.isResolving(approval.copy()))
+        assertFalse(resolving.copy(resolvingRequestIds = emptySet()).isResolving(approval))
+        assertFalse(resolving.copy(pending = emptyList()).isResolving(approval))
+    }
+
+    @Test
     fun elicitationHelpersShareOneValidatorAndSnapshotResponses() {
         val defaultSelections = mutableListOf("a")
         val elicitation = AgentElicitation(

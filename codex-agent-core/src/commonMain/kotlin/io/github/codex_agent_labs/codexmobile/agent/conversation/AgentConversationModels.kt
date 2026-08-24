@@ -130,7 +130,10 @@ public data class AgentHook(
         else -> AgentResourceOrigin.UNKNOWN
     },
     public val canUninstall: Boolean = false,
-)
+) {
+    public val canTrust: Boolean
+        get() = trustStatus == AgentHookTrustStatus.UNTRUSTED || trustStatus == AgentHookTrustStatus.MODIFIED
+}
 
 public data class AgentHookCatalog(
     public val hooks: List<AgentHook>,

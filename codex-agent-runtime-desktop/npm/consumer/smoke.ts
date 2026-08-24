@@ -33,6 +33,7 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     signal,
   );
   const conversationState: CodexConversationState = conversation.state;
+  const isTurnActive: boolean = conversationState.isTurnActive;
   conversation.observeState((next: CodexConversationState): void => void next.status).dispose();
   await conversation.send("hello", signal);
   await conversation.runShellCommand("pwd", signal);
@@ -41,7 +42,7 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   await conversation.close();
   await conversation.dispose();
   await conversation[Symbol.asyncDispose]();
-  void conversationState;
+  void [conversationState, isTurnActive];
 }
 
 async function handleFailure(operation: Promise<void>): Promise<void> {

@@ -39,6 +39,8 @@ public class CodexAgent internal constructor(
 
     private val runtimeFeatures: Set<CodexRuntimeFeature> = features.toSet()
     internal val authenticationState: StateFlow<AgentAuthenticationState> = authenticationController.state
+    internal val authenticationIsAuthenticated: StateFlow<Boolean> = authenticationController.isAuthenticated
+    internal val authenticationIsAuthenticating: StateFlow<Boolean> = authenticationController.isAuthenticating
     internal val interactionState: StateFlow<AgentInteractionState> = interactionController.state
     internal val pendingApprovals: StateFlow<List<AgentPendingApproval>> = interactionController.approvals
     internal val pendingElicitations: StateFlow<List<AgentPendingElicitation>> = interactionController.elicitations
@@ -46,6 +48,8 @@ public class CodexAgent internal constructor(
         integrationAuthorizationController.state
     internal val activeIntegrationAuthorization: StateFlow<AgentIntegration?> =
         integrationAuthorizationController.active
+    internal val integrationAuthorizationIsAuthorizing: StateFlow<Boolean> =
+        integrationAuthorizationController.isAuthorizing
     internal val activeConversation: StateFlow<CodexConversation?> =
         mutableActiveConversation.asStateFlow()
 

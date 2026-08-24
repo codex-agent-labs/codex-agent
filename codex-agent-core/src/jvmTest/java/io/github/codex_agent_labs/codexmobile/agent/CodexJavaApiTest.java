@@ -16,6 +16,24 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 final class CodexJavaApiTest {
+    @SuppressWarnings("ResultOfMethodCallIgnored")
+    private static void compileConvenienceSurface(
+        CodexAgent agent,
+        CodexConversation conversation,
+        AgentMcpServer mcpServer,
+        AgentHook hook,
+        AgentInteractionState state,
+        AgentPendingInteraction interaction
+    ) {
+        agent.getAuthentication().isAuthenticated();
+        agent.getAuthentication().isAuthenticating();
+        conversation.isTurnActive();
+        agent.getIntegrationAuthorization().isAuthorizing();
+        mcpServer.isAuthorized();
+        hook.getCanTrust();
+        InteractionControllerKt.isResolving(state, interaction);
+    }
+
     @Test
     void canonicalHostAgentConversationLifecycleIsJavaFriendly() throws Exception {
         CodexHost host = JavaCodexApiFixture.selectableHost();

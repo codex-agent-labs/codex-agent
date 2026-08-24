@@ -63,6 +63,7 @@ internal class IntegrationAuthorizationController(
     private val lock = Mutex()
     private val mutableState = MutableStateFlow(AgentIntegrationAuthorizationState())
     private val mutableActive = MutableStateFlow<AgentIntegration?>(null)
+    private val mutableIsAuthorizing = MutableStateFlow(false)
     private var presentation: CodexAuthorizationPresentation? = null
     private var completion: CompletableDeferred<Throwable?>? = null
     private var startup: Job? = null
@@ -74,6 +75,7 @@ internal class IntegrationAuthorizationController(
 
     internal val state: StateFlow<AgentIntegrationAuthorizationState> = mutableState.asStateFlow()
     internal val active: StateFlow<AgentIntegration?> = mutableActive.asStateFlow()
+    internal val isAuthorizing: StateFlow<Boolean> = mutableIsAuthorizing.asStateFlow()
 
     private val observation: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         client.events.collect(::process)
@@ -618,6 +620,7 @@ internal class IntegrationAuthorizationController(
     private fun publishState(state: AgentIntegrationAuthorizationState) {
         mutableState.value = state
         mutableActive.value = state.target.takeIf { state.status in ACTIVE_STATUSES }
+        mutableIsAuthorizing.value = state.status in ACTIVE_STATUSES
     }
 
     private companion object {

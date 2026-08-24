@@ -112,6 +112,23 @@ private func compileSimpleAndAdvancedOperations(
     try await conversation.send(prompt: "Hello")
 }
 
+private func compileConvenienceSurface(
+    agent: CodexAgent,
+    conversation: CodexConversation,
+    mcpServer: AgentMcpServer,
+    hook: AgentHook,
+    interactionState: AgentInteractionState,
+    interaction: any AgentPendingInteraction
+) {
+    _ = agent.authentication.isAuthenticated
+    _ = agent.authentication.isAuthenticating
+    _ = conversation.isTurnActive
+    _ = agent.integrationAuthorization.isAuthorizing
+    _ = mcpServer.isAuthorized
+    _ = hook.canTrust
+    _ = interactionState.isResolving(interaction: interaction)
+}
+
 private func compileCapabilitiesMutationsAndElicitation(
     agent: CodexAgent,
     conversationState: AgentConversationState,

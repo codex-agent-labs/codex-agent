@@ -82,6 +82,7 @@ public class CodexConversation internal constructor(
     private val mutableCanReload = MutableStateFlow(false)
     private val mutableCanCancelTurn = MutableStateFlow(false)
     private val mutableCanRunShellCommand = MutableStateFlow(false)
+    private val mutableIsTurnActive = MutableStateFlow(false)
     private var generation = 0L
     private var closed = false
     private var closeRequested = false
@@ -107,6 +108,7 @@ public class CodexConversation internal constructor(
     public val canReload: StateFlow<Boolean> = mutableCanReload.asStateFlow()
     public val canCancelTurn: StateFlow<Boolean> = mutableCanCancelTurn.asStateFlow()
     public val canRunShellCommand: StateFlow<Boolean> = mutableCanRunShellCommand.asStateFlow()
+    public val isTurnActive: StateFlow<Boolean> = mutableIsTurnActive.asStateFlow()
 
     private val eventObservation: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         client.events.collect(::process)
@@ -582,6 +584,7 @@ public class CodexConversation internal constructor(
         mutableCanReload.value = state.canReload
         mutableCanCancelTurn.value = state.canCancelTurn
         mutableCanRunShellCommand.value = CodexRuntimeFeature.SHELL_COMMANDS in features && state.canStartTurn
+        mutableIsTurnActive.value = state.status in ACTIVE_TURN_STATUSES
     }
 
     private companion object {

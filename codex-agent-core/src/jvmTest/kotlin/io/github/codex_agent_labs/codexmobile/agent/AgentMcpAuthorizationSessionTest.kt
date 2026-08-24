@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
@@ -49,6 +50,7 @@ class IntegrationAuthorizationControllerTest {
         )
         try {
             agent.start()
+            assertFalse(agent.integrationAuthorization.isAuthorizing.value)
             val connectorAuthorization = async {
                 agent.integrationAuthorization.authorize(AgentIntegration.Connector(connector()))
             }
@@ -57,12 +59,14 @@ class IntegrationAuthorizationControllerTest {
                     it.status == AgentIntegrationAuthorizationStatus.AWAITING_COMPLETION
                 }
             }
+            assertTrue(agent.integrationAuthorization.isAuthorizing.value)
             assertIs<AgentIntegration.Connector>(withTimeout(1_000) {
                 agent.integrationAuthorization.active.first { it != null }
             })
             connectorAccessible.set(true)
             process.notify("app/list/updated", connectorList(isAccessible = true))
             connectorAuthorization.await()
+            assertFalse(agent.integrationAuthorization.isAuthorizing.value)
             assertEquals(null, withTimeout(1_000) {
                 agent.integrationAuthorization.active.first { it == null }
             })
@@ -80,6 +84,7 @@ class IntegrationAuthorizationControllerTest {
                     it.status == AgentIntegrationAuthorizationStatus.AWAITING_COMPLETION
                 }
             }
+            assertTrue(agent.integrationAuthorization.isAuthorizing.value)
             assertEquals(
                 mcp,
                 assertIs<AgentIntegration.McpServer>(withTimeout(1_000) {
@@ -89,6 +94,7 @@ class IntegrationAuthorizationControllerTest {
             process.notify("mcpServer/oauthLogin/completed", completion(mcp.name, success = true))
             mcpAuthorization.await()
             assertEquals(AgentIntegrationAuthorizationStatus.AUTHORIZED, agent.integrationAuthorization.state.value.status)
+            assertFalse(agent.integrationAuthorization.isAuthorizing.value)
             assertEquals(null, withTimeout(1_000) {
                 agent.integrationAuthorization.active.first { it == null }
             })
@@ -120,12 +126,14 @@ class IntegrationAuthorizationControllerTest {
             }
             val pendingRequestId = withTimeout(1_000) { requestId.await() }
             assertIs<AgentIntegration.McpServer>(agent.integrationAuthorization.active.value)
+            assertTrue(agent.integrationAuthorization.isAuthorizing.value)
 
             agent.integrationAuthorization.cancel()
             operation.join()
             assertTrue(operation.isCancelled)
             assertEquals(AgentIntegrationAuthorizationStatus.IDLE, agent.integrationAuthorization.state.value.status)
             assertEquals(null, agent.integrationAuthorization.active.value)
+            assertFalse(agent.integrationAuthorization.isAuthorizing.value)
 
             process.respond(pendingRequestId, buildJsonObject {
                 put("authorizationUrl", "https://accounts.example.com/oauth/drive")

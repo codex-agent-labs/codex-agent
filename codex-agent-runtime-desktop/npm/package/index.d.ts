@@ -64,6 +64,7 @@ export declare class CodexConversationState {
     get effort(): Nullable<string>;
     get serviceTier(): Nullable<string>;
     get failure(): Nullable<CodexFailure>;
+    get isTurnActive(): boolean;
     get canStartTurn(): boolean;
     get canReload(): boolean;
     get canCancelTurn(): boolean;

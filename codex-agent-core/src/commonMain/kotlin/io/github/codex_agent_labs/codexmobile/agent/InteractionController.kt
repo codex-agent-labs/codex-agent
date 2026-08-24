@@ -44,6 +44,9 @@ public data class AgentInteractionState(
         pending.filter { it.conversationId == conversationId }
 }
 
+public fun AgentInteractionState.isResolving(interaction: AgentPendingInteraction): Boolean =
+    interaction.requestId in resolvingRequestIds && pending.any { it === interaction }
+
 internal class InteractionController(
     private val client: CodexAgentClient,
     scope: CoroutineScope,

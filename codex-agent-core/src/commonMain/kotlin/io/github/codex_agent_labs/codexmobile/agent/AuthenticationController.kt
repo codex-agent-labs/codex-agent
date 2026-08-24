@@ -37,10 +37,14 @@ internal class AuthenticationController(
 ) {
     private val lock = Mutex()
     private val mutableState = MutableStateFlow(AgentAuthenticationState())
+    private val mutableIsAuthenticated = MutableStateFlow(false)
+    private val mutableIsAuthenticating = MutableStateFlow(false)
     private var presentation: CodexAuthorizationPresentation? = null
     private var closed = false
 
     internal val state: StateFlow<AgentAuthenticationState> = mutableState.asStateFlow()
+    internal val isAuthenticated: StateFlow<Boolean> = mutableIsAuthenticated.asStateFlow()
+    internal val isAuthenticating: StateFlow<Boolean> = mutableIsAuthenticating.asStateFlow()
 
     private val observation: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         client.events.collect(::process)
@@ -54,7 +58,7 @@ internal class AuthenticationController(
             if (mutableState.value.status == AgentAuthenticationStatus.AUTHENTICATED) return
             presentation.also {
                 presentation = null
-                mutableState.value = AgentAuthenticationState(status = AgentAuthenticationStatus.AUTHENTICATING)
+                publishState(AgentAuthenticationState(status = AgentAuthenticationStatus.AUTHENTICATING))
             }
         }
         try {
@@ -64,7 +68,7 @@ internal class AuthenticationController(
             if (error is CancellationException) {
                 withContext(NonCancellable) {
                     lock.withLock {
-                        if (!closed) mutableState.value = AgentAuthenticationState()
+                        if (!closed) publishState(AgentAuthenticationState())
                     }
                 }
                 throw error
@@ -121,7 +125,7 @@ internal class AuthenticationController(
                 if (closed) return@withContext
                 presentation.also {
                     presentation = null
-                    mutableState.value = AgentAuthenticationState()
+                    publishState(AgentAuthenticationState())
                 }
             }
             closePublicPresentation(owned, "Could not sign out")
@@ -145,12 +149,12 @@ internal class AuthenticationController(
             is AgentEvent.AuthenticationRequired -> openBrowser(CodexAuthorizationUrl.chatGpt(event.signInUrl))
             is AgentEvent.DeviceCodeAuthenticationRequired -> lock.withLock {
                 if (!closed) {
-                    mutableState.value = mutableState.value.copy(
+                    publishState(mutableState.value.copy(
                         status = AgentAuthenticationStatus.AUTHENTICATING,
                         deviceVerificationUrl = CodexAuthorizationUrl.external(event.verificationUrl),
                         deviceUserCode = event.userCode,
                         failure = null,
-                    )
+                    ))
                 }
             }
             AgentEvent.Authenticated -> closePresentation {
@@ -196,11 +200,11 @@ internal class AuthenticationController(
                     true
                 } else {
                     presentation = opened
-                    mutableState.value = mutableState.value.copy(
+                    publishState(mutableState.value.copy(
                         status = AgentAuthenticationStatus.AUTHENTICATING,
                         pendingSignInUrl = url,
                         failure = null,
-                    )
+                    ))
                     false
                 }
             }
@@ -214,7 +218,7 @@ internal class AuthenticationController(
             if (closed) return
             presentation.also {
                 presentation = null
-                mutableState.value = state()
+                publishState(state())
             }
         }
         runCatching { owned?.close() }
@@ -242,9 +246,15 @@ internal class AuthenticationController(
         )
 
     private fun markSignedOut(failure: CodexFailure) {
-        mutableState.value = AgentAuthenticationState(
+        publishState(AgentAuthenticationState(
             status = AgentAuthenticationStatus.SIGNED_OUT,
             failure = failure,
-        )
+        ))
+    }
+
+    private fun publishState(state: AgentAuthenticationState) {
+        mutableState.value = state
+        mutableIsAuthenticated.value = state.status == AgentAuthenticationStatus.AUTHENTICATED
+        mutableIsAuthenticating.value = state.status == AgentAuthenticationStatus.AUTHENTICATING
     }
 }

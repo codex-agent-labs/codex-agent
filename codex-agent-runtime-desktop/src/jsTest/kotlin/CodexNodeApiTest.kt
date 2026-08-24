@@ -67,6 +67,7 @@ class CodexNodeApiTest {
         assertSame(conversation, active.last())
         assertEquals("ready", conversation.state.status)
         assertEquals("thread-js", conversation.state.conversationId)
+        assertFalse(conversation.state.isTurnActive)
         assertTrue(isFrozen(conversation.state))
         assertTrue(isFrozen(conversation.state.messages))
         assertEquals(0, enumerablePropertyCount(conversation))

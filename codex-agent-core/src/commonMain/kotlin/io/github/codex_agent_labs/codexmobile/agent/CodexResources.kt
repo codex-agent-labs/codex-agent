@@ -6,6 +6,8 @@ public class CodexAuthentication internal constructor(
     private val agent: CodexAgent,
 ) {
     public val state: StateFlow<AgentAuthenticationState> = agent.authenticationState
+    public val isAuthenticated: StateFlow<Boolean> = agent.authenticationIsAuthenticated
+    public val isAuthenticating: StateFlow<Boolean> = agent.authenticationIsAuthenticating
 
     @Throws(Exception::class)
     public suspend fun authenticate(
@@ -48,6 +50,7 @@ public class CodexIntegrationAuthorization internal constructor(
 ) {
     public val state: StateFlow<AgentIntegrationAuthorizationState> = agent.integrationAuthorizationState
     public val active: StateFlow<AgentIntegration?> = agent.activeIntegrationAuthorization
+    public val isAuthorizing: StateFlow<Boolean> = agent.integrationAuthorizationIsAuthorizing
 
     @Throws(Exception::class)
     public suspend fun <T : AgentIntegration> authorize(target: T): Unit = when (target) {

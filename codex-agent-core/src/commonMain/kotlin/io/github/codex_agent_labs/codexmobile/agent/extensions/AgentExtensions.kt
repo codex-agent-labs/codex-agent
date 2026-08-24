@@ -120,7 +120,10 @@ public data class AgentMcpServer(
     public val configuration: AgentMcpServerConfiguration? = null,
     public val origin: AgentResourceOrigin = AgentResourceOrigin.UNKNOWN,
     public val canRemove: Boolean = false,
-)
+) {
+    public val isAuthorized: Boolean
+        get() = authStatus == AgentMcpAuthStatus.BEARER_TOKEN || authStatus == AgentMcpAuthStatus.OAUTH
+}
 
 public enum class AgentMcpAuthStatus { UNKNOWN, UNSUPPORTED, NOT_LOGGED_IN, BEARER_TOKEN, OAUTH }
 

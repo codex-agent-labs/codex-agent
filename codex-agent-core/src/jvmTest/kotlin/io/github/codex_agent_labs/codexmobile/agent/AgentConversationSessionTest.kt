@@ -42,6 +42,7 @@ class CodexConversationTest {
         val client = CodexAgentClient({ process }, requestTimeoutMillis = 1_000)
         val conversation = testConversation(client, this)
         try {
+            assertFalse(conversation.isTurnActive.value)
             conversation.open()
             assertTrue(conversation.currentMessages.value.isEmpty())
             assertNull(conversation.activeTurnProgress.value)
@@ -57,6 +58,7 @@ class CodexConversationTest {
             assertFalse(conversation.canReload.value)
             assertTrue(conversation.canCancelTurn.value)
             assertFalse(conversation.canRunShellCommand.value)
+            assertTrue(conversation.isTurnActive.value)
 
             conversation.process(AgentEvent.TextDelta(ConversationId("thread-1"), "working"))
             assertEquals("working", conversation.activeTurnProgress.value?.text)
@@ -74,6 +76,7 @@ class CodexConversationTest {
             assertTrue(conversation.canReload.value)
             assertFalse(conversation.canCancelTurn.value)
             assertTrue(conversation.canRunShellCommand.value)
+            assertFalse(conversation.isTurnActive.value)
 
             conversation.send(AgentTurnRequest("structured", clientMessageId = "client-2"))
             assertEquals("structured", conversation.currentMessages.value.last().text)
@@ -88,6 +91,7 @@ class CodexConversationTest {
             assertFalse(conversation.canReload.value)
             assertFalse(conversation.canCancelTurn.value)
             assertFalse(conversation.canRunShellCommand.value)
+            assertFalse(conversation.isTurnActive.value)
 
             val withoutShell = testConversation(client, this, features = emptySet())
             try {
@@ -125,6 +129,7 @@ class CodexConversationTest {
             sending.cancelAndJoin()
             assertEquals(AgentConversationStatus.FAILED, conversation.state.value.status)
             assertEquals("turn_start_failed", conversation.state.value.failure?.code)
+            assertFalse(conversation.isTurnActive.value)
 
             val refreshing = async { conversation.reload() }
             withTimeout(1_000) {
@@ -180,9 +185,11 @@ class CodexConversationTest {
             withTimeout(1_000) {
                 conversation.state.first { it.status == AgentConversationStatus.RUNNING_TURN }
             }
+            assertTrue(conversation.isTurnActive.value)
 
             conversation.cancelTurn()
             assertEquals(AgentConversationStatus.CANCELLING_TURN, conversation.state.value.status)
+            assertTrue(conversation.isTurnActive.value)
             assertEquals(0, interruptCount.get())
 
             releaseStart.countDown()

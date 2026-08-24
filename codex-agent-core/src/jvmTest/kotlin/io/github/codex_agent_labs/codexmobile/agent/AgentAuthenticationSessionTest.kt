@@ -3,6 +3,7 @@ package io.github.codex_agent_labs.codexmobile.agent
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -82,6 +83,8 @@ class AuthenticationControllerTest {
             client.applyLoginCompletion(LoginCompletion("login-1", false, "Access denied"))
             withTimeout(1_000) { authentication.state.first { it.failure?.message == "Access denied" } }
 
+            assertFalse(authentication.isAuthenticated.value)
+            assertFalse(authentication.isAuthenticating.value)
             assertEquals(AgentConversationStatus.READY, conversation.state.value.status)
             assertEquals(1, interactions.state.value.pending.size)
         } finally {
@@ -150,8 +153,12 @@ class AuthenticationControllerTest {
             },
         )
         try {
+            assertFalse(session.isAuthenticated.value)
+            assertFalse(session.isAuthenticating.value)
             session.authenticate()
             withTimeout(1_000) { session.state.first { it.pendingSignInUrl != null } }
+            assertFalse(session.isAuthenticated.value)
+            assertTrue(session.isAuthenticating.value)
             assertEquals("https://auth.openai.com/oauth?state=login-1", opened?.value)
 
             runtime.notify(
@@ -164,6 +171,8 @@ class AuthenticationControllerTest {
             withTimeout(1_000) {
                 session.state.first { it.status == AgentAuthenticationStatus.AUTHENTICATED }
             }
+            assertTrue(session.isAuthenticated.value)
+            assertFalse(session.isAuthenticating.value)
             assertTrue(presentationClosed)
         } finally {
             session.close()
@@ -208,8 +217,11 @@ class AuthenticationControllerTest {
         try {
             session.authenticate()
             withTimeout(1_000) { session.state.first { it.pendingSignInUrl != null } }
+            assertTrue(session.isAuthenticating.value)
             session.cancel()
             assertEquals(AgentAuthenticationStatus.SIGNED_OUT, session.state.value.status)
+            assertFalse(session.isAuthenticated.value)
+            assertFalse(session.isAuthenticating.value)
 
             session.authenticate()
             withTimeout(1_000) {
@@ -218,6 +230,7 @@ class AuthenticationControllerTest {
                         it.pendingSignInUrl?.value?.contains("login-2") == true
                 }
             }
+            assertTrue(session.isAuthenticating.value)
             assertEquals(2, attempts.get())
         } finally {
             session.close()
