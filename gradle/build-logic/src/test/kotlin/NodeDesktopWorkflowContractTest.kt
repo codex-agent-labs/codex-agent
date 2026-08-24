@@ -35,6 +35,21 @@ class NodeDesktopWorkflowContractTest {
     }
 
     @Test
+    fun `only the Node JS build lane verifies the packed npm SDK`() {
+        val nodeJs = driver.substringAfter("  node-js)").substringBefore("  node-wasm)")
+        val nodeWasm = driver.substringAfter("  node-wasm)").substringBefore("  desktop-macos-arm64)")
+        val packedTask = ":codex-agent-runtime-desktop:verifyPackedNpmConsumers"
+
+        assertEquals(1, Regex(Regex.escape(packedTask)).findAll(nodeJs).count())
+        assertEquals(1, Regex(Regex.escape(":codex-agent-runtime-desktop:jsNodeTest")).findAll(nodeJs).count())
+        assertFalse(packedTask in nodeWasm)
+        assertEquals(
+            1,
+            Regex(Regex.escape(":codex-agent-runtime-desktop:wasmJsNodeTest")).findAll(nodeWasm).count(),
+        )
+    }
+
+    @Test
     fun `every direct desktop Gradle invocation receives its evidence target`() {
         val directDesktop = driver.substringAfter("run_desktop() {").substringBefore("\n}\n\ncase ")
         val targetArgument = "args+=(-PcodexAgent.desktopEvidenceTarget=\"${'$'}target\")"

@@ -321,6 +321,16 @@ class ImpactPlanTest(GitFixture):
         self.assertFalse(matches("node-js", "production", wasm))
         self.assertFalse(matches("node-wasm", "production", js))
         self.assertTrue(matches("node-wasm", "production", wasm))
+        for npm in (
+            "codex-agent-runtime-desktop/npm/package/index.cjs",
+            "codex-agent-runtime-desktop/npm/consumer/smoke.ts",
+        ):
+            self.assertEqual(
+                {"node-js", "consumer-node-js"},
+                {lane for lane in LANES if matches(lane, "production", npm)},
+            )
+            self.assertFalse(any(matches(lane, "test", npm) for lane in LANES))
+            self.assertFalse(any(matches(lane, "metadata", npm) for lane in LANES))
         for lane in (name for name in LANES if name.startswith("desktop-")):
             self.assertFalse(matches(lane, "production", js))
             self.assertFalse(matches(lane, "production", wasm))

@@ -6,8 +6,9 @@ existing `CodexRuntimeFactory` boundary. Applications use the public
 `CodexHost` -> `CodexAgent` -> `CodexConversation` lifecycle; the raw runtime
 and protocol handshake remain internal.
 
-It is a Kotlin Maven dependency, not an npm JavaScript API. Browser JavaScript,
-browser Wasm, and WASI are unsupported.
+Kotlin consumers use the Maven dependency; JavaScript and TypeScript consumers
+use `@codex-agent-labs/codex-agent`. Browser JavaScript, browser Wasm, and WASI
+are unsupported.
 
 ## Supported hosts
 
@@ -52,8 +53,10 @@ it is not synthesized from the Codex Agent artifact version. Each optional
 agent resource exposes `isAvailable`, and rejects an unavailable operation
 before RPC.
 
-There is no separate public Node operational layer or Windows supervisor
-classifier; applications use `NodeCodexPlatform` with `CodexHost`.
+There is no separate Node execution model or Windows supervisor classifier.
+Kotlin applications use `NodeCodexPlatform` with `CodexHost`; JavaScript and
+TypeScript applications use `createCodexHost`. Both call the same Desktop/Host
+adapter and canonical lifecycle.
 
 ## Security and lifecycle
 

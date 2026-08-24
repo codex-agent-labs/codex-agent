@@ -1,0 +1,13 @@
+{
+  "name": "codex-agent-packed-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && node smoke.cjs && node smoke.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

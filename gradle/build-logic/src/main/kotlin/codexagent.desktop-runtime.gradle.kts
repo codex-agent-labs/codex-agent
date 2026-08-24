@@ -116,6 +116,7 @@ extensions.configure<KotlinMultiplatformExtension> {
     js {
         nodejs()
         binaries.executable()
+        generateTypeScriptDefinitions()
     }
     wasmJs {
         nodejs()

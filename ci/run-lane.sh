@@ -95,6 +95,7 @@ case "$lane" in
     ./gradlew "${tasks[@]}" "${args[@]}"
     ;;
   node-js)
+    [ "$build" != true ] || ./gradlew :codex-agent-runtime-desktop:verifyPackedNpmConsumers "${args[@]}"
     [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-desktop:jsNodeTest "${args[@]}"
     ;;
   node-wasm)

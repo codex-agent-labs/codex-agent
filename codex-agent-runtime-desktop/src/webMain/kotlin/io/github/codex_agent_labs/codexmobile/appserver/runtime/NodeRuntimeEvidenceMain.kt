@@ -134,7 +134,7 @@ private class FakeNodeProcess : NodeOwnedProcess {
     }
 }
 
-internal fun main() {
+internal fun runNodeRuntimeEvidenceMain() {
     val argument = runCatching { singleNodeEvidenceArgument(nodeArguments().drop(2)) }.getOrElse {
         nodeConsoleError(it.message.orEmpty())
         nodeExit(2)
