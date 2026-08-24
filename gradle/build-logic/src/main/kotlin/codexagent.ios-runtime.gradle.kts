@@ -157,6 +157,7 @@ tasks.register<VerifySwiftSimulatorCompilationTask>("verifyCodexAgentSwiftSimula
 val appleDistributionTasks = registerIosAppleDistributionTasks(
     expectedSwiftTestCount,
     pinnedRustToolchain,
+    nativeTasks.appleFrameworkToolchainIdentity,
     importedDeviceFramework,
     importedSimulatorFramework,
 )

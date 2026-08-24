@@ -190,6 +190,7 @@ private val cargoManagedEnvironmentNames = setOf(
 )
 private val sccacheTransportEnvironmentNames = setOf(
     "ACTIONS_CACHE_SERVICE_V2", "ACTIONS_CACHE_URL", "ACTIONS_RESULTS_URL", "ACTIONS_RUNTIME_TOKEN",
+    "SCCACHE_IGNORE_SERVER_IO_ERROR",
 )
 
 internal fun sanitizedCargoBaseEnvironment(

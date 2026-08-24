@@ -79,6 +79,10 @@ class GitFixture(unittest.TestCase):
             "ios-privacy-metrics.metadata": "privacy-policy/**\n",
             "ios-kotlin-tests.test": "ios-sim-tests/**\n",
             "ios-swift-tests.test": "ios-swift-auth-tests/**\n",
+            "ios-package.production": (
+                "configured/ios-package.txt\n"
+                "codex-agent-runtime-ios/apple/Sources/**\n"
+            ),
         }
         for name, contents in inventories.items():
             self.write(f"ci/lanes/{name}.pathspec", contents)
@@ -262,15 +266,85 @@ class ImpactPlanTest(GitFixture):
             if lane.startswith("ios-")
         ))
 
-    def test_candidate_support_fallbacks_produce_complete_desktop_and_package_lanes(self) -> None:
+    def test_swift_wrapper_change_keeps_framework_production_compatible(self) -> None:
+        prior_path = self.root / "build/ci/prior/impact-plan.json"
+        plan(
+            root=self.root,
+            base=self.base,
+            target=self.base,
+            head=self.base,
+            event="pull_request",
+            pull_request=7,
+            merge_ready=True,
+            force_full=False,
+            require_android_evidence=False,
+            repository="codex-agent-labs/codex-agent",
+            output=prior_path,
+        )
+        wrapper = "codex-agent-runtime-ios/apple/Sources/Wrapper.swift"
+        result, current_path, _ = self.make_plan(wrapper, "public struct Wrapper {}\n")
+        self.assertTrue(result["lanes"]["ios-package"]["build"])
+        package = Path("inventories/ios-package/production-inputs.git-tree")
+        self.assertNotEqual(
+            (prior_path.parent / package).read_bytes(),
+            (current_path.parent / package).read_bytes(),
+        )
+        self.assertIn(
+            f"\t{wrapper}\n",
+            (current_path.parent / package).read_text(encoding="utf-8"),
+        )
+        for lane in ("ios-framework-device", "ios-framework-simulator"):
+            self.assertTrue(result["lanes"][lane]["build"])
+            relative = Path("inventories", lane, "production-inputs.git-tree")
+            self.assertEqual(
+                (prior_path.parent / relative).read_bytes(),
+                (current_path.parent / relative).read_bytes(),
+            )
+
+    def test_candidate_support_fallbacks_produce_complete_desktop_and_privacy_lanes(self) -> None:
         desktop, _, _ = self.make_plan("configured/consumer-desktop.txt", "consumer changed\n")
         for lane in (name for name in LANES if name.startswith("desktop-")):
             self.assertTrue(desktop["lanes"][lane]["build"])
             self.assertTrue(desktop["lanes"][lane]["test"])
 
         privacy, _, _ = self.make_plan("privacy-policy/review.json", "{}\n")
-        self.assertTrue(privacy["lanes"]["ios-package"]["build"])
-        self.assertTrue(privacy["lanes"]["ios-package"]["metadata"])
+        self.assertTrue(privacy["lanes"]["ios-privacy-metrics"]["metadata"])
+        for lane in ("ios-framework-device", "ios-framework-simulator"):
+            self.assertTrue(privacy["lanes"][lane]["build"])
+        for lane in ("ios-kotlin-tests", "ios-swift-tests", "ios-package"):
+            self.assertFalse(any(privacy["lanes"][lane][action] for action in ("build", "test", "metadata")))
+
+    def test_privacy_workflow_uses_only_framework_artifacts_and_complete_gate(self) -> None:
+        apple = (CI_ROOT.parent / ".github/workflows/apple-runtime-evidence.yml").read_text(encoding="utf-8")
+        select = apple[apple.index("\n  select:"):apple.index("\n\n  native-tests:")]
+        privacy = apple[apple.index("\n  privacy-metrics:"):apple.index("\n\n  consumer-common:")]
+        self.assertIn("needs: [select, framework-device, framework-simulator]", privacy)
+        self.assertEqual(2, privacy.count("uses: actions/download-artifact@"))
+        for lane, path in (("framework-device", "device"), ("framework-simulator", "simulator")):
+            self.assertIn(f"needs.{lane}.outputs.artifact_name", privacy)
+            self.assertIn(f"path: build/ci/privacy-inputs/{path}", privacy)
+        for removed in ("needs.kotlin-tests", "needs.swift-tests", "needs.package"):
+            self.assertNotIn(removed, privacy)
+
+        selected = (
+            lane for lane in LANES
+            if lane.startswith("ios-") or lane in {
+                "consumer-common", "consumer-ios-device", "consumer-ios-simulator",
+            }
+        )
+        for lane in selected:
+            self.assertIn(f"--lane {lane}", select)
+        for job in ("kotlin-tests", "swift-tests", "package", "privacy-metrics"):
+            self.assertIn(f"\n  {job}:\n", apple)
+
+        workflow = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        gate = workflow[workflow.index("\n  merge-gate:"):]
+        self.assertIn(
+            "needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple, consumers]",
+            gate,
+        )
+        self.assertIn("pattern: codex-agent-ci-*", gate)
+        self.assertIn("python3 ci/receipt.py aggregate --plan", gate)
 
     def test_unknown_and_planner_changes_force_full(self) -> None:
         unknown, _, unknown_target = self.make_plan("unclassified/input.txt")
@@ -390,6 +464,14 @@ class RealImpactPlanTest(unittest.TestCase):
         self.assertEqual(
             set(LANES),
             matching_lanes("production", "gradle/libs.versions.toml"),
+        )
+        self.assertEqual(
+            set(LANES),
+            matching_lanes("production", prefix + "ReleaseIo.kt"),
+        )
+        self.assertEqual(
+            {"contracts"},
+            matching_lanes("test", prefix + "ReleaseIo.kt"),
         )
         self.assertEqual(
             {"portable", "consumer-common", "consumer-desktop"},
@@ -742,6 +824,12 @@ class ReceiptTest(GitFixture):
         combined = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(["android"], list(combined["lanes"]))
         self.assertEqual(101, combined["lanes"]["android"]["runId"])
+
+        plan_value = json.loads(self.plan_path.read_text(encoding="utf-8"))
+        plan_value["lanes"]["ios-privacy-metrics"]["metadata"] = True
+        self.plan_path.write_text(json.dumps(plan_value), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Validation receipt set mismatch"):
+            aggregate(Namespace(plan=self.plan_path, receipts=self.receipt_root.parent, output=output))
 
     def test_required_android_evidence_is_attached_fail_closed(self) -> None:
         plan_value = json.loads(self.plan_path.read_text(encoding="utf-8"))

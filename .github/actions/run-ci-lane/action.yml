@@ -96,9 +96,23 @@ runs:
         targets: aarch64-apple-ios,aarch64-apple-ios-sim
     - id: setup-sccache
       if: inputs.rust-version != 'none'
+      continue-on-error: true
       uses: ./.github/actions/setup-sccache
       with:
         write: ${{ steps.cache-policy.outputs.rust-write }}
+        sccache-write: ${{ steps.cache-policy.outputs.sccache-write }}
+        version: ${{ steps.cache-policy.outputs.sccache-version }}
+    - name: Fall back to direct Rust compilation when cache setup fails
+      if: inputs.rust-version != 'none' && steps.setup-sccache.outcome == 'failure'
+      shell: bash
+      run: |
+        {
+          printf 'SCCACHE_GHA_ENABLED=\n'
+          printf 'SCCACHE_GHA_VERSION=\n'
+          printf 'SCCACHE_GHA_RW_MODE=\n'
+          printf 'SCCACHE_IGNORE_SERVER_IO_ERROR=\n'
+          printf 'RUSTC_WRAPPER=\n'
+        } >> "$GITHUB_ENV"
     - id: environment
       env:
         NODE_REQUESTED: ${{ inputs.node-version }}
@@ -287,6 +301,31 @@ runs:
       run: >-
         python3 ci/runner_identity.py verify --expected "$EXPECTED"
         --actual build/ci/reuse/production/payload/build/ci/linux-arm64-producer-identities
+    - name: Validate reused Apple Rust slice
+      if: >-
+        (inputs.lane == 'ios-rust-device' || inputs.lane == 'ios-rust-simulator') &&
+        (steps.reuse.outputs.reused == 'true' || steps.production.outputs.reused == 'true')
+      env:
+        FULL_REUSED: ${{ steps.reuse.outputs.reused }}
+        LANE: ${{ inputs.lane }}
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+      shell: bash
+      run: |
+        case "$LANE" in
+          ios-rust-device)
+            task=importCodexAgentIosArm64RustSlice
+            property=codexAgent.iosDeviceRustEvidenceDirectory
+            ;;
+          ios-rust-simulator)
+            task=importCodexAgentIosSimulatorArm64RustSlice
+            property=codexAgent.iosSimulatorRustEvidenceDirectory
+            ;;
+        esac
+        mode=production
+        [ "$FULL_REUSED" != true ] || mode=full
+        evidence="$GITHUB_WORKSPACE/build/ci/reuse/$mode/payload/codex-agent-runtime-ios/build/apple-slice-exports"
+        ./gradlew --stacktrace -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+          "-P$property=$evidence" ":codex-agent-runtime-ios:$task"
     - name: Transport selected production reuse to downstream jobs
       if: >-
         inputs.reuse-only == 'true' && steps.reuse.outputs.reused != 'true' &&

@@ -46,7 +46,7 @@ class IosNativeTaskRegistrationTest {
             ).forEach { provider ->
                 val task = provider.get()
                 val actual = task.sourceInputs.files.map(File::getCanonicalFile).toSet()
-                assertTrue(actual.containsAll(expectedRoots), "${task.name} is missing native inputs")
+                assertEquals(expectedRoots, actual, "${task.name} native inputs changed")
                 assertEquals(
                     directory.resolve("build/codex-source/codex-rs").canonicalFile,
                     task.workingDirectory.get().asFile.canonicalFile,

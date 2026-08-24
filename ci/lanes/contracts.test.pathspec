@@ -1,5 +1,6 @@
 gradle/build-logic/src/main/kotlin/ImportedAppleFrameworkTasks.kt
 gradle/build-logic/src/main/kotlin/ProtectedRuntimeCandidateRegistration.kt
+gradle/build-logic/src/main/kotlin/ReleaseIo.kt
 gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt
 gradle/build-logic/src/test/**
 codex-agent-client/src/commonTest/**

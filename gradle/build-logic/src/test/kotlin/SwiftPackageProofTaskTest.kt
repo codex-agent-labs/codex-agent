@@ -1,6 +1,10 @@
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.attribute.FileTime
+import java.nio.file.attribute.PosixFileAttributeView
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -91,6 +95,74 @@ class SwiftPackageProofTaskTest {
     }
 
     @Test
+    fun `checksum updater changes only the canonical checksum and preserves permissions`() =
+        withFixture(checksumMatches = false) { fixture ->
+            val before = fixture.manifest.readText()
+            val permissions = posixPermissions(fixture.manifest)
+            fixture.update()
+            assertEquals(
+                before.replace("0".repeat(64), fixture.archive.releaseDigest()),
+                fixture.manifest.readText(),
+            )
+            assertEquals(permissions, posixPermissions(fixture.manifest))
+        }
+
+    @Test
+    fun `checksum updater does not rewrite an unchanged manifest`() = withFixture { fixture ->
+        val fixedTime = FileTime.fromMillis(1_700_000_000_000)
+        Files.setLastModifiedTime(fixture.manifest.toPath(), fixedTime)
+        val before = fixture.manifest.readBytes()
+        fixture.update()
+        assertContentEquals(before, fixture.manifest.readBytes())
+        assertEquals(fixedTime, Files.getLastModifiedTime(fixture.manifest.toPath()))
+    }
+
+    @Test
+    fun `checksum updater rejects an archive checksum mismatch without mutation`() = withFixture { fixture ->
+        fixture.checksum.writeText("${"f".repeat(64)}\n")
+        val before = fixture.manifest.readBytes()
+        assertFailsWith<IllegalStateException> { fixture.update() }
+        assertContentEquals(before, fixture.manifest.readBytes())
+    }
+
+    @Test
+    fun `checksum updater rejects ambiguous or noncanonical targets without mutation`() = withFixture { fixture ->
+        val canonical = fixture.manifest.readText()
+        val variants = listOf(
+            canonical + canonical,
+            canonical.replace(SWIFTPM_TEST_URL, "https://example.invalid/CodexAgent.zip"),
+            canonical.replace(".binaryTarget", ".target"),
+        )
+        variants.forEach { contents ->
+            fixture.manifest.writeText(contents)
+            val before = fixture.manifest.readBytes()
+            assertFailsWith<IllegalStateException> { fixture.update() }
+            assertContentEquals(before, fixture.manifest.readBytes())
+        }
+    }
+
+    @Test
+    fun `checksum updater rejects a symbolic link manifest without mutation`() = withFixture { fixture ->
+        val target = fixture.repo.resolve("Package.target.swift")
+        Files.move(fixture.manifest.toPath(), target.toPath())
+        Files.createSymbolicLink(fixture.manifest.toPath(), File(target.name).toPath())
+        val before = target.readBytes()
+        assertFailsWith<IllegalStateException> { fixture.update() }
+        assertTrue(Files.isSymbolicLink(fixture.manifest.toPath()))
+        assertContentEquals(before, target.readBytes())
+    }
+
+    @Test
+    fun `checksum verification remains read only`() = withFixture { fixture ->
+        val fixedTime = FileTime.fromMillis(1_700_000_000_000)
+        Files.setLastModifiedTime(fixture.manifest.toPath(), fixedTime)
+        val before = fixture.manifest.readBytes()
+        fixture.verify()
+        assertContentEquals(before, fixture.manifest.readBytes())
+        assertEquals(fixedTime, Files.getLastModifiedTime(fixture.manifest.toPath()))
+    }
+
+    @Test
     fun `proof graph retains exact producers without clean`() {
         val root = ProjectBuilder.builder().withName("root").build()
         val ios = ProjectBuilder.builder().withName("codex-agent-runtime-ios").withParent(root).build()
@@ -131,6 +203,11 @@ class SwiftPackageProofTaskTest {
         assertFalse("RecordSwiftPackageProofTask" in rootBuild)
         assertFalse("stage" + "Protected" in rootBuild)
         assertTrue("recordCodexAgentSwiftPackageProof" in registration)
+        assertTrue("updateCodexAgentSwiftPackageChecksum" in registration)
+        assertTrue("dependsOn(packageCodexAgentSwiftPackageBinary, generateCodexAgentSwiftPackageChecksum)" in registration)
+        assertTrue("manifestFile.set(rootProject.layout.projectDirectory.file(\"Package.swift\"))" in registration)
+        assertTrue("mustRunAfter(updateCodexAgentSwiftPackageChecksum)" in registration)
+        assertFalse("dependsOn(updateCodexAgentSwiftPackageChecksum)" in registration)
         assertFalse("SwiftPackageAB" in rootBuild + registration)
         assertFalse("swiftPmBaselineProof" in rootBuild + registration)
         assertFalse("clean.configure" in registration)
@@ -155,4 +232,8 @@ class SwiftPackageProofTaskTest {
         val failure = assertFailsWith<IllegalStateException> { fixture.record() }
         assertTrue(failure.message.orEmpty().contains("non-ignored untracked"))
     }
+
+    private fun posixPermissions(file: File) =
+        Files.getFileAttributeView(file.toPath(), PosixFileAttributeView::class.java)
+            ?.readAttributes()?.permissions()
 }
