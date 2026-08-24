@@ -118,7 +118,7 @@ class SwiftPackageProofTaskTest {
     }
 
     @Test
-    fun `root wiring stages one proof and contains no AB path`() {
+    fun `root release path has no legacy Swift proof staging`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { it.resolve("build.gradle.kts").isFile && it.resolve("codex-agent-runtime-ios").isDirectory }
         val rootBuild = repository.resolve(
@@ -128,9 +128,8 @@ class SwiftPackageProofTaskTest {
             "gradle/build-logic/src/main/kotlin/IosAppleReleaseVerificationTasks.kt",
         ).readText()
 
-        assertTrue("ios.named<RecordSwiftPackageProofTask>" in rootBuild)
-        assertTrue("proofFile.set(stagedSwiftPmProof)" in rootBuild)
-        assertTrue("stageSwiftZip.configure { dependsOn(swiftPackageProof) }" in rootBuild)
+        assertFalse("RecordSwiftPackageProofTask" in rootBuild)
+        assertFalse("stage" + "Protected" in rootBuild)
         assertTrue("recordCodexAgentSwiftPackageProof" in registration)
         assertFalse("SwiftPackageAB" in rootBuild + registration)
         assertFalse("swiftPmBaselineProof" in rootBuild + registration)

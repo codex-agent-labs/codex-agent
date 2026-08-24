@@ -192,7 +192,6 @@ jobs:
           chmod 700 "$RUNNER_TEMP/gnupg"
           export GNUPGHOME="$RUNNER_TEMP/gnupg"
           test -d "$SIGNED_MAVEN/io/github/codex-agent-labs"
-          test -d "$SIGNED_MAVEN/io/github/ciurlaro"
           if find "$SIGNED_MAVEN" -type f ! -name 'maven-metadata.xml*' \
             \( -name '*.asc' -o -name '*.md5' -o -name '*.sha1' -o -name '*.sha256' -o -name '*.sha512' \) \
             -print -quit | grep -q .; then

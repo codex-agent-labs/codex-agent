@@ -46,8 +46,8 @@ follows:
   Keep Firebase OIDC configuration in `merge-validation`; keep signing and
   Maven Central credentials only in the candidate/publication environments,
   with required reviewers.
-- Set `CI_MERGE_QUEUE_ENABLED=true` only after the trusted Android bootstrap
-  described below is on `main` and the queue rules are ready.
+- Set `CI_MERGE_QUEUE_ENABLED=true` when the merge-queue rules and trusted
+  workflow are configured.
 
 ## Candidate identity
 
@@ -120,26 +120,6 @@ Follow the [iOS development verification order](RUNTIME_IOS.md#verification)
 before starting the expensive Apple gate; it includes the scoped clean,
 simulator-only Swift typecheck, source freeze, disk budget, and exact-evidence
 reuse rules.
-
-## Trusted Android rollout
-
-The Firebase job has OIDC authority and deliberately executes workflow code
-pinned to `main`, so the modernization must be enabled in three ordered steps:
-
-1. Freeze candidate tags, then land the new trusted
-   `android-runtime-evidence.yml` interface and its pinned-main dependencies on
-   `main`: `ci/impact.py`, `ci/receipt.py`, `ci/evidence.py`, the Firebase
-   evidence model/task/plugin files, and `setup-kmp`. The old candidate caller
-   is intentionally unavailable during this short bootstrap window.
-2. In a later change, land the CI caller and the remaining modernization that
-   passes those exact bindings. Do not weaken the pin to `main` and do not give
-   OIDC or release secrets to PR-controlled workflow code.
-3. Confirm the trusted pre-merge evidence path, then set
-   `CI_MERGE_QUEUE_ENABLED=true` and enable the one-PR merge queue ruleset.
-
-Attempting the trusted workflow interface change and its new caller in one PR
-fails closed because GitHub resolves reusable-workflow inputs from `main`.
-Do not create a candidate tag until step 2 has landed.
 
 ## Manual ChatGPT acceptance
 
