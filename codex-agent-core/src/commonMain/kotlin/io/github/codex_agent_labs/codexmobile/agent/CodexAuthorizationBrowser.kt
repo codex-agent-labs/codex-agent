@@ -12,9 +12,11 @@ public class CodexAuthorizationUrl private constructor(
     public val purpose: CodexAuthorizationPurpose,
 ) {
     public companion object {
+        @kotlin.jvm.JvmStatic
         public fun chatGpt(value: String): CodexAuthorizationUrl =
             CodexAuthorizationUrl(validateAuthorizationUrl(value, chatGpt = true), CodexAuthorizationPurpose.CHAT_GPT)
 
+        @kotlin.jvm.JvmStatic
         public fun external(value: String): CodexAuthorizationUrl =
             CodexAuthorizationUrl(validateAuthorizationUrl(value, chatGpt = false), CodexAuthorizationPurpose.EXTERNAL)
     }

@@ -45,14 +45,15 @@ from validation_reuse import (  # noqa: E402
 
 
 class RunLaneContractTest(unittest.TestCase):
-    def test_contracts_build_runs_the_transitive_kotlin_binding_gate(self) -> None:
+    def test_contracts_build_runs_the_transitive_binding_gates(self) -> None:
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
         contracts = driver.split("  contracts)", 1)[1].split("  portable)", 1)[0]
         build = contracts.split('if [ "$build" = true ]; then', 1)[1].split("    fi", 1)[0]
 
-        self.assertEqual(1, build.count(":codex-agent-core:verifyKotlinBindingParity"))
+        self.assertEqual(1, build.count(":codex-agent-core:auditCrossLanguageBindingParity"))
+        self.assertNotIn(":codex-agent-core:verifyKotlinBindingParity", build)
+        self.assertNotIn(":codex-agent-core:verifyJavaBindingParity", build)
         self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", build)
-        self.assertNotIn(":codex-agent-core:auditCrossLanguageBindingParity", build)
 
 
 class GitFixture(unittest.TestCase):
@@ -675,7 +676,7 @@ class RealImpactPlanTest(unittest.TestCase):
             self.assertEqual(set(), matching_lanes("production", test_path))
             self.assertEqual(set(), matching_lanes("metadata", test_path))
         self.assertEqual(
-            {"portable", "consumer-common", "consumer-desktop"},
+            {"contracts", "portable", "consumer-common", "consumer-desktop"},
             matching_lanes(
                 "production",
                 "codex-agent-core/src/jvmMain/kotlin/io/github/codex_agent_labs/ClientJvm.kt",
@@ -686,16 +687,63 @@ class RealImpactPlanTest(unittest.TestCase):
             "io/github/codex_agent_labs/codexmobile/agent/CodexJava.kt"
         )
         self.assertEqual(
-            {"android", "portable", "consumer-common", "consumer-android", "consumer-desktop"},
+            {
+                "contracts", "android", "portable",
+                "consumer-common", "consumer-android", "consumer-desktop",
+            },
             matching_lanes("production", codex_java_source),
         )
         self.assertEqual({"contracts"}, matching_lanes("test", codex_java_source))
         self.assertEqual(
-            {"portable", "consumer-desktop"},
+            {"contracts", "portable", "consumer-desktop"},
             matching_lanes(
                 "production",
                 "codex-agent-runtime-desktop/src/jvmMain/kotlin/"
                 "io/github/codex_agent_labs/codexmobile/agent/runtime/DesktopCodexJava.kt",
+            ),
+        )
+
+        parity_inputs = (
+            prefix + "CrossLanguageBindingAudit.kt",
+            prefix + "GenerateDesktopDistributionSourceTask.kt",
+            prefix + "PrepareCodexRuntimeTask.kt",
+            prefix + "codexagent.desktop-runtime.gradle.kts",
+            "gradle/build-logic/src/test/kotlin/CrossLanguageBindingAuditTest.kt",
+            "codex-agent-core/src/commonMain/kotlin/sample/Canonical.kt",
+            "codex-agent-core/src/commonTest/kotlin/sample/CanonicalTest.kt",
+            "codex-agent-core/src/jvmAndAndroidMain/kotlin/sample/CodexJava.kt",
+            "codex-agent-core/src/jvmMain/kotlin/sample/JvmProjection.kt",
+            "codex-agent-core/src/androidMain/kotlin/sample/AndroidProjection.kt",
+            "codex-agent-core/src/nativeMain/kotlin/sample/NativeProjection.kt",
+            "codex-agent-core/src/wasmJsMain/kotlin/sample/WasmProjection.kt",
+            "codex-agent-core/src/jvmTest/java/sample/CodexJavaApiTest.java",
+            "codex-agent-runtime-desktop/src/commonMain/kotlin/sample/DesktopCommon.kt",
+            "codex-agent-runtime-desktop/src/desktopMain/kotlin/sample/Desktop.kt",
+            "codex-agent-runtime-desktop/src/jvmMain/kotlin/sample/DesktopCodexJava.kt",
+            "codex-agent-runtime-desktop/codex-app-server-distributions.json",
+            "codex-agent-runtime-android/src/main/kotlin/sample/AndroidCodexJava.kt",
+        )
+        for path in parity_inputs:
+            with self.subTest(parity_input=path):
+                self.assertIn("contracts", matching_lanes("production", path))
+        self.assertEqual(
+            {"contracts"},
+            matching_lanes("production", prefix + "CrossLanguageJavaBindingEvidence.kt"),
+        )
+        self.assertEqual(
+            {"contracts"},
+            matching_lanes(
+                "production",
+                "gradle/build-logic/src/test/kotlin/CrossLanguageJavaBindingEvidenceTest.kt",
+            ),
+        )
+
+        self.assertIn(
+            "contracts",
+            matching_lanes(
+                "production",
+                "codex-agent-runtime-android/src/main/kotlin/"
+                "io/github/codex_agent_labs/codexmobile/agent/runtime/AndroidCodexJava.kt",
             ),
         )
 

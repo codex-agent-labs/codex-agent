@@ -19,8 +19,9 @@ class CrossLanguageBindingTasksTest {
                 val coverage = layout.buildDirectory.file("reports/cross-language-api/canonical-coverage.json")
                 val audit = layout.buildDirectory.file("reports/cross-language-api/binding-obligations-m7_5.json")
                 val receipt = layout.buildDirectory.file("reports/cross-language-api/bindings/kotlin-parity.json")
+                val javaReceipt = layout.buildDirectory.file("reports/cross-language-api/bindings/java-parity.json")
                 val preflight = tasks.register<Delete>("invalidateCrossLanguageBindingParityOutputs") {
-                    delete(coverage, audit, receipt)
+                    delete(coverage, audit, receipt, javaReceipt)
                 }
                 tasks.configureEach {
                     if (name != preflight.name) mustRunAfter(preflight)
@@ -28,17 +29,27 @@ class CrossLanguageBindingTasksTest {
                 val failingPrerequisite = tasks.register("failingCoveragePrerequisite") {
                     doLast { throw GradleException("intentional coverage prerequisite failure") }
                 }
-                tasks.register("verifyKotlinBindingParity") {
+                val coverageGate = tasks.register("verifyCrossLanguageApiCoverage") {
                     dependsOn(preflight, failingPrerequisite)
+                }
+                val kotlinGate = tasks.register("verifyKotlinBindingParity") {
+                    dependsOn(coverageGate)
+                }
+                val javaGate = tasks.register("verifyJavaBindingParity") {
+                    dependsOn(coverageGate)
+                }
+                tasks.register("auditCrossLanguageBindingParity") {
+                    dependsOn(kotlinGate, javaGate)
                 }
             """.trimIndent())
             val coverage = root.staleOutput("reports/cross-language-api/canonical-coverage.json")
             val audit = root.staleOutput("reports/cross-language-api/binding-obligations-m7_5.json")
             val receipt = root.staleOutput("reports/cross-language-api/bindings/kotlin-parity.json")
+            val javaReceipt = root.staleOutput("reports/cross-language-api/bindings/java-parity.json")
 
             val result = GradleRunner.create()
                 .withProjectDir(root)
-                .withArguments("verifyKotlinBindingParity", "--stacktrace")
+                .withArguments("auditCrossLanguageBindingParity", "--stacktrace")
                 .buildAndFail()
 
             assertEquals(
@@ -51,16 +62,21 @@ class CrossLanguageBindingTasksTest {
             assertFalse(coverage.exists())
             assertFalse(audit.exists())
             assertFalse(receipt.exists())
+            assertFalse(javaReceipt.exists())
 
             val wiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
             listOf(
                 "reports/cross-language-api/canonical-coverage.json",
                 "reports/cross-language-api/binding-obligations-m7_5.json",
                 "reports/cross-language-api/bindings/kotlin-parity.json",
+                "reports/cross-language-api/bindings/java-parity.json",
                 "tasks.configureEach",
                 "mustRunAfter(invalidateCrossLanguageBindingParityOutputs)",
                 "verifyCrossLanguageApiCoverage.configure",
                 "dependsOn(invalidateCrossLanguageBindingParityOutputs)",
+                "dependsOn(verifyKotlinBindingParity, verifyJavaBindingParity)",
+                "kotlinReceipt.set(verifyKotlinBindingParity.flatMap",
+                "javaReceipt.set(verifyJavaBindingParity.flatMap",
             ).forEach { contract ->
                 assertTrue(contract in wiring, "Missing convention-plugin cleanup contract: $contract")
             }

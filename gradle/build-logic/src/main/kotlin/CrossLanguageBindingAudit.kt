@@ -1,5 +1,4 @@
 import java.io.File
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -37,6 +36,7 @@ internal data class CrossLanguageBindingAudit(
     val kotlinArtifactSha256: String,
     val compiledTestsSha256: String,
     val testResultsSha256: String,
+    val languageReceiptSha256: Map<CrossLanguageBinding, String>,
     val summary: CrossLanguageBindingAuditSummary,
     val obligations: List<CrossLanguageBindingAuditRecord>,
     val kotlinScenarios: List<CrossLanguageScenarioEvidence>,
@@ -44,20 +44,33 @@ internal data class CrossLanguageBindingAudit(
 )
 
 internal fun buildCrossLanguageBindingAudit(
-    evidence: CrossLanguageKotlinBindingEvidence,
+    kotlinEvidence: CrossLanguageKotlinBindingEvidence,
+    javaEvidence: CrossLanguageJavaBindingParityEvidence,
+    languageReceiptSha256: Map<CrossLanguageBinding, String>,
 ): CrossLanguageBindingAudit {
     val phase = CrossLanguageBindingPhase.M7_5
-    val capabilityKeys = evidence.capabilityClaims.map(KotlinBindingCapabilityClaim::capabilityKey)
-    val publicSymbols = evidence.capabilityClaims.map(KotlinBindingCapabilityClaim::publicSymbol)
+    val capabilityKeys = kotlinEvidence.capabilityClaims.map(KotlinBindingCapabilityClaim::capabilityKey)
+    val kotlinPublicSymbols = kotlinEvidence.capabilityClaims.map(KotlinBindingCapabilityClaim::publicSymbol)
+    check(javaEvidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).sorted() ==
+        capabilityKeys.sorted()) {
+        "Java binding audit evidence does not match the canonical API"
+    }
+    check(languageReceiptSha256.keys == setOf(CrossLanguageBinding.KOTLIN, CrossLanguageBinding.JAVA) &&
+        languageReceiptSha256.values.all(String::isExactSha256)) {
+        "Binding audit requires exact Kotlin and Java receipt digests"
+    }
     val parity = evaluateCrossLanguageBindingParity(
         CrossLanguageBindingParityInput(
             phase = phase,
             capabilityKeys = capabilityKeys,
             canonicalCoverageKeys = capabilityKeys,
-            projectionClaims = emptyList(),
-            publicSymbols = mapOf(CrossLanguageBinding.KOTLIN to publicSymbols),
-            bindingTests = evidence.bindingTests,
-            scenarioEvidence = evidence.scenarioEvidence,
+            projectionClaims = javaEvidence.projectionClaims,
+            publicSymbols = mapOf(
+                CrossLanguageBinding.KOTLIN to kotlinPublicSymbols,
+                CrossLanguageBinding.JAVA to javaEvidence.publicSymbols,
+            ),
+            bindingTests = kotlinEvidence.bindingTests + javaEvidence.bindingTests,
+            scenarioEvidence = kotlinEvidence.scenarioEvidence + javaEvidence.scenarioEvidence,
         ),
     )
     check(parity.obligations.isNotEmpty()) { parity.errors.joinToString("\n") }
@@ -78,20 +91,21 @@ internal fun buildCrossLanguageBindingAudit(
     return CrossLanguageBindingAudit(
         phase = phase,
         result = if (errors.isEmpty()) "complete" else "incomplete",
-        apiReportSha256 = evidence.digests.apiReportSha256,
-        canonicalCoverageSha256 = evidence.digests.canonicalCoverageSha256,
-        kotlinArtifactSha256 = evidence.digests.artifactSha256,
-        compiledTestsSha256 = evidence.digests.compiledTestsSha256,
-        testResultsSha256 = evidence.digests.testResultsSha256,
+        apiReportSha256 = kotlinEvidence.digests.apiReportSha256,
+        canonicalCoverageSha256 = kotlinEvidence.digests.canonicalCoverageSha256,
+        kotlinArtifactSha256 = kotlinEvidence.digests.artifactSha256,
+        compiledTestsSha256 = kotlinEvidence.digests.compiledTestsSha256,
+        testResultsSha256 = kotlinEvidence.digests.testResultsSha256,
+        languageReceiptSha256 = languageReceiptSha256.toMap(),
         summary = obligations.summary(),
         obligations = obligations,
-        kotlinScenarios = evidence.scenarioEvidence,
+        kotlinScenarios = kotlinEvidence.scenarioEvidence,
         errors = errors,
     )
 }
 
 internal fun CrossLanguageBindingAudit.toJson(): JsonObject = buildJsonObject {
-    put("schema", JsonPrimitive(1))
+    put("schema", JsonPrimitive(2))
     put("result", JsonPrimitive(result))
     put("phase", JsonPrimitive(phase.name))
     put("apiReportSha256", JsonPrimitive(apiReportSha256))
@@ -99,6 +113,11 @@ internal fun CrossLanguageBindingAudit.toJson(): JsonObject = buildJsonObject {
     put("kotlinArtifactSha256", JsonPrimitive(kotlinArtifactSha256))
     put("compiledTestsSha256", JsonPrimitive(compiledTestsSha256))
     put("testResultsSha256", JsonPrimitive(testResultsSha256))
+    put("languageReceiptSha256", buildJsonObject {
+        languageReceiptSha256.entries.sortedBy { it.key.id }.forEach { (language, digest) ->
+            put(language.id, JsonPrimitive(digest))
+        }
+    })
     put("summary", summary.toJson())
     put("obligations", buildJsonArray {
         obligations.forEach { obligation ->
@@ -125,114 +144,19 @@ internal fun CrossLanguageBindingAudit.toJson(): JsonObject = buildJsonObject {
 
 internal fun readCrossLanguageBindingAudit(
     auditFile: File,
-    expectedEvidence: CrossLanguageKotlinBindingEvidence,
+    expectedKotlinEvidence: CrossLanguageKotlinBindingEvidence,
+    expectedJavaEvidence: CrossLanguageJavaBindingParityEvidence,
+    expectedLanguageReceiptSha256: Map<CrossLanguageBinding, String>,
 ): CrossLanguageBindingAudit {
-    val expectedAudit = buildCrossLanguageBindingAudit(expectedEvidence)
-    val root = auditFile.readReleaseObject()
-    check(root.keys == setOf(
-        "schema", "result", "phase", "apiReportSha256", "canonicalCoverageSha256",
-        "kotlinArtifactSha256", "compiledTestsSha256", "testResultsSha256", "summary",
-        "obligations", "kotlinScenarios", "errors",
-    )) { "Invalid cross-language binding audit shape" }
-    check(root.releaseInt("schema") == 1) { "Unsupported cross-language binding audit schema" }
-    val result = root.releaseString("result")
-    check(result in setOf("complete", "incomplete")) { "Invalid cross-language binding audit result" }
-    val phaseName = root.releaseString("phase")
-    val phase = CrossLanguageBindingPhase.entries.singleOrNull { it.name == phaseName }
-        ?: error("Unknown cross-language binding phase: $phaseName")
-    check(root.releaseString("apiReportSha256") == expectedAudit.apiReportSha256) {
-        "Cross-language binding audit API report digest mismatch"
-    }
-    check(root.releaseString("canonicalCoverageSha256") == expectedAudit.canonicalCoverageSha256) {
-        "Cross-language binding audit coverage digest mismatch"
-    }
-    check(root.releaseString("kotlinArtifactSha256") == expectedAudit.kotlinArtifactSha256) {
-        "Cross-language binding audit Kotlin artifact digest mismatch"
-    }
-    val obligations = root.releaseArray("obligations").map { value ->
-        (value as? JsonObject)?.bindingAuditRecord() ?: error("Invalid cross-language binding audit obligation")
-    }
-    check(obligations.all { obligation ->
-        when (obligation.obligationState) {
-            CrossLanguageBindingObligationState.PENDING -> {
-                obligation.parityStatus == CrossLanguageObligationStatus.PENDING
-            }
-            CrossLanguageBindingObligationState.EXCLUDED -> {
-                obligation.parityStatus == CrossLanguageObligationStatus.EXCLUDED
-            }
-            CrossLanguageBindingObligationState.ACTIVE -> {
-                obligation.parityStatus in setOf(
-                    CrossLanguageObligationStatus.SATISFIED,
-                    CrossLanguageObligationStatus.MISSING,
-                )
-            }
-        }
-    }) { "Cross-language binding audit phase/parity status mismatch" }
-    val scenarios = root.releaseArray("kotlinScenarios").map { value ->
-        val record = value as? JsonObject ?: error("Invalid Kotlin binding scenario audit record")
-        check(record.keys == setOf("scenario", "testIds")) { "Invalid Kotlin binding scenario audit shape" }
-        val scenarioId = record.releaseString("scenario")
-        val scenario = CrossLanguageBindingScenario.entries.singleOrNull { it.id == scenarioId }
-            ?: error("Unknown Kotlin binding scenario: $scenarioId")
-        val testIds = record.releaseArray("testIds").exactStrings("Kotlin binding scenario test")
-        check(testIds.isNotEmpty()) { "Kotlin binding scenario has no tests: $scenarioId" }
-        CrossLanguageScenarioEvidence(CrossLanguageBinding.KOTLIN, scenario, testIds)
-    }
-    check(scenarios.map(CrossLanguageScenarioEvidence::scenario) == CrossLanguageBindingScenario.entries) {
-        "Kotlin binding scenario audit is incomplete or non-canonical"
-    }
-    val errors = root.releaseArray("errors").exactStrings("Cross-language binding audit error")
-    check(errors == errors.distinct().sorted()) { "Cross-language binding audit errors are not canonical" }
-    check((errors.isEmpty() && result == "complete") || (errors.isNotEmpty() && result == "incomplete")) {
-        "Cross-language binding audit result/error mismatch"
-    }
-    val summary = root.releaseObject("summary").bindingAuditSummary()
-    check(summary == obligations.summary()) { "Cross-language binding audit summary mismatch" }
-    val audit = CrossLanguageBindingAudit(
-        phase = phase,
-        result = result,
-        apiReportSha256 = expectedAudit.apiReportSha256,
-        canonicalCoverageSha256 = expectedAudit.canonicalCoverageSha256,
-        kotlinArtifactSha256 = expectedAudit.kotlinArtifactSha256,
-        compiledTestsSha256 = root.exactBindingSha256("compiledTestsSha256"),
-        testResultsSha256 = root.exactBindingSha256("testResultsSha256"),
-        summary = summary,
-        obligations = obligations,
-        kotlinScenarios = scenarios,
-        errors = errors,
+    val expected = buildCrossLanguageBindingAudit(
+        expectedKotlinEvidence,
+        expectedJavaEvidence,
+        expectedLanguageReceiptSha256,
     )
-    check(audit == expectedAudit) {
+    check(auditFile.readReleaseObject() == expected.toJson()) {
         "Cross-language binding audit does not match freshly recomputed evidence"
     }
-    return audit
-}
-
-private fun JsonObject.bindingAuditRecord(): CrossLanguageBindingAuditRecord {
-    check(keys == setOf("capabilityKey", "language", "applicable", "obligationState", "parityStatus") ||
-        keys == setOf(
-            "capabilityKey", "language", "applicable", "obligationState", "parityStatus", "exclusionReason",
-        )) { "Invalid cross-language binding audit obligation shape" }
-    val languageId = releaseString("language")
-    val language = CrossLanguageBinding.entries.singleOrNull { it.id == languageId }
-        ?: error("Unknown cross-language binding language: $languageId")
-    val obligationStateId = releaseString("obligationState")
-    val obligationState = CrossLanguageBindingObligationState.entries.singleOrNull { it.id == obligationStateId }
-        ?: error("Unknown cross-language binding obligation state: $obligationStateId")
-    val parityStatusName = releaseString("parityStatus")
-    val parityStatus = CrossLanguageObligationStatus.entries.singleOrNull {
-        it.name.lowercase() == parityStatusName
-    } ?: error("Unknown cross-language binding parity status: $parityStatusName")
-    val applicable = releaseBoolean("applicable")
-    val exclusionReason = releaseStringOrNull("exclusionReason")
-    check(applicable == (exclusionReason == null)) { "Binding applicability/exclusion reason mismatch" }
-    return CrossLanguageBindingAuditRecord(
-        capabilityKey = releaseString("capabilityKey"),
-        language = language,
-        applicable = applicable,
-        obligationState = obligationState,
-        parityStatus = parityStatus,
-        exclusionReason = exclusionReason,
-    )
+    return expected
 }
 
 private fun CrossLanguageBindingAuditSummary.toJson(): JsonObject = buildJsonObject {
@@ -242,20 +166,6 @@ private fun CrossLanguageBindingAuditSummary.toJson(): JsonObject = buildJsonObj
     put("excluded", JsonPrimitive(excluded))
     put("satisfied", JsonPrimitive(satisfied))
     put("missing", JsonPrimitive(missing))
-}
-
-private fun JsonObject.bindingAuditSummary(): CrossLanguageBindingAuditSummary {
-    check(keys == setOf("total", "active", "pending", "excluded", "satisfied", "missing")) {
-        "Invalid cross-language binding audit summary shape"
-    }
-    return CrossLanguageBindingAuditSummary(
-        total = releaseInt("total"),
-        active = releaseInt("active"),
-        pending = releaseInt("pending"),
-        excluded = releaseInt("excluded"),
-        satisfied = releaseInt("satisfied"),
-        missing = releaseInt("missing"),
-    )
 }
 
 private fun List<CrossLanguageBindingAuditRecord>.summary(): CrossLanguageBindingAuditSummary =
@@ -275,15 +185,5 @@ private fun CrossLanguageObligationStatus.obligationState(): CrossLanguageBindin
     CrossLanguageObligationStatus.EXCLUDED -> CrossLanguageBindingObligationState.EXCLUDED
 }
 
-private fun JsonArray.exactStrings(label: String): List<String> = map { value ->
-    (value as? JsonPrimitive)?.content ?: error("Invalid $label")
-}.also { values ->
-    check(values.none { it.isBlank() || '*' in it }) { "$label is blank or wildcard" }
-    check(values.size == values.distinct().size) { "$label identities are duplicated" }
-}
-
-private fun JsonObject.exactBindingSha256(name: String): String = releaseString(name).also { digest ->
-    check(digest.length == 64 && digest.all { it in '0'..'9' || it in 'a'..'f' }) {
-        "Cross-language binding audit $name is not an exact SHA-256"
-    }
-}
+private fun String.isExactSha256(): Boolean =
+    length == 64 && all { it in '0'..'9' || it in 'a'..'f' }

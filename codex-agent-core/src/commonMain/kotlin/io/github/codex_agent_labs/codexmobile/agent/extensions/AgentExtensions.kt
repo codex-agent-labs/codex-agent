@@ -268,8 +268,10 @@ public data class AgentElicitationResponse(
     public val content: Map<String, AgentFormValue> = emptyMap(),
 ) {
     public companion object {
+        @kotlin.jvm.JvmStatic
         public fun decline(): AgentElicitationResponse = AgentElicitationResponse(AgentElicitationAction.DECLINE)
 
+        @kotlin.jvm.JvmStatic
         public fun cancel(): AgentElicitationResponse = AgentElicitationResponse(AgentElicitationAction.CANCEL)
     }
 }

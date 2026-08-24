@@ -65,7 +65,7 @@ case "$lane" in
   contracts)
     if [ "$build" = true ]; then
       ./gradlew :codex-agent-core:verifyProtocolSource \
-        :codex-agent-core:verifyKotlinBindingParity "${args[@]}"
+        :codex-agent-core:auditCrossLanguageBindingParity "${args[@]}"
       ./gradlew -p gradle/build-logic releaseToolingJar --stacktrace
     fi
     if [ "$test_lane" = true ]; then

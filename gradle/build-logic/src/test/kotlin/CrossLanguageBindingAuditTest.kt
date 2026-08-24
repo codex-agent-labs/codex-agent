@@ -2,58 +2,53 @@ import kotlin.io.path.createTempFile
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageBindingAuditTest {
     @Test
-    fun `materializes Kotlin proof and every active missing and future pending pair`() {
-        val audit = buildCrossLanguageBindingAudit(evidence(FULL_MEMBER_SET))
+    fun `materializes Kotlin and Java proof with every remaining active and future pair`() {
+        val audit = buildCrossLanguageBindingAudit(
+            evidence(FULL_MEMBER_SET),
+            javaEvidence(FULL_MEMBER_SET),
+            RECEIPTS,
+        )
 
         assertEquals("incomplete", audit.result)
         assertEquals(6_039, audit.summary.total)
         assertEquals(2_745, audit.summary.active)
         assertEquals(3_294, audit.summary.pending)
-        assertEquals(549, audit.summary.satisfied)
-        assertEquals(2_196, audit.summary.missing)
-        assertTrue(audit.obligations.filter { it.language == CrossLanguageBinding.KOTLIN }.all {
-            it.parityStatus == CrossLanguageObligationStatus.SATISFIED
-        })
+        assertEquals(1_098, audit.summary.satisfied)
+        assertEquals(1_647, audit.summary.missing)
+        assertEquals(RECEIPTS, audit.languageReceiptSha256)
+        for (language in listOf(CrossLanguageBinding.KOTLIN, CrossLanguageBinding.JAVA)) {
+            assertTrue(audit.obligations.filter { it.language == language }.all {
+                it.parityStatus == CrossLanguageObligationStatus.SATISFIED
+            })
+            assertTrue(audit.errors.none { "Missing active binding projection ${language.id}:" in it })
+        }
         assertTrue(audit.obligations.filter { it.language == CrossLanguageBinding.C_ABI }.all {
             it.parityStatus == CrossLanguageObligationStatus.PENDING
         })
-        assertTrue(audit.errors.any { "Missing active binding projection java:" in it })
-        assertTrue(audit.errors.none { "Missing active binding projection kotlin:" in it })
+        assertTrue(audit.errors.any { "Missing active binding projection swift:" in it })
     }
 
     @Test
-    fun `strict audit reader binds live inputs and rejects incomplete or stale records`() {
-        val audit = buildCrossLanguageBindingAudit(evidence())
+    fun `strict audit reader binds both receipts and rejects any stale record`() {
+        val kotlin = evidence()
+        val java = javaEvidence()
+        val audit = buildCrossLanguageBindingAudit(kotlin, java, RECEIPTS)
         val path = createTempFile("binding-audit", ".json").toFile()
         try {
             path.writeText(audit.toJson().toString())
-            assertEquals(
-                audit,
-                readCrossLanguageBindingAudit(path, evidence()),
-            )
+            assertEquals(audit, readCrossLanguageBindingAudit(path, kotlin, java, RECEIPTS))
 
             val root = audit.toJson()
             val obligations = root.releaseArray("obligations")
-            val forgedStatus = obligations.mapIndexed { index, value ->
-                if (index != 2) {
-                    value
-                } else {
-                    JsonObject((value as JsonObject) + ("parityStatus" to JsonPrimitive("satisfied")))
-                }
-            }
-            val forgedStatusSummary = JsonObject(root.releaseObject("summary") + mapOf(
-                "satisfied" to JsonPrimitive(audit.summary.satisfied + 1),
-                "missing" to JsonPrimitive(audit.summary.missing - 1),
-            ))
+            val receipts = root.releaseObject("languageReceiptSha256")
             val corruptions = listOf(
                 JsonObject(root + ("apiReportSha256" to JsonPrimitive("0".repeat(64)))),
                 JsonObject(root + ("obligations" to JsonArray(obligations.drop(1)))),
@@ -61,16 +56,15 @@ class CrossLanguageBindingAuditTest {
                     ("total" to JsonPrimitive(0))))),
                 JsonObject(root + ("errors" to JsonArray(emptyList()))),
                 JsonObject(root + ("obligations" to JsonArray(obligations.reversed()))),
-                JsonObject(root + mapOf(
-                    "obligations" to JsonArray(forgedStatus),
-                    "summary" to forgedStatusSummary,
-                )),
-                JsonObject(root + ("errors" to JsonArray(listOf(JsonPrimitive("forged error"))))),
+                JsonObject(root + ("languageReceiptSha256" to JsonObject(
+                    receipts + ("java" to JsonPrimitive("0".repeat(64))),
+                ))),
+                JsonObject(root + ("languageReceiptSha256" to JsonObject(receipts - "java"))),
             )
             corruptions.forEach { corruption ->
                 path.writeText(corruption.toString())
                 assertFailsWith<IllegalStateException> {
-                    readCrossLanguageBindingAudit(path, evidence())
+                    readCrossLanguageBindingAudit(path, kotlin, java, RECEIPTS)
                 }
             }
         } finally {
@@ -79,77 +73,20 @@ class CrossLanguageBindingAuditTest {
     }
 
     @Test
-    fun `Kotlin pass receipt rejects stale inputs and incomplete scenarios`() {
-        val path = createTempFile("kotlin-binding-parity", ".json").toFile()
-        try {
-            val expectedScenarios = CrossLanguageBindingScenario.entries.map { scenario ->
-                CrossLanguageScenarioEvidence(
-                    CrossLanguageBinding.KOTLIN,
-                    scenario,
-                    listOf("sample.Test#${scenario.id}"),
-                )
-            }
-            fun write(
-                auditDigest: String = "f".repeat(64),
-                includeAllScenarios: Boolean = true,
-                forgedTestId: Boolean = false,
-            ) {
-                path.writeText(buildJsonObject {
-                    put("schema", JsonPrimitive(1))
-                    put("result", JsonPrimitive("passed"))
-                    put("language", JsonPrimitive("kotlin"))
-                    put("phase", JsonPrimitive("M7_5"))
-                    put("apiReportSha256", JsonPrimitive(API_DIGEST))
-                    put("canonicalCoverageSha256", JsonPrimitive(COVERAGE_DIGEST))
-                    put("bindingAuditSha256", JsonPrimitive(auditDigest))
-                    put("publicArtifactSha256", JsonPrimitive(ARTIFACT_DIGEST))
-                    put("compiledTestsSha256", JsonPrimitive("d".repeat(64)))
-                    put("testResultsSha256", JsonPrimitive("e".repeat(64)))
-                    put("capabilityCount", JsonPrimitive(MEMBERS.size))
-                    put("scenarios", buildJsonArray {
-                        val scenarios = if (includeAllScenarios) {
-                            CrossLanguageBindingScenario.entries
-                        } else {
-                            CrossLanguageBindingScenario.entries.dropLast(1)
-                        }
-                        scenarios.forEachIndexed { index, scenario ->
-                            add(buildJsonObject {
-                                put("id", JsonPrimitive(scenario.id))
-                                put("testIds", buildJsonArray {
-                                    val testId = if (forgedTestId && index == 0) {
-                                        "sample.Test#forged"
-                                    } else {
-                                        "sample.Test#${scenario.id}"
-                                    }
-                                    add(JsonPrimitive(testId))
-                                })
-                            })
-                        }
-                    })
-                }.toString())
-            }
-            fun verify() = verifyKotlinBindingParityReceipt(
-                path,
-                API_DIGEST,
-                COVERAGE_DIGEST,
-                "f".repeat(64),
-                ARTIFACT_DIGEST,
-                "d".repeat(64),
-                "e".repeat(64),
-                MEMBERS.size,
-                expectedScenarios,
-            )
+    fun `Kotlin pass receipt is independent and exact`() {
+        val expected = buildKotlinBindingParityReceipt(evidence())
+        verifyKotlinBindingParityReceipt(expected, expected)
 
-            write()
-            verify()
-            write(auditDigest = "0".repeat(64))
-            assertFailsWith<IllegalStateException> { verify() }
-            write(includeAllScenarios = false)
-            assertFailsWith<IllegalStateException> { verify() }
-            write(forgedTestId = true)
-            assertFailsWith<IllegalStateException> { verify() }
-        } finally {
-            path.delete()
+        assertEquals(2, (expected.getValue("schema") as JsonPrimitive).content.toInt())
+        assertFalse("bindingAuditSha256" in expected)
+        listOf(
+            JsonObject(expected + ("result" to JsonPrimitive("forged"))),
+            JsonObject(expected + ("apiReportSha256" to JsonPrimitive("0".repeat(64)))),
+            JsonObject(expected + ("scenarios" to JsonArray(expected.releaseArray("scenarios").dropLast(1)))),
+        ).forEach { forged ->
+            assertFailsWith<IllegalStateException> {
+                verifyKotlinBindingParityReceipt(forged, expected)
+            }
         }
     }
 
@@ -165,9 +102,7 @@ class CrossLanguageBindingAuditTest {
                 compiledTestsSha256 = "d".repeat(64),
                 testResultsSha256 = "e".repeat(64),
             ),
-            capabilityClaims = members.map { member ->
-                KotlinBindingCapabilityClaim(member, member)
-            },
+            capabilityClaims = members.map { member -> KotlinBindingCapabilityClaim(member, member) },
             bindingTests = testIds.values.map { testId ->
                 CrossLanguageBindingTestEvidence(
                     CrossLanguageBinding.KOTLIN,
@@ -185,10 +120,66 @@ class CrossLanguageBindingAuditTest {
         )
     }
 
+    private fun javaEvidence(members: List<String> = MEMBERS): CrossLanguageJavaBindingParityEvidence {
+        val testId = "sample.JavaBindingTest#projection"
+        val symbols = members.mapIndexed { index, _ -> "method:sample/Owner#$index()V" }
+        val tests = listOf(
+            CrossLanguageBindingTestEvidence(
+                CrossLanguageBinding.JAVA,
+                testId,
+                CrossLanguageBindingTestStatus.PASSED,
+            ),
+        )
+        val scenarios = CrossLanguageBindingScenario.entries.map { scenario ->
+            CrossLanguageScenarioEvidence(CrossLanguageBinding.JAVA, scenario, listOf(testId))
+        }
+        val claims = members.mapIndexed { index, member ->
+            CrossLanguageProjectionClaim(
+                capabilityKey = member,
+                language = CrossLanguageBinding.JAVA,
+                publicSymbols = listOf(symbols[index]),
+                executedTests = listOf(testId),
+                sharedScenarios = CrossLanguageBindingScenario.entries,
+            )
+        }
+        val parity = evaluateCrossLanguageBindingParity(
+            CrossLanguageBindingParityInput(
+                phase = CrossLanguageBindingPhase.M7_5,
+                capabilityKeys = members,
+                canonicalCoverageKeys = members,
+                projectionClaims = claims,
+                publicSymbols = mapOf(CrossLanguageBinding.JAVA to symbols),
+                bindingTests = tests,
+                scenarioEvidence = scenarios,
+            ),
+        )
+        return CrossLanguageJavaBindingParityEvidence(
+            digests = JavaBindingParityDigests(
+                JavaBindingArtifactDigests(
+                    "1".repeat(64),
+                    "2".repeat(64),
+                    "3".repeat(64),
+                    "4".repeat(64),
+                ),
+                "5".repeat(64),
+                "6".repeat(64),
+            ),
+            projectionClaims = claims,
+            publicSymbols = symbols,
+            bindingTests = tests,
+            scenarioEvidence = scenarios,
+            parityReport = parity,
+        )
+    }
+
     private companion object {
         val API_DIGEST = "a".repeat(64)
         val COVERAGE_DIGEST = "b".repeat(64)
         val ARTIFACT_DIGEST = "c".repeat(64)
+        val RECEIPTS = mapOf(
+            CrossLanguageBinding.KOTLIN to "7".repeat(64),
+            CrossLanguageBinding.JAVA to "8".repeat(64),
+        )
         val MEMBERS = listOf(
             "common|owner=sample/Owner|kind=function|abi=sample/Owner.first",
             "common|owner=sample/Owner|kind=property|abi=sample/Owner.second",

@@ -3,7 +3,7 @@ package io.github.codex_agent_labs.codexmobile.agent
 private const val RUST_DURATION_SECONDS_LIMIT: Double = 1.8446744073709552E19
 
 @CodexBindingApi
-public data class AgentMcpServerConfiguration(
+public data class AgentMcpServerConfiguration @kotlin.jvm.JvmOverloads public constructor(
     public val name: String,
     public val transport: AgentMcpTransport,
     public val authentication: AgentMcpAuthentication? = null,
@@ -51,7 +51,7 @@ private fun Double?.isSupportedMcpTimeout(): Boolean =
 
 @CodexBindingApi
 public sealed interface AgentMcpTransport {
-    public data class Stdio(
+    public data class Stdio @kotlin.jvm.JvmOverloads public constructor(
         public val command: String,
         public val arguments: List<String> = emptyList(),
         public val workingDirectory: String? = null,
@@ -63,7 +63,7 @@ public sealed interface AgentMcpTransport {
         }
     }
 
-    public data class Http(
+    public data class Http @kotlin.jvm.JvmOverloads public constructor(
         public val url: String,
         public val bearerTokenEnvironmentVariable: String? = null,
         public val headers: Map<String, String>? = null,
@@ -83,7 +83,7 @@ public sealed interface AgentMcpTransport {
 }
 
 @CodexBindingApi
-public data class AgentMcpEnvironmentVariable(
+public data class AgentMcpEnvironmentVariable @kotlin.jvm.JvmOverloads public constructor(
     public val name: String,
     public val source: AgentMcpEnvironmentSource? = null,
 ) {
@@ -105,7 +105,7 @@ public enum class AgentMcpToolApproval { AUTO, PROMPT, WRITES, APPROVE }
 public enum class AgentMcpToolExposureSurface { CODE_MODE, DEFERRED, DIRECT }
 
 @CodexBindingApi
-public data class AgentMcpOauthConfiguration(
+public data class AgentMcpOauthConfiguration @kotlin.jvm.JvmOverloads public constructor(
     public val clientId: String? = null,
     public val callbackPort: Int? = null,
 ) {
@@ -115,7 +115,7 @@ public data class AgentMcpOauthConfiguration(
 }
 
 @CodexBindingApi
-public data class AgentMcpToolConfiguration(
+public data class AgentMcpToolConfiguration @kotlin.jvm.JvmOverloads public constructor(
     public val approval: AgentMcpToolApproval? = null,
 )
 

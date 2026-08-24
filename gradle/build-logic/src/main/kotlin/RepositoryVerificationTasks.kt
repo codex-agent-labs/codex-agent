@@ -3,8 +3,7 @@ import org.gradle.kotlin.dsl.register
 
 internal val repositoryVerificationTaskPaths = listOf(
     ":codex-agent-core:jvmTest",
-    ":codex-agent-core:verifyCrossLanguageApiCoverage",
-    ":codex-agent-core:verifyKotlinBindingParity",
+    ":codex-agent-core:auditCrossLanguageBindingParity",
     ":codex-agent-core:compileAndroidMain",
     ":codex-agent-core:compileKotlinJs",
     ":codex-agent-core:compileKotlinWasmJs",
@@ -32,7 +31,10 @@ fun Project.registerRepositoryVerificationTasks() {
     tasks.register("verifyRepository") {
         group = "verification"
         description = "Runs all client compilations, desktop/Android runtime checks, protocol, and build-logic checks."
-        dependsOn(repositoryVerificationTaskPaths)
+        dependsOn(
+            repositoryVerificationTaskPaths,
+            gradle.includedBuild("build-logic").task(":test"),
+        )
     }
     tasks.register("verifyIosRuntime") {
         group = "verification"

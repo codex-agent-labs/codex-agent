@@ -69,6 +69,8 @@ val crossLanguageBindingAuditFile =
     layout.buildDirectory.file("reports/cross-language-api/binding-obligations-m7_5.json")
 val kotlinBindingParityReceiptFile =
     layout.buildDirectory.file("reports/cross-language-api/bindings/kotlin-parity.json")
+val javaBindingParityReceiptFile =
+    layout.buildDirectory.file("reports/cross-language-api/bindings/java-parity.json")
 val invalidateCrossLanguageBindingParityOutputs = tasks.register<Delete>(
     "invalidateCrossLanguageBindingParityOutputs",
 ) {
@@ -78,6 +80,7 @@ val invalidateCrossLanguageBindingParityOutputs = tasks.register<Delete>(
         canonicalCrossLanguageCoverageReceiptFile,
         crossLanguageBindingAuditFile,
         kotlinBindingParityReceiptFile,
+        javaBindingParityReceiptFile,
     )
 }
 tasks.configureEach {
@@ -89,31 +92,73 @@ verifyCrossLanguageApiCoverage.configure {
     dependsOn(invalidateCrossLanguageBindingParityOutputs)
 }
 
-val auditCrossLanguageBindingParity = tasks.register<AuditCrossLanguageBindingParityTask>(
-    "auditCrossLanguageBindingParity",
-) {
+val verifyKotlinBindingParity = tasks.register<VerifyKotlinBindingParityTask>("verifyKotlinBindingParity") {
     group = "verification"
-    description = "Materializes every canonical API obligation for all eleven first-class languages."
+    description = "Verifies canonical Kotlin artifact and shared projection behavior parity."
     dependsOn(verifyCrossLanguageApiCoverage)
     apiReport.set(discoverCrossLanguageApi.flatMap(DiscoverCrossLanguageApiTask::reportFile))
     canonicalCoverageReceipt.set(
         verifyCrossLanguageApiCoverage.flatMap(VerifyCrossLanguageApiCoverageTask::receiptFile),
     )
     kotlinArtifact.set(layout.buildDirectory.dir("classes/kotlin/jvm/main"))
-    auditFile.set(crossLanguageBindingAuditFile)
+    receiptFile.set(kotlinBindingParityReceiptFile)
 }
 
-val verifyKotlinBindingParity = tasks.register<VerifyKotlinBindingParityTask>("verifyKotlinBindingParity") {
+val javaBindingVersion = project.version.toString()
+val javaBindingCoreJvmJar = layout.buildDirectory.file("libs/codex-agent-core-jvm-$javaBindingVersion.jar")
+val javaBindingCoreAndroidAar = layout.buildDirectory.file("outputs/aar/codex-agent-core.aar")
+val javaBindingDesktopRuntimeJar = rootProject.layout.projectDirectory.file(
+    "codex-agent-runtime-desktop/build/libs/codex-agent-runtime-desktop-jvm-$javaBindingVersion.jar",
+)
+val javaBindingAndroidRuntimeAar = rootProject.layout.projectDirectory.file(
+    "codex-agent-runtime-android/build/outputs/aar/codex-agent-runtime-android-release.aar",
+)
+val javaBindingCompiledTests = layout.buildDirectory.dir("classes/java/jvmTest")
+val javaBindingTestResults = layout.buildDirectory.dir("test-results/jvmTest")
+val verifyJavaBindingParity = tasks.register<VerifyJavaBindingParityTask>("verifyJavaBindingParity") {
     group = "verification"
-    description = "Verifies canonical Kotlin artifact and shared projection behavior parity."
-    dependsOn(auditCrossLanguageBindingParity)
+    description = "Verifies Java API parity in exact JVM, Android, and runtime artifacts."
+    dependsOn(
+        verifyCrossLanguageApiCoverage,
+        "jvmJar",
+        "bundleAndroidMainAar",
+        ":codex-agent-runtime-desktop:jvmJar",
+        ":codex-agent-runtime-android:bundleReleaseAar",
+    )
     apiReport.set(discoverCrossLanguageApi.flatMap(DiscoverCrossLanguageApiTask::reportFile))
     canonicalCoverageReceipt.set(
         verifyCrossLanguageApiCoverage.flatMap(VerifyCrossLanguageApiCoverageTask::receiptFile),
     )
     kotlinArtifact.set(layout.buildDirectory.dir("classes/kotlin/jvm/main"))
-    bindingAudit.set(auditCrossLanguageBindingParity.flatMap(AuditCrossLanguageBindingParityTask::auditFile))
-    receiptFile.set(kotlinBindingParityReceiptFile)
+    coreJvmJar.set(javaBindingCoreJvmJar)
+    coreAndroidAar.set(javaBindingCoreAndroidAar)
+    desktopRuntimeJar.set(javaBindingDesktopRuntimeJar)
+    androidRuntimeAar.set(javaBindingAndroidRuntimeAar)
+    compiledJavaTests.set(javaBindingCompiledTests)
+    testResults.set(javaBindingTestResults)
+    receiptFile.set(javaBindingParityReceiptFile)
+}
+
+val auditCrossLanguageBindingParity = tasks.register<AuditCrossLanguageBindingParityTask>(
+    "auditCrossLanguageBindingParity",
+) {
+    group = "verification"
+    description = "Recomputes the authoritative all-language obligation audit from verified language receipts."
+    dependsOn(verifyKotlinBindingParity, verifyJavaBindingParity)
+    apiReport.set(discoverCrossLanguageApi.flatMap(DiscoverCrossLanguageApiTask::reportFile))
+    canonicalCoverageReceipt.set(
+        verifyCrossLanguageApiCoverage.flatMap(VerifyCrossLanguageApiCoverageTask::receiptFile),
+    )
+    kotlinArtifact.set(layout.buildDirectory.dir("classes/kotlin/jvm/main"))
+    coreJvmJar.set(javaBindingCoreJvmJar)
+    coreAndroidAar.set(javaBindingCoreAndroidAar)
+    desktopRuntimeJar.set(javaBindingDesktopRuntimeJar)
+    androidRuntimeAar.set(javaBindingAndroidRuntimeAar)
+    compiledJavaTests.set(javaBindingCompiledTests)
+    testResults.set(javaBindingTestResults)
+    kotlinReceipt.set(verifyKotlinBindingParity.flatMap(VerifyKotlinBindingParityTask::receiptFile))
+    javaReceipt.set(verifyJavaBindingParity.flatMap(VerifyJavaBindingParityTask::receiptFile))
+    auditFile.set(crossLanguageBindingAuditFile)
 }
 
 val verifyProtocolSource = tasks.register<VerifyProtocolSourceTask>("verifyProtocolSource") {
@@ -137,5 +182,5 @@ tasks.register("updateProtocol") {
 }
 
 tasks.named("check").configure {
-    dependsOn(verifyProtocolSource, verifyCrossLanguageApiCoverage, verifyKotlinBindingParity)
+    dependsOn(verifyProtocolSource, auditCrossLanguageBindingParity)
 }

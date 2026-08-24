@@ -1,3 +1,4 @@
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -5,8 +6,9 @@ import kotlin.test.assertTrue
 class RepositoryVerificationTasksTest {
     @Test
     fun `repository verification requires compiler derived API coverage`() {
-        assertTrue(":codex-agent-core:verifyCrossLanguageApiCoverage" in repositoryVerificationTaskPaths)
-        assertTrue(":codex-agent-core:verifyKotlinBindingParity" in repositoryVerificationTaskPaths)
+        assertTrue(":codex-agent-core:auditCrossLanguageBindingParity" in repositoryVerificationTaskPaths)
+        val source = File("src/main/kotlin/RepositoryVerificationTasks.kt").readText()
+        assertTrue("gradle.includedBuild(\"build-logic\").task(\":test\")" in source)
     }
 
     @Test
