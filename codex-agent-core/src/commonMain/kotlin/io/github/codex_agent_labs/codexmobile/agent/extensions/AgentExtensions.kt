@@ -1,16 +1,19 @@
 package io.github.codex_agent_labs.codexmobile.agent
 
+@CodexBindingApi
 public data class AgentSkillCatalog(
     public val skills: List<AgentSkill>,
     public val errors: List<String> = emptyList(),
 )
 
+@CodexBindingApi
 public data class AgentSkillChunk(
     public val content: String,
     public val nextOffset: Long?,
     public val totalBytes: Long,
 )
 
+@CodexBindingApi
 public data class AgentSkill(
     public val name: String,
     public val displayName: String,
@@ -29,6 +32,7 @@ public data class AgentSkill(
     },
 )
 
+@CodexBindingApi
 public enum class AgentSkillScope(public val displayName: String) {
     SYSTEM("Built in"),
     USER("User"),
@@ -37,8 +41,10 @@ public enum class AgentSkillScope(public val displayName: String) {
     ADMIN("Managed"),
 }
 
+@CodexBindingApi
 public enum class AgentCatalogFreshness { LIVE, FRESH_CACHE, STALE_CACHE }
 
+@CodexBindingApi
 public data class AgentPluginReference(
     public val id: String,
     public val name: String,
@@ -49,12 +55,14 @@ public data class AgentPluginReference(
     public val uri: String get() = "plugin://$name@$marketplaceName"
 }
 
+@CodexBindingApi
 public data class AgentPluginCatalog(
     public val plugins: List<AgentPluginSummary>,
     public val errors: List<String> = emptyList(),
     public val freshness: AgentCatalogFreshness = AgentCatalogFreshness.LIVE,
 )
 
+@CodexBindingApi
 public data class AgentPluginSummary(
     public val reference: AgentPluginReference,
     public val displayName: String,
@@ -71,10 +79,13 @@ public data class AgentPluginSummary(
     public val websiteUrl: String? = null,
 )
 
+@CodexBindingApi
 public enum class AgentPluginInstallPolicy { NOT_AVAILABLE, AVAILABLE, INSTALLED_BY_DEFAULT }
 
+@CodexBindingApi
 public enum class AgentPluginAuthPolicy { ON_INSTALL, ON_USE }
 
+@CodexBindingApi
 public data class AgentPluginDetail(
     public val summary: AgentPluginSummary,
     public val description: String,
@@ -84,6 +95,7 @@ public data class AgentPluginDetail(
     public val hookCount: Int,
 )
 
+@CodexBindingApi
 public data class AgentPluginSkill(
     public val name: String,
     public val description: String,
@@ -91,6 +103,7 @@ public data class AgentPluginSkill(
     public val path: String? = null,
 )
 
+@CodexBindingApi
 public data class AgentPluginInstallResult(
     public val authPolicy: AgentPluginAuthPolicy,
     public val connectorsNeedingAuthentication: List<AgentConnector>,
@@ -103,6 +116,7 @@ internal class AgentPluginUnavailableException(
     message: String = "$pluginName is temporarily unavailable",
 ) : IllegalStateException(message)
 
+@CodexBindingApi
 public data class AgentConnector(
     public val id: String,
     public val name: String,
@@ -113,6 +127,7 @@ public data class AgentConnector(
     public val pluginNames: List<String> = emptyList(),
 )
 
+@CodexBindingApi
 public data class AgentMcpServer(
     public val name: String,
     public val displayName: String,
@@ -125,8 +140,10 @@ public data class AgentMcpServer(
         get() = authStatus == AgentMcpAuthStatus.BEARER_TOKEN || authStatus == AgentMcpAuthStatus.OAUTH
 }
 
+@CodexBindingApi
 public enum class AgentMcpAuthStatus { UNKNOWN, UNSUPPORTED, NOT_LOGGED_IN, BEARER_TOKEN, OAUTH }
 
+@CodexBindingApi
 public sealed interface AgentInvocation {
     public val name: String
     public val key: String
@@ -146,6 +163,7 @@ public sealed interface AgentInvocation {
     }
 }
 
+@CodexBindingApi
 public data class AgentElicitation(
     public val requestId: String,
     public val serverName: String,
@@ -153,8 +171,42 @@ public data class AgentElicitation(
     public val message: String,
     public val form: List<AgentFormField>? = null,
     public val url: String? = null,
-)
+) {
+    public fun initialValues(): Map<String, AgentFormValue> =
+        form.orEmpty().mapNotNull { field ->
+            field.defaultValue?.let { field.name to it.snapshot() }
+        }.toMap()
 
+    public fun validate(content: Map<String, AgentFormValue>): AgentElicitationValidation {
+        val fields = form.orEmpty()
+        val fieldsByName = fields.associateBy(AgentFormField::name)
+        val issues = content.keys.filterNot(fieldsByName::containsKey).map { name ->
+            AgentElicitationValidationIssue(name, AgentElicitationValidationReason.UNKNOWN_FIELD)
+        } + fields.mapNotNull { field ->
+            field.validationReason(content[field.name])?.let { reason ->
+                AgentElicitationValidationIssue(field.name, reason)
+            }
+        }
+        return AgentElicitationValidation(issues)
+    }
+
+    public fun accept(content: Map<String, AgentFormValue>): AgentElicitationResponse {
+        require(validate(content).isValid) { "Elicitation content is invalid" }
+        return AgentElicitationResponse(
+            AgentElicitationAction.ACCEPT,
+            content.mapValues { (_, value) -> value.snapshot() },
+        )
+    }
+
+    public fun accepts(response: AgentElicitationResponse): Boolean = when (response.action) {
+        AgentElicitationAction.DECLINE,
+        AgentElicitationAction.CANCEL,
+        -> response.content.isEmpty()
+        AgentElicitationAction.ACCEPT -> validate(response.content).isValid
+    }
+}
+
+@CodexBindingApi
 public data class AgentFormField(
     public val name: String,
     public val title: String,
@@ -185,20 +237,24 @@ public data class AgentFormField(
             "Minimum selections must not exceed maximum selections"
         }
     }
+
+    public fun accepts(value: AgentFormValue?): Boolean = validationReason(value) == null
 }
 
-public fun AgentFormField.accepts(value: AgentFormValue?): Boolean = validationReason(value) == null
-
+@CodexBindingApi
 public enum class AgentFormFieldType { STRING, NUMBER, INTEGER, BOOLEAN, SINGLE_SELECT, MULTI_SELECT }
 
+@CodexBindingApi
 public enum class AgentFormStringFormat { EMAIL, URI, DATE, DATE_TIME }
 
+@CodexBindingApi
 public data class AgentFormOption(
     public val value: String,
     public val title: String = value,
     public val description: String? = null,
 )
 
+@CodexBindingApi
 public sealed interface AgentFormValue {
     public data class Text(public val value: String) : AgentFormValue
     public data class Number(public val value: Double) : AgentFormValue
@@ -206,6 +262,7 @@ public sealed interface AgentFormValue {
     public data class TextList(public val value: List<String>) : AgentFormValue
 }
 
+@CodexBindingApi
 public data class AgentElicitationResponse(
     public val action: AgentElicitationAction,
     public val content: Map<String, AgentFormValue> = emptyMap(),
@@ -223,8 +280,10 @@ internal fun AgentElicitationResponse.snapshot(): AgentElicitationResponse = cop
     },
 )
 
+@CodexBindingApi
 public enum class AgentElicitationAction { ACCEPT, DECLINE, CANCEL }
 
+@CodexBindingApi
 public enum class AgentElicitationValidationReason {
     MISSING_REQUIRED,
     UNKNOWN_FIELD,
@@ -238,52 +297,17 @@ public enum class AgentElicitationValidationReason {
     DUPLICATE_SELECTION,
 }
 
+@CodexBindingApi
 public data class AgentElicitationValidationIssue(
     public val fieldName: String,
     public val reason: AgentElicitationValidationReason,
 )
 
+@CodexBindingApi
 public data class AgentElicitationValidation(
     public val issues: List<AgentElicitationValidationIssue>,
 ) {
     public val isValid: Boolean get() = issues.isEmpty()
-}
-
-public fun AgentElicitation.initialValues(): Map<String, AgentFormValue> =
-    form.orEmpty().mapNotNull { field ->
-        field.defaultValue?.let { field.name to it.snapshot() }
-    }.toMap()
-
-public fun AgentElicitation.validate(
-    content: Map<String, AgentFormValue>,
-): AgentElicitationValidation {
-    val fields = form.orEmpty()
-    val fieldsByName = fields.associateBy(AgentFormField::name)
-    val issues = content.keys.filterNot(fieldsByName::containsKey).map { name ->
-        AgentElicitationValidationIssue(name, AgentElicitationValidationReason.UNKNOWN_FIELD)
-    } + fields.mapNotNull { field ->
-        field.validationReason(content[field.name])?.let { reason ->
-            AgentElicitationValidationIssue(field.name, reason)
-        }
-    }
-    return AgentElicitationValidation(issues)
-}
-
-public fun AgentElicitation.accept(
-    content: Map<String, AgentFormValue>,
-): AgentElicitationResponse {
-    require(validate(content).isValid) { "Elicitation content is invalid" }
-    return AgentElicitationResponse(
-        AgentElicitationAction.ACCEPT,
-        content.mapValues { (_, value) -> value.snapshot() },
-    )
-}
-
-public fun AgentElicitation.accepts(response: AgentElicitationResponse): Boolean = when (response.action) {
-    AgentElicitationAction.DECLINE,
-    AgentElicitationAction.CANCEL,
-    -> response.content.isEmpty()
-    AgentElicitationAction.ACCEPT -> validate(response.content).isValid
 }
 
 private fun AgentFormField.validationReason(value: AgentFormValue?): AgentElicitationValidationReason? {

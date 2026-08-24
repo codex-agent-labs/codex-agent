@@ -1,11 +1,13 @@
 package io.github.codex_agent_labs.codexmobile.agent
 
+@CodexBindingApi
 public data class ConversationId(public val value: String) {
     init {
         require(value.isNotBlank()) { "Conversation ID must not be blank" }
     }
 }
 
+@CodexBindingApi
 public data class AgentModel(
     public val id: String,
     public val displayName: String,
@@ -17,12 +19,14 @@ public data class AgentModel(
     public val defaultServiceTier: String? = null,
 )
 
+@CodexBindingApi
 public data class AgentServiceTier(
     public val id: String,
     public val name: String,
     public val description: String,
 )
 
+@CodexBindingApi
 public enum class AgentApprovalPreset(
     public val displayName: String,
 ) {
@@ -32,29 +36,35 @@ public enum class AgentApprovalPreset(
     STRICT("Strict"),
 }
 
+@CodexBindingApi
 public enum class AgentApprovalDecision {
     ACCEPT,
     DECLINE,
 }
 
+@CodexBindingApi
 public data class AgentConversationSettings(
     public val approvalPreset: AgentApprovalPreset = AgentApprovalPreset.AUTO_REVIEW,
     public val serviceTier: String? = null,
 )
 
+@CodexBindingApi
 public data class AgentConversationSummary(
     public val conversationId: ConversationId,
     public val title: String,
     public val updatedAtEpochSeconds: Long,
 )
 
+@CodexBindingApi
 public data class AgentConversation(
     public val summary: AgentConversationSummary,
     public val messages: List<AgentMessage>,
 )
 
+@CodexBindingApi
 public enum class AgentMessageRole { USER, ASSISTANT }
 
+@CodexBindingApi
 public data class AgentMessage(
     public val id: String,
     public val clientMessageId: String?,
@@ -69,22 +79,28 @@ public data class AgentMessage(
     public val invocations: List<AgentInvocation> = emptyList(),
 )
 
+@CodexBindingApi
 public enum class AgentCollaborationMode { DEFAULT, PLAN }
 
 internal const val PLAN_CLIENT_MESSAGE_PREFIX = "codex-agent:plan:"
 internal const val LEGACY_PLAN_CLIENT_MESSAGE_PREFIX = "codex-mobile:plan:"
 
+@CodexBindingApi
 public enum class AgentPlanStepStatus { PENDING, IN_PROGRESS, COMPLETED }
 
+@CodexBindingApi
 public data class AgentPlanStep(public val text: String, public val status: AgentPlanStepStatus)
 
+@CodexBindingApi
 public data class AgentPlanProgress(
     public val explanation: String? = null,
     public val steps: List<AgentPlanStep> = emptyList(),
 )
 
+@CodexBindingApi
 public enum class AgentHookTrustStatus { MANAGED, UNTRUSTED, TRUSTED, MODIFIED }
 
+@CodexBindingApi
 public sealed interface AgentHookHandler {
     public data class Command(
         public val command: String,
@@ -101,6 +117,7 @@ public sealed interface AgentHookHandler {
     public data object Agent : AgentHookHandler
 }
 
+@CodexBindingApi
 public data class AgentHook(
     public val key: String,
     public val currentHash: String,
@@ -135,14 +152,17 @@ public data class AgentHook(
         get() = trustStatus == AgentHookTrustStatus.UNTRUSTED || trustStatus == AgentHookTrustStatus.MODIFIED
 }
 
+@CodexBindingApi
 public data class AgentHookCatalog(
     public val hooks: List<AgentHook>,
     public val warnings: List<String> = emptyList(),
     public val errors: List<String> = emptyList(),
 )
 
+@CodexBindingApi
 public enum class AgentHookRunStatus { RUNNING, COMPLETED, FAILED, BLOCKED, STOPPED }
 
+@CodexBindingApi
 public data class AgentHookActivity(
     public val id: String,
     public val eventName: String,
@@ -152,6 +172,7 @@ public data class AgentHookActivity(
     public val details: List<String> = emptyList(),
 )
 
+@CodexBindingApi
 public enum class AgentCapability(
     public val id: String,
     public val displayLabel: String,
@@ -161,6 +182,7 @@ public enum class AgentCapability(
     WEB_SEARCH("web_search", "Web search", "🌐", "Use 🌐 Web search"),
 }
 
+@CodexBindingApi
 public data class AgentTurnRequest(
     public val prompt: String,
     public val clientMessageId: String? = null,

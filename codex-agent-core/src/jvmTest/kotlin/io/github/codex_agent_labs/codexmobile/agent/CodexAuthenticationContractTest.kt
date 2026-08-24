@@ -58,6 +58,10 @@ class CodexAuthenticationContractTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:CodexAuthenticationMethod.ApiKey#constructor:<init>#sha256:065a79fedb9680f9c869f9140bb7f748793e81afb45c7eeddedfed4826303bb1",
+        "api-v1:CodexAuthenticationMethod.ApiKey#property:value#sha256:67e78e7956cfaf5c3777b710615085998147ba964e0146d3dbe3b994c11e3058",
+    )
     fun apiKeyAuthenticationIsImmediateAndRedacted(): Unit = runBlocking {
         var observedKey: String? = null
         val process = FakeCodexRuntime { message, server ->

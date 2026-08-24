@@ -102,6 +102,7 @@ internal sealed interface AgentEvent {
     ) : AgentEvent
 }
 
+@CodexBindingApi
 public enum class AgentWorkActivity {
     RUNNING_COMMAND,
     WRITING_FILES,

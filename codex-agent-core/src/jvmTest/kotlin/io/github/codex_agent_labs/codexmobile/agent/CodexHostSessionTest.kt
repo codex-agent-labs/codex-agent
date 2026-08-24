@@ -131,6 +131,11 @@ class CodexHostTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:AgentTurnRequest#property:invocations#sha256:ebbd7dc36627bc359e26a3a52750314c2689462c9f5ba8fa614c556639281e11",
+        "api-v1:CodexAgent#property:connectors#sha256:f604c83b32c1208445efc88b2dbba7b5fe66fc77a44f0fe77c00b680f8049365",
+        "api-v1:CodexAgent#property:mcpServers#sha256:9e78cffd1c9fd6f5313f9fa335079bc08ca872550683d7403ddb4f39bca6edc9",
+    )
     fun unavailablePreparedFeaturesFailBeforeTheirRpc(): Unit = runBlocking {
         val requestedMethods = mutableListOf<String>()
         var unsupportedStartupFlags: List<Boolean>? = null
@@ -215,6 +220,22 @@ class CodexHostTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:CodexAgent#property:authentication#sha256:799f1d0c28410f5135ab32eeadb8745704d68b8ddfe0386674504830fba0a65b",
+        "api-v1:CodexAgent#property:conversations#sha256:fb027560a8d85208765127f17015db1015b54558cb14ca48179bccaab08bfe5b",
+        "api-v1:CodexAgent#property:hooks#sha256:3dab7847134f334ba448d4df322e1a3e117b4f1324116b13ecd566aafa35e231",
+        "api-v1:CodexAgent#property:integrationAuthorization#sha256:bb33f3477fe2cf3da8355a92192589371817eb559fd0b2aa3e87a74f0774bd1b",
+        "api-v1:CodexAgent#property:interactions#sha256:35498a67da381809079d86c3900dcbe1a29302faaad872dbb6443182b4b5d4e9",
+        "api-v1:CodexAgent#property:plugins#sha256:ea7e5e98395c441f63b5ae64765d552d6260a088a41970affbcb29d5dadde4a6",
+        "api-v1:CodexAgent#property:skills#sha256:4abb6e1fa9604e1a25aa3416e31307f83060134691c21482c54f23412e500ae7",
+        "api-v1:CodexAgent#property:workspace#sha256:8a553889c30587123344fe910c359dfd72238ed1c54d575a525028318a20b973",
+        "api-v1:CodexClientInfo#property:name#sha256:c1477a2ead2d738a7b4ea37727ca22e3e0f6aac210f7f56a8dae8dcac2ab5ea1",
+        "api-v1:CodexClientInfo#property:title#sha256:c3c69a080afc3ec74ba91578a3554adc47174606af9d5f331190751e5a2ce478",
+        "api-v1:CodexClientInfo#property:version#sha256:71f05fe551852d8dc5b47bb80386574b7c54ff4317d397d32b13dff26511c7db",
+        "api-v1:CodexWorkspace#constructor:<init>#sha256:6052e1fb89e9482f7f58fd8df9279eb8095e8c730634e6c15841a147032182d3",
+        "api-v1:CodexWorkspace#property:displayName#sha256:d6e22600a7aff3e203772f9343fb21208309923ad2e4cbdb923b4925a3b05307",
+        "api-v1:CodexWorkspace#property:path#sha256:d0cc25e91bc838c45c466c3b3bca8eef9046212a1c9e09b59f31474869cae4e5",
+    )
     fun ownedHostUsesClientIdentityPreparedPathAndDeclaredFeatures(): Unit = runBlocking {
         val paths = mutableListOf<String>()
         var initializedClient: Triple<String, String, String>? = null
@@ -384,6 +405,12 @@ class CodexHostTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:CodexAgent#property:models#sha256:1b22b0700597a95300774809e34f0443a191ea0e5e114363dc6025e7b95867cd",
+        "api-v1:CodexModels#function:resolveEffort#sha256:bb74f468a50633a029ae8354f0e2924e7bbe2ee6bd8dc11732fb41eeccbfd665",
+        "api-v1:CodexModels#function:resolveServiceTier#sha256:57af6d303b0d802917d7c4873a4490ec5a7a69a96751a87b81a551bae96c7970",
+        "api-v1:CodexModels#function:resolve#sha256:2ab51e1910fa8238efc503a1a6f197441bbc807ae33b9d2f588e0ab62be0666e",
+    )
     fun modelFacadeResolvesConfiguredModelEffortAndTierWithoutCallerPreferences(): Unit = runBlocking {
         var configReads = 0
         val preferred = buildJsonObject {
@@ -687,6 +714,9 @@ class CodexHostTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:AgentApprovalDecision#enum-entry:ACCEPT#sha256:c6613f75901ffd0146f3c8f945f73fabdc67efb237d52809c8a1e062835dc868",
+    )
     fun readyAgentPublishesReturnedConversationAndResolvesTypedApproval(): Unit = runBlocking {
         val approvalResponse = CompletableDeferred<String>()
         val runtime = FakeCodexRuntime { message, server ->
@@ -739,6 +769,10 @@ class CodexHostTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:CodexHostState.Preparing#constructor:<init>#sha256:f5ed8a44dbb2cec0c0b3e0344b28df1a2f8a3432198ebd7e165a734ff511b52e",
+        "api-v1:CodexHostState.Preparing#property:workspace#sha256:4c777093c8a55e6abceb156e95a45d69027ecd55f5055befb96e75da786bf2fc",
+    )
     fun cancellationDoesNotLeaveHostInARestoreOrPrepareTransition(): Unit = runBlocking {
         val restoringHost = CodexHost(
             object : CodexPlatform {
@@ -757,9 +791,9 @@ class CodexHostTest {
             TEST_CLIENT_INFO,
         )
         val restoring = async(start = CoroutineStart.UNDISPATCHED) { restoringHost.start() }
-        assertIs<CodexHostState.Restoring>(restoringHost.state.value)
+        assertIs<CodexHostState.Restoring>(restoringHost.lifecycleState.value)
         restoring.cancelAndJoin()
-        assertIs<CodexHostState.Failed>(restoringHost.state.value)
+        assertIs<CodexHostState.Failed>(restoringHost.lifecycleState.value)
         restoringHost.close()
 
         val workspace = CodexWorkspace("/workspace", "Workspace")
@@ -781,9 +815,15 @@ class CodexHostTest {
             TEST_CLIENT_INFO,
         )
         val preparing = async(start = CoroutineStart.UNDISPATCHED) { preparingHost.start() }
-        assertIs<CodexHostState.Preparing>(preparingHost.state.value)
+        assertEquals(
+            workspace,
+            assertIs<CodexHostState.Preparing>(preparingHost.lifecycleState.value).workspace,
+        )
         preparing.cancelAndJoin()
-        assertIs<CodexHostState.Failed>(preparingHost.state.value)
+        assertEquals(
+            workspace,
+            assertIs<CodexHostState.Failed>(preparingHost.lifecycleState.value).workspace,
+        )
         preparingHost.close()
     }
 
@@ -1139,6 +1179,29 @@ class CodexHostTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:AgentConversationState#property:conversationId#sha256:f6d329a5729a719f0b8095c25f1d2728397f486cc580634699ded378058e2ea4",
+        "api-v1:CodexConversations#property:active#sha256:51f563ccfb23b3619f03442768195a4a46a9a0ad7cc4684c4a4b918b3cdd910a",
+        "api-v1:CodexHost#constructor:<init>#sha256:e01e9e81541906e439d36a508a657a208b2de603e5c12a69841df6d33a0c9b0d",
+        "api-v1:CodexHost#function:close#sha256:7162d5c35564c04a1748f00e59c1a4f4e29ab328c33013d84ce80899144b317d",
+        "api-v1:CodexHost#function:selectWorkspace#sha256:95f020ad538882bdb4937c43fa6100064993e7e73f90858607b430566f6b759e",
+        "api-v1:CodexHost#function:start#sha256:7885840abf9ffae9c432a01d1b625ba9da051574290b1eb24944b9d2bcfc66a8",
+        "api-v1:CodexHost#property:lifecycleState#sha256:530c20068ea1f147d4e2cd87e3d4a7d116205064825b2c5e2dd7788deebbb164",
+        "api-v1:CodexHostState.Failed#constructor:<init>#sha256:6b173df69eda3640954bcf72e592f58acfef5923b702473a580ef73432d93b60",
+        "api-v1:CodexHostState.Failed#property:failure#sha256:4c857a428aab1bc9e6dc2752f8f02597cee73deef5f73a6840499fc4846206a4",
+        "api-v1:CodexHostState.Failed#property:workspace#sha256:29f650191156a988a7bc3f28775875d026f26fa2ea9897c5ee695ec520c90778",
+        "api-v1:CodexHostState.Ready#constructor:<init>#sha256:bbab17fde3424d747ab4d8e791198a63738ed40aec4633c06e65c5081436e835",
+        "api-v1:CodexHostState.Ready#property:agent#sha256:9d964c550c89f365ba10fa5135f0093371eb9252d9adc0072a2463bf5b49ec4a",
+        "api-v1:CodexHostState.WorkspaceRequired#constructor:<init>#sha256:b2bd8add02cbfa2c44bc8feb0d057cb810714e3cc1cedff07f147a37ee32c332",
+        "api-v1:CodexHostState.WorkspaceRequired#property:requirement#sha256:db2d8accfa2ebd83f04cc6c1e66cd028b49cfb1ebe76a0d340cfa6e02f8d75b7",
+        "api-v1:CodexPathWorkspaceSelection#constructor:<init>#sha256:f267155b28d3890ac579ce9d7d3726772dd71a576814dcc8058a4ced24df33e3",
+        "api-v1:CodexPathWorkspaceSelection#property:path#sha256:d4f0303b78fe110d49d695f6a30cb0f96977c284ccb7b3bc9d75d7c27abf1b91",
+        "api-v1:CodexWorkspaceResolution.Available#constructor:<init>#sha256:080ecff0867650b076c57a1513364c1f3838e3560de5ff674a80361e4f0c249e",
+        "api-v1:CodexWorkspaceResolution.Available#property:workspace#sha256:b91e8c45f3f4c667a0192ae3385bad0c7b3fc9cbe710c0d04310fa7b30509231",
+        "api-v1:CodexWorkspaceResolution.SelectionRequired#constructor:<init>#sha256:e3997a8a3d4c7239045142ca1f6ea3b0c2139cd15a6d606801f3177dc0405685",
+        "api-v1:CodexWorkspaceResolution.SelectionRequired#property:reason#sha256:3e34abc2a345a5dfa0d3bb41c62ab9ae7152bbe313ab4efdf769517f88f02ec0",
+        "api-v1:CodexWorkspaceSelectionReason#enum-entry:NOT_FOUND#sha256:b761c39041169dfec8948b0926594a98e6b7393062e78e7a9afca0e63f403c3f",
+    )
     fun restoresSelectsReplacesRetriesAndClosesOneOwnedGraph(): Unit = runBlocking {
         val runtimes = ArrayDeque<FakeCodexRuntime>()
         val threadIds = AtomicInteger()
@@ -1155,6 +1218,7 @@ class CodexHostTest {
         val support = FakePlatformSupport(store, runtimes)
         val host = CodexHost(support, this, clientInfo = TEST_CLIENT_INFO)
 
+        assertIs<CodexHostState.New>(host.lifecycleState.value)
         host.start()
         val required = assertIs<CodexHostState.WorkspaceRequired>(host.lifecycleState.value)
         assertEquals(CodexWorkspaceSelectionReason.NOT_FOUND, required.requirement.reason)
@@ -1190,6 +1254,7 @@ class CodexHostTest {
             host.selectWorkspace(CodexPathWorkspaceSelection("/workspace/three"))
         }
         val failed = assertIs<CodexHostState.Failed>(host.lifecycleState.value)
+        assertEquals("/workspace/three", failed.workspace?.path)
         assertEquals("Could not prepare Codex", failed.failure.message)
         host.start()
         val thirdAgent = readyAgent(host)

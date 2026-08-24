@@ -18,6 +18,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
+@CodexBindingApi
 public enum class AgentConversationStatus {
     NEW,
     OPENING,
@@ -30,6 +31,7 @@ public enum class AgentConversationStatus {
     CLOSED,
 }
 
+@CodexBindingApi
 public data class AgentTurnProgress(
     public val text: String = "",
     public val commentary: String = "",
@@ -43,6 +45,7 @@ public data class AgentTurnProgress(
     public val isTruncated: Boolean = false,
 )
 
+@CodexBindingApi
 public data class AgentConversationState(
     public val status: AgentConversationStatus = AgentConversationStatus.NEW,
     public val conversationId: ConversationId? = null,
@@ -67,6 +70,7 @@ public data class AgentConversationState(
             status == AgentConversationStatus.RUNNING_TURN
 }
 
+@CodexBindingApi
 public class CodexConversation internal constructor(
     private val client: CodexAgentClient,
     scope: CoroutineScope,

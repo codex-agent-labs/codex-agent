@@ -2,11 +2,13 @@ package io.github.codex_agent_labs.codexmobile.agent
 
 import okio.Path
 
+@CodexBindingApi
 public enum class AgentInstallationScope {
     User,
     Workspace,
 }
 
+@CodexBindingApi
 public enum class AgentResourceOrigin {
     USER,
     WORKSPACE,

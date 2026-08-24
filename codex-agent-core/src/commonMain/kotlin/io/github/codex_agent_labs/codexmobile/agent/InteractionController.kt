@@ -16,11 +16,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+@CodexBindingApi
 public sealed interface AgentPendingInteraction {
     public val requestId: String
     public val conversationId: ConversationId
 }
 
+@CodexBindingApi
 public data class AgentPendingApproval(
     public override val requestId: String,
     public override val conversationId: ConversationId,
@@ -28,6 +30,7 @@ public data class AgentPendingApproval(
     public val details: String,
 ) : AgentPendingInteraction
 
+@CodexBindingApi
 public data class AgentPendingElicitation(
     public val elicitation: AgentElicitation,
 ) : AgentPendingInteraction {
@@ -35,6 +38,7 @@ public data class AgentPendingElicitation(
     public override val conversationId: ConversationId get() = elicitation.conversationId
 }
 
+@CodexBindingApi
 public data class AgentInteractionState(
     public val pending: List<AgentPendingInteraction> = emptyList(),
     public val resolvingRequestIds: Set<String> = emptySet(),
@@ -42,10 +46,10 @@ public data class AgentInteractionState(
 ) {
     public fun pendingFor(conversationId: ConversationId): List<AgentPendingInteraction> =
         pending.filter { it.conversationId == conversationId }
-}
 
-public fun AgentInteractionState.isResolving(interaction: AgentPendingInteraction): Boolean =
-    interaction.requestId in resolvingRequestIds && pending.any { it === interaction }
+    public fun isResolving(interaction: AgentPendingInteraction): Boolean =
+        interaction.requestId in resolvingRequestIds && pending.any { it === interaction }
+}
 
 internal class InteractionController(
     private val client: CodexAgentClient,

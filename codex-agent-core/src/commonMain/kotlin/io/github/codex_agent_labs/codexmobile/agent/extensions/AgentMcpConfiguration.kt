@@ -2,6 +2,7 @@ package io.github.codex_agent_labs.codexmobile.agent
 
 private const val RUST_DURATION_SECONDS_LIMIT: Double = 1.8446744073709552E19
 
+@CodexBindingApi
 public data class AgentMcpServerConfiguration(
     public val name: String,
     public val transport: AgentMcpTransport,
@@ -48,6 +49,7 @@ public data class AgentMcpServerConfiguration(
 private fun Double?.isSupportedMcpTimeout(): Boolean =
     this == null || isFinite() && this > 0.0 && this < RUST_DURATION_SECONDS_LIMIT
 
+@CodexBindingApi
 public sealed interface AgentMcpTransport {
     public data class Stdio(
         public val command: String,
@@ -80,6 +82,7 @@ public sealed interface AgentMcpTransport {
     }
 }
 
+@CodexBindingApi
 public data class AgentMcpEnvironmentVariable(
     public val name: String,
     public val source: AgentMcpEnvironmentSource? = null,
@@ -89,14 +92,19 @@ public data class AgentMcpEnvironmentVariable(
     }
 }
 
+@CodexBindingApi
 public enum class AgentMcpEnvironmentSource { LOCAL, REMOTE }
 
+@CodexBindingApi
 public enum class AgentMcpAuthentication { OAUTH, CHAT_GPT }
 
+@CodexBindingApi
 public enum class AgentMcpToolApproval { AUTO, PROMPT, WRITES, APPROVE }
 
+@CodexBindingApi
 public enum class AgentMcpToolExposureSurface { CODE_MODE, DEFERRED, DIRECT }
 
+@CodexBindingApi
 public data class AgentMcpOauthConfiguration(
     public val clientId: String? = null,
     public val callbackPort: Int? = null,
@@ -106,6 +114,7 @@ public data class AgentMcpOauthConfiguration(
     }
 }
 
+@CodexBindingApi
 public data class AgentMcpToolConfiguration(
     public val approval: AgentMcpToolApproval? = null,
 )

@@ -25,6 +25,21 @@ import kotlinx.serialization.json.putJsonArray
 
 class IntegrationAuthorizationControllerTest {
     @Test
+    @CoversApi(
+        "api-v1:AgentIntegration.Connector#constructor:<init>#sha256:53c3bed9b9327e92c1de932bfe311fb7f069a2633fc189773bcf3840c895d735",
+        "api-v1:AgentIntegration.Connector#property:connector#sha256:d9d4c621a394c4ef6fc2ca6835d35ead04461b3962b05dc30d5919db5e75d2a2",
+        "api-v1:AgentIntegration.McpServer#constructor:<init>#sha256:69d74d91e75e796386916619b8f58c15d99fe944d6c80ee5393e7c380fdd4156",
+        "api-v1:AgentIntegration.McpServer#property:server#sha256:dfa565386548c90435609bf8f3f46975fd5034df431795612ac9d45e477a7228",
+        "api-v1:AgentIntegrationAuthorizationState#constructor:<init>#sha256:5bf6287d131b762e9bec5bd222117db9940647613b5e4740401eaf4285e24277",
+        "api-v1:AgentIntegrationAuthorizationState#property:status#sha256:54415d0c6e740d9e49c47918844d3f5b0e299b06b4452e21e49998bf246d5466",
+        "api-v1:AgentIntegrationAuthorizationState#property:target#sha256:eaa6e44da2ed625eafeee7059f4c2ad9d6672916d625cc6b0a696691940f7645",
+        "api-v1:AgentIntegrationAuthorizationStatus#enum-entry:AUTHORIZED#sha256:00012ba6f4880f257f48204d50e0163289dcc0f07d8df39b47f34362c199fe60",
+        "api-v1:AgentIntegrationAuthorizationStatus#enum-entry:AWAITING_COMPLETION#sha256:7f7ea4af3b9e11d62e0dcc499ae60c3529d25ed1b1e20e8067e5062b164532b9",
+        "api-v1:CodexIntegrationAuthorization#function:authorize#sha256:f62d16556d7f54ae5f2f690643be5964444e4954ec45c0e53168270d84bc2171",
+        "api-v1:CodexIntegrationAuthorization#property:active#sha256:1bea5d50fa55a1998e824113adafa623dd3ec1ed46e02da07b0988c062ab65e3",
+        "api-v1:CodexIntegrationAuthorization#property:isAuthorizing#sha256:9ef105bd1b19f521faea41898ee107f00dd9f7c66598263e782d80b20f12bcf7",
+        "api-v1:CodexIntegrationAuthorization#property:state#sha256:f1829aeb13a0425d28ba14444b12b617e094126fcea810be040e5a5ca69fa57b",
+    )
     fun publicFacadeAuthorizesConnectorAndMcpTargetsThroughOneActiveProjection(): Unit = runBlocking {
         val connectorAccessible = AtomicBoolean(false)
         val process = FakeCodexRuntime { message, server ->
@@ -105,6 +120,10 @@ class IntegrationAuthorizationControllerTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:AgentIntegrationAuthorizationStatus#enum-entry:IDLE#sha256:a02e5a4934cc7c771ee7f7065f7016eb3c4134c16d9533256840a137a24a6c01",
+        "api-v1:CodexIntegrationAuthorization#function:cancel#sha256:264cbc6307d57a967505ce89fd304ff1a6d50c9e369a91e2d97e01bb7c079968",
+    )
     fun facadeCancelStopsAStartingRequestWithoutOpeningALateBrowser(): Unit = runBlocking {
         val requestId = CompletableDeferred<Long>()
         val process = FakeCodexRuntime { message, server ->
@@ -146,6 +165,9 @@ class IntegrationAuthorizationControllerTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:AgentIntegrationAuthorizationStatus#enum-entry:FAILED#sha256:752e72fd253f208797f1c057f10efa7a5245122ddb34dec9ba2744ddfa44872b",
+    )
     fun terminalPresentationCloseFailureFailsTheAuthorization(): Unit = runBlocking {
         val process = oauthRuntime()
         val client = CodexAgentClient({ process }, requestTimeoutMillis = 1_000)
@@ -278,6 +300,9 @@ class IntegrationAuthorizationControllerTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:AgentIntegrationAuthorizationState#property:failure#sha256:c2fbc6043eae7b96553f97e2d99666ed5dd50f2db443fc24bdd8efd4080b67bc",
+    )
     fun connectorWithoutAnAuthorizationUrlFailsClearly(): Unit = runBlocking {
         val process = FakeCodexRuntime { message, server ->
             when (message.method) {
@@ -388,6 +413,9 @@ class IntegrationAuthorizationControllerTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:AgentIntegrationAuthorizationStatus#enum-entry:STARTING#sha256:72c534d8d3c8847e6319cea95a17cb5bff7662095bebfcd72a7cecbf7749446b",
+    )
     fun callerCancellationFailsAndReleasesTheActiveAuthorization(): Unit = runBlocking {
         val process = FakeCodexRuntime { message, server ->
             when (message.method) {

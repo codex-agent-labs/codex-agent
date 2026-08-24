@@ -23,6 +23,53 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
 class AgentMcpConfigurationTest {
+    @CoversApi(
+        "api-v1:AgentMcpAuthentication#enum-entry:CHAT_GPT#sha256:7c29d87446cfcc25e694ac555c8f9349e62a72f6884568233776e2dea708fd90",
+        "api-v1:AgentMcpAuthentication#enum-entry:OAUTH#sha256:5ffd448a6bef75d0773c93e7250b6308f43ce35262fd15fa6fc243406f4a971a",
+        "api-v1:AgentMcpEnvironmentSource#enum-entry:REMOTE#sha256:6f5abdbe115733f4b06fa9e6652b6e6ed03d721494d32a2cee5b175c41b686e7",
+        "api-v1:AgentMcpEnvironmentVariable#constructor:<init>#sha256:ea74c05c30ff971d6bb50db0c983226e6a654fc633b2e3c05fa81f9674b944fe",
+        "api-v1:AgentMcpEnvironmentVariable#property:name#sha256:003523da58dea2f1596dddfc9159e7f1dc2014fa870c04e469e871fd95a06764",
+        "api-v1:AgentMcpEnvironmentVariable#property:source#sha256:09e7df0ab056f5c4104e1bb1362f72748a8d818a5c2d39de23621c223340ed15",
+        "api-v1:AgentMcpOauthConfiguration#constructor:<init>#sha256:715a75cd09cd83bb0d48a13df89067a5d5aca7e251d61d60d775ab20abefac0b",
+        "api-v1:AgentMcpOauthConfiguration#property:callbackPort#sha256:96843847ccb2184a8ab7c776098c1eef617d4381e940b41f62cbfdd3e4b9bb60",
+        "api-v1:AgentMcpOauthConfiguration#property:clientId#sha256:b9277346f58cc0c0b2df0d8d37fc54143e6dc4f5ba7b77e3e2dfae55b589d67c",
+        "api-v1:AgentMcpServerConfiguration#constructor:<init>#sha256:4b864ebb4893ef4f62208bb11164ca3ddefedd140608b6dfa432b4a06fa9e887",
+        "api-v1:AgentMcpServerConfiguration#property:authentication#sha256:b8682413c1d1207d2d03b4c9eb58968fcf1b5a28647d96777d67ac8538cf37df",
+        "api-v1:AgentMcpServerConfiguration#property:defaultToolApproval#sha256:128a963ba75013de7281aee0d25d7d70cc82010c58bbc1350e19851eeb6cdd80",
+        "api-v1:AgentMcpServerConfiguration#property:disabledTools#sha256:63c57851cf6edb6d44ff9867b686f6935100c9b5ab4ed662968f653259c49506",
+        "api-v1:AgentMcpServerConfiguration#property:enabledTools#sha256:509184dea46858a7b68cc3ec47ebf3ab9a055c83992ca8c19d62da943c1955d6",
+        "api-v1:AgentMcpServerConfiguration#property:environmentId#sha256:16f0780aac56f94386444b517ed76470a54465499992bd11146514293853908c",
+        "api-v1:AgentMcpServerConfiguration#property:isEnabled#sha256:cc1b16d5daf8712530ee1973c3fad143eb0b105b1dab1954d7d39ffe1b7552ed",
+        "api-v1:AgentMcpServerConfiguration#property:isRequired#sha256:47a893b96e3987a4fd67bb7706992f2e5a31fba890e48f87b0382de5b9ec9035",
+        "api-v1:AgentMcpServerConfiguration#property:name#sha256:49d9384bd7f721d5cbc6f5c1f03e52f37dcb770590e19a849c7064ad72af95be",
+        "api-v1:AgentMcpServerConfiguration#property:oauthResource#sha256:3d1f298bb5bac5f264af0dbc12a4deb3cda3c409b9af39763bb9bc61877f14c2",
+        "api-v1:AgentMcpServerConfiguration#property:oauth#sha256:f825ef95964b770e3c547a1817bc413a1e48a876a76f7a7c396537b640728b77",
+        "api-v1:AgentMcpServerConfiguration#property:omitToolsFrom#sha256:02446000a0cde67dc5ec62e2a41622fddc7b415dbef8766336dc620d598d6133",
+        "api-v1:AgentMcpServerConfiguration#property:scopes#sha256:0119d0f8e8b9c78a9ba670414a31433f2895545a20fbe9a39024b12ae9776c9b",
+        "api-v1:AgentMcpServerConfiguration#property:startupTimeoutSeconds#sha256:0a850713cd56b8009fee37ac1eab8488dc10e2ba334acde31899fe71cf817118",
+        "api-v1:AgentMcpServerConfiguration#property:supportsParallelToolCalls#sha256:3e75f95ab4a7fd3cfff3133a47b93c49e97ad3da4ef5513ab087bcda5e0795f6",
+        "api-v1:AgentMcpServerConfiguration#property:toolTimeoutSeconds#sha256:8ee9c359fd8d1b159d3d210a46a659c45b9cd9ac59f42e0c09993654ee5115fd",
+        "api-v1:AgentMcpServerConfiguration#property:tools#sha256:24c0d1ec0dff6d92a0c830b9f6674bc9a55a6000843f11a9e434cec600252559",
+        "api-v1:AgentMcpServerConfiguration#property:transport#sha256:6168f7549db54360fc4f2436e04efb8715c015b62bc11ab73e67b8c99e08b9a8",
+        "api-v1:AgentMcpToolApproval#enum-entry:PROMPT#sha256:9a9f57c969983e49dbe83184d434e95784b20fa658a255f0e5d73d5f1b13b773",
+        "api-v1:AgentMcpToolApproval#enum-entry:WRITES#sha256:c993d37fa559178612e16396f57a30f879a5a8aaf3f5d5d30c4d428bd57ae9c3",
+        "api-v1:AgentMcpToolConfiguration#constructor:<init>#sha256:125558327201be74c63f39b2c1ad57491d2dfed66598ae9603c13d411fda6dd2",
+        "api-v1:AgentMcpToolConfiguration#property:approval#sha256:179f9b1e8479dae94304e7099ac59a532fff01a62d867730a19ad9359453a2e1",
+        "api-v1:AgentMcpToolExposureSurface#enum-entry:CODE_MODE#sha256:60654a57ebc2cce80f9ba4dbd0342a993c4562cea56d09b3f77abc99af4eaf5a",
+        "api-v1:AgentMcpToolExposureSurface#enum-entry:DEFERRED#sha256:7a2936b6f895da33b3f34e8a9c7117fba6555c08d1959634c03384c83eace6db",
+        "api-v1:AgentMcpTransport.Http#constructor:<init>#sha256:ecb975d784d743096723db3351a2b9928ee9ab0be3731df1b31ef864d0aaf5cd",
+        "api-v1:AgentMcpTransport.Http#property:bearerTokenEnvironmentVariable#sha256:c0c9fd204d621f2e5d88589bf3062632761ee4538a977b20d21a80bc739d7cac",
+        "api-v1:AgentMcpTransport.Http#property:environmentHeaders#sha256:b7818e73fc0022126aaf797a58406fb55fbb9a049b9e9b6c9f3867e1aff50a9b",
+        "api-v1:AgentMcpTransport.Http#property:headersHelper#sha256:3b5fe3aaa9301586e233995737669a20adeea553b0b9e8199fae811efe17d36d",
+        "api-v1:AgentMcpTransport.Http#property:headers#sha256:b94366bcaf233efd4567705443fb8082747f6462f1e5e3cb02ac510da0d0c53e",
+        "api-v1:AgentMcpTransport.Http#property:url#sha256:7d8e4370787e318016ba13a082330909ce4fc0b5d4bbc0c716d28d4efef58395",
+        "api-v1:AgentMcpTransport.Stdio#constructor:<init>#sha256:0b9250abde38881acd18041df79ec627352f1b759b8bda225eae5deae1a4d25a",
+        "api-v1:AgentMcpTransport.Stdio#property:arguments#sha256:0810e92eb5a55b64a8b94a5a24b3088fa9004e8da69f75adfa9f561d926a56c9",
+        "api-v1:AgentMcpTransport.Stdio#property:command#sha256:fbde7940f09b6d946e4093a29f4c9ab8891ac30ef69d514766f3569a26ec1451",
+        "api-v1:AgentMcpTransport.Stdio#property:environment#sha256:4aced20260dea06c3592312eca71c2bd963946048b77704922bb83df68a26d3a",
+        "api-v1:AgentMcpTransport.Stdio#property:forwardedEnvironment#sha256:40a34f03fe00ce49a04850af59c0f7b75312941bf096b95c57175b5f4e421ef5",
+        "api-v1:AgentMcpTransport.Stdio#property:workingDirectory#sha256:ccf2c3340a6cba8015f7ecc562a2a5b2a6cf490d997aa5392e5d3deaacd9744e",
+    )
     @Test
     fun typedConfigurationRoundTripsEverySupportedField() {
         val expected = AgentMcpServerConfiguration(
@@ -173,6 +220,16 @@ class AgentMcpConfigurationTest {
         AgentMcpTransport.Http("http://[::1]:8080/mcp")
     }
 
+    @CoversApi(
+        "api-v1:AgentMcpServer#property:canRemove#sha256:3790fa4bf425e1b3420cb30ad1bc7f9ac855f0993acbcc044f0d111bd2349c48",
+        "api-v1:AgentMcpServer#property:configuration#sha256:fd4d7437ddaf39ea039879c8a317e7df840f18cdae6f35f5ddfbd764cbf584c7",
+        "api-v1:AgentMcpServer#property:name#sha256:8a11daa4a66dd2a54c1c798d095649d7db0eb724c49601ca2e3aeb8f9a40aae7",
+        "api-v1:AgentMcpServer#property:origin#sha256:ac33f5e8a13ffc08ae14854311995e06cf94943914bf7f74ecff463ce50a7749",
+        "api-v1:AgentResourceOrigin#enum-entry:WORKSPACE#sha256:f92ee726d345e108fa396a706de0087a17b3f04718f051ca25be1e463d5c8d3b",
+        "api-v1:CodexMcpServers#function:add#sha256:816e235211895ebffb0107daa644ac908e2a52674fd65ef7415384a343647b07",
+        "api-v1:CodexMcpServers#function:list#sha256:99c94452c1184fa58b3200809790612692bc7b729e8a54e3da251cb0f44062f5",
+        "api-v1:CodexMcpServers#function:remove#sha256:9e62c524a65d17e2707420d37a923c449512460db7ec0466817139777e771da5",
+    )
     @Test
     fun appServerAddsAndRemovesOnlyFreshlyProvenUserConfiguration(): Unit = runBlocking {
         val inherited = AgentMcpServerConfiguration(
@@ -260,22 +317,31 @@ class AgentMcpConfigurationTest {
             }
         }
         val client = CodexAgentClient({ runtime }, requestTimeoutMillis = 1_000)
+        val agent = CodexAgent(
+            workspace = CodexWorkspace("/workspace"),
+            workingDirectory = "/workspace",
+            features = setOf(CodexRuntimeFeature.MCP_SERVERS),
+            client = client,
+            parentScope = this,
+            authorizationBrowser = CodexAuthorizationBrowser { CodexAuthorizationPresentation.None },
+        )
         try {
-            val baseOnly = client.listMcpServers("/workspace").single { it.name == "base-only" }
+            agent.start()
+            val baseOnly = agent.mcpServers.list().single { it.name == "base-only" }
             assertEquals(AgentResourceOrigin.USER, baseOnly.origin)
             assertFalse(baseOnly.canRemove)
             assertFailsWith<IllegalArgumentException> { client.removeMcpServer(baseOnly, "/workspace") }
             assertTrue(writes.isEmpty())
 
-            val layered = client.listMcpServers("/workspace").single { it.name == "layered" }
+            val layered = agent.mcpServers.list().single { it.name == "layered" }
             assertTrue(layered.canRemove)
             client.removeMcpServer(layered, "/workspace")
-            val revealedBase = client.listMcpServers("/workspace").single { it.name == "layered" }
+            val revealedBase = agent.mcpServers.list().single { it.name == "layered" }
             assertEquals(inherited, revealedBase.configuration?.toJson())
             assertEquals(AgentResourceOrigin.USER, revealedBase.origin)
             assertFalse(revealedBase.canRemove)
 
-            val managed = client.listMcpServers("/workspace").single { it.name == "managed" }
+            val managed = agent.mcpServers.list().single { it.name == "managed" }
             assertEquals(AgentResourceOrigin.WORKSPACE, managed.origin)
             assertFalse(managed.canRemove)
             assertFailsWith<IllegalArgumentException> { client.removeMcpServer(managed, "/workspace") }
@@ -293,17 +359,17 @@ class AgentMcpConfigurationTest {
                 "new-server",
                 AgentMcpTransport.Stdio("mcp", listOf("serve")),
             )
-            val added = client.addMcpServer(configuration, "/workspace")
+            val added = agent.mcpServers.add(configuration)
             assertEquals(configuration, added.configuration)
             assertEquals(AgentResourceOrigin.USER, added.origin)
             assertTrue(added.canRemove)
             assertEquals("mcp_servers.\"new-server\"", writes[1])
 
-            client.removeMcpServer(added, "/workspace")
-            assertNull(client.listMcpServers("/workspace").singleOrNull { it.name == added.name })
+            agent.mcpServers.remove(added)
+            assertNull(agent.mcpServers.list().singleOrNull { it.name == added.name })
             assertEquals(3, writes.size)
         } finally {
-            client.close()
+            agent.close()
         }
     }
 

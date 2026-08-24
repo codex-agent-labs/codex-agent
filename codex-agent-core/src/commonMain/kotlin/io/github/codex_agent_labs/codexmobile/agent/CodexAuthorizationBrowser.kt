@@ -1,10 +1,12 @@
 package io.github.codex_agent_labs.codexmobile.agent
 
+@CodexBindingApi
 public enum class CodexAuthorizationPurpose {
     CHAT_GPT,
     EXTERNAL,
 }
 
+@CodexBindingApi
 public class CodexAuthorizationUrl private constructor(
     public val value: String,
     public val purpose: CodexAuthorizationPurpose,

@@ -1,5 +1,6 @@
 package io.github.codex_agent_labs.codexmobile.agent
 
+@CodexBindingApi
 public enum class AgentResolution {
     Preferred,
     Default,

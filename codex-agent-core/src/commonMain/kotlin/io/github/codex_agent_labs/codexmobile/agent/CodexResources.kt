@@ -2,6 +2,7 @@ package io.github.codex_agent_labs.codexmobile.agent
 
 import kotlinx.coroutines.flow.StateFlow
 
+@CodexBindingApi
 public class CodexAuthentication internal constructor(
     private val agent: CodexAgent,
 ) {
@@ -21,6 +22,7 @@ public class CodexAuthentication internal constructor(
     public suspend fun signOut(): Unit = agent.signOut()
 }
 
+@CodexBindingApi
 public class CodexInteractions internal constructor(
     private val agent: CodexAgent,
 ) {
@@ -45,6 +47,7 @@ public class CodexInteractions internal constructor(
         agent.openElicitationUrl(elicitation)
 }
 
+@CodexBindingApi
 public class CodexIntegrationAuthorization internal constructor(
     private val agent: CodexAgent,
 ) {
@@ -62,6 +65,7 @@ public class CodexIntegrationAuthorization internal constructor(
     public suspend fun cancel(): Unit = agent.cancelIntegrationAuthorization()
 }
 
+@CodexBindingApi
 public class CodexConversations internal constructor(
     private val agent: CodexAgent,
 ) {
@@ -86,6 +90,7 @@ public class CodexConversations internal constructor(
     ): CodexConversation = agent.openConversation(conversationId, settings)
 }
 
+@CodexBindingApi
 public class CodexModels internal constructor(
     private val agent: CodexAgent,
 ) {
@@ -121,6 +126,7 @@ public class CodexModels internal constructor(
     )
 }
 
+@CodexBindingApi
 public class CodexSkills internal constructor(
     private val agent: CodexAgent,
 ) {
@@ -140,6 +146,7 @@ public class CodexSkills internal constructor(
     public suspend fun uninstall(skill: AgentSkill): Unit = agent.uninstallSkill(skill)
 }
 
+@CodexBindingApi
 public class CodexHooks internal constructor(
     private val agent: CodexAgent,
 ) {
@@ -159,6 +166,7 @@ public class CodexHooks internal constructor(
     public suspend fun trust(hook: AgentHook): Unit = agent.trustHook(hook)
 }
 
+@CodexBindingApi
 public class CodexPlugins internal constructor(
     private val agent: CodexAgent,
 ) {
@@ -177,6 +185,7 @@ public class CodexPlugins internal constructor(
     public suspend fun uninstall(plugin: AgentPluginReference): Unit = agent.uninstallPlugin(plugin)
 }
 
+@CodexBindingApi
 public class CodexConnectors internal constructor(
     private val agent: CodexAgent,
 ) {
@@ -187,6 +196,7 @@ public class CodexConnectors internal constructor(
         agent.listConnectors(forceReload)
 }
 
+@CodexBindingApi
 public class CodexMcpServers internal constructor(
     private val agent: CodexAgent,
 ) {

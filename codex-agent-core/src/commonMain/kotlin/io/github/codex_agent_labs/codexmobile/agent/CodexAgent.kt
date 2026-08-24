@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+@CodexBindingApi
 public class CodexAgent internal constructor(
     public val workspace: CodexWorkspace,
     private val workingDirectory: String,

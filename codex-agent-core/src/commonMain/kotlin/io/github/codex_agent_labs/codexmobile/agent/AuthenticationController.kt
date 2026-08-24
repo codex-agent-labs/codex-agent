@@ -16,12 +16,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+@CodexBindingApi
 public enum class AgentAuthenticationStatus {
     SIGNED_OUT,
     AUTHENTICATING,
     AUTHENTICATED,
 }
 
+@CodexBindingApi
 public data class AgentAuthenticationState(
     public val status: AgentAuthenticationStatus = AgentAuthenticationStatus.SIGNED_OUT,
     public val pendingSignInUrl: CodexAuthorizationUrl? = null,

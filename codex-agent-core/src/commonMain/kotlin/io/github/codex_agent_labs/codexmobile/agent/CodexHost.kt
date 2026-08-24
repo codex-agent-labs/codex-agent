@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+@CodexBindingApi
 public sealed interface CodexHostState {
     public data object New : CodexHostState
 
@@ -42,6 +43,7 @@ public sealed interface CodexHostState {
     public data object Closed : CodexHostState
 }
 
+@CodexBindingApi
 public class CodexHost private constructor(
     private val platform: CodexPlatform,
     private val clientInfo: CodexClientInfo,
@@ -57,6 +59,7 @@ public class CodexHost private constructor(
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
     )
 
+    @CodexBindingApiKotlinOnly
     public constructor(
         platform: CodexPlatform,
         parentScope: CoroutineScope,

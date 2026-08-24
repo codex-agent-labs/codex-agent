@@ -6,6 +6,10 @@ import kotlin.test.assertFailsWith
 
 class CodexAuthorizationBrowserTest {
     @Test
+    @CoversApi(
+        "api-v1:CodexAuthorizationUrl#property:value#sha256:baccc0a42dbeef1b9a06cbcefae83cf5147fe726a0763358d4a93753c5456176",
+        "api-v1:CodexAuthorizationUrl.Companion#function:chatGpt#sha256:b9a2ed2e00deca1c26990e59f433f2a3fbb6f31dbd6cdfc2c0ac488fe1a1e939",
+    )
     fun chatGptUrlsRequireTrustedHttpsHostsAndDefaultPort() {
         assertEquals(
             "https://auth.openai.com/authorize?client=codex",
@@ -26,6 +30,9 @@ class CodexAuthorizationBrowserTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:CodexAuthorizationUrl.Companion#function:external#sha256:1df63c749bdeb117c03d6e790978c1cb3207ed50e82ed968cc745f1328f5d6d1",
+    )
     fun externalUrlsAllowHttpsAndOnlyLoopbackHttp() {
         CodexAuthorizationUrl.external("https://accounts.example.com/oauth")
         CodexAuthorizationUrl.external("http://localhost:8787/callback")
@@ -45,6 +52,9 @@ class CodexAuthorizationBrowserTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:CodexAuthorizationPurpose#enum-entry:EXTERNAL#sha256:492cd9f0170382074654bb2399c71ab72be8a01ec8806dc20aa717b69b42506a",
+    )
     fun authorizationUrlsDoNotLeakTheirValueFromToString() {
         val url = CodexAuthorizationUrl.external("https://accounts.example.com/oauth?secret=value")
         assertEquals("CodexAuthorizationUrl(purpose=EXTERNAL)", url.toString())

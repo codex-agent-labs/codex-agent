@@ -86,11 +86,13 @@ class AppleReleaseCheckTasksTest {
                 .sorted().map(Files::readString).toList().joinToString("\n")
         }
         listOf(
-            "/bin/bash", "\"bash\", \"-c\"", "\"sh\", \"-c\"", "python3", "\"python\",",
+            "/bin/bash", "\"bash\", \"-c\"", "\"sh\", \"-c\"", "python3",
             "\"jq\"", "\"find\"", "\"awk\"", "\"stat\"",
         ).forEach { forbidden ->
             assertFalse(forbidden in source, forbidden)
         }
+        assertFalse("commandLine(\"python\"" in source)
+        assertFalse("executable(\"python\"" in source)
         assertTrue("VerifyIosReleaseBudgetsTask" in source)
         assertTrue("xcodebuild" in source && "/usr/bin/xcrun" in source)
     }

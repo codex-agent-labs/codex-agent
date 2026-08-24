@@ -31,7 +31,7 @@ final class CodexJavaApiTest {
         agent.getIntegrationAuthorization().isAuthorizing();
         mcpServer.isAuthorized();
         hook.getCanTrust();
-        InteractionControllerKt.isResolving(state, interaction);
+        state.isResolving(interaction);
     }
 
     @Test

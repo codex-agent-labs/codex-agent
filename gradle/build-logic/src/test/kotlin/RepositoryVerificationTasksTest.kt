@@ -4,6 +4,11 @@ import kotlin.test.assertTrue
 
 class RepositoryVerificationTasksTest {
     @Test
+    fun `repository verification requires compiler derived API coverage`() {
+        assertTrue(":codex-agent-core:verifyCrossLanguageApiCoverage" in repositoryVerificationTaskPaths)
+    }
+
+    @Test
     fun `ordinary Android verification uses the complete release variant gates`() {
         assertTrue(":codex-agent-runtime-android:testDebugUnitTest" in repositoryVerificationTaskPaths)
         assertTrue(":codex-agent-runtime-android:lintRelease" in repositoryVerificationTaskPaths)

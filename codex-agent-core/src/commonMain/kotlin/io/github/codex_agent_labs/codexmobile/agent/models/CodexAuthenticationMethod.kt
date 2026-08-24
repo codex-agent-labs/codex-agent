@@ -1,5 +1,6 @@
 package io.github.codex_agent_labs.codexmobile.agent
 
+@CodexBindingApi
 public sealed interface CodexAuthenticationMethod {
     public data object ChatGptBrowser : CodexAuthenticationMethod
 

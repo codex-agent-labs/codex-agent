@@ -25,6 +25,28 @@ import kotlinx.serialization.json.putJsonObject
 
 class InteractionControllerTest {
     @Test
+    @CoversApi(
+        "api-v1:AgentApprovalDecision#enum-entry:ACCEPT#sha256:c6613f75901ffd0146f3c8f945f73fabdc67efb237d52809c8a1e062835dc868",
+        "api-v1:AgentInteractionState#function:pendingFor#sha256:08307041ebff699e5ae22007d411599025c4275ecd7ba025cfa31ee522e269b4",
+        "api-v1:AgentInteractionState#property:failure#sha256:7080551831f3c3b2368a281750ad45912cbb4b25f81036210b69a4045aa1fcb8",
+        "api-v1:AgentInteractionState#property:pending#sha256:10fbf36988a81d4af15d4838836e5eb81e416af5857feb53b3da1489870f08b1",
+        "api-v1:AgentPendingApproval#constructor:<init>#sha256:d36d1c527facbf77aef6ab0428e6f7777d6d05c5c96330417dd2a6956184fb57",
+        "api-v1:AgentPendingApproval#property:conversationId#sha256:887bfbda3318ffd52e5dcf35b99fbf8ea38f0bd452c7d47998b29f21cc894115",
+        "api-v1:AgentPendingApproval#property:details#sha256:44ea68a0bf7feab1522ed42d43fb45ed6ac17cf2aa9993b17b8eed70314e79ae",
+        "api-v1:AgentPendingApproval#property:requestId#sha256:fd0c32a7d1e38b0654696c08bcf2265a592d5ef67d744d6e0c8498bec84d5788",
+        "api-v1:AgentPendingElicitation#constructor:<init>#sha256:7321ecbedd6ed0aecb6b866a116d05d21590b1bc5e57486a0e76b2d441d5a374",
+        "api-v1:AgentPendingElicitation#property:conversationId#sha256:7949bbe281579a5a7997d366d50f5553bf648b72aa836562fe8720d8f23ca3ec",
+        "api-v1:AgentPendingElicitation#property:elicitation#sha256:157dddfc7f6cb679afe7cd4d0cfa3f88429775c99e5b5db9c5dcb930279cde25",
+        "api-v1:AgentPendingElicitation#property:requestId#sha256:96ac11f269d0cb2c513b838a8fdad948e4c988d542ad63f8c554e55232fb32a4",
+        "api-v1:AgentPendingInteraction#property:conversationId#sha256:2169271cd2b78533552e14cfc6d811f99921d4ba0e0a471628d69c8386aaf1b4",
+        "api-v1:AgentPendingInteraction#property:requestId#sha256:76afd10111bafff507f9198b8a047cc1ca09559084d29e01fd7d4859dd4a8acf",
+        "api-v1:CodexInteractions#function:openUrl#sha256:14ac0e7cc6c67c15dc676e0009de45616b44950f3090357adbb72307ae23be5c",
+        "api-v1:CodexInteractions#function:resolve#sha256:e3b367ed45c3a07f913b1c9d44d92e9ce90fac35794a04941d2ab4b07fbcec56",
+        "api-v1:CodexInteractions#function:resolve#sha256:cd22511653ca191997ed753c35699e2dbf6b31d32a27519bde1bec64c6789559",
+        "api-v1:CodexInteractions#property:approvals#sha256:5010b605e9dae5c13177ac80ad2d8925c94022f76b57c52aa7ac35d7842ca6da",
+        "api-v1:CodexInteractions#property:elicitations#sha256:d25818743ec91e05a7fc781ed39ed2ba9a0a4da675f0447c76bd76d4a415f63f",
+        "api-v1:CodexInteractions#property:state#sha256:ee707951ac40aa02c7cf0720ee2171cfcf0d31c847cb46e0c537e4600821c004",
+    )
     fun publicFacadeProjectsSanitizedApprovalsAndElicitationsAndResolvesThem(): Unit = runBlocking {
         val approvalResponse = CompletableDeferred<Unit>()
         val elicitationResponse = CompletableDeferred<Unit>()
@@ -47,9 +69,7 @@ class InteractionControllerTest {
             features = emptySet(),
             client = client,
             parentScope = this,
-            authorizationBrowser = CodexAuthorizationBrowser {
-                CodexAuthorizationPresentation {}
-            },
+            authorizationBrowser = CodexAuthorizationBrowser { error("browser failed") },
         )
         try {
             agent.start()
@@ -63,6 +83,11 @@ class InteractionControllerTest {
 
             val approval = withTimeout(1_000) { agent.interactions.approvals.first { it.size == 1 }.single() }
             val elicitation = withTimeout(1_000) { agent.interactions.elicitations.first { it.size == 1 }.single() }
+            assertEquals(
+                listOf(approval, elicitation),
+                agent.interactions.state.value.pendingFor(ConversationId("thread-1")),
+            )
+            assertTrue(agent.interactions.state.value.pendingFor(ConversationId("other")).isEmpty())
             assertTrue("\\u{202E}" in approval.details)
             assertTrue("\\u{A}" in approval.details)
             assertTrue('\u202E' !in approval.details && '\n' !in approval.details)
@@ -87,12 +112,25 @@ class InteractionControllerTest {
             elicitationResponse.await()
             withTimeout(1_000) { agent.interactions.approvals.first { it.isEmpty() } }
             withTimeout(1_000) { agent.interactions.elicitations.first { it.isEmpty() } }
+
+            process.request(203, "mcpServer/elicitation/request", urlElicitation(203))
+            val urlElicitation = withTimeout(1_000) {
+                agent.interactions.elicitations.first { it.size == 1 }.single()
+            }
+            val browserFailure = assertFailsWith<CodexOperationException> {
+                agent.interactions.openUrl(urlElicitation)
+            }
+            assertEquals("authorization_browser_failed", browserFailure.failure.code)
+            assertEquals(browserFailure.failure, agent.interactions.state.value.failure)
         } finally {
             agent.close()
         }
     }
 
     @Test
+    @CoversApi(
+        "api-v1:AgentInteractionState#property:resolvingRequestIds#sha256:654e56f37a63fbcd185e5f33d03bbe939c47a5a4d743acb0b2dac67a3faa43a5",
+    )
     fun cancelledResolutionCanBeRetried(): Unit = runBlocking {
         val response = CompletableDeferred<JsonObject>()
         val process = FakeCodexRuntime { message, server ->
@@ -275,6 +313,9 @@ class InteractionControllerTest {
     }
 
     @Test
+    @CoversApi(
+        "api-v1:AgentInteractionState#constructor:<init>#sha256:2f20415a7cd63439aa6fdb6a8f0a9a0377383530651884faf19da842eb3a9471",
+    )
     fun lateResolutionFailureAfterCloseDoesNotRepublishState(): Unit = runBlocking {
         val process = FakeCodexRuntime { message, server ->
             when (message.method) {

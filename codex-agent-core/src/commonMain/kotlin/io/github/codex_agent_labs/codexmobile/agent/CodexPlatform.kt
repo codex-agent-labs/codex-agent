@@ -6,6 +6,7 @@ import okio.Path.Companion.toPath
 
 public interface CodexWorkspaceSelection
 
+@CodexBindingApi
 public data class CodexClientInfo(
     public val name: String,
     public val title: String,
@@ -27,12 +28,14 @@ public enum class CodexRuntimeFeature {
     MCP_SERVERS,
 }
 
+@CodexBindingApi
 public data class CodexPathWorkspaceSelection(public val path: String) : CodexWorkspaceSelection {
     init {
         require(path.isNotBlank() && '\u0000' !in path) { "Workspace path must not be blank" }
     }
 }
 
+@CodexBindingApi
 public data class CodexWorkspace(
     public val path: String,
     public val displayName: String = path,
@@ -43,6 +46,7 @@ public data class CodexWorkspace(
     }
 }
 
+@CodexBindingApi
 public enum class CodexWorkspaceSelectionReason {
     NOT_SELECTED,
     NOT_FOUND,
@@ -50,9 +54,11 @@ public enum class CodexWorkspaceSelectionReason {
     INVALID_SELECTION,
 }
 
+@CodexBindingApi
 public sealed interface CodexWorkspaceResolution {
     public data class Available(public val workspace: CodexWorkspace) : CodexWorkspaceResolution
 
+    @CodexBindingApi
     public data class SelectionRequired(
         public val reason: CodexWorkspaceSelectionReason,
         public val message: String,

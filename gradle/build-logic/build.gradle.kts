@@ -23,9 +23,12 @@ repositories { google(); mavenCentral(); gradlePluginPortal() }
 dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation("org.jetbrains.kotlin:kotlin-gradle-plugin:${libs.versions.kotlin.get()}")
+    compileOnly("org.jetbrains.kotlin:kotlin-klib-abi-reader:${libs.versions.kotlin.get()}")
+    implementation("org.jetbrains.kotlin:kotlin-metadata-jvm:${libs.versions.kotlin.get()}")
     implementation("com.android.tools.build:gradle:${libs.versions.agp.get()}")
     testImplementation(gradleTestKit())
     testImplementation(kotlin("test-junit"))
+    testImplementation("org.jetbrains.kotlin:kotlin-klib-abi-reader:${libs.versions.kotlin.get()}")
 }
 tasks.withType<Test>().configureEach { maxParallelForks = 2 }
 

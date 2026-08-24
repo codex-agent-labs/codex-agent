@@ -21,6 +21,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+@CodexBindingApi
 public sealed interface AgentIntegration {
     public val id: String
     public val displayName: String
@@ -40,6 +41,7 @@ public sealed interface AgentIntegration {
     }
 }
 
+@CodexBindingApi
 public enum class AgentIntegrationAuthorizationStatus {
     IDLE,
     STARTING,
@@ -48,6 +50,7 @@ public enum class AgentIntegrationAuthorizationStatus {
     FAILED,
 }
 
+@CodexBindingApi
 public data class AgentIntegrationAuthorizationState(
     public val status: AgentIntegrationAuthorizationStatus = AgentIntegrationAuthorizationStatus.IDLE,
     public val target: AgentIntegration? = null,

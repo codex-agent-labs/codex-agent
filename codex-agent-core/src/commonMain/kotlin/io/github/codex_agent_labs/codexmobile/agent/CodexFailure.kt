@@ -4,6 +4,7 @@ import io.github.codex_agent_labs.codexmobile.appserver.client.AppServerRpcExcep
 import io.github.codex_agent_labs.codexmobile.appserver.client.AppServerTimeoutException
 import kotlinx.coroutines.CancellationException
 
+@CodexBindingApi
 public data class CodexFailure(
     public val code: String,
     public val message: String,
