@@ -10,6 +10,46 @@ import org.gradle.api.tasks.CacheableTask
 
 class AppleDistributionTasksTest {
     @Test
+    fun `Objective-C consumer reuses Swift simulator proof and preserves three XCTest methods`() {
+        val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .first { it.resolve("build.gradle.kts").isFile && it.resolve("codex-agent-runtime-ios").isDirectory }
+        val apple = repository.resolve("codex-agent-runtime-ios/apple")
+        val manifest = apple.resolve("Package.swift").readText()
+        val registration = repository.resolve(
+            "gradle/build-logic/src/main/kotlin/codexagent.ios-runtime.gradle.kts",
+        ).readText()
+        val simulatorTask = repository.resolve(
+            "gradle/build-logic/src/main/kotlin/SwiftAuthenticationTestTask.kt",
+        ).readText()
+        val objectiveCConsumer = apple.resolve(
+            "Tests/CodexAgentObjectiveCConsumer/CodexAgentObjectiveCConsumer.m",
+        ).readText()
+        val swiftConsumer = apple.resolve(
+            "Tests/CodexAgentObservationTests/CodexAgentObservationTests.swift",
+        ).readText()
+        val swiftTestCount = Files.walk(apple.resolve("Tests").toPath()).use { paths ->
+            paths.filter { it.toString().endsWith(".swift") }
+                .mapToInt { path -> Regex("""\bfunc\s+test\w*\s*\(""").findAll(path.toFile().readText()).count() }
+                .sum()
+        }
+
+        assertTrue("name: \"CodexAgentObjectiveCConsumer\"" in manifest)
+        assertTrue("path: \"Tests/CodexAgentObjectiveCConsumer\"" in manifest)
+        assertTrue("publicHeadersPath: \"include\"" in manifest)
+        assertTrue("testsDirectory.set(layout.projectDirectory.dir(\"apple/Tests\"))" in registration)
+        assertTrue("private val expectedSwiftTestCount = 3" in registration)
+        assertTrue("\"build-for-testing\"" in simulatorTask)
+        assertTrue("#import <CodexAgent/CodexAgent.h>" in objectiveCConsumer)
+        listOf(
+            "startWithCompletion", "selectWorkspaceURL", "observeStateWithHandler", "disposeWithCompletion",
+            "openConversationWithCompletion", "observeActiveConversationWithHandler",
+            "sendPrompt", "cancelTurnWithCompletion",
+        ).forEach { selector -> assertTrue(selector in objectiveCConsumer, "missing Objective-C selector $selector") }
+        assertTrue("CDXRunObjectiveCConsumer" in swiftConsumer)
+        assertEquals(3, swiftTestCount)
+    }
+
+    @Test
     fun `structured simulator JSON selects exact available runtime and device`() {
         val selection = selectSimulator(
             """{"runtimes":[{"name":"iOS 26.5","isAvailable":true,"identifier":"runtime-1"}]}""",

@@ -534,6 +534,37 @@ class ImpactPlanTest(GitFixture):
 
 
 class RealImpactPlanTest(unittest.TestCase):
+    def test_objective_c_consumer_has_exact_existing_apple_lane_owners(self) -> None:
+        root = CI_ROOT.parent
+        consumers = (
+            "codex-agent-runtime-ios/apple/Tests/CodexAgentObjectiveCConsumer/"
+            "CodexAgentObjectiveCConsumer.m",
+            "codex-agent-runtime-ios/apple/Tests/CodexAgentObjectiveCConsumer/"
+            "include/CodexAgentObjectiveCConsumer.h",
+        )
+
+        def matching_lanes(path: str, category: str) -> set[str]:
+            return {
+                lane
+                for lane in LANES
+                if any(
+                    fnmatch.fnmatchcase(path, spec)
+                    for spec in effective_pathspecs(root, lane, category)
+                )
+            }
+
+        for consumer in consumers:
+            with self.subTest(consumer=consumer):
+                self.assertEqual(
+                    {"ios-swift-build", "ios-swift-tests"},
+                    matching_lanes(consumer, "test"),
+                )
+                self.assertEqual(
+                    {"ios-package", "ios-privacy-metrics"},
+                    matching_lanes(consumer, "production"),
+                )
+                self.assertEqual(set(), matching_lanes(consumer, "metadata"))
+
     def test_build_logic_sources_have_explicit_narrow_owners(self) -> None:
         root = CI_ROOT.parent
 

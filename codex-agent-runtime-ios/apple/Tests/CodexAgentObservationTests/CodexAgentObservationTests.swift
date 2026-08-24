@@ -1,5 +1,6 @@
 import CodexAgent
 @testable import CodexAgentObservation
+import CodexAgentObjectiveCConsumer
 import CodexAgentSwiftSupport
 import XCTest
 
@@ -45,7 +46,7 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertNil(weakToken)
     }
 
-    func testCodexOperationErrorsExposeStructuredFailure() {
+    func testCodexOperationErrorsExposeStructuredFailure() async {
         let failure = CodexFailure(
             code: "workspace_unavailable",
             message: "Workspace is unavailable",
@@ -56,6 +57,13 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertEqual(error.codexFailure?.code, failure.code)
         XCTAssertEqual(error.codexFailure?.message, failure.message)
         XCTAssertEqual(error.codexFailure?.isRecoverable, failure.isRecoverable)
+
+        let objectiveCConsumer = expectation(description: "Objective-C lifecycle consumer")
+        CDXRunObjectiveCConsumer { failureMessage in
+            XCTAssertNil(failureMessage, failureMessage ?? "Objective-C consumer failed")
+            objectiveCConsumer.fulfill()
+        }
+        await fulfillment(of: [objectiveCConsumer], timeout: 120)
     }
 }
 
