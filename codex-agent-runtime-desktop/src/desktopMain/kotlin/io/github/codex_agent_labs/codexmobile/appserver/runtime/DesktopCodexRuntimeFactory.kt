@@ -87,18 +87,33 @@ private fun validateDesktopConfiguration(configuration: DesktopCodexRuntimeConfi
     check(executable.isAbsolute) { "Codex app-server path must be absolute" }
     check(supervisor.isAbsolute) { "Process-supervisor path must be absolute" }
     check(workingDirectory.isAbsolute) { "Desktop working-directory path must be absolute" }
-    check(executable.isRegularFile()) { "Codex app server does not exist" }
-    check(supervisor.isRegularFile()) { "Codex process supervisor does not exist" }
+    check(desktopFileSystem.metadataOrNull(executable)?.symlinkTarget == null) {
+        "Codex app server must not be a symbolic link"
+    }
     check(desktopFileSystem.metadataOrNull(supervisor)?.symlinkTarget == null) {
         "Codex process supervisor must not be a symbolic link"
+    }
+    check(desktopFileSystem.metadataOrNull(workingDirectory)?.symlinkTarget == null) {
+        "Desktop working directory must not be a symbolic link"
+    }
+    check(executable.isRegularFile()) { "Codex app server does not exist" }
+    check(supervisor.isRegularFile()) { "Codex process supervisor does not exist" }
+    check(desktopFileSystem.metadataOrNull(workingDirectory)?.isDirectory == true) {
+        "Desktop working directory does not exist"
+    }
+    check(runCatching { desktopFileSystem.canonicalize(executable) }.getOrNull() == executable) {
+        "Codex app-server path must be canonical"
     }
     check(runCatching { desktopFileSystem.canonicalize(supervisor) }.getOrNull() == supervisor) {
         "Codex process-supervisor path must be canonical"
     }
-    check(desktopFileSystem.metadataOrNull(workingDirectory)?.isDirectory == true) {
-        "Desktop working directory does not exist"
+    check(runCatching { desktopFileSystem.canonicalize(workingDirectory) }.getOrNull() == workingDirectory) {
+        "Desktop working-directory path must be canonical"
     }
     val distribution = desktopCodexDistribution(currentDesktopTarget())
+    check(executable.name == distribution.executableName) {
+        "Expected Codex app server '${distribution.executableName}' for ${distribution.target}"
+    }
     check(supervisor.name == distribution.supervisorExecutableName) {
         "Expected process supervisor '${distribution.supervisorExecutableName}' for ${distribution.target}"
     }

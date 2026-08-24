@@ -107,6 +107,70 @@ class DesktopCodexRuntimeTest {
     }
 }
 
+class DesktopCodexRuntimeValidationTest {
+    @Test
+    fun revalidatesCanonicalLaunchPathsAndExpectedAppServerName(): Unit = runBlocking {
+        val temporary = FileSystem.SYSTEM_TEMPORARY_DIRECTORY /
+            "codex-agent-desktop-path-validation-${Random.nextLong().toString(16)}"
+        FileSystem.SYSTEM.createDirectories(temporary)
+        val directory = FileSystem.SYSTEM.canonicalize(temporary)
+        val distribution = desktopCodexDistribution(currentDesktopTarget())
+        val appServerTarget = directory / "app-server-target"
+        val appServerLink = directory / distribution.executableName
+        val wrongName = directory / "wrong-app-server"
+        val supervisor = directory / distribution.supervisorExecutableName
+        val workspace = directory / "workspace"
+        val workspaceLink = directory / "workspace-link"
+        FileSystem.SYSTEM.write(appServerTarget) { writeUtf8("not an app server") }
+        FileSystem.SYSTEM.write(wrongName) { writeUtf8("not an app server") }
+        FileSystem.SYSTEM.write(supervisor) { writeUtf8("not a supervisor") }
+        FileSystem.SYSTEM.createDirectories(workspace)
+        FileSystem.SYSTEM.createSymlink(appServerLink, appServerTarget)
+        FileSystem.SYSTEM.createSymlink(workspaceLink, workspace)
+
+        suspend fun rejection(configuration: DesktopCodexRuntimeConfiguration): String {
+            val runtime = DesktopCodexRuntimeFactory(configuration).create()
+            return try {
+                assertFailsWith<IllegalStateException> { runtime.start() }.message.orEmpty()
+            } finally {
+                runtime.close()
+            }
+        }
+
+        try {
+            assertContains(
+                rejection(DesktopCodexRuntimeConfiguration(
+                    appServerLink,
+                    supervisor,
+                    "0".repeat(64),
+                    workspace,
+                )),
+                "must not be a symbolic link",
+            )
+            assertContains(
+                rejection(DesktopCodexRuntimeConfiguration(
+                    wrongName,
+                    supervisor,
+                    "0".repeat(64),
+                    workspace,
+                )),
+                "Expected Codex app server",
+            )
+            assertContains(
+                rejection(DesktopCodexRuntimeConfiguration(
+                    wrongName,
+                    supervisor,
+                    "0".repeat(64),
+                    workspaceLink,
+                )),
+                "Desktop working directory must not be a symbolic link",
+            )
+        } finally {
+            FileSystem.SYSTEM.deleteRecursively(directory, mustExist = false)
+        }
+    }
+}
+
 internal expect fun desktopTestEnvironment(name: String): String?
 
 private class FakeDesktopProcess : DesktopProcess {
