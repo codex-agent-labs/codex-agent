@@ -23,7 +23,10 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.okio)
         }
-        commonTest.dependencies { implementation(kotlin("test")) }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.test)
+        }
         nativeTest.dependencies { implementation(kotlin("test")) }
         jvmTest.dependencies { implementation(kotlin("test")) }
         jsTest.dependencies { implementation(kotlin("test")) }

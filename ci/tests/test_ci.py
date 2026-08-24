@@ -578,6 +578,20 @@ class RealImpactPlanTest(unittest.TestCase):
             {"contracts"},
             matching_lanes("test", prefix + "ReleaseIo.kt"),
         )
+        common_desktop_test = (
+            "codex-agent-runtime-desktop/src/commonTest/kotlin/"
+            "io/github/codex_agent_labs/codexmobile/appserver/runtime/ExternalProcessCodexRuntimeTest.kt"
+        )
+        self.assertEqual(
+            {
+                "portable", "node-js", "node-wasm",
+                "desktop-macos-arm64", "desktop-macos-x64",
+                "desktop-linux-arm64", "desktop-linux-x64", "desktop-windows-x64",
+            },
+            matching_lanes("test", common_desktop_test),
+        )
+        self.assertEqual(set(), matching_lanes("production", common_desktop_test))
+        self.assertEqual(set(), matching_lanes("metadata", common_desktop_test))
         self.assertEqual(
             {"portable", "consumer-common", "consumer-desktop"},
             matching_lanes(

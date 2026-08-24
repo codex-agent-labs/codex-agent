@@ -2,6 +2,7 @@ package io.github.codex_agent_labs.codexmobile.appserver.runtime
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 
 internal data class NodeLaunchSpec(
     val command: String,
@@ -11,11 +12,14 @@ internal data class NodeLaunchSpec(
     val target: String,
 )
 
-internal interface NodeOwnedProcess {
+internal interface NodeOwnedProcess : ExternalHostProcess {
     val stdout: Flow<ByteArray>
     val exitCode: CompletableDeferred<Int>
-    suspend fun write(line: String)
-    fun close()
+
+    override suspend fun collectStdout(emit: suspend (ByteArray, Int) -> Unit) =
+        stdout.collect { bytes -> emit(bytes, bytes.size) }
+    override suspend fun drainStderr(): Unit = Unit
+    override suspend fun awaitExit(): Int = exitCode.await()
 }
 
 internal fun interface NodeProcessLauncher {

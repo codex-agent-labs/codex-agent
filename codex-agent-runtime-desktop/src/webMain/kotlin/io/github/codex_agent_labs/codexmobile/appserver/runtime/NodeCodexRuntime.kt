@@ -1,15 +1,5 @@
 package io.github.codex_agent_labs.codexmobile.appserver.runtime
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.coroutines.launch
 import okio.Path
 
 internal data class NodeCodexRuntimeConfiguration(
@@ -29,96 +19,9 @@ internal class NodeCodexRuntime(
     private val configuration: NodeCodexRuntimeConfiguration,
     private val prepare: (NodeCodexRuntimeConfiguration) -> NodeLaunchSpec = ::validateNodeLaunch,
     private val launcher: NodeProcessLauncher = DefaultNodeProcessLauncher,
-) : CodexRuntime {
-    private enum class State { NEW, STARTING, RUNNING, EXITED, CLOSED }
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val eventChannel = Channel<CodexRuntimeEvent>(64)
-    private var state = State.NEW
-    private var process: NodeOwnedProcess? = null
-    private var stdoutJob: Job? = null
-    override val events: Flow<CodexRuntimeEvent> = eventChannel.receiveAsFlow()
-
-    override suspend fun start() {
-        check(state == State.NEW) { "Node Codex runtime has already been started or closed" }
-        state = State.STARTING
-        try {
-            val owned = launcher.launch(prepare(configuration))
-            if (state == State.CLOSED) {
-                owned.close()
-                runCatching { owned.exitCode.await() }
-                finishClose()
-                error("Node Codex runtime was closed while starting")
-            }
-            process = owned
-            state = State.RUNNING
-            val framer = JsonLineFramer()
-            stdoutJob = scope.launch {
-                try {
-                    owned.stdout.collect { bytes ->
-                        framer.accept(bytes) { eventChannel.send(CodexRuntimeEvent.Received(CodexJsonLine(it))) }
-                    }
-                    framer.finish { eventChannel.send(CodexRuntimeEvent.Received(CodexJsonLine(it))) }
-                    if (state != State.CLOSED) eventChannel.send(CodexRuntimeEvent.EndOfFile)
-                } catch (error: Throwable) {
-                    if (state != State.CLOSED) {
-                        eventChannel.send(CodexRuntimeEvent.IoFailure(error.message ?: "stdout failed"))
-                    }
-                }
-            }
-            scope.launch {
-                val code = runCatching { owned.exitCode.await() }.getOrElse {
-                    if (state != State.CLOSED) {
-                        eventChannel.send(CodexRuntimeEvent.IoFailure(it.message ?: "process failed"))
-                    }
-                    -1
-                }
-                stdoutJob?.join()
-                try {
-                    if (state != State.CLOSED) {
-                        state = State.EXITED
-                        eventChannel.send(CodexRuntimeEvent.Exited(code))
-                    }
-                } finally {
-                    state = State.CLOSED
-                    finishClose()
-                }
-            }
-        } catch (error: Throwable) {
-            if (state != State.CLOSED) {
-                state = State.CLOSED
-                eventChannel.send(CodexRuntimeEvent.StartFailure(error.message ?: "Node runtime failed to start"))
-            }
-            finishClose()
-            throw error
-        }
-    }
-
-    override suspend fun send(line: CodexJsonLine) {
-        check(state == State.RUNNING) { "Node Codex runtime is not running" }
-        try {
-            process!!.write(line.value + "\n")
-        } catch (error: Throwable) {
-            if (state == State.RUNNING) {
-                eventChannel.trySend(CodexRuntimeEvent.IoFailure(error.message ?: "stdin failed"))
-            }
-            throw error
-        }
-    }
-
-    override fun close() {
-        if (state == State.CLOSED) return
-        val closeImmediately = state == State.NEW
-        state = State.CLOSED
-        process?.close()
-        if (closeImmediately) finishClose()
-    }
-
-    private fun finishClose() {
-        eventChannel.close()
-        scope.cancel()
-    }
-}
+) : CodexRuntime by ExternalProcessCodexRuntime(
+    launch = { launcher.launch(prepare(configuration)) },
+)
 
 internal fun validateNodeLaunch(configuration: NodeCodexRuntimeConfiguration): NodeLaunchSpec {
     fun canonical(value: Path, kind: String): String {

@@ -1,3 +1,4 @@
+codex-agent-runtime-desktop/src/commonTest/**
 codex-agent-runtime-desktop/src/webTest/**
 codex-agent-runtime-desktop/src/jsTest/**
 gradle/build-logic/src/test/**/*Node*

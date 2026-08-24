@@ -1,6 +1,7 @@
 package io.github.codex_agent_labs.codexmobile.appserver.runtime
 
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.withContext
 import okio.FileSystem
 import okio.HashingSource
 import okio.Path
@@ -30,19 +31,43 @@ internal class DesktopCodexRuntimeFactory private constructor(
         startProcess: suspend (DesktopCodexRuntimeConfiguration) -> DesktopProcess,
     ) : this(configuration, {}, startProcess)
 
-    override fun create(): CodexRuntime = DesktopCodexRuntime(
-        configuration,
-        validateConfiguration,
-        startProcess,
-    )
+    override fun create(): CodexRuntime = ExternalProcessCodexRuntime(desktopProcessDispatcher) {
+        validateConfiguration(configuration)
+        startProcess(configuration)
+    }
 }
 
-internal interface DesktopProcess {
+internal interface DesktopProcess : ExternalHostProcess {
     fun readStdout(buffer: ByteArray): Int
     fun readStderr(buffer: ByteArray): Int
     fun write(bytes: ByteArray)
     fun waitForExit(): Int?
-    fun close()
+
+    override suspend fun collectStdout(emit: suspend (ByteArray, Int) -> Unit) {
+        val buffer = ByteArray(STREAM_BUFFER_SIZE)
+        while (true) {
+            val count = readStdout(buffer)
+            if (count == 0) return
+            check(count > 0) { "Codex app-server stdout read failed" }
+            emit(buffer, count)
+        }
+    }
+
+    override suspend fun drainStderr() {
+        val buffer = ByteArray(STREAM_BUFFER_SIZE)
+        while (readStderr(buffer) > 0) Unit
+    }
+
+    override suspend fun awaitExit(): Int =
+        checkNotNull(waitForExit()) { "Codex app-server process wait failed" }
+
+    override suspend fun write(line: String) = withContext(desktopProcessDispatcher) {
+        write(line.encodeToByteArray())
+    }
+
+    private companion object {
+        const val STREAM_BUFFER_SIZE = 8 * 1024
+    }
 }
 
 internal expect suspend fun startDesktopProcess(

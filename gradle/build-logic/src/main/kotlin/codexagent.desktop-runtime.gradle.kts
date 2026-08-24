@@ -129,6 +129,10 @@ extensions.configure<KotlinMultiplatformExtension> {
             }
         }
     }
+    sourceSets {
+        getByName("nativeMain").dependsOn(getByName("desktopMain"))
+        getByName("nativeTest").dependsOn(getByName("desktopTest"))
+    }
     desktopTargets.forEach { target ->
         target.compilations.getByName("main").cinterops.create("codexDesktop") {
             defFile(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_desktop.def"))
