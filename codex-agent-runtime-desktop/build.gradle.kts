@@ -82,6 +82,8 @@ val npmDeclarationReport = layout.buildDirectory.file("reports/npm/generated-ind
 val npmStageDirectory = layout.buildDirectory.dir("npm/package")
 val npmConsumerDirectory = layout.buildDirectory.dir("npm/consumer")
 val npmConsumerCacheDirectory = layout.buildDirectory.dir("npm/cache")
+val npmPublicApiReport = layout.buildDirectory.file("npm/consumer/public-api.json")
+val npmPackedTestReport = layout.buildDirectory.file("npm/consumer/packed-tests.xml")
 
 val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     group = "verification"
@@ -288,7 +290,36 @@ tasks.register<Exec>("verifyPackedNpmConsumers") {
     description = "Type-checks and executes CJS/ESM consumers against the exact SDK tarball."
     dependsOn(installPackedNpmSdk)
     workingDir(npmConsumerDirectory)
+    inputs.file(npmArchiveFile)
+    inputs.files(npmConsumerSourceDirectory.asFileTree)
+    outputs.files(npmPublicApiReport, npmPackedTestReport)
+    environment("CODEX_AGENT_NPM_TARBALL", npmArchiveFile.get().asFile.absolutePath)
     commandLine("npm", "run", "verify")
+    doFirst {
+        outputs.files.forEach(File::delete)
+    }
+    doLast {
+        val publicApi = outputs.files.single { it.name == "public-api.json" }
+        val junit = outputs.files.single { it.name == "packed-tests.xml" }
+        check(publicApi.isFile && publicApi.length() > 0 &&
+            publicApi.readText().contains("\"schema\": 1")) {
+            "Packed npm compiler API report is missing or malformed"
+        }
+        val testReport = junit.takeIf(File::isFile)?.readText().orEmpty()
+        check(testReport.isNotBlank() &&
+            !Regex("""<(failure|error|skipped)\b""").containsMatchIn(testReport)) {
+            "Packed npm JUnit evidence is missing, failed, or skipped"
+        }
+        listOf(
+            "cjs exposes the exact Node-only SDK surface",
+            "cjs projects lifecycle state failure cleanup and terminal delivery",
+            "cjs maps AbortSignal cancellation without starting",
+            "esm exposes the same runtime values as CommonJS",
+            "typescript compiler discovers the exact installed public API",
+        ).forEach { testId ->
+            check(testId in testReport) { "Packed npm JUnit evidence did not execute: $testId" }
+        }
+    }
 }
 
 val nodeWasmRunnerBaseName = "codex-agent-codex-agent-runtime-desktop"

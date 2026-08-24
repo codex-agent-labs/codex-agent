@@ -36,7 +36,7 @@ from reuse import (  # noqa: E402
     promoted_artifacts,
     restore,
 )
-from stage import OUTPUTS, archive_tree, restore_production_files, safe_extract_tar  # noqa: E402
+from stage import OUTPUTS, archive_tree, copy_matches, restore_production_files, safe_extract_tar  # noqa: E402
 from validation_reuse import (  # noqa: E402
     discover as discover_validation,
     materialize,
@@ -920,6 +920,20 @@ class RealImpactPlanTest(unittest.TestCase):
 
 
 class StageArchiveTest(unittest.TestCase):
+    def test_node_js_stages_exact_packed_consumer_evidence_and_rejects_missing_outputs(self) -> None:
+        expected = (
+            ("build", "codex-agent-runtime-desktop/build/npm/consumer/public-api.json", "npm-public-api-report"),
+            ("build", "codex-agent-runtime-desktop/build/npm/consumer/packed-tests.xml", "npm-packed-test-report"),
+        )
+        self.assertEqual(expected, OUTPUTS["node-js"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for _, pattern, _ in expected:
+                with self.subTest(pattern=pattern):
+                    with self.assertRaisesRegex(ValueError, "Required lane output did not match"):
+                        copy_matches(root, root / "staged", pattern)
+
     def test_recursive_output_globs_are_python_312_compatible(self) -> None:
         self.assertFalse([
             pattern

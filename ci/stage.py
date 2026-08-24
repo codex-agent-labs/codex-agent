@@ -32,6 +32,10 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("test", "codex-agent-runtime-android/build/test-results/**/*.xml", "test-report"),
         ("metadata", "codex-agent-runtime-android/build/reports/lint-results-release.xml", "lint-report"),
     ),
+    "node-js": (
+        ("build", "codex-agent-runtime-desktop/build/npm/consumer/public-api.json", "npm-public-api-report"),
+        ("build", "codex-agent-runtime-desktop/build/npm/consumer/packed-tests.xml", "npm-packed-test-report"),
+    ),
     "desktop-macos-arm64": (
         ("build", "codex-agent-runtime-desktop/build/distributions/*-app-server-macos-arm64.zip", "classifier"),
         ("test", "codex-agent-runtime-desktop/build/reports/desktop-runtime-evidence/desktop-runtime-macosArm64.json", "runtime-evidence"),
