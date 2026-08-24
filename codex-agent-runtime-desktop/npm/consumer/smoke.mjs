@@ -270,6 +270,8 @@ test('esm exposes the same runtime values as CommonJS', () => {
   const esmExports = Object.keys(sdk).sort();
   assert.deepEqual(esmExports, commonJsExports);
   assert.equal(typeof sdk.CodexHost, 'function');
+  assert.equal(typeof sdk.CodexAuthentication, 'function');
+  assert.equal(typeof sdk.CodexAuthenticationState, 'function');
   assert.equal(typeof sdk.createCodexHost, 'function');
 });
 
@@ -291,6 +293,22 @@ test('typescript compiler discovers the exact installed public API', () => {
     new Set(['"new"', '"restoring"', '"workspace_required"', '"preparing"', '"ready"', '"failed"', '"closed"']),
     'Type aliases must expand to their exact union members',
   );
+  const authenticationMethod = compilerApi.publicSymbols
+    .find((symbol) => symbol.startsWith('type:CodexAuthenticationMethod:'))
+    ?.slice('type:CodexAuthenticationMethod:'.length);
+  assert.deepEqual(
+    new Set(authenticationMethod?.split(' | ')),
+    new Set(['"chatgpt_browser"', '"chatgpt_device_code"', '"api_key"']),
+    'Authentication methods must remain a closed typed domain',
+  );
+  const authenticationStatus = compilerApi.publicSymbols
+    .find((symbol) => symbol.startsWith('type:CodexAuthenticationStatus:'))
+    ?.slice('type:CodexAuthenticationStatus:'.length);
+  assert.deepEqual(
+    new Set(authenticationStatus?.split(' | ')),
+    new Set(['"signed_out"', '"authenticating"', '"authenticated"']),
+    'Authentication statuses must remain a closed typed domain',
+  );
   assert.ok(
     compilerApi.publicSymbols.some((symbol) =>
       symbol.startsWith('getter:CodexHostState#workspace:') && symbol.includes('null') && symbol.includes('undefined')),
@@ -299,6 +317,24 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexAgent#openConversation:(conversationId?: string | null | undefined, approvalPreset?: CodexApprovalPreset | null | undefined, serviceTier?: string | null | undefined, signal?: AbortSignal | null | undefined): Promise<CodexConversation>',
   ), 'Nested method parameter aliases must expand structurally');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:CodexAgent#authentication:CodexAuthentication',
+  ), 'Agent authentication ownership must be discoverable');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexAuthentication#authenticate:(method?: "chatgpt_browser" | null | undefined, apiKey?: null, signal?: AbortSignal | null | undefined): Promise<void>',
+  ), 'Default and browser authentication must forbid API keys');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexAuthentication#authenticate:(method: "chatgpt_device_code", apiKey?: null, signal?: AbortSignal | null | undefined): Promise<void>',
+  ), 'Device-code authentication must forbid API keys');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexAuthentication#authenticate:(method: "api_key", apiKey: string, signal?: AbortSignal | null | undefined): Promise<void>',
+  ), 'API-key authentication must require a key and preserve AbortSignal cancellation');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexAuthentication#observeState:(listener: (state: CodexAuthenticationState) => void): CodexObservation',
+  ), 'Authentication state observation must be discoverable');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:CodexAuthenticationState#failure:CodexFailure | null | undefined',
+  ), 'Authentication structured state failure must be discoverable');
   const privateSurface = ts.createSourceFile(
     'private-surface.d.ts',
     'export declare class Visible { private constructor(); protected hidden(): void; #secret: string; }',

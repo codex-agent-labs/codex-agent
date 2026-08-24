@@ -5,11 +5,21 @@ export type CodexMessageRole = "user" | "assistant";
 export type CodexWorkActivity = "running_command" | "writing_files";
 export type CodexConversationStatus = "new" | "opening" | "ready" | "starting_turn" | "running_turn" | "cancelling_turn" | "reloading" | "failed" | "closed";
 export type CodexApprovalPreset = "auto_review" | "never" | "ask_me" | "strict";
+export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code" | "api_key";
+export type CodexAuthenticationStatus = "signed_out" | "authenticating" | "authenticated";
 export declare class CodexFailure {
     private constructor();
     get code(): string;
     get message(): string;
     get recoverable(): boolean;
+}
+export declare class CodexAuthenticationState {
+    private constructor();
+    get status(): CodexAuthenticationStatus;
+    get pendingSignInUrl(): Nullable<string>;
+    get deviceVerificationUrl(): Nullable<string>;
+    get deviceUserCode(): Nullable<string>;
+    get failure(): Nullable<CodexFailure>;
 }
 export declare class CodexError extends Error {
     private constructor();
@@ -92,9 +102,24 @@ export declare function createCodexHost(bundleDirectory: string, dataDirectory: 
 export declare class CodexAgent {
     private constructor();
     get workspace(): CodexWorkspace;
+    get authentication(): CodexAuthentication;
     get activeConversation(): Nullable<CodexConversation>;
     openConversation(conversationId?: Nullable<string>, approvalPreset?: Nullable<CodexApprovalPreset>, serviceTier?: Nullable<string>, signal?: Nullable<AbortSignal>): Promise<CodexConversation>;
     observeActiveConversation(listener: (conversation: Nullable<CodexConversation>) => void): CodexObservation;
+}
+export declare class CodexAuthentication {
+    private constructor();
+    get state(): CodexAuthenticationState;
+    get isAuthenticated(): boolean;
+    get isAuthenticating(): boolean;
+    authenticate(method?: Nullable<"chatgpt_browser">, apiKey?: null, signal?: Nullable<AbortSignal>): Promise<void>;
+    authenticate(method: "chatgpt_device_code", apiKey?: null, signal?: Nullable<AbortSignal>): Promise<void>;
+    authenticate(method: "api_key", apiKey: string, signal?: Nullable<AbortSignal>): Promise<void>;
+    cancel(signal?: Nullable<AbortSignal>): Promise<void>;
+    signOut(signal?: Nullable<AbortSignal>): Promise<void>;
+    observeState(listener: (state: CodexAuthenticationState) => void): CodexObservation;
+    observeAuthenticated(listener: (isAuthenticated: boolean) => void): CodexObservation;
+    observeAuthenticating(listener: (isAuthenticating: boolean) => void): CodexObservation;
 }
 export declare class CodexConversation {
     private constructor();

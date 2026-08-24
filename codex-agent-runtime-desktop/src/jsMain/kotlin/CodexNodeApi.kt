@@ -1,12 +1,15 @@
 @file:OptIn(ExperimentalJsExport::class)
 
 import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
+import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as CoreAuthenticationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSettings
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState as CoreConversationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
 import io.github.codex_agent_labs.codexmobile.agent.AgentTurnProgress as CoreTurnProgress
 import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
+import io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication as CoreAuthentication
+import io.github.codex_agent_labs.codexmobile.agent.CodexAuthenticationMethod as CoreAuthenticationMethod
 import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo
 import io.github.codex_agent_labs.codexmobile.agent.CodexConversation as CoreConversation
 import io.github.codex_agent_labs.codexmobile.agent.CodexFailure as CoreFailure
@@ -50,6 +53,22 @@ public class CodexFailure internal constructor(
     public val recoverable: Boolean,
 ) {
     init {
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable authentication lifecycle snapshot. */
+@JsExport
+public class CodexAuthenticationState internal constructor(
+    public val status: String,
+    public val pendingSignInUrl: String?,
+    public val deviceVerificationUrl: String?,
+    public val deviceUserCode: String?,
+    public val failure: CodexFailure?,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex authentication states are created by the SDK" }
         freezeSnapshot(this)
     }
 }
@@ -311,6 +330,8 @@ public class CodexAgent internal constructor(
     private val core: CoreAgent,
     token: Any,
 ) {
+    private val authenticationProjection: CodexAuthentication =
+        CodexAuthentication(host, core, core.authentication, jsApiToken)
     private var cachedCoreConversation: CoreConversation? = null
     private var cachedConversation: CodexConversation? = null
 
@@ -321,6 +342,9 @@ public class CodexAgent internal constructor(
 
     public val workspace: CodexWorkspace
         get() = core.workspace.project()
+
+    public val authentication: CodexAuthentication
+        get() = authenticationProjection
 
     public val activeConversation: CodexConversation?
         get() = if (host.owns(core)) core.conversations.active.value?.let(::wrapConversation) else null
@@ -363,6 +387,69 @@ public class CodexAgent internal constructor(
             cachedConversation = CodexConversation(host, conversation, jsApiToken)
         }
         return checkNotNull(cachedConversation)
+    }
+}
+
+/** Agent-owned authentication projection. */
+@JsExport
+public class CodexAuthentication internal constructor(
+    private val host: CodexHost,
+    private val agent: CoreAgent,
+    private val core: CoreAuthentication,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex authentication is created by an Agent" }
+        hideBackingFields(this)
+    }
+
+    public val state: CodexAuthenticationState
+        get() = core.state.value.project()
+
+    public val isAuthenticated: Boolean
+        get() = core.isAuthenticated.value
+
+    public val isAuthenticating: Boolean
+        get() = core.isAuthenticating.value
+
+    public fun authenticate(
+        method: String? = null,
+        apiKey: String? = null,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        core.authenticate(method.toAuthenticationMethod(apiKey))
+    }
+
+    public fun cancel(signal: AbortSignal? = null): Promise<Unit> =
+        host.operationScope().codexUnitPromise(signal) { core.cancel() }
+
+    public fun signOut(signal: AbortSignal? = null): Promise<Unit> =
+        host.operationScope().codexUnitPromise(signal) { core.signOut() }
+
+    public fun observeState(listener: (CodexAuthenticationState) -> Unit): CodexObservation =
+        observeOwnedState(core.state, CoreAuthenticationState::project, listener)
+
+    public fun observeAuthenticated(listener: (Boolean) -> Unit): CodexObservation =
+        observeOwnedState(core.isAuthenticated, { it }, listener)
+
+    public fun observeAuthenticating(listener: (Boolean) -> Unit): CodexObservation =
+        observeOwnedState(core.isAuthenticating, { it }, listener)
+
+    private fun <T, R> observeOwnedState(
+        state: StateFlow<T>,
+        project: (T) -> R,
+        listener: (R) -> Unit,
+    ): CodexObservation {
+        val owned = combine(host.lifecycleState(), state) { hostState, value ->
+            OwnedValue(value, (hostState as? CoreHostState.Ready)?.agent !== agent)
+        }
+        return observeFlow(
+            scope = host.operationScope(),
+            state = owned,
+            project = { project(it.value) },
+            listener = listener,
+            isTerminal = { it.terminal },
+        )
     }
 }
 
@@ -411,6 +498,11 @@ private data class ActiveConversationState(
     val terminal: Boolean,
 )
 
+private data class OwnedValue<T>(
+    val value: T,
+    val terminal: Boolean,
+)
+
 private class CodexAbortError(message: String) : CancellationException(message) {
     init {
         asDynamic().name = "AbortError"
@@ -425,9 +517,33 @@ private fun String?.toApprovalPreset(): AgentApprovalPreset = when (this) {
     else -> throw IllegalArgumentException("Unknown approval preset: $this")
 }
 
+private fun String?.toAuthenticationMethod(apiKey: String?): CoreAuthenticationMethod = when (this) {
+    null, "chatgpt_browser" -> {
+        require(apiKey == null) { "apiKey is only valid for api_key authentication" }
+        CoreAuthenticationMethod.ChatGptBrowser
+    }
+    "chatgpt_device_code" -> {
+        require(apiKey == null) { "apiKey is only valid for api_key authentication" }
+        CoreAuthenticationMethod.ChatGptDeviceCode
+    }
+    "api_key" -> CoreAuthenticationMethod.ApiKey(requireNotNull(apiKey) {
+        "apiKey is required for api_key authentication"
+    })
+    else -> throw IllegalArgumentException("Unknown authentication method: $this")
+}
+
 private fun CoreWorkspace.project(): CodexWorkspace = CodexWorkspace(path, displayName)
 
 private fun CoreFailure.project(): CodexFailure = CodexFailure(code, message, isRecoverable)
+
+private fun CoreAuthenticationState.project(): CodexAuthenticationState = CodexAuthenticationState(
+    status = status.name.lowercase(),
+    pendingSignInUrl = pendingSignInUrl?.value,
+    deviceVerificationUrl = deviceVerificationUrl?.value,
+    deviceUserCode = deviceUserCode,
+    failure = failure?.project(),
+    token = jsApiToken,
+)
 
 private fun CoreMessage.project(): CodexMessage = CodexMessage(
     id = id,

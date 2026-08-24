@@ -133,10 +133,15 @@ export type CodexMessageRole = "user" | "assistant";
 export type CodexWorkActivity = "running_command" | "writing_files";
 export type CodexConversationStatus = "new" | "opening" | "ready" | "starting_turn" | "running_turn" | "cancelling_turn" | "reloading" | "failed" | "closed";
 export type CodexApprovalPreset = "auto_review" | "never" | "ask_me" | "strict";
+export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code" | "api_key";
+export type CodexAuthenticationStatus = "signed_out" | "authenticating" | "authenticated";
 """,
         ).replace(
             "    get recoverable(): boolean;\n}\nexport declare class CodexWorkspace",
             "    get recoverable(): boolean;\n    readonly cause?: unknown;\n}\nexport declare class CodexWorkspace",
+        ).replace(
+            "    get status(): string;\n    get pendingSignInUrl(): Nullable<string>;",
+            "    get status(): CodexAuthenticationStatus;\n    get pendingSignInUrl(): Nullable<string>;",
         ).replace(
             "export declare class CodexHostState {\n    private constructor();\n    get status(): string;",
             "export declare class CodexHostState {\n    private constructor();\n    get status(): CodexHostStatus;",
@@ -170,6 +175,21 @@ export type CodexApprovalPreset = "auto_review" | "never" | "ask_me" | "strict";
         ).replace(
             "approvalPreset?: Nullable<string>",
             "approvalPreset?: Nullable<CodexApprovalPreset>",
+        ).replace(
+            "    authenticate(method?: Nullable<string>, apiKey?: Nullable<string>, " +
+                "signal?: Nullable<AbortSignal>): Promise<void>;",
+            """    authenticate(method?: Nullable<"chatgpt_browser">, apiKey?: null, signal?: Nullable<AbortSignal>): Promise<void>;
+    authenticate(method: "chatgpt_device_code", apiKey?: null, signal?: Nullable<AbortSignal>): Promise<void>;
+    authenticate(method: "api_key", apiKey: string, signal?: Nullable<AbortSignal>): Promise<void>;""",
+        ).replace(
+            "observeState(listener: (p0: CodexAuthenticationState) => void)",
+            "observeState(listener: (state: CodexAuthenticationState) => void)",
+        ).replace(
+            "observeAuthenticated(listener: (p0: boolean) => void)",
+            "observeAuthenticated(listener: (isAuthenticated: boolean) => void)",
+        ).replace(
+            "observeAuthenticating(listener: (p0: boolean) => void)",
+            "observeAuthenticating(listener: (isAuthenticating: boolean) => void)",
         ).replace(
             "    observeState(listener: (p0: CodexConversationState) => void): CodexObservation;",
             "    observeState(listener: (state: CodexConversationState) => void): CodexObservation;",

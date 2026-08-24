@@ -27,6 +27,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.await
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -180,6 +181,137 @@ class CodexNodeApiTest {
             host.close().await()
         }
     }
+
+    @Test
+    fun projectsAuthenticationStateMethodsIdentityAndDisposal() = runTest {
+        val runtime = ApiTestRuntime()
+        val core = CoreHost(ApiTestPlatform(runtime), CodexClientInfo("node_test", "Node Test", "test"))
+        val host = wrapCodexHost(core)
+        host.start().await()
+        val agent = assertIs<CodexAgent>(host.agent)
+        val authentication = agent.authentication
+
+        assertSame(authentication, agent.authentication)
+        assertEquals(0, enumerablePropertyCount(authentication))
+        assertEquals("signed_out", authentication.state.status)
+        assertFalse(authentication.isAuthenticated)
+        assertFalse(authentication.isAuthenticating)
+        assertTrue(isFrozen(authentication.state))
+
+        val states = mutableListOf<CodexAuthenticationState>()
+        val authenticated = mutableListOf<Boolean>()
+        val authenticating = mutableListOf<Boolean>()
+        val stateObservation = authentication.observeState(states::add)
+        val authenticatedObservation = authentication.observeAuthenticated(authenticated::add)
+        val authenticatingObservation = authentication.observeAuthenticating(authenticating::add)
+        val disposedStates = mutableListOf<String>()
+        val disposedObservation = authentication.observeState { disposedStates += it.status }
+        awaitCondition {
+            states.isNotEmpty() && authenticated.isNotEmpty() &&
+                authenticating.isNotEmpty() && disposedStates.isNotEmpty()
+        }
+        disposedObservation.dispose()
+
+        authentication.authenticate("chatgpt_browser").await()
+        awaitCondition {
+            states.lastOrNull()?.pendingSignInUrl == "https://auth.openai.com/oauth?state=login-1" &&
+                authenticated.lastOrNull() == false && authenticating.lastOrNull() == true
+        }
+        assertEquals("authenticating", authentication.state.status)
+        assertEquals("https://auth.openai.com/oauth?state=login-1", authentication.state.pendingSignInUrl)
+        assertEquals("authenticating", states.last().status)
+        assertTrue(authentication.isAuthenticating)
+
+        authentication.cancel().await()
+        awaitCondition {
+            states.lastOrNull()?.failure?.code == "authentication_failed" &&
+                authenticated.lastOrNull() == false && authenticating.lastOrNull() == false
+        }
+        assertEquals("signed_out", authentication.state.status)
+        assertEquals("authentication_failed", authentication.state.failure?.code)
+        assertEquals("signed_out", states.last().status)
+        assertTrue(isFrozen(checkNotNull(authentication.state.failure)))
+        assertEquals(1, runtime.cancelRequests)
+
+        authentication.authenticate("chatgpt_device_code").await()
+        awaitCondition {
+            states.lastOrNull()?.deviceUserCode == "ABCD-EFGH" &&
+                authenticated.lastOrNull() == false && authenticating.lastOrNull() == true
+        }
+        assertEquals("authenticating", authentication.state.status)
+        assertEquals("https://auth.openai.com/device", authentication.state.deviceVerificationUrl)
+        assertEquals("ABCD-EFGH", authentication.state.deviceUserCode)
+        assertEquals("https://auth.openai.com/device", states.last().deviceVerificationUrl)
+        authentication.cancel().await()
+        awaitCondition {
+            states.lastOrNull()?.status == "signed_out" &&
+                authenticated.lastOrNull() == false && authenticating.lastOrNull() == false
+        }
+
+        authentication.authenticate("api_key", "sk-js-test").await()
+        awaitCondition {
+            states.lastOrNull()?.status == "authenticated" &&
+                authenticated.lastOrNull() == true && authenticating.lastOrNull() == false
+        }
+        assertEquals("authenticated", authentication.state.status)
+        assertEquals("sk-js-test", runtime.apiKey)
+
+        authentication.signOut().await()
+        awaitCondition {
+            states.lastOrNull()?.let { it.status == "signed_out" && it.failure == null } == true &&
+                authenticated.lastOrNull() == false && authenticating.lastOrNull() == false
+        }
+        assertEquals(1, runtime.logoutRequests)
+        assertEquals(listOf("signed_out"), disposedStates)
+
+        host.close().await()
+        awaitCondition {
+            stateObservation.isClosed && authenticatedObservation.isClosed && authenticatingObservation.isClosed
+        }
+    }
+
+    @Test
+    fun mapsAuthenticationFailureAndAbortSignalCancellation() = runTest {
+        val failedRuntime = ApiTestRuntime().apply { failNextAccountRead = true }
+        val failedHost = wrapCodexHost(
+            CoreHost(ApiTestPlatform(failedRuntime), CodexClientInfo("node_test", "Node Test", "test")),
+        )
+        failedHost.start().await()
+        val failedAuthentication = assertIs<CodexAgent>(failedHost.agent).authentication
+        val failure = runCatching { failedAuthentication.authenticate().await() }.exceptionOrNull()
+        val codexError = assertIs<CodexError>(failure)
+        assertEquals("authentication_failed", codexError.code)
+        assertTrue(codexError.recoverable)
+        assertEquals("authentication denied", codexError.message)
+        assertEquals("authentication_failed", failedAuthentication.state.failure?.code)
+        assertTrue(isFrozen(failedAuthentication.state))
+        failedHost.close().await()
+
+        val readEntered = CompletableDeferred<Unit>()
+        val readRelease = CompletableDeferred<Unit>()
+        val cancelledRuntime = ApiTestRuntime().apply {
+            accountReadEntered = readEntered
+            accountReadRelease = readRelease
+        }
+        val cancelledHost = wrapCodexHost(
+            CoreHost(ApiTestPlatform(cancelledRuntime), CodexClientInfo("node_test", "Node Test", "test")),
+        )
+        cancelledHost.start().await()
+        val cancelledAuthentication = assertIs<CodexAgent>(cancelledHost.agent).authentication
+        val controller = js("new AbortController()")
+        val operation = cancelledAuthentication.authenticate(
+            signal = controller.signal.unsafeCast<AbortSignal>(),
+        )
+        readEntered.await()
+        controller.abort()
+        readRelease.complete(Unit)
+
+        val abort = runCatching { operation.await() }.exceptionOrNull()
+        assertEquals("AbortError", abort?.asDynamic()?.name as String)
+        awaitCondition { cancelledAuthentication.state.status == "signed_out" }
+        assertFalse(cancelledAuthentication.isAuthenticating)
+        cancelledHost.close().await()
+    }
 }
 
 private suspend fun awaitCondition(condition: () -> Boolean) {
@@ -246,6 +378,13 @@ private class ApiTestRuntime : CodexRuntime {
     override val events: Flow<CodexRuntimeEvent> = eventChannel.receiveAsFlow()
     var started: Boolean = false
     var closed: Boolean = false
+    var failNextAccountRead: Boolean = false
+    var accountReadEntered: CompletableDeferred<Unit>? = null
+    var accountReadRelease: CompletableDeferred<Unit>? = null
+    var apiKey: String? = null
+    var cancelRequests: Int = 0
+    var logoutRequests: Int = 0
+    private var loginAttempts: Int = 0
 
     override suspend fun start(): Unit {
         started = true
@@ -254,15 +393,87 @@ private class ApiTestRuntime : CodexRuntime {
     override suspend fun send(line: CodexJsonLine): Unit {
         val request = Json.parseToJsonElement(line.value).jsonObject
         val id = request["id"]?.jsonPrimitive?.long ?: return
-        val result = when (request["method"]?.jsonPrimitive?.content) {
-            "initialize" -> initializeResult()
-            "thread/start" -> threadStartResult()
-            else -> buildJsonObject {}
+        when (request["method"]?.jsonPrimitive?.content) {
+            "initialize" -> respond(id, initializeResult())
+            "thread/start" -> respond(id, threadStartResult())
+            "account/read" -> {
+                accountReadEntered?.complete(Unit)
+                accountReadRelease?.await()
+                if (failNextAccountRead) {
+                    failNextAccountRead = false
+                    respondError(id, "authentication denied")
+                } else {
+                    respond(id, buildJsonObject {
+                        put("account", JsonNull)
+                        put("requiresOpenaiAuth", true)
+                    })
+                }
+            }
+            "account/login/start" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                when (params["type"]?.jsonPrimitive?.content) {
+                    "chatgpt" -> respond(id, buildJsonObject {
+                        put("type", "chatgpt")
+                        put("loginId", "login-${++loginAttempts}")
+                        put("authUrl", "https://auth.openai.com/oauth?state=login-$loginAttempts")
+                    })
+                    "chatgptDeviceCode" -> respond(id, buildJsonObject {
+                        put("type", "chatgptDeviceCode")
+                        put("loginId", "login-${++loginAttempts}")
+                        put("userCode", "ABCD-EFGH")
+                        put("verificationUrl", "https://auth.openai.com/device")
+                    })
+                    "apiKey" -> {
+                        apiKey = params["apiKey"]?.jsonPrimitive?.content
+                        respond(id, buildJsonObject { put("type", "apiKey") })
+                    }
+                    else -> error("Unexpected authentication method")
+                }
+            }
+            "account/login/cancel" -> {
+                cancelRequests += 1
+                val loginId = checkNotNull(request["params"]).jsonObject["loginId"]!!.jsonPrimitive.content
+                notify("account/login/completed", buildJsonObject {
+                    put("loginId", loginId)
+                    put("success", false)
+                    put("error", "cancelled")
+                })
+                respond(id, buildJsonObject { put("status", "canceled") })
+            }
+            "account/logout" -> {
+                logoutRequests += 1
+                respond(id, buildJsonObject {})
+            }
+            else -> respond(id, buildJsonObject {})
         }
+    }
+
+    private suspend fun respond(id: Long, result: JsonObject): Unit {
         eventChannel.send(CodexRuntimeEvent.Received(CodexJsonLine(
             buildJsonObject {
                 put("id", id)
                 put("result", result)
+            }.toString(),
+        )))
+    }
+
+    private suspend fun respondError(id: Long, message: String): Unit {
+        eventChannel.send(CodexRuntimeEvent.Received(CodexJsonLine(
+            buildJsonObject {
+                put("id", id)
+                putJsonObject("error") {
+                    put("code", -32000)
+                    put("message", message)
+                }
+            }.toString(),
+        )))
+    }
+
+    private suspend fun notify(method: String, params: JsonObject): Unit {
+        eventChannel.send(CodexRuntimeEvent.Received(CodexJsonLine(
+            buildJsonObject {
+                put("method", method)
+                put("params", params)
             }.toString(),
         )))
     }

@@ -1,6 +1,8 @@
 import api from './index.cjs';
 
 export const CodexAgent = api.CodexAgent;
+export const CodexAuthentication = api.CodexAuthentication;
+export const CodexAuthenticationState = api.CodexAuthenticationState;
 export const CodexConversation = api.CodexConversation;
 export const CodexConversationState = api.CodexConversationState;
 export const CodexError = api.CodexError;

@@ -19,10 +19,14 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.createCodexHost, 'function');
   assert.throws(() => new sdk.CodexHost());
   assert.throws(() => new sdk.CodexAgent());
+  assert.throws(() => new sdk.CodexAuthentication());
+  assert.throws(() => new sdk.CodexAuthenticationState());
   assert.throws(() => new sdk.CodexConversation());
   assert.throws(() => new sdk.CodexObservation());
   for (const constructor of [
     sdk.CodexAgent,
+    sdk.CodexAuthentication,
+    sdk.CodexAuthenticationState,
     sdk.CodexConversation,
     sdk.CodexConversationState,
     sdk.CodexError,
