@@ -1,15 +1,15 @@
-import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState
-import io.github.codex_agent_labs.codexmobile.agent.AgentHook
-import io.github.codex_agent_labs.codexmobile.agent.AgentPluginSummary
-import io.github.codex_agent_labs.codexmobile.agent.AgentSkill
-import io.github.codex_agent_labs.codexmobile.agent.AgentTurnRequest
-import io.github.codex_agent_labs.codexmobile.agent.CodexAgent
-import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo
-import io.github.codex_agent_labs.codexmobile.agent.CodexConversation
-import io.github.codex_agent_labs.codexmobile.agent.CodexHost
-import io.github.codex_agent_labs.codexmobile.agent.CodexHostState
-import io.github.codex_agent_labs.codexmobile.agent.CodexPlatform
-import io.github.codex_agent_labs.codexmobile.agent.CodexRuntimeFeature
+import io.github.codex_agent_labs.codexagent.agent.AgentConversationState
+import io.github.codex_agent_labs.codexagent.agent.AgentHook
+import io.github.codex_agent_labs.codexagent.agent.AgentPluginSummary
+import io.github.codex_agent_labs.codexagent.agent.AgentSkill
+import io.github.codex_agent_labs.codexagent.agent.AgentTurnRequest
+import io.github.codex_agent_labs.codexagent.agent.CodexAgent
+import io.github.codex_agent_labs.codexagent.agent.CodexClientInfo
+import io.github.codex_agent_labs.codexagent.agent.CodexConversation
+import io.github.codex_agent_labs.codexagent.agent.CodexHost
+import io.github.codex_agent_labs.codexagent.agent.CodexHostState
+import io.github.codex_agent_labs.codexagent.agent.CodexPlatform
+import io.github.codex_agent_labs.codexagent.agent.CodexRuntimeFeature
 import kotlinx.coroutines.CoroutineScope
 
 fun publicHost(

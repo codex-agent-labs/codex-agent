@@ -712,30 +712,20 @@ internal fun canonicalPromotedMavenPrimarySources(
     val owners = canonicalPromotedMavenOwners(ownership)
     check(repositories.keys == ownership.keys) { "Promoted consumer Maven repository set is incomplete" }
     val groupPrefix = "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/"
-    val relocationPrefix = "${OLD_MAVEN_GROUP.replace('.', '/')}/"
     val sources = linkedMapOf<String, File>()
     repositories.forEach { (target, repository) -> safeRegularFiles(repository).forEach { file ->
         if (promotedSidecarSuffixes.any(file.name::endsWith)) return@forEach
         if (centralExclusion(file) != null) return@forEach
         val relative = file.relativeTo(repository).invariantSeparatorsPath
         check(relative.isSafeRelativePath()) { "Unsafe promoted $target Maven path: $relative" }
-        val artifactId = when {
-            relative.startsWith(groupPrefix) -> relative.removePrefix(groupPrefix).substringBefore('/')
-            relative.startsWith(relocationPrefix) -> relative.removePrefix(relocationPrefix).substringBefore('/')
-            else -> error("Unexpected promoted Maven path: $relative")
-        }
-        val owner = if (relative.startsWith(groupPrefix)) {
-            owners[artifactId] ?: error("Canonical Maven owner is missing for $artifactId")
-        } else {
-            check(artifactId in mavenRelocationArtifactIds) { "Unexpected Maven relocation: $artifactId" }
-            "common"
-        }
+        check(relative.startsWith(groupPrefix)) { "Unexpected promoted Maven path: $relative" }
+        val artifactId = relative.removePrefix(groupPrefix).substringBefore('/')
+        val owner = owners[artifactId] ?: error("Canonical Maven owner is missing for $artifactId")
         if (target == owner) {
             check(sources.put(relative, file) == null) { "Duplicate canonical Maven ownership for $relative" }
         }
     } }
-    val expectedPaths = expectedMavenPrimaryPaths(version).mapTo(sortedSetOf()) { "$groupPrefix$it" } +
-        expectedMavenRelocationPaths(version)
+    val expectedPaths = expectedMavenPrimaryPaths(version).mapTo(sortedSetOf()) { "$groupPrefix$it" }
     check(sources.keys == expectedPaths) { "Canonical promoted Maven primary set is incomplete" }
     return sources
 }

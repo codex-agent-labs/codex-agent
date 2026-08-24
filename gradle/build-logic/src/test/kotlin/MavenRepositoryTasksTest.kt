@@ -7,13 +7,26 @@ import kotlin.test.assertTrue
 
 class MavenRepositoryTasksTest {
     @Test
-    fun `exact signed publication and six relocations pass`() = withRepository { repository, inventory ->
+    fun `exact signed publication passes`() = withRepository { repository, inventory ->
         writeExactRepository(repository, signed = true)
         verifyMavenRepository(repository, GROUP, VERSION, true, inventory)
         val report = inventory.readReleaseObject()
-        assertEquals(160, report.releaseInt("primaryArtifactCount"))
+        assertEquals(
+            setOf(
+                "schemaVersion",
+                "groupId",
+                "version",
+                "artifactIds",
+                "primaryArtifactCount",
+                "signaturesRequired",
+                "files",
+            ),
+            report.keys,
+        )
+        assertEquals(3, report.releaseInt("schemaVersion"))
+        assertEquals(GROUP, report.releaseString("groupId"))
+        assertEquals(154, report.releaseInt("primaryArtifactCount"))
         assertEquals(26, report.releaseArray("artifactIds").size)
-        assertEquals(6, report.releaseArray("relocationArtifactIds").size)
         expectedMavenPrimaryPaths(VERSION).forEach { relative ->
             val primary = repository.resolve("io/github/codex-agent-labs/$relative")
             assertEquals(primary.releaseDigest("MD5"), primary.resolveSibling(primary.name + ".md5").readText().trim())
@@ -59,21 +72,6 @@ class MavenRepositoryTasksTest {
         writeExactRepository(repository)
         val group = repository.resolve("io/github/codex-agent-labs")
         group.resolve("unexpected/0.2.0/unexpected-0.2.0.jar").apply { parentFile.mkdirs(); writeText("x") }
-        assertFailsWith<IllegalStateException> { verifyMavenRepository(repository, GROUP, VERSION, false, inventory) }
-    }
-
-    @Test
-    fun `missing or unexpected relocation is rejected`() = withRepository { repository, inventory ->
-        writeExactRepository(repository)
-        val relocation = repository.resolve(expectedMavenRelocationPaths(VERSION).first())
-        val bytes = relocation.readBytes()
-        relocation.delete()
-        assertFailsWith<IllegalStateException> { verifyMavenRepository(repository, GROUP, VERSION, false, inventory) }
-        relocation.apply { parentFile.mkdirs(); writeBytes(bytes) }
-        repository.resolve("io/github/ciurlaro/unreleased/0.2.0/unreleased-0.2.0.pom").apply {
-            parentFile.mkdirs()
-            writeText(validPom)
-        }
         assertFailsWith<IllegalStateException> { verifyMavenRepository(repository, GROUP, VERSION, false, inventory) }
     }
 
@@ -126,12 +124,6 @@ class MavenRepositoryTasksTest {
                 parentFile.mkdirs()
                 writeText(if (extension == "pom") validPom else relative)
                 if (signed) resolveSibling(name + ".asc").writeText("signature")
-            }
-        }
-        generateMavenRelocationPoms(repository.resolve(OLD_MAVEN_GROUP.replace('.', '/')), GROUP, VERSION)
-        if (signed) {
-            expectedMavenRelocationPaths(VERSION).forEach { relative ->
-                repository.resolve(relative).let { it.resolveSibling(it.name + ".asc") }.writeText("signature")
             }
         }
     }

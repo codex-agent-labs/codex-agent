@@ -49,204 +49,204 @@
                 "sha256": "13fc24cbe142d4af560844ac64f7306eed7a85f48bf52995a0eaf6bad78994a9"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolDescriptors.kt",
-                "sha256": "914503e84f8fdb1c212d4cc1f2ad839f6f1fc9a023a5dd00d09cfcdb0165b716"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolDescriptors.kt",
+                "sha256": "3f1fc47149aa1c8da2dcc5a3d1ad02f8185d94a09b3a07535212741c5396c90c"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolClientRoutes.kt",
-                "sha256": "7433a6668c1d76149d4bc423c2b152106c576e7ab58336161f4b2f79c8805fb1"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolClientRoutes.kt",
+                "sha256": "ae4b85402c13c7da1bfb647196ede385015941e402c6637915d9e7e9297d80a0"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolClientMethods.kt",
-                "sha256": "7ca962967581ee96738e098ea66ee0e6db83f6cc63468ede241f8764c64272d4"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolClientMethods.kt",
+                "sha256": "73bc0f25cba8c2c46eb33cc5692940f89264d41a2f75abb752e557eaaa6d4a3f"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels001.kt",
-                "sha256": "b39e1aa48f77510c5fcca58a85ba75792e60bc01d85d4fb9045909dc3bc214a7"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels001.kt",
+                "sha256": "4c69d0c44930513b49aee93cafc0ce76aebbf4c3a4985eb8ce77f1e4f309d3a8"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels002.kt",
-                "sha256": "7903d6e954c6cf2b050ec38950a9f6588631a5cd3398f8a3379e4f0692d4848a"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels002.kt",
+                "sha256": "59fe1540b4eeea0c718b8421d99463e26ad41c60f03f00fdf60cba3a4bce4ec1"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels003.kt",
-                "sha256": "e6348ec1f27991f978fea9bc54c6f8d080f21823426764584155eaa06a896049"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels003.kt",
+                "sha256": "8c1aedf81abae1e67741d4ce0651966289a7abf08cc3d091b0ed561437804faa"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels004.kt",
-                "sha256": "77a75eff95f5987f9f760acdd9908b75eb5c68a0c94720d19d1c7ad2d16e3ecd"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels004.kt",
+                "sha256": "e7cd5a8a8a86bb2b0bfa4845d7ca5fe11115860bd3b37fc517121afe4a42d34c"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels005.kt",
-                "sha256": "8b39054cbf99a531d18003cfec97ef57a366ea4d5b1e4614bf20dee5a762027a"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels005.kt",
+                "sha256": "02776618b7c73e258886840541e199eb3e0a3e981806a15cdeab5b9c153ec4fe"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels006.kt",
-                "sha256": "130855fadbad5d3cce2ee853455b8d523bf2b1730daa04a1828a55b4f28f053c"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels006.kt",
+                "sha256": "cbd1f647e1b1be9c7c0bd3aac506a917a26e35fd77f0320eece066e212c0560a"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels007.kt",
-                "sha256": "676f577f1d97676512728af0b1c71a63dd602610e575799539c09a9c3211c09f"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels007.kt",
+                "sha256": "82bc9a9db008543ab8eaf418795027811f4f557d21a290e1979bbb9eb4b430a2"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels008.kt",
-                "sha256": "989a2a7ff8758c2bf6bbd10696ae57a8441b1e7ba822c94159dcd78fc51fdb79"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels008.kt",
+                "sha256": "45e0eb3f0f45dc24eba242d8b43b0b1f5e033e7c53ed477052cad834157af974"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels009.kt",
-                "sha256": "656d3dbdffef85d79cf8bb405c2ed423790c9e2370f1bde2abb0a2398f8e9429"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels009.kt",
+                "sha256": "5097cde50efe36fd263615f78bb7318151cc2dad2c9f17747124ea187563d695"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels010.kt",
-                "sha256": "db069cce1200ef532c01c24d18cdef2d157b702008c85052b139d196f33b45aa"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels010.kt",
+                "sha256": "1858a941266f650e487fe8264691bb5a1b6cccaff38dc6f90a0039c55d5d37df"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels011.kt",
-                "sha256": "fbeb11801ef0ea2ce2a6c2d27a5946227b3bb0b6ebe5e9225ae57d574eac12e4"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels011.kt",
+                "sha256": "c0b4c3edb9544992fda9b1e5e5cf29a4cf96c88c24a3efa9099e47fdedbccee0"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels012.kt",
-                "sha256": "adb5ca9edde15b8e45b082717225f835bb48d02467fbebc84eedfe7636c3b981"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels012.kt",
+                "sha256": "559658af0d6fd49cd77e4b20884fdd887761ff4c485063d314d1de802de16cdc"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels013.kt",
-                "sha256": "c7bd122f8366bc3a5766fef160b369fb9406a8d83bd5a1d9fb15ae8b42b30f0f"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels013.kt",
+                "sha256": "30a3baad48d6071c167012a8a78865d2f4977c8ad05f7b81b6abdc9d61887c25"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels014.kt",
-                "sha256": "d289646197d8731f96c64c45ac7c05730d0d0aa9447c5339b4c47c870a25b15c"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels014.kt",
+                "sha256": "46e2f5f8bef57069f1021c1286213849fc7a00e28c278f7813930a1973d66445"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels015.kt",
-                "sha256": "5a6d6fc911254fcba20e8079205ee700bfcea5d799be93027326fc24529991d1"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels015.kt",
+                "sha256": "7f66efcf7c7f2b6c318734782b5ba8a5cfc8f2feb12024b20e8cbcd5387edf17"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels016.kt",
-                "sha256": "87b62ae49bc90c80d1d20648af48e5f227048d98256a957ea5f7677fa8c7279f"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels016.kt",
+                "sha256": "5cd7d1b372f6e80fa8ba708d6c1095d1314d778bbb23d7703e5115b17737acfc"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels017.kt",
-                "sha256": "f84c29a1084530cfb96c20f2245217001322cbdd16661fc6fa87759df72e8476"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels017.kt",
+                "sha256": "57bd30ba39e7f97a63f62adf403f6dfd07ab06ee646fa3a53d226ff2162dcb1a"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels018.kt",
-                "sha256": "2df81725ad7a538a8d6689f49653ccc49a695654d55d306e4fab68d793e54c61"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels018.kt",
+                "sha256": "c079ef1525bd5ac539361425737b51be9256c8786eada8e038d9e87d640d1b29"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels019.kt",
-                "sha256": "885ec0441ab0c536e289bbf26b3a935ae0bc1e5a5d0ce2febfe75e83fb1e3d7a"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels019.kt",
+                "sha256": "393107cebfc2cf7d5f8eb3c8c274b7b0f6bb1f485bfcbe06eac6883de7c6bece"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels020.kt",
-                "sha256": "149a296994fc7acbdf637f38d6149bfbc3c1dae205ceebb0dc34cc78cd6289ad"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels020.kt",
+                "sha256": "1a487e8303cc66a68f207ded84522be57c10d33e0f94910576e3ae962649ca82"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels021.kt",
-                "sha256": "923ba0705c3c1b3d516ee07a9d7415639531c10b10b369cc3472a6aaca9ae027"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels021.kt",
+                "sha256": "17552f2ddcb309fd8f17d04a064dc00ab0293f1a0918d1fa6ecc4a21872442a6"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels022.kt",
-                "sha256": "dcb3419fbec3ec2bcc1dcd78e8981524dea6dc90936d31a25a526ce0ae3b0c7f"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels022.kt",
+                "sha256": "6617538c2fa22293b41a79de2277289793b7a65fa2d46d491e10d37c58ae4989"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels023.kt",
-                "sha256": "106c4f1c1d9feca3a96698973e6763338adaa0294798ffed24182db1d7ea6dc9"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels023.kt",
+                "sha256": "205a3472057ae5140bf249ab72568c8c677bd69fa59f3e7480a17345e9038a95"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels024.kt",
-                "sha256": "fb226b6cf05729995e02f15c56807eba8e8440fedc4b7da1fdce893bb69ba286"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels024.kt",
+                "sha256": "8ca0c32e10be014ba14b3253b229d20e55a052780d2e1c0f4777c1cb6195dcfa"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels025.kt",
-                "sha256": "8029f56bbf568f1836909ccc8ac45b990d40d520a8b46a63cefd764564bc4994"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels025.kt",
+                "sha256": "c368c3c29dbb0a87e3f5a78d3e89547a2f4b33d37bf7ac720f4c62cc4b48497b"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels026.kt",
-                "sha256": "89dbb23a253ad78f411cc6ab1c8562d24accfa6bcad62c8ddd85d4a1438b32c5"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels026.kt",
+                "sha256": "7f481f06a39892db3e1a5ee86cfb08388a45bec1a689155448dfb79555a59b68"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels027.kt",
-                "sha256": "70190dde1de1ffc1a5b062ef9f469463aec1985eb6d7d4548dce7cd1020c24e7"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels027.kt",
+                "sha256": "88dce46e7f61f72c10ad63fee46b89f2c73067457efcea893ed2fec4520d360b"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels028.kt",
-                "sha256": "d98e7d04151a81cdb3428ea21e92cb2e6c3f0698c29c2d5dc9c2b0ed233d899d"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels028.kt",
+                "sha256": "d0a85cf0ab0901a6949da103ae8d41ed9fdf67897e729945be5637c123713759"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels029.kt",
-                "sha256": "2c0b17bbac7fd44e1933fcda370b789c3e894e11c3cec39e1376dfc117ed4fe9"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels029.kt",
+                "sha256": "e1cbad2b4c99363e45994dc16c18d7052b9063cb5da931bd7a698a28568e6f45"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels030.kt",
-                "sha256": "0127f1a5030d56c8cae139ebdaea9e6d0ca53cf1a4f8a342953f790e3b07c900"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels030.kt",
+                "sha256": "8f4e047d4023935b22cde03480b70a842d3e2305c5c11e3b99d86132b68012de"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels031.kt",
-                "sha256": "2b3f52e57400fd6ab594776207c2b5d1db33bfe8709179543ce28d80995817f3"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels031.kt",
+                "sha256": "4f2d1386a8949b2fdfe0f8982fd9f8cfcdce7c1ff2bd14c1d47caeeeb85af0b6"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels032.kt",
-                "sha256": "3bcb702dcd7ebb37256ae5a0abbb10591f73c23f041a59acc53085e15fc4a610"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels032.kt",
+                "sha256": "e1b0caaa0583340d70ade59d330a46ad53ea777df79dd8059fe43896ccb70bc6"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels033.kt",
-                "sha256": "b28e3bc52280848a1d90b8a190e7c2f8ce07f1f856aae798eaf4994c405c4679"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels033.kt",
+                "sha256": "673529de79f03fa85bc0c3b1bc113c5c85cea5451919fe5dd6542eaa38a19080"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels034.kt",
-                "sha256": "815187700bf7f7bc2b4b7b6d62d8de69612dbf7cc512bef7c8fdc98720f058e8"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels034.kt",
+                "sha256": "c470ed712e4a0e2fa86cb1efd4f1cef3801a2c066708cbc6a1556286a2ebad76"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels035.kt",
-                "sha256": "61571ca5dd2a8f063267aa820a82302644b86cbb3fdcfd01f726bf720f1a28fb"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels035.kt",
+                "sha256": "f13e6f66354a9a3200bd1785fea0cc6b43092c21d7e23c02600d727a513f0ac3"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels036.kt",
-                "sha256": "6ae7055aee7d2745ee936c655e784572e7d8885befa58dfe6b5d68199dd61efe"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels036.kt",
+                "sha256": "9bb7cd217a9da4316c258ff845f93f7ce4411dc35eddaf610a429bbb05f7816f"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels037.kt",
-                "sha256": "4290cd5ef67d36158d2d5d76f9065c0dea5e090eb200dec15cc9238608be5fd5"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels037.kt",
+                "sha256": "c603ebfdf61f913bf2a05da5f65e61b7e9f6088be89bfe97f0450ef06644477a"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels038.kt",
-                "sha256": "5ce8fc01d034346c9a935d23295bb21412cebdc44c1f736aaf25eb139a0af826"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels038.kt",
+                "sha256": "d1ed102855215234777f85e3ae9b9c1d4d3a179f27b737ff1350f5857450a08f"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels039.kt",
-                "sha256": "40324f1fd83d27e6f5fc2258a59d1520e3ce21e849bf50fab1f6102f66714b63"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels039.kt",
+                "sha256": "4d8c59c9f83691701333ef263716c059f532913dabf584ddf0b79dfc346b8fbd"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels040.kt",
-                "sha256": "8fd7a925a97465db69a8974a4f31727109e5da0e1478c794b6ccb911c40c236a"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels040.kt",
+                "sha256": "1d1848e7bf5952c9bc23ac8286405f9aed96c5830e61842416a42195b952501c"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels041.kt",
-                "sha256": "e97e356047add61547709c65428da0167b741b90a863d805a24b2fabc8b2e8c8"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels041.kt",
+                "sha256": "6643d6a345048678dd14f5966858fc440f6e84918d277e2991275f02558d935e"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels042.kt",
-                "sha256": "1329e670709623719b95513f4e3c50a34be6c22f63b39dba76c5d3eb75a7e716"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels042.kt",
+                "sha256": "15982c87898f3df506ca18babe316257ba6e48c61417731ba7283c03a568d817"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels043.kt",
-                "sha256": "e94a972293096350e44da13efed1c79aafb97e6975781271db5cd9807cd70520"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels043.kt",
+                "sha256": "8ded3e5a25bdd98e73823b6880332085822568b69b1d4faf56a85e86436036e5"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels044.kt",
-                "sha256": "66250140bcd78aed9fc0ef6e6f09d733659bb875aef6a1f773f4898a5eb4d5c1"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels044.kt",
+                "sha256": "42fee46e56195385b74e523fce950cec87d4d73feb4b82f7a12163ffe8289d09"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels045.kt",
-                "sha256": "e5db6821645a15155cff2384bc7872a339c8fe48e38b5b6ff66868d45898018b"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels045.kt",
+                "sha256": "9628621076f394c85a8e56a0f32e3ec82c31d9fb20b673528513839f30753a4d"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels046.kt",
-                "sha256": "c622aaa0deb25372048f93762d5330618dac487b18e622fef8c38b0b6f2fe263"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels046.kt",
+                "sha256": "faf3572143c1b004f676804ce2cbe47ee83e66af9f7a78f4d66e3dcde975fcf4"
             },
             {
-                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexmobile/appserver/protocol/generated/GeneratedProtocolModels047.kt",
-                "sha256": "8868ed01baa9bfb8b34a0127e5ea4089aec9930a59210b5b26357b74c9733535"
+                "path": "src/commonMain/kotlin/io/github/codex_agent_labs/codexagent/appserver/protocol/generated/GeneratedProtocolModels047.kt",
+                "sha256": "d9fa344e3a99d6a14f858f85b9d812acb15d71432b8ba39a051db48926de66c9"
             }
         ]
     }

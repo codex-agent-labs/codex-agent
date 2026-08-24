@@ -27,8 +27,7 @@ class PromotedMavenOwnershipTest {
         stageCanonicalPromotedMavenPrimaries(fixture.promoted, COMMIT, VERSION, fixture.output)
 
         assertEquals("common:$sharedPath", fixture.output.resolve(sharedPath).readText())
-        val expected = expectedMavenPrimaryPaths(VERSION).mapTo(sortedSetOf()) { "$GROUP_PATH/$it" } +
-            expectedMavenRelocationPaths(VERSION)
+        val expected = expectedMavenPrimaryPaths(VERSION).mapTo(sortedSetOf()) { "$GROUP_PATH/$it" }
         assertEquals(
             expected,
             fixture.output.walkTopDown().filter(File::isFile)
@@ -75,12 +74,6 @@ class PromotedMavenOwnershipTest {
                 repositories.getValue(owner).resolve(path).apply {
                     parentFile.mkdirs()
                     writeText("$owner:$path")
-                }
-            }
-            expectedMavenRelocationPaths(VERSION).forEach { relative ->
-                repositories.getValue("common").resolve(relative).apply {
-                    parentFile.mkdirs()
-                    writeText("common:$relative")
                 }
             }
             repositories.values.forEach { repository ->

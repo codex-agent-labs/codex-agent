@@ -7,7 +7,6 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import org.gradle.api.DefaultTask
 import org.gradle.api.Project
-import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
@@ -16,7 +15,6 @@ import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
-import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.LocalState
 import org.gradle.api.tasks.Optional
@@ -278,37 +276,6 @@ abstract class RecordDesktopRuntimeEvidenceTask : DefaultTask() {
     }
 }
 
-@DisableCachingByDefault(because = "Relocation POMs are tiny deterministic publication primaries")
-abstract class GenerateMavenRelocationPomsTask : DefaultTask() {
-    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
-    @get:Input abstract val newGroup: Property<String>
-    @get:Input abstract val version: Property<String>
-
-    @TaskAction
-    fun generate() = generateMavenRelocationPoms(outputDirectory.get().asFile, newGroup.get(), version.get())
-}
-
-@DisableCachingByDefault(because = "Checksums are materialized into the isolated staged repository")
-abstract class VerifyMavenStagingTask : DefaultTask() {
-    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
-    abstract val repositoryDirectory: DirectoryProperty
-    @get:Input abstract val groupId: Property<String>
-    @get:Input abstract val version: Property<String>
-    @get:Input abstract val requireSignatures: Property<Boolean>
-    @get:OutputFile abstract val inventoryFile: RegularFileProperty
-
-    init { outputs.upToDateWhen { false } }
-
-    @TaskAction
-    fun verify() = verifyMavenRepository(
-        repositoryDirectory.get().asFile,
-        groupId.get(),
-        version.get(),
-        requireSignatures.get(),
-        inventoryFile.get().asFile,
-    )
-}
-
 @CacheableTask
 abstract class VerifyCandidatePayloadTask : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val manifestFile: RegularFileProperty
@@ -348,10 +315,8 @@ abstract class VerifyCandidatePayloadTask : DefaultTask() {
                 put("approvals", approvalsFile.get().asFile)
                 put("privacyManifest", privacyManifest.get().asFile)
                 put("privacyDataFlowReview", privacyDataFlowReview.get().asFile)
-                if (manifest.releaseInt("schemaVersion") == PROMOTED_CANDIDATE_SCHEMA) {
-                    put("iosResourcePolicy", iosResourcePolicy.get().asFile)
-                }
-                exactReview?.let { put("privacyRequiredReasonReviews", it) }
+                put("iosResourcePolicy", iosResourcePolicy.get().asFile)
+                put("privacyRequiredReasonReviews", exactReview)
                 put("packageSwift", packageSwift.get().asFile)
                 put("desktopDistributionManifest", desktopDistributionManifest.get().asFile)
                 put("desktopBundledLicense", desktopBundledLicense.get().asFile)
@@ -482,33 +447,6 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
             put("mavenGroup", JsonPrimitive(inventory.releaseString("groupId")))
             put("target", JsonPrimitive(targetName.get()))
             put("tasks", buildJsonArray { requestedTasks.forEach { add(JsonPrimitive(it)) } })
-        })
-    }
-}
-
-@DisableCachingByDefault(because = "This task verifies exact target receipts from isolated nested builds")
-abstract class AggregateStagedKmpConsumerTask : DefaultTask() {
-    @get:InputFiles @get:PathSensitive(PathSensitivity.NONE)
-    abstract val targetResults: ConfigurableFileCollection
-    @get:Input abstract val projectVersion: Property<String>
-    @get:OutputFile abstract val resultFile: RegularFileProperty
-
-    @TaskAction
-    fun aggregate() {
-        val results = targetResults.files.associate { file ->
-            val value = file.readReleaseObject()
-            check(value.releaseString("result") == "passed") { "Staged consumer target failed: ${file.name}" }
-            check(value.releaseString("version") == projectVersion.get()) { "Staged consumer version mismatch" }
-            value.releaseString("target") to file
-        }
-        check(results.keys == stagedConsumerBuildTasks.keys) {
-            "Staged consumer target set mismatch: expected=${stagedConsumerBuildTasks.keys} actual=${results.keys}"
-        }
-        resultFile.get().asFile.atomicWriteJson(buildJsonObject {
-            put("schemaVersion", JsonPrimitive(5))
-            put("result", JsonPrimitive("passed"))
-            put("version", JsonPrimitive(projectVersion.get()))
-            put("targets", buildJsonArray { results.keys.sorted().forEach { add(JsonPrimitive(it)) } })
         })
     }
 }

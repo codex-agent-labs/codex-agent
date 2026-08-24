@@ -9,7 +9,7 @@ import kotlinx.serialization.json.jsonPrimitive
 
 internal const val JVM_RUNTIME_RUNNER_ARCHIVE = "codex-agent-jvm-runtime-evidence-runner.zip"
 internal const val JVM_RUNTIME_RUNNER_ENTRYPOINT =
-    "io.github.codex_agent_labs.codexmobile.appserver.runtime.JvmRuntimeEvidenceMain"
+    "io.github.codex_agent_labs.codexagent.appserver.runtime.JvmRuntimeEvidenceMain"
 internal const val JVM_RUNTIME_TEST_TASK = ":codex-agent-runtime-desktop:jvmTest"
 
 internal fun jvmRuntimeEvidenceTestTask(target: String) = if (target == "linuxArm64") {

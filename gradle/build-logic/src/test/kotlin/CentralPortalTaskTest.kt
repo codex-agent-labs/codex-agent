@@ -21,7 +21,7 @@ class CentralPortalTaskTest {
         val upload = portal.requests.last()
         assertEquals("$CENTRAL_API/upload?publishingType=USER_MANAGED&name=$CENTRAL_NAME", upload.url)
         assertEquals("Bearer " + Base64.getEncoder().encodeToString("user:password".toByteArray(UTF_8)), upload.headers["Authorization"])
-        assertTrue(upload.body.toString(UTF_8).contains("name=\"bundle\"; filename=\"bundle.zip\""))
+        assertTrue(upload.body.toString(UTF_8).contains("name=\"bundle\"; filename=\"${fixture.bundle.name}\""))
         assertEquals(fixture.bundle, upload.bodyFile)
         assertEquals("PENDING", fixture.record.readReleaseObject().releaseString("deploymentState"))
         assertEquals(CENTRAL_ID, fixture.record.readReleaseObject().releaseString("deploymentId"))

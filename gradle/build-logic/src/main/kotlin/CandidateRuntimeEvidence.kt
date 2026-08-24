@@ -6,46 +6,6 @@ internal val candidateFirebaseAndroidEvidenceFileNames =
     protectedFirebaseAndroidRuntimeRawFiles.map(Pair<String, String>::second) +
         FIREBASE_ANDROID_VERIFICATION_RECEIPT_FILE
 
-internal fun verifyCandidateRuntimeEvidence(input: CandidateInputFiles) {
-    val desktopErrors = validateDesktopRuntimeEvidence(
-        input.desktopEvidence,
-        input.commit,
-        input.version,
-        input.mavenInventory,
-        input.desktopDistributionManifest,
-        input.desktopClassifierArchives,
-    )
-    check(desktopErrors.isEmpty()) {
-        "Desktop runtime evidence is invalid: ${desktopErrors.joinToString()}"
-    }
-    val jvmErrors = validateJvmRuntimeEvidence(
-        input.jvmEvidence,
-        input.commit,
-        input.desktopDistributionManifest,
-        input.desktopClassifierArchives,
-        input.jvmRuntimeRunner,
-    )
-    check(jvmErrors.isEmpty()) { "JVM runtime evidence is invalid: ${jvmErrors.joinToString()}" }
-    listOf(
-        Triple(NODE_RUNTIME_JS_BACKEND, input.nodeEvidence, input.nodeRuntimeRunner),
-        Triple(NODE_RUNTIME_WASM_BACKEND, input.nodeWasmEvidence, input.nodeWasmRuntimeRunner),
-    ).forEach { (backend, evidence, runner) ->
-        val errors = validateNodeRuntimeEvidence(
-            evidence,
-            input.commit,
-            backend,
-            input.desktopDistributionManifest,
-            input.desktopClassifierArchives,
-            runner,
-        )
-        check(errors.isEmpty()) {
-            "Node $backend runtime evidence is invalid: ${errors.joinToString()}"
-        }
-    }
-    verifyCandidateFirebaseAndroidEvidence(input.androidEvidence, input.commit)
-    verifyCandidateCentralAndroidRuntimeBinding(input.androidEvidence, input.centralBundle, input.version)
-}
-
 internal fun verifyCandidateFirebaseAndroidEvidence(files: List<File>, expectedCommit: String) {
     val byName = files.associateBy(File::getName)
     check(files.size == candidateFirebaseAndroidEvidenceFileNames.size &&
