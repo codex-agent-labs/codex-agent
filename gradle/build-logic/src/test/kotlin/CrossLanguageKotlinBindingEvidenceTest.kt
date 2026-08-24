@@ -10,6 +10,43 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageKotlinBindingEvidenceTest {
     @Test
+    fun `writes canonical universal Kotlin receipt without projection or exclusion records`() = withFixture { fixture ->
+        val evidence = fixture.derive()
+        val expected = buildKotlinBindingParityReceipt(evidence)
+
+        writeCrossLanguageBindingReceipt(fixture.parityReceipt, expected)
+        val actual = readCrossLanguageBindingReceipt(fixture.parityReceipt)
+        verifyKotlinBindingParityReceipt(actual, expected)
+
+        assertEquals(CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA, actual.toJson().releaseInt("schema"))
+        assertEquals(CrossLanguageBindingPhase.M7_5, actual.phase)
+        assertEquals(CrossLanguageBinding.KOTLIN, actual.language)
+        assertEquals(evidence.digests.apiReportSha256, actual.canonical.apiReportSha256)
+        assertEquals(evidence.digests.canonicalCoverageSha256, actual.canonical.coverageReceiptSha256)
+        assertEquals(
+            listOf(CrossLanguageBindingArtifactIdentity("kotlin-public-api", evidence.digests.artifactSha256)),
+            actual.artifacts,
+        )
+        assertEquals(evidence.digests.compiledTestsSha256, actual.testProgramSha256)
+        assertEquals(evidence.digests.testResultsSha256, actual.testResultsSha256)
+        assertEquals(MEMBERS, actual.publicSymbols)
+        assertEquals(
+            evidence.bindingTests.sortedBy(CrossLanguageBindingTestEvidence::testId),
+            actual.bindingTests,
+        )
+        assertTrue(actual.bindingTests.all { it.status == CrossLanguageBindingTestStatus.PASSED })
+        assertEquals(
+            evidence.scenarioEvidence.associate { it.scenario to it.testIds },
+            actual.scenarioEvidence.associate { it.scenario to it.testIds },
+        )
+        assertTrue(actual.projectionClaims.isEmpty())
+        assertTrue(actual.applicabilityExclusions.isEmpty())
+        assertFailsWith<IllegalStateException> {
+            verifyKotlinBindingParityReceipt(actual.copy(publicSymbols = actual.publicSymbols.dropLast(1)), expected)
+        }
+    }
+
+    @Test
     fun `derives every capability and all closed scenarios from bound successful evidence`() = withFixture { fixture ->
         val evidence = fixture.derive()
 
@@ -103,6 +140,7 @@ class CrossLanguageKotlinBindingEvidenceTest {
         val artifact = root.resolve("codex-agent.jar").apply { writeText("artifact") }
         val report = root.resolve("canonical-api.json")
         val receipt = root.resolve("canonical-coverage.json")
+        val parityReceipt = root.resolve("kotlin-parity.json")
 
         fun derive(
             mappings: List<KotlinBindingScenarioMapping> = kotlinBindingScenarioMappings,

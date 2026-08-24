@@ -149,13 +149,6 @@ val auditCrossLanguageBindingParity = tasks.register<AuditCrossLanguageBindingPa
     canonicalCoverageReceipt.set(
         verifyCrossLanguageApiCoverage.flatMap(VerifyCrossLanguageApiCoverageTask::receiptFile),
     )
-    kotlinArtifact.set(layout.buildDirectory.dir("classes/kotlin/jvm/main"))
-    coreJvmJar.set(javaBindingCoreJvmJar)
-    coreAndroidAar.set(javaBindingCoreAndroidAar)
-    desktopRuntimeJar.set(javaBindingDesktopRuntimeJar)
-    androidRuntimeAar.set(javaBindingAndroidRuntimeAar)
-    compiledJavaTests.set(javaBindingCompiledTests)
-    testResults.set(javaBindingTestResults)
     kotlinReceipt.set(verifyKotlinBindingParity.flatMap(VerifyKotlinBindingParityTask::receiptFile))
     javaReceipt.set(verifyJavaBindingParity.flatMap(VerifyJavaBindingParityTask::receiptFile))
     auditFile.set(crossLanguageBindingAuditFile)

@@ -57,6 +57,19 @@ internal fun readCrossLanguageBindingReceipt(file: File): CrossLanguageBindingRe
     return receipt
 }
 
+internal fun readCrossLanguageBindingReceipts(
+    receiptFiles: Map<CrossLanguageBinding, File>,
+): Map<CrossLanguageBinding, CrossLanguageBindingReceipt> {
+    check(receiptFiles.isNotEmpty()) { "Cross-language binding receipt file inventory is empty" }
+    return CrossLanguageBinding.entries.filter(receiptFiles::containsKey).associateWith { expectedLanguage ->
+        readCrossLanguageBindingReceipt(receiptFiles.getValue(expectedLanguage)).also { receipt ->
+            check(receipt.language == expectedLanguage) {
+                "${expectedLanguage.id} binding receipt file contains ${receipt.language.id} evidence"
+            }
+        }
+    }
+}
+
 internal fun CrossLanguageBindingReceipt.toJson(): JsonObject {
     val receipt = normalized()
     return buildJsonObject {

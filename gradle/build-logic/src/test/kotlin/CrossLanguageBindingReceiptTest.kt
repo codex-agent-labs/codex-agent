@@ -223,6 +223,34 @@ class CrossLanguageBindingReceiptTest {
         assertFails { readCrossLanguageBindingReceipt(file) }
     }
 
+    @Test
+    fun `named receipt files cannot swap language identities`() = withReceipt { kotlinFile ->
+        val javaFile = kotlinFile.resolveSibling("java.json")
+        val kotlin = receipt(CrossLanguageBinding.KOTLIN).copy(
+            projectionClaims = emptyList(),
+            applicabilityExclusions = emptyList(),
+        )
+        writeCrossLanguageBindingReceipt(kotlinFile, kotlin)
+        writeCrossLanguageBindingReceipt(javaFile, receipt())
+
+        val expected = readCrossLanguageBindingReceipts(
+            mapOf(
+                CrossLanguageBinding.KOTLIN to kotlinFile,
+                CrossLanguageBinding.JAVA to javaFile,
+            ),
+        )
+        assertEquals(kotlin.toJson(), expected.getValue(CrossLanguageBinding.KOTLIN).toJson())
+        assertEquals(CrossLanguageBinding.JAVA, expected.getValue(CrossLanguageBinding.JAVA).language)
+        assertFailure("kotlin binding receipt file contains java evidence") {
+            readCrossLanguageBindingReceipts(
+                mapOf(
+                    CrossLanguageBinding.KOTLIN to javaFile,
+                    CrossLanguageBinding.JAVA to kotlinFile,
+                ),
+            )
+        }
+    }
+
     private fun receipt(language: CrossLanguageBinding = CrossLanguageBinding.JAVA): CrossLanguageBindingReceipt {
         val tests = TESTS.map { id ->
             CrossLanguageBindingTestEvidence(language, id, CrossLanguageBindingTestStatus.PASSED)

@@ -1,4 +1,6 @@
 import java.io.File
+import java.nio.file.Files
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -33,44 +35,51 @@ internal data class CrossLanguageBindingAudit(
     val result: String,
     val apiReportSha256: String,
     val canonicalCoverageSha256: String,
-    val kotlinArtifactSha256: String,
-    val compiledTestsSha256: String,
-    val testResultsSha256: String,
     val languageReceiptSha256: Map<CrossLanguageBinding, String>,
     val summary: CrossLanguageBindingAuditSummary,
     val obligations: List<CrossLanguageBindingAuditRecord>,
-    val kotlinScenarios: List<CrossLanguageScenarioEvidence>,
     val errors: List<String>,
 )
 
 internal fun buildCrossLanguageBindingAudit(
-    kotlinEvidence: CrossLanguageKotlinBindingEvidence,
-    javaEvidence: CrossLanguageJavaBindingParityEvidence,
+    phase: CrossLanguageBindingPhase,
+    capabilityKeys: List<String>,
+    canonical: CrossLanguageBindingCanonicalIdentity,
+    receipts: Map<CrossLanguageBinding, CrossLanguageBindingReceipt>,
     languageReceiptSha256: Map<CrossLanguageBinding, String>,
 ): CrossLanguageBindingAudit {
-    val phase = CrossLanguageBindingPhase.M7_5
-    val capabilityKeys = kotlinEvidence.capabilityClaims.map(KotlinBindingCapabilityClaim::capabilityKey)
-    val kotlinPublicSymbols = kotlinEvidence.capabilityClaims.map(KotlinBindingCapabilityClaim::publicSymbol)
-    check(javaEvidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).sorted() ==
-        capabilityKeys.sorted()) {
-        "Java binding audit evidence does not match the canonical API"
+    check(receipts.isNotEmpty() && CrossLanguageBinding.KOTLIN in receipts) {
+        "Binding audit requires a canonical Kotlin receipt"
     }
-    check(languageReceiptSha256.keys == setOf(CrossLanguageBinding.KOTLIN, CrossLanguageBinding.JAVA) &&
+    check(receipts.keys == languageReceiptSha256.keys &&
         languageReceiptSha256.values.all(String::isExactSha256)) {
-        "Binding audit requires exact Kotlin and Java receipt digests"
+        "Binding audit receipt identities are missing or malformed"
     }
+    receipts.forEach { (language, receipt) ->
+        receipt.toJson() // Validate direct producer values through the universal receipt contract.
+        check(receipt.language == language) { "Binding audit receipt language mismatch for ${language.id}" }
+        check(receipt.phase == phase) { "Binding audit receipt phase mismatch for ${language.id}" }
+        check(language.isActive(phase)) { "Binding audit contains inactive language ${language.id}" }
+        check(receipt.canonical == canonical) {
+            "Binding audit canonical identity mismatch for ${language.id}"
+        }
+    }
+    check(receipts.getValue(CrossLanguageBinding.KOTLIN).publicSymbols.sorted() == capabilityKeys.sorted()) {
+        "Kotlin binding audit receipt does not match the canonical API"
+    }
+
+    val exclusions = receipts.values.flatMap(CrossLanguageBindingReceipt::applicabilityExclusions)
+        .associateBy { it.capabilityKey to it.language }
     val parity = evaluateCrossLanguageBindingParity(
         CrossLanguageBindingParityInput(
             phase = phase,
             capabilityKeys = capabilityKeys,
             canonicalCoverageKeys = capabilityKeys,
-            projectionClaims = javaEvidence.projectionClaims,
-            publicSymbols = mapOf(
-                CrossLanguageBinding.KOTLIN to kotlinPublicSymbols,
-                CrossLanguageBinding.JAVA to javaEvidence.publicSymbols,
-            ),
-            bindingTests = kotlinEvidence.bindingTests + javaEvidence.bindingTests,
-            scenarioEvidence = kotlinEvidence.scenarioEvidence + javaEvidence.scenarioEvidence,
+            projectionClaims = receipts.values.flatMap(CrossLanguageBindingReceipt::projectionClaims),
+            applicabilityExclusions = exclusions.values.toList(),
+            publicSymbols = receipts.mapValues { it.value.publicSymbols },
+            bindingTests = receipts.values.flatMap(CrossLanguageBindingReceipt::bindingTests),
+            scenarioEvidence = receipts.values.flatMap(CrossLanguageBindingReceipt::scenarioEvidence),
         ),
     )
     check(parity.obligations.isNotEmpty()) { parity.errors.joinToString("\n") }
@@ -81,7 +90,7 @@ internal fun buildCrossLanguageBindingAudit(
             applicable = obligation.applicable,
             obligationState = obligation.status.obligationState(),
             parityStatus = obligation.status,
-            exclusionReason = null,
+            exclusionReason = exclusions[obligation.capabilityKey to obligation.language]?.reason,
         )
     }
     check(obligations.size == capabilityKeys.size * CrossLanguageBinding.entries.size) {
@@ -91,28 +100,21 @@ internal fun buildCrossLanguageBindingAudit(
     return CrossLanguageBindingAudit(
         phase = phase,
         result = if (errors.isEmpty()) "complete" else "incomplete",
-        apiReportSha256 = kotlinEvidence.digests.apiReportSha256,
-        canonicalCoverageSha256 = kotlinEvidence.digests.canonicalCoverageSha256,
-        kotlinArtifactSha256 = kotlinEvidence.digests.artifactSha256,
-        compiledTestsSha256 = kotlinEvidence.digests.compiledTestsSha256,
-        testResultsSha256 = kotlinEvidence.digests.testResultsSha256,
+        apiReportSha256 = canonical.apiReportSha256,
+        canonicalCoverageSha256 = canonical.coverageReceiptSha256,
         languageReceiptSha256 = languageReceiptSha256.toMap(),
         summary = obligations.summary(),
         obligations = obligations,
-        kotlinScenarios = kotlinEvidence.scenarioEvidence,
         errors = errors,
     )
 }
 
 internal fun CrossLanguageBindingAudit.toJson(): JsonObject = buildJsonObject {
-    put("schema", JsonPrimitive(2))
+    put("schema", JsonPrimitive(3))
     put("result", JsonPrimitive(result))
     put("phase", JsonPrimitive(phase.name))
     put("apiReportSha256", JsonPrimitive(apiReportSha256))
     put("canonicalCoverageSha256", JsonPrimitive(canonicalCoverageSha256))
-    put("kotlinArtifactSha256", JsonPrimitive(kotlinArtifactSha256))
-    put("compiledTestsSha256", JsonPrimitive(compiledTestsSha256))
-    put("testResultsSha256", JsonPrimitive(testResultsSha256))
     put("languageReceiptSha256", buildJsonObject {
         languageReceiptSha256.entries.sortedBy { it.key.id }.forEach { (language, digest) ->
             put(language.id, JsonPrimitive(digest))
@@ -131,33 +133,38 @@ internal fun CrossLanguageBindingAudit.toJson(): JsonObject = buildJsonObject {
             })
         }
     })
-    put("kotlinScenarios", buildJsonArray {
-        kotlinScenarios.forEach { claim ->
-            add(buildJsonObject {
-                put("scenario", JsonPrimitive(claim.scenario.id))
-                put("testIds", buildJsonArray { claim.testIds.forEach { add(JsonPrimitive(it)) } })
-            })
-        }
-    })
     put("errors", buildJsonArray { errors.forEach { add(JsonPrimitive(it)) } })
 }
 
 internal fun readCrossLanguageBindingAudit(
     auditFile: File,
-    expectedKotlinEvidence: CrossLanguageKotlinBindingEvidence,
-    expectedJavaEvidence: CrossLanguageJavaBindingParityEvidence,
+    phase: CrossLanguageBindingPhase,
+    capabilityKeys: List<String>,
+    canonical: CrossLanguageBindingCanonicalIdentity,
+    receipts: Map<CrossLanguageBinding, CrossLanguageBindingReceipt>,
     expectedLanguageReceiptSha256: Map<CrossLanguageBinding, String>,
 ): CrossLanguageBindingAudit {
     val expected = buildCrossLanguageBindingAudit(
-        expectedKotlinEvidence,
-        expectedJavaEvidence,
+        phase,
+        capabilityKeys,
+        canonical,
+        receipts,
         expectedLanguageReceiptSha256,
     )
-    check(auditFile.readReleaseObject() == expected.toJson()) {
-        "Cross-language binding audit does not match freshly recomputed evidence"
+    check(auditFile.isFile && !Files.isSymbolicLink(auditFile.toPath())) {
+        "Cross-language binding audit is missing, non-regular, or a symlink: $auditFile"
+    }
+    val contents = auditFile.readText()
+    val actual = releaseJson.parseToJsonElement(contents) as? JsonObject
+        ?: error("Cross-language binding audit must be a JSON object")
+    check(actual == expected.toJson() && contents == expected.canonicalJson()) {
+        "Cross-language binding audit does not match canonical freshly recomputed evidence"
     }
     return expected
 }
+
+private fun CrossLanguageBindingAudit.canonicalJson(): String =
+    releaseJson.encodeToString(JsonElement.serializer(), toJson()) + "\n"
 
 private fun CrossLanguageBindingAuditSummary.toJson(): JsonObject = buildJsonObject {
     put("total", JsonPrimitive(total))

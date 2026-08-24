@@ -1,8 +1,4 @@
 import java.nio.file.Files
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
@@ -76,8 +72,8 @@ abstract class VerifyJavaBindingParityTask : DefaultTask() {
             testResultsDirectory = testResults.get().asFile,
         )
         val receipt = buildJavaBindingParityReceipt(canonicalEvidence.digests, javaEvidence)
-        output.atomicWriteJson(receipt)
-        verifyJavaBindingParityReceipt(output.readReleaseObject(), receipt)
+        writeCrossLanguageBindingReceipt(output, receipt)
+        verifyJavaBindingParityReceipt(readCrossLanguageBindingReceipt(output), receipt)
     }
 }
 
@@ -111,54 +107,48 @@ internal fun deriveVerifiedJavaBindingParityEvidence(
 internal fun buildJavaBindingParityReceipt(
     canonicalDigests: KotlinBindingDigestEvidence,
     evidence: CrossLanguageJavaBindingParityEvidence,
-): JsonObject = buildJsonObject {
-    put("schema", JsonPrimitive(1))
-    put("result", JsonPrimitive("passed"))
-    put("language", JsonPrimitive(CrossLanguageBinding.JAVA.id))
-    put("phase", JsonPrimitive(CrossLanguageBindingPhase.M7_5.name))
-    put("apiReportSha256", JsonPrimitive(canonicalDigests.apiReportSha256))
-    put("canonicalCoverageSha256", JsonPrimitive(canonicalDigests.canonicalCoverageSha256))
-    put("canonicalArtifactSha256", JsonPrimitive(canonicalDigests.artifactSha256))
-    put("artifacts", buildJsonObject {
-        val artifacts = evidence.digests.artifactDigests
-        put("coreJvmJarSha256", JsonPrimitive(artifacts.coreJvmJarSha256))
-        put("coreAndroidAarSha256", JsonPrimitive(artifacts.coreAndroidAarSha256))
-        put("desktopRuntimeJarSha256", JsonPrimitive(artifacts.desktopRuntimeJarSha256))
-        put("androidRuntimeAarSha256", JsonPrimitive(artifacts.androidRuntimeAarSha256))
-    })
-    put("compiledTestsSha256", JsonPrimitive(evidence.digests.compiledTestsSha256))
-    put("testResultsSha256", JsonPrimitive(evidence.digests.testResultsSha256))
-    put("summary", buildJsonObject {
-        put("capabilities", JsonPrimitive(evidence.javaObligations.size))
-        put("publicSymbols", JsonPrimitive(evidence.publicSymbols.size))
-        put("tests", JsonPrimitive(evidence.bindingTests.size))
-        put("scenarios", JsonPrimitive(evidence.scenarioEvidence.size))
-    })
-    put("tests", buildJsonArray {
-        evidence.bindingTests.forEach { test -> add(JsonPrimitive(test.testId)) }
-    })
-    put("scenarios", buildJsonArray {
-        evidence.scenarioEvidence.forEach { scenario ->
-            add(buildJsonObject {
-                put("id", JsonPrimitive(scenario.scenario.id))
-                put("testIds", buildJsonArray {
-                    scenario.testIds.forEach { add(JsonPrimitive(it)) }
-                })
-            })
-        }
-    })
-    put("claims", buildJsonArray {
-        evidence.projectionClaims.forEach { claim ->
-            add(buildJsonObject {
-                put("capabilityKey", JsonPrimitive(claim.capabilityKey))
-                put("publicSymbols", buildJsonArray {
-                    claim.publicSymbols.forEach { add(JsonPrimitive(it)) }
-                })
-            })
-        }
-    })
+): CrossLanguageBindingReceipt {
+    val artifacts = evidence.digests.artifactDigests
+    return CrossLanguageBindingReceipt(
+        phase = CrossLanguageBindingPhase.M7_5,
+        language = CrossLanguageBinding.JAVA,
+        canonical = CrossLanguageBindingCanonicalIdentity(
+            apiReportSha256 = canonicalDigests.apiReportSha256,
+            coverageReceiptSha256 = canonicalDigests.canonicalCoverageSha256,
+        ),
+        artifacts = listOf(
+            CrossLanguageBindingArtifactIdentity(
+                "android-runtime-aar",
+                artifacts.androidRuntimeAarSha256,
+            ),
+            CrossLanguageBindingArtifactIdentity(
+                "core-android-aar",
+                artifacts.coreAndroidAarSha256,
+            ),
+            CrossLanguageBindingArtifactIdentity(
+                "core-jvm-jar",
+                artifacts.coreJvmJarSha256,
+            ),
+            CrossLanguageBindingArtifactIdentity(
+                "desktop-runtime-jar",
+                artifacts.desktopRuntimeJarSha256,
+            ),
+        ),
+        testProgramSha256 = evidence.digests.compiledTestsSha256,
+        testResultsSha256 = evidence.digests.testResultsSha256,
+        publicSymbols = evidence.publicSymbols,
+        bindingTests = evidence.bindingTests,
+        scenarioEvidence = evidence.scenarioEvidence,
+        projectionClaims = evidence.projectionClaims,
+        applicabilityExclusions = emptyList(),
+    )
 }
 
-internal fun verifyJavaBindingParityReceipt(actual: JsonObject, expected: JsonObject) {
-    check(actual == expected) { "Java binding parity receipt does not match freshly recomputed evidence" }
+internal fun verifyJavaBindingParityReceipt(
+    actual: CrossLanguageBindingReceipt,
+    expected: CrossLanguageBindingReceipt,
+) {
+    check(actual.toJson() == expected.toJson()) {
+        "Java binding parity receipt does not match freshly recomputed evidence"
+    }
 }

@@ -4,9 +4,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import org.jetbrains.org.objectweb.asm.ClassWriter
 import org.jetbrains.org.objectweb.asm.Handle
 import org.jetbrains.org.objectweb.asm.Opcodes
@@ -140,7 +137,8 @@ class CrossLanguageJavaBindingParityEvidenceTest {
     }
 
     @Test
-    fun `Java receipt is exact and carries every structural claim`() = withFixture { fixture ->
+    fun `Java schema three receipt preserves every binding record and digest`() = withFixture { fixture ->
+        val evidence = fixture.derive()
         val receipt = buildJavaBindingParityReceipt(
             KotlinBindingDigestEvidence(
                 artifactSha256 = "e".repeat(64),
@@ -149,12 +147,49 @@ class CrossLanguageJavaBindingParityEvidenceTest {
                 compiledTestsSha256 = "1".repeat(64),
                 testResultsSha256 = "2".repeat(64),
             ),
-            fixture.derive(),
+            evidence,
         )
 
-        verifyJavaBindingParityReceipt(receipt, receipt)
-        assertEquals(549, (receipt.getValue("claims") as JsonArray).size)
-        val forged = JsonObject(receipt + ("result" to JsonPrimitive("forged")))
+        val file = fixture.results.resolve("java-binding-receipt.json")
+        writeCrossLanguageBindingReceipt(file, receipt)
+        val decoded = readCrossLanguageBindingReceipt(file)
+        verifyJavaBindingParityReceipt(decoded, receipt)
+
+        assertEquals(CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA, decoded.toJson().releaseInt("schema"))
+        assertEquals(CrossLanguageBinding.JAVA, decoded.language)
+        assertEquals(CrossLanguageBindingPhase.M7_5, decoded.phase)
+        assertEquals(CrossLanguageBindingCanonicalIdentity("f".repeat(64), "0".repeat(64)), decoded.canonical)
+        assertEquals(
+            mapOf(
+                "android-runtime-aar" to "d".repeat(64),
+                "core-android-aar" to "b".repeat(64),
+                "core-jvm-jar" to "a".repeat(64),
+                "desktop-runtime-jar" to "c".repeat(64),
+            ),
+            decoded.artifacts.associate { it.id to it.sha256 },
+        )
+        assertEquals(evidence.digests.compiledTestsSha256, decoded.testProgramSha256)
+        assertEquals(evidence.digests.testResultsSha256, decoded.testResultsSha256)
+        assertEquals(evidence.publicSymbols.sorted(), decoded.publicSymbols)
+        assertEquals(549, decoded.publicSymbols.size)
+        assertEquals(549, decoded.projectionClaims.size)
+        assertEquals(7, decoded.bindingTests.size)
+        assertEquals(evidence.bindingTests.sortedBy { it.testId }, decoded.bindingTests)
+        assertTrue(decoded.bindingTests.all { it.status == CrossLanguageBindingTestStatus.PASSED })
+        assertEquals(javaBindingTestIds.toSet(), decoded.bindingTests.map { it.testId }
+            .filter(javaBindingTestIds::contains).toSet())
+        assertEquals(14, decoded.scenarioEvidence.size)
+        assertEquals(CrossLanguageBindingScenario.entries.toSet(), decoded.scenarioEvidence
+            .map(CrossLanguageScenarioEvidence::scenario).toSet())
+        assertTrue(decoded.projectionClaims.all { claim ->
+            claim.publicSymbols.isNotEmpty() && claim.executedTests.isNotEmpty() &&
+                claim.sharedScenarios.isNotEmpty()
+        })
+        assertTrue(decoded.applicabilityExclusions.isEmpty())
+
+        val forged = decoded.copy(
+            canonical = decoded.canonical.copy(apiReportSha256 = "9".repeat(64)),
+        )
         assertFailure("does not match freshly recomputed evidence") {
             verifyJavaBindingParityReceipt(forged, receipt)
         }
