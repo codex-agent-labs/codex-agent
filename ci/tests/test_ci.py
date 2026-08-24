@@ -44,6 +44,17 @@ from validation_reuse import (  # noqa: E402
 )
 
 
+class RunLaneContractTest(unittest.TestCase):
+    def test_contracts_build_runs_the_transitive_kotlin_binding_gate(self) -> None:
+        driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
+        contracts = driver.split("  contracts)", 1)[1].split("  portable)", 1)[0]
+        build = contracts.split('if [ "$build" = true ]; then', 1)[1].split("    fi", 1)[0]
+
+        self.assertEqual(1, build.count(":codex-agent-core:verifyKotlinBindingParity"))
+        self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", build)
+        self.assertNotIn(":codex-agent-core:auditCrossLanguageBindingParity", build)
+
+
 class GitFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()

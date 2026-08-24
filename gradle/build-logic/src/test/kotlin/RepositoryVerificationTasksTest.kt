@@ -6,6 +6,7 @@ class RepositoryVerificationTasksTest {
     @Test
     fun `repository verification requires compiler derived API coverage`() {
         assertTrue(":codex-agent-core:verifyCrossLanguageApiCoverage" in repositoryVerificationTaskPaths)
+        assertTrue(":codex-agent-core:verifyKotlinBindingParity" in repositoryVerificationTaskPaths)
     }
 
     @Test

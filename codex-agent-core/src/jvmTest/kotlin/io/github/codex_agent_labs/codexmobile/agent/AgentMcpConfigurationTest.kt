@@ -426,7 +426,7 @@ class AgentMcpConfigurationTest {
                 })
             }
         }
-        val client = CodexAgentClient({ runtime }, requestTimeoutMillis = 100)
+        val client = CodexAgentClient({ runtime }, requestTimeoutMillis = 1_000)
         try {
             assertFailsWith<AgentResourceInstallationException> {
                 client.addMcpServer(

@@ -224,7 +224,7 @@ private fun Iterable<String>.toJsonArray(): JsonArray = buildJsonArray {
     this@toJsonArray.forEach { add(JsonPrimitive(it)) }
 }
 
-private fun File.crossLanguageTreeDigest(): String {
+internal fun File.crossLanguageTreeDigest(): String {
     check(isDirectory) { "Cross-language input directory is missing: $this" }
     val files = walkTopDown().onEnter { directory ->
         check(!Files.isSymbolicLink(directory.toPath())) { "Cross-language input contains a symlink: $directory" }

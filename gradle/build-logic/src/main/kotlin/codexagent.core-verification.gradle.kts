@@ -49,6 +49,8 @@ val discoverCrossLanguageApi = tasks.register<DiscoverCrossLanguageApiTask>("dis
     reportFile.set(layout.buildDirectory.file("reports/cross-language-api/canonical-api.json"))
 }
 
+val canonicalCrossLanguageCoverageReceiptFile =
+    layout.buildDirectory.file("reports/cross-language-api/canonical-coverage.json")
 val verifyCrossLanguageApiCoverage = tasks.register<VerifyCrossLanguageApiCoverageTask>(
     "verifyCrossLanguageApiCoverage",
 ) {
@@ -60,7 +62,58 @@ val verifyCrossLanguageApiCoverage = tasks.register<VerifyCrossLanguageApiCovera
     testResults.set(layout.buildDirectory.dir("test-results/jvmTest"))
     kotlinCompilerVersion.set(crossLanguageKotlinVersion)
     canonicalTestTask.set(":codex-agent-core:jvmTest")
-    receiptFile.set(layout.buildDirectory.file("reports/cross-language-api/canonical-coverage.json"))
+    receiptFile.set(canonicalCrossLanguageCoverageReceiptFile)
+}
+
+val crossLanguageBindingAuditFile =
+    layout.buildDirectory.file("reports/cross-language-api/binding-obligations-m7_5.json")
+val kotlinBindingParityReceiptFile =
+    layout.buildDirectory.file("reports/cross-language-api/bindings/kotlin-parity.json")
+val invalidateCrossLanguageBindingParityOutputs = tasks.register<Delete>(
+    "invalidateCrossLanguageBindingParityOutputs",
+) {
+    group = "verification"
+    description = "Deletes stale binding parity outputs before their prerequisites execute."
+    delete(
+        canonicalCrossLanguageCoverageReceiptFile,
+        crossLanguageBindingAuditFile,
+        kotlinBindingParityReceiptFile,
+    )
+}
+tasks.configureEach {
+    if (name != invalidateCrossLanguageBindingParityOutputs.name) {
+        mustRunAfter(invalidateCrossLanguageBindingParityOutputs)
+    }
+}
+verifyCrossLanguageApiCoverage.configure {
+    dependsOn(invalidateCrossLanguageBindingParityOutputs)
+}
+
+val auditCrossLanguageBindingParity = tasks.register<AuditCrossLanguageBindingParityTask>(
+    "auditCrossLanguageBindingParity",
+) {
+    group = "verification"
+    description = "Materializes every canonical API obligation for all eleven first-class languages."
+    dependsOn(verifyCrossLanguageApiCoverage)
+    apiReport.set(discoverCrossLanguageApi.flatMap(DiscoverCrossLanguageApiTask::reportFile))
+    canonicalCoverageReceipt.set(
+        verifyCrossLanguageApiCoverage.flatMap(VerifyCrossLanguageApiCoverageTask::receiptFile),
+    )
+    kotlinArtifact.set(layout.buildDirectory.dir("classes/kotlin/jvm/main"))
+    auditFile.set(crossLanguageBindingAuditFile)
+}
+
+val verifyKotlinBindingParity = tasks.register<VerifyKotlinBindingParityTask>("verifyKotlinBindingParity") {
+    group = "verification"
+    description = "Verifies canonical Kotlin artifact and shared projection behavior parity."
+    dependsOn(auditCrossLanguageBindingParity)
+    apiReport.set(discoverCrossLanguageApi.flatMap(DiscoverCrossLanguageApiTask::reportFile))
+    canonicalCoverageReceipt.set(
+        verifyCrossLanguageApiCoverage.flatMap(VerifyCrossLanguageApiCoverageTask::receiptFile),
+    )
+    kotlinArtifact.set(layout.buildDirectory.dir("classes/kotlin/jvm/main"))
+    bindingAudit.set(auditCrossLanguageBindingParity.flatMap(AuditCrossLanguageBindingParityTask::auditFile))
+    receiptFile.set(kotlinBindingParityReceiptFile)
 }
 
 val verifyProtocolSource = tasks.register<VerifyProtocolSourceTask>("verifyProtocolSource") {
@@ -84,5 +137,5 @@ tasks.register("updateProtocol") {
 }
 
 tasks.named("check").configure {
-    dependsOn(verifyProtocolSource, verifyCrossLanguageApiCoverage)
+    dependsOn(verifyProtocolSource, verifyCrossLanguageApiCoverage, verifyKotlinBindingParity)
 }

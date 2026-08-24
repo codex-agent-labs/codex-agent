@@ -101,6 +101,20 @@ class CrossLanguageBindingParityTest {
     }
 
     @Test
+    fun `Kotlin identity projection requires the compiler derived public member`() {
+        val input = passingInput().copy(
+            publicSymbols = passingInput().publicSymbols - CrossLanguageBinding.KOTLIN,
+        )
+        val report = evaluateCrossLanguageBindingParity(input)
+
+        assertTrue(report.errors.any { "Missing active binding projection kotlin:$CAPABILITY" in it })
+        assertEquals(
+            CrossLanguageObligationStatus.MISSING,
+            report.obligations.single { it.language == CrossLanguageBinding.KOTLIN }.status,
+        )
+    }
+
+    @Test
     fun `skipped and failed binding tests satisfy neither claims nor scenarios`() {
         listOf(CrossLanguageBindingTestStatus.SKIPPED, CrossLanguageBindingTestStatus.FAILED).forEach { status ->
             val input = passingInput().copy(
@@ -323,9 +337,9 @@ class CrossLanguageBindingParityTest {
 
         fun passingPublicSymbols(
             phase: CrossLanguageBindingPhase = CrossLanguageBindingPhase.M7_5,
-        ): Map<CrossLanguageBinding, List<String>> = activeLanguages(phase)
-            .filterNot { it == CrossLanguageBinding.KOTLIN }
-            .associateWith { listOf(symbol(it)) }
+        ): Map<CrossLanguageBinding, List<String>> = activeLanguages(phase).associateWith { language ->
+            if (language == CrossLanguageBinding.KOTLIN) listOf(CAPABILITY) else listOf(symbol(language))
+        }
 
         fun passingBindingTests(
             phase: CrossLanguageBindingPhase = CrossLanguageBindingPhase.M7_5,
@@ -337,7 +351,7 @@ class CrossLanguageBindingParityTest {
             phase: CrossLanguageBindingPhase = CrossLanguageBindingPhase.M7_5,
         ): List<CrossLanguageScenarioEvidence> = activeLanguages(phase).flatMap { language ->
             CrossLanguageBindingScenario.entries.map { scenario ->
-                CrossLanguageScenarioEvidence(language, scenario, testId(language))
+                CrossLanguageScenarioEvidence(language, scenario, listOf(testId(language)))
             }
         }
 

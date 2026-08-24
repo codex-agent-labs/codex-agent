@@ -4,6 +4,7 @@ import org.gradle.kotlin.dsl.register
 internal val repositoryVerificationTaskPaths = listOf(
     ":codex-agent-core:jvmTest",
     ":codex-agent-core:verifyCrossLanguageApiCoverage",
+    ":codex-agent-core:verifyKotlinBindingParity",
     ":codex-agent-core:compileAndroidMain",
     ":codex-agent-core:compileKotlinJs",
     ":codex-agent-core:compileKotlinWasmJs",

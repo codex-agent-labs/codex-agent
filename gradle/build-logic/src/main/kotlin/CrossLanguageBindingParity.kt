@@ -58,7 +58,7 @@ internal data class CrossLanguageBindingTestEvidence(
 internal data class CrossLanguageScenarioEvidence(
     val language: CrossLanguageBinding,
     val scenario: CrossLanguageBindingScenario,
-    val testId: String,
+    val testIds: List<String>,
 )
 
 internal data class CrossLanguageProjectionClaim(
@@ -150,17 +150,32 @@ internal fun evaluateCrossLanguageBindingParity(
         errors += "Duplicate ${language.id} scenario evidence ${scenario.id}"
     }
     input.scenarioEvidence.forEach { evidence ->
-        if (evidence.testId.isBlank()) errors += "Blank ${evidence.language.id} scenario test id for ${evidence.scenario.id}"
-        if (evidence.testId.contains('*')) {
-            errors += "Wildcard ${evidence.language.id} scenario test id ${evidence.testId}"
+        if (evidence.testIds.isEmpty()) {
+            errors += "Missing ${evidence.language.id} scenario tests for ${evidence.scenario.id}"
         }
-        if (evidence.language to evidence.testId !in passedTests) {
-            errors += "Unknown or non-passed ${evidence.language.id} scenario test ${evidence.testId} for ${evidence.scenario.id}"
+        duplicateValues(evidence.testIds).forEach { testId ->
+            errors += "Duplicate ${evidence.language.id} scenario test $testId for ${evidence.scenario.id}"
+        }
+        evidence.testIds.forEach { testId ->
+            if (testId.isBlank()) {
+                errors += "Blank ${evidence.language.id} scenario test id for ${evidence.scenario.id}"
+            }
+            if (testId.contains('*')) {
+                errors += "Wildcard ${evidence.language.id} scenario test id $testId"
+            }
+            if (evidence.language to testId !in passedTests) {
+                errors += "Unknown or non-passed ${evidence.language.id} scenario test $testId for ${evidence.scenario.id}"
+            }
         }
     }
     val validScenarioEvidence = scenarioRecords.mapNotNullTo(mutableSetOf()) { (key, records) ->
         val record = records.singleOrNull()
-        key.takeIf { record != null && record.language to record.testId in passedTests }
+        key.takeIf {
+            record != null &&
+                record.testIds.isNotEmpty() &&
+                record.testIds.distinct().size == record.testIds.size &&
+                record.testIds.all { record.language to it in passedTests }
+        }
     }
     activeLanguages.forEach { language ->
         CrossLanguageBindingScenario.entries.forEach { scenario ->
@@ -206,30 +221,12 @@ internal fun evaluateCrossLanguageBindingParity(
     }
 
     val exclusionRecords = input.applicabilityExclusions.groupBy { it.capabilityKey to it.language }
-    exclusionRecords.filterValues { it.size > 1 }.keys.forEach { (capability, language) ->
-        errors += "Duplicate applicability exclusion ${language.id}:$capability"
-    }
-    input.applicabilityExclusions.forEach { exclusion ->
-        val pair = exclusion.capabilityKey to exclusion.language
-        when {
-            exclusion.capabilityKey.isBlank() -> errors += "Blank applicability exclusion capability key"
-            exclusion.capabilityKey.contains('*') -> errors += "Wildcard applicability exclusion capability key ${exclusion.capabilityKey}"
-            exclusion.capabilityKey !in capabilityKeys -> errors += "Stale applicability exclusion ${exclusion.language.id}:${exclusion.capabilityKey}"
-        }
-        when {
-            exclusion.reason.isBlank() -> errors += "Blank applicability exclusion reason ${exclusion.language.id}:${exclusion.capabilityKey}"
-            exclusion.reason.contains('*') -> errors += "Wildcard applicability exclusion reason ${exclusion.language.id}:${exclusion.capabilityKey}"
-            exclusion.reason.normalizedExclusionReason() in genericExclusionReasons -> {
-                errors += "Broad applicability exclusion reason ${exclusion.language.id}:${exclusion.capabilityKey}"
-            }
-        }
-        if (exclusion.language !in activeLanguages) {
-            errors += "Applicability exclusion targets an inactive language ${exclusion.language.id}:${exclusion.capabilityKey}"
-        }
-        if (pair in claimRecords) {
-            errors += "Projection claim conflicts with applicability exclusion ${exclusion.language.id}:${exclusion.capabilityKey}"
-        }
-    }
+    errors += crossLanguageApplicabilityExclusionErrors(
+        capabilityKeys = capabilityKeys,
+        activeLanguages = activeLanguages,
+        exclusions = input.applicabilityExclusions,
+        projectionClaimPairs = claimRecords.keys,
+    )
 
     val validClaims = claimRecords.mapNotNullTo(mutableSetOf()) { (pair, records) ->
         val claim = records.singleOrNull()
@@ -262,7 +259,10 @@ internal fun evaluateCrossLanguageBindingParity(
             val status = when {
                 language !in activeLanguages -> CrossLanguageObligationStatus.PENDING
                 excluded -> CrossLanguageObligationStatus.EXCLUDED
-                language == CrossLanguageBinding.KOTLIN -> CrossLanguageObligationStatus.SATISFIED
+                language == CrossLanguageBinding.KOTLIN &&
+                    capability in input.publicSymbols[CrossLanguageBinding.KOTLIN].orEmpty() -> {
+                    CrossLanguageObligationStatus.SATISFIED
+                }
                 pair in validClaims -> CrossLanguageObligationStatus.SATISFIED
                 else -> CrossLanguageObligationStatus.MISSING
             }
@@ -274,6 +274,49 @@ internal fun evaluateCrossLanguageBindingParity(
     }
 
     return CrossLanguageBindingParityReport(input.phase, obligations, errors.distinct().sorted())
+}
+
+internal fun crossLanguageApplicabilityExclusionErrors(
+    capabilityKeys: Set<String>,
+    activeLanguages: Set<CrossLanguageBinding>,
+    exclusions: List<CrossLanguageApplicabilityExclusion>,
+    projectionClaimPairs: Set<Pair<String, CrossLanguageBinding>> = emptySet(),
+): List<String> = buildList {
+    exclusions.groupBy { it.capabilityKey to it.language }
+        .filterValues { it.size > 1 }
+        .keys
+        .forEach { (capability, language) ->
+            add("Duplicate applicability exclusion ${language.id}:$capability")
+        }
+    exclusions.forEach { exclusion ->
+        val pair = exclusion.capabilityKey to exclusion.language
+        when {
+            exclusion.capabilityKey.isBlank() -> add("Blank applicability exclusion capability key")
+            exclusion.capabilityKey.contains('*') -> {
+                add("Wildcard applicability exclusion capability key ${exclusion.capabilityKey}")
+            }
+            exclusion.capabilityKey !in capabilityKeys -> {
+                add("Stale applicability exclusion ${exclusion.language.id}:${exclusion.capabilityKey}")
+            }
+        }
+        when {
+            exclusion.reason.isBlank() -> {
+                add("Blank applicability exclusion reason ${exclusion.language.id}:${exclusion.capabilityKey}")
+            }
+            exclusion.reason.contains('*') -> {
+                add("Wildcard applicability exclusion reason ${exclusion.language.id}:${exclusion.capabilityKey}")
+            }
+            exclusion.reason.normalizedExclusionReason() in genericExclusionReasons -> {
+                add("Broad applicability exclusion reason ${exclusion.language.id}:${exclusion.capabilityKey}")
+            }
+        }
+        if (exclusion.language !in activeLanguages) {
+            add("Applicability exclusion targets an inactive language ${exclusion.language.id}:${exclusion.capabilityKey}")
+        }
+        if (pair in projectionClaimPairs) {
+            add("Projection claim conflicts with applicability exclusion ${exclusion.language.id}:${exclusion.capabilityKey}")
+        }
+    }
 }
 
 private val genericExclusionReasons = setOf(
