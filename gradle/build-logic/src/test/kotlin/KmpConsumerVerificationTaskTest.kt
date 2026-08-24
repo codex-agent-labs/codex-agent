@@ -32,6 +32,12 @@ class KmpConsumerVerificationTaskTest {
             stagedConsumerBuildTasks.keys,
         )
         assertEquals(listOf("compileKotlinJvm"), stagedConsumerBuildTasks.getValue("common"))
+        assertEquals(
+            listOf("compileAndroidMain", "compileAndroidMainJavaWithJavac"),
+            stagedConsumerBuildTasks.getValue("android"),
+        )
+        assertTrue("compileJvmMainJava" in stagedConsumerBuildTasks.getValue("desktop"))
+        assertTrue("runDesktopJavaConsumer" in stagedConsumerBuildTasks.getValue("desktop"))
     }
 
     @Test

@@ -3,6 +3,7 @@ codex-agent-runtime-android/src/main/**
 codex-agent-core/build.gradle.kts
 codex-agent-core/src/commonMain/**
 codex-agent-core/src/androidMain/**
+codex-agent-core/src/jvmAndAndroidMain/**
 tooling/android-runtime-evidence/build.gradle.kts
 tooling/android-runtime-evidence/src/androidTest/**
 gradle/build-logic/src/main/kotlin/*Android*.kt

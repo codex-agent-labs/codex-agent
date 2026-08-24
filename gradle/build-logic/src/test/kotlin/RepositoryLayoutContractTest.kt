@@ -37,6 +37,9 @@ class RepositoryLayoutContractTest {
         val consumer = repository.resolve("gradle/release/kmp-consumer-template/build.gradle.kts").readText()
         assertTrue("kotlin(\"multiplatform\") version \"${version("kotlin")}\"" in consumer)
         assertTrue("id(\"com.android.kotlin.multiplatform.library\") version \"${version("agp")}\"" in consumer)
+        assertTrue("withJava()" in consumer)
+        assertTrue(repository.resolve("gradle/release/kmp-consumer-template/src/androidMain/java").isDirectory)
+        assertTrue(repository.resolve("gradle/release/kmp-consumer-template/src/desktopMain/java").isDirectory)
     }
 
     @Test

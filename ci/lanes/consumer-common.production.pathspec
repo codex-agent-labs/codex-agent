@@ -4,6 +4,7 @@ gradle/release/kmp-consumer-template/src/commonMain/**
 codex-agent-core/build.gradle.kts
 codex-agent-core/src/commonMain/**
 codex-agent-core/src/jvmMain/**
+codex-agent-core/src/jvmAndAndroidMain/**
 gradle/build-logic/src/main/kotlin/KmpConsumerVerificationTask.kt
 gradle/build-logic/src/main/kotlin/MavenRepositoryTasks.kt
 gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt

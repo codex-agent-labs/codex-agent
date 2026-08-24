@@ -629,6 +629,23 @@ class RealImpactPlanTest(unittest.TestCase):
                 "codex-agent-core/src/jvmMain/kotlin/io/github/codex_agent_labs/ClientJvm.kt",
             ),
         )
+        codex_java_source = (
+            "codex-agent-core/src/jvmAndAndroidMain/kotlin/"
+            "io/github/codex_agent_labs/codexmobile/agent/CodexJava.kt"
+        )
+        self.assertEqual(
+            {"android", "portable", "consumer-common", "consumer-android", "consumer-desktop"},
+            matching_lanes("production", codex_java_source),
+        )
+        self.assertEqual({"contracts"}, matching_lanes("test", codex_java_source))
+        self.assertEqual(
+            {"portable", "consumer-desktop"},
+            matching_lanes(
+                "production",
+                "codex-agent-runtime-desktop/src/jvmMain/kotlin/"
+                "io/github/codex_agent_labs/codexmobile/agent/runtime/DesktopCodexJava.kt",
+            ),
+        )
 
         imported = prefix + "ImportedAppleFrameworkTasks.kt"
         self.assertEqual(

@@ -23,9 +23,13 @@ kotlin {
             namespace = "io.github.codex_agent_labs.codexagent.stagedconsumer"
             compileSdk = 37
             minSdk = 26
+            withJava()
         }
         "desktop" -> {
-            jvm()
+            val desktopJvm = jvm()
+            desktopJvm.compilations.getByName("main").defaultSourceSet {
+                kotlin.srcDir("src/desktopMain/kotlin")
+            }
             macosArm64()
             macosX64()
             linuxArm64()
@@ -49,9 +53,8 @@ kotlin {
             }
             "desktop" -> {
                 jvmMain {
-                    kotlin.srcDir("src/desktopMain/kotlin")
                     dependencies {
-                        implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:$codexAgentVersion")
+                        implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop-jvm:$codexAgentVersion")
                     }
                 }
                 listOf(macosMain, linuxMain, mingwX64Main).forEach { sourceSet ->
@@ -76,6 +79,21 @@ kotlin {
                 }
             }
         }
+    }
+}
+
+if (consumerTarget == "desktop") {
+    val compileDesktopJava = tasks.named<JavaCompile>("compileJvmMainJava") {
+        source("src/desktopMain/java")
+    }
+    tasks.register<JavaExec>("runDesktopJavaConsumer") {
+        dependsOn("jvmMainClasses")
+        classpath(
+            compileDesktopJava.flatMap { it.destinationDirectory },
+            layout.buildDirectory.dir("classes/kotlin/jvm/main"),
+            configurations.named("jvmRuntimeClasspath"),
+        )
+        mainClass.set("io.github.codex_agent_labs.codexagent.stagedconsumer.DesktopJavaConsumer")
     }
 }
 

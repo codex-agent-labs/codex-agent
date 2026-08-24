@@ -1,6 +1,7 @@
 codex-agent-core/src/commonMain/**
 codex-agent-core/build.gradle.kts
 codex-agent-core/src/jvmMain/**
+codex-agent-core/src/jvmAndAndroidMain/**
 codex-agent-core/src/jsMain/**
 codex-agent-core/src/wasmJsMain/**
 codex-agent-runtime-desktop/build.gradle.kts

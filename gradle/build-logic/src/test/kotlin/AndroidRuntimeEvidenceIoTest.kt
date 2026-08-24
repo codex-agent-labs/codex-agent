@@ -19,6 +19,10 @@ class AndroidRuntimeEvidenceIoTest {
             reportXml(firstBody = "<skipped/>"),
             "<testsuite/>",
             reportXml(secondName = "notTheRequiredTest"),
+            reportXml().replace(
+                "name=\"javaHostLifecycleIsObservableAndIdempotentlyCloseable\"",
+                "name=\"notTheJavaLifecycleTest\"",
+            ),
             reportXml(firstClass = wrongClass),
             reportXml().replace(
                 "</testsuite>",
@@ -55,13 +59,16 @@ class AndroidRuntimeEvidenceIoTest {
     private fun reportXml(
         firstBody: String = "",
         secondBody: String = "",
+        thirdBody: String = "",
         secondName: String = "successfulRuntimeInstallsCertificatePrivacyAndCleanupPolicies",
         firstClass: String = ANDROID_RUNTIME_TEST_CLASS,
     ): String = """
-        <testsuite tests="2" failures="0" errors="0" skipped="0">
+        <testsuite tests="3" failures="0" errors="0" skipped="0">
           <testcase classname="$firstClass"
             name="missingNonExecutableAndCorruptOverridesFailClosed">$firstBody</testcase>
           <testcase classname="$ANDROID_RUNTIME_TEST_CLASS" name="$secondName">$secondBody</testcase>
+          <testcase classname="$ANDROID_RUNTIME_TEST_CLASS"
+            name="javaHostLifecycleIsObservableAndIdempotentlyCloseable">$thirdBody</testcase>
         </testsuite>
     """.trimIndent()
 }

@@ -42,6 +42,9 @@ kotlin {
     wasmJs { nodejs() }
 
     sourceSets {
+        val jvmAndAndroidMainDirectory = "src/jvmAndAndroidMain/kotlin"
+        androidMain { kotlin.srcDir(jvmAndAndroidMainDirectory) }
+        jvmMain { kotlin.srcDir(jvmAndAndroidMainDirectory) }
         commonMain.dependencies {
             api(libs.kotlinx.coroutines.core)
             api(libs.kotlinx.serialization.json)

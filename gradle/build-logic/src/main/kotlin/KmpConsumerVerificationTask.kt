@@ -2,9 +2,10 @@ import java.io.File
 
 internal val stagedConsumerBuildTasks = linkedMapOf(
     "common" to listOf("compileKotlinJvm"),
-    "android" to listOf("compileAndroidMain"),
+    "android" to listOf("compileAndroidMain", "compileAndroidMainJavaWithJavac"),
     "desktop" to listOf(
-        "compileKotlinJvm", "compileKotlinMacosArm64", "compileKotlinMacosX64",
+        "compileKotlinJvm", "compileJvmMainJava", "runDesktopJavaConsumer",
+        "compileKotlinMacosArm64", "compileKotlinMacosX64",
         "compileKotlinLinuxArm64", "compileKotlinLinuxX64", "compileKotlinMingwX64",
     ),
     "ios-device" to listOf("linkDebugFrameworkIosArm64"),
