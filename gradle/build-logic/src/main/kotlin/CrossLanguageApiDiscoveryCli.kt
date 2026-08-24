@@ -1,7 +1,7 @@
 import java.io.File
 
 public fun main(arguments: Array<String>) {
-    check(arguments.size == 8) { "Cross-language API discovery requires exactly eight arguments" }
+    check(arguments.size == 10) { "Cross-language API discovery requires exactly ten arguments" }
     val nativeKlib = File(arguments[0])
     val wasmKlib = File(arguments[1])
     val marker = arguments[2]
@@ -9,7 +9,9 @@ public fun main(arguments: Array<String>) {
     val exclusionAnnotation = arguments[4]
     val excludedTypes = File(arguments[5]).readCrossLanguageStrings()
     val dataClassNames = File(arguments[6]).readCrossLanguageStrings()
-    val output = File(arguments[7])
+    val singletonObjectNames = File(arguments[7]).readCrossLanguageStrings()
+    val companionObjectNames = File(arguments[8]).readCrossLanguageStrings()
+    val output = File(arguments[9])
     fun discover(klib: File) = discoverCrossLanguageApi(
         klib = klib,
         markerAnnotation = marker,
@@ -17,6 +19,8 @@ public fun main(arguments: Array<String>) {
         memberExclusionAnnotation = exclusionAnnotation,
         requiredExcludedReachableTypes = excludedTypes,
         dataClassNames = dataClassNames,
+        singletonObjectNames = singletonObjectNames,
+        companionObjectNames = companionObjectNames,
     )
     val nativeReport = discover(nativeKlib)
     val wasmReport = discover(wasmKlib)

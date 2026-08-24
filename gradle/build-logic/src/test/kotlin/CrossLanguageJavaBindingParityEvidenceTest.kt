@@ -11,11 +11,11 @@ import org.jetbrains.org.objectweb.asm.Type
 
 class CrossLanguageJavaBindingParityEvidenceTest {
     @Test
-    fun `current 549 capability matrix satisfies exactly the Java slice`() = withFixture { fixture ->
+    fun `current 556 capability matrix satisfies exactly the Java slice`() = withFixture { fixture ->
         val evidence = fixture.derive()
 
-        assertEquals(549, evidence.projectionClaims.size)
-        assertEquals(549, evidence.publicSymbols.size)
+        assertEquals(556, evidence.projectionClaims.size)
+        assertEquals(576, evidence.publicSymbols.size)
         assertEquals(7, evidence.bindingTests.size)
         assertEquals(javaBindingTestIds.toSet(), evidence.bindingTests.map(CrossLanguageBindingTestEvidence::testId)
             .filter(javaBindingTestIds::contains).toSet())
@@ -25,15 +25,15 @@ class CrossLanguageJavaBindingParityEvidenceTest {
                 it.executedTests.single().endsWith("#ordinaryAndHostStructurePassed") &&
                 it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
         })
-        assertEquals(6_039, evidence.parityReport.obligations.size)
-        assertEquals(549, evidence.javaObligations.size)
+        assertEquals(6_116, evidence.parityReport.obligations.size)
+        assertEquals(556, evidence.javaObligations.size)
         assertTrue(evidence.javaObligations.all {
             it.applicable && it.status == CrossLanguageObligationStatus.SATISFIED
         })
-        assertEquals(2_196, evidence.parityReport.obligations.count {
+        assertEquals(2_224, evidence.parityReport.obligations.count {
             it.status == CrossLanguageObligationStatus.MISSING
         })
-        assertEquals(3_294, evidence.parityReport.obligations.count {
+        assertEquals(3_336, evidence.parityReport.obligations.count {
             it.status == CrossLanguageObligationStatus.PENDING
         })
         assertEquals(fixture.compiledTests.crossLanguageTreeDigest(), evidence.digests.compiledTestsSha256)
@@ -171,8 +171,8 @@ class CrossLanguageJavaBindingParityEvidenceTest {
         assertEquals(evidence.digests.compiledTestsSha256, decoded.testProgramSha256)
         assertEquals(evidence.digests.testResultsSha256, decoded.testResultsSha256)
         assertEquals(evidence.publicSymbols.sorted(), decoded.publicSymbols)
-        assertEquals(549, decoded.publicSymbols.size)
-        assertEquals(549, decoded.projectionClaims.size)
+        assertEquals(576, decoded.publicSymbols.size)
+        assertEquals(556, decoded.projectionClaims.size)
         assertEquals(7, decoded.bindingTests.size)
         assertEquals(evidence.bindingTests.sortedBy { it.testId }, decoded.bindingTests)
         assertTrue(decoded.bindingTests.all { it.status == CrossLanguageBindingTestStatus.PASSED })
@@ -326,7 +326,7 @@ class CrossLanguageJavaBindingParityEvidenceTest {
     }
 
     private companion object {
-        val CAPABILITIES = (0 until 549).map { index -> "canonical-capability-$index" }
+        val CAPABILITIES = (0 until 556).map { index -> "canonical-capability-$index" }
         const val JAVA_TEST_INTERNAL_NAME =
             "io/github/codex_agent_labs/codexmobile/agent/CodexJavaApiTest"
         val LAMBDA_METAFACTORY = Handle(
@@ -347,7 +347,13 @@ class CrossLanguageJavaBindingParityEvidenceTest {
                 androidRuntimeAarSha256 = "d".repeat(64),
             ),
             capabilityClaims = capabilities.mapIndexed { index, capability ->
-                JavaBindingCapabilityClaim(capability, listOf("method:sample/Owner#$index()V"))
+                JavaBindingCapabilityClaim(
+                    capability,
+                    buildList {
+                        add("method:sample/Owner#$index()V")
+                        if (index < 20) add("field:sample/Owner#value$index:I")
+                    },
+                )
             },
         )
 

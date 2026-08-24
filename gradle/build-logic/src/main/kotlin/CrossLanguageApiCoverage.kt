@@ -230,13 +230,21 @@ internal fun crossLanguageApiCoverageToken(memberKey: String): String {
     }
     val owner = memberKey.substring(ownerPrefix.length, kindStart)
     val kind = memberKey.substring(kindStart + kindPrefix.length, abiStart)
-    check(kind in setOf("constructor", "function", "property", "enum-entry")) {
+    check(kind in setOf("constructor", "function", "property", "enum-entry", "object")) {
         "Compiler-derived member key has an unsupported kind: $kind"
     }
     val abiName = memberKey.substring(abiStart + abiPrefix.length, abiEnd)
-    val memberName = abiName.removePrefix("$owner.")
-    check(memberName != abiName && memberName.isNotBlank()) {
-        "Compiler-derived member key has an invalid ABI name: $memberKey"
+    val memberName = if (kind == "object") {
+        check(abiName == owner && memberKey.substring(abiEnd + 1).isNotBlank()) {
+            "Compiler-derived object key has an invalid ABI identity: $memberKey"
+        }
+        owner.substringAfterLast('/').substringAfterLast('.')
+    } else {
+        abiName.removePrefix("$owner.").also { name ->
+            check(name != abiName && name.isNotBlank()) {
+                "Compiler-derived member key has an invalid ABI name: $memberKey"
+            }
+        }
     }
     val ownerName = owner.substringAfterLast('/')
     check(ownerName.isNotBlank()) { "Compiler-derived member key has an invalid owner: $memberKey" }

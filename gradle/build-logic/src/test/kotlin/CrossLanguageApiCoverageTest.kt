@@ -29,7 +29,7 @@ class CrossLanguageApiCoverageTest {
     @Test
     fun `compiled CoversApi claim reader handles the current API scale`() = withDirectory { root ->
         val classes = root.resolve("classes").apply { mkdir() }
-        val tokens = List(549) { index ->
+        val tokens = List(556) { index ->
             "api-v1:Scale#function:m$index#sha256:${index.toString(16).padStart(64, '0')}"
         }
         writeCoverageClass(classes.resolve("fixture/ScaleCoverageTest.class"), tokens, "fixture/ScaleCoverageTest")
@@ -151,6 +151,23 @@ class CrossLanguageApiCoverageTest {
     }
 
     @Test
+    fun `object capability tokens are exact and participate in coverage`() {
+        val token = crossLanguageApiCoverageToken(OBJECT_KEY)
+        val testId = "fixture.CoverageTest#objectVariant"
+
+        assertTrue(token.startsWith("api-v1:State.Ready#object:Ready#sha256:"), token)
+        val coverage = verifyCrossLanguageApiCoverage(
+            listOf(OBJECT_KEY),
+            listOf(CoveredApiClaim(testId, listOf(token))),
+            listOf(CanonicalTestResult(testId, CanonicalTestStatus.PASSED)),
+        )
+        assertEquals(listOf(OBJECT_KEY), coverage.memberKeys)
+        assertFailure("invalid ABI identity") {
+            crossLanguageApiCoverageToken(OBJECT_KEY.replace("abi=fixture/State.Ready", "abi=fixture/State.Other"))
+        }
+    }
+
+    @Test
     fun `coverage tokens reject malformed groups and unknown exact members`() {
         val testId = "fixture.CoverageTest#covered"
         val passed = listOf(CanonicalTestResult(testId, CanonicalTestStatus.PASSED))
@@ -244,6 +261,8 @@ class CrossLanguageApiCoverageTest {
             "common|owner=fixture/Host|kind=function|abi=fixture/Host.refresh|refresh(){}[0]|return=kotlin/Unit|suspend=true|parameters=[]"
         const val API_KEY_THREE =
             "common|owner=fixture/Host|kind=property|abi=fixture/Host.count|{}count[0]|propertyKind=VAL|type=kotlin/Int!!"
+        const val OBJECT_KEY =
+            "common|owner=fixture/State.Ready|kind=object|abi=fixture/State.Ready|null[0]"
         const val FIXTURE_TOKEN_ONE =
             "api-v1:Fixture#function:one#sha256:0000000000000000000000000000000000000000000000000000000000000001"
         const val FIXTURE_TOKEN_TWO =

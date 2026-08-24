@@ -2,7 +2,7 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
 
-private const val CROSS_LANGUAGE_REPORT_BINARY_VERSION = 1
+private const val CROSS_LANGUAGE_REPORT_BINARY_VERSION = 2
 
 internal fun File.writeCrossLanguageApiReport(report: CrossLanguageApiReport) {
     parentFile.mkdirs()
@@ -22,7 +22,7 @@ internal fun File.writeCrossLanguageApiReport(report: CrossLanguageApiReport) {
             output.writeInt(report.owners.size)
             report.owners.forEach { owner ->
                 output.writeUTF(owner.name)
-                output.writeStrings(owner.memberKeys)
+                output.writeStrings(owner.capabilityKeys)
             }
         }
     }

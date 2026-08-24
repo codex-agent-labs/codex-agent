@@ -22,7 +22,7 @@ class CrossLanguageApiReportCodecTest {
         file.appendBytes(byteArrayOf(1))
         assertFailsWith<IllegalStateException> { file.readCrossLanguageApiReport() }
 
-        file.writeBytes(byteArrayOf(0, 0, 0, 2))
+        file.writeBytes(byteArrayOf(0, 0, 0, 3))
         assertFailsWith<IllegalStateException> { file.readCrossLanguageApiReport() }
     }
 
@@ -31,6 +31,14 @@ class CrossLanguageApiReportCodecTest {
         assertEquals(report, requireMatchingCrossLanguageApiReports(report, report.copy()))
         assertFailsWith<IllegalStateException> {
             requireMatchingCrossLanguageApiReports(report, report.copy(libraryUniqueName = "wasm"))
+        }
+        assertFailsWith<IllegalStateException> {
+            requireMatchingCrossLanguageApiReports(
+                report,
+                report.copy(owners = report.owners.map { owner ->
+                    if (owner.name.endsWith(".Ready")) owner.copy(capabilityKeys = emptyList()) else owner
+                }),
+            )
         }
     }
 
@@ -56,7 +64,10 @@ class CrossLanguageApiReportCodecTest {
             dataClassNames = listOf("fixture/State"),
             owners = listOf(
                 CrossLanguageApiOwner("fixture/Host", listOf("fixture/Host.open|kind=function")),
-                CrossLanguageApiOwner("fixture/State", listOf("fixture/State.value|kind=property")),
+                CrossLanguageApiOwner(
+                    "fixture/State.Ready",
+                    listOf("common|owner=fixture/State.Ready|kind=object|abi=fixture/State.Ready|null[0]"),
+                ),
             ),
         )
     }

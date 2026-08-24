@@ -159,7 +159,7 @@ class CrossLanguageKotlinBindingEvidenceTest {
             ),
         ) {
             report.atomicWriteJson(buildJsonObject {
-                put("schema", JsonPrimitive(1))
+                put("schema", JsonPrimitive(2))
                 put("libraryUniqueName", JsonPrimitive("codex-agent-core"))
                 put("markerAnnotation", JsonPrimitive("CodexBindingApi"))
                 put("signatureVersion", JsonPrimitive(2))
@@ -172,7 +172,7 @@ class CrossLanguageKotlinBindingEvidenceTest {
                 put("owners", buildJsonArray {
                     add(buildJsonObject {
                         put("name", JsonPrimitive("sample/Owner"))
-                        put("members", buildJsonArray { MEMBERS.forEach { add(JsonPrimitive(it)) } })
+                        put("capabilities", buildJsonArray { MEMBERS.forEach { add(JsonPrimitive(it)) } })
                     })
                 })
                 put("targets", buildJsonArray {
@@ -199,19 +199,19 @@ class CrossLanguageKotlinBindingEvidenceTest {
             }.toMutableList()
             extraClaimTestId?.let { claims += it to listOf(checkNotNull(extraClaimMember)) }
             receipt.atomicWriteJson(buildJsonObject {
-                put("schema", JsonPrimitive(1))
+                put("schema", JsonPrimitive(2))
                 put("result", JsonPrimitive(result))
                 put("kotlinCompilerVersion", JsonPrimitive("2.3.10"))
                 put("canonicalTestTask", JsonPrimitive(":codex-agent-core:jvmTest"))
                 put("apiReportSha256", JsonPrimitive(reportDigest))
                 put("compiledTestsSha256", JsonPrimitive(compiledTestsDigest))
                 put("testResultsSha256", JsonPrimitive("b".repeat(64)))
-                put("members", buildJsonArray { members.forEach { add(JsonPrimitive(it)) } })
+                put("capabilities", buildJsonArray { members.forEach { add(JsonPrimitive(it)) } })
                 put("claims", buildJsonArray {
                     claims.forEach { (testId, claimedMembers) ->
                         add(buildJsonObject {
                             put("testId", JsonPrimitive(testId))
-                            put("members", buildJsonArray {
+                            put("capabilities", buildJsonArray {
                                 claimedMembers.forEach { add(JsonPrimitive(it)) }
                             })
                         })

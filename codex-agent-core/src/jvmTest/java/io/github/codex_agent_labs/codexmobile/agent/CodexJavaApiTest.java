@@ -211,6 +211,7 @@ final class CodexJavaApiTest {
 
     @Test
     void controllerFuturesProjectAuthenticationInteractionsAndCancellation() throws Exception {
+        assertCanonicalSingletonSurface();
         assertEquals(AgentElicitationAction.DECLINE, AgentElicitationResponse.decline().getAction());
         assertEquals(AgentElicitationAction.CANCEL, AgentElicitationResponse.cancel().getAction());
         CodexAuthorizationUrl chatGptUrl = CodexAuthorizationUrl.chatGpt("https://chatgpt.com/auth");
@@ -323,6 +324,21 @@ final class CodexJavaApiTest {
                 assertTrue(observations.stream().allMatch(CodexJavaObservation::isClosed));
             }
         }
+    }
+
+    private static void assertCanonicalSingletonSurface() {
+        assertEquals(
+            7,
+            Set.of(
+                CodexAuthenticationMethod.ChatGptBrowser.INSTANCE,
+                CodexAuthenticationMethod.ChatGptDeviceCode.INSTANCE,
+                CodexHostState.New.INSTANCE,
+                CodexHostState.Restoring.INSTANCE,
+                CodexHostState.Closed.INSTANCE,
+                AgentHookHandler.Prompt.INSTANCE,
+                AgentHookHandler.Agent.INSTANCE
+            ).size()
+        );
     }
 
     @Test

@@ -21,13 +21,13 @@ class CrossLanguageBindingAuditTest {
         )
 
         assertEquals("incomplete", audit.result)
-        assertEquals(6_039, audit.summary.total)
-        assertEquals(2_745, audit.summary.active)
-        assertEquals(3_294, audit.summary.pending)
-        assertEquals(1_098, audit.summary.satisfied)
-        assertEquals(1_647, audit.summary.missing)
-        assertEquals(1_689, audit.errors.size)
-        assertEquals(1_647, audit.errors.count { it.startsWith("Missing active binding projection ") })
+        assertEquals(6_116, audit.summary.total)
+        assertEquals(2_780, audit.summary.active)
+        assertEquals(3_336, audit.summary.pending)
+        assertEquals(1_112, audit.summary.satisfied)
+        assertEquals(1_668, audit.summary.missing)
+        assertEquals(1_710, audit.errors.size)
+        assertEquals(1_668, audit.errors.count { it.startsWith("Missing active binding projection ") })
         assertEquals(42, audit.errors.count { "shared scenario evidence" in it })
         assertEquals(digests, audit.languageReceiptSha256)
         for (language in listOf(CrossLanguageBinding.KOTLIN, CrossLanguageBinding.JAVA)) {
@@ -318,7 +318,7 @@ class CrossLanguageBindingAuditTest {
             "common|owner=sample/Owner|kind=property|abi=sample/Owner.fourth",
             "common|owner=sample/Owner|kind=function|abi=sample/Owner.fifth",
         )
-        val FULL_MEMBER_SET = (0 until 549).map { index ->
+        val FULL_MEMBER_SET = (0 until 556).map { index ->
             "common|owner=sample/Owner$index|kind=property|abi=sample/Owner$index.value"
         }
     }

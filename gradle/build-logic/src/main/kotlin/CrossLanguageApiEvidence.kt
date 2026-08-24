@@ -31,9 +31,9 @@ internal fun readCrossLanguageCanonicalApiEvidence(
     coverage.requireExactKeys(
         "canonical coverage receipt",
         "schema", "result", "kotlinCompilerVersion", "canonicalTestTask", "apiReportSha256",
-        "compiledTestsSha256", "testResultsSha256", "members", "claims",
+        "compiledTestsSha256", "testResultsSha256", "capabilities", "claims",
     )
-    check(coverage.exactInt("schema") == 1) { "Unsupported canonical coverage receipt schema" }
+    check(coverage.exactInt("schema") == 2) { "Unsupported canonical coverage receipt schema" }
     check(coverage.exactString("result") == "passed") { "Canonical coverage receipt did not pass" }
     requireExactApiRecord(coverage.exactString("kotlinCompilerVersion"), "Canonical coverage Kotlin compiler")
     requireExactApiRecord(coverage.exactString("canonicalTestTask"), "Canonical coverage test task")
@@ -43,14 +43,14 @@ internal fun readCrossLanguageCanonicalApiEvidence(
     val compiledTestsSha256 = coverage.exactSha256("compiledTestsSha256")
     val testResultsSha256 = coverage.exactSha256("testResultsSha256")
 
-    val coveredMembers = coverage.exactStrings("members")
-    requireUniqueApiRecords(coveredMembers, "Canonical coverage member")
-    check(coveredMembers == memberKeys) { "Canonical coverage member/report mismatch" }
+    val coveredMembers = coverage.exactStrings("capabilities")
+    requireUniqueApiRecords(coveredMembers, "Canonical coverage capability")
+    check(coveredMembers == memberKeys) { "Canonical coverage capability/report mismatch" }
     val claims = coverage.exactArray("claims").map { value ->
         val claim = value.exactObject("canonical coverage claim")
-        claim.requireExactKeys("canonical coverage claim", "testId", "members")
+        claim.requireExactKeys("canonical coverage claim", "testId", "capabilities")
         val testId = claim.exactString("testId")
-        val members = claim.exactStrings("members")
+        val members = claim.exactStrings("capabilities")
         requireExactApiRecord(testId, "Canonical coverage claim test")
         check(members.isNotEmpty()) { "Canonical coverage claim is empty: $testId" }
         requireUniqueApiRecords(members, "Canonical coverage claim member for $testId")
@@ -96,7 +96,7 @@ private fun readCrossLanguageApiReport(report: File): CrossLanguageApiReportEvid
         "memberExclusionAnnotation", "excludedReachableTypes", "excludedMemberKeys",
         "dataClassMetadataAvailable", "dataClassNames", "owners", "targets",
     )
-    check(root.exactInt("schema") == 1) { "Unsupported cross-language API report schema" }
+    check(root.exactInt("schema") == 2) { "Unsupported cross-language API report schema" }
     requireExactApiRecord(root.exactString("libraryUniqueName"), "Cross-language API library")
     requireExactApiRecord(root.exactString("markerAnnotation"), "Cross-language API marker")
     check(root.exactInt("signatureVersion") == 2) { "Unsupported cross-language API signature version" }
@@ -108,16 +108,16 @@ private fun readCrossLanguageApiReport(report: File): CrossLanguageApiReportEvid
 
     val owners = root.exactArray("owners").map { ownerValue ->
         val owner = ownerValue.exactObject("API owner")
-        owner.requireExactKeys("cross-language API owner", "name", "members")
+        owner.requireExactKeys("cross-language API owner", "name", "capabilities")
         val name = owner.exactString("name")
-        val members = owner.exactStrings("members")
+        val members = owner.exactStrings("capabilities")
         requireExactApiRecord(name, "Cross-language API owner")
-        requireUniqueApiRecords(members, "Cross-language API member")
+        requireUniqueApiRecords(members, "Cross-language API capability")
         name to members
     }
     requireUniqueApiRecords(owners.map(Pair<String, List<String>>::first), "Cross-language API owner")
     val members = owners.flatMap(Pair<String, List<String>>::second)
-    requireUniqueApiRecords(members, "Cross-language API member")
+    requireUniqueApiRecords(members, "Cross-language API capability")
     check(members.isNotEmpty()) { "Cross-language API report is empty" }
 
     val targets = root.exactArray("targets").associate { targetValue ->

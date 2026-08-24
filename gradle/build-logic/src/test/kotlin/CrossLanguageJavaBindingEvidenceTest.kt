@@ -15,6 +15,7 @@ import kotlin.test.assertTrue
 import org.jetbrains.org.objectweb.asm.ClassReader
 import org.jetbrains.org.objectweb.asm.ClassVisitor
 import org.jetbrains.org.objectweb.asm.ClassWriter
+import org.jetbrains.org.objectweb.asm.FieldVisitor
 import org.jetbrains.org.objectweb.asm.MethodVisitor
 import org.jetbrains.org.objectweb.asm.Opcodes
 
@@ -35,15 +36,65 @@ class CrossLanguageJavaBindingEvidenceTest {
 
             assertEquals(first, second)
             assertEquals(CAPABILITIES.sorted(), first.capabilityClaims.map(JavaBindingCapabilityClaim::capabilityKey))
-            assertEquals(8, first.capabilityClaims.size)
-            assertEquals(10, first.publicSymbols.size)
+            assertEquals(9, first.capabilityClaims.size)
+            assertEquals(11, first.publicSymbols.size)
             assertEquals(artifacts.coreJvm.readBytes().inputStream().releaseDigest(), first.digests.coreJvmJarSha256)
             assertTrue(first.publicSymbols.all { "|genericSha256=" in it })
             assertTrue(first.capabilityClaims.single { it.capabilityKey == SUSPEND }.publicSymbols.single()
                 .contains("#loadAsync"))
             assertEquals(2, first.capabilityClaims.single { it.capabilityKey == STATE_FLOW }.publicSymbols.size)
             assertEquals(2, first.capabilityClaims.single { it.capabilityKey == HOST }.publicSymbols.size)
+            assertTrue(first.capabilityClaims.single { it.capabilityKey == OBJECT }.publicSymbols.single()
+                .contains("#INSTANCE:"))
         }
+
+    @Test
+    fun `canonical object requires Kotlin object metadata and its exact INSTANCE field`() = withArtifacts { artifacts ->
+        assertFailure("Canonical Java capability ABI identity mismatch") {
+            evidence(
+                artifacts,
+                capabilities = CAPABILITIES - OBJECT + OBJECT.replace(
+                    "abi=JavaFixtureSingleton|null[0]",
+                    "abi=JavaFixtureSingleton.INSTANCE|null[0]",
+                ),
+            )
+        }
+        assertFailure("Canonical Java object ABI signature mismatch") {
+            evidence(artifacts, capabilities = CAPABILITIES - OBJECT + OBJECT.replace("|null[0]", "|wrong[0]"))
+        }
+        assertFailure("does not contain exactly one Kotlin declaration matching canonical semantics") {
+            evidence(artifacts, capabilities = CAPABILITIES - OBJECT + OBJECT.replace(
+                "owner=JavaFixtureSingleton|kind=object|abi=JavaFixtureSingleton",
+                "owner=JavaFixture|kind=object|abi=JavaFixture",
+            ))
+        }
+
+        listOf(
+            FieldMutation.remove(JavaFixtureSingleton::class.java, "INSTANCE", SINGLETON_DESCRIPTOR) to
+                "missing Java member",
+            FieldMutation.makePrivate(JavaFixtureSingleton::class.java, "INSTANCE", SINGLETON_DESCRIPTOR) to
+                "not public",
+            FieldMutation.makeSynthetic(JavaFixtureSingleton::class.java, "INSTANCE", SINGLETON_DESCRIPTOR) to
+                "synthetic",
+            FieldMutation.removeStatic(JavaFixtureSingleton::class.java, "INSTANCE", SINGLETON_DESCRIPTOR) to
+                "not static final",
+            FieldMutation.removeFinal(JavaFixtureSingleton::class.java, "INSTANCE", SINGLETON_DESCRIPTOR) to
+                "not static final",
+            FieldMutation.replaceDescriptor(
+                JavaFixtureSingleton::class.java,
+                "INSTANCE",
+                SINGLETON_DESCRIPTOR,
+                "Ljava/lang/Object;",
+            ) to "missing Java member",
+        ).forEach { (mutation, expected) ->
+            withArtifacts(coreJvmMutations = listOf(mutation)) { changed ->
+                assertFailure(expected) { evidence(changed) }
+            }
+            withArtifacts(coreAndroidMutations = listOf(mutation)) { changed ->
+                assertFailure(expected) { evidence(changed) }
+            }
+        }
+    }
 
     @Test
     fun `ordinary member must have an exact Android counterpart`() = withArtifacts(
@@ -89,7 +140,7 @@ class CrossLanguageJavaBindingEvidenceTest {
 
     @Test
     fun `ordinary generic Java ABI must match canonical metadata in both artifacts`() = withArtifacts { artifacts ->
-        assertEquals(9, evidence(artifacts, capabilities = CAPABILITIES + GENERIC_FUNCTION).capabilityClaims.size)
+        assertEquals(10, evidence(artifacts, capabilities = CAPABILITIES + GENERIC_FUNCTION).capabilityClaims.size)
         val wrongGeneric = MethodMutation.replaceSignature(
             JavaFixture::class.java,
             "genericEcho",
@@ -510,10 +561,10 @@ class CrossLanguageJavaBindingEvidenceTest {
     }
 
     private fun withArtifacts(
-        coreJvmMutations: List<MethodMutation> = emptyList(),
-        coreAndroidMutations: List<MethodMutation> = emptyList(),
-        desktopRuntimeMutations: List<MethodMutation> = emptyList(),
-        androidRuntimeMutations: List<MethodMutation> = emptyList(),
+        coreJvmMutations: List<ClassMutation> = emptyList(),
+        coreAndroidMutations: List<ClassMutation> = emptyList(),
+        desktopRuntimeMutations: List<ClassMutation> = emptyList(),
+        androidRuntimeMutations: List<ClassMutation> = emptyList(),
         coreJvmEntryNames: Map<Class<*>, String> = emptyMap(),
         rewriteCanonicalStateFlow: Boolean = true,
         block: (JavaFixtureArtifacts) -> Unit,
@@ -525,6 +576,7 @@ class CrossLanguageJavaBindingEvidenceTest {
                 JavaFixture.Companion::class.java,
                 JavaFixtureValue::class.java,
                 JavaFixtureEnum::class.java,
+                JavaFixtureSingleton::class.java,
                 CodexHost::class.java,
                 JavaProjectionFixture::class.java,
                 JavaObservationFixture::class.java,
@@ -584,7 +636,7 @@ class CrossLanguageJavaBindingEvidenceTest {
     private fun writeJar(
         file: File,
         classes: List<Class<*>>,
-        mutations: List<MethodMutation>,
+        mutations: List<ClassMutation>,
         entryNames: Map<Class<*>, String> = emptyMap(),
         rewriteCanonicalStateFlow: Boolean = false,
     ) {
@@ -611,7 +663,7 @@ class CrossLanguageJavaBindingEvidenceTest {
     private fun writeAar(
         file: File,
         classes: List<Class<*>>,
-        mutations: List<MethodMutation>,
+        mutations: List<ClassMutation>,
         rewriteCanonicalStateFlow: Boolean = false,
     ) {
         val jar = ByteArrayOutputStream().also { output ->
@@ -740,6 +792,8 @@ class CrossLanguageJavaBindingEvidenceTest {
                 "type=kotlin.collections/List<INVARIANT:JavaFixtureValue!!>!!"
         const val ENUM_ENTRY =
             "common|owner=JavaFixtureEnum|kind=enum-entry|abi=JavaFixtureEnum.ONE|null[0]"
+        const val OBJECT =
+            "common|owner=JavaFixtureSingleton|kind=object|abi=JavaFixtureSingleton|null[0]"
         const val SUSPEND =
             "common|owner=JavaFixture|kind=function|abi=JavaFixture.load|load(){}[0]|" +
                 "return=kotlin/String!!|suspend=true|parameters=[]"
@@ -765,7 +819,17 @@ class CrossLanguageJavaBindingEvidenceTest {
             "common|owner=JavaFixture.Companion|kind=function|abi=JavaFixture.Companion.from|" +
                 "from(kotlin.String){}[0]|return=JavaFixture!!|suspend=false|" +
                 "parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]"
-        val CAPABILITIES = listOf(CONSTRUCTOR, PROPERTY, FUNCTION, ENUM_ENTRY, SUSPEND, STATE_FLOW, HOST, COMPANION)
+        val CAPABILITIES = listOf(
+            CONSTRUCTOR,
+            PROPERTY,
+            FUNCTION,
+            ENUM_ENTRY,
+            OBJECT,
+            SUSPEND,
+            STATE_FLOW,
+            HOST,
+            COMPANION,
+        )
 
         const val ECHO_DESCRIPTOR = "(Ljava/lang/String;)Ljava/lang/String;"
         const val GENERIC_ECHO_DESCRIPTOR = "(Ljava/util/List;)Ljava/util/List;"
@@ -782,6 +846,7 @@ class CrossLanguageJavaBindingEvidenceTest {
         const val GENERIC_FUTURE_DESCRIPTOR =
             "(LJavaFixture;Ljava/lang/Object;)Ljava/util/concurrent/CompletableFuture;"
         const val FACTORY_DESCRIPTOR = "(Ljava/lang/String;)LCodexHost;"
+        const val SINGLETON_DESCRIPTOR = "LJavaFixtureSingleton;"
         const val DESKTOP_FACTORY_DESCRIPTOR = "(Ljava/nio/file/Path;)LCodexHost;"
         const val ANDROID_FACTORY_DESCRIPTOR = "(Landroid/content/Context;)LCodexHost;"
         val FUTURE_METHOD = method(JavaProjectionFixture::class.java, "loadAsync", FUTURE_DESCRIPTOR)
@@ -888,6 +953,11 @@ private data class JavaFixtureArtifacts(
     val androidRuntime: File,
 )
 
+private sealed interface ClassMutation {
+    val owner: String
+    fun apply(bytes: ByteArray): ByteArray
+}
+
 private enum class MethodMutationKind {
     REMOVE,
     PRIVATE,
@@ -899,14 +969,14 @@ private enum class MethodMutationKind {
 }
 
 private data class MethodMutation(
-    val owner: String,
+    override val owner: String,
     val name: String,
     val descriptor: String,
     val kind: MethodMutationKind,
     val replacementDescriptor: String? = null,
     val replacementSignature: String? = null,
-) {
-    fun apply(bytes: ByteArray): ByteArray {
+) : ClassMutation {
+    override fun apply(bytes: ByteArray): ByteArray {
         val writer = ClassWriter(0)
         var matches = 0
         ClassReader(bytes).accept(object : ClassVisitor(Opcodes.ASM9, writer) {
@@ -995,6 +1065,82 @@ private data class MethodMutation(
     }
 }
 
+private enum class FieldMutationKind {
+    REMOVE,
+    PRIVATE,
+    SYNTHETIC,
+    REMOVE_STATIC,
+    REMOVE_FINAL,
+    REPLACE_DESCRIPTOR,
+}
+
+private data class FieldMutation(
+    override val owner: String,
+    val name: String,
+    val descriptor: String,
+    val kind: FieldMutationKind,
+    val replacementDescriptor: String? = null,
+) : ClassMutation {
+    override fun apply(bytes: ByteArray): ByteArray {
+        val writer = ClassWriter(0)
+        var matches = 0
+        ClassReader(bytes).accept(object : ClassVisitor(Opcodes.ASM9, writer) {
+            override fun visitField(
+                access: Int,
+                fieldName: String,
+                fieldDescriptor: String,
+                signature: String?,
+                value: Any?,
+            ): FieldVisitor? {
+                if (fieldName != name || fieldDescriptor != descriptor) {
+                    return super.visitField(access, fieldName, fieldDescriptor, signature, value)
+                }
+                matches++
+                if (kind == FieldMutationKind.REMOVE) return null
+                val changedAccess = when (kind) {
+                    FieldMutationKind.PRIVATE -> access and Opcodes.ACC_PUBLIC.inv() or Opcodes.ACC_PRIVATE
+                    FieldMutationKind.SYNTHETIC -> access or Opcodes.ACC_SYNTHETIC
+                    FieldMutationKind.REMOVE_STATIC -> access and Opcodes.ACC_STATIC.inv()
+                    FieldMutationKind.REMOVE_FINAL -> access and Opcodes.ACC_FINAL.inv()
+                    FieldMutationKind.REPLACE_DESCRIPTOR, FieldMutationKind.REMOVE -> access
+                }
+                val changedDescriptor = replacementDescriptor ?: fieldDescriptor
+                return super.visitField(changedAccess, fieldName, changedDescriptor, signature, value)
+            }
+        }, 0)
+        check(matches == 1) { "Expected one field mutation target $owner#$name:$descriptor, found $matches" }
+        return writer.toByteArray()
+    }
+
+    companion object {
+        fun remove(owner: Class<*>, name: String, descriptor: String) =
+            create(owner, name, descriptor, FieldMutationKind.REMOVE)
+
+        fun makePrivate(owner: Class<*>, name: String, descriptor: String) =
+            create(owner, name, descriptor, FieldMutationKind.PRIVATE)
+
+        fun makeSynthetic(owner: Class<*>, name: String, descriptor: String) =
+            create(owner, name, descriptor, FieldMutationKind.SYNTHETIC)
+
+        fun removeStatic(owner: Class<*>, name: String, descriptor: String) =
+            create(owner, name, descriptor, FieldMutationKind.REMOVE_STATIC)
+
+        fun removeFinal(owner: Class<*>, name: String, descriptor: String) =
+            create(owner, name, descriptor, FieldMutationKind.REMOVE_FINAL)
+
+        fun replaceDescriptor(owner: Class<*>, name: String, descriptor: String, replacement: String) =
+            create(owner, name, descriptor, FieldMutationKind.REPLACE_DESCRIPTOR, replacement)
+
+        private fun create(
+            owner: Class<*>,
+            name: String,
+            descriptor: String,
+            kind: FieldMutationKind,
+            replacement: String? = null,
+        ) = FieldMutation(owner.name.replace('.', '/'), name, descriptor, kind, replacement)
+    }
+}
+
 public class JavaFixture(public val value: String) {
     public fun echo(input: String): String = input
 
@@ -1038,6 +1184,8 @@ public interface JavaFixtureValue
 public interface FixtureStateFlow<T>
 
 public enum class JavaFixtureEnum { ONE }
+
+public object JavaFixtureSingleton
 
 public class CodexHost
 

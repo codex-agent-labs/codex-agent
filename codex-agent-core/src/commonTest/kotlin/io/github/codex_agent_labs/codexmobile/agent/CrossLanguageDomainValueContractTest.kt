@@ -8,6 +8,36 @@ import kotlin.test.assertTrue
 class CrossLanguageDomainValueContractTest {
     @Test
     @CoversApi(
+        "api-v1:AgentHookHandler.Agent#object:Agent#sha256:1e177881622b84b29a82000206858c307bef8ac1940611d15c04ac3f0406e984",
+        "api-v1:AgentHookHandler.Prompt#object:Prompt#sha256:e2a7fc51b50ab37b41f6682dbedb387f967c34ff5a61dc227605ebb5a78e434e",
+        "api-v1:CodexAuthenticationMethod.ChatGptBrowser#object:ChatGptBrowser#sha256:e2e11f2ca07d67eb6da27a6eca5e7b5d4451b2df6c4f553f17f33677f12d06f3",
+        "api-v1:CodexAuthenticationMethod.ChatGptDeviceCode#object:ChatGptDeviceCode#sha256:cf47a7f37839b9b0d1d4d2842184866a8c6389bfeee9a315f867c8fe0579ce33",
+        "api-v1:CodexHostState.Closed#object:Closed#sha256:d8602f7cf27f5dc2c427d6609275fe7d77e91db491069107dd881b5f7040fa9d",
+        "api-v1:CodexHostState.New#object:New#sha256:fc9357dfaebdbc55634d7dff6fb586c9f33db31a07dc69f57c0def084d70b30e",
+        "api-v1:CodexHostState.Restoring#object:Restoring#sha256:8c150a1a42c8c6dbf69c7e9fd536584b9c1a81751f43877d1f7cf8198d6d3d04",
+    )
+    fun singletonVariantsExposeStableDistinctValues() {
+        val handlers: List<AgentHookHandler> = listOf(AgentHookHandler.Agent, AgentHookHandler.Prompt)
+        val authenticationMethods: List<CodexAuthenticationMethod> = listOf(
+            CodexAuthenticationMethod.ChatGptBrowser,
+            CodexAuthenticationMethod.ChatGptDeviceCode,
+        )
+        val hostStates: List<CodexHostState> = listOf(
+            CodexHostState.New,
+            CodexHostState.Restoring,
+            CodexHostState.Closed,
+        )
+
+        assertEquals(handlers.size, handlers.toSet().size)
+        assertEquals(authenticationMethods.size, authenticationMethods.toSet().size)
+        assertEquals(hostStates.size, hostStates.toSet().size)
+        assertTrue(handlers.first() === AgentHookHandler.Agent)
+        assertTrue(authenticationMethods.first() === CodexAuthenticationMethod.ChatGptBrowser)
+        assertTrue(hostStates.first() === CodexHostState.New)
+    }
+
+    @Test
+    @CoversApi(
         "api-v1:AgentApprovalDecision#enum-entry:DECLINE#sha256:db4d1df5ec20f42363a10d2b7a416c5e114a21663f8f70e0b32f4608dade7d56",
         "api-v1:AgentApprovalPreset#enum-entry:ASK_ME#sha256:b21b8e8b5b96f7fcaf0669b5dfe1a7ad225e99032388d072795887645a1c7b3e",
         "api-v1:AgentApprovalPreset#enum-entry:AUTO_REVIEW#sha256:46880d4cb53a4f9f85e09acd87861d3459feb94ea78d88584fbe7d4b95a43841",

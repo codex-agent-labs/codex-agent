@@ -34,21 +34,75 @@ class CrossLanguageApiDiscoveryTest {
             ),
         )
 
-        assertEquals(2, initial.memberKeys.size)
-        assertEquals(3, expanded.memberKeys.size)
-        assertTrue(expanded.memberKeys.any { "fixture/Host.refresh|refresh()" in it })
-        assertEquals(initial.memberKeys, initial.memberKeys.sorted())
+        assertEquals(2, initial.capabilityKeys.size)
+        assertEquals(3, expanded.capabilityKeys.size)
+        assertTrue(expanded.capabilityKeys.any { "fixture/Host.refresh|refresh()" in it })
+        assertEquals(initial.capabilityKeys, initial.capabilityKeys.sorted())
 
         val companion = CompilerApiClass(
-            name = "fixture/Host.Companion",
-            abiSignature = "fixture/Host.Companion|null[0]",
+            name = "fixture/Host.Factory",
+            abiSignature = "fixture/Host.Factory|null[0]",
             enclosingClass = "fixture/Host",
+            kind = "OBJECT",
             members = listOf(function("create")),
         )
-        val nested = discover(owner("fixture/Host"), companion)
-        val futureNested = discover(owner("fixture/Host"), companion.copy(members = companion.members + function("open")))
-        assertEquals(listOf("fixture/Host", "fixture/Host.Companion"), nested.owners.map { it.name })
-        assertEquals(nested.memberKeys.size + 1, futureNested.memberKeys.size)
+        val nested = discoverConfigured(
+            listOf(owner("fixture/Host"), companion),
+            companionObjectNames = setOf("fixture.Host.Factory"),
+        )
+        val futureNested = discoverConfigured(
+            listOf(owner("fixture/Host"), companion.copy(members = companion.members + function("open"))),
+            companionObjectNames = setOf("fixture.Host.Factory"),
+        )
+        assertEquals(listOf("fixture/Host", "fixture/Host.Factory"), nested.owners.map { it.name })
+        assertEquals(nested.capabilityKeys.size + 1, futureNested.capabilityKeys.size)
+        assertTrue(nested.capabilityKeys.none { "kind=object" in it })
+    }
+
+    @Test
+    fun `non-companion objects add one capability and require exact JVM corroboration`() {
+        val singleton = CompilerApiClass(
+            name = "fixture/State.Ready",
+            abiSignature = "fixture/State.Ready|null[0]",
+            enclosingClass = "fixture/State",
+            kind = "OBJECT",
+            superTypes = type("fixture/State"),
+        )
+        val report = discoverConfigured(
+            listOf(owner("fixture/State", modality = "SEALED"), singleton),
+            singletonObjectNames = setOf("fixture.State.Ready"),
+        )
+
+        assertEquals(
+            listOf("common|owner=fixture/State.Ready|kind=object|abi=fixture/State.Ready|null[0]"),
+            report.owners.single { it.name == "fixture/State.Ready" }.capabilityKeys,
+        )
+        val futureSingleton = singleton.copy(
+            name = "fixture/State.Future",
+            abiSignature = "fixture/State.Future|null[0]",
+        )
+        val expanded = discoverConfigured(
+            listOf(owner("fixture/State", modality = "SEALED"), singleton, futureSingleton),
+            singletonObjectNames = setOf("fixture.State.Ready", "fixture.State.Future"),
+        )
+        assertEquals(report.capabilityKeys.size + 1, expanded.capabilityKeys.size)
+        assertTrue(expanded.capabilityKeys.any { "owner=fixture/State.Future|kind=object" in it })
+        assertFailure("lacks one exact JVM singleton/companion classification") {
+            discover(owner("fixture/State", modality = "SEALED"), singleton)
+        }
+        assertFailure("marked non-object owner fixture/State.Ready has a JVM singleton/companion classification") {
+            discoverConfigured(
+                listOf(owner("fixture/State"), singleton.copy(kind = "CLASS")),
+                singletonObjectNames = setOf("fixture.State.Ready"),
+            )
+        }
+        assertFailure("identities overlap") {
+            discoverConfigured(
+                listOf(owner("fixture/State"), singleton),
+                singletonObjectNames = setOf("fixture.State.Ready"),
+                companionObjectNames = setOf("fixture/State.Ready"),
+            )
+        }
     }
 
     @Test
@@ -71,9 +125,9 @@ class CrossLanguageApiDiscoveryTest {
             ),
         )
 
-        assertEquals(3, report.memberKeys.toSet().size)
-        assertTrue(report.memberKeys.any { "kotlin/String?" in it })
-        assertTrue(report.memberKeys.any { "suspend=true" in it && "default=true" in it && "vararg=true" in it })
+        assertEquals(3, report.capabilityKeys.toSet().size)
+        assertTrue(report.capabilityKeys.any { "kotlin/String?" in it })
+        assertTrue(report.capabilityKeys.any { "suspend=true" in it && "default=true" in it && "vararg=true" in it })
     }
 
     @Test
@@ -164,15 +218,15 @@ class CrossLanguageApiDiscoveryTest {
             dataClassNames = setOf("fixture.Value", "fixture.JvmOnlyData"),
         )
 
-        assertEquals(6, unavailable.memberKeys.size)
+        assertEquals(6, unavailable.capabilityKeys.size)
         assertTrue(!unavailable.dataClassMetadataAvailable)
-        assertEquals(4, report.memberKeys.size)
+        assertEquals(4, report.capabilityKeys.size)
         assertTrue(report.dataClassMetadataAvailable)
         assertEquals(listOf("fixture/Value"), report.dataClassNames)
-        assertTrue(report.memberKeys.any { "kind=constructor" in it })
-        assertTrue(report.memberKeys.any { "kind=property" in it && "Value.value" in it })
-        assertTrue(report.memberKeys.any { "kind=function" in it && "component2" in it })
-        assertTrue(report.memberKeys.any { "kind=enum-entry" in it })
+        assertTrue(report.capabilityKeys.any { "kind=constructor" in it })
+        assertTrue(report.capabilityKeys.any { "kind=property" in it && "Value.value" in it })
+        assertTrue(report.capabilityKeys.any { "kind=function" in it && "component2" in it })
+        assertTrue(report.capabilityKeys.any { "kind=enum-entry" in it })
     }
 
     @Test
@@ -187,7 +241,7 @@ class CrossLanguageApiDiscoveryTest {
             exclusionAnnotation = kotlinOnlyMarker,
             excludedTypes = setOf("kotlinx.coroutines.CoroutineScope"),
         )
-        assertEquals(1, report.memberKeys.size)
+        assertEquals(1, report.capabilityKeys.size)
         assertEquals(1, report.excludedMemberKeys.size)
         assertEquals(listOf("kotlinx.coroutines.CoroutineScope"), report.excludedReachableTypes)
 
@@ -271,6 +325,8 @@ class CrossLanguageApiDiscoveryTest {
         exclusionAnnotation: String? = null,
         excludedTypes: Set<String> = emptySet(),
         dataClassNames: Set<String>? = null,
+        singletonObjectNames: Set<String> = emptySet(),
+        companionObjectNames: Set<String> = emptySet(),
     ): CrossLanguageApiReport =
         discoverCrossLanguageApi(
             library = CompilerApiLibrary("fixture", 2, classes),
@@ -283,6 +339,8 @@ class CrossLanguageApiDiscoveryTest {
             memberExclusionAnnotation = exclusionAnnotation,
             requiredExcludedReachableTypes = excludedTypes,
             dataClassNames = dataClassNames,
+            singletonObjectNames = singletonObjectNames,
+            companionObjectNames = companionObjectNames,
         )
 
     private fun owner(

@@ -196,7 +196,7 @@ internal class CrossLanguageBindingCliFixture(val root: File) {
 
     private fun writeApiReport() {
         apiReport.atomicWriteJson(buildJsonObject {
-            put("schema", JsonPrimitive(1))
+            put("schema", JsonPrimitive(2))
             put("libraryUniqueName", JsonPrimitive("codex-agent-core"))
             put("markerAnnotation", JsonPrimitive("sample.CodexBindingApi"))
             put("signatureVersion", JsonPrimitive(2))
@@ -209,7 +209,7 @@ internal class CrossLanguageBindingCliFixture(val root: File) {
             put("owners", buildJsonArray {
                 add(buildJsonObject {
                     put("name", JsonPrimitive("sample/Owner"))
-                    put("members", members.toJsonArray())
+                    put("capabilities", members.toJsonArray())
                 })
             })
             put("targets", buildJsonArray {
@@ -224,18 +224,18 @@ internal class CrossLanguageBindingCliFixture(val root: File) {
     }
 
     private fun canonicalCoverage(apiReportSha256: String, testResultsSha256: String) = buildJsonObject {
-        put("schema", JsonPrimitive(1))
+        put("schema", JsonPrimitive(2))
         put("result", JsonPrimitive("passed"))
         put("kotlinCompilerVersion", JsonPrimitive("2.3.10"))
         put("canonicalTestTask", JsonPrimitive(":codex-agent-core:jvmTest"))
         put("apiReportSha256", JsonPrimitive(apiReportSha256))
         put("compiledTestsSha256", JsonPrimitive("4".repeat(64)))
         put("testResultsSha256", JsonPrimitive(testResultsSha256))
-        put("members", members.toJsonArray())
+        put("capabilities", members.toJsonArray())
         put("claims", buildJsonArray {
             add(buildJsonObject {
                 put("testId", JsonPrimitive("sample.CanonicalTest#behavior"))
-                put("members", members.toJsonArray())
+                put("capabilities", members.toJsonArray())
             })
         })
     }

@@ -31,12 +31,12 @@ internal data class CrossLanguageApiReport(
     val dataClassNames: List<String>,
     val owners: List<CrossLanguageApiOwner>,
 ) {
-    val memberKeys: List<String> = owners.flatMap(CrossLanguageApiOwner::memberKeys).sorted()
+    val capabilityKeys: List<String> = owners.flatMap(CrossLanguageApiOwner::capabilityKeys).sorted()
 }
 
 internal data class CrossLanguageApiOwner(
     val name: String,
-    val memberKeys: List<String>,
+    val capabilityKeys: List<String>,
 )
 
 internal fun discoverCrossLanguageApi(
@@ -46,6 +46,8 @@ internal fun discoverCrossLanguageApi(
     memberExclusionAnnotation: String? = null,
     requiredExcludedReachableTypes: Set<String> = emptySet(),
     dataClassNames: Set<String>? = null,
+    singletonObjectNames: Set<String>,
+    companionObjectNames: Set<String>,
 ): CrossLanguageApiReport {
     check(klib.exists()) { "Cross-language API KLIB is missing: $klib" }
     val abi = LibraryAbiReader.readAbiInfo(klib)
@@ -59,6 +61,8 @@ internal fun discoverCrossLanguageApi(
         memberExclusionAnnotation = memberExclusionAnnotation,
         requiredExcludedReachableTypes = requiredExcludedReachableTypes,
         dataClassNames = dataClassNames,
+        singletonObjectNames = singletonObjectNames,
+        companionObjectNames = companionObjectNames,
     )
 }
 
@@ -69,6 +73,8 @@ internal fun discoverCrossLanguageApi(
     memberExclusionAnnotation: String? = null,
     requiredExcludedReachableTypes: Set<String> = emptySet(),
     dataClassNames: Set<String>? = null,
+    singletonObjectNames: Set<String> = emptySet(),
+    companionObjectNames: Set<String> = emptySet(),
 ): CrossLanguageApiReport {
     check(markerAnnotation.isNotBlank()) { "CodexBindingApi annotation name is blank" }
     val exclusionAnnotation = memberExclusionAnnotation?.trim()?.also { annotation ->
@@ -82,6 +88,17 @@ internal fun discoverCrossLanguageApi(
         requiredExcludedReachableTypes,
         "Required excluded reachable type",
     )
+    val normalizedSingletonObjects = normalizeExactDiscoveryNames(
+        singletonObjectNames,
+        "Compiler-derived singleton object",
+    )
+    val normalizedCompanionObjects = normalizeExactDiscoveryNames(
+        companionObjectNames,
+        "Compiler-derived companion object",
+    )
+    check(normalizedSingletonObjects.intersect(normalizedCompanionObjects).isEmpty()) {
+        "Compiler-derived singleton and companion object identities overlap"
+    }
     val classes = library.classes.associateByStrict(CompilerApiClass::name, "Compiler API class")
     val classesByNormalizedName = classes.values.associateByStrict(
         { normalizeQualifiedName(it.name) },
@@ -100,6 +117,19 @@ internal fun discoverCrossLanguageApi(
     val owners = ownerNames.map(classes::getValue).sortedBy(CompilerApiClass::name)
 
     val violations = sortedSetOf<String>()
+    owners.forEach { owner ->
+        val normalized = normalizeQualifiedName(owner.name)
+        val classifications = listOf(
+            normalized in normalizedSingletonObjects,
+            normalized in normalizedCompanionObjects,
+        ).count { it }
+        when {
+            owner.kind == AbiClassKind.OBJECT.name && classifications != 1 ->
+                violations += "marked object owner ${owner.name} lacks one exact JVM singleton/companion classification"
+            owner.kind != AbiClassKind.OBJECT.name && classifications != 0 ->
+                violations += "marked non-object owner ${owner.name} has a JVM singleton/companion classification"
+        }
+    }
     val exactBoundaries = buildMap {
         normalizedBoundaries.forEach { normalized ->
             val boundary = classesByNormalizedName[normalized]
@@ -201,19 +231,24 @@ internal fun discoverCrossLanguageApi(
     val reports = owners.map { owner ->
         val memberKeys = includedMembers.getValue(owner).asSequence()
             .map { member -> member.stableKey(owner.name) }
-            .sorted()
             .toList()
         requireUniqueNonBlankDiscovery(memberKeys, "Compiler-derived member for ${owner.name}")
-        CrossLanguageApiOwner(owner.name, memberKeys)
+        val objectKey = owner.takeIf {
+            it.kind == AbiClassKind.OBJECT.name &&
+                normalizeQualifiedName(it.name) in normalizedSingletonObjects
+        }?.stableObjectKey()
+        val capabilityKeys = (memberKeys + listOfNotNull(objectKey)).sorted()
+        requireUniqueNonBlankDiscovery(capabilityKeys, "Compiler-derived capability for ${owner.name}")
+        CrossLanguageApiOwner(owner.name, capabilityKeys)
     }
-    val allKeys = reports.flatMap(CrossLanguageApiOwner::memberKeys)
-    requireUniqueNonBlankDiscovery(allKeys, "Compiler-derived member")
+    val allKeys = reports.flatMap(CrossLanguageApiOwner::capabilityKeys)
+    requireUniqueNonBlankDiscovery(allKeys, "Compiler-derived capability")
     val excludedKeys = owners.flatMap { owner ->
         excludedMembers.getValue(owner).map { it.stableKey(owner.name) }
     }.sorted()
     requireUniqueNonBlankDiscovery(excludedKeys, "Excluded compiler-derived member")
     check(allKeys.intersect(excludedKeys.toSet()).isEmpty()) {
-        "Compiler-derived members cannot be both included and excluded"
+        "Compiler-derived capabilities cannot be both included and excluded"
     }
     return CrossLanguageApiReport(
         libraryUniqueName = library.uniqueName,
@@ -228,6 +263,9 @@ internal fun discoverCrossLanguageApi(
         owners = reports,
     )
 }
+
+private fun CompilerApiClass.stableObjectKey(): String =
+    "common|owner=$name|kind=object|abi=$abiSignature"
 
 internal data class CompilerApiLibrary(
     val uniqueName: String,

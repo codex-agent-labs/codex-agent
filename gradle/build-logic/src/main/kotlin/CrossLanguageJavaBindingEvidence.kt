@@ -1,6 +1,7 @@
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.zip.ZipInputStream
+import kotlin.metadata.ClassKind
 import kotlin.metadata.KmClass
 import kotlin.metadata.KmClassifier
 import kotlin.metadata.KmFunction
@@ -13,6 +14,7 @@ import kotlin.metadata.isDefinitelyNonNull
 import kotlin.metadata.isNullable
 import kotlin.metadata.isSuspend
 import kotlin.metadata.isVar
+import kotlin.metadata.kind
 import kotlin.metadata.jvm.KotlinClassMetadata
 import kotlin.metadata.jvm.fieldSignature
 import kotlin.metadata.jvm.getterSignature
@@ -290,13 +292,18 @@ private fun parseJavaCanonicalMember(key: String): JavaCanonicalMember {
         ?: error("Invalid canonical Java capability $prefix field: $key")
     val owner = single("owner=")
     val kind = single("kind=")
-    check(kind in setOf("constructor", "function", "property", "enum-entry")) {
+    check(kind in setOf("constructor", "function", "property", "enum-entry", "object")) {
         "Unsupported canonical Java capability kind $kind: $key"
     }
     val abiIdentity = single("abi=")
-    val name = abiIdentity.substringAfterLast('.', missingDelimiterValue = "")
-    check(name.isNotBlank() && abiIdentity.removeSuffix(".$name") == owner) {
-        "Canonical Java capability owner/member mismatch: $key"
+    val name = if (kind == "object") "INSTANCE" else abiIdentity.substringAfterLast('.', missingDelimiterValue = "")
+    check(if (kind == "object") abiIdentity == owner else name.isNotBlank() && abiIdentity.removeSuffix(".$name") == owner) {
+        "Canonical Java capability ABI identity mismatch: $key"
+    }
+    if (kind == "object") {
+        check(parts.size == 5 && parts.last() == "null[0]") {
+            "Canonical Java object ABI signature mismatch: $key"
+        }
     }
     val abiSignatureStart = key.indexOf('|', key.indexOf("|abi=") + 5) + 1
     check(abiSignatureStart > 0) { "Invalid canonical Java ABI signature: $key" }
@@ -328,6 +335,9 @@ private fun parseJavaCanonicalMember(key: String): JavaCanonicalMember {
         }
         "enum-entry" -> check(returnType == null && propertyKind == null && propertyType == null && parameters.isEmpty()) {
             "Invalid canonical Java enum-entry semantics: $key"
+        }
+        "object" -> check(returnType == null && propertyKind == null && propertyType == null && parameters.isEmpty()) {
+            "Invalid canonical Java object semantics: $key"
         }
     }
     val hostFactory = owner.substringAfterLast('/') == "CodexHost" && kind == "constructor"
@@ -800,6 +810,7 @@ private fun JavaCanonicalMember.matchesOrdinaryJavaAbi(member: JavaMemberRecord)
             actual.matchesCanonicalJavaType(expected, typeVariables)
         }
         "enum-entry" -> true
+        "object" -> true
         else -> false
     }
 }
@@ -982,6 +993,7 @@ private class JavaArtifactIndex(
                     member.matchesProperty(property.returnType, property.isVar)
             }.size
             "enum-entry" -> metadata.enumEntries.count { it == member.name }
+            "object" -> if (metadata.kind == ClassKind.OBJECT) 1 else 0
             else -> error("Unsupported canonical Java member kind ${member.kind}")
         }
         check(matches == 1) {
@@ -1030,6 +1042,11 @@ private class JavaArtifactIndex(
             "enum-entry" -> listOf(field(owner, member.name, "L${owner.internalName};", member.key).also { field ->
                 check(field.access and Opcodes.ACC_STATIC != 0 && field.access and Opcodes.ACC_FINAL != 0) {
                     "$label enum entry is not static final: ${field.symbol.id}"
+                }
+            })
+            "object" -> listOf(field(owner, "INSTANCE", "L${owner.internalName};", member.key).also { field ->
+                check(field.access and Opcodes.ACC_STATIC != 0 && field.access and Opcodes.ACC_FINAL != 0) {
+                    "$label Kotlin object INSTANCE is not static final: ${field.symbol.id}"
                 }
             })
             else -> error("Unsupported ordinary Java member kind ${member.kind}")

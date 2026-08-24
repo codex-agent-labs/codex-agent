@@ -1,7 +1,9 @@
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
+import kotlin.metadata.ClassKind
 import kotlin.metadata.isData
+import kotlin.metadata.kind
 import kotlin.metadata.jvm.KotlinClassMetadata
 import kotlin.metadata.jvm.Metadata as metadataAnnotation
 import kotlin.metadata.jvm.toJvmInternalName
@@ -82,8 +84,15 @@ abstract class DiscoverCrossLanguageApiTask @Inject constructor(
         val excludedTypesFile = inputs.resolve("excluded-types.bin").apply {
             writeCrossLanguageStrings(setOf("kotlinx.coroutines.CoroutineScope"))
         }
+        val compilerFacts = readCompilerJvmClassFacts(jvmDirectory)
         val dataClassesFile = inputs.resolve("data-classes.bin").apply {
-            writeCrossLanguageStrings(readCompilerDataClassNames(jvmDirectory))
+            writeCrossLanguageStrings(compilerFacts.dataClassNames)
+        }
+        val singletonObjectsFile = inputs.resolve("singleton-objects.bin").apply {
+            writeCrossLanguageStrings(compilerFacts.singletonObjectNames)
+        }
+        val companionObjectsFile = inputs.resolve("companion-objects.bin").apply {
+            writeCrossLanguageStrings(compilerFacts.companionObjectNames)
         }
         val compilerReport = temporaryDir.resolve("compiler-report.bin")
         Files.deleteIfExists(compilerReport.toPath())
@@ -98,6 +107,8 @@ abstract class DiscoverCrossLanguageApiTask @Inject constructor(
                 "io.github.codex_agent_labs.codexmobile.agent.CodexBindingApiKotlinOnly",
                 excludedTypesFile.absolutePath,
                 dataClassesFile.absolutePath,
+                singletonObjectsFile.absolutePath,
+                companionObjectsFile.absolutePath,
                 compilerReport.absolutePath,
             )
         }.rethrowFailure().assertNormalExitValue()
@@ -137,24 +148,24 @@ abstract class VerifyCrossLanguageApiCoverageTask : DefaultTask() {
         val report = apiReport.get().asFile
         val classes = compiledTests.get().asFile
         val results = testResults.get().asFile
-        val memberKeys = readCrossLanguageApiMemberKeys(report)
+        val capabilityKeys = readCrossLanguageApiMemberKeys(report)
         val claims = readCoveredApiClaims(classes)
         val testResults = readCanonicalTestResults(results)
-        val coverage = verifyCrossLanguageApiCoverage(memberKeys, claims, testResults)
+        val coverage = verifyCrossLanguageApiCoverage(capabilityKeys, claims, testResults)
         output.atomicWriteJson(buildJsonObject {
-            put("schema", JsonPrimitive(1))
+            put("schema", JsonPrimitive(2))
             put("result", JsonPrimitive("passed"))
             put("kotlinCompilerVersion", JsonPrimitive(kotlinCompilerVersion.get()))
             put("canonicalTestTask", JsonPrimitive(canonicalTestTask.get()))
             put("apiReportSha256", JsonPrimitive(report.releaseDigest()))
             put("compiledTestsSha256", JsonPrimitive(classes.crossLanguageTreeDigest()))
             put("testResultsSha256", JsonPrimitive(results.crossLanguageTreeDigest()))
-            put("members", coverage.memberKeys.toJsonArray())
+            put("capabilities", coverage.memberKeys.toJsonArray())
             put("claims", buildJsonArray {
                 coverage.claims.forEach { claim ->
                     add(buildJsonObject {
                         put("testId", JsonPrimitive(claim.testId))
-                        put("members", claim.memberKeys.sorted().toJsonArray())
+                        put("capabilities", claim.memberKeys.sorted().toJsonArray())
                     })
                 }
             })
@@ -167,7 +178,7 @@ private fun CrossLanguageApiReport.toJson(
     wasmKlib: File,
     jvmClasses: File,
 ): JsonObject = buildJsonObject {
-    put("schema", JsonPrimitive(1))
+    put("schema", JsonPrimitive(2))
     put("libraryUniqueName", JsonPrimitive(libraryUniqueName))
     put("markerAnnotation", JsonPrimitive(markerAnnotation))
     put("signatureVersion", JsonPrimitive(signatureVersion))
@@ -181,7 +192,7 @@ private fun CrossLanguageApiReport.toJson(
         owners.forEach { owner ->
             add(buildJsonObject {
                 put("name", JsonPrimitive(owner.name))
-                put("members", owner.memberKeys.toJsonArray())
+                put("capabilities", owner.capabilityKeys.toJsonArray())
             })
         }
     })
@@ -234,9 +245,18 @@ private fun requireCrossLanguageUnique(values: List<String>, label: String) {
     check(duplicates.isEmpty()) { "$label identities are duplicated: $duplicates" }
 }
 
-internal fun readCompilerDataClassNames(classesDirectory: File): Set<String> {
+internal data class CompilerJvmClassFacts(
+    val dataClassNames: Set<String>,
+    val singletonObjectNames: Set<String>,
+    val companionObjectNames: Set<String>,
+)
+
+internal fun readCompilerDataClassNames(classesDirectory: File): Set<String> =
+    readCompilerJvmClassFacts(classesDirectory).dataClassNames
+
+internal fun readCompilerJvmClassFacts(classesDirectory: File): CompilerJvmClassFacts {
     check(classesDirectory.isDirectory) { "JVM compiler classes directory is missing: $classesDirectory" }
-    val names = classesDirectory.walkTopDown()
+    val facts = classesDirectory.walkTopDown()
         .onEnter { directory ->
             check(!Files.isSymbolicLink(directory.toPath())) { "JVM compiler classes contain a symlink: $directory" }
             true
@@ -246,13 +266,30 @@ internal fun readCompilerDataClassNames(classesDirectory: File): Set<String> {
             file.isFile && file.extension == "class"
         }
         .sortedBy { it.relativeTo(classesDirectory).invariantSeparatorsPath }
-        .mapNotNull { readCompilerDataClassName(it) }
+        .mapNotNull { readCompilerJvmClassFact(it) }
         .toList()
-    requireCrossLanguageUnique(names, "Compiler-derived data class")
-    return names.toSet()
+    requireCrossLanguageUnique(facts.map(CompilerJvmClassFact::name), "Compiler-derived JVM class")
+    val dataClasses = facts.filter(CompilerJvmClassFact::isData).map(CompilerJvmClassFact::name)
+    val singletonObjects = facts.filter { it.kind == ClassKind.OBJECT }.map(CompilerJvmClassFact::name)
+    val companionObjects = facts.filter { it.kind == ClassKind.COMPANION_OBJECT }.map(CompilerJvmClassFact::name)
+    listOf(
+        "data class" to dataClasses,
+        "singleton object" to singletonObjects,
+        "companion object" to companionObjects,
+    ).forEach { (label, names) -> requireCrossLanguageUnique(names, "Compiler-derived $label") }
+    check(singletonObjects.intersect(companionObjects.toSet()).isEmpty()) {
+        "Compiler-derived singleton and companion object identities overlap"
+    }
+    return CompilerJvmClassFacts(dataClasses.toSet(), singletonObjects.toSet(), companionObjects.toSet())
 }
 
-private fun readCompilerDataClassName(classFile: File): String? {
+private data class CompilerJvmClassFact(
+    val name: String,
+    val kind: ClassKind,
+    val isData: Boolean,
+)
+
+private fun readCompilerJvmClassFact(classFile: File): CompilerJvmClassFact? {
     val reader = ClassReader(classFile.readBytes())
     var header: KotlinMetadataHeader? = null
     reader.accept(object : ClassVisitor(Opcodes.ASM9) {
@@ -267,12 +304,11 @@ private fun readCompilerDataClassName(classFile: File): String? {
     val metadata = header?.build() ?: return null
     val parsed = KotlinClassMetadata.readStrict(metadata) as? KotlinClassMetadata.Class ?: return null
     val kmClass = parsed.kmClass
-    if (!kmClass.isData) return null
     val internalName = kmClass.name.toJvmInternalName()
     check(internalName == reader.className) {
         "Kotlin metadata/JVM class-name mismatch: $internalName != ${reader.className}"
     }
-    return kmClass.name
+    return CompilerJvmClassFact(kmClass.name, kmClass.kind, kmClass.isData)
 }
 
 private class KotlinMetadataHeader : AnnotationVisitor(Opcodes.ASM9) {
