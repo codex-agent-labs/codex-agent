@@ -112,10 +112,43 @@ class ReleaseToolingCliFunctionalTest {
     }
 
     @Test
+    fun `packaged tool runs the exact binding audit without Gradle and fails incomplete parity`() {
+        val root = createTempDirectory("release-tooling-binding-audit").toFile()
+        try {
+            val fixture = CrossLanguageBindingCliFixture(root)
+            val passed = runTool(root, *fixture.cliArguments())
+            assertEquals(0, passed.first, passed.second)
+            assertEquals("complete", fixture.output.readReleaseObject().releaseString("result"))
+            assertFalse("NoClassDefFoundError" in passed.second || "ClassNotFoundException" in passed.second)
+
+            val invalidPhaseArguments = fixture.cliArguments().also { arguments ->
+                arguments[arguments.indexOf("--phase") + 1] = "UNKNOWN"
+            }
+            val invalidPhase = runTool(root, *invalidPhaseArguments)
+            assertTrue(invalidPhase.first != 0, invalidPhase.second)
+            assertTrue("Unknown cross-language binding phase" in invalidPhase.second)
+            assertFalse(fixture.output.exists())
+
+            fixture.writeReceipt(
+                CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT,
+                claimedMembers = fixture.members.dropLast(1),
+            )
+            val failed = runTool(root, *fixture.cliArguments())
+            assertTrue(failed.first != 0, failed.second)
+            assertTrue("Missing active binding projection javascript-typescript:" in failed.second)
+            assertEquals("incomplete", fixture.output.readReleaseObject().releaseString("result"))
+            assertFalse("NoClassDefFoundError" in failed.second || "ClassNotFoundException" in failed.second)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `packaged tool exposes every protected workflow command`() {
         val workingDirectory = createTempDirectory("release-tooling-commands").toFile()
         try {
             listOf(
+                "audit-cross-language-bindings",
                 "stage-promoted-maven",
                 "assemble-promoted-candidate",
                 "verify-candidate",

@@ -1,4 +1,5 @@
 import java.io.File
+import java.nio.file.Files
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -39,6 +40,21 @@ fun main(arguments: Array<String>) {
             check(requireIosFreeDiskSpace(2L * 1024 * 1024 * 1024, 1) > 0)
             check(desktopRuntimeEvidenceFileName("linuxX64") == "desktop-runtime-linuxX64.json")
             println("codex-agent release tooling is ready")
+        }
+        "audit-cross-language-bindings" -> {
+            options.requireOnly("phase", "api-report", "coverage-receipt", "receipts", "output")
+            val output = options.file("output")
+            Files.deleteIfExists(output.toPath())
+            val phaseName = options.required("phase")
+            val phase = CrossLanguageBindingPhase.entries.singleOrNull { it.name == phaseName }
+                ?: error("Unknown cross-language binding phase: $phaseName")
+            writeCompleteCrossLanguageBindingAudit(
+                phase = phase,
+                apiReport = options.file("api-report"),
+                canonicalCoverageReceipt = options.file("coverage-receipt"),
+                receiptDirectory = options.file("receipts"),
+                auditFile = output,
+            )
         }
         "stage-promoted-maven" -> {
             options.requireOnly("promoted", "commit", "version", "output")

@@ -152,13 +152,17 @@ class CrossLanguageKotlinBindingEvidenceTest {
         )
 
         fun writeReport(
-            targets: List<Pair<String, String>> = listOf("jvm-classes" to artifact.releaseDigest()),
+            targets: List<Pair<String, String>> = listOf(
+                "native" to "c".repeat(64),
+                "wasm" to "d".repeat(64),
+                "jvm-classes" to artifact.releaseDigest(),
+            ),
         ) {
-            report.writeText(buildJsonObject {
+            report.atomicWriteJson(buildJsonObject {
                 put("schema", JsonPrimitive(1))
                 put("libraryUniqueName", JsonPrimitive("codex-agent-core"))
                 put("markerAnnotation", JsonPrimitive("CodexBindingApi"))
-                put("signatureVersion", JsonPrimitive(1))
+                put("signatureVersion", JsonPrimitive(2))
                 put("boundaryTypes", buildJsonArray {})
                 put("memberExclusionAnnotation", JsonPrimitive("CodexBindingApiKotlinOnly"))
                 put("excludedReachableTypes", buildJsonArray {})
@@ -179,7 +183,7 @@ class CrossLanguageKotlinBindingEvidenceTest {
                         })
                     }
                 })
-            }.toString())
+            })
         }
 
         fun writeReceipt(
@@ -194,7 +198,7 @@ class CrossLanguageKotlinBindingEvidenceTest {
                 testId to listOf(MEMBERS[index % MEMBERS.size])
             }.toMutableList()
             extraClaimTestId?.let { claims += it to listOf(checkNotNull(extraClaimMember)) }
-            receipt.writeText(buildJsonObject {
+            receipt.atomicWriteJson(buildJsonObject {
                 put("schema", JsonPrimitive(1))
                 put("result", JsonPrimitive(result))
                 put("kotlinCompilerVersion", JsonPrimitive("2.3.10"))
@@ -213,7 +217,7 @@ class CrossLanguageKotlinBindingEvidenceTest {
                         })
                     }
                 })
-            }.toString())
+            })
         }
     }
 

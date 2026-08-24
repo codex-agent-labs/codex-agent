@@ -1,6 +1,4 @@
 import java.io.File
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 
 internal data class KotlinBindingDigestEvidence(
     val artifactSha256: String,
@@ -121,65 +119,12 @@ internal fun deriveCrossLanguageKotlinBindingEvidence(
     }
 
     val artifactDigest = kotlinArtifact.kotlinBindingArtifactDigest()
-    val reportRoot = apiReport.readReleaseObject()
-    val jvmTargets = reportRoot.releaseArray("targets").map { value ->
-        val target = value as? JsonObject ?: error("Invalid cross-language API target")
-        check(target.keys == setOf("kind", "sha256")) { "Invalid cross-language API target shape" }
-        target.releaseString("kind") to target.exactTargetSha256()
-    }.filter { (kind, _) -> kind == "jvm-classes" }
-    check(jvmTargets.size == 1) { "Cross-language API report must contain exactly one jvm-classes target" }
-    check(jvmTargets.single().second == artifactDigest) {
+    val canonicalEvidence = readCrossLanguageCanonicalApiEvidence(apiReport, canonicalCoverageReceipt)
+    check(canonicalEvidence.targetSha256.getValue("jvm-classes") == artifactDigest) {
         "Cross-language API report jvm-classes target digest mismatch"
     }
-
-    val reportMembers = readCrossLanguageApiMemberKeys(apiReport)
-    val reportDigest = apiReport.releaseDigest()
-    val coverage = canonicalCoverageReceipt.readReleaseObject()
-    check(coverage.keys == setOf(
-        "schema", "result", "kotlinCompilerVersion", "canonicalTestTask", "apiReportSha256",
-        "compiledTestsSha256", "testResultsSha256", "members", "claims",
-    )) { "Invalid canonical coverage receipt shape" }
-    check(coverage.releaseInt("schema") == 1) { "Unsupported canonical coverage receipt schema" }
-    check(coverage.releaseString("result") == "passed") { "Canonical coverage receipt did not pass" }
-    check(coverage.releaseString("kotlinCompilerVersion").isNotBlank()) {
-        "Canonical coverage Kotlin compiler identity is blank"
-    }
-    check(coverage.releaseString("canonicalTestTask").isNotBlank()) {
-        "Canonical coverage test task identity is blank"
-    }
-    check(coverage.releaseString("apiReportSha256") == reportDigest) {
-        "Canonical coverage API report digest mismatch"
-    }
-    val compiledTestsDigest = coverage.exactSha256("compiledTestsSha256")
-    val testResultsDigest = coverage.exactSha256("testResultsSha256")
-
-    val receiptMembers = coverage.releaseArray("members").map { value ->
-        (value as? JsonPrimitive)?.content ?: error("Invalid canonical coverage member")
-    }
-    requireUniqueExact(receiptMembers, "Canonical coverage member")
-    check(receiptMembers == reportMembers) { "Canonical coverage member/report mismatch" }
-
-    val receiptClaims = coverage.releaseArray("claims").map { value ->
-        val claim = value as? JsonObject ?: error("Invalid canonical coverage claim")
-        check(claim.keys == setOf("testId", "members")) { "Invalid canonical coverage claim shape" }
-        val testId = claim.releaseString("testId")
-        val members = claim.releaseArray("members").map { member ->
-            (member as? JsonPrimitive)?.content ?: error("Invalid canonical coverage claim member")
-        }
-        requireExact(testId, "Canonical coverage claim test")
-        check(members.isNotEmpty()) { "Canonical coverage claim is empty: $testId" }
-        requireUniqueExact(members, "Canonical coverage claim member for $testId")
-        testId to members
-    }
-    requireUniqueExact(receiptClaims.map(Pair<String, List<String>>::first), "Canonical coverage claim test")
-
-    val reportMemberSet = reportMembers.toSet()
-    val claimedMembers = receiptClaims.flatMap(Pair<String, List<String>>::second).toSet()
-    check(claimedMembers == reportMemberSet) {
-        "Canonical coverage claim/member mismatch: missing=${(reportMemberSet - claimedMembers).sorted()} " +
-            "stale=${(claimedMembers - reportMemberSet).sorted()}"
-    }
-    val passedTestIds = receiptClaims.map(Pair<String, List<String>>::first).toSet()
+    val reportMembers = canonicalEvidence.memberKeys
+    val passedTestIds = canonicalEvidence.coveredTestIds
 
     val scenarioById = CrossLanguageBindingScenario.entries.associateBy(CrossLanguageBindingScenario::id)
     val mappingsByScenario = scenarioMappings.groupBy(KotlinBindingScenarioMapping::scenarioId)
@@ -210,10 +155,10 @@ internal fun deriveCrossLanguageKotlinBindingEvidence(
     return CrossLanguageKotlinBindingEvidence(
         digests = KotlinBindingDigestEvidence(
             artifactSha256 = artifactDigest,
-            apiReportSha256 = reportDigest,
-            canonicalCoverageSha256 = canonicalCoverageReceipt.releaseDigest(),
-            compiledTestsSha256 = compiledTestsDigest,
-            testResultsSha256 = testResultsDigest,
+            apiReportSha256 = canonicalEvidence.canonical.apiReportSha256,
+            canonicalCoverageSha256 = canonicalEvidence.canonical.coverageReceiptSha256,
+            compiledTestsSha256 = canonicalEvidence.compiledTestsSha256,
+            testResultsSha256 = canonicalEvidence.testResultsSha256,
         ),
         capabilityClaims = reportMembers.map { member ->
             KotlinBindingCapabilityClaim(member, member)
@@ -227,18 +172,6 @@ internal fun deriveCrossLanguageKotlinBindingEvidence(
         },
         scenarioEvidence = scenarioEvidence,
     )
-}
-
-private fun JsonObject.exactSha256(name: String): String = releaseString(name).also { digest ->
-    check(digest.length == 64 && digest.all { it in '0'..'9' || it in 'a'..'f' }) {
-        "Canonical coverage $name is not an exact SHA-256"
-    }
-}
-
-private fun JsonObject.exactTargetSha256(): String = releaseString("sha256").also { digest ->
-    check(digest.length == 64 && digest.all { it in '0'..'9' || it in 'a'..'f' }) {
-        "Cross-language API target sha256 is not an exact SHA-256"
-    }
 }
 
 private fun requireUniqueExact(values: List<String>, label: String) {

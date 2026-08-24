@@ -162,29 +162,6 @@ abstract class VerifyCrossLanguageApiCoverageTask : DefaultTask() {
     }
 }
 
-internal fun readCrossLanguageApiMemberKeys(report: File): List<String> {
-    val root = report.readReleaseObject()
-    check(root.keys == setOf(
-        "schema", "libraryUniqueName", "markerAnnotation", "signatureVersion", "boundaryTypes",
-        "memberExclusionAnnotation", "excludedReachableTypes", "excludedMemberKeys",
-        "dataClassMetadataAvailable", "dataClassNames", "owners", "targets",
-    )) { "Invalid cross-language API report shape" }
-    check(root.releaseInt("schema") == 1) { "Unsupported cross-language API report schema" }
-    val owners = root.releaseArray("owners").map { ownerValue ->
-        val owner = ownerValue as? JsonObject ?: error("Invalid cross-language API owner")
-        check(owner.keys == setOf("name", "members")) { "Invalid cross-language API owner shape" }
-        owner.releaseString("name") to owner.releaseArray("members").map { member ->
-            (member as? JsonPrimitive)?.content ?: error("Invalid cross-language API member key")
-        }
-    }
-    val ownerNames = owners.map(Pair<String, List<String>>::first)
-    requireCrossLanguageUnique(ownerNames, "Cross-language API owner")
-    val members = owners.flatMap(Pair<String, List<String>>::second)
-    requireCrossLanguageUnique(members, "Cross-language API member")
-    check(members.isNotEmpty()) { "Cross-language API report is empty" }
-    return members.sorted()
-}
-
 private fun CrossLanguageApiReport.toJson(
     nativeKlib: File,
     wasmKlib: File,

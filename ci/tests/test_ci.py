@@ -48,12 +48,11 @@ class RunLaneContractTest(unittest.TestCase):
     def test_contracts_build_runs_the_transitive_binding_gates(self) -> None:
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
         contracts = driver.split("  contracts)", 1)[1].split("  portable)", 1)[0]
-        build = contracts.split('if [ "$build" = true ]; then', 1)[1].split("    fi", 1)[0]
-
-        self.assertEqual(1, build.count(":codex-agent-core:auditCrossLanguageBindingParity"))
-        self.assertNotIn(":codex-agent-core:verifyKotlinBindingParity", build)
-        self.assertNotIn(":codex-agent-core:verifyJavaBindingParity", build)
-        self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", build)
+        self.assertIn('if [ "$build" = true ] || [ "$test_lane" = true ]; then', contracts)
+        self.assertEqual(1, contracts.count(":codex-agent-core:auditCrossLanguageBindingParity"))
+        self.assertNotIn(":codex-agent-core:verifyKotlinBindingParity", contracts)
+        self.assertNotIn(":codex-agent-core:verifyJavaBindingParity", contracts)
+        self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", contracts)
 
 
 class GitFixture(unittest.TestCase):
@@ -920,6 +919,15 @@ class RealImpactPlanTest(unittest.TestCase):
 
 
 class StageArchiveTest(unittest.TestCase):
+    def test_contracts_stages_the_exact_binding_parity_prerequisites(self) -> None:
+        self.assertEqual((
+            ("build", "gradle/build-logic/build/libs/codex-agent-release-tooling.jar", "release-tooling"),
+            ("test", "codex-agent-core/build/reports/cross-language-api/canonical-api.json", "cross-language-api-report-evidence"),
+            ("test", "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json", "cross-language-coverage-receipt-evidence"),
+            ("test", "codex-agent-core/build/reports/cross-language-api/bindings/kotlin-parity.json", "cross-language-kotlin-binding-receipt-evidence"),
+            ("test", "codex-agent-core/build/reports/cross-language-api/bindings/java-parity.json", "cross-language-java-binding-receipt-evidence"),
+        ), OUTPUTS["contracts"])
+
     def test_node_js_stages_exact_packed_consumer_evidence_and_rejects_missing_outputs(self) -> None:
         expected = (
             ("build", "codex-agent-runtime-desktop/build/npm/consumer/public-api.json", "npm-public-api-report"),
@@ -1041,6 +1049,24 @@ class StageProductionRestoreTest(unittest.TestCase):
                 artifacts,
             )
             self.assertFalse((root / "output/payload/CodexAgent.xcframework.zip.sha256").exists())
+
+    def test_restored_contracts_production_drops_binding_test_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binding_evidence = [
+                (f"payload/{kind}.json", kind)
+                for kind in (
+                    "cross-language-api-report-evidence",
+                    "cross-language-coverage-receipt-evidence",
+                    "cross-language-kotlin-binding-receipt-evidence",
+                    "cross-language-java-binding-receipt-evidence",
+                )
+            ]
+            source = self.source(root, [], binding_evidence)
+            artifacts, evidence = restore_production_files(source, root / "output", "contracts")
+            self.assertEqual({}, artifacts)
+            self.assertEqual({}, evidence)
+            self.assertFalse((root / "output/payload").exists())
 
     def test_restored_production_keeps_build_owned_evidence(self) -> None:
         cases = (

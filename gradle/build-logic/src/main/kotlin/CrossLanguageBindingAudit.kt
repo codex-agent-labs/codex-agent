@@ -41,6 +41,70 @@ internal data class CrossLanguageBindingAudit(
     val errors: List<String>,
 )
 
+internal fun writeCompleteCrossLanguageBindingAudit(
+    phase: CrossLanguageBindingPhase,
+    apiReport: File,
+    canonicalCoverageReceipt: File,
+    receiptDirectory: File,
+    auditFile: File,
+): CrossLanguageBindingAudit {
+    Files.deleteIfExists(auditFile.toPath())
+    check(receiptDirectory.isDirectory && !Files.isSymbolicLink(receiptDirectory.toPath())) {
+        "Cross-language binding receipt directory is missing or a symlink: $receiptDirectory"
+    }
+    val activeLanguages = CrossLanguageBinding.entries.filter { it.isActive(phase) }
+    val receiptFiles = activeLanguages.associateWith { language ->
+        receiptDirectory.resolve("${language.id}-parity.json")
+    }
+    val entries = receiptDirectory.listFiles()?.toList()
+        ?: error("Cross-language binding receipt directory cannot be listed: $receiptDirectory")
+    check(entries.all { it.isFile && !Files.isSymbolicLink(it.toPath()) } &&
+        entries.map(File::getName).toSet() == receiptFiles.values.map(File::getName).toSet() &&
+        entries.size == receiptFiles.size) {
+        "Cross-language binding receipt file set does not match active phase ${phase.name}"
+    }
+    val audit = writeCrossLanguageBindingAudit(
+        phase,
+        apiReport,
+        canonicalCoverageReceipt,
+        receiptFiles,
+        auditFile,
+    )
+    check(audit.errors.isEmpty() && audit.result == "complete") {
+        audit.errors.joinToString("\n").ifEmpty { "Cross-language binding audit did not complete" }
+    }
+    return audit
+}
+
+internal fun writeCrossLanguageBindingAudit(
+    phase: CrossLanguageBindingPhase,
+    apiReport: File,
+    canonicalCoverageReceipt: File,
+    receiptFiles: Map<CrossLanguageBinding, File>,
+    auditFile: File,
+): CrossLanguageBindingAudit {
+    Files.deleteIfExists(auditFile.toPath())
+    val canonicalEvidence = readCrossLanguageCanonicalApiEvidence(apiReport, canonicalCoverageReceipt)
+    val receipts = readCrossLanguageBindingReceipts(receiptFiles)
+    val receiptDigests = receiptFiles.mapValues { (_, file) -> file.releaseDigest() }
+    val audit = buildCrossLanguageBindingAudit(
+        phase = phase,
+        capabilityKeys = canonicalEvidence.memberKeys,
+        canonical = canonicalEvidence.canonical,
+        receipts = receipts,
+        languageReceiptSha256 = receiptDigests,
+    )
+    auditFile.atomicWriteJson(audit.toJson())
+    return readCrossLanguageBindingAudit(
+        auditFile = auditFile,
+        phase = phase,
+        capabilityKeys = canonicalEvidence.memberKeys,
+        canonical = canonicalEvidence.canonical,
+        receipts = receipts,
+        expectedLanguageReceiptSha256 = receiptDigests,
+    )
+}
+
 internal fun buildCrossLanguageBindingAudit(
     phase: CrossLanguageBindingPhase,
     capabilityKeys: List<String>,

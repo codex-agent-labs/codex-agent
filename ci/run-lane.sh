@@ -63,11 +63,12 @@ run_desktop() {
 
 case "$lane" in
   contracts)
-    if [ "$build" = true ]; then
-      ./gradlew :codex-agent-core:verifyProtocolSource \
-        :codex-agent-core:auditCrossLanguageBindingParity "${args[@]}"
-      ./gradlew -p gradle/build-logic releaseToolingJar --stacktrace
+    if [ "$build" = true ] || [ "$test_lane" = true ]; then
+      contract_tasks=(:codex-agent-core:auditCrossLanguageBindingParity)
+      [ "$build" != true ] || contract_tasks=(:codex-agent-core:verifyProtocolSource "${contract_tasks[@]}")
+      ./gradlew "${contract_tasks[@]}" "${args[@]}"
     fi
+    [ "$build" != true ] || ./gradlew -p gradle/build-logic releaseToolingJar --stacktrace
     if [ "$test_lane" = true ]; then
       ./gradlew :codex-agent-core:jvmTest :tooling:protocol-generator:test "${args[@]}"
       ./gradlew -p gradle/build-logic test --parallel --stacktrace

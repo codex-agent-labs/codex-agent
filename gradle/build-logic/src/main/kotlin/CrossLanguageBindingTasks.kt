@@ -33,42 +33,17 @@ abstract class AuditCrossLanguageBindingParityTask : DefaultTask() {
 
     @TaskAction
     fun audit() {
-        val output = auditFile.get().asFile
-        Files.deleteIfExists(output.toPath())
-        val report = apiReport.get().asFile
-        val coverage = canonicalCoverageReceipt.get().asFile
-        val capabilityKeys = readCrossLanguageApiMemberKeys(report)
-        val canonical = CrossLanguageBindingCanonicalIdentity(
-            apiReportSha256 = report.releaseDigest(),
-            coverageReceiptSha256 = coverage.releaseDigest(),
-        )
         val kotlinReceiptFile = kotlinReceipt.get().asFile
         val javaReceiptFile = javaReceipt.get().asFile
-        val receipts = readCrossLanguageBindingReceipts(
-            mapOf(
+        writeCrossLanguageBindingAudit(
+            phase = CrossLanguageBindingPhase.M7_5,
+            apiReport = apiReport.get().asFile,
+            canonicalCoverageReceipt = canonicalCoverageReceipt.get().asFile,
+            receiptFiles = mapOf(
                 CrossLanguageBinding.KOTLIN to kotlinReceiptFile,
                 CrossLanguageBinding.JAVA to javaReceiptFile,
             ),
-        )
-        val receiptDigests = mapOf(
-            CrossLanguageBinding.KOTLIN to kotlinReceiptFile.releaseDigest(),
-            CrossLanguageBinding.JAVA to javaReceiptFile.releaseDigest(),
-        )
-        val audit = buildCrossLanguageBindingAudit(
-            CrossLanguageBindingPhase.M7_5,
-            capabilityKeys,
-            canonical,
-            receipts,
-            receiptDigests,
-        )
-        output.atomicWriteJson(audit.toJson())
-        readCrossLanguageBindingAudit(
-            output,
-            CrossLanguageBindingPhase.M7_5,
-            capabilityKeys,
-            canonical,
-            receipts,
-            receiptDigests,
+            auditFile = auditFile.get().asFile,
         )
     }
 }
