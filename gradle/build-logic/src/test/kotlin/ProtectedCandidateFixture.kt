@@ -50,8 +50,8 @@ internal class ProtectedCandidatePayloadFixture(
     val dataFlow = policy("data-flow.json")
     val packageSwift = policy("Package.swift")
     val desktopManifest = runtimes.distributionManifest
-    val desktopLicense = policy("openai-codex-LICENSE.txt")
-    val desktopNotice = policy("openai-codex-NOTICE.txt")
+    val desktopLicense = root.resolve("openai-codex-LICENSE.txt").apply { writeText("license") }
+    val desktopNotice = root.resolve("openai-codex-NOTICE.txt").apply { writeText("notice") }
     val approvals = writeTestPublicationApprovals(
         root.resolve("approvals.json"), desktopManifest, desktopLicense, desktopNotice,
     )

@@ -5,6 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -19,27 +20,128 @@ class CandidateManifestTasksTest {
             put("sha256", JsonPrimitive("a".repeat(64)))
         }
         val bundles = centralBundleShardNames.map { centralBundleFileName("0.2.0", it) }
+        val sbom = aggregateReleaseSbomFileName("0.2.0")
         val manifest = buildJsonObject {
             put("artifacts", buildJsonObject {
                 put("swiftPackage", record("swift.zip"))
                 put("centralBundles", buildJsonArray { bundles.forEach { add(record(it)) } })
+                put("sbom", record(sbom))
             })
             put("evidence", buildJsonObject {})
             put("policies", buildJsonObject {})
         }
         assertEquals(
-            listOf("swift.zip") + bundles,
+            listOf("swift.zip") + bundles + sbom,
             candidatePayloadRecords(manifest).map { it.releaseString("fileName") },
         )
         val result = buildJsonObject {
             put("releaseTag", JsonPrimitive("v0.2.0"))
             put("swiftAsset", JsonPrimitive("swift.zip"))
             put("centralBundles", buildJsonArray { bundles.forEach { add(JsonPrimitive(it)) } })
+            put("sbomAsset", JsonPrimitive(sbom))
         }
         assertEquals(
-            "releaseTag=v0.2.0\nswiftAsset=swift.zip\ncentralBundles=${result.releaseArray("centralBundles")}\n",
+            "releaseTag=v0.2.0\nswiftAsset=swift.zip\n" +
+                "centralBundles=${result.releaseArray("centralBundles")}\nsbomAsset=$sbom\n",
             candidateGithubOutputs(result),
         )
+    }
+
+    @Test
+    fun `aggregate SBOM is deterministic exact and semantically reconstructed`() {
+        val root = createTempDirectory("aggregate-sbom").toFile()
+        try {
+            val groupPath = CodexAgentBuild.MAVEN_GROUP.replace('.', '/')
+            val primaryPaths = expectedMavenPrimaryPaths(VERSION).mapTo(sortedSetOf()) { "$groupPath/$it" } +
+                expectedMavenRelocationPaths(VERSION)
+            val inventoryPaths = primaryPaths.flatMapTo(sortedSetOf()) { path ->
+                listOf(path, "$path.asc", "$path.md5", "$path.sha1", "$path.sha256", "$path.sha512")
+            }
+            val inventory = root.resolve("maven-inventory.json").apply { atomicWriteJson(buildJsonObject {
+                put("schemaVersion", JsonPrimitive(2)); put("groupId", JsonPrimitive(CodexAgentBuild.MAVEN_GROUP))
+                put("version", JsonPrimitive(VERSION))
+                put("artifactIds", buildJsonArray {
+                    expectedMavenPrimaryPaths(VERSION).mapTo(sortedSetOf()) { it.substringBefore('/') }
+                        .forEach { add(JsonPrimitive(it)) }
+                })
+                put("relocationGroupId", JsonPrimitive(OLD_MAVEN_GROUP))
+                put("relocationArtifactIds", buildJsonArray {
+                    mavenRelocationArtifactIds.forEach { add(JsonPrimitive(it)) }
+                })
+                put("primaryArtifactCount", JsonPrimitive(primaryPaths.size))
+                put("signaturesRequired", JsonPrimitive(true))
+                put("files", buildJsonArray { inventoryPaths.forEach { path -> add(buildJsonObject {
+                    put("path", JsonPrimitive(path)); put("bytes", JsonPrimitive(path.length.toLong()))
+                    put("sha256", JsonPrimitive(path.encodeToByteArray().inputStream().releaseDigest()))
+                }) } })
+            }) }
+            val swift = root.resolve("CodexAgent-$VERSION.xcframework.zip").apply { writeText("swift") }
+            val desktopManifest = writeTestDesktopDistributionManifest(
+                root.resolve("codex-app-server-distributions.json"),
+                "f".repeat(64),
+            )
+            val license = root.resolve("openai-codex-LICENSE.txt").apply { writeText("license") }
+            val notice = root.resolve("openai-codex-NOTICE.txt").apply { writeText("notice") }
+            fun build() = buildAggregateReleaseSbom(
+                VERSION,
+                "v$VERSION",
+                COMMIT,
+                "f".repeat(40),
+                inventory,
+                swift,
+                desktopManifest,
+                license,
+                notice,
+            )
+
+            val first = build()
+            assertEquals(first, build())
+            assertEquals(
+                setOf("${'$'}schema", "bomFormat", "specVersion", "version", "metadata", "components", "dependencies", "compositions"),
+                first.keys,
+            )
+            assertEquals("CycloneDX", first.releaseString("bomFormat"))
+            assertEquals("1.7", first.releaseString("specVersion"))
+            assertEquals("post-build", first.releaseObject("metadata").releaseArray("lifecycles")
+                .single().let { (it as JsonObject).releaseString("phase") })
+            val rootComponent = first.releaseObject("metadata").releaseObject("component")
+            assertEquals(CodexAgentBuild.REPOSITORY.substringBefore('/'), rootComponent.releaseString("group"))
+            assertEquals(CodexAgentBuild.REPOSITORY.substringAfter('/'), rootComponent.releaseString("name"))
+            assertEquals("v$VERSION", rootComponent.releaseString("version"))
+            assertEquals(
+                "pkg:github/${CodexAgentBuild.REPOSITORY}@v$VERSION",
+                rootComponent.releaseString("purl"),
+            )
+            val components = first.releaseArray("components").map { it as JsonObject }
+            assertEquals(27, components.size)
+            val mavenComponents = components.filter { it.releaseString("bom-ref").startsWith("pkg:maven/") }
+            assertEquals(25, mavenComponents.size)
+            assertEquals(primaryPaths.size, mavenComponents.sumOf { it.releaseArray("externalReferences").size })
+            val upstream = readDesktopCodexManifest(desktopManifest)
+            val codex = components.single { it.releaseString("name") == "codex" }
+            assertEquals(upstream.releaseTag, codex.releaseString("version"))
+            assertEquals("pkg:github/openai/codex@${upstream.releaseTag}", codex.releaseString("purl"))
+            assertEquals(5, codex.releaseArray("externalReferences").size)
+            assertEquals("incomplete", first.releaseArray("compositions").single()
+                .let { (it as JsonObject).releaseString("aggregate") })
+
+            val sbom = root.resolve(aggregateReleaseSbomFileName(VERSION)).apply { atomicWriteJson(first) }
+            verifyAggregateReleaseSbom(
+                sbom, VERSION, "v$VERSION", COMMIT, "f".repeat(40), inventory, swift,
+                desktopManifest, license, notice,
+            )
+            sbom.atomicWriteJson(JsonObject(first + ("unexpected" to JsonPrimitive(true))))
+            verifyReleaseRecord(sbom, sbom.releaseRecord())
+            val failure = assertFailsWith<IllegalStateException> {
+                verifyAggregateReleaseSbom(
+                    sbom, VERSION, "v$VERSION", COMMIT, "f".repeat(40), inventory, swift,
+                    desktopManifest, license, notice,
+                )
+            }
+            assertTrue(failure.message.orEmpty().contains("exact release inputs"))
+        } finally {
+            root.deleteRecursively()
+        }
     }
 
     @Test
@@ -308,6 +410,29 @@ class CandidateManifestTasksTest {
         fixture.desktop.first().writeText(fixture.desktop.first().readText().replace("\"ARM64\"", "\"X64\""))
         val failure = assertFailsWith<IllegalStateException> { buildCandidateManifest(fixture.inputs) }
         assertTrue(failure.message.orEmpty().contains("Desktop runtime evidence is invalid"))
+    }
+
+    @Test
+    fun `approved desktop policy bytes must match every valid classifier member`() = withFixture { fixture ->
+        listOf(fixture.desktopLicense, fixture.desktopNotice).forEach { policy ->
+            val original = policy.readBytes()
+            policy.appendText(" changed after classifier packaging")
+            writeTestPublicationApprovals(
+                fixture.approvals,
+                fixture.desktopManifest,
+                fixture.desktopLicense,
+                fixture.desktopNotice,
+            )
+            val failure = assertFailsWith<IllegalStateException> { buildCandidateManifest(fixture.inputs) }
+            assertTrue(failure.message.orEmpty().contains("macosArm64 classifier ${policy.name}"))
+            policy.writeBytes(original)
+            writeTestPublicationApprovals(
+                fixture.approvals,
+                fixture.desktopManifest,
+                fixture.desktopLicense,
+                fixture.desktopNotice,
+            )
+        }
     }
 
     @Test

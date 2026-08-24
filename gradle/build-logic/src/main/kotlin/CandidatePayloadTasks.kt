@@ -75,6 +75,7 @@ internal fun verifyCandidatePayload(
                     add(JsonPrimitive(record.releaseString("fileName")))
                 }
             })
+            put("sbomAsset", JsonPrimitive(artifacts.releaseObject("sbom").releaseString("fileName")))
         } else {
             put("centralBundle", JsonPrimitive(artifacts.releaseObject("centralBundle").releaseString("fileName")))
         }
@@ -86,6 +87,7 @@ internal fun candidatePayloadRecords(manifest: JsonObject): List<JsonObject> = b
     add(artifacts.releaseObject("swiftPackage"))
     if ("centralBundles" in artifacts) promotedCentralBundleRecords(manifest).forEach(::add)
     else add(artifacts.releaseObject("centralBundle"))
+    if ("sbom" in artifacts) add(artifacts.releaseObject("sbom"))
     val evidence = manifest.releaseObject("evidence")
     evidence.filterKeys { it !in candidateEvidenceArrayNames }.values.forEach { add(it as JsonObject) }
     candidateEvidenceArrayNames.forEach { name ->
@@ -237,6 +239,19 @@ private fun verifyPromotedCandidatePayload(
         artifacts.releaseObject("swiftPackage").releaseString("swiftPmChecksum") == swift.releaseDigest()) {
         "Transported Swift checksum does not bind the promoted ZIP"
     }
+    val policies = manifest.releaseObject("policies")
+    verifyAggregateReleaseSbom(
+        safePayloadFile(payload, artifacts.releaseObject("sbom").releaseString("fileName")),
+        expectedVersion,
+        "v$expectedVersion",
+        expectedCommit,
+        expectedTree,
+        mavenFile,
+        swift,
+        safePayloadFile(payload, policies.releaseObject("desktopDistributionManifest").releaseString("fileName")),
+        safePayloadFile(payload, policies.releaseObject("desktopBundledLicense").releaseString("fileName")),
+        safePayloadFile(payload, policies.releaseObject("desktopBundledNotice").releaseString("fileName")),
+    )
     check(evidence.releaseObject("privacyAudit").releaseString("fileName") == "privacy-audit.json") {
         "Transported promoted privacy audit is missing"
     }
@@ -480,6 +495,12 @@ private fun verifyPromotedRuntimeEvidence(
         check(desktopErrors.isEmpty()) {
             "Promoted desktop runtime evidence is invalid: ${desktopErrors.joinToString()}"
         }
+        val policies = manifest.releaseObject("policies")
+        verifyApprovedDesktopClassifierPolicyMembers(
+            classifiers,
+            safePayloadFile(payload, policies.releaseObject("desktopBundledLicense").releaseString("fileName")),
+            safePayloadFile(payload, policies.releaseObject("desktopBundledNotice").releaseString("fileName")),
+        )
         val jvmErrors = validateJvmRuntimeEvidence(
             jvm.map(TransportedRuntimeEvidence::file),
             jvmCommits,
@@ -540,6 +561,7 @@ internal fun candidateGithubOutputs(result: JsonObject): String = buildString {
     } else {
         append("centralBundle=").append(result.releaseString("centralBundle")).append('\n')
     }
+    if ("sbomAsset" in result) append("sbomAsset=").append(result.releaseString("sbomAsset")).append('\n')
 }
 
 internal fun resolveCandidatePrivacyReview(

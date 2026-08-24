@@ -108,7 +108,9 @@ private fun verifyPromotedCandidateManifestStructure(manifest: JsonObject) {
     check(manifest.releaseBoolean("protectedCandidate")) { "Candidate is not technically protected" }
 
     val artifacts = manifest.releaseObject("artifacts")
-    check(artifacts.keys == setOf("swiftPackage", "centralBundles")) { "Candidate artifact set is invalid" }
+    check(artifacts.keys == setOf("swiftPackage", "centralBundles", "sbom")) {
+        "Candidate artifact set is invalid"
+    }
     val swift = artifacts.releaseObject("swiftPackage")
     verifyRecordShape(swift)
     check(swift.releaseString("swiftPmChecksum") == swift.releaseString("sha256") && swift["members"] is JsonArray) {
@@ -121,6 +123,11 @@ private fun verifyPromotedCandidateManifestStructure(manifest: JsonObject) {
         "Promoted Central bundle set is invalid"
     }
     centralBundles.forEach(::verifyRecordShape)
+    val sbom = artifacts.releaseObject("sbom")
+    verifyRecordShape(sbom)
+    check(sbom.releaseString("fileName") == aggregateReleaseSbomFileName(version)) {
+        "Promoted candidate SBOM file name is invalid"
+    }
 
     val evidence = manifest.releaseObject("evidence")
     val expectedEvidence = setOf(

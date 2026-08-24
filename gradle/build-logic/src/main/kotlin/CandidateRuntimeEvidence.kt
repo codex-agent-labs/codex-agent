@@ -18,6 +18,11 @@ internal fun verifyCandidateRuntimeEvidence(input: CandidateInputFiles) {
     check(desktopErrors.isEmpty()) {
         "Desktop runtime evidence is invalid: ${desktopErrors.joinToString()}"
     }
+    verifyApprovedDesktopClassifierPolicyMembers(
+        input.desktopClassifierArchives,
+        input.desktopBundledLicense,
+        input.desktopBundledNotice,
+    )
     val jvmErrors = validateJvmRuntimeEvidence(
         input.jvmEvidence,
         input.commit,
@@ -44,6 +49,37 @@ internal fun verifyCandidateRuntimeEvidence(input: CandidateInputFiles) {
     }
     verifyCandidateFirebaseAndroidEvidence(input.androidEvidence, input.commit)
     verifyCandidateCentralAndroidRuntimeBinding(input.androidEvidence, input.centralBundle, input.version)
+}
+
+internal fun verifyApprovedDesktopClassifierPolicyMembers(
+    classifierArchives: List<File>,
+    approvedLicense: File,
+    approvedNotice: File,
+) {
+    check(classifierArchives.size == desktopRuntimeEvidenceTargets.size && classifierArchives.all(File::isFile)) {
+        "Approved Desktop classifier policy check requires the exact classifier set"
+    }
+    val expectedMembers = listOf(
+        "openai-codex-LICENSE.txt" to approvedLicense.releaseDigest(),
+        "openai-codex-NOTICE.txt" to approvedNotice.releaseDigest(),
+    )
+    desktopRuntimeEvidenceTargets.forEach { (target, spec) ->
+        val archives = classifierArchives.filter { archive ->
+            archive.name == "${spec.classifier}.zip" || archive.name.endsWith("-${spec.classifier}.zip")
+        }
+        check(archives.size == 1) { "Approved Desktop classifier policy archive mismatch for $target" }
+        ZipFile(archives.single()).use { zip ->
+            expectedMembers.forEach { (memberName, expected) ->
+                val members = zip.entries().asSequence().filter { !it.isDirectory && it.name == memberName }.toList()
+                check(members.size == 1) { "$target classifier must contain exactly one $memberName" }
+                val actual = zip.getInputStream(members.single()).use { it.releaseDigest() }
+                check(actual == expected) {
+                    "$target classifier $memberName differs from the approved policy: " +
+                        "expected=$expected actual=$actual"
+                }
+            }
+        }
+    }
 }
 
 internal fun verifyCandidateFirebaseAndroidEvidence(files: List<File>, expectedCommit: String) {

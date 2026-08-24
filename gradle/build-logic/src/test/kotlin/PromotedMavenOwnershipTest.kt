@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 
 class PromotedMavenOwnershipTest {
     @Test
-    fun `every coordinate has one canonical owner and only its bytes are forwarded`() = withFixture { fixture ->
+    fun `matching duplicate primaries are accepted and only owner bytes are forwarded`() = withFixture { fixture ->
         val owners = canonicalPromotedMavenOwners()
         assertEquals(
             expectedMavenPrimaryPaths(VERSION).mapTo(sortedSetOf()) { it.substringBefore('/') },
@@ -22,10 +22,9 @@ class PromotedMavenOwnershipTest {
         assertEquals("node-wasm", owners.getValue("codex-agent-runtime-desktop-wasm-js"))
 
         val sharedPath = "$GROUP_PATH/codex-agent/$VERSION/codex-agent-$VERSION.jar"
-        fixture.repositories.getValue("android").resolve(sharedPath).apply {
-            parentFile.mkdirs()
-            writeText("independent duplicate that must not be compared or forwarded")
-        }
+        fixture.repositories.getValue("common").resolve(sharedPath).copyTo(
+            fixture.repositories.getValue("android").resolve(sharedPath).apply { parentFile.mkdirs() },
+        )
         stageCanonicalPromotedMavenPrimaries(fixture.promoted, COMMIT, VERSION, fixture.output)
 
         assertEquals("common:$sharedPath", fixture.output.resolve(sharedPath).readText())
@@ -47,7 +46,26 @@ class PromotedMavenOwnershipTest {
     }
 
     @Test
-    fun `candidate forwards canonical primaries without comparing consumer repositories`() {
+    fun `divergent ordinary and classifier duplicate primaries are rejected before staging`() {
+        listOf(
+            "android" to "$GROUP_PATH/codex-agent/$VERSION/codex-agent-$VERSION.module",
+            "node-js" to "$GROUP_PATH/codex-agent-runtime-desktop/$VERSION/" +
+                "codex-agent-runtime-desktop-$VERSION-app-server-linux-x64.zip",
+        ).forEach { (target, relative) -> withFixture { fixture ->
+            fixture.repositories.getValue(target).resolve(relative).apply {
+                parentFile.mkdirs()
+                writeText("divergent $target primary")
+            }
+            val failure = assertFailsWith<IllegalStateException> {
+                stageCanonicalPromotedMavenPrimaries(fixture.promoted, COMMIT, VERSION, fixture.output)
+            }
+            assertTrue(failure.message.orEmpty().contains(relative))
+            assertFalse(fixture.output.exists())
+        } }
+    }
+
+    @Test
+    fun `candidate uses packaged parity verification before signing without shell comparison`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { it.resolve(".github/workflows/release-candidate.yml").isFile }
         val workflow = repository.resolve(".github/workflows/release-candidate.yml").readText()

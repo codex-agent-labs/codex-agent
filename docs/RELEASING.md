@@ -77,8 +77,8 @@ not publication authority.
 4. Main promotion forwards equal-tree receipts and the exact bytes uploaded by
    the producing jobs. Candidate assembly verifies those promoted inputs,
    signs the unsigned Maven primaries, generates mandated sidecars, and
-   assembles the Central bundle and release manifest without compiling,
-   linking, or running platform tests.
+   assembles the Central bundles, release manifest, and deterministic CycloneDX
+   release-artifact SBOM without compiling, linking, or running platform tests.
 
 Git commit, tree, blob, and explicit toolchain identity decide reuse. Checksums
 remain for SwiftPM, Maven Central, signatures, pinned external inputs, GitHub
@@ -96,9 +96,9 @@ build/protected-candidate/<candidate-commit>/payload/
 
 The aggregate verifies the imported evidence, iOS runtime, Swift package,
 privacy declarations, Maven inventories, pre-merge consumer receipts, Central
-bundle, and canonical candidate manifest. Candidate tasks may inspect,
-inventory, sign, and assemble promoted files; they may not compile, link, run
-Xcode, boot a simulator, or execute a platform test.
+bundles, aggregate SBOM, and canonical candidate manifest. Candidate tasks may
+inspect, inventory, sign, and assemble promoted files; they may not compile,
+link, run Xcode, boot a simulator, or execute a platform test.
 
 Candidate output is immutable. A rerun reuses an already successful candidate;
 it never silently deletes or replaces one with the same identity.
@@ -196,9 +196,11 @@ bytes and never rebuilds Maven, native, or runtime artifacts. It:
 3. Waits for protected release-environment approval, then uses an Ubuntu job to
    create or reuse the matching Maven Central deployment and GitHub draft
    release.
-4. Promotes only the recorded Central bundle and exact Swift package/candidate
-   assets, comparing the official GitHub asset digest with the manifest-bound
-   artifact without downloading it again.
+4. Promotes the recorded bundles to Maven Central and attaches exactly five
+   GitHub release assets: the Swift ZIP, its checksum, the CycloneDX SBOM, the
+   candidate manifest, and the Central deployment record. It compares every
+   official GitHub asset digest with the exact local bytes without downloading
+   them again.
 5. Runs one downstream macOS job whose only public asset download is the clean
    Swift Package resolution check.
 6. On rerun, reuses matching validated or published records and fails closed on

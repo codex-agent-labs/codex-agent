@@ -371,11 +371,12 @@ class ReleaseWorkflowContractTest {
         listOf(
             "${'$'}SWIFT_ASSET|${'$'}PAYLOAD/${'$'}SWIFT_ASSET",
             "${'$'}SWIFT_ASSET.sha256|${'$'}PAYLOAD/${'$'}SWIFT_ASSET.sha256",
+            "${'$'}SBOM_ASSET|${'$'}PAYLOAD/${'$'}SBOM_ASSET",
             "candidate-manifest.json|${'$'}PAYLOAD/candidate-manifest.json",
             "central-deployment.json|${'$'}RECORD",
         ).forEach { asset -> assertTrue(asset in publish, asset) }
         assertTrue("release_json=${'$'}(gh api" in publish)
-        assertTrue("test \"${'$'}(jq '.assets | length' <<<\"${'$'}release_json\")\" -eq 4" in publish)
+        assertTrue("test \"${'$'}(jq '.assets | length' <<<\"${'$'}release_json\")\" -eq 5" in publish)
         assertTrue("test \"${'$'}asset_count\" -eq 1" in publish)
         assertTrue("test \"${'$'}api_digest\" = \"${'$'}expected_digest\"" in publish)
     }

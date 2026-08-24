@@ -77,6 +77,9 @@ class ReleaseToolingCliFunctionalTest {
                     writeText(relative)
                 }
             }
+            val duplicatedPath = "$group/codex-agent/$version/codex-agent-$version.module"
+            val duplicate = repositories.getValue("android").resolve(duplicatedPath).apply { parentFile.mkdirs() }
+            repositories.getValue("common").resolve(duplicatedPath).copyTo(duplicate)
             val result = runTool(
                 root,
                 "stage-promoted-maven",
@@ -90,6 +93,19 @@ class ReleaseToolingCliFunctionalTest {
                 expectedMavenPrimaryPaths(version).size + expectedMavenRelocationPaths(version).size,
                 output.walkTopDown().count(File::isFile),
             )
+            duplicate.writeText("divergent primary")
+            val failedOutput = root.resolve("failed-output")
+            val failed = runTool(
+                root,
+                "stage-promoted-maven",
+                "--promoted", promoted.absolutePath,
+                "--commit", commit,
+                "--version", version,
+                "--output", failedOutput.absolutePath,
+            )
+            assertTrue(failed.first != 0, failed.second)
+            assertTrue(duplicatedPath in failed.second, failed.second)
+            assertFalse(failedOutput.exists())
         } finally {
             root.deleteRecursively()
         }
