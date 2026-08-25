@@ -162,6 +162,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
             !isAllowedAgentInvocationMemberReuse(symbol, projections) &&
             !isAllowedAgentTurnRequestReuse(symbol, projections) &&
             !isAllowedAgentHookHandlerReuse(symbol, projections) &&
+            !isAllowedIntegrationAuthorizationReuse(symbol, projections) &&
             !isAllowedFlattenedValueReuse(symbol, projections)
         ) {
             errors += "Reused JavaScript/TypeScript public symbol $symbol for capabilities " +
@@ -173,6 +174,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
     errors += invalidAgentTurnRequestErrors(canonical.memberKeys, provisional)
     errors += invalidAgentHookHandlerErrors(canonical.memberKeys, provisional)
     errors += invalidMcpServersErrors(canonical.memberKeys, provisional)
+    errors += invalidIntegrationAuthorizationErrors(canonical.memberKeys, provisional)
 
     val rejectedKeys = errors.flatMap { error ->
         provisional.mapNotNull { projection -> projection.member.key.takeIf(error::contains) }
@@ -828,6 +830,9 @@ private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.isD051IntegrationAuthorizationSurfaceMember()) {
+        return integrationAuthorizationProjectionCandidates(member, symbols)
+    }
     if (member.isD050McpServersSurfaceMember()) {
         return mcpServersProjectionCandidates(member, symbols)
     }
@@ -969,6 +974,43 @@ private val javaScriptMcpServersSymbols = listOf(
     "method:CodexMcpServers#remove:(server: AgentMcpServer, " +
         "signal?: AbortSignal | null | undefined): Promise<void>",
     javaScriptAgentMcpTransportType,
+).sorted()
+private const val javaScriptAgentIntegrationType =
+    "type:AgentIntegration:AgentConnectorIntegration | AgentMcpServerIntegration"
+private val javaScriptIntegrationAuthorizationSymbols = listOf(
+    "class:AgentConnectorIntegration",
+    "class:AgentIntegrationAuthorizationState",
+    "class:AgentMcpServerIntegration",
+    "class:CodexIntegrationAuthorization",
+    "constructor:AgentConnectorIntegration#(connector: AgentConnector)",
+    "constructor:AgentIntegrationAuthorizationState#(" +
+        "status?: AgentIntegrationAuthorizationStatus, " +
+        "target?: AgentIntegration | null | undefined, " +
+        "failure?: CodexFailure | null | undefined)",
+    "constructor:AgentMcpServerIntegration#(server: AgentMcpServer)",
+    "getter:AgentConnectorIntegration#connector:AgentConnector",
+    "getter:AgentConnectorIntegration#displayName:string",
+    "getter:AgentConnectorIntegration#id:string",
+    "getter:AgentIntegrationAuthorizationState#failure:CodexFailure | null | undefined",
+    "getter:AgentIntegrationAuthorizationState#status:AgentIntegrationAuthorizationStatus",
+    "getter:AgentIntegrationAuthorizationState#target:AgentIntegration | null | undefined",
+    "getter:AgentMcpServerIntegration#displayName:string",
+    "getter:AgentMcpServerIntegration#id:string",
+    "getter:AgentMcpServerIntegration#server:AgentMcpServer",
+    "getter:CodexAgent#integrationAuthorization:CodexIntegrationAuthorization",
+    "getter:CodexIntegrationAuthorization#active:AgentIntegration | null | undefined",
+    "getter:CodexIntegrationAuthorization#isAuthorizing:boolean",
+    "getter:CodexIntegrationAuthorization#state:AgentIntegrationAuthorizationState",
+    "method:CodexIntegrationAuthorization#authorize:(target: AgentIntegration, " +
+        "signal?: AbortSignal | null | undefined): Promise<void>",
+    "method:CodexIntegrationAuthorization#cancel:(signal?: AbortSignal | null | undefined): Promise<void>",
+    "method:CodexIntegrationAuthorization#observeActive:(listener: " +
+        "(target: AgentIntegration | null | undefined) => void): CodexObservation",
+    "method:CodexIntegrationAuthorization#observeAuthorizing:(listener: " +
+        "(isAuthorizing: boolean) => void): CodexObservation",
+    "method:CodexIntegrationAuthorization#observeState:(listener: " +
+        "(state: AgentIntegrationAuthorizationState) => void): CodexObservation",
+    javaScriptAgentIntegrationType,
 ).sorted()
 private const val javaScriptAgentMessageCapabilities =
     "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"
@@ -1439,6 +1481,220 @@ private fun CanonicalJavaScriptMember.d050McpServersPublicSymbols(): List<String
             add(javaScriptAgentMcpTransportType)
         }
         add(memberSymbol)
+    }.sorted()
+}
+
+private fun integrationAuthorizationProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    if (!member.isExactD051IntegrationAuthorizationMember() ||
+        !hasExactJavaScriptSymbolInventory(symbols, javaScriptIntegrationAuthorizationSymbols)
+    ) return emptyList()
+    val projected = member.d051IntegrationAuthorizationPublicSymbols()
+    val stateFlow = member.simpleOwner == "CodexIntegrationAuthorization" &&
+        member.kind == CanonicalJavaScriptMemberKind.PROPERTY
+    val scenarios = buildList {
+        add(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        if (member.simpleOwner == "AgentIntegrationAuthorizationState") {
+            add(CrossLanguageBindingScenario.NULLABILITY)
+            add(CrossLanguageBindingScenario.STRUCTURED_FAILURE)
+        }
+        if (stateFlow) {
+            add(CrossLanguageBindingScenario.STATE_CURRENT_VALUE)
+            add(CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE)
+            add(CrossLanguageBindingScenario.SUBSCRIPTION_CANCELLATION)
+        }
+        if (member.kind == CanonicalJavaScriptMemberKind.FUNCTION) {
+            add(CrossLanguageBindingScenario.ASYNC_SUCCESS)
+            add(CrossLanguageBindingScenario.ASYNC_FAILURE)
+            add(CrossLanguageBindingScenario.CANCELLATION)
+        }
+        if (member.simpleOwner == "CodexIntegrationAuthorization" || member.simpleOwner == "CodexAgent") {
+            add(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP)
+        }
+        if (member.simpleOwner in setOf(
+                "AgentIntegration",
+                "AgentIntegration.Connector",
+                "AgentIntegration.McpServer",
+                "AgentIntegrationAuthorizationState",
+            )
+        ) add(CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING)
+    }
+    val shareable = projected.filterTo(mutableSetOf()) { symbol ->
+        symbol == javaScriptAgentIntegrationType ||
+            symbol.startsWith("getter:AgentConnectorIntegration#id:") ||
+            symbol.startsWith("getter:AgentConnectorIntegration#displayName:") ||
+            symbol.startsWith("getter:AgentMcpServerIntegration#id:") ||
+            symbol.startsWith("getter:AgentMcpServerIntegration#displayName:")
+    }
+    return listOf(JavaScriptProjectionCandidate(
+        publicSymbols = projected,
+        scenarios = scenarios.distinct(),
+        requiresConsumerReference = true,
+        shareablePublicSymbols = shareable,
+    ))
+}
+
+private fun CanonicalJavaScriptMember.isD051IntegrationAuthorizationSurfaceMember(): Boolean =
+    simpleOwner in setOf(
+        "AgentIntegration",
+        "AgentIntegration.Connector",
+        "AgentIntegration.McpServer",
+        "AgentIntegrationAuthorizationState",
+        "CodexIntegrationAuthorization",
+    ) || simpleOwner == "CodexAgent" && name == "integrationAuthorization"
+
+private fun CanonicalJavaScriptMember.isExactD051IntegrationAuthorizationMember(): Boolean {
+    if (owner.substringBeforeLast('/') != canonicalAgentPackage) return false
+    fun canonical(name: String, nullable: Boolean = false): String =
+        "$canonicalAgentPackage/$name${if (nullable) "?" else "!!"}"
+    return when (simpleOwner) {
+        "AgentIntegration" -> kind == CanonicalJavaScriptMemberKind.PROPERTY &&
+            name in setOf("id", "displayName") &&
+            isExactProperty(simpleOwner, name, "kotlin/String!!")
+        "AgentIntegration.Connector" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(CanonicalJavaScriptParameter(canonical("AgentConnector"), false, false)),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "connector" -> isExactProperty(simpleOwner, name, canonical("AgentConnector"))
+                "id", "displayName" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                else -> false
+            }
+            else -> false
+        }
+        "AgentIntegration.McpServer" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(CanonicalJavaScriptParameter(canonical("AgentMcpServer"), false, false)),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "server" -> isExactProperty(simpleOwner, name, canonical("AgentMcpServer"))
+                "id", "displayName" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                else -> false
+            }
+            else -> false
+        }
+        "AgentIntegrationAuthorizationState" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentIntegrationAuthorizationStatus"), true, false),
+                    CanonicalJavaScriptParameter(canonical("AgentIntegration", nullable = true), true, false),
+                    CanonicalJavaScriptParameter(canonical("CodexFailure", nullable = true), true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "status" -> isExactProperty(
+                    simpleOwner,
+                    name,
+                    canonical("AgentIntegrationAuthorizationStatus"),
+                )
+                "target" -> isExactProperty(simpleOwner, name, canonical("AgentIntegration", nullable = true))
+                "failure" -> isExactProperty(simpleOwner, name, canonical("CodexFailure", nullable = true))
+                else -> false
+            }
+            else -> false
+        }
+        "CodexIntegrationAuthorization" -> when (name) {
+            "state" -> isExactProperty(
+                simpleOwner,
+                name,
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+                    canonical("AgentIntegrationAuthorizationState") + ">!!",
+            )
+            "active" -> isExactProperty(
+                simpleOwner,
+                name,
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+                    canonical("AgentIntegration", nullable = true) + ">!!",
+            )
+            "isAuthorizing" -> isExactProperty(
+                simpleOwner,
+                name,
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+            )
+            "authorize" -> isExactFunction(
+                simpleOwner,
+                name,
+                "kotlin/Unit",
+                expectedSuspend = true,
+                expectedParameters = listOf(CanonicalJavaScriptParameter("^A1", false, false)),
+            ) && key.contains(
+                "|abi=$canonicalAgentPackage/CodexIntegrationAuthorization.authorize|" +
+                    "authorize(0:0){0§<$canonicalAgentPackage.AgentIntegration>}[0]|",
+            )
+            "cancel" -> isExactFunction(
+                simpleOwner,
+                name,
+                "kotlin/Unit",
+                expectedSuspend = true,
+                expectedParameters = emptyList(),
+            )
+            else -> false
+        }
+        "CodexAgent" -> name == "integrationAuthorization" &&
+            isExactProperty(simpleOwner, name, canonical("CodexIntegrationAuthorization"))
+        else -> false
+    }
+}
+
+private fun CanonicalJavaScriptMember.d051IntegrationAuthorizationPublicSymbols(): List<String> {
+    fun symbol(kind: JavaScriptPublicSymbolKind, owner: String, name: String): String =
+        javaScriptIntegrationAuthorizationSymbols.single { raw ->
+            parseJavaScriptPublicSymbol(raw).let {
+                it.kind == kind && it.owner == owner && it.name == name
+            }
+        }
+    return when (simpleOwner) {
+        "AgentIntegration" -> listOf(
+            javaScriptAgentIntegrationType,
+            symbol(JavaScriptPublicSymbolKind.GETTER, "AgentConnectorIntegration", name),
+            symbol(JavaScriptPublicSymbolKind.GETTER, "AgentMcpServerIntegration", name),
+        )
+        "AgentIntegration.Connector", "AgentIntegration.McpServer" -> {
+            val publicOwner = if (simpleOwner.endsWith("Connector")) {
+                "AgentConnectorIntegration"
+            } else {
+                "AgentMcpServerIntegration"
+            }
+            if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR) listOf(
+                "class:$publicOwner",
+                symbol(JavaScriptPublicSymbolKind.CONSTRUCTOR, publicOwner, "constructor"),
+            ) else listOf(symbol(JavaScriptPublicSymbolKind.GETTER, publicOwner, name))
+        }
+        "AgentIntegrationAuthorizationState" -> if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR) {
+            listOf(
+                "class:AgentIntegrationAuthorizationState",
+                symbol(
+                    JavaScriptPublicSymbolKind.CONSTRUCTOR,
+                    "AgentIntegrationAuthorizationState",
+                    "constructor",
+                ),
+            )
+        } else listOf(symbol(JavaScriptPublicSymbolKind.GETTER, simpleOwner, name))
+        "CodexIntegrationAuthorization" -> when (kind) {
+            CanonicalJavaScriptMemberKind.PROPERTY -> buildList {
+                if (name == "state") add("class:CodexIntegrationAuthorization")
+                add(symbol(JavaScriptPublicSymbolKind.GETTER, simpleOwner, name))
+                add(symbol(
+                    JavaScriptPublicSymbolKind.METHOD,
+                    simpleOwner,
+                    when (name) {
+                        "state" -> "observeState"
+                        "active" -> "observeActive"
+                        else -> "observeAuthorizing"
+                    },
+                ))
+            }
+            CanonicalJavaScriptMemberKind.FUNCTION ->
+                listOf(symbol(JavaScriptPublicSymbolKind.METHOD, simpleOwner, name))
+            else -> error("Unsupported integration authorization capability: $key")
+        }
+        "CodexAgent" -> listOf(symbol(JavaScriptPublicSymbolKind.GETTER, simpleOwner, name))
+        else -> error("Unsupported integration authorization capability: $key")
     }.sorted()
 }
 
@@ -2994,6 +3250,62 @@ private fun invalidMcpServersErrors(
         javaScriptMcpServersSymbols.toSet()
     return if (exact) emptyList() else listOf(
         "Incomplete JavaScript/TypeScript MCP Servers family for capabilities " +
+            (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
+                .distinct()
+                .sorted(),
+    )
+}
+
+private fun isAllowedIntegrationAuthorizationReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean {
+    if (symbol == javaScriptAgentIntegrationType) {
+        return projections.size == 2 && projections.map { it.member.name }.toSet() ==
+            setOf("id", "displayName") && projections.all {
+            it.member.simpleOwner == "AgentIntegration" &&
+                it.member.isExactD051IntegrationAuthorizationMember() &&
+                symbol in it.shareablePublicSymbols
+        }
+    }
+    val parsed = parseJavaScriptPublicSymbol(symbol)
+    if (parsed.kind != JavaScriptPublicSymbolKind.GETTER || parsed.owner !in setOf(
+            "AgentConnectorIntegration",
+            "AgentMcpServerIntegration",
+        ) || parsed.name !in setOf("id", "displayName")
+    ) return false
+    val nestedOwner = if (parsed.owner == "AgentConnectorIntegration") {
+        "AgentIntegration.Connector"
+    } else {
+        "AgentIntegration.McpServer"
+    }
+    return projections.size == 2 && projections.all {
+        it.member.name == parsed.name && it.member.isExactD051IntegrationAuthorizationMember() &&
+            symbol in it.shareablePublicSymbols
+    } && projections.map { it.member.simpleOwner }.toSet() == setOf("AgentIntegration", nestedOwner)
+}
+
+private fun invalidIntegrationAuthorizationErrors(
+    canonicalKeys: List<String>,
+    projections: List<JavaScriptProjection>,
+): List<String> {
+    val canonicalMembers = canonicalKeys.map(::parseCanonicalJavaScriptMember)
+        .filter(CanonicalJavaScriptMember::isD051IntegrationAuthorizationSurfaceMember)
+    val related = projections.filter { projection ->
+        projection.publicSymbols.any(javaScriptIntegrationAuthorizationSymbols::contains)
+    }
+    if (canonicalMembers.isEmpty() && related.isEmpty()) return emptyList()
+    val exact = canonicalMembers.size == 20 &&
+        canonicalMembers.all(CanonicalJavaScriptMember::isExactD051IntegrationAuthorizationMember) &&
+        canonicalMembers.map(CanonicalJavaScriptMember::key).distinct().size == 20 &&
+        related.size == 20 && related.map { it.member.key }.distinct().size == 20 &&
+        related.all { projection ->
+            projection.member.isExactD051IntegrationAuthorizationMember() &&
+                projection.publicSymbols == projection.member.d051IntegrationAuthorizationPublicSymbols()
+        } && related.flatMap(JavaScriptProjection::publicSymbols).toSet() ==
+        javaScriptIntegrationAuthorizationSymbols.toSet()
+    return if (exact) emptyList() else listOf(
+        "Incomplete JavaScript/TypeScript integration authorization family for capabilities " +
             (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
                 .distinct()
                 .sorted(),

@@ -138,6 +138,19 @@ class CodexNodeApiTest {
         assertTrue(isFrozen(localConnector))
         assertTrue(isFrozen(localConnector.pluginNames))
         assertEquals(0, enumerablePropertyCount(localConnector))
+
+        val localConnectorIntegration = AgentConnectorIntegration(localConnector)
+        assertEquals("connector-local", localConnectorIntegration.id)
+        assertEquals("Local connector", localConnectorIntegration.displayName)
+        assertEquals("connector-local", localConnectorIntegration.connector.id)
+        assertTrue(isFrozen(localConnectorIntegration))
+        assertTrue(isFrozen(localConnectorIntegration.connector))
+        assertEquals(
+            "connector must be an AgentConnector",
+            runCatching {
+                AgentConnectorIntegration(js("({})").unsafeCast<AgentConnector>())
+            }.exceptionOrNull()?.message,
+        )
         val invalidConnector = runCatching {
             AgentConnector(js("({})").unsafeCast<String>(), "Invalid")
         }.exceptionOrNull()
@@ -227,6 +240,40 @@ class CodexNodeApiTest {
         assertTrue(localMcpServer.canRemove)
         assertTrue(isFrozen(localMcpServer))
         assertTrue(isFrozen(checkNotNull(localMcpServer.configuration)))
+
+        val localMcpIntegration = AgentMcpServerIntegration(localMcpServer)
+        assertEquals("remote", localMcpIntegration.id)
+        assertEquals("Remote", localMcpIntegration.displayName)
+        assertEquals("remote", localMcpIntegration.server.name)
+        assertTrue(isFrozen(localMcpIntegration))
+        assertTrue(isFrozen(localMcpIntegration.server))
+        val localAuthorizationState = AgentIntegrationAuthorizationState(
+            status = "awaiting_completion",
+            target = localMcpIntegration,
+        )
+        assertEquals("awaiting_completion", localAuthorizationState.status)
+        assertIs<AgentMcpServerIntegration>(localAuthorizationState.target)
+        assertNull(localAuthorizationState.failure)
+        assertTrue(isFrozen(localAuthorizationState))
+        assertTrue(isFrozen(checkNotNull(localAuthorizationState.target)))
+        assertEquals("idle", AgentIntegrationAuthorizationState().status)
+        listOf(
+            runCatching {
+                AgentMcpServerIntegration(js("({})").unsafeCast<AgentMcpServer>())
+            }.exceptionOrNull() to "server must be an AgentMcpServer",
+            runCatching {
+                AgentIntegrationAuthorizationState(js("({})").unsafeCast<String>())
+            }.exceptionOrNull() to "status must be a string",
+            runCatching {
+                AgentIntegrationAuthorizationState("waiting")
+            }.exceptionOrNull() to "Unknown integration authorization status: waiting",
+            runCatching {
+                AgentIntegrationAuthorizationState(
+                    target = js("({})").unsafeCast<AgentIntegration>(),
+                )
+            }.exceptionOrNull() to
+                "target must be an AgentConnectorIntegration, AgentMcpServerIntegration, or null",
+        ).forEach { (error, message) -> assertEquals(message, error?.message) }
         listOf(
             runCatching {
                 AgentMcpStdioTransport(js("({})").unsafeCast<String>())
@@ -1231,6 +1278,7 @@ class CodexNodeApiTest {
             skillManifestPath = skillFixture.sourceManifestPath
             hookInstalledSourcePath = skillFixture.installedHookConfigPath
         }
+        val authorizationBrowser = RecordingAuthorizationBrowser()
         val shellHost = wrapCodexHost(CoreHost(
             ApiTestPlatform(shellRuntime, features = setOf(
                 CodexRuntimeFeature.SHELL_COMMANDS,
@@ -1239,7 +1287,7 @@ class CodexNodeApiTest {
                 CodexRuntimeFeature.HOOKS,
                 CodexRuntimeFeature.PLUGINS,
                 CodexRuntimeFeature.MCP_SERVERS,
-            ), workspacePath = skillFixture.workspacePath),
+            ), workspacePath = skillFixture.workspacePath, authorizationBrowser = authorizationBrowser),
             CodexClientInfo("node_test", "Node Test", "test"),
         ))
         try {
@@ -1264,6 +1312,26 @@ class CodexNodeApiTest {
             assertSame(mcpServers, shellAgent.mcpServers)
             assertTrue(mcpServers.isAvailable)
             assertEquals(0, enumerablePropertyCount(mcpServers))
+            val integrationAuthorization = shellAgent.integrationAuthorization
+            assertSame(integrationAuthorization, shellAgent.integrationAuthorization)
+            assertEquals(0, enumerablePropertyCount(integrationAuthorization))
+            assertEquals("idle", integrationAuthorization.state.status)
+            assertNull(integrationAuthorization.state.target)
+            assertNull(integrationAuthorization.state.failure)
+            assertNull(integrationAuthorization.active)
+            assertFalse(integrationAuthorization.isAuthorizing)
+            assertTrue(isFrozen(integrationAuthorization.state))
+
+            val authorizationStates = mutableListOf<AgentIntegrationAuthorizationState>()
+            val activeAuthorizations = mutableListOf<AgentIntegration?>()
+            val authorizingValues = mutableListOf<Boolean>()
+            val authorizationStateObservation = integrationAuthorization.observeState(authorizationStates::add)
+            val activeAuthorizationObservation = integrationAuthorization.observeActive(activeAuthorizations::add)
+            val authorizingObservation = integrationAuthorization.observeAuthorizing(authorizingValues::add)
+            awaitCondition {
+                authorizationStates.isNotEmpty() && activeAuthorizations.isNotEmpty() &&
+                    authorizingValues.isNotEmpty()
+            }
 
             val controller = js("new AbortController()")
             controller.abort()
@@ -1969,6 +2037,91 @@ class CodexNodeApiTest {
             assertTrue(listError.recoverable)
             assertEquals(3, shellRuntime.appListRequests.size)
 
+            shellRuntime.connectorAccessible = false
+            val connectorAuthorization = integrationAuthorization.authorize(
+                AgentConnectorIntegration(customConnector),
+            )
+            awaitCondition {
+                integrationAuthorization.state.status == "awaiting_completion" &&
+                    integrationAuthorization.active is AgentConnectorIntegration &&
+                    integrationAuthorization.isAuthorizing
+            }
+            assertEquals("connector-custom", integrationAuthorization.active?.id)
+            assertEquals("Custom connector", integrationAuthorization.active?.displayName)
+            assertEquals("https://example.com/install", authorizationBrowser.urls.last().value)
+            assertEquals("external", authorizationBrowser.urls.last().purpose.name.lowercase())
+            assertTrue(isFrozen(integrationAuthorization.state))
+            assertTrue(isFrozen(checkNotNull(integrationAuthorization.state.target)))
+            shellRuntime.completeConnectorAuthorization()
+            connectorAuthorization.await()
+            awaitCondition {
+                integrationAuthorization.state.status == "authorized" &&
+                    integrationAuthorization.active == null && !integrationAuthorization.isAuthorizing
+            }
+            val authorizedConnector = assertIs<AgentConnectorIntegration>(
+                integrationAuthorization.state.target,
+            )
+            assertTrue(authorizedConnector.connector.isAccessible)
+            assertEquals(listOf(false, true, false), authorizingValues.distinctConsecutive())
+
+            val mcpTarget = AgentMcpServerIntegration(
+                AgentMcpServer("drive", "Drive MCP", "not_logged_in"),
+            )
+            val mcpAuthorization = integrationAuthorization.authorize(mcpTarget)
+            awaitCondition {
+                integrationAuthorization.state.status == "awaiting_completion" &&
+                    integrationAuthorization.active is AgentMcpServerIntegration
+            }
+            assertEquals("drive", shellRuntime.mcpOauthRequests.single()["name"]?.jsonPrimitive?.content)
+            assertEquals("thread-js", shellRuntime.mcpOauthRequests.single()["threadId"]?.jsonPrimitive?.content)
+            assertEquals("https://accounts.example.com/oauth/drive", authorizationBrowser.urls.last().value)
+            shellRuntime.completeMcpAuthorization("drive")
+            mcpAuthorization.await()
+            awaitCondition { integrationAuthorization.state.status == "authorized" }
+            assertEquals("drive", assertIs<AgentMcpServerIntegration>(
+                integrationAuthorization.state.target,
+            ).server.name)
+
+            val cancelledMcpAuthorization = integrationAuthorization.authorize(mcpTarget)
+            awaitCondition { integrationAuthorization.state.status == "awaiting_completion" }
+            integrationAuthorization.cancel().await()
+            val cancelledAuthorization = runCatching { cancelledMcpAuthorization.await() }.exceptionOrNull()
+            assertEquals("AbortError", cancelledAuthorization?.asDynamic()?.name as String)
+            awaitCondition {
+                integrationAuthorization.state.status == "idle" &&
+                    integrationAuthorization.active == null && !integrationAuthorization.isAuthorizing
+            }
+            assertEquals(3, authorizationBrowser.closedPresentations)
+
+            shellRuntime.failNextMcpOauthLogin = true
+            val authorizationFailureValue = runCatching {
+                integrationAuthorization.authorize(localMcpIntegration).await()
+            }.exceptionOrNull()
+            val authorizationFailure = assertIs<CodexError>(
+                authorizationFailureValue,
+                authorizationFailureValue?.message,
+            )
+            assertEquals("mcp_authorization_failed", authorizationFailure.code)
+            assertEquals("MCP authorization denied", authorizationFailure.message)
+            assertEquals("failed", integrationAuthorization.state.status)
+            assertEquals("mcp_authorization_failed", integrationAuthorization.state.failure?.code)
+            assertTrue(isFrozen(checkNotNull(integrationAuthorization.state.failure)))
+
+            val authorizationRequestsBeforeAbort = shellRuntime.requestMethods.size
+            val authorizationAbortController = js("new AbortController()")
+            authorizationAbortController.abort()
+            val abortedAuthorization = runCatching {
+                integrationAuthorization.authorize(
+                    mcpTarget,
+                    authorizationAbortController.signal.unsafeCast<AbortSignal>(),
+                ).await()
+            }.exceptionOrNull()
+            assertEquals("AbortError", abortedAuthorization?.asDynamic()?.name as String)
+            assertEquals(authorizationRequestsBeforeAbort, shellRuntime.requestMethods.size)
+            assertTrue(authorizationStates.any { it.status == "awaiting_completion" })
+            assertTrue(authorizationStates.all(::isFrozen))
+            assertTrue(activeAuthorizations.filterNotNull().all(::isFrozen))
+
             val shellAvailability = mutableListOf<Boolean>()
             shellConversation.observeState { shellAvailability += it.canRunShellCommand }
             awaitCondition { shellAvailability.lastOrNull() == true }
@@ -2030,6 +2183,7 @@ class CodexNodeApiTest {
             assertSame(skills, shellAgent.skills)
             assertSame(hooks, shellAgent.hooks)
             assertSame(mcpServers, shellAgent.mcpServers)
+            assertSame(integrationAuthorization, shellAgent.integrationAuthorization)
             val requestsBeforeClosedList = shellRuntime.appListRequests.size
             val conversationRequestsBeforeClosedList = shellRuntime.threadListRequests.size
             val conversationRequestsBeforeClosedRead = shellRuntime.threadReadRequests.size
@@ -2040,6 +2194,7 @@ class CodexNodeApiTest {
             val mcpStatusBeforeClosed = shellRuntime.mcpStatusRequests.size
             val mcpReloadsBeforeClosed = shellRuntime.mcpReloadRequests.size
             val mcpWritesBeforeClosed = shellRuntime.mcpBatchWriteRequests.size
+            val authorizationRequestsBeforeClosed = shellRuntime.requestMethods.size
             val closedList = runCatching { connectors.list().await() }.exceptionOrNull()
             assertEquals("IllegalStateException", closedList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedList.message)
@@ -2092,6 +2247,18 @@ class CodexNodeApiTest {
             assertEquals(mcpStatusBeforeClosed, shellRuntime.mcpStatusRequests.size)
             assertEquals(mcpReloadsBeforeClosed, shellRuntime.mcpReloadRequests.size)
             assertEquals(mcpWritesBeforeClosed, shellRuntime.mcpBatchWriteRequests.size)
+            listOf(
+                runCatching { integrationAuthorization.authorize(mcpTarget).await() }.exceptionOrNull(),
+                runCatching { integrationAuthorization.cancel().await() }.exceptionOrNull(),
+            ).forEach { closedAuthorizationOperation ->
+                assertEquals("IllegalStateException", closedAuthorizationOperation?.asDynamic()?.name as String)
+                assertEquals("Codex agent is closed", closedAuthorizationOperation.message)
+            }
+            assertEquals(authorizationRequestsBeforeClosed, shellRuntime.requestMethods.size)
+            awaitCondition {
+                authorizationStateObservation.isClosed && activeAuthorizationObservation.isClosed &&
+                    authorizingObservation.isClosed
+            }
             val requestsBeforePureResolution = shellRuntime.requestMethods.size
             assertEquals("medium", models.resolveEffort(preferredModel, "default").await())
             assertEquals("low", models.resolveEffort(preferredModel, "first").await())
@@ -2426,12 +2593,13 @@ private class ApiTestPlatform(
     private val restoreFailure: Throwable? = null,
     private val prepareEntered: CompletableDeferred<Unit>? = null,
     private val prepareRelease: CompletableDeferred<Unit>? = null,
+    authorizationBrowser: CodexAuthorizationBrowser =
+        CodexAuthorizationBrowser { CodexAuthorizationPresentation.None },
 ) : CodexPlatform {
     var selectedWorkspacePath: String? = null
     var failNextPrepare: Boolean = false
 
-    override val authorizationBrowser: CodexAuthorizationBrowser =
-        CodexAuthorizationBrowser { CodexAuthorizationPresentation.None }
+    override val authorizationBrowser: CodexAuthorizationBrowser = authorizationBrowser
     override val workspaceStore: CodexWorkspaceStore = object : CodexWorkspaceStore {
         override suspend fun select(selection: CodexWorkspaceSelection): CodexWorkspaceResolution {
             val path = (selection as CodexPathWorkspaceSelection).path
@@ -2462,6 +2630,22 @@ private class ApiTestPlatform(
             features = features,
         )
     }
+}
+
+private class RecordingAuthorizationBrowser : CodexAuthorizationBrowser {
+    val urls: MutableList<io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl> = mutableListOf()
+    var closedPresentations: Int = 0
+
+    override fun open(
+        url: io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl,
+    ): CodexAuthorizationPresentation {
+        urls += url
+        return CodexAuthorizationPresentation { closedPresentations += 1 }
+    }
+}
+
+private fun <T> List<T>.distinctConsecutive(): List<T> = filterIndexed { index, value ->
+    index == 0 || this[index - 1] != value
 }
 
 private class CountingAbortSignal : AbortSignal {
@@ -2588,6 +2772,7 @@ private class ApiTestRuntime : CodexRuntime {
     var failNextThreadList: Boolean = false
     val appListRequests: MutableList<JsonObject> = mutableListOf()
     var failNextAppList: Boolean = false
+    var connectorAccessible: Boolean = true
     val modelListRequests: MutableList<JsonObject> = mutableListOf()
     val configReadRequests: MutableList<JsonObject> = mutableListOf()
     var failNextModelList: Boolean = false
@@ -2604,6 +2789,8 @@ private class ApiTestRuntime : CodexRuntime {
     val mcpBatchWriteRequests: MutableList<JsonObject> = mutableListOf()
     var failNextHookList: Boolean = false
     var failNextMcpStatus: Boolean = false
+    var failNextMcpOauthLogin: Boolean = false
+    val mcpOauthRequests: MutableList<JsonObject> = mutableListOf()
     var hookInstalledSourcePath: String? = null
     var hookVisible: Boolean = false
     var revealHookAtRequest: Int? = null
@@ -2662,6 +2849,18 @@ private class ApiTestRuntime : CodexRuntime {
         put("turnId", activeTurnId)
         put("run", hookRun("completed", "Complete", listOf("finished", "detached")))
     })
+
+    suspend fun completeConnectorAuthorization(): Unit {
+        connectorAccessible = true
+        notify("app/list/updated", connectorUpdateResult(connectorAccessible))
+    }
+
+    suspend fun completeMcpAuthorization(name: String): Unit =
+        notify("mcpServer/oauthLogin/completed", buildJsonObject {
+            put("threadId", "thread-js")
+            put("name", name)
+            put("success", true)
+        })
 
     override suspend fun start(): Unit {
         started = true
@@ -2724,7 +2923,7 @@ private class ApiTestRuntime : CodexRuntime {
                     val cursor = params["cursor"]?.let {
                         if (it == JsonNull) null else it.jsonPrimitive.content
                     }
-                    respond(id, appListResult(cursor))
+                    respond(id, appListResult(cursor, connectorAccessible))
                 }
             }
             "model/list" -> {
@@ -2842,6 +3041,21 @@ private class ApiTestRuntime : CodexRuntime {
                                 })
                             }
                         }
+                    })
+                }
+            }
+            "mcpServer/oauth/login" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                mcpOauthRequests += params
+                if (failNextMcpOauthLogin) {
+                    failNextMcpOauthLogin = false
+                    respondError(id, "MCP authorization denied")
+                } else {
+                    respond(id, buildJsonObject {
+                        put(
+                            "authorizationUrl",
+                            "https://accounts.example.com/oauth/${params["name"]?.jsonPrimitive?.content}",
+                        )
                     })
                 }
             }
@@ -3216,7 +3430,7 @@ private fun threadReadResult(threadId: String): JsonObject = buildJsonObject {
     )
 }
 
-private fun appListResult(cursor: String?): JsonObject = buildJsonObject {
+private fun appListResult(cursor: String?, isAccessible: Boolean = true): JsonObject = buildJsonObject {
     putJsonArray("data") {
         when (cursor) {
             null -> add(buildJsonObject {
@@ -3224,7 +3438,7 @@ private fun appListResult(cursor: String?): JsonObject = buildJsonObject {
                 put("name", "Custom connector")
                 put("description", "Custom description")
                 put("installUrl", "https://example.com/install")
-                put("isAccessible", true)
+                put("isAccessible", isAccessible)
                 put("isEnabled", false)
                 putJsonArray("pluginDisplayNames") {
                     add(JsonPrimitive("Plugin one"))
@@ -3239,6 +3453,23 @@ private fun appListResult(cursor: String?): JsonObject = buildJsonObject {
         }
     }
     if (cursor == null) put("nextCursor", "page-2")
+}
+
+private fun connectorUpdateResult(isAccessible: Boolean): JsonObject = buildJsonObject {
+    putJsonArray("data") {
+        add(buildJsonObject {
+            put("id", "connector-custom")
+            put("name", "Custom connector")
+            put("description", "Custom description")
+            put("installUrl", "https://example.com/install")
+            put("isAccessible", isAccessible)
+            put("isEnabled", false)
+            putJsonArray("pluginDisplayNames") {
+                add(JsonPrimitive("Plugin one"))
+                add(JsonPrimitive("Plugin two"))
+            }
+        })
+    }
 }
 
 private fun modelListResult(cursor: String?): JsonObject = buildJsonObject {

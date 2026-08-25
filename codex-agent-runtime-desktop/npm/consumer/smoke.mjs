@@ -369,6 +369,12 @@ test('esm exposes the same runtime values as CommonJS', () => {
   const esmExports = Object.keys(sdk).sort();
   assert.deepEqual(esmExports, commonJsExports);
   assert.equal(sdk.AgentConnector, commonJsSdk.AgentConnector);
+  assert.equal(sdk.AgentConnectorIntegration, commonJsSdk.AgentConnectorIntegration);
+  assert.equal(sdk.AgentMcpServerIntegration, commonJsSdk.AgentMcpServerIntegration);
+  assert.equal(
+    sdk.AgentIntegrationAuthorizationState,
+    commonJsSdk.AgentIntegrationAuthorizationState,
+  );
   assert.equal(sdk.AgentConversation, commonJsSdk.AgentConversation);
   assert.equal(sdk.AgentConversationSummary, commonJsSdk.AgentConversationSummary);
   assert.equal(sdk.CodexAuthorizationUrl, commonJsSdk.CodexAuthorizationUrl);
@@ -421,6 +427,19 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.CodexSkills, commonJsSdk.CodexSkills);
   assert.equal(sdk.CodexHooks, commonJsSdk.CodexHooks);
   assert.equal(sdk.CodexMcpServers, commonJsSdk.CodexMcpServers);
+  assert.equal(sdk.CodexIntegrationAuthorization, commonJsSdk.CodexIntegrationAuthorization);
+  assert.equal(
+    Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'integrationAuthorization').get,
+    Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'integrationAuthorization').get,
+  );
+  assert.equal(
+    sdk.CodexIntegrationAuthorization.prototype.authorize,
+    commonJsSdk.CodexIntegrationAuthorization.prototype.authorize,
+  );
+  assert.equal(
+    sdk.CodexIntegrationAuthorization.prototype.cancel,
+    commonJsSdk.CodexIntegrationAuthorization.prototype.cancel,
+  );
   assert.equal(
     Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'skills').get,
     Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'skills').get,
@@ -746,6 +765,21 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexMcpServers#add:(configuration: AgentMcpServerConfiguration, signal?: AbortSignal | null | undefined): Promise<AgentMcpServer>',
   ), 'MCP server installation must preserve canonical configuration and cancellation');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'type:AgentIntegration:AgentConnectorIntegration | AgentMcpServerIntegration',
+  ), 'Integration targets must remain the exact two-variant reviewed union');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentIntegrationAuthorizationState#(status?: AgentIntegrationAuthorizationStatus, target?: AgentIntegration | null | undefined, failure?: CodexFailure | null | undefined)',
+  ), 'Integration authorization state must preserve defaults, target union, and structured failure');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:CodexAgent#integrationAuthorization:CodexIntegrationAuthorization',
+  ), 'Integration authorization ownership must be discoverable from an Agent');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexIntegrationAuthorization#authorize:(target: AgentIntegration, signal?: AbortSignal | null | undefined): Promise<void>',
+  ), 'Integration authorization must preserve the target union and cancellation');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexIntegrationAuthorization#observeState:(listener: (state: AgentIntegrationAuthorizationState) => void): CodexObservation',
+  ), 'Integration authorization state observation must be discoverable');
   assert.ok(compilerApi.publicSymbols.includes(
     'getter:CodexAgent#authentication:CodexAuthentication',
   ), 'Agent authentication ownership must be discoverable');

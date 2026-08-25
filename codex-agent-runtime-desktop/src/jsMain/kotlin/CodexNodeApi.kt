@@ -25,6 +25,9 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentHookHandler as CoreHook
 import io.github.codex_agent_labs.codexmobile.agent.AgentHookRunStatus as CoreHookRunStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentHookTrustStatus as CoreHookTrustStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentInstallationScope as CoreInstallationScope
+import io.github.codex_agent_labs.codexmobile.agent.AgentIntegration as CoreIntegration
+import io.github.codex_agent_labs.codexmobile.agent.AgentIntegrationAuthorizationState as CoreIntegrationAuthorizationState
+import io.github.codex_agent_labs.codexmobile.agent.AgentIntegrationAuthorizationStatus as CoreIntegrationAuthorizationStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentInvocation as CoreInvocation
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable as CoreMcpEnvironmentVariable
@@ -63,6 +66,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexFailure as CoreFailure
 import io.github.codex_agent_labs.codexmobile.agent.CodexHost as CoreHost
 import io.github.codex_agent_labs.codexmobile.agent.CodexHostState as CoreHostState
 import io.github.codex_agent_labs.codexmobile.agent.CodexHooks as CoreHooks
+import io.github.codex_agent_labs.codexmobile.agent.CodexIntegrationAuthorization as CoreIntegrationAuthorization
 import io.github.codex_agent_labs.codexmobile.agent.CodexModels as CoreModels
 import io.github.codex_agent_labs.codexmobile.agent.CodexMcpServers as CoreMcpServers
 import io.github.codex_agent_labs.codexmobile.agent.CodexOperationException
@@ -710,19 +714,7 @@ public class AgentConnector public constructor(
     public val pluginNames: Array<String>
 
     init {
-        requireJavaScriptArray(pluginNames, "pluginNames")
-        val core = CoreConnector(
-            id = id.requireJavaScriptString("id"),
-            name = name.requireJavaScriptString("name"),
-            description = description.requireJavaScriptString("description"),
-            installUrl = installUrl.requireJavaScriptNullableString("installUrl"),
-            isAccessible = isAccessible.requireJavaScriptBoolean("isAccessible"),
-            isEnabled = isEnabled.requireJavaScriptBoolean("isEnabled"),
-            pluginNames = List(pluginNames.size) { index ->
-                requireOwnJavaScriptArrayIndex(pluginNames, index, "pluginNames")
-                pluginNames[index].requireJavaScriptString("pluginNames[$index]")
-            },
-        )
+        val core = canonicalConnector(id, name, description, installUrl, isAccessible, isEnabled, pluginNames)
         this.id = core.id
         this.name = core.name
         this.description = core.description
@@ -731,6 +723,53 @@ public class AgentConnector public constructor(
         this.isEnabled = core.isEnabled
         this.pluginNames = core.pluginNames.toTypedArray()
         freezeSnapshot(this.pluginNames)
+        freezeSnapshot(this)
+    }
+}
+
+/** Common immutable connector/MCP integration target. */
+@JsExport
+public interface AgentIntegration {
+    public val id: String
+    public val displayName: String
+}
+
+/** Immutable connector authorization target. */
+@JsExport
+public class AgentConnectorIntegration public constructor(
+    connector: AgentConnector,
+) : AgentIntegration {
+    public val connector: AgentConnector
+    public override val id: String
+    public override val displayName: String
+
+    init {
+        val value: Any? = connector
+        require(value is AgentConnector) { "connector must be an AgentConnector" }
+        val core = CoreIntegration.Connector(value.canonicalCopy())
+        this.connector = core.connector.project()
+        this.id = core.id
+        this.displayName = core.displayName
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable MCP-server authorization target. */
+@JsExport
+public class AgentMcpServerIntegration public constructor(
+    server: AgentMcpServer,
+) : AgentIntegration {
+    public val server: AgentMcpServer
+    public override val id: String
+    public override val displayName: String
+
+    init {
+        val value: Any? = server
+        require(value is AgentMcpServer) { "server must be an AgentMcpServer" }
+        val core = CoreIntegration.McpServer(value.canonicalCopy())
+        this.server = core.server.project()
+        this.id = core.id
+        this.displayName = core.displayName
         freezeSnapshot(this)
     }
 }
@@ -1048,6 +1087,26 @@ public class CodexFailure internal constructor(
     public val recoverable: Boolean,
 ) {
     init {
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable integration-authorization lifecycle snapshot. */
+@JsExport
+public class AgentIntegrationAuthorizationState public constructor(
+    status: String = "idle",
+    target: AgentIntegration? = null,
+    failure: CodexFailure? = null,
+) {
+    public val status: String
+    public val target: AgentIntegration?
+    public val failure: CodexFailure?
+
+    init {
+        val core = canonicalIntegrationAuthorizationState(status, target, failure)
+        this.status = core.status.name.lowercase()
+        this.target = core.target?.project()
+        this.failure = core.failure?.project()
         freezeSnapshot(this)
     }
 }
@@ -1381,6 +1440,8 @@ public class CodexAgent internal constructor(
         CodexHooks(host, core.hooks, jsApiToken)
     private val mcpServersProjection: CodexMcpServers =
         CodexMcpServers(host, core.mcpServers, jsApiToken)
+    private val integrationAuthorizationProjection: CodexIntegrationAuthorization =
+        CodexIntegrationAuthorization(host, core, core.integrationAuthorization, jsApiToken)
     private var cachedCoreConversation: CoreConversation? = null
     private var cachedConversation: CodexConversation? = null
 
@@ -1409,6 +1470,9 @@ public class CodexAgent internal constructor(
 
     public val mcpServers: CodexMcpServers
         get() = mcpServersProjection
+
+    public val integrationAuthorization: CodexIntegrationAuthorization
+        get() = integrationAuthorizationProjection
 
     public val activeConversation: CodexConversation?
         get() = if (host.owns(core)) core.conversations.active.value?.let(::wrapConversation) else null
@@ -1769,6 +1833,67 @@ public class CodexAuthentication internal constructor(
     }
 }
 
+/** Agent-owned connector and MCP-server authorization lifecycle. */
+@JsExport
+public class CodexIntegrationAuthorization internal constructor(
+    private val host: CodexHost,
+    private val agent: CoreAgent,
+    private val core: CoreIntegrationAuthorization,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex integration authorization is created by an Agent" }
+        hideBackingFields(this)
+    }
+
+    public val state: AgentIntegrationAuthorizationState
+        get() = core.state.value.project()
+
+    public val active: AgentIntegration?
+        get() = core.active.value?.project()
+
+    public val isAuthorizing: Boolean
+        get() = core.isAuthorizing.value
+
+    public fun authorize(
+        target: AgentIntegration,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        val value: Any? = target
+        require(value is AgentIntegration) { "target must be an AgentIntegration" }
+        core.authorize(value.canonicalCopy())
+    }
+
+    public fun cancel(signal: AbortSignal? = null): Promise<Unit> =
+        host.operationScope().codexUnitPromise(signal) { core.cancel() }
+
+    public fun observeState(listener: (AgentIntegrationAuthorizationState) -> Unit): CodexObservation =
+        observeOwnedState(core.state, CoreIntegrationAuthorizationState::project, listener)
+
+    public fun observeActive(listener: (AgentIntegration?) -> Unit): CodexObservation =
+        observeOwnedState(core.active, { it?.project() }, listener)
+
+    public fun observeAuthorizing(listener: (Boolean) -> Unit): CodexObservation =
+        observeOwnedState(core.isAuthorizing, { it }, listener)
+
+    private fun <T, R> observeOwnedState(
+        state: StateFlow<T>,
+        project: (T) -> R,
+        listener: (R) -> Unit,
+    ): CodexObservation {
+        val owned = combine(host.lifecycleState(), state) { hostState, value ->
+            OwnedValue(value, (hostState as? CoreHostState.Ready)?.agent !== agent)
+        }
+        return observeFlow(
+            scope = host.operationScope(),
+            state = owned,
+            project = { project(it.value) },
+            listener = listener,
+            isTerminal = { it.terminal },
+        )
+    }
+}
+
 /** Explicitly closeable canonical Conversation projection. */
 @JsExport
 public class CodexConversation internal constructor(
@@ -1968,6 +2093,12 @@ private fun String.toCoreMcpAuthStatus(): CoreMcpAuthStatus {
     val value = requireJavaScriptString("authStatus")
     return CoreMcpAuthStatus.entries.singleOrNull { it.name.lowercase() == value }
         ?: throw IllegalArgumentException("Unknown MCP auth status: $value")
+}
+
+private fun String.toCoreIntegrationAuthorizationStatus(): CoreIntegrationAuthorizationStatus {
+    val value = requireJavaScriptString("status")
+    return CoreIntegrationAuthorizationStatus.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown integration authorization status: $value")
 }
 
 private fun String.requireJavaScriptString(name: String): String {
@@ -2269,6 +2400,78 @@ private fun AgentMcpServer.canonicalCopy(): CoreMcpServer = canonicalMcpServer(
     canRemove,
 )
 
+private fun canonicalConnector(
+    id: String,
+    name: String,
+    description: String,
+    installUrl: String?,
+    isAccessible: Boolean,
+    isEnabled: Boolean,
+    pluginNames: Array<String>,
+): CoreConnector {
+    requireJavaScriptArray(pluginNames, "pluginNames")
+    return CoreConnector(
+        id = id.requireJavaScriptString("id"),
+        name = name.requireJavaScriptString("name"),
+        description = description.requireJavaScriptString("description"),
+        installUrl = installUrl.requireJavaScriptNullableString("installUrl"),
+        isAccessible = isAccessible.requireJavaScriptBoolean("isAccessible"),
+        isEnabled = isEnabled.requireJavaScriptBoolean("isEnabled"),
+        pluginNames = List(pluginNames.size) { index ->
+            requireOwnJavaScriptArrayIndex(pluginNames, index, "pluginNames")
+            pluginNames[index].requireJavaScriptString("pluginNames[$index]")
+        },
+    )
+}
+
+private fun AgentConnector.canonicalCopy(): CoreConnector = canonicalConnector(
+    id,
+    name,
+    description,
+    installUrl,
+    isAccessible,
+    isEnabled,
+    pluginNames,
+)
+
+private fun AgentIntegration.canonicalCopy(): CoreIntegration {
+    val value: Any? = this
+    return when (value) {
+        is AgentConnectorIntegration -> CoreIntegration.Connector(value.connector.canonicalCopy())
+        is AgentMcpServerIntegration -> CoreIntegration.McpServer(value.server.canonicalCopy())
+        else -> throw IllegalArgumentException(
+            "target must be an AgentConnectorIntegration or AgentMcpServerIntegration",
+        )
+    }
+}
+
+private fun canonicalIntegrationAuthorizationState(
+    status: String,
+    target: AgentIntegration?,
+    failure: CodexFailure?,
+): CoreIntegrationAuthorizationState {
+    val targetValue: Any? = target
+    require(
+        targetValue == null || targetValue is AgentConnectorIntegration ||
+            targetValue is AgentMcpServerIntegration,
+    ) { "target must be an AgentConnectorIntegration, AgentMcpServerIntegration, or null" }
+    val failureValue: Any? = failure
+    require(failureValue == null || failureValue is CodexFailure) {
+        "failure must be a CodexFailure or null"
+    }
+    return CoreIntegrationAuthorizationState(
+        status = status.toCoreIntegrationAuthorizationStatus(),
+        target = targetValue?.unsafeCast<AgentIntegration>()?.canonicalCopy(),
+        failure = failureValue?.let {
+            CoreFailure(
+                code = it.code.requireJavaScriptString("failure.code"),
+                message = it.message.requireJavaScriptString("failure.message"),
+                isRecoverable = it.recoverable.requireJavaScriptBoolean("failure.recoverable"),
+            )
+        },
+    )
+}
+
 private fun canonicalServiceTier(
     id: String,
     name: String,
@@ -2510,6 +2713,18 @@ private fun CoreMcpServer.project(): AgentMcpServer = AgentMcpServer(
     origin = origin.name.lowercase(),
     canRemove = canRemove,
 )
+
+private fun CoreIntegration.project(): AgentIntegration = when (this) {
+    is CoreIntegration.Connector -> AgentConnectorIntegration(connector.project())
+    is CoreIntegration.McpServer -> AgentMcpServerIntegration(server.project())
+}
+
+private fun CoreIntegrationAuthorizationState.project(): AgentIntegrationAuthorizationState =
+    AgentIntegrationAuthorizationState(
+        status = status.name.lowercase(),
+        target = target?.project(),
+        failure = failure?.project(),
+    )
 
 private fun CoreServiceTier.project(): AgentServiceTier = AgentServiceTier(id, name, description)
 

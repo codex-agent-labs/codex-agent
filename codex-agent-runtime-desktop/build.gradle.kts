@@ -238,6 +238,46 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get isEnabled(): boolean;
     get pluginNames(): ReadonlyArray<string>;
 }"""
+        val rawAgentIntegrationDeclaration =
+            """export declare interface AgentIntegration {
+    readonly id: string;
+    readonly displayName: string;
+    readonly __doNotUseOrImplementIt: {
+        readonly AgentIntegration: unique symbol;
+    };
+}"""
+        val reviewedAgentIntegrationDeclaration =
+            "export type AgentIntegration = AgentConnectorIntegration | AgentMcpServerIntegration;"
+        val rawAgentConnectorIntegrationDeclaration =
+            """export declare class AgentConnectorIntegration implements AgentIntegration {
+    constructor(connector: AgentConnector);
+    get connector(): AgentConnector;
+    get id(): string;
+    get displayName(): string;
+    readonly __doNotUseOrImplementIt: AgentIntegration["__doNotUseOrImplementIt"];
+}"""
+        val reviewedAgentConnectorIntegrationDeclaration =
+            """export declare class AgentConnectorIntegration {
+    constructor(connector: AgentConnector);
+    get connector(): AgentConnector;
+    get id(): string;
+    get displayName(): string;
+}"""
+        val rawAgentMcpServerIntegrationDeclaration =
+            """export declare class AgentMcpServerIntegration implements AgentIntegration {
+    constructor(server: AgentMcpServer);
+    get server(): AgentMcpServer;
+    get id(): string;
+    get displayName(): string;
+    readonly __doNotUseOrImplementIt: AgentIntegration["__doNotUseOrImplementIt"];
+}"""
+        val reviewedAgentMcpServerIntegrationDeclaration =
+            """export declare class AgentMcpServerIntegration {
+    constructor(server: AgentMcpServer);
+    get server(): AgentMcpServer;
+    get id(): string;
+    get displayName(): string;
+}"""
         val rawAgentInvocationDeclaration =
             """export declare interface AgentInvocation {
     readonly name: string;
@@ -277,6 +317,20 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get name(): string;
     get uri(): string;
     get key(): string;
+}"""
+        val rawIntegrationAuthorizationStateDeclaration =
+            """export declare class AgentIntegrationAuthorizationState {
+    constructor(status?: string, target?: Nullable<AgentIntegration>, failure?: Nullable<CodexFailure>);
+    get status(): string;
+    get target(): Nullable<AgentIntegration>;
+    get failure(): Nullable<CodexFailure>;
+}"""
+        val reviewedIntegrationAuthorizationStateDeclaration =
+            """export declare class AgentIntegrationAuthorizationState {
+    constructor(status?: AgentIntegrationAuthorizationStatus, target?: Nullable<AgentIntegration>, failure?: Nullable<CodexFailure>);
+    get status(): AgentIntegrationAuthorizationStatus;
+    get target(): Nullable<AgentIntegration>;
+    get failure(): Nullable<CodexFailure>;
 }"""
         val expectedAgentConversationSummaryDeclaration =
             """export declare class AgentConversationSummary {
@@ -665,6 +719,30 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     add(configuration: AgentMcpServerConfiguration, signal?: Nullable<AbortSignal>): Promise<AgentMcpServer>;
     remove(server: AgentMcpServer, signal?: Nullable<AbortSignal>): Promise<void>;
 }"""
+        val rawCodexIntegrationAuthorizationDeclaration =
+            """export declare class CodexIntegrationAuthorization {
+    private constructor();
+    get state(): AgentIntegrationAuthorizationState;
+    get active(): Nullable<AgentIntegration>;
+    get isAuthorizing(): boolean;
+    authorize(target: AgentIntegration, signal?: Nullable<AbortSignal>): Promise<void>;
+    cancel(signal?: Nullable<AbortSignal>): Promise<void>;
+    observeState(listener: (p0: AgentIntegrationAuthorizationState) => void): CodexObservation;
+    observeActive(listener: (p0: Nullable<AgentIntegration>) => void): CodexObservation;
+    observeAuthorizing(listener: (p0: boolean) => void): CodexObservation;
+}"""
+        val reviewedCodexIntegrationAuthorizationDeclaration =
+            """export declare class CodexIntegrationAuthorization {
+    private constructor();
+    get state(): AgentIntegrationAuthorizationState;
+    get active(): Nullable<AgentIntegration>;
+    get isAuthorizing(): boolean;
+    authorize(target: AgentIntegration, signal?: Nullable<AbortSignal>): Promise<void>;
+    cancel(signal?: Nullable<AbortSignal>): Promise<void>;
+    observeState(listener: (state: AgentIntegrationAuthorizationState) => void): CodexObservation;
+    observeActive(listener: (target: Nullable<AgentIntegration>) => void): CodexObservation;
+    observeAuthorizing(listener: (isAuthorizing: boolean) => void): CodexObservation;
+}"""
         check(actual.lineSequence().count { it == rawAgentSkillScopeDisplayNameDeclaration } == 1) {
             "Unexpected agentSkillScopeDisplayName TypeScript declaration"
         }
@@ -698,6 +776,15 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawAgentConnectorDeclaration).size == 2) {
             "Unexpected AgentConnector TypeScript declaration"
         }
+        check(actual.split(rawAgentIntegrationDeclaration).size == 2) {
+            "Unexpected AgentIntegration TypeScript declaration"
+        }
+        check(actual.split(rawAgentConnectorIntegrationDeclaration).size == 2) {
+            "Unexpected AgentConnectorIntegration TypeScript declaration"
+        }
+        check(actual.split(rawAgentMcpServerIntegrationDeclaration).size == 2) {
+            "Unexpected AgentMcpServerIntegration TypeScript declaration"
+        }
         check(actual.split(rawAgentInvocationDeclaration).size == 2) {
             "Unexpected AgentInvocation TypeScript declaration"
         }
@@ -715,6 +802,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         }
         check(actual.split(rawCodexAuthorizationUrlDeclaration).size == 2) {
             "Unexpected CodexAuthorizationUrl TypeScript declaration"
+        }
+        check(actual.split(rawIntegrationAuthorizationStateDeclaration).size == 2) {
+            "Unexpected AgentIntegrationAuthorizationState TypeScript declaration"
         }
         check(actual.split(expectedAgentServiceTierDeclaration).size == 2) {
             "Unexpected AgentServiceTier TypeScript declaration"
@@ -788,6 +878,14 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawCodexMcpServersDeclaration).size == 2) {
             "Unexpected CodexMcpServers TypeScript declaration"
         }
+        check(actual.lineSequence().count {
+            it == "    get integrationAuthorization(): CodexIntegrationAuthorization;"
+        } == 1) {
+            "Unexpected CodexAgent.integrationAuthorization TypeScript declaration"
+        }
+        check(actual.split(rawCodexIntegrationAuthorizationDeclaration).size == 2) {
+            "Unexpected CodexIntegrationAuthorization TypeScript declaration"
+        }
         actual = actual.replace(
             "type Nullable<T> = T | null | undefined\n",
             """type Nullable<T> = T | null | undefined;
@@ -826,6 +924,15 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
             rawAgentConnectorDeclaration,
             reviewedAgentConnectorDeclaration,
         ).replace(
+            rawAgentIntegrationDeclaration,
+            reviewedAgentIntegrationDeclaration,
+        ).replace(
+            rawAgentConnectorIntegrationDeclaration,
+            reviewedAgentConnectorIntegrationDeclaration,
+        ).replace(
+            rawAgentMcpServerIntegrationDeclaration,
+            reviewedAgentMcpServerIntegrationDeclaration,
+        ).replace(
             rawAgentInvocationDeclaration,
             reviewedAgentInvocationDeclaration,
         ).replace(
@@ -840,6 +947,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawCodexAuthorizationUrlDeclaration,
             reviewedCodexAuthorizationUrlDeclaration,
+        ).replace(
+            rawIntegrationAuthorizationStateDeclaration,
+            reviewedIntegrationAuthorizationStateDeclaration,
         ).replace(
             rawAgentModelDeclaration,
             reviewedAgentModelDeclaration,
@@ -888,6 +998,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawCodexMcpServersDeclaration,
             reviewedCodexMcpServersDeclaration,
+        ).replace(
+            rawCodexIntegrationAuthorizationDeclaration,
+            reviewedCodexIntegrationAuthorizationDeclaration,
         ).replace(
             """export declare class AgentFormTextListValue {
     constructor(value: Array<string>);

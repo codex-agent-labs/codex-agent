@@ -450,6 +450,169 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `integration authorization closes exact target state observation and controller family`() {
+        val keys = d051IntegrationAuthorizationKeys()
+        val symbols = d051IntegrationAuthorizationSymbols()
+        val evidence = derive(keys, symbols, references = D051_PUBLIC_SYMBOLS)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(20, keys.size)
+        assertEquals(20, claims.size)
+        assertEquals(D051_PUBLIC_SYMBOLS, evidence.packedApi.referencedSymbols)
+        assertEquals(D051_PUBLIC_SYMBOLS.toSet(), claims.values.flatMap { it.publicSymbols }.toSet())
+        assertEquals(439, 419 + claims.size)
+        assertEquals(105, 125 - claims.size)
+        assertEquals(556, 439 + 12 + 105)
+        assertEquals(17, 22 - 5)
+
+        val stateClaims = claims.values.filter {
+            "owner=$CANONICAL_AGENT_PACKAGE/CodexIntegrationAuthorization" in it.capabilityKey &&
+                "kind=property" in it.capabilityKey
+        }
+        assertEquals(3, stateClaims.size)
+        stateClaims.forEach { claim ->
+            assertTrue(CrossLanguageBindingScenario.STATE_CURRENT_VALUE in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.SUBSCRIPTION_CANCELLATION in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP in claim.sharedScenarios)
+        }
+        claims.values.filter { "kind=function" in it.capabilityKey }.forEach { claim ->
+            assertTrue(CrossLanguageBindingScenario.ASYNC_SUCCESS in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.ASYNC_FAILURE in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.CANCELLATION in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP in claim.sharedScenarios)
+        }
+        val currentSymbols = d051CurrentPublicSymbols()
+        assertEquals(395, currentSymbols.size)
+        assertEquals(89, symbolExports(currentSymbols).first.size)
+        assertEquals(59, symbolExports(currentSymbols).second.size)
+    }
+
+    @Test
+    fun `integration authorization rejects canonical public reference reuse and family drift`() {
+        val keys = d051IntegrationAuthorizationKeys()
+        val symbols = d051IntegrationAuthorizationSymbols()
+
+        keys.forEach { exact ->
+            val drifted = when {
+                "|kind=constructor|" in exact -> exact.replace("suspend=false", "suspend=true")
+                "|kind=property|" in exact -> exact.replace("propertyKind=VAL", "propertyKind=VAR")
+                else -> exact.replace("suspend=true", "suspend=false")
+            }
+            val drift = derive(keys - exact + drifted, symbols, references = D051_PUBLIC_SYMBOLS)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted canonical drift: $drifted")
+        }
+
+        val authorize = keys.single { "CodexIntegrationAuthorization.authorize|" in it }
+        val genericBoundDrift = authorize.replace(
+            "$CANONICAL_AGENT_PACKAGE.AgentIntegration>}[0]",
+            "$CANONICAL_AGENT_PACKAGE.AgentIntegration.Connector>}[0]",
+        )
+        assertTrue(derive(
+            keys - authorize + genericBoundDrift,
+            symbols,
+            references = D051_PUBLIC_SYMBOLS,
+        ).projectionClaims.none { it.capabilityKey in keys })
+        val connectorConstructor = keys.single {
+            "owner=$CANONICAL_AGENT_PACKAGE/AgentIntegration.Connector|kind=constructor" in it
+        }
+        val stateConstructor = keys.single {
+            "owner=$CANONICAL_AGENT_PACKAGE/AgentIntegrationAuthorizationState|kind=constructor" in it
+        }
+        listOf(
+            connectorConstructor to connectorConstructor.replace(
+                "$CANONICAL_AGENT_PACKAGE/AgentConnector!!",
+                "kotlin/String!!",
+            ),
+            stateConstructor to stateConstructor.replaceFirst("default=true", "default=false"),
+            authorize to authorize.replace("parameters=[REGULAR:^A1", "parameters=[REGULAR:kotlin/String!!"),
+        ).forEach { (exact, drifted) ->
+            assertTrue(derive(
+                keys - exact + drifted,
+                symbols,
+                references = D051_PUBLIC_SYMBOLS,
+            ).projectionClaims.none { it.capabilityKey in keys }, "Accepted canonical signature drift: $drifted")
+        }
+
+        D051_PUBLIC_SYMBOLS.forEach { exact ->
+            val drifted = when {
+                exact.startsWith("class:") -> "${exact}Drift"
+                exact.startsWith("type:") -> exact.replace(
+                    "AgentConnectorIntegration | AgentMcpServerIntegration",
+                    "AgentMcpServerIntegration | AgentConnectorIntegration",
+                )
+                exact.startsWith("constructor:") -> exact.dropLast(1) + ", drift?: boolean)"
+                exact.startsWith("getter:") -> "$exact | false"
+                else -> exact.replaceFirst("#", "#drift")
+            }
+            val renameClass = exact.removePrefix("class:").takeIf { exact.startsWith("class:") }
+            val driftSymbols = if (renameClass != null) {
+                val pattern = Regex("\\b${Regex.escape(renameClass)}\\b")
+                symbols.map { it.replace(pattern, "${renameClass}Drift") }.sorted()
+            } else {
+                symbols.map { if (it == exact) drifted else it }.sorted()
+            }
+            val references = if (renameClass != null) {
+                val pattern = Regex("\\b${Regex.escape(renameClass)}\\b")
+                D051_PUBLIC_SYMBOLS.map { it.replace(pattern, "${renameClass}Drift") }.sorted()
+            } else {
+                D051_PUBLIC_SYMBOLS.map { if (it == exact) drifted else it }.sorted()
+            }
+            val drift = derive(keys, driftSymbols, references = references)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted public drift: $drifted")
+        }
+
+        keys.forEach { omitted ->
+            val partial = derive(keys - omitted, symbols, references = D051_PUBLIC_SYMBOLS)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys }, "Accepted without $omitted")
+        }
+        D051_PUBLIC_SYMBOLS.forEach { omitted ->
+            val unreferenced = derive(keys, symbols, references = D051_PUBLIC_SYMBOLS - omitted)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && omitted in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        val future = canonicalProperty("CodexIntegrationAuthorization", "future", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureEvidence = derive(keys + future, symbols, references = D051_PUBLIC_SYMBOLS)
+        assertTrue(future in futureEvidence.missingCapabilityKeys)
+        assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey in keys })
+
+        val foreign = keys.first().replace(CANONICAL_AGENT_PACKAGE, "foreign")
+        val crossPackage = derive(keys + foreign, symbols, references = D051_PUBLIC_SYMBOLS)
+        assertTrue(foreign in crossPackage.missingCapabilityKeys)
+        assertTrue(crossPackage.projectionClaims.none { it.capabilityKey in keys })
+
+        val leaf = D051_PUBLIC_SYMBOLS.single { it == "getter:AgentConnectorIntegration#id:string" }
+        val unauthorizedReuseKey = canonicalProperty(
+            "AgentConnectorIntegration",
+            "id",
+            "kotlin/String!!",
+        )
+        val unauthorizedReuse = derive(
+            keys + unauthorizedReuseKey,
+            symbols,
+            references = D051_PUBLIC_SYMBOLS,
+        )
+        assertTrue(unauthorizedReuse.errors.any {
+            it.startsWith("Reused JavaScript/TypeScript public symbol $leaf for capabilities ") &&
+                unauthorizedReuseKey in it
+        })
+        assertTrue(unauthorizedReuse.projectionClaims.none { it.capabilityKey == unauthorizedReuseKey })
+
+        val ambiguousGetter = "$leaf | number"
+        val ambiguous = derive(
+            keys,
+            (symbols + ambiguousGetter).sorted(),
+            references = (D051_PUBLIC_SYMBOLS + ambiguousGetter).sorted(),
+        )
+        assertTrue(ambiguous.projectionClaims.none { it.capabilityKey in keys })
+    }
+
+    @Test
     fun `state projection requires exact current callback and observation return types`() {
         val key = canonicalProperty(
             "Stream",
@@ -4859,6 +5022,83 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun d050McpServersSymbols(): List<String> =
         (D050_PUBLIC_SYMBOLS + "class:CodexAgent").distinct().sorted()
 
+    private fun d051IntegrationAuthorizationKeys(): List<String> {
+        val authorize = canonicalFunction(
+            "CodexIntegrationAuthorization",
+            "authorize",
+            suspendFunction = true,
+            parameters = listOf("^A1"),
+        ).replace(
+            "authorize(){}[0]",
+            "authorize(0:0){0§<example.AgentIntegration>}[0]",
+        )
+        return listOf(
+            canonicalProperty("AgentIntegration", "displayName", "kotlin/String!!"),
+            canonicalProperty("AgentIntegration", "id", "kotlin/String!!"),
+            canonicalConstructor("AgentIntegration.Connector", listOf("example/AgentConnector!!")),
+            canonicalProperty("AgentIntegration.Connector", "connector", "example/AgentConnector!!"),
+            canonicalProperty("AgentIntegration.Connector", "displayName", "kotlin/String!!"),
+            canonicalProperty("AgentIntegration.Connector", "id", "kotlin/String!!"),
+            canonicalConstructor("AgentIntegration.McpServer", listOf("example/AgentMcpServer!!")),
+            canonicalProperty("AgentIntegration.McpServer", "displayName", "kotlin/String!!"),
+            canonicalProperty("AgentIntegration.McpServer", "id", "kotlin/String!!"),
+            canonicalProperty("AgentIntegration.McpServer", "server", "example/AgentMcpServer!!"),
+            canonicalConstructor(
+                "AgentIntegrationAuthorizationState",
+                listOf(
+                    "example/AgentIntegrationAuthorizationStatus!!",
+                    "example/AgentIntegration?",
+                    "example/CodexFailure?",
+                ),
+                defaultParameterIndices = setOf(0, 1, 2),
+            ),
+            canonicalProperty(
+                "AgentIntegrationAuthorizationState",
+                "failure",
+                "example/CodexFailure?",
+            ),
+            canonicalProperty(
+                "AgentIntegrationAuthorizationState",
+                "status",
+                "example/AgentIntegrationAuthorizationStatus!!",
+            ),
+            canonicalProperty(
+                "AgentIntegrationAuthorizationState",
+                "target",
+                "example/AgentIntegration?",
+            ),
+            authorize,
+            canonicalFunction("CodexIntegrationAuthorization", "cancel", suspendFunction = true),
+            canonicalProperty(
+                "CodexIntegrationAuthorization",
+                "active",
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/AgentIntegration?>!!",
+            ),
+            canonicalProperty(
+                "CodexIntegrationAuthorization",
+                "isAuthorizing",
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+            ),
+            canonicalProperty(
+                "CodexIntegrationAuthorization",
+                "state",
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+                    "example/AgentIntegrationAuthorizationState!!>!!",
+            ),
+            canonicalProperty(
+                "CodexAgent",
+                "integrationAuthorization",
+                "example/CodexIntegrationAuthorization!!",
+            ),
+        ).map {
+            it.replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+                .replace("example.", "$CANONICAL_AGENT_PACKAGE.")
+        }.sorted().also { assertEquals(20, it.size) }
+    }
+
+    private fun d051IntegrationAuthorizationSymbols(): List<String> =
+        (D051_PUBLIC_SYMBOLS + "class:CodexAgent").distinct().sorted()
+
     private fun conversationStateSymbols(): List<String> = listOf(
         "class:CodexConversation",
         "class:CodexConversationState",
@@ -5432,6 +5672,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         (d049CurrentPublicSymbols() + D050_PUBLIC_SYMBOLS).distinct().sorted()
             .also { assertEquals(369, it.size) }
 
+    private fun d051CurrentPublicSymbols(): List<String> =
+        (d050CurrentPublicSymbols() + D051_PUBLIC_SYMBOLS).distinct().sorted()
+            .also { assertEquals(395, it.size) }
+
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
@@ -5708,6 +5952,43 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
                 "signal?: AbortSignal | null | undefined): Promise<void>",
             "type:AgentMcpTransport:AgentMcpStdioTransport | AgentMcpHttpTransport",
         ).sorted().also { assertEquals(49, it.size) }
+
+        private val D051_PUBLIC_SYMBOLS = listOf(
+            "class:AgentConnectorIntegration",
+            "class:AgentIntegrationAuthorizationState",
+            "class:AgentMcpServerIntegration",
+            "class:CodexIntegrationAuthorization",
+            "constructor:AgentConnectorIntegration#(connector: AgentConnector)",
+            "constructor:AgentIntegrationAuthorizationState#(" +
+                "status?: AgentIntegrationAuthorizationStatus, " +
+                "target?: AgentIntegration | null | undefined, " +
+                "failure?: CodexFailure | null | undefined)",
+            "constructor:AgentMcpServerIntegration#(server: AgentMcpServer)",
+            "getter:AgentConnectorIntegration#connector:AgentConnector",
+            "getter:AgentConnectorIntegration#displayName:string",
+            "getter:AgentConnectorIntegration#id:string",
+            "getter:AgentIntegrationAuthorizationState#failure:CodexFailure | null | undefined",
+            "getter:AgentIntegrationAuthorizationState#status:AgentIntegrationAuthorizationStatus",
+            "getter:AgentIntegrationAuthorizationState#target:AgentIntegration | null | undefined",
+            "getter:AgentMcpServerIntegration#displayName:string",
+            "getter:AgentMcpServerIntegration#id:string",
+            "getter:AgentMcpServerIntegration#server:AgentMcpServer",
+            "getter:CodexAgent#integrationAuthorization:CodexIntegrationAuthorization",
+            "getter:CodexIntegrationAuthorization#active:AgentIntegration | null | undefined",
+            "getter:CodexIntegrationAuthorization#isAuthorizing:boolean",
+            "getter:CodexIntegrationAuthorization#state:AgentIntegrationAuthorizationState",
+            "method:CodexIntegrationAuthorization#authorize:(target: AgentIntegration, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+            "method:CodexIntegrationAuthorization#cancel:(signal?: AbortSignal | null | undefined): " +
+                "Promise<void>",
+            "method:CodexIntegrationAuthorization#observeActive:(listener: " +
+                "(target: AgentIntegration | null | undefined) => void): CodexObservation",
+            "method:CodexIntegrationAuthorization#observeAuthorizing:(listener: " +
+                "(isAuthorizing: boolean) => void): CodexObservation",
+            "method:CodexIntegrationAuthorization#observeState:(listener: " +
+                "(state: AgentIntegrationAuthorizationState) => void): CodexObservation",
+            "type:AgentIntegration:AgentConnectorIntegration | AgentMcpServerIntegration",
+        ).sorted().also { assertEquals(26, it.size) }
 
         private val AUTHENTICATION_OVERLOADS = listOf(
             "method:CodexAuthentication#authenticate:" +

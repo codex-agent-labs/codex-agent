@@ -1,5 +1,6 @@
 import {
   AgentConnector,
+  AgentConnectorIntegration,
   AgentConversation,
   AgentConversationSummary,
   AgentElicitationValidation,
@@ -16,6 +17,7 @@ import {
   AgentMcpHttpTransport,
   AgentMcpOauthConfiguration,
   AgentMcpServer,
+  AgentMcpServerIntegration,
   AgentMcpServerConfiguration,
   AgentMcpStdioTransport,
   AgentMcpToolConfiguration,
@@ -38,9 +40,11 @@ import {
   CodexFailure,
   CodexHost,
   CodexHostState,
+  CodexIntegrationAuthorization,
   CodexHooks,
   CodexModels,
   CodexMcpServers,
+  AgentIntegrationAuthorizationState,
   CodexObservation,
   CodexSkills,
   agentCapabilityDisplayLabel,
@@ -65,6 +69,7 @@ import type {
   AgentHookTrustStatus,
   AgentInstallationScope,
   AgentIntegrationAuthorizationStatus,
+  AgentIntegration,
   AgentInvocation,
   AgentMcpAuthStatus,
   AgentMcpAuthentication,
@@ -292,6 +297,30 @@ const connectorInstallUrl: string | null | undefined = customConnector.installUr
 const connectorIsAccessible: boolean = customConnector.isAccessible;
 const connectorIsEnabled: boolean = customConnector.isEnabled;
 const connectorPluginNames: ReadonlyArray<string> = customConnector.pluginNames;
+const connectorIntegrationClass: typeof AgentConnectorIntegration = AgentConnectorIntegration;
+const connectorIntegration = new AgentConnectorIntegration(customConnector);
+const connectorIntegrationConnector: AgentConnector = connectorIntegration.connector;
+const connectorIntegrationId: string = connectorIntegration.id;
+const connectorIntegrationDisplayName: string = connectorIntegration.displayName;
+const mcpIntegrationClass: typeof AgentMcpServerIntegration = AgentMcpServerIntegration;
+const mcpIntegration = new AgentMcpServerIntegration(mcpServer);
+const mcpIntegrationServer: AgentMcpServer = mcpIntegration.server;
+const mcpIntegrationId: string = mcpIntegration.id;
+const mcpIntegrationDisplayName: string = mcpIntegration.displayName;
+const integrationTargets: ReadonlyArray<AgentIntegration> = [connectorIntegration, mcpIntegration];
+const integrationAuthorizationStateClass: typeof AgentIntegrationAuthorizationState =
+  AgentIntegrationAuthorizationState;
+const integrationAuthorizationState = new AgentIntegrationAuthorizationState(
+  "awaiting_completion",
+  connectorIntegration,
+  null,
+);
+const integrationAuthorizationStateStatus: AgentIntegrationAuthorizationStatus =
+  integrationAuthorizationState.status;
+const integrationAuthorizationStateTarget: AgentIntegration | null | undefined =
+  integrationAuthorizationState.target;
+const integrationAuthorizationStateFailure: CodexFailure | null | undefined =
+  integrationAuthorizationState.failure;
 const skillInvocation = new AgentSkillInvocation("review", "/skills/review/SKILL.md");
 const pluginInvocation = new AgentPluginInvocation("tools", "plugin://tools@official");
 const skillInvocationClass: typeof AgentSkillInvocation = AgentSkillInvocation;
@@ -537,6 +566,22 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   await authentication.authenticate(authenticationMethod, "sk-test", signal);
   await authentication.cancel(signal);
   await authentication.signOut(signal);
+  const integrationAuthorization: CodexIntegrationAuthorization = agent.integrationAuthorization;
+  const integrationAuthorizationClass: typeof CodexIntegrationAuthorization =
+    CodexIntegrationAuthorization;
+  const currentIntegrationAuthorizationState: AgentIntegrationAuthorizationState =
+    integrationAuthorization.state;
+  const activeIntegration: AgentIntegration | null | undefined = integrationAuthorization.active;
+  const isAuthorizingIntegration: boolean = integrationAuthorization.isAuthorizing;
+  integrationAuthorization.observeState(
+    (next: AgentIntegrationAuthorizationState): void => void next.status,
+  ).dispose();
+  integrationAuthorization.observeActive(
+    (next: AgentIntegration | null | undefined): void => void next,
+  ).dispose();
+  integrationAuthorization.observeAuthorizing((next: boolean): void => void next).dispose();
+  await integrationAuthorization.authorize(connectorIntegration, signal);
+  await integrationAuthorization.cancel(signal);
   const conversation: CodexConversation = await agent.openConversation(
     null,
     approvalPreset,
@@ -625,6 +670,10 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     deviceVerificationUrl,
     deviceUserCode,
     authenticationFailure,
+    integrationAuthorizationClass,
+    currentIntegrationAuthorizationState,
+    activeIntegration,
+    isAuthorizingIntegration,
     activeConversation,
     conversationSummaries,
     historicalConversation,
@@ -749,6 +798,19 @@ void [
   connectorIsAccessible,
   connectorIsEnabled,
   connectorPluginNames,
+  connectorIntegrationClass,
+  connectorIntegrationConnector,
+  connectorIntegrationId,
+  connectorIntegrationDisplayName,
+  mcpIntegrationClass,
+  mcpIntegrationServer,
+  mcpIntegrationId,
+  mcpIntegrationDisplayName,
+  integrationTargets,
+  integrationAuthorizationStateClass,
+  integrationAuthorizationStateStatus,
+  integrationAuthorizationStateTarget,
+  integrationAuthorizationStateFailure,
   skillInvocationClass,
   pluginInvocationClass,
   invocations,

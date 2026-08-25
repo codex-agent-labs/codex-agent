@@ -1,5 +1,6 @@
 import {
   AgentConnector,
+  AgentConnectorIntegration,
   AgentConversation,
   AgentConversationSummary,
   AgentElicitationValidation,
@@ -16,6 +17,7 @@ import {
   AgentMcpHttpTransport,
   AgentMcpOauthConfiguration,
   AgentMcpServer,
+  AgentMcpServerIntegration,
   AgentMcpServerConfiguration,
   AgentMcpStdioTransport,
   AgentMcpToolConfiguration,
@@ -32,6 +34,8 @@ import {
   CodexConnectors,
   CodexModels,
   CodexMcpServers,
+  CodexIntegrationAuthorization,
+  AgentIntegrationAuthorizationState,
   CodexSkills,
   CodexHooks,
   agentCapabilityDisplayLabel,
@@ -46,6 +50,7 @@ import type {
   AgentHookHandler,
   AgentHookTrustStatus,
   AgentInvocation,
+  AgentIntegration,
   AgentMcpTransport,
   AgentTurnRequest,
   CodexAgent,
@@ -129,6 +134,47 @@ pluginInvocation.key = "changed";
 
 // @ts-expect-error Invocation values must use one of the reviewed concrete shapes.
 const invalidInvocation: AgentInvocation = { name: "invalid", key: "invalid" };
+
+const connectorIntegration = new AgentConnectorIntegration(new AgentConnector("drive", "Drive"));
+// @ts-expect-error Connector integration targets require a connector.
+new AgentConnectorIntegration();
+// @ts-expect-error Connector integration targets require canonical connectors.
+new AgentConnectorIntegration({});
+// @ts-expect-error Connector integration connector values are readonly.
+connectorIntegration.connector = new AgentConnector("other", "Other");
+// @ts-expect-error Connector integration IDs are readonly.
+connectorIntegration.id = "other";
+// @ts-expect-error Connector integration display names are readonly.
+connectorIntegration.displayName = "Other";
+
+const integrationMcpServer = new AgentMcpServer("drive", "Drive", "not_logged_in");
+const mcpIntegration = new AgentMcpServerIntegration(integrationMcpServer);
+// @ts-expect-error MCP integration targets require a server.
+new AgentMcpServerIntegration();
+// @ts-expect-error MCP integration targets require canonical servers.
+new AgentMcpServerIntegration({});
+// @ts-expect-error MCP integration server values are readonly.
+mcpIntegration.server = integrationMcpServer;
+// @ts-expect-error MCP integration IDs are readonly.
+mcpIntegration.id = "other";
+// @ts-expect-error MCP integration display names are readonly.
+mcpIntegration.displayName = "Other";
+// @ts-expect-error Integration targets use one of the reviewed concrete values.
+const invalidIntegration: AgentIntegration = { id: "drive", displayName: "Drive" };
+
+const integrationState = new AgentIntegrationAuthorizationState();
+// @ts-expect-error Integration authorization statuses remain a closed typed domain.
+new AgentIntegrationAuthorizationState("IDLE");
+// @ts-expect-error Integration authorization targets use reviewed integration values.
+new AgentIntegrationAuthorizationState("idle", {});
+// @ts-expect-error Integration authorization failures use canonical failure values.
+new AgentIntegrationAuthorizationState("failed", null, {});
+// @ts-expect-error Integration authorization state statuses are readonly.
+integrationState.status = "authorized";
+// @ts-expect-error Integration authorization state targets are readonly.
+integrationState.target = connectorIntegration;
+// @ts-expect-error Integration authorization state failures are readonly.
+integrationState.failure = null;
 // @ts-expect-error Capabilities remain a closed typed domain.
 const invalidCapabilities: ReadonlyArray<AgentCapability> = ["WEB_SEARCH"];
 declare const message: CodexMessage;
@@ -751,6 +797,29 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   await mcpServers.remove({});
   // @ts-expect-error MCP server-remove signals must be AbortSignal values.
   await mcpServers.remove(mcpServer, {});
+  const integrationAuthorization = agent.integrationAuthorization;
+  // @ts-expect-error Integration authorization controllers are created by an Agent.
+  new CodexIntegrationAuthorization();
+  // @ts-expect-error Integration authorization controllers are owned by the Agent.
+  agent.integrationAuthorization = integrationAuthorization;
+  // @ts-expect-error Integration authorization state is readonly.
+  integrationAuthorization.state = integrationState;
+  // @ts-expect-error Active integration authorization is readonly.
+  integrationAuthorization.active = connectorIntegration;
+  // @ts-expect-error Integration authorization activity is readonly.
+  integrationAuthorization.isAuthorizing = false;
+  // @ts-expect-error State observers require state values.
+  integrationAuthorization.observeState((value: boolean) => void value);
+  // @ts-expect-error Active-target observers require nullable integration values.
+  integrationAuthorization.observeActive((value: boolean) => void value);
+  // @ts-expect-error Activity observers require booleans.
+  integrationAuthorization.observeAuthorizing((value: string) => void value);
+  // @ts-expect-error Authorization requires a reviewed integration target.
+  await integrationAuthorization.authorize({});
+  // @ts-expect-error Authorization signals must be AbortSignal values.
+  await integrationAuthorization.authorize(connectorIntegration, {});
+  // @ts-expect-error Cancellation signals must be AbortSignal values.
+  await integrationAuthorization.cancel({});
   // @ts-expect-error Conversation IDs are strings.
   await agent.rename(1, "Renamed conversation");
   // @ts-expect-error Conversation names are strings.

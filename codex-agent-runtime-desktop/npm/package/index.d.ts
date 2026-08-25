@@ -194,6 +194,19 @@ export declare class AgentConnector {
     get isEnabled(): boolean;
     get pluginNames(): ReadonlyArray<string>;
 }
+export type AgentIntegration = AgentConnectorIntegration | AgentMcpServerIntegration;
+export declare class AgentConnectorIntegration {
+    constructor(connector: AgentConnector);
+    get connector(): AgentConnector;
+    get id(): string;
+    get displayName(): string;
+}
+export declare class AgentMcpServerIntegration {
+    constructor(server: AgentMcpServer);
+    get server(): AgentMcpServer;
+    get id(): string;
+    get displayName(): string;
+}
 export type AgentInvocation = AgentPluginInvocation | AgentSkillInvocation;
 export declare class AgentSkillInvocation {
     constructor(name: string, path: string);
@@ -271,6 +284,12 @@ export declare class CodexFailure {
     get code(): string;
     get message(): string;
     get recoverable(): boolean;
+}
+export declare class AgentIntegrationAuthorizationState {
+    constructor(status?: AgentIntegrationAuthorizationStatus, target?: Nullable<AgentIntegration>, failure?: Nullable<CodexFailure>);
+    get status(): AgentIntegrationAuthorizationStatus;
+    get target(): Nullable<AgentIntegration>;
+    get failure(): Nullable<CodexFailure>;
 }
 export declare class CodexAuthenticationState {
     private constructor();
@@ -379,6 +398,7 @@ export declare class CodexAgent {
     get skills(): CodexSkills;
     get hooks(): CodexHooks;
     get mcpServers(): CodexMcpServers;
+    get integrationAuthorization(): CodexIntegrationAuthorization;
     get activeConversation(): Nullable<CodexConversation>;
     listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;
     readConversation(conversationId: string, signal?: Nullable<AbortSignal>): Promise<AgentConversation>;
@@ -435,6 +455,17 @@ export declare class CodexAuthentication {
     observeState(listener: (state: CodexAuthenticationState) => void): CodexObservation;
     observeAuthenticated(listener: (isAuthenticated: boolean) => void): CodexObservation;
     observeAuthenticating(listener: (isAuthenticating: boolean) => void): CodexObservation;
+}
+export declare class CodexIntegrationAuthorization {
+    private constructor();
+    get state(): AgentIntegrationAuthorizationState;
+    get active(): Nullable<AgentIntegration>;
+    get isAuthorizing(): boolean;
+    authorize(target: AgentIntegration, signal?: Nullable<AbortSignal>): Promise<void>;
+    cancel(signal?: Nullable<AbortSignal>): Promise<void>;
+    observeState(listener: (state: AgentIntegrationAuthorizationState) => void): CodexObservation;
+    observeActive(listener: (target: Nullable<AgentIntegration>) => void): CodexObservation;
+    observeAuthorizing(listener: (isAuthorizing: boolean) => void): CodexObservation;
 }
 export declare class CodexConversation {
     private constructor();

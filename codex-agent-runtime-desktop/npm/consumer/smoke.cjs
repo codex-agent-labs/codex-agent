@@ -131,6 +131,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexSkills());
   assert.throws(() => new sdk.CodexHooks());
   assert.throws(() => new sdk.CodexMcpServers());
+  assert.throws(() => new sdk.CodexIntegrationAuthorization());
   assert.throws(() => new sdk.CodexAuthenticationState());
   assert.throws(() => new sdk.CodexConversation());
   assert.throws(() => new sdk.CodexObservation());
@@ -153,8 +154,18 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.CodexMcpServers.prototype.list, 'function');
   assert.equal(typeof sdk.CodexMcpServers.prototype.add, 'function');
   assert.equal(typeof sdk.CodexMcpServers.prototype.remove, 'function');
+  assert.equal(
+    typeof Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'integrationAuthorization')?.get,
+    'function',
+  );
+  assert.equal(typeof sdk.CodexIntegrationAuthorization.prototype.authorize, 'function');
+  assert.equal(typeof sdk.CodexIntegrationAuthorization.prototype.cancel, 'function');
+  assert.equal(typeof sdk.CodexIntegrationAuthorization.prototype.observeState, 'function');
+  assert.equal(typeof sdk.CodexIntegrationAuthorization.prototype.observeActive, 'function');
+  assert.equal(typeof sdk.CodexIntegrationAuthorization.prototype.observeAuthorizing, 'function');
   for (const constructor of [
     sdk.AgentConnector,
+    sdk.AgentConnectorIntegration,
     sdk.AgentConversation,
     sdk.AgentConversationSummary,
     sdk.AgentElicitationValidation,
@@ -174,6 +185,8 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentMcpHttpTransport,
     sdk.AgentMcpServerConfiguration,
     sdk.AgentMcpServer,
+    sdk.AgentMcpServerIntegration,
+    sdk.AgentIntegrationAuthorizationState,
     sdk.AgentModel,
     sdk.AgentPlanProgress,
     sdk.AgentPlanStep,
@@ -198,6 +211,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.CodexSkills,
     sdk.CodexHooks,
     sdk.CodexMcpServers,
+    sdk.CodexIntegrationAuthorization,
     sdk.CodexObservation,
     sdk.CodexTurnProgress,
     sdk.CodexWorkspace,
@@ -925,6 +939,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
       assert.throws(() => new sdk.AgentHookActivity('hook', 'afterTurn', 'command', 'running', invalid));
     }
   }
+
   for (const invalidStatus of ['', 'RUNNING', 'Running', 'inProgress', 'unknown']) {
     assert.throws(() => new sdk.AgentHookActivity('hook', 'afterTurn', 'command', invalidStatus));
   }
@@ -1198,6 +1213,61 @@ test('cjs exposes the exact Node-only SDK surface', () => {
       'drive', 'Google Drive', '', null, false, true, [invalid],
     ));
   }
+
+  const connectorIntegration = new sdk.AgentConnectorIntegration(customConnector);
+  assert.deepEqual(
+    [connectorIntegration.connector.id, connectorIntegration.id, connectorIntegration.displayName],
+    ['slack', 'slack', 'Slack'],
+  );
+  assert.notEqual(connectorIntegration.connector, customConnector);
+  const mcpIntegration = new sdk.AgentMcpServerIntegration(mcpServer);
+  assert.deepEqual(
+    [mcpIntegration.server.name, mcpIntegration.id, mcpIntegration.displayName],
+    [mcpServer.name, mcpServer.name, mcpServer.displayName],
+  );
+  assert.notEqual(mcpIntegration.server, mcpServer);
+  const defaultIntegrationState = new sdk.AgentIntegrationAuthorizationState();
+  assert.deepEqual(
+    [defaultIntegrationState.status, defaultIntegrationState.target, defaultIntegrationState.failure],
+    ['idle', null, null],
+  );
+  const awaitingIntegrationState = new sdk.AgentIntegrationAuthorizationState(
+    'awaiting_completion',
+    connectorIntegration,
+  );
+  assert.equal(awaitingIntegrationState.status, 'awaiting_completion');
+  assert.notEqual(awaitingIntegrationState.target, connectorIntegration);
+  assert.equal(awaitingIntegrationState.target.id, 'slack');
+  assert.equal(awaitingIntegrationState.failure, null);
+  for (const invalid of [null, undefined, 0, false, {}, [], new Proxy({}, {})]) {
+    assert.throws(
+      () => new sdk.AgentConnectorIntegration(invalid),
+      (error) => error?.message === 'connector must be an AgentConnector',
+    );
+    assert.throws(
+      () => new sdk.AgentMcpServerIntegration(invalid),
+      (error) => error?.message === 'server must be an AgentMcpServer',
+    );
+  }
+  for (const invalid of [0, false, {}, [], new String('idle'), new Proxy({}, {})]) {
+    assert.throws(
+      () => new sdk.AgentIntegrationAuthorizationState(invalid),
+      (error) => error?.message === 'status must be a string',
+    );
+  }
+  assert.throws(
+    () => new sdk.AgentIntegrationAuthorizationState('IDLE'),
+    (error) => error?.message === 'Unknown integration authorization status: IDLE',
+  );
+  assert.throws(
+    () => new sdk.AgentIntegrationAuthorizationState('idle', {}),
+    (error) => error?.message ===
+      'target must be an AgentConnectorIntegration, AgentMcpServerIntegration, or null',
+  );
+  assert.throws(
+    () => new sdk.AgentIntegrationAuthorizationState('failed', null, {}),
+    (error) => error?.message === 'failure must be a CodexFailure or null',
+  );
 
   const skillInvocation = new sdk.AgentSkillInvocation('review', '/skills/review/SKILL.md');
   const pluginInvocation = new sdk.AgentPluginInvocation('tools', 'plugin://tools@official');
@@ -1621,6 +1691,10 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     undefinedConnector,
     customConnector,
     proxyConnector,
+    connectorIntegration,
+    mcpIntegration,
+    defaultIntegrationState,
+    awaitingIntegrationState,
     skillInvocation,
     pluginInvocation,
     conversationSummary,
@@ -1699,6 +1773,9 @@ test('cjs exposes the exact Node-only SDK surface', () => {
       Reflect.ownKeys(connector),
       ['id', 'name', 'description', 'installUrl', 'isAccessible', 'isEnabled', 'pluginNames'],
     );
+  }
+  for (const state of [defaultIntegrationState, awaitingIntegrationState]) {
+    assert.deepEqual(Reflect.ownKeys(state), ['status', 'target', 'failure']);
   }
   for (const summary of [conversationSummary, permissiveConversationSummary]) {
     assert.deepEqual(
