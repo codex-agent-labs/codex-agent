@@ -644,6 +644,35 @@ class CodexNodeApiTest {
                 authenticated.lastOrNull() == false && authenticating.lastOrNull() == false
         }
 
+        val requestsBeforeRejectedApiKeys = runtime.requestMethods.size
+        listOf("", " \t").forEach { rejectedKey ->
+            val rejected = runCatching {
+                authentication.authenticate("api_key", rejectedKey).await()
+            }.exceptionOrNull()
+            assertEquals("API key must not be blank", rejected?.message)
+        }
+        val hostileKey = runCatching {
+            authentication.authenticate(
+                "api_key",
+                js("({})").unsafeCast<String>(),
+            ).await()
+        }.exceptionOrNull()
+        assertEquals("apiKey must be a string", hostileKey?.message)
+        assertEquals(requestsBeforeRejectedApiKeys, runtime.requestMethods.size)
+
+        val controller = js("new AbortController()")
+        controller.abort()
+        val preAborted = runCatching {
+            authentication.authenticate(
+                "api_key",
+                "sk-pre-aborted",
+                controller.signal.unsafeCast<AbortSignal>(),
+            ).await()
+        }.exceptionOrNull()
+        assertEquals("AbortError", preAborted?.asDynamic()?.name as String)
+        assertEquals(requestsBeforeRejectedApiKeys, runtime.requestMethods.size)
+
+        val requestsBeforeApiKey = runtime.requestMethods.size
         authentication.authenticate("api_key", "sk-js-test").await()
         awaitCondition {
             states.lastOrNull()?.status == "authenticated" &&
@@ -651,6 +680,10 @@ class CodexNodeApiTest {
         }
         assertEquals("authenticated", authentication.state.status)
         assertEquals("sk-js-test", runtime.apiKey)
+        assertEquals(
+            listOf("account/read", "account/login/start"),
+            runtime.requestMethods.drop(requestsBeforeApiKey),
+        )
 
         authentication.signOut().await()
         awaitCondition {
@@ -785,6 +818,7 @@ private class ApiTestRuntime : CodexRuntime {
     var failNextAccountRead: Boolean = false
     var accountReadEntered: CompletableDeferred<Unit>? = null
     var accountReadRelease: CompletableDeferred<Unit>? = null
+    val requestMethods: MutableList<String> = mutableListOf()
     var apiKey: String? = null
     var cancelRequests: Int = 0
     var logoutRequests: Int = 0
@@ -845,7 +879,9 @@ private class ApiTestRuntime : CodexRuntime {
     override suspend fun send(line: CodexJsonLine): Unit {
         val request = Json.parseToJsonElement(line.value).jsonObject
         val id = request["id"]?.jsonPrimitive?.long ?: return
-        when (request["method"]?.jsonPrimitive?.content) {
+        val method = request["method"]?.jsonPrimitive?.content ?: return
+        requestMethods += method
+        when (method) {
             "initialize" -> respond(id, initializeResult())
             "thread/start" -> {
                 threadStartParams = checkNotNull(request["params"]).jsonObject

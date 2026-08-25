@@ -957,9 +957,11 @@ private fun String?.toAuthenticationMethod(apiKey: String?): CoreAuthenticationM
         require(apiKey == null) { "apiKey is only valid for api_key authentication" }
         CoreAuthenticationMethod.ChatGptDeviceCode
     }
-    "api_key" -> CoreAuthenticationMethod.ApiKey(requireNotNull(apiKey) {
-        "apiKey is required for api_key authentication"
-    })
+    "api_key" -> CoreAuthenticationMethod.ApiKey(
+        requireNotNull(apiKey) {
+            "apiKey is required for api_key authentication"
+        }.requireJavaScriptString("apiKey"),
+    )
     else -> throw IllegalArgumentException("Unknown authentication method: $this")
 }
 

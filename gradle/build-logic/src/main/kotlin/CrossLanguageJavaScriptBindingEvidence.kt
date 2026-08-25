@@ -831,6 +831,9 @@ private fun javaScriptProjectionCandidates(
 
 private const val javaScriptApprovalPresetDisplayName =
     "function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string"
+private const val javaScriptApiKeyAuthentication =
+    "method:CodexAuthentication#authenticate:" +
+        "(method: \"api_key\", apiKey: string, signal?: AbortSignal | null | undefined): Promise<void>"
 private const val javaScriptDeleteConversation =
     "method:CodexAgent#delete:" +
         "(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>"
@@ -855,12 +858,18 @@ private fun flattenedValueProjectionCandidates(
     val projectedSymbols = when {
         member.isExactProperty("AgentApprovalPreset", "displayName", "kotlin/String!!") ->
             listOf(javaScriptApprovalPresetDisplayName)
+        member.isExactApiKeyAuthenticationMethodMember() -> listOf(javaScriptApiKeyAuthentication)
         member.isExactConversationSettingsMember() -> listOf(javaScriptOpenConversation)
         member.isExactConversationIdMember() -> javaScriptConversationIdSymbols
         member.isExactPathWorkspaceSelectionMember() -> listOf(javaScriptSelectWorkspace)
         else -> return emptyList()
     }
-    if (!hasExactJavaScriptSymbolInventory(symbols, projectedSymbols)) return emptyList()
+    val hasExactInventory = if (member.isExactApiKeyAuthenticationMethodMember()) {
+        hasExactAuthenticationOverloadInventory(symbols)
+    } else {
+        hasExactJavaScriptSymbolInventory(symbols, projectedSymbols)
+    }
+    if (!hasExactInventory) return emptyList()
     return listOf(
         JavaScriptProjectionCandidate(
             publicSymbols = projectedSymbols,
@@ -900,6 +909,12 @@ private fun CanonicalJavaScriptMember.isExactPathWorkspaceSelectionMember(): Boo
         "CodexPathWorkspaceSelection",
         listOf(CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false)),
     ) || isExactProperty("CodexPathWorkspaceSelection", "path", "kotlin/String!!")
+
+private fun CanonicalJavaScriptMember.isExactApiKeyAuthenticationMethodMember(): Boolean =
+    isExactConstructor(
+        "CodexAuthenticationMethod.ApiKey",
+        listOf(CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false)),
+    ) || isExactProperty("CodexAuthenticationMethod.ApiKey", "value", "kotlin/String!!")
 
 private fun CanonicalJavaScriptMember.isExactConstructor(
     expectedOwner: String,
@@ -1320,18 +1335,9 @@ private fun authenticationProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
-    val canonicalPackage = member.owner.substringBeforeLast('/')
-    val parameter = member.parameters.singleOrNull()
-    val canonicalShape = member.isSuspend && member.returnType == "kotlin/Unit" &&
-        parameter != null && parameter.hasDefault && !parameter.isVararg &&
-        parameter.type == "$canonicalPackage/CodexAuthenticationMethod!!"
-    val overloads = symbols.filter {
-        it.owner == "CodexAuthentication" && it.name == "authenticate" &&
-            it.kind == JavaScriptPublicSymbolKind.METHOD
-    }.map(JavaScriptPublicSymbol::raw)
-    if (!canonicalShape || overloads.size != javaScriptAuthenticationOverloads.size ||
-        overloads.toSet() != javaScriptAuthenticationOverloads
-    ) return emptyList()
+    if (!member.isExactAuthenticationFunction() || !hasExactAuthenticationOverloadInventory(symbols)) {
+        return emptyList()
+    }
     return listOf(
         JavaScriptProjectionCandidate(
             publicSymbols = javaScriptAuthenticationOverloads.sorted(),
@@ -1343,6 +1349,32 @@ private fun authenticationProjectionCandidates(
             requiresConsumerReference = true,
         )
     )
+}
+
+private fun CanonicalJavaScriptMember.isExactAuthenticationFunction(): Boolean {
+    val canonicalPackage = owner.substringBeforeLast('/')
+    return isExactFunction(
+        expectedOwner = "CodexAuthentication",
+        expectedName = "authenticate",
+        expectedReturnType = "kotlin/Unit",
+        expectedSuspend = true,
+        expectedParameters = listOf(
+            CanonicalJavaScriptParameter(
+                "$canonicalPackage/CodexAuthenticationMethod!!",
+                hasDefault = true,
+                isVararg = false,
+            ),
+        ),
+    )
+}
+
+private fun hasExactAuthenticationOverloadInventory(symbols: List<JavaScriptPublicSymbol>): Boolean {
+    val overloads = symbols.filter {
+        it.owner == "CodexAuthentication" && it.name == "authenticate" &&
+            it.kind == JavaScriptPublicSymbolKind.METHOD
+    }.map(JavaScriptPublicSymbol::raw)
+    return overloads.size == javaScriptAuthenticationOverloads.size &&
+        overloads.toSet() == javaScriptAuthenticationOverloads
 }
 
 private const val javaScriptOpenConversation =
@@ -1707,6 +1739,24 @@ private fun isAllowedFlattenedValueReuse(
 ): Boolean {
     val members = projections.map(JavaScriptProjection::member)
     if (members.map { it.owner.substringBeforeLast('/') }.distinct().size != 1) return false
+    if (symbol == javaScriptApiKeyAuthentication) {
+        return members.size == 3 && members.map(CanonicalJavaScriptMember::key).distinct().size == 3 &&
+            members.count(CanonicalJavaScriptMember::isExactAuthenticationFunction) == 1 &&
+            members.count {
+                it.isExactConstructor(
+                    "CodexAuthenticationMethod.ApiKey",
+                    listOf(
+                        CanonicalJavaScriptParameter(
+                            "kotlin/String!!",
+                            hasDefault = false,
+                            isVararg = false,
+                        ),
+                    ),
+                )
+            } == 1 && members.count {
+                it.isExactProperty("CodexAuthenticationMethod.ApiKey", "value", "kotlin/String!!")
+            } == 1
+    }
     val accepts: (CanonicalJavaScriptMember) -> Boolean = when (symbol) {
         javaScriptOpenConversation -> { member ->
             member.isExactOpenConversationFunction() || member.isExactConversationSettingsMember() ||

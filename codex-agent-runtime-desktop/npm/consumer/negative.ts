@@ -225,6 +225,8 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   summaries.push(conversationSummary);
   // @ts-expect-error API-key authentication requires a key.
   await agent.authentication.authenticate("api_key");
+  // @ts-expect-error API-key authentication requires a string key.
+  await agent.authentication.authenticate("api_key", 42);
   // @ts-expect-error Browser authentication does not accept an API key.
   await agent.authentication.authenticate("chatgpt_browser", "sk-test");
   // @ts-expect-error Device-code authentication does not accept an API key.

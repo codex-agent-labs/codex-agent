@@ -1323,6 +1323,107 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `api key value flattens only into the exact referenced authentication overload`() {
+        val apiKeyConstructor = canonicalConstructor(
+            "CodexAuthenticationMethod.ApiKey",
+            listOf("kotlin/String!!"),
+        )
+        val apiKeyValue =
+            canonicalProperty("CodexAuthenticationMethod.ApiKey", "value", "kotlin/String!!")
+        val authenticate = canonicalFunction(
+            "CodexAuthentication",
+            "authenticate",
+            suspendFunction = true,
+            parameters = listOf("example/CodexAuthenticationMethod!!"),
+            defaultParameterIndices = setOf(0),
+        )
+        val keys = listOf(apiKeyConstructor, apiKeyValue, authenticate).sorted()
+        val symbols = (listOf("class:CodexAuthentication") + AUTHENTICATION_OVERLOADS).sorted()
+        val apiKeyOverload = AUTHENTICATION_OVERLOADS.single { "\"api_key\"" in it }
+
+        val evidence = derive(keys, symbols, references = AUTHENTICATION_OVERLOADS)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty())
+        assertEquals(3, evidence.projectionClaims.size)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+        assertEquals(listOf(apiKeyOverload), claims.getValue(apiKeyConstructor).publicSymbols)
+        assertEquals(listOf(apiKeyOverload), claims.getValue(apiKeyValue).publicSymbols)
+        assertEquals(AUTHENTICATION_OVERLOADS.sorted(), claims.getValue(authenticate).publicSymbols)
+
+        listOf(
+            canonicalConstructor("OtherAuthenticationMethod.ApiKey", listOf("kotlin/String!!")),
+            canonicalFunction(
+                "CodexAuthenticationMethod.ApiKey",
+                "create",
+                returnType = "example/CodexAuthenticationMethod.ApiKey",
+                parameters = listOf("kotlin/String!!"),
+            ),
+            canonicalConstructor(
+                "CodexAuthenticationMethod.ApiKey",
+                listOf("kotlin/String!!"),
+                defaultParameterIndices = setOf(0),
+            ),
+            canonicalConstructor("CodexAuthenticationMethod.ApiKey", listOf("kotlin/Int!!")),
+            canonicalConstructor(
+                "CodexAuthenticationMethod.ApiKey",
+                listOf("kotlin/String!!", "kotlin/String!!"),
+            ),
+            apiKeyConstructor.replace(
+                "return=example/CodexAuthenticationMethod.ApiKey",
+                "return=example/Wrong",
+            ),
+            apiKeyConstructor.replace(
+                "abi=example/CodexAuthenticationMethod.ApiKey.<init>",
+                "abi=example/Wrong.<init>",
+            ),
+            canonicalProperty("CodexAuthenticationMethod.ApiKey", "value", "kotlin/Int!!"),
+            canonicalProperty(
+                "CodexAuthenticationMethod.ApiKey",
+                "value",
+                "kotlin/String!!",
+                propertyKind = "VAR",
+            ),
+        ).forEach { malformed ->
+            val rejected = derive(listOf(malformed), symbols, references = AUTHENTICATION_OVERLOADS)
+            assertEquals(listOf(malformed), rejected.missingCapabilityKeys, "Accepted malformed key: $malformed")
+            assertTrue(rejected.projectionClaims.isEmpty())
+        }
+
+        listOf(
+            AUTHENTICATION_OVERLOADS.map { symbol ->
+                if (symbol == apiKeyOverload) symbol.replace("apiKey: string", "apiKey?: string") else symbol
+            },
+            AUTHENTICATION_OVERLOADS +
+                "method:CodexAuthentication#authenticate:(method: string): Promise<void>",
+        ).forEach { overloads ->
+            val rejected = derive(keys, (listOf("class:CodexAuthentication") + overloads).sorted())
+            assertEquals(keys, rejected.missingCapabilityKeys)
+            assertTrue(rejected.projectionClaims.isEmpty())
+        }
+
+        val unreferenced = derive(
+            keys,
+            symbols,
+            references = AUTHENTICATION_OVERLOADS.filterNot { it == apiKeyOverload },
+        )
+        assertEquals(3, unreferenced.errors.count { "Unreferenced exceptional" in it })
+        assertTrue(unreferenced.projectionClaims.isEmpty())
+
+        val foreignConstructor = apiKeyConstructor.replace("example/", "foreign/")
+        val foreignValue = apiKeyValue.replace("example/", "foreign/")
+        val crossPackage = derive(
+            keys + foreignConstructor + foreignValue,
+            symbols,
+            references = AUTHENTICATION_OVERLOADS,
+        )
+        assertTrue(crossPackage.errors.any { "Reused" in it })
+        assertTrue(crossPackage.projectionClaims.none {
+            it.capabilityKey in setOf(apiKeyConstructor, apiKeyValue, authenticate, foreignConstructor, foreignValue)
+        })
+    }
+
+    @Test
     fun `conversation rename and delete project as referenced asynchronous agent methods`() {
         val rename = canonicalFunction(
             "CodexConversations",
