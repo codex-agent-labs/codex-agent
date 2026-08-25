@@ -64,7 +64,10 @@ internal data class FirebaseAndroidEvidenceVerification(
     val bundledRuntimeSha256: String,
 )
 
-internal fun buildFirebaseAndroidEvidence(values: FirebaseAndroidEvidenceValues): JsonObject = buildJsonObject {
+internal fun buildFirebaseAndroidEvidence(
+    values: FirebaseAndroidEvidenceValues,
+    expectedTestClass: String = ANDROID_RUNTIME_TEST_CLASS,
+): JsonObject = buildJsonObject {
     put("schemaVersion", JsonPrimitive(3))
     put("commitSha", JsonPrimitive(values.commitSha))
     put("result", JsonPrimitive("passed"))
@@ -78,7 +81,7 @@ internal fun buildFirebaseAndroidEvidence(values: FirebaseAndroidEvidenceValues)
     put("deviceArchitecture", JsonPrimitive(FIREBASE_DEVICE_ARCHITECTURE))
     put("deviceLocale", JsonPrimitive(values.matrix.locale))
     put("deviceOrientation", JsonPrimitive(values.matrix.orientation))
-    put("testClassName", JsonPrimitive(ANDROID_RUNTIME_TEST_CLASS))
+    put("testClassName", JsonPrimitive(expectedTestClass))
     put("testReportFileName", JsonPrimitive(FIREBASE_ANDROID_REPORT))
     put("testReportSha256", JsonPrimitive(values.testReportSha256))
     put("testsRun", JsonPrimitive(REQUIRED_ANDROID_RUNTIME_TESTS.size))
@@ -96,7 +99,11 @@ internal fun buildFirebaseAndroidEvidence(values: FirebaseAndroidEvidenceValues)
     put("aarBundledRuntimeSha256", JsonPrimitive(values.aarBundledRuntimeSha256))
 }
 
-internal fun validateFirebaseAndroidEvidence(evidence: JsonObject, expectedCommit: String): List<String> = buildList {
+internal fun validateFirebaseAndroidEvidence(
+    evidence: JsonObject,
+    expectedCommit: String,
+    expectedTestClass: String = ANDROID_RUNTIME_TEST_CLASS,
+): List<String> = buildList {
     if (evidence.keys != FIREBASE_ANDROID_EVIDENCE_KEYS) add("schema fields mismatch")
     if (evidence.intOrNull("schemaVersion") != 3) add("schema version is not 3")
     if (!expectedCommit.matches(Regex("[0-9a-f]{40}"))) add("candidate commit is not immutable")
@@ -109,7 +116,7 @@ internal fun validateFirebaseAndroidEvidence(evidence: JsonObject, expectedCommi
     if (!evidence.stringOrNull("firebaseResultsUri").orEmpty().startsWith("gs://")) {
         add("Firebase results URI is invalid")
     }
-    expectedStrings().forEach { (key, value) ->
+    expectedStrings(expectedTestClass).forEach { (key, value) ->
         if (evidence.stringOrNull(key) != value) add("$key mismatch")
     }
     if (evidence.intOrNull("deviceApi") != FIREBASE_DEVICE_API) add("device API mismatch")
@@ -128,13 +135,13 @@ internal fun validateFirebaseAndroidEvidence(evidence: JsonObject, expectedCommi
     }
 }
 
-private fun expectedStrings(): Map<String, String> = mapOf(
+private fun expectedStrings(expectedTestClass: String): Map<String, String> = mapOf(
     "firebaseMatrixFileName" to FIREBASE_MATRIX_FILE,
     "deviceModel" to FIREBASE_DEVICE_MODEL,
     "deviceArchitecture" to FIREBASE_DEVICE_ARCHITECTURE,
     "deviceLocale" to FIREBASE_DEVICE_LOCALE,
     "deviceOrientation" to FIREBASE_DEVICE_ORIENTATION,
-    "testClassName" to ANDROID_RUNTIME_TEST_CLASS,
+    "testClassName" to expectedTestClass,
     "testReportFileName" to FIREBASE_ANDROID_REPORT,
     "testedApplicationKind" to FIREBASE_TESTED_APPLICATION_KIND,
     "applicationApkFileName" to FIREBASE_APPLICATION_APK,

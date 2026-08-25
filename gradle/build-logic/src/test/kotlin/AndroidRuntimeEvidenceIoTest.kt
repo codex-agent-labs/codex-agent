@@ -11,6 +11,16 @@ class AndroidRuntimeEvidenceIoTest {
     }
 
     @Test
+    fun `trusted producer can require the exact current runtime class`() =
+        withReport(reportXml(firstClass = TRUSTED_FIREBASE_ANDROID_TEST_CLASS)) { report ->
+            assertEquals(
+                REQUIRED_ANDROID_RUNTIME_TESTS.size,
+                requirePassingAndroidRuntimeReport(report, TRUSTED_FIREBASE_ANDROID_TEST_CLASS).testCases.size,
+            )
+            assertFailsWith<IllegalStateException> { requirePassingAndroidRuntimeReport(report) }
+        }
+
+    @Test
     fun `failed skipped incomplete duplicate and wrong reports fail`() {
         val wrongClass = "io.example.WrongRuntimeBootstrapDeviceTest"
         listOf(
@@ -61,7 +71,7 @@ class AndroidRuntimeEvidenceIoTest {
         <testsuite tests="2" failures="0" errors="0" skipped="0">
           <testcase classname="$firstClass"
             name="missingNonExecutableAndCorruptOverridesFailClosed">$firstBody</testcase>
-          <testcase classname="$ANDROID_RUNTIME_TEST_CLASS" name="$secondName">$secondBody</testcase>
+          <testcase classname="$firstClass" name="$secondName">$secondBody</testcase>
         </testsuite>
     """.trimIndent()
 }

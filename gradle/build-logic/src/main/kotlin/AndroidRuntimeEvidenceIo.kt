@@ -12,25 +12,33 @@ internal data class AndroidTestReport(
 
 internal data class AndroidTestCase(val className: String, val methodName: String)
 
-private val REQUIRED_ANDROID_RUNTIME_CASES = REQUIRED_ANDROID_RUNTIME_TESTS
-    .mapTo(mutableSetOf()) { AndroidTestCase(ANDROID_RUNTIME_TEST_CLASS, it) }
+private fun requiredAndroidRuntimeCases(expectedTestClass: String) = REQUIRED_ANDROID_RUNTIME_TESTS
+    .mapTo(mutableSetOf()) { AndroidTestCase(expectedTestClass, it) }
 
-internal fun findPassingAndroidRuntimeReport(directory: File): AndroidTestReport {
+internal fun findPassingAndroidRuntimeReport(
+    directory: File,
+    expectedTestClass: String = ANDROID_RUNTIME_TEST_CLASS,
+): AndroidTestReport {
+    val requiredCases = requiredAndroidRuntimeCases(expectedTestClass)
     val parsed = directory.walkTopDown()
         .filter { it.isFile && it.extension == "xml" }
         .mapNotNull { runCatching { parseAndroidTestReport(it) }.getOrNull() }
-        .filter { it.testCases.toSet() == REQUIRED_ANDROID_RUNTIME_CASES }
+        .filter { it.testCases.toSet() == requiredCases }
         .toList()
     check(parsed.size == 1) { "Expected exactly one RuntimeBootstrapDeviceTest report, found ${parsed.size}" }
-    return parsed.single().also(::requirePassingAndroidRuntimeReport)
+    return parsed.single().also { requirePassingAndroidRuntimeReport(it, requiredCases) }
 }
 
-internal fun requirePassingAndroidRuntimeReport(file: File): AndroidTestReport =
-    parseAndroidTestReport(file).also(::requirePassingAndroidRuntimeReport)
+internal fun requirePassingAndroidRuntimeReport(
+    file: File,
+    expectedTestClass: String = ANDROID_RUNTIME_TEST_CLASS,
+): AndroidTestReport = parseAndroidTestReport(file).also {
+    requirePassingAndroidRuntimeReport(it, requiredAndroidRuntimeCases(expectedTestClass))
+}
 
-private fun requirePassingAndroidRuntimeReport(report: AndroidTestReport) {
-    check(report.testCases.size == REQUIRED_ANDROID_RUNTIME_CASES.size) { "Android runtime test count mismatch" }
-    check(report.testCases.toSet() == REQUIRED_ANDROID_RUNTIME_CASES) {
+private fun requirePassingAndroidRuntimeReport(report: AndroidTestReport, requiredCases: Set<AndroidTestCase>) {
+    check(report.testCases.size == requiredCases.size) { "Android runtime test count mismatch" }
+    check(report.testCases.toSet() == requiredCases) {
         "Required Android runtime test class and methods did not run"
     }
     check(report.failures == 0 && report.errors == 0 && report.skipped == 0) {

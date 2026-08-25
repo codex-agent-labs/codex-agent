@@ -57,6 +57,23 @@ class FirebaseAndroidRuntimeEvidenceTasksTest {
     }
 
     @Test
+    fun `explicit trusted runtime class remains exact`() = withFixture { fixture ->
+        fixture.replace("testClassName", JsonPrimitive(TRUSTED_FIREBASE_ANDROID_TEST_CLASS))
+        assertEquals(
+            emptyList(),
+            validateFirebaseAndroidEvidence(
+                fixture.evidence.readReleaseObject(),
+                COMMIT,
+                TRUSTED_FIREBASE_ANDROID_TEST_CLASS,
+            ),
+        )
+        assertEquals(
+            listOf("testClassName mismatch"),
+            validateFirebaseAndroidEvidence(fixture.evidence.readReleaseObject(), COMMIT),
+        )
+    }
+
+    @Test
     fun `matrix failures multiple devices and non-ARM models fail`() {
         val mutations = listOf<(Fixture) -> Unit>(
             { it.matrix.writeText(it.matrix.readText().replace("FINISHED", "ERROR")) },
