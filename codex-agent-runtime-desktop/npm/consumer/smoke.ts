@@ -384,6 +384,7 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   const historicalSummary: AgentConversationSummary = historicalConversation.summary;
   const historicalMessages = historicalConversation.messages;
   const conversationState: CodexConversationState = conversation.state;
+  const reconciledConversation: AgentConversation | null | undefined = conversationState.conversation;
   const messages = conversationState.messages;
   const constructedConversation = new AgentConversation(conversationSummary, messages);
   const messageCollaborationModes: ReadonlyArray<AgentCollaborationMode> =
@@ -444,6 +445,7 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     historicalMessages,
     constructedConversation,
     conversationState,
+    reconciledConversation,
     messages,
     messageCollaborationModes,
     messageCapabilities,

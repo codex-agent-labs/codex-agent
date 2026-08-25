@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 281-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 282-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(281, evidence.packedApi.publicSymbols.size)
+        assertEquals(282, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -1011,7 +1011,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(250, 274 - claims.size)
         assertEquals(556, 294 + 12 + 250)
         assertEquals(52, 56 - setOf("AgentSkill", "AgentSkillCatalog", "AgentSkillChunk", "CodexSkills").size)
-        assertEquals(281, currentPublicSymbols().size)
+        assertEquals(282, currentPublicSymbols().size)
         assertTrue(skillSymbols.all { it in currentPublicSymbols() })
         assertTrue(evidence.projectionClaims.filter { "|owner=example/CodexSkills|" in it.capabilityKey && "|kind=function|" in it.capabilityKey }.all {
             it.sharedScenarios.toSet() ==
@@ -1237,7 +1237,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 311 + 12 + 233)
         assertEquals(47, 52 - 5)
         val currentSymbols = currentPublicSymbols()
-        assertEquals(281, currentSymbols.size)
+        assertEquals(282, currentSymbols.size)
         assertTrue(familySymbols.all { it in currentSymbols })
         assertEquals(72, symbolExports(currentSymbols).first.size)
         assertEquals(46, symbolExports(currentSymbols).second.size)
@@ -1427,7 +1427,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(225, 233 - hostStateClaims.size)
         assertEquals(556, 319 + 12 + 225)
         assertEquals(41, 47 - 6)
-        assertEquals(281, currentPublicSymbols().size)
+        assertEquals(282, currentPublicSymbols().size)
         assertTrue(symbols.all { it in currentPublicSymbols() })
         assertEquals(5, references.count { it.startsWith("getter:CodexHostState#") && it != HOST_STATE_STATUS })
     }
@@ -1599,7 +1599,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(220, 225 - historyClaims.size)
         assertEquals(556, 324 + 12 + 220)
         assertEquals(39, 41 - 2)
-        assertEquals(281, currentPublicSymbols().size)
+        assertEquals(282, currentPublicSymbols().size)
         assertTrue(symbols.all { it in currentPublicSymbols() })
         assertEquals(5, d045PublicSymbols().size)
     }
@@ -3021,7 +3021,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 269 + 12 + 275)
         assertEquals(57, 58 - 1)
         assertEquals(
-            281,
+            282,
             currentPublicSymbols().size + (clientProjectionSymbols - currentPublicSymbols().toSet()).size,
         )
         assertEquals(references, evidence.packedApi.referencedSymbols)
@@ -3211,7 +3211,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             listOf(SKILL_SCOPE_DISPLAY_NAME),
             currentSymbols.filter { it == SKILL_SCOPE_DISPLAY_NAME },
         )
-        assertEquals(281, currentSymbols.size)
+        assertEquals(282, currentSymbols.size)
 
         val canonicalDrift = listOf(
             agentProperty("OtherSkillScope", "displayName", "kotlin/String!!"),
@@ -3357,6 +3357,164 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             assertTrue(evidence.applicabilityExclusions.isEmpty())
             assertTrue(evidence.missingCapabilityKeys.isEmpty())
         }
+    }
+
+    @Test
+    fun `conversation state snapshot compacts only the exact default and shares the supplied state envelope`() {
+        val keys = d046ConversationStateKeys()
+        val aggregateKeys = d046ConversationStateAggregateKeys()
+        val symbols = d046ConversationStateSymbols()
+        val evidence = derive(aggregateKeys, symbols, references = symbols)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+        val conversation = keys.single { "AgentConversationState.conversation" in it }
+        val turnProgress = keys.single { "AgentConversationState.turnProgress" in it }
+        val state = aggregateKeys.single { "CodexConversation.state" in it }
+        val activeTurnProgress = aggregateKeys.single { "CodexConversation.activeTurnProgress" in it }
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(4, claims.size)
+        assertEquals(
+            (setOf(CONVERSATION_STATE_GETTER, CONVERSATION_STATE_OBSERVER) + D046_CONVERSATION).sorted(),
+            claims.getValue(conversation).publicSymbols,
+        )
+        assertEquals(
+            (setOf(CONVERSATION_STATE_GETTER, CONVERSATION_STATE_OBSERVER) + D046_TURN_PROGRESS).sorted(),
+            claims.getValue(turnProgress).publicSymbols,
+        )
+        keys.forEach { key ->
+            assertEquals(
+                setOf(
+                    CrossLanguageBindingScenario.STATE_CURRENT_VALUE,
+                    CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE,
+                    CrossLanguageBindingScenario.SUBSCRIPTION_CANCELLATION,
+                    CrossLanguageBindingScenario.VALUE_CONVERSION,
+                ),
+                claims.getValue(key).sharedScenarios.toSet(),
+            )
+        }
+        assertEquals(4, claims.values.count { CONVERSATION_STATE_GETTER in it.publicSymbols })
+        assertEquals(4, claims.values.count { CONVERSATION_STATE_OBSERVER in it.publicSymbols })
+        assertEquals(1, claims.values.count { D046_CONVERSATION in it.publicSymbols })
+        assertEquals(2, claims.values.count { D046_TURN_PROGRESS in it.publicSymbols })
+        assertTrue(D046_TURN_PROGRESS in claims.getValue(activeTurnProgress).publicSymbols)
+        assertEquals(
+            listOf(CONVERSATION_STATE_GETTER, CONVERSATION_STATE_OBSERVER).sorted(),
+            claims.getValue(state).publicSymbols,
+        )
+        assertEquals(326, 324 + keys.size)
+        assertEquals(218, 220 - keys.size)
+        assertEquals(556, 326 + 12 + 218)
+        assertEquals(38, 39 - 1)
+        val currentSymbols = currentPublicSymbols()
+        assertEquals(282, currentSymbols.size)
+        assertEquals(listOf(D046_CONVERSATION), currentSymbols.filter { it == D046_CONVERSATION })
+        assertEquals(72, symbolExports(currentSymbols).first.size)
+        assertEquals(46, symbolExports(currentSymbols).second.size)
+    }
+
+    @Test
+    fun `conversation state snapshot rejects canonical public reference envelope and reuse drift`() {
+        val keys = d046ConversationStateKeys()
+        val aggregateKeys = d046ConversationStateAggregateKeys()
+        val symbols = d046ConversationStateSymbols()
+        val conversation = keys.single { "AgentConversationState.conversation" in it }
+        val turnProgress = keys.single { "AgentConversationState.turnProgress" in it }
+
+        listOf(
+            conversation.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            conversation.replace("AgentConversationState", "OtherConversationState"),
+            canonicalFunction(
+                "AgentConversationState",
+                "conversation",
+                returnType = "$CANONICAL_AGENT_PACKAGE/AgentConversation?",
+            ).replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+            conversation.replace("propertyKind=VAL", "propertyKind=VAR"),
+            conversation.replace("AgentConversation?", "AgentConversation!!"),
+            "$conversation|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+            "$conversation|suspend=true",
+            conversation.replace("AgentConversationState.conversation", "AgentConversationState.future"),
+            turnProgress.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            turnProgress.replace("propertyKind=VAL", "propertyKind=VAR"),
+            turnProgress.replace("AgentTurnProgress!!", "AgentTurnProgress?"),
+            turnProgress.replace("AgentTurnProgress!!", "kotlin/String!!"),
+        ).forEach { drifted ->
+            val drift = derive(listOf(drifted), symbols, references = symbols)
+            assertEquals(listOf(drifted), drift.missingCapabilityKeys, "Accepted canonical drift: $drifted")
+            assertTrue(drift.projectionClaims.isEmpty())
+        }
+
+        aggregateKeys.forEach { omitted ->
+            val partial = derive(aggregateKeys - omitted, symbols, references = symbols)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys }, "Accepted without $omitted")
+        }
+
+        listOf(
+            CONVERSATION_STATE_GETTER,
+            CONVERSATION_STATE_OBSERVER,
+            D046_CONVERSATION,
+            D046_TURN_PROGRESS,
+        ).forEach { omitted ->
+            val partialSymbols = symbols - omitted
+            val partial = derive(aggregateKeys, partialSymbols, references = partialSymbols)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys }, "Accepted without $omitted")
+        }
+
+        listOf(
+            D046_CONVERSATION to D046_CONVERSATION.replace("AgentConversation", "string"),
+            D046_TURN_PROGRESS to D046_TURN_PROGRESS.replace("CodexTurnProgress", "string"),
+            CONVERSATION_STATE_GETTER to CONVERSATION_STATE_GETTER.replace("CodexConversationState", "string"),
+            CONVERSATION_STATE_OBSERVER to
+                CONVERSATION_STATE_OBSERVER.replace("state: CodexConversationState", "state: string"),
+        ).forEach { (exact, drifted) ->
+            val driftSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(aggregateKeys, driftSymbols, references = driftSymbols)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        listOf(
+            "property:CodexConversationState#conversation[readonly]:AgentConversation | null | undefined",
+            "property:CodexConversationState#turnProgress[readonly]:CodexTurnProgress | null | undefined",
+        ).forEach { extra ->
+            val ambiguousSymbols = (symbols + extra).sorted()
+            val ambiguous = derive(aggregateKeys, ambiguousSymbols, references = ambiguousSymbols)
+            assertTrue(ambiguous.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        listOf(
+            CONVERSATION_STATE_GETTER,
+            CONVERSATION_STATE_OBSERVER,
+            D046_CONVERSATION,
+            D046_TURN_PROGRESS,
+        ).forEach { unreferenced ->
+            val evidence = derive(aggregateKeys, symbols, references = symbols - unreferenced)
+            assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && unreferenced in it })
+            assertTrue(evidence.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        val future = canonicalProperty("AgentConversationState", "future", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureEvidence = derive(aggregateKeys + future, symbols, references = symbols)
+        assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
+        assertEquals(keys.toSet(), futureEvidence.projectionClaims.mapTo(mutableSetOf()) { it.capabilityKey }
+            .intersect(keys.toSet()))
+
+        val extraAggregate = canonicalProperty(
+            "CodexConversation",
+            "turnProgress",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:$CANONICAL_AGENT_PACKAGE/AgentTurnProgress?>!!",
+        ).replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val reused = derive(aggregateKeys + extraAggregate, symbols, references = symbols)
+        assertTrue(reused.errors.any {
+            "Reused JavaScript/TypeScript public symbol" in it && turnProgress in it && extraAggregate in it
+        })
+        assertTrue(reused.projectionClaims.none { it.capabilityKey in setOf(turnProgress, extraAggregate) })
+
+        val foreign = turnProgress.replace(CANONICAL_AGENT_PACKAGE, "foreign")
+        val crossPackage = derive(aggregateKeys + foreign, symbols, references = symbols)
+        assertEquals(listOf(foreign), crossPackage.missingCapabilityKeys)
+        assertTrue(crossPackage.projectionClaims.none { it.capabilityKey == foreign })
     }
 
     @Test
@@ -3813,6 +3971,46 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         listOf("canCancelTurn", "canReload", "canStartTurn").map { name ->
             canonicalProperty("AgentConversationState", name, "kotlin/Boolean!!")
         }.sorted()
+
+    private fun d046ConversationStateKeys(): List<String> = listOf(
+        canonicalProperty(
+            "AgentConversationState",
+            "conversation",
+            "$CANONICAL_AGENT_PACKAGE/AgentConversation?",
+        ),
+        canonicalProperty(
+            "AgentConversationState",
+            "turnProgress",
+            "$CANONICAL_AGENT_PACKAGE/AgentTurnProgress!!",
+        ),
+    ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }.sorted()
+
+    private fun d046ConversationStateAggregateKeys(): List<String> = (
+        d046ConversationStateKeys() + listOf(
+            canonicalProperty(
+                "CodexConversation",
+                "state",
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:$CANONICAL_AGENT_PACKAGE/" +
+                    "AgentConversationState!!>!!",
+            ),
+            canonicalProperty(
+                "CodexConversation",
+                "activeTurnProgress",
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:$CANONICAL_AGENT_PACKAGE/" +
+                    "AgentTurnProgress?>!!",
+            ),
+        ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }
+        ).sorted()
+
+    private fun d046ConversationStateSymbols(): List<String> = listOf(
+        "class:AgentConversation",
+        "class:CodexConversation",
+        "class:CodexConversationState",
+        CONVERSATION_STATE_GETTER,
+        CONVERSATION_STATE_OBSERVER,
+        D046_CONVERSATION,
+        D046_TURN_PROGRESS,
+    ).sorted()
 
     private fun conversationStateSymbols(): List<String> = listOf(
         "class:CodexConversation",
@@ -4358,10 +4556,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             .also { assertEquals(208, it.size) }
         return (
             baseline + modelPublicSymbols() + SKILL_SCOPE_DISPLAY_NAME + skillsPublicSymbols() +
-                d043PublicSymbols() + d045PublicSymbols()
+                d043PublicSymbols() + d045PublicSymbols() + D046_CONVERSATION
             )
             .sorted()
-            .also { assertEquals(281, it.size) }
+            .also { assertEquals(282, it.size) }
     }
 
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
@@ -4478,6 +4676,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         private const val CONVERSATION_STATE_OBSERVER =
             "method:CodexConversation#observeState:" +
                 "(listener: (state: CodexConversationState) => void): CodexObservation"
+        private const val D046_CONVERSATION =
+            "getter:CodexConversationState#conversation:AgentConversation | null | undefined"
+        private const val D046_TURN_PROGRESS =
+            "getter:CodexConversationState#turnProgress:CodexTurnProgress | null | undefined"
 
         private val AUTHENTICATION_OVERLOADS = listOf(
             "method:CodexAuthentication#authenticate:" +

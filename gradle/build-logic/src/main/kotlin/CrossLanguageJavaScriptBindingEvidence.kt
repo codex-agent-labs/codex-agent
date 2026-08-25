@@ -167,6 +167,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
         }
     }
     errors += invalidConversationControllerFlatteningErrors(provisional)
+    errors += invalidConversationStateSnapshotErrors(provisional)
 
     val rejectedKeys = errors.flatMap { error ->
         provisional.mapNotNull { projection -> projection.member.key.takeIf(error::contains) }
@@ -823,6 +824,9 @@ private fun javaScriptProjectionCandidates(
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
     if (member.isD044HostStateOwner()) return hostStateFlatteningProjectionCandidates(member, symbols)
+    if (member.simpleOwner == "AgentConversationState" && member.name in d046ConversationStateMemberNames) {
+        return conversationStateSnapshotProjectionCandidates(member, symbols)
+    }
     if (member.simpleOwner == "CodexAgent" && member.name == "conversations") {
         return conversationsFlatteningProjectionCandidates(member, symbols)
     }
@@ -1462,10 +1466,76 @@ private const val javaScriptConversationStateGetter =
     "getter:CodexConversation#state:CodexConversationState"
 private const val javaScriptConversationStateObserver =
     "method:CodexConversation#observeState:(listener: (state: CodexConversationState) => void): CodexObservation"
+private const val javaScriptConversationStateConversation =
+    "getter:CodexConversationState#conversation:AgentConversation | null | undefined"
+private const val javaScriptConversationStateTurnProgress =
+    "getter:CodexConversationState#turnProgress:CodexTurnProgress | null | undefined"
 private val javaScriptConversationStateEnvelope = setOf(
     javaScriptConversationStateGetter,
     javaScriptConversationStateObserver,
 )
+private val d046ConversationStateMemberNames = setOf("conversation", "turnProgress")
+
+private fun conversationStateSnapshotProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    val leaf = when {
+        member.isExactD046Conversation() -> javaScriptConversationStateConversation
+        member.isExactD046TurnProgress() -> javaScriptConversationStateTurnProgress
+        else -> return emptyList()
+    }
+    val inventory = (
+        javaScriptConversationStateEnvelope + javaScriptConversationStateConversation +
+            javaScriptConversationStateTurnProgress
+        ).sorted()
+    if (!hasExactConversationStateSnapshotInventory(symbols, inventory)) return emptyList()
+    return listOf(
+        JavaScriptProjectionCandidate(
+            publicSymbols = (javaScriptConversationStateEnvelope + leaf).sorted(),
+            scenarios = javaScriptStateScenarios + CrossLanguageBindingScenario.VALUE_CONVERSION,
+            requiresConsumerReference = true,
+            shareablePublicSymbols = javaScriptConversationStateEnvelope,
+        ),
+    )
+}
+
+private fun hasExactConversationStateSnapshotInventory(
+    symbols: List<JavaScriptPublicSymbol>,
+    expectedSymbols: List<String>,
+): Boolean = hasExactJavaScriptSymbolInventory(symbols, expectedSymbols) && expectedSymbols.all { raw ->
+    val expected = parseJavaScriptPublicSymbol(raw)
+    symbols.filter { it.owner == expected.owner && it.name == expected.name }
+        .map(JavaScriptPublicSymbol::raw) == listOf(raw)
+}
+
+private fun CanonicalJavaScriptMember.isExactD046Conversation(): Boolean =
+    owner == "$canonicalAgentPackage/AgentConversationState" && isExactProperty(
+        "AgentConversationState",
+        "conversation",
+        "$canonicalAgentPackage/AgentConversation?",
+    )
+
+private fun CanonicalJavaScriptMember.isExactD046TurnProgress(): Boolean =
+    owner == "$canonicalAgentPackage/AgentConversationState" && isExactProperty(
+        "AgentConversationState",
+        "turnProgress",
+        "$canonicalAgentPackage/AgentTurnProgress!!",
+    )
+
+private fun CanonicalJavaScriptMember.isExactD046ConversationState(): Boolean =
+    owner == "$canonicalAgentPackage/CodexConversation" && isExactProperty(
+        "CodexConversation",
+        "state",
+        "kotlinx.coroutines.flow/StateFlow<INVARIANT:$canonicalAgentPackage/AgentConversationState!!>!!",
+    )
+
+private fun CanonicalJavaScriptMember.isExactD046ActiveTurnProgress(): Boolean =
+    owner == "$canonicalAgentPackage/CodexConversation" && isExactProperty(
+        "CodexConversation",
+        "activeTurnProgress",
+        "kotlinx.coroutines.flow/StateFlow<INVARIANT:$canonicalAgentPackage/AgentTurnProgress?>!!",
+    )
 
 private fun conversationStateFlowProjectionCandidates(
     member: CanonicalJavaScriptMember,
@@ -2184,18 +2254,43 @@ private fun CanonicalJavaScriptMember.isExactActiveConversationsProperty(): Bool
 private fun isAllowedConversationStateEnvelopeReuse(
     symbol: String,
     projections: List<JavaScriptProjection>,
-): Boolean = symbol in javaScriptConversationStateEnvelope && projections.all { projection ->
-    symbol in projection.shareablePublicSymbols && projection.member.simpleOwner == "CodexConversation" &&
-        projection.member.kind == CanonicalJavaScriptMemberKind.PROPERTY &&
-        projection.member.propertyKind == CanonicalJavaScriptPropertyKind.VAL &&
-        projection.member.returnType?.let(::isStateFlowType) == true
-} && projections.map { it.member.owner }.distinct().size == 1
+): Boolean {
+    if (symbol !in javaScriptConversationStateEnvelope) return false
+    val snapshots = projections.filter {
+        it.member.isExactD046Conversation() || it.member.isExactD046TurnProgress()
+    }
+    val aggregates = projections - snapshots.toSet()
+    val exactAggregates = aggregates.all { projection ->
+        symbol in projection.shareablePublicSymbols && projection.member.simpleOwner == "CodexConversation" &&
+            projection.member.kind == CanonicalJavaScriptMemberKind.PROPERTY &&
+            projection.member.propertyKind == CanonicalJavaScriptPropertyKind.VAL &&
+            projection.member.returnType?.let(::isStateFlowType) == true
+    } && aggregates.map { it.member.owner }.distinct().size == 1
+    if (snapshots.isEmpty()) return exactAggregates
+    return exactAggregates && snapshots.size == 2 && snapshots.all { projection ->
+        symbol in projection.shareablePublicSymbols &&
+            projection.publicSymbols.toSet() == javaScriptConversationStateEnvelope + when {
+                projection.member.isExactD046Conversation() -> javaScriptConversationStateConversation
+                projection.member.isExactD046TurnProgress() -> javaScriptConversationStateTurnProgress
+                else -> return@all false
+            }
+    } && aggregates.count { it.member.isExactD046ConversationState() } == 1 &&
+        aggregates.count { it.member.isExactD046ActiveTurnProgress() } == 1
+}
 
 private fun isAllowedConversationStateLeafReuse(
     symbol: String,
     projections: List<JavaScriptProjection>,
 ): Boolean {
     if (projections.size != 2 || symbol in javaScriptConversationStateEnvelope) return false
+    if (symbol == javaScriptConversationStateTurnProgress) {
+        val snapshot = projections.singleOrNull { it.member.isExactD046TurnProgress() } ?: return false
+        val aggregate = projections.singleOrNull { it.member.isExactD046ActiveTurnProgress() } ?: return false
+        return snapshot.publicSymbols.toSet() == javaScriptConversationStateEnvelope + symbol &&
+            snapshot.shareablePublicSymbols == javaScriptConversationStateEnvelope &&
+            aggregate.publicSymbols.toSet() == javaScriptConversationStateEnvelope + symbol &&
+            aggregate.shareablePublicSymbols == javaScriptConversationStateEnvelope
+    }
     val ordinary = projections.singleOrNull {
         it.member.simpleOwner == "AgentConversationState" &&
             it.member.kind == CanonicalJavaScriptMemberKind.PROPERTY &&
@@ -2222,6 +2317,28 @@ private fun isAllowedConversationStateLeafReuse(
         "static" !in leaf.qualifiers && "optional" !in leaf.qualifiers &&
         (leaf.kind == JavaScriptPublicSymbolKind.GETTER || "readonly" in leaf.qualifiers) &&
         javascriptTypeCompatible(leaf.signature.orEmpty(), ordinaryType)
+}
+
+private fun invalidConversationStateSnapshotErrors(
+    projections: List<JavaScriptProjection>,
+): List<String> {
+    val snapshots = projections.filter {
+        it.member.isExactD046Conversation() || it.member.isExactD046TurnProgress()
+    }
+    if (snapshots.isEmpty()) return emptyList()
+    val related = projections.filter { projection ->
+        projection in snapshots || projection.member.isExactD046ConversationState() ||
+            projection.member.isExactD046ActiveTurnProgress()
+    }
+    val exact = snapshots.size == 2 &&
+        snapshots.count { it.member.isExactD046Conversation() } == 1 &&
+        snapshots.count { it.member.isExactD046TurnProgress() } == 1 &&
+        related.count { it.member.isExactD046ConversationState() } == 1 &&
+        related.count { it.member.isExactD046ActiveTurnProgress() } == 1
+    return if (exact) emptyList() else listOf(
+        "Incomplete JavaScript/TypeScript conversation state snapshot for capabilities " +
+            related.map { it.member.key }.sorted(),
+    )
 }
 
 private fun isAllowedAgentInvocationMemberReuse(

@@ -531,6 +531,7 @@ class CodexNodeApiTest {
         assertSame(conversation, active.last())
         assertEquals("ready", conversation.state.status)
         assertEquals("thread-js", conversation.state.conversationId)
+        assertNull(conversation.state.conversation)
         assertTrue(conversation.state.messages.isEmpty())
         assertNull(conversation.state.turnProgress)
         assertTrue(conversation.state.canStartTurn)
@@ -546,10 +547,12 @@ class CodexNodeApiTest {
         val conversationObservation = conversation.observeState { conversationStates += it }
         awaitCondition { conversationStates.isNotEmpty() }
         assertEquals(listOf("ready"), conversationStates.map(CodexConversationState::status))
+        assertNull(conversationStates.single().conversation)
 
         conversation.send("hello").await()
         awaitCondition { conversation.state.status == "running_turn" }
         val activeState = conversation.state
+        assertNull(activeState.conversation)
         assertEquals(listOf("hello"), activeState.messages.map(CodexMessage::text))
         val pendingMessage = activeState.messages.single()
         assertEquals("default", pendingMessage.collaborationMode)
@@ -615,8 +618,12 @@ class CodexNodeApiTest {
         assertTrue(isFrozen(completedHook.details))
 
         runtime.completeTurn()
-        awaitCondition { conversation.state.status == "ready" && conversation.state.messages.size == 2 }
-        awaitCondition { conversationStates.any { it.messages.size == 2 && !it.isTurnActive } }
+        awaitCondition("Reconciled conversation did not become current") {
+            conversation.state.let { it.status == "ready" && it.conversation != null && it.messages.size == 2 }
+        }
+        awaitCondition("Reconciled conversation was not observed") {
+            conversationStates.any { it.conversation != null && it.messages.size == 2 && !it.isTurnActive }
+        }
         val messageState = conversation.state
         val messages = messageState.messages
         assertEquals(listOf("user-1", "assistant-1"), messages.map(CodexMessage::id))
@@ -647,6 +654,58 @@ class CodexNodeApiTest {
         assertEquals("default", liveAssistantMessage.collaborationMode)
         assertTrue(liveAssistantMessage.capabilities.isEmpty())
         assertTrue(liveAssistantMessage.invocations.isEmpty())
+        val reconciledConversation = checkNotNull(messageState.conversation)
+        assertEquals("thread-js", reconciledConversation.summary.conversationId)
+        assertEquals("History title", reconciledConversation.summary.title)
+        assertEquals("-9007199254740993", reconciledConversation.summary.updatedAtEpochSeconds.toString())
+        assertEquals("bigint", jsTypeOf(reconciledConversation.summary.updatedAtEpochSeconds))
+        val reconciledMessages = reconciledConversation.messages
+        assertEquals(listOf("user-1", "assistant-1"), reconciledMessages.map(CodexMessage::id))
+        assertEquals(listOf("client-plan", null), reconciledMessages.map(CodexMessage::clientMessageId))
+        assertEquals(listOf("user", "assistant"), reconciledMessages.map(CodexMessage::role))
+        assertEquals(messages.map(CodexMessage::text), reconciledMessages.map(CodexMessage::text))
+        assertEquals(listOf("plan", "default"), reconciledMessages.map(CodexMessage::collaborationMode))
+        assertEquals(listOf(null, null), reconciledMessages.map(CodexMessage::reasoning))
+        assertEquals(listOf(null, null), reconciledMessages.map(CodexMessage::plan))
+        assertEquals(listOf(null, null), reconciledMessages.map(CodexMessage::shellCommand))
+        assertEquals(listOf(null, null), reconciledMessages.map(CodexMessage::exitCode))
+        assertEquals(
+            listOf(listOf("web_search"), emptyList()),
+            reconciledMessages.map { it.capabilities.toList() },
+        )
+        assertEquals(
+            listOf(listOf("review", "drive"), emptyList()),
+            reconciledMessages.map { message -> message.invocations.map(AgentInvocation::name) },
+        )
+        assertEquals(
+            listOf("skill:/skills/review/SKILL.md", "plugin:plugin://drive@catalog"),
+            reconciledMessages[0].invocations.map(AgentInvocation::key),
+        )
+        assertEquals(
+            "/skills/review/SKILL.md",
+            assertIs<AgentSkillInvocation>(reconciledMessages[0].invocations[0]).path,
+        )
+        assertEquals(
+            "plugin://drive@catalog",
+            assertIs<AgentPluginInvocation>(reconciledMessages[0].invocations[1]).uri,
+        )
+        assertFalse(reconciledMessages === messages)
+        assertFalse(reconciledMessages[0] === messages[0])
+        assertTrue(isFrozen(reconciledConversation))
+        assertTrue(isFrozen(reconciledConversation.summary))
+        assertTrue(isFrozen(reconciledMessages))
+        reconciledMessages.forEach { message ->
+            assertTrue(isFrozen(message))
+            assertTrue(isFrozen(message.capabilities))
+            assertTrue(isFrozen(message.invocations))
+            message.invocations.forEach { assertTrue(isFrozen(it)) }
+        }
+        val observedReconciled = checkNotNull(
+            conversationStates.last { it.status == "ready" && it.conversation != null }.conversation,
+        )
+        assertEquals("thread-js", observedReconciled.summary.conversationId)
+        assertFalse(observedReconciled === reconciledConversation)
+        assertTrue(isFrozen(observedReconciled))
         assertNull(messageState.turnProgress)
         assertTrue(messageState.canStartTurn)
         assertTrue(messageState.canReload)
@@ -687,9 +746,12 @@ class CodexNodeApiTest {
         }
 
         conversation.reload().await()
-        awaitCondition { conversation.state.status == "ready" && conversation.state.messages.size == 2 }
+        awaitCondition("Reloaded conversation did not become current") {
+            conversation.state.let { it.status == "ready" && it.conversation != null && it.messages.size == 2 }
+        }
         assertSame(conversation, agent.activeConversation)
         assertSame(conversation, active.last())
+        val reloadedConversation = checkNotNull(conversation.state.conversation)
         val reloadedMessages = conversation.state.messages
         val reloadedUserMessage = reloadedMessages[0]
         assertEquals("plan", reloadedUserMessage.collaborationMode)
@@ -704,6 +766,15 @@ class CodexNodeApiTest {
         assertFalse(liveUserMessage.capabilities === reloadedUserMessage.capabilities)
         assertFalse(liveUserMessage.invocations === reloadedUserMessage.invocations)
         assertFalse(liveUserMessage.invocations[0] === reloadedUserMessage.invocations[0])
+        assertFalse(reconciledConversation === reloadedConversation)
+        assertFalse(reconciledConversation.summary === reloadedConversation.summary)
+        assertFalse(reconciledMessages === reloadedConversation.messages)
+        assertFalse(reconciledMessages[0] === reloadedConversation.messages[0])
+        assertEquals("thread-js", reconciledConversation.summary.conversationId)
+        assertEquals(listOf("user-1", "assistant-1"), reconciledMessages.map(CodexMessage::id))
+        assertTrue(isFrozen(reloadedConversation))
+        assertTrue(isFrozen(reloadedConversation.summary))
+        assertTrue(isFrozen(reloadedConversation.messages))
         assertTrue(isFrozen(reloadedMessages))
         reloadedMessages.forEach { message ->
             assertTrue(isFrozen(message))
@@ -807,6 +878,47 @@ class CodexNodeApiTest {
         assertSame(activeBeforeHistoryRead, agent.activeConversation)
         assertEquals(observedActiveCountBeforeHistoryRead, active.size)
         assertEquals(observedStateCountBeforeHistoryRead, conversationStates.size)
+
+        conversation.send("retry").await()
+        awaitCondition("Retry did not start") { conversation.state.status == "running_turn" }
+        val optimisticRetry = conversation.state
+        val retryReconciled = checkNotNull(optimisticRetry.conversation)
+        assertEquals(listOf("user-1", "assistant-1"), retryReconciled.messages.map(CodexMessage::id))
+        assertEquals(3, optimisticRetry.messages.size)
+        assertEquals("retry", optimisticRetry.messages.last().text)
+        assertNull(optimisticRetry.turnProgress)
+        assertTrue(isFrozen(retryReconciled))
+        assertTrue(isFrozen(retryReconciled.messages))
+
+        runtime.emitAgentMessageDelta("retained after failure")
+        awaitCondition("Retained progress was not projected") {
+            conversation.state.turnProgress?.text == "retained after failure"
+        }
+        runtime.failTurn()
+        awaitCondition("Failed conversation state did not become current") {
+            conversation.state.status == "failed"
+        }
+        val failedConversationState = conversation.state
+        assertEquals("turn_failed", failedConversationState.failure?.code)
+        assertEquals("retained failure", failedConversationState.failure?.message)
+        assertEquals("retained after failure", failedConversationState.turnProgress?.text)
+        assertEquals(3, failedConversationState.messages.size)
+        assertEquals("retry", failedConversationState.messages.last().text)
+        val failedReconciled = checkNotNull(failedConversationState.conversation)
+        assertEquals(listOf("user-1", "assistant-1"), failedReconciled.messages.map(CodexMessage::id))
+        assertFalse(failedReconciled === reloadedConversation)
+        assertFalse(failedReconciled.messages === reloadedConversation.messages)
+        assertTrue(isFrozen(failedConversationState))
+        assertTrue(isFrozen(checkNotNull(failedConversationState.turnProgress)))
+        assertTrue(isFrozen(failedReconciled))
+        assertTrue(isFrozen(failedReconciled.summary))
+        assertTrue(isFrozen(failedReconciled.messages))
+        awaitCondition("Failed conversation state was not observed") {
+            conversationStates.any {
+                it.status == "failed" && it.turnProgress?.text == "retained after failure" &&
+                    it.conversation?.messages?.size == 2 && it.messages.size == 3
+            }
+        }
 
         val failure = runCatching { conversation.runShellCommand("pwd").await() }.exceptionOrNull()
         val codexError = assertIs<CodexError>(failure)
@@ -1622,12 +1734,15 @@ class CodexNodeApiTest {
     }
 }
 
-private suspend fun awaitCondition(condition: () -> Boolean) {
+private suspend fun awaitCondition(
+    message: String = "Condition did not become true",
+    condition: () -> Boolean,
+) {
     repeat(100) {
         if (condition()) return
         yield()
     }
-    assertTrue(condition(), "Condition did not become true")
+    assertTrue(condition(), message)
 }
 
 private class ApiTestPlatform(
@@ -1791,22 +1906,34 @@ private class ApiTestRuntime : CodexRuntime {
     var effortPreference: String = "low"
     var serviceTierPreference: String = "fast"
     private var loginAttempts: Int = 0
+    private var turnStarts: Int = 0
+    private var activeTurnId: String = "turn-js"
 
     suspend fun completeTurn(): Unit = notify("turn/completed", buildJsonObject {
         put("threadId", "thread-js")
-        put("turn", completedTurn())
+        put("turn", completedTurn(activeTurnId))
+    })
+
+    suspend fun failTurn(): Unit = notify("turn/completed", buildJsonObject {
+        put("threadId", "thread-js")
+        putJsonObject("turn") {
+            put("id", activeTurnId)
+            putJsonArray("items") {}
+            put("status", "failed")
+            putJsonObject("error") { put("message", "retained failure") }
+        }
     })
 
     suspend fun emitAgentMessageDelta(text: String): Unit = notify("item/agentMessage/delta", buildJsonObject {
         put("threadId", "thread-js")
-        put("turnId", "turn-js")
+        put("turnId", activeTurnId)
         put("itemId", "assistant-live")
         put("delta", text)
     })
 
     suspend fun emitPlanUpdated(): Unit = notify("turn/plan/updated", buildJsonObject {
         put("threadId", "thread-js")
-        put("turnId", "turn-js")
+        put("turnId", activeTurnId)
         put("explanation", "Executing the plan")
         putJsonArray("plan") {
             add(buildJsonObject {
@@ -1818,13 +1945,13 @@ private class ApiTestRuntime : CodexRuntime {
 
     suspend fun emitHookStarted(): Unit = notify("hook/started", buildJsonObject {
         put("threadId", "thread-js")
-        put("turnId", "turn-js")
+        put("turnId", activeTurnId)
         put("run", hookRun("running", "Running hook", listOf("started")))
     })
 
     suspend fun emitHookCompleted(): Unit = notify("hook/completed", buildJsonObject {
         put("threadId", "thread-js")
-        put("turnId", "turn-js")
+        put("turnId", activeTurnId)
         put("run", hookRun("completed", "Complete", listOf("finished", "detached")))
     })
 
@@ -1957,7 +2084,10 @@ private class ApiTestRuntime : CodexRuntime {
                 deleteRelease?.await()
                 respond(id, buildJsonObject {})
             }
-            "turn/start" -> respond(id, turnStartResult())
+            "turn/start" -> {
+                activeTurnId = "turn-js-${++turnStarts}"
+                respond(id, turnStartResult(activeTurnId))
+            }
             "account/read" -> {
                 accountReadEntered?.complete(Unit)
                 accountReadRelease?.await()
@@ -2298,16 +2428,16 @@ private fun threadResult(
     put("updatedAt", updatedAt)
 }
 
-private fun turnStartResult(): JsonObject = buildJsonObject {
+private fun turnStartResult(turnId: String): JsonObject = buildJsonObject {
     putJsonObject("turn") {
-        put("id", "turn-js")
+        put("id", turnId)
         putJsonArray("items") {}
         put("status", "inProgress")
     }
 }
 
-private fun completedTurn(): JsonObject = buildJsonObject {
-    put("id", "turn-js")
+private fun completedTurn(turnId: String = "turn-js"): JsonObject = buildJsonObject {
+    put("id", turnId)
     putJsonArray("items") {
         add(buildJsonObject {
             put("id", "user-1")

@@ -368,6 +368,8 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
             "    listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;"
         val expectedReadConversationDeclaration =
             "    readConversation(conversationId: string, signal?: Nullable<AbortSignal>): Promise<AgentConversation>;"
+        val expectedConversationStateConversationDeclaration =
+            "    get conversation(): Nullable<AgentConversation>;"
         val rawCodexConnectorsDeclaration =
             """export declare class CodexConnectors {
     private constructor();
@@ -473,6 +475,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         }
         check(actual.lineSequence().count { it == expectedReadConversationDeclaration } == 1) {
             "Unexpected CodexAgent.readConversation TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == expectedConversationStateConversationDeclaration } == 1) {
+            "Unexpected CodexConversationState.conversation TypeScript declaration"
         }
         check(actual.split(rawCodexConnectorsDeclaration).size == 2) {
             "Unexpected CodexConnectors TypeScript declaration"

@@ -36,6 +36,7 @@ import type {
   AgentCapability,
   AgentInvocation,
   CodexAgent,
+  CodexConversationState,
   CodexHostState,
   CodexMessage,
   CodexTurnProgress,
@@ -396,6 +397,12 @@ turnProgress.planProgress = null;
 turnProgress.hookActivities = [];
 // @ts-expect-error Turn-progress hook activities are readonly.
 turnProgress.hookActivities.push(hookActivity);
+
+declare const conversationState: CodexConversationState;
+// @ts-expect-error Reconciled conversation snapshots are readonly.
+conversationState.conversation = null;
+// @ts-expect-error Conversation-state progress is readonly.
+conversationState.turnProgress = null;
 
 async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   // @ts-expect-error Connector controllers are owned by the Agent.

@@ -801,6 +801,7 @@ public class CodexTurnProgress internal constructor(
 public class CodexConversationState internal constructor(
     public val status: String,
     public val conversationId: String?,
+    public val conversation: AgentConversation?,
     public val title: String?,
     public val messages: Array<CodexMessage>,
     public val turnProgress: CodexTurnProgress?,
@@ -1782,9 +1783,10 @@ private fun CoreConversation.project(state: CoreConversationState = this.state.v
     CodexConversationState(
         status = state.status.name.lowercase(),
         conversationId = state.conversationId?.value,
+        conversation = state.conversation?.project(),
         title = state.conversation?.summary?.title,
         messages = currentMessages.value.map(CoreMessage::project).toTypedArray(),
-        turnProgress = activeTurnProgress.value?.project(),
+        turnProgress = state.turnProgress.takeUnless { it == CoreTurnProgress() }?.project(),
         model = state.model,
         effort = state.effort,
         serviceTier = state.serviceTier,

@@ -236,6 +236,7 @@ export declare class CodexConversationState {
     private constructor();
     get status(): CodexConversationStatus;
     get conversationId(): Nullable<string>;
+    get conversation(): Nullable<AgentConversation>;
     get title(): Nullable<string>;
     get messages(): ReadonlyArray<CodexMessage>;
     get turnProgress(): Nullable<CodexTurnProgress>;
