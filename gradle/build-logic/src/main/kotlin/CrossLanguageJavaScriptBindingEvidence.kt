@@ -156,6 +156,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
         if (projections.size > 1 &&
             !isAllowedLiteralTypeReuse(symbol, projections) &&
             !isAllowedHostStateFlatteningReuse(symbol, projections) &&
+            !isAllowedConversationControllerFlatteningReuse(symbol, projections) &&
             !isAllowedConversationStateEnvelopeReuse(symbol, projections) &&
             !isAllowedConversationStateLeafReuse(symbol, projections) &&
             !isAllowedAgentInvocationMemberReuse(symbol, projections) &&
@@ -165,6 +166,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
                 projections.map { it.member.key }.sorted()
         }
     }
+    errors += invalidConversationControllerFlatteningErrors(provisional)
 
     val rejectedKeys = errors.flatMap { error ->
         provisional.mapNotNull { projection -> projection.member.key.takeIf(error::contains) }
@@ -821,6 +823,9 @@ private fun javaScriptProjectionCandidates(
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
     if (member.isD044HostStateOwner()) return hostStateFlatteningProjectionCandidates(member, symbols)
+    if (member.simpleOwner == "CodexAgent" && member.name == "conversations") {
+        return conversationsFlatteningProjectionCandidates(member, symbols)
+    }
     if (member.isD043SurfaceMember() && !member.isExactD043SurfaceMember()) return emptyList()
     val flattened = flattenedValueProjectionCandidates(member, symbols)
     if (flattened.isNotEmpty() || member.requiresExactD043FlattenedProjection()) return flattened
@@ -859,6 +864,9 @@ private const val javaScriptSkillScopeDisplayName =
 private const val javaScriptDeleteConversation =
     "method:CodexAgent#delete:" +
         "(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>"
+private const val javaScriptReadConversation =
+    "method:CodexAgent#readConversation:" +
+        "(conversationId: string, signal?: AbortSignal | null | undefined): Promise<AgentConversation>"
 private const val javaScriptRenameConversation =
     "method:CodexAgent#rename:" +
         "(conversationId: string, name: string, " +
@@ -890,8 +898,27 @@ private val javaScriptHostStateSharedSymbols = javaScriptHostStateEnvelope + set
 private val javaScriptConversationIdSymbols = listOf(
     javaScriptDeleteConversation,
     javaScriptOpenConversation,
+    javaScriptReadConversation,
     javaScriptRenameConversation,
 ).sorted()
+
+private const val javaScriptActiveConversation =
+    "getter:CodexAgent#activeConversation:CodexConversation | null | undefined"
+private const val javaScriptObserveActiveConversation =
+    "method:CodexAgent#observeActiveConversation:" +
+        "(listener: (conversation: CodexConversation | null | undefined) => void): CodexObservation"
+private const val javaScriptListConversations =
+    "method:CodexAgent#listConversations:" +
+        "(signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentConversationSummary>>"
+private val javaScriptConversationsEnvelope = setOf(
+    javaScriptActiveConversation,
+    javaScriptDeleteConversation,
+    javaScriptListConversations,
+    javaScriptObserveActiveConversation,
+    javaScriptOpenConversation,
+    javaScriptReadConversation,
+    javaScriptRenameConversation,
+)
 
 private fun agentInvocationBaseSymbols(name: String): List<String> = listOf(
     javaScriptAgentInvocationType,
@@ -956,6 +983,39 @@ private fun hostStateFlatteningProjectionCandidates(
         ),
     )
 }
+
+private fun conversationsFlatteningProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    if (!member.isExactConversationsProperty()) return emptyList()
+    val projectedSymbols = javaScriptConversationsEnvelope.sorted()
+    if (!hasExactD045ConversationInventory(symbols, projectedSymbols)) return emptyList()
+    return listOf(
+        JavaScriptProjectionCandidate(
+            publicSymbols = projectedSymbols,
+            scenarios = listOf(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP),
+            requiresConsumerReference = true,
+            shareablePublicSymbols = javaScriptConversationsEnvelope,
+        ),
+    )
+}
+
+private fun hasExactD045ConversationInventory(
+    symbols: List<JavaScriptPublicSymbol>,
+    expectedSymbols: List<String>,
+): Boolean = hasExactJavaScriptSymbolInventory(symbols, expectedSymbols) && expectedSymbols.all { raw ->
+    val expected = parseJavaScriptPublicSymbol(raw)
+    symbols.filter { it.owner == expected.owner && it.name == expected.name }
+        .map(JavaScriptPublicSymbol::raw) == listOf(raw)
+}
+
+private fun CanonicalJavaScriptMember.isExactConversationsProperty(): Boolean =
+    owner == "$canonicalAgentPackage/CodexAgent" && isExactProperty(
+        "CodexAgent",
+        "conversations",
+        "$canonicalAgentPackage/CodexConversations!!",
+    )
 
 private fun hasExactD044HostStateInventory(
     symbols: List<JavaScriptPublicSymbol>,
@@ -1510,6 +1570,8 @@ private fun functionProjectionCandidates(
             return authenticationProjectionCandidates(member, symbols)
         "CodexConversations" to "open" ->
             return openConversationProjectionCandidates(member, symbols)
+        "CodexConversations" to "read" ->
+            return readConversationProjectionCandidates(member, symbols)
     }
     val targetOwner = when (member.simpleOwner) {
         "CodexConversations" -> "CodexAgent"
@@ -1658,6 +1720,41 @@ private fun CanonicalJavaScriptMember.isExactListConversationsFunction(): Boolea
         expectedParameters = emptyList(),
     )
 }
+
+private fun readConversationProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    if (!member.isExactReadConversationFunction() ||
+        !hasExactD045ConversationInventory(symbols, listOf(javaScriptReadConversation))
+    ) return emptyList()
+    return listOf(
+        JavaScriptProjectionCandidate(
+            publicSymbols = listOf(javaScriptReadConversation),
+            scenarios = listOf(
+                CrossLanguageBindingScenario.ASYNC_SUCCESS,
+                CrossLanguageBindingScenario.ASYNC_FAILURE,
+            ),
+            requiresConsumerReference = true,
+            shareablePublicSymbols = setOf(javaScriptReadConversation),
+        ),
+    )
+}
+
+private fun CanonicalJavaScriptMember.isExactReadConversationFunction(): Boolean =
+    owner == "$canonicalAgentPackage/CodexConversations" && isExactFunction(
+        expectedOwner = "CodexConversations",
+        expectedName = "read",
+        expectedReturnType = "$canonicalAgentPackage/AgentConversation!!",
+        expectedSuspend = true,
+        expectedParameters = listOf(
+            CanonicalJavaScriptParameter(
+                "$canonicalAgentPackage/ConversationId!!",
+                hasDefault = false,
+                isVararg = false,
+            ),
+        ),
+    )
 
 private fun CanonicalJavaScriptMember.isExactFunction(
     expectedOwner: String,
@@ -1986,6 +2083,103 @@ private fun isAllowedHostStateFlatteningReuse(
         else -> false
     }
 }
+
+private fun isAllowedConversationControllerFlatteningReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean {
+    if (symbol !in javaScriptConversationsEnvelope) return false
+    val parent = projections.singleOrNull { projection ->
+        projection.member.isExactConversationsProperty() &&
+            projection.publicSymbols == javaScriptConversationsEnvelope.sorted() &&
+            projection.shareablePublicSymbols == javaScriptConversationsEnvelope
+    } ?: return false
+    fun exactChild(
+        predicate: (CanonicalJavaScriptMember) -> Boolean,
+        publicSymbols: List<String> = listOf(symbol),
+    ): JavaScriptProjection? = projections.singleOrNull { projection ->
+        projection !== parent && predicate(projection.member) &&
+            projection.publicSymbols == publicSymbols.sorted()
+    }
+    fun exactConversationIds(): List<JavaScriptProjection> = projections.filter { projection ->
+        projection.member.owner.substringBeforeLast('/') == canonicalAgentPackage &&
+            projection.member.isExactConversationIdMember() &&
+            projection.publicSymbols == javaScriptConversationIdSymbols
+    }
+    val inCanonicalPackage: (CanonicalJavaScriptMember) -> Boolean = {
+        it.owner.substringBeforeLast('/') == canonicalAgentPackage
+    }
+    return when (symbol) {
+        javaScriptActiveConversation, javaScriptObserveActiveConversation ->
+            projections.size == 2 && exactChild(
+                predicate = { member ->
+                    inCanonicalPackage(member) && member.isExactActiveConversationsProperty()
+                },
+                publicSymbols = listOf(javaScriptActiveConversation, javaScriptObserveActiveConversation),
+            ) != null
+        javaScriptListConversations ->
+            projections.size == 2 && exactChild(predicate = { member ->
+                inCanonicalPackage(member) && member.isExactListConversationsFunction()
+            }) != null
+        javaScriptReadConversation ->
+            projections.size == 4 &&
+                exactChild(CanonicalJavaScriptMember::isExactReadConversationFunction) != null &&
+                exactConversationIds().size == 2
+        javaScriptRenameConversation ->
+            projections.size == 4 && exactChild(predicate = { member ->
+                inCanonicalPackage(member) && member.isExactRenameConversationFunction()
+            }) != null && exactConversationIds().size == 2
+        javaScriptDeleteConversation ->
+            projections.size == 4 && exactChild(predicate = { member ->
+                inCanonicalPackage(member) && member.isExactDeleteConversationFunction()
+            }) != null && exactConversationIds().size == 2
+        javaScriptOpenConversation -> {
+            val settings = projections.filter { projection ->
+                projection.member.owner.substringBeforeLast('/') == canonicalAgentPackage &&
+                    projection.member.isExactConversationSettingsMember() &&
+                    projection.publicSymbols == listOf(javaScriptOpenConversation)
+            }
+            projections.size == 7 && exactChild(predicate = { member ->
+                inCanonicalPackage(member) && member.isExactOpenConversationFunction()
+            }) != null && exactConversationIds().size == 2 && settings.size == 3
+        }
+        else -> false
+    }
+}
+
+private fun invalidConversationControllerFlatteningErrors(
+    projections: List<JavaScriptProjection>,
+): List<String> {
+    val related = projections.filter { projection ->
+        projection.publicSymbols.any(javaScriptConversationsEnvelope::contains)
+    }
+    val parents = related.filter { it.member.isExactConversationsProperty() }
+    if (parents.isEmpty()) return emptyList()
+    val exact = related.size == 12 && parents.size == 1 &&
+        related.all { it.member.owner.substringBeforeLast('/') == canonicalAgentPackage } &&
+        related.count { projection ->
+            projection.member.isExactActiveConversationsProperty() && projection.publicSymbols ==
+                listOf(javaScriptActiveConversation, javaScriptObserveActiveConversation).sorted()
+        } == 1 &&
+        related.count { it.member.isExactListConversationsFunction() } == 1 &&
+        related.count { it.member.isExactReadConversationFunction() } == 1 &&
+        related.count { it.member.isExactOpenConversationFunction() } == 1 &&
+        related.count { it.member.isExactRenameConversationFunction() } == 1 &&
+        related.count { it.member.isExactDeleteConversationFunction() } == 1 &&
+        related.count { it.member.isExactConversationIdMember() } == 2 &&
+        related.count { it.member.isExactConversationSettingsMember() } == 3
+    return if (exact) emptyList() else listOf(
+        "Incomplete JavaScript/TypeScript conversation controller flattening for capabilities " +
+            related.map { it.member.key }.sorted(),
+    )
+}
+
+private fun CanonicalJavaScriptMember.isExactActiveConversationsProperty(): Boolean =
+    owner == "$canonicalAgentPackage/CodexConversations" && isExactProperty(
+        "CodexConversations",
+        "active",
+        "kotlinx.coroutines.flow/StateFlow<INVARIANT:$canonicalAgentPackage/CodexConversation?>!!",
+    )
 
 private fun isAllowedConversationStateEnvelopeReuse(
     symbol: String,

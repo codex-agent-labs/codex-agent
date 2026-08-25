@@ -334,6 +334,127 @@ class CodexNodeApiTest {
         }.exceptionOrNull()
         assertEquals("updatedAtEpochSeconds must be a bigint", stringSummaryTimestamp?.message)
 
+        val localConversationMessage = CodexMessage(
+            id = "message-local",
+            clientMessageId = "client-local",
+            role = "user",
+            text = "Local message",
+            collaborationMode = "plan",
+            reasoning = "Local reasoning",
+            plan = "Local plan",
+            shellCommand = "pwd",
+            exitCode = 0,
+            capabilities = arrayOf("web_search", "web_search"),
+            invocations = arrayOf(skillInvocation, pluginInvocation, skillInvocation),
+        )
+        val sourceConversationMessages = arrayOf(localConversationMessage)
+        val localConversation = AgentConversation(localSummary, sourceConversationMessages)
+        sourceConversationMessages[0] = CodexMessage(
+            id = "changed",
+            clientMessageId = null,
+            role = "assistant",
+            text = "Changed",
+            collaborationMode = "default",
+            reasoning = null,
+            plan = null,
+            shellCommand = null,
+            exitCode = null,
+            capabilities = emptyArray(),
+            invocations = emptyArray(),
+        )
+        assertEquals("thread-local", localConversation.summary.conversationId)
+        val localConversationSnapshot = localConversation.messages.single()
+        assertEquals("message-local", localConversationSnapshot.id)
+        assertEquals("client-local", localConversationSnapshot.clientMessageId)
+        assertEquals("user", localConversationSnapshot.role)
+        assertEquals("Local message", localConversationSnapshot.text)
+        assertEquals("plan", localConversationSnapshot.collaborationMode)
+        assertEquals("Local reasoning", localConversationSnapshot.reasoning)
+        assertEquals("Local plan", localConversationSnapshot.plan)
+        assertEquals("pwd", localConversationSnapshot.shellCommand)
+        assertEquals(0, localConversationSnapshot.exitCode)
+        assertEquals(listOf("web_search"), localConversationSnapshot.capabilities.toList())
+        assertEquals(
+            listOf(
+                "skill:/skills/review/SKILL.md",
+                "plugin:plugin://drive@catalog",
+                "skill:/skills/review/SKILL.md",
+            ),
+            localConversationSnapshot.invocations.map(AgentInvocation::key),
+        )
+        assertFalse(localConversation.summary === localSummary)
+        assertFalse(localConversation.messages === sourceConversationMessages)
+        assertFalse(localConversation.messages.single() === localConversationMessage)
+        assertFalse(localConversation.messages.single().capabilities === localConversationMessage.capabilities)
+        assertFalse(localConversation.messages.single().invocations === localConversationMessage.invocations)
+        assertFalse(
+            localConversation.messages.single().invocations[0] === localConversationMessage.invocations[0],
+        )
+        assertTrue(isFrozen(localConversation))
+        assertTrue(isFrozen(localConversation.summary))
+        assertTrue(isFrozen(localConversation.messages))
+        assertTrue(isFrozen(localConversation.messages.single()))
+        assertTrue(isFrozen(localConversation.messages.single().capabilities))
+        assertTrue(isFrozen(localConversation.messages.single().invocations))
+        localConversation.messages.single().invocations.forEach { assertTrue(isFrozen(it)) }
+        assertEquals(0, enumerablePropertyCount(localConversation))
+        val invalidConversationSummary = runCatching {
+            AgentConversation(
+                js("({})").unsafeCast<AgentConversationSummary>(),
+                emptyArray(),
+            )
+        }.exceptionOrNull()
+        assertEquals("summary must be an AgentConversationSummary", invalidConversationSummary?.message)
+        val nonArrayMessages = runCatching {
+            AgentConversation(
+                localSummary,
+                js("({ length: 0 })").unsafeCast<Array<CodexMessage>>(),
+            )
+        }.exceptionOrNull()
+        assertEquals("messages must be an array", nonArrayMessages?.message)
+        val sparseMessages = runCatching {
+            AgentConversation(localSummary, js("new Array(1)").unsafeCast<Array<CodexMessage>>())
+        }.exceptionOrNull()
+        assertEquals("messages must not contain sparse elements", sparseMessages?.message)
+        val hostileMessage = runCatching {
+            AgentConversation(localSummary, js("[{}]").unsafeCast<Array<CodexMessage>>())
+        }.exceptionOrNull()
+        assertEquals("messages[0] must be a CodexMessage", hostileMessage?.message)
+        val forgedCodexMessage = CodexMessage(
+            id = "forged",
+            clientMessageId = null,
+            role = "user",
+            text = "Forged",
+            collaborationMode = "default",
+            reasoning = null,
+            plan = null,
+            shellCommand = null,
+            exitCode = null,
+            capabilities = js("({})").unsafeCast<Array<String>>(),
+            invocations = emptyArray(),
+        )
+        val hostileNestedMessage = runCatching {
+            AgentConversation(localSummary, arrayOf(forgedCodexMessage))
+        }.exceptionOrNull()
+        assertEquals("capabilities must be an array", hostileNestedMessage?.message)
+        val outOfRangeExitCodeMessage = CodexMessage(
+            id = "forged-exit-code",
+            clientMessageId = null,
+            role = "assistant",
+            text = "Forged",
+            collaborationMode = "default",
+            reasoning = null,
+            plan = null,
+            shellCommand = null,
+            exitCode = js("2147483648").unsafeCast<Int>(),
+            capabilities = emptyArray(),
+            invocations = emptyArray(),
+        )
+        val outOfRangeExitCode = runCatching {
+            AgentConversation(localSummary, arrayOf(outOfRangeExitCodeMessage))
+        }.exceptionOrNull()
+        assertEquals("exitCode must be an integer or null", outOfRangeExitCode?.message)
+
         yield()
         assertEquals(listOf("new"), hostStates.map(CodexHostState::status))
         assertTrue(isFrozen(host.state))
@@ -591,6 +712,102 @@ class CodexNodeApiTest {
             message.invocations.forEach { assertTrue(isFrozen(it)) }
         }
 
+        val readRequestsBeforeInvalid = runtime.threadReadRequests.size
+        val blankReadId = runCatching { agent.readConversation("  ").await() }.exceptionOrNull()
+        assertEquals("Conversation ID must not be blank", blankReadId?.message)
+        val hostileReadId = runCatching {
+            agent.readConversation(js("({})").unsafeCast<String>()).await()
+        }.exceptionOrNull()
+        assertEquals("conversationId must be a string", hostileReadId?.message)
+        assertEquals(readRequestsBeforeInvalid, runtime.threadReadRequests.size)
+
+        yield()
+        val activeBeforeHistoryRead = agent.activeConversation
+        val observedActiveCountBeforeHistoryRead = active.size
+        val observedStateCountBeforeHistoryRead = conversationStates.size
+        val history = agent.readConversation("thread-history").await()
+        assertEquals(readRequestsBeforeInvalid + 1, runtime.threadReadRequests.size)
+        val historyReadRequest = runtime.threadReadRequests.last()
+        assertEquals(setOf("includeTurns", "threadId"), historyReadRequest.keys)
+        assertEquals("thread-history", historyReadRequest["threadId"]?.jsonPrimitive?.content)
+        assertEquals("true", historyReadRequest["includeTurns"]?.jsonPrimitive?.content)
+        assertEquals("thread-history", history.summary.conversationId)
+        assertEquals("History title", history.summary.title)
+        assertEquals("-9007199254740993", history.summary.updatedAtEpochSeconds.toString())
+        assertEquals("bigint", jsTypeOf(history.summary.updatedAtEpochSeconds))
+        assertEquals(listOf("user-1", "assistant-1"), history.messages.map(CodexMessage::id))
+        assertEquals(listOf("user", "assistant"), history.messages.map(CodexMessage::role))
+        assertEquals(
+            listOf(
+                "hello\n${CoreCapability.WEB_SEARCH.promptLabel}\n\$review\n@drive\n\nmalformed",
+                "world",
+            ),
+            history.messages.map(CodexMessage::text),
+        )
+        val historyUserMessage = history.messages[0]
+        assertEquals("client-plan", historyUserMessage.clientMessageId)
+        assertEquals("plan", historyUserMessage.collaborationMode)
+        assertNull(historyUserMessage.reasoning)
+        assertNull(historyUserMessage.plan)
+        assertNull(historyUserMessage.shellCommand)
+        assertNull(historyUserMessage.exitCode)
+        assertEquals(listOf("web_search"), historyUserMessage.capabilities.toList())
+        assertEquals(listOf("review", "drive"), historyUserMessage.invocations.map(AgentInvocation::name))
+        assertEquals(
+            listOf("skill:/skills/review/SKILL.md", "plugin:plugin://drive@catalog"),
+            historyUserMessage.invocations.map(AgentInvocation::key),
+        )
+        assertEquals(
+            "/skills/review/SKILL.md",
+            assertIs<AgentSkillInvocation>(historyUserMessage.invocations[0]).path,
+        )
+        assertEquals(
+            "plugin://drive@catalog",
+            assertIs<AgentPluginInvocation>(historyUserMessage.invocations[1]).uri,
+        )
+        val historyAssistantMessage = history.messages[1]
+        assertNull(historyAssistantMessage.clientMessageId)
+        assertEquals("default", historyAssistantMessage.collaborationMode)
+        assertNull(historyAssistantMessage.reasoning)
+        assertNull(historyAssistantMessage.plan)
+        assertNull(historyAssistantMessage.shellCommand)
+        assertNull(historyAssistantMessage.exitCode)
+        assertTrue(historyAssistantMessage.capabilities.isEmpty())
+        assertTrue(historyAssistantMessage.invocations.isEmpty())
+        assertTrue(isFrozen(history))
+        assertTrue(isFrozen(history.summary))
+        assertTrue(isFrozen(history.messages))
+        history.messages.forEach { message ->
+            assertTrue(isFrozen(message))
+            assertTrue(isFrozen(message.capabilities))
+            assertTrue(isFrozen(message.invocations))
+            message.invocations.forEach { assertTrue(isFrozen(it)) }
+        }
+        assertEquals(0, enumerablePropertyCount(history))
+        yield()
+        assertSame(activeBeforeHistoryRead, agent.activeConversation)
+        assertEquals(observedActiveCountBeforeHistoryRead, active.size)
+        assertEquals(observedStateCountBeforeHistoryRead, conversationStates.size)
+        assertEquals(listOf("user-1", "assistant-1"), conversation.state.messages.map(CodexMessage::id))
+
+        runtime.failNextThreadRead = true
+        val historyReadFailure = assertIs<CodexError>(
+            runCatching { agent.readConversation("thread-history").await() }.exceptionOrNull(),
+        )
+        assertEquals("conversation_read_failed", historyReadFailure.code)
+        assertEquals("conversation read denied", historyReadFailure.message)
+        assertTrue(historyReadFailure.recoverable)
+        runtime.mismatchNextThreadRead = true
+        val mismatchedHistory = assertIs<CodexError>(
+            runCatching { agent.readConversation("thread-history").await() }.exceptionOrNull(),
+        )
+        assertEquals("conversation_read_failed", mismatchedHistory.code)
+        assertEquals("Could not read conversation", mismatchedHistory.message)
+        assertTrue(mismatchedHistory.recoverable)
+        assertSame(activeBeforeHistoryRead, agent.activeConversation)
+        assertEquals(observedActiveCountBeforeHistoryRead, active.size)
+        assertEquals(observedStateCountBeforeHistoryRead, conversationStates.size)
+
         val failure = runCatching { conversation.runShellCommand("pwd").await() }.exceptionOrNull()
         val codexError = assertIs<CodexError>(failure)
         assertEquals("CodexError", codexError.asDynamic().name as String)
@@ -744,6 +961,15 @@ class CodexNodeApiTest {
             }.exceptionOrNull()
             assertEquals("AbortError", abortedConversationList?.asDynamic()?.name as String)
             assertTrue(shellRuntime.threadListRequests.isEmpty())
+
+            val abortedConversationRead = runCatching {
+                shellAgent.readConversation(
+                    "thread-history",
+                    controller.signal.unsafeCast<AbortSignal>(),
+                ).await()
+            }.exceptionOrNull()
+            assertEquals("AbortError", abortedConversationRead?.asDynamic()?.name as String)
+            assertTrue(shellRuntime.threadReadRequests.isEmpty())
 
             listOf(
                 runCatching {
@@ -1096,6 +1322,7 @@ class CodexNodeApiTest {
             assertSame(skills, shellAgent.skills)
             val requestsBeforeClosedList = shellRuntime.appListRequests.size
             val conversationRequestsBeforeClosedList = shellRuntime.threadListRequests.size
+            val conversationRequestsBeforeClosedRead = shellRuntime.threadReadRequests.size
             val modelRequestsBeforeClosedList = shellRuntime.modelListRequests.size
             val skillRequestsBeforeClosedList = shellRuntime.skillListRequests.size
             val closedList = runCatching { connectors.list().await() }.exceptionOrNull()
@@ -1106,6 +1333,12 @@ class CodexNodeApiTest {
             assertEquals("IllegalStateException", closedConversationList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedConversationList.message)
             assertEquals(conversationRequestsBeforeClosedList, shellRuntime.threadListRequests.size)
+            val closedConversationRead = runCatching {
+                shellAgent.readConversation("thread-history").await()
+            }.exceptionOrNull()
+            assertEquals("IllegalStateException", closedConversationRead?.asDynamic()?.name as String)
+            assertEquals("Codex agent is closed", closedConversationRead.message)
+            assertEquals(conversationRequestsBeforeClosedRead, shellRuntime.threadReadRequests.size)
             val closedModelList = runCatching { models.list().await() }.exceptionOrNull()
             assertEquals("IllegalStateException", closedModelList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedModelList.message)
@@ -1538,6 +1771,9 @@ private class ApiTestRuntime : CodexRuntime {
     var deleteRelease: CompletableDeferred<Unit>? = null
     var threadStartParams: JsonObject? = null
     var threadResumeParams: JsonObject? = null
+    val threadReadRequests: MutableList<JsonObject> = mutableListOf()
+    var failNextThreadRead: Boolean = false
+    var mismatchNextThreadRead: Boolean = false
     val threadListRequests: MutableList<JsonObject> = mutableListOf()
     var failNextThreadList: Boolean = false
     val appListRequests: MutableList<JsonObject> = mutableListOf()
@@ -1614,7 +1850,21 @@ private class ApiTestRuntime : CodexRuntime {
             }
             "thread/read" -> {
                 val params = checkNotNull(request["params"]).jsonObject
-                respond(id, threadReadResult(checkNotNull(params["threadId"]).jsonPrimitive.content))
+                threadReadRequests += params
+                when {
+                    failNextThreadRead -> {
+                        failNextThreadRead = false
+                        respondError(id, "conversation read denied")
+                    }
+                    mismatchNextThreadRead -> {
+                        mismatchNextThreadRead = false
+                        respond(id, threadReadResult("thread-other"))
+                    }
+                    else -> respond(
+                        id,
+                        threadReadResult(checkNotNull(params["threadId"]).jsonPrimitive.content),
+                    )
+                }
             }
             "thread/list" -> {
                 val params = checkNotNull(request["params"]).jsonObject
@@ -1889,7 +2139,15 @@ private fun threadResumeResult(threadId: String): JsonObject = buildJsonObject {
 }
 
 private fun threadReadResult(threadId: String): JsonObject = buildJsonObject {
-    put("thread", threadResult(buildJsonArray { add(completedTurn()) }, threadId))
+    put(
+        "thread",
+        threadResult(
+            turns = buildJsonArray { add(completedTurn()) },
+            threadId = threadId,
+            name = "History title",
+            updatedAt = -9_007_199_254_740_993L,
+        ),
+    )
 }
 
 private fun appListResult(cursor: String?): JsonObject = buildJsonObject {

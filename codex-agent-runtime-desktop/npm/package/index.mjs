@@ -17,6 +17,7 @@ export const AgentSkill = api.AgentSkill;
 export const AgentSkillCatalog = api.AgentSkillCatalog;
 export const AgentSkillChunk = api.AgentSkillChunk;
 export const AgentConversationSummary = api.AgentConversationSummary;
+export const AgentConversation = api.AgentConversation;
 export const AgentMcpEnvironmentVariable = api.AgentMcpEnvironmentVariable;
 export const AgentMcpOauthConfiguration = api.AgentMcpOauthConfiguration;
 export const AgentMcpToolConfiguration = api.AgentMcpToolConfiguration;

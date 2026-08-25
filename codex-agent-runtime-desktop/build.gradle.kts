@@ -242,6 +242,18 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get title(): string;
     get updatedAtEpochSeconds(): bigint;
 }"""
+        val rawAgentConversationDeclaration =
+            """export declare class AgentConversation {
+    constructor(summary: AgentConversationSummary, messages: Array<CodexMessage>);
+    get summary(): AgentConversationSummary;
+    get messages(): Array<CodexMessage>;
+}"""
+        val reviewedAgentConversationDeclaration =
+            """export declare class AgentConversation {
+    constructor(summary: AgentConversationSummary, messages: ReadonlyArray<CodexMessage>);
+    get summary(): AgentConversationSummary;
+    get messages(): ReadonlyArray<CodexMessage>;
+}"""
         val expectedAgentServiceTierDeclaration =
             """export declare class AgentServiceTier {
     constructor(id: string, name: string, description: string);
@@ -354,6 +366,8 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
             "    listConversations(signal?: Nullable<AbortSignal>): Promise<Array<AgentConversationSummary>>;"
         val reviewedListConversationsDeclaration =
             "    listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;"
+        val expectedReadConversationDeclaration =
+            "    readConversation(conversationId: string, signal?: Nullable<AbortSignal>): Promise<AgentConversation>;"
         val rawCodexConnectorsDeclaration =
             """export declare class CodexConnectors {
     private constructor();
@@ -433,6 +447,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(expectedAgentConversationSummaryDeclaration).size == 2) {
             "Unexpected AgentConversationSummary TypeScript declaration"
         }
+        check(actual.split(rawAgentConversationDeclaration).size == 2) {
+            "Unexpected AgentConversation TypeScript declaration"
+        }
         check(actual.split(expectedAgentServiceTierDeclaration).size == 2) {
             "Unexpected AgentServiceTier TypeScript declaration"
         }
@@ -453,6 +470,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         }
         check(actual.lineSequence().count { it == rawListConversationsDeclaration } == 1) {
             "Unexpected CodexAgent.listConversations TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == expectedReadConversationDeclaration } == 1) {
+            "Unexpected CodexAgent.readConversation TypeScript declaration"
         }
         check(actual.split(rawCodexConnectorsDeclaration).size == 2) {
             "Unexpected CodexConnectors TypeScript declaration"
@@ -506,6 +526,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawAgentPluginInvocationDeclaration,
             reviewedAgentPluginInvocationDeclaration,
+        ).replace(
+            rawAgentConversationDeclaration,
+            reviewedAgentConversationDeclaration,
         ).replace(
             rawAgentModelDeclaration,
             reviewedAgentModelDeclaration,

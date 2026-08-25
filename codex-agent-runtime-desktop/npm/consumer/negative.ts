@@ -1,5 +1,6 @@
 import {
   AgentConnector,
+  AgentConversation,
   AgentConversationSummary,
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
@@ -271,6 +272,20 @@ conversationSummary.title = "Changed";
 // @ts-expect-error Immutable conversation-summary timestamps are readonly.
 conversationSummary.updatedAtEpochSeconds = 2n;
 
+const historicalConversation = new AgentConversation(conversationSummary, [message]);
+// @ts-expect-error Historical conversations require a message collection.
+new AgentConversation(conversationSummary);
+// @ts-expect-error Historical conversation summaries use the canonical summary value.
+new AgentConversation({}, [message]);
+// @ts-expect-error Historical conversation messages use canonical message values.
+new AgentConversation(conversationSummary, [{}]);
+// @ts-expect-error Immutable historical conversation summaries are readonly.
+historicalConversation.summary = conversationSummary;
+// @ts-expect-error Immutable historical conversation collections cannot be replaced.
+historicalConversation.messages = [];
+// @ts-expect-error Historical conversation message collections are readonly.
+historicalConversation.messages.push(message);
+
 const serviceTier = new AgentServiceTier("fast", "Fast", "Lowest latency");
 // @ts-expect-error Service-tier descriptions are required.
 new AgentServiceTier("fast", "Fast");
@@ -464,6 +479,12 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   const summaries = await agent.listConversations();
   // @ts-expect-error Conversation-list results are readonly.
   summaries.push(conversationSummary);
+  // @ts-expect-error Reading a conversation requires an ID.
+  await agent.readConversation();
+  // @ts-expect-error Conversation IDs are strings.
+  await agent.readConversation(1);
+  // @ts-expect-error Conversation-read signals must be AbortSignal values.
+  await agent.readConversation("conversation", {});
   // @ts-expect-error API-key authentication requires a key.
   await agent.authentication.authenticate("api_key");
   // @ts-expect-error API-key authentication requires a string key.

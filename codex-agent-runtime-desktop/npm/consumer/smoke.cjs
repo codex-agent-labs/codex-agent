@@ -96,6 +96,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.CodexAgent.prototype.rename, 'function');
   assert.equal(typeof sdk.CodexAgent.prototype.delete, 'function');
   assert.equal(typeof sdk.CodexAgent.prototype.listConversations, 'function');
+  assert.equal(typeof sdk.CodexAgent.prototype.readConversation, 'function');
   assert.equal(typeof Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'skills')?.get, 'function');
   assert.equal(typeof sdk.CodexSkills.prototype.list, 'function');
   assert.equal(typeof sdk.CodexSkills.prototype.read, 'function');
@@ -103,6 +104,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.CodexSkills.prototype.uninstall, 'function');
   for (const constructor of [
     sdk.AgentConnector,
+    sdk.AgentConversation,
     sdk.AgentConversationSummary,
     sdk.AgentElicitationValidation,
     sdk.AgentElicitationValidationIssue,
@@ -856,6 +858,50 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     assert.throws(() => new sdk.AgentConversationSummary('conversation', 'Title', invalid));
   }
 
+  const sourceConversationMessages = [];
+  const historicalConversation = new sdk.AgentConversation(
+    conversationSummary,
+    sourceConversationMessages,
+  );
+  sourceConversationMessages.push(null);
+  assert.notEqual(historicalConversation.summary, conversationSummary);
+  assert.deepEqual(
+    [historicalConversation.summary.conversationId, historicalConversation.summary.title,
+      historicalConversation.summary.updatedAtEpochSeconds],
+    ['conversation', 'Conversation title', 1n],
+  );
+  assert.deepEqual(historicalConversation.messages, []);
+  assert.equal(Object.isFrozen(historicalConversation.summary), true);
+  assert.equal(Object.isFrozen(historicalConversation.messages), true);
+  assert.equal(Object.isFrozen(historicalConversation), true);
+  for (const invalidSummary of [null, undefined, 0, false, {}, [], new Proxy({}, {})]) {
+    assert.throws(
+      () => new sdk.AgentConversation(invalidSummary, []),
+      (error) => error?.message === 'summary must be an AgentConversationSummary',
+    );
+  }
+  for (const invalidMessages of [null, undefined, 0, false, {}, new Set()]) {
+    assert.throws(
+      () => new sdk.AgentConversation(conversationSummary, invalidMessages),
+      (error) => error?.message === 'messages must be an array',
+    );
+  }
+  assert.throws(
+    () => new sdk.AgentConversation(conversationSummary, [{}]),
+    (error) => error?.message === 'messages[0] must be a CodexMessage',
+  );
+  const malformedMessage = new sdk.CodexMessage(
+    'message', null, 'user', 'Text', 'default', null, null, null, null, {}, [],
+  );
+  assert.throws(
+    () => new sdk.AgentConversation(conversationSummary, [malformedMessage]),
+    (error) => error?.message === 'capabilities must be an array',
+  );
+  assert.throws(
+    () => new sdk.AgentConversation(conversationSummary, Array(1)),
+    (error) => error?.message === 'messages must not contain sparse elements',
+  );
+
   const serviceTier = new sdk.AgentServiceTier('fast', 'Fast', 'Lowest latency');
   assert.equal(serviceTier.id, 'fast');
   assert.equal(serviceTier.name, 'Fast');
@@ -1169,6 +1215,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     pluginInvocation,
     conversationSummary,
     permissiveConversationSummary,
+    historicalConversation,
     serviceTier,
     defaultModel,
     model,
@@ -1238,6 +1285,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
       ['conversationId', 'title', 'updatedAtEpochSeconds'],
     );
   }
+  assert.deepEqual(Reflect.ownKeys(historicalConversation), ['summary', 'messages']);
   for (const tier of [serviceTier, ...model.serviceTiers]) {
     assert.deepEqual(Reflect.ownKeys(tier), ['id', 'name', 'description']);
   }

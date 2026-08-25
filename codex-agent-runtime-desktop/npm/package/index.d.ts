@@ -166,6 +166,11 @@ export declare class AgentConversationSummary {
     get title(): string;
     get updatedAtEpochSeconds(): bigint;
 }
+export declare class AgentConversation {
+    constructor(summary: AgentConversationSummary, messages: ReadonlyArray<CodexMessage>);
+    get summary(): AgentConversationSummary;
+    get messages(): ReadonlyArray<CodexMessage>;
+}
 export declare class CodexFailure {
     private constructor();
     get code(): string;
@@ -278,6 +283,7 @@ export declare class CodexAgent {
     get skills(): CodexSkills;
     get activeConversation(): Nullable<CodexConversation>;
     listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;
+    readConversation(conversationId: string, signal?: Nullable<AbortSignal>): Promise<AgentConversation>;
     openConversation(conversationId?: Nullable<string>, approvalPreset?: Nullable<CodexApprovalPreset>, serviceTier?: Nullable<string>, signal?: Nullable<AbortSignal>): Promise<CodexConversation>;
     rename(conversationId: string, name: string, signal?: Nullable<AbortSignal>): Promise<void>;
     delete(conversationId: string, signal?: Nullable<AbortSignal>): Promise<void>;

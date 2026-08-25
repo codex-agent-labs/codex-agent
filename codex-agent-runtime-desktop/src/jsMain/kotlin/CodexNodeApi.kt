@@ -3,7 +3,9 @@
 import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
 import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as CoreAuthenticationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentCapability as CoreCapability
+import io.github.codex_agent_labs.codexmobile.agent.AgentCollaborationMode as CoreCollaborationMode
 import io.github.codex_agent_labs.codexmobile.agent.AgentConnector as CoreConnector
+import io.github.codex_agent_labs.codexmobile.agent.AgentConversation as CoreAgentConversation
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSummary as CoreConversationSummary
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSettings
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState as CoreConversationState
@@ -26,6 +28,7 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentMcpOauthConfiguration a
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolApproval as CoreMcpToolApproval
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolConfiguration as CoreMcpToolConfiguration
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
+import io.github.codex_agent_labs.codexmobile.agent.AgentMessageRole as CoreMessageRole
 import io.github.codex_agent_labs.codexmobile.agent.AgentModel as CoreModel
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanProgress as CorePlanProgress
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanStep
@@ -644,6 +647,33 @@ public class AgentConversationSummary public constructor(
     }
 }
 
+/** Immutable conversation-history snapshot. */
+@JsExport
+public class AgentConversation public constructor(
+    summary: AgentConversationSummary,
+    messages: Array<CodexMessage>,
+) {
+    public val summary: AgentConversationSummary
+    public val messages: Array<CodexMessage>
+
+    init {
+        val summaryValue: Any? = summary
+        require(summaryValue is AgentConversationSummary) {
+            "summary must be an AgentConversationSummary"
+        }
+        requireJavaScriptArray(messages, "messages")
+        this.summary = summaryValue.detachedCopy()
+        this.messages = Array(messages.size) { index ->
+            requireOwnJavaScriptArrayIndex(messages, index, "messages")
+            val message: Any? = messages[index]
+            require(message is CodexMessage) { "messages[$index] must be a CodexMessage" }
+            message.detachedCopy()
+        }
+        freezeSnapshot(this.messages)
+        freezeSnapshot(this)
+    }
+}
+
 /** Structured failure data exposed by observable state snapshots. */
 @JsExport
 public class CodexFailure internal constructor(
@@ -1016,6 +1046,15 @@ public class CodexAgent internal constructor(
         conversations
     }
 
+    public fun readConversation(
+        conversationId: String,
+        signal: AbortSignal? = null,
+    ): Promise<AgentConversation> = host.operationScope().codexPromise(signal) {
+        core.conversations.read(
+            ConversationId(conversationId.requireJavaScriptString("conversationId")),
+        ).project()
+    }
+
     public fun openConversation(
         conversationId: String? = null,
         approvalPreset: String? = null,
@@ -1326,10 +1365,22 @@ private fun String.toAgentSkillScope(): CoreAgentSkillScope {
         ?: throw IllegalArgumentException("Unknown skill scope: $value")
 }
 
-private fun String.toAgentCapability(): CoreCapability {
-    val value = requireJavaScriptString("capability")
+private fun String.toAgentCapability(name: String = "capability"): CoreCapability {
+    val value = requireJavaScriptString(name)
     return CoreCapability.entries.singleOrNull { it.name.lowercase() == value }
         ?: throw IllegalArgumentException("Unknown agent capability: $value")
+}
+
+private fun String.toCoreMessageRole(): CoreMessageRole {
+    val value = requireJavaScriptString("role")
+    return CoreMessageRole.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown message role: $value")
+}
+
+private fun String.toCoreCollaborationMode(): CoreCollaborationMode {
+    val value = requireJavaScriptString("collaborationMode")
+    return CoreCollaborationMode.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown collaboration mode: $value")
 }
 
 private fun String.toCoreInstallationScope(): CoreInstallationScope {
@@ -1413,7 +1464,10 @@ private fun String?.requireJavaScriptNullableString(name: String): String? {
 }
 
 private fun requireJavaScriptNullableInteger(value: Int?, name: String): Int? {
-    require(value == null || js("Number.isInteger(value)") as Boolean) { "$name must be an integer or null" }
+    require(
+        value == null ||
+            js("Number.isInteger(value) && value >= -2147483648 && value <= 2147483647") as Boolean,
+    ) { "$name must be an integer or null" }
     return value
 }
 
@@ -1610,6 +1664,62 @@ private fun CoreConversationSummary.project(): AgentConversationSummary = AgentC
     title = title,
     updatedAtEpochSeconds = updatedAtEpochSeconds.toJavaScriptBigInt(),
 )
+
+private fun CoreAgentConversation.project(): AgentConversation = AgentConversation(
+    summary = summary.project(),
+    messages = messages.map(CoreMessage::project).toTypedArray(),
+)
+
+private fun AgentConversationSummary.detachedCopy(): AgentConversationSummary = AgentConversationSummary(
+    conversationId = conversationId,
+    title = title,
+    updatedAtEpochSeconds = updatedAtEpochSeconds,
+)
+
+private fun CodexMessage.detachedCopy(): CodexMessage {
+    return CoreMessage(
+        id = id.requireJavaScriptString("id"),
+        clientMessageId = clientMessageId.requireJavaScriptNullableString("clientMessageId"),
+        role = role.toCoreMessageRole(),
+        text = text.requireJavaScriptString("text"),
+        collaborationMode = collaborationMode.toCoreCollaborationMode(),
+        reasoning = reasoning.requireJavaScriptNullableString("reasoning"),
+        plan = plan.requireJavaScriptNullableString("plan"),
+        shellCommand = shellCommand.requireJavaScriptNullableString("shellCommand"),
+        exitCode = requireJavaScriptNullableInteger(exitCode, "exitCode"),
+        capabilities = run {
+            requireJavaScriptArray(capabilities, "capabilities")
+            List(capabilities.size) { index ->
+                requireOwnJavaScriptArrayIndex(capabilities, index, "capabilities")
+                capabilities[index].toAgentCapability("capabilities[$index]")
+            }.toSet()
+        },
+        invocations = run {
+            requireJavaScriptArray(invocations, "invocations")
+            List(invocations.size) { index ->
+                requireOwnJavaScriptArrayIndex(invocations, index, "invocations")
+                invocations[index].toCoreInvocation(index)
+            }
+        },
+    ).project()
+}
+
+private fun AgentInvocation.toCoreInvocation(index: Int): CoreInvocation {
+    val invocation: Any? = this
+    return when (invocation) {
+        is AgentSkillInvocation -> CoreInvocation.Skill(
+            name = invocation.name.requireJavaScriptString("invocations[$index].name"),
+            path = invocation.path.requireJavaScriptString("invocations[$index].path"),
+        )
+        is AgentPluginInvocation -> CoreInvocation.Plugin(
+            name = invocation.name.requireJavaScriptString("invocations[$index].name"),
+            uri = invocation.uri.requireJavaScriptString("invocations[$index].uri"),
+        )
+        else -> throw IllegalArgumentException(
+            "invocations[$index] must be an AgentSkillInvocation or AgentPluginInvocation",
+        )
+    }
+}
 
 private fun CoreFailure.project(): CodexFailure = CodexFailure(code, message, isRecoverable)
 

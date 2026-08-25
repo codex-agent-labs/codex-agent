@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 276-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 281-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(276, evidence.packedApi.publicSymbols.size)
+        assertEquals(281, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -1011,7 +1011,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(250, 274 - claims.size)
         assertEquals(556, 294 + 12 + 250)
         assertEquals(52, 56 - setOf("AgentSkill", "AgentSkillCatalog", "AgentSkillChunk", "CodexSkills").size)
-        assertEquals(276, currentPublicSymbols().size)
+        assertEquals(281, currentPublicSymbols().size)
         assertTrue(skillSymbols.all { it in currentPublicSymbols() })
         assertTrue(evidence.projectionClaims.filter { "|owner=example/CodexSkills|" in it.capabilityKey && "|kind=function|" in it.capabilityKey }.all {
             it.sharedScenarios.toSet() ==
@@ -1237,10 +1237,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 311 + 12 + 233)
         assertEquals(47, 52 - 5)
         val currentSymbols = currentPublicSymbols()
-        assertEquals(276, currentSymbols.size)
+        assertEquals(281, currentSymbols.size)
         assertTrue(familySymbols.all { it in currentSymbols })
-        assertEquals(71, symbolExports(currentSymbols).first.size)
-        assertEquals(45, symbolExports(currentSymbols).second.size)
+        assertEquals(72, symbolExports(currentSymbols).first.size)
+        assertEquals(46, symbolExports(currentSymbols).second.size)
 
         val canonicalDrift = listOf(
             capabilityId.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
@@ -1427,7 +1427,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(225, 233 - hostStateClaims.size)
         assertEquals(556, 319 + 12 + 225)
         assertEquals(41, 47 - 6)
-        assertEquals(276, currentPublicSymbols().size)
+        assertEquals(281, currentPublicSymbols().size)
         assertTrue(symbols.all { it in currentPublicSymbols() })
         assertEquals(5, references.count { it.startsWith("getter:CodexHostState#") && it != HOST_STATE_STATUS })
     }
@@ -1557,6 +1557,191 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
         assertEquals(keys.toSet(), futureEvidence.projectionClaims.mapTo(mutableSetOf()) { it.capabilityKey }
             .intersect(keys.toSet()))
+    }
+
+    @Test
+    fun `conversation history completes five exact claims through the flattened controller`() {
+        val keys = d045ConversationKeys()
+        val aggregateKeys = d045ConversationAggregateKeys()
+        val symbols = d045ConversationSymbols()
+        val evidence = derive(aggregateKeys, symbols, references = symbols)
+        val claims = evidence.projectionClaims.associate { it.capabilityKey to it.publicSymbols }
+        val historyClaims = claims.filterKeys(keys::contains)
+        val constructor = keys.single { "AgentConversation.<init>" in it }
+        val messages = keys.single { "AgentConversation.messages" in it }
+        val summary = keys.single { "AgentConversation.summary" in it }
+        val read = keys.single { "CodexConversations.read" in it }
+        val conversations = keys.single { "CodexAgent.conversations" in it }
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(15, claims.size)
+        assertEquals(5, historyClaims.size)
+        assertEquals(listOf(AGENT_CONVERSATION_CONSTRUCTOR), claims.getValue(constructor))
+        assertEquals(listOf(AGENT_CONVERSATION_MESSAGES), claims.getValue(messages))
+        assertEquals(listOf(AGENT_CONVERSATION_SUMMARY), claims.getValue(summary))
+        assertEquals(listOf(READ_CONVERSATION), claims.getValue(read))
+        assertEquals(d045ConversationEnvelope(), claims.getValue(conversations))
+        assertEquals(
+            listOf(CrossLanguageBindingScenario.VALUE_CONVERSION),
+            evidence.projectionClaims.single { it.capabilityKey == constructor }.sharedScenarios,
+        )
+        assertEquals(
+            setOf(CrossLanguageBindingScenario.ASYNC_SUCCESS, CrossLanguageBindingScenario.ASYNC_FAILURE),
+            evidence.projectionClaims.single { it.capabilityKey == read }.sharedScenarios.toSet(),
+        )
+        assertEquals(
+            listOf(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP),
+            evidence.projectionClaims.single { it.capabilityKey == conversations }.sharedScenarios,
+        )
+        assertEquals(324, 319 + historyClaims.size)
+        assertEquals(220, 225 - historyClaims.size)
+        assertEquals(556, 324 + 12 + 220)
+        assertEquals(39, 41 - 2)
+        assertEquals(281, currentPublicSymbols().size)
+        assertTrue(symbols.all { it in currentPublicSymbols() })
+        assertEquals(5, d045PublicSymbols().size)
+    }
+
+    @Test
+    fun `conversation history rejects canonical public reference inventory and reuse drift`() {
+        val keys = d045ConversationKeys()
+        val aggregateKeys = d045ConversationAggregateKeys()
+        val symbols = d045ConversationSymbols()
+        val parent = keys.single { "CodexAgent.conversations" in it }
+        val read = keys.single { "CodexConversations.read" in it }
+        val constructor = keys.single { "AgentConversation.<init>" in it }
+        val messages = keys.single { "AgentConversation.messages" in it }
+
+        listOf(
+            parent.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            parent.replace("CodexAgent.conversations", "OtherAgent.conversations"),
+            parent.replace(".conversations|{}conversations", ".future|{}conversations"),
+            parent.replace("propertyKind=VAL", "propertyKind=VAR"),
+            parent.replace("CodexConversations!!", "CodexConversations?"),
+            "$parent|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+            "$parent|suspend=true",
+            read.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            read.replace("CodexConversations.read", "OtherConversations.read"),
+            read.replace(".read|read(", ".future|future("),
+            read.replace("AgentConversation!!", "AgentConversation?"),
+            read.replaceFirst("default=false", "default=true"),
+            read.replaceFirst("vararg=false", "vararg=true"),
+            read.replace("suspend=true", "suspend=false"),
+            constructor.replace("AgentConversationSummary!!", "AgentConversationSummary?"),
+            messages.replace("propertyKind=VAL", "propertyKind=VAR"),
+        ).forEach { drifted ->
+            val drift = derive(listOf(drifted), symbols, references = symbols)
+            assertEquals(listOf(drifted), drift.missingCapabilityKeys, "Accepted canonical drift: $drifted")
+            assertTrue(drift.projectionClaims.isEmpty())
+        }
+
+        listOf(
+            Triple(
+                READ_CONVERSATION,
+                READ_CONVERSATION.replace("readConversation", "read"),
+                setOf(parent, read),
+            ),
+            Triple(
+                READ_CONVERSATION,
+                READ_CONVERSATION.replace("conversationId: string", "id: string"),
+                setOf(parent, read),
+            ),
+            Triple(
+                READ_CONVERSATION,
+                READ_CONVERSATION.replace("conversationId: string", "conversationId?: string"),
+                setOf(parent, read),
+            ),
+            Triple(
+                READ_CONVERSATION,
+                READ_CONVERSATION.replace("Promise<AgentConversation>", "Promise<void>"),
+                setOf(parent, read),
+            ),
+            Triple(
+                AGENT_CONVERSATION_CONSTRUCTOR,
+                AGENT_CONVERSATION_CONSTRUCTOR.replace(
+                    "ReadonlyArray<CodexMessage>",
+                    "Array<CodexMessage>",
+                ),
+                setOf(constructor),
+            ),
+            Triple(
+                AGENT_CONVERSATION_MESSAGES,
+                AGENT_CONVERSATION_MESSAGES.replace(
+                    "ReadonlyArray<CodexMessage>",
+                    "ReadonlyArray<string>",
+                ),
+                setOf(messages),
+            ),
+        ).forEach { (exact, drifted, rejectedKeys) ->
+            val driftSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val driftReferences = symbols.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(aggregateKeys, driftSymbols, references = driftReferences)
+            assertTrue(drift.missingCapabilityKeys.isNotEmpty() || drift.errors.isNotEmpty())
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in rejectedKeys })
+        }
+
+        listOf(
+            "property:CodexAgent#activeConversation[readonly]:CodexConversation | null | undefined",
+            "method:CodexAgent#readConversation:(conversationId: string): Promise<AgentConversation>",
+        ).forEach { extra ->
+            val ambiguous = derive(
+                aggregateKeys,
+                (symbols + extra).sorted(),
+                references = (symbols + extra).sorted(),
+            )
+            assertTrue(ambiguous.projectionClaims.none { it.capabilityKey in setOf(parent, read) })
+            assertTrue(ambiguous.missingCapabilityKeys.isNotEmpty() || ambiguous.errors.isNotEmpty())
+        }
+
+        d045ConversationEnvelope().forEach { omitted ->
+            val partial = derive(
+                aggregateKeys,
+                symbols - omitted,
+                references = symbols - omitted,
+            )
+            assertTrue(partial.projectionClaims.none { it.capabilityKey == parent }, "Accepted without $omitted")
+        }
+
+        val claimReferences = d045ConversationEnvelope() + AGENT_CONVERSATION_CONSTRUCTOR
+        claimReferences.forEach { symbol ->
+            val unreferenced = derive(
+                aggregateKeys,
+                symbols,
+                references = symbols - symbol,
+            )
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && symbol in it })
+            assertTrue(unreferenced.projectionClaims.none { symbol in it.publicSymbols })
+        }
+
+        val controllerAggregate = aggregateKeys.filterNot {
+            "AgentConversation.<init>" in it || "AgentConversation.messages" in it ||
+                "AgentConversation.summary" in it
+        }
+        controllerAggregate.forEach { omitted ->
+            val partial = derive(aggregateKeys - omitted, symbols, references = symbols)
+            assertTrue(partial.errors.any {
+                "Reused JavaScript/TypeScript public symbol" in it ||
+                    "conversation controller flattening" in it
+            })
+            assertTrue(partial.projectionClaims.none { it.capabilityKey == parent })
+        }
+
+        val future = canonicalProperty("CodexConversations", "future", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureEvidence = derive(aggregateKeys + future, symbols, references = symbols)
+        assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
+        assertEquals(keys.toSet(), futureEvidence.projectionClaims.mapTo(mutableSetOf()) { it.capabilityKey }
+            .intersect(keys.toSet()))
+
+        val foreignId = aggregateKeys.single { "ConversationId.value" in it }
+            .replace(CANONICAL_AGENT_PACKAGE, "foreign")
+        val unauthorized = derive(aggregateKeys + foreignId, symbols, references = symbols)
+        assertTrue(unauthorized.errors.any { "Reused JavaScript/TypeScript public symbol" in it })
+        assertTrue(unauthorized.projectionClaims.none {
+            it.capabilityKey in setOf(parent, read, foreignId)
+        })
     }
 
     @Test
@@ -2664,19 +2849,24 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "AgentConversationSettings",
             listOf("example/AgentApprovalPreset!!", "kotlin/String?"),
             defaultParameterIndices = setOf(0, 1),
-        )
+        ).replace("example/", "$CANONICAL_AGENT_PACKAGE/")
         val settingsApproval = canonicalProperty(
             "AgentConversationSettings",
             "approvalPreset",
             "example/AgentApprovalPreset!!",
-        )
+        ).replace("example/", "$CANONICAL_AGENT_PACKAGE/")
         val settingsServiceTier =
             canonicalProperty("AgentConversationSettings", "serviceTier", "kotlin/String?")
+                .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
         val conversationIdConstructor = canonicalConstructor("ConversationId", listOf("kotlin/String!!"))
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
         val conversationIdValue = canonicalProperty("ConversationId", "value", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
         val pathConstructor =
             canonicalConstructor("CodexPathWorkspaceSelection", listOf("kotlin/String!!"))
+                .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
         val pathValue = canonicalProperty("CodexPathWorkspaceSelection", "path", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
         val flattened = listOf(
             settingsConstructor,
             settingsApproval,
@@ -2686,27 +2876,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             pathConstructor,
             pathValue,
         ).sorted()
-        val ordinary = listOf(
-            canonicalFunction(
-                "CodexConversations",
-                "open",
-                returnType = "example/CodexConversation!!",
-                suspendFunction = true,
-                parameters = listOf("example/ConversationId?", "example/AgentConversationSettings!!"),
-                defaultParameterIndices = setOf(0, 1),
-            ),
-            canonicalFunction(
-                "CodexConversations",
-                "rename",
-                suspendFunction = true,
-                parameters = listOf("example/ConversationId!!", "kotlin/String!!"),
-            ),
-            canonicalFunction(
-                "CodexConversations",
-                "delete",
-                suspendFunction = true,
-                parameters = listOf("example/ConversationId!!"),
-            ),
+        val controller = d045ConversationAggregateKeys().filterNot {
+            it in flattened || "AgentConversation." in it
+        }
+        val ordinary = controller + listOf(
             canonicalProperty("AgentConversationState", "conversationId", "example/ConversationId?"),
             canonicalFunction(
                 "CodexHost",
@@ -2714,30 +2887,31 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
                 suspendFunction = true,
                 parameters = listOf("example/CodexWorkspaceSelection!!"),
             ),
-        )
-        val symbols = listOf(
-            "class:CodexAgent",
+        ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }
+        val symbols = (d045ConversationSymbols() + listOf(
             "class:CodexConversationState",
             "class:CodexHost",
-            OPEN_CONVERSATION,
-            RENAME_CONVERSATION,
-            DELETE_CONVERSATION,
             CONVERSATION_ID_GETTER,
             SELECT_WORKSPACE,
-        ).sorted()
+        )).distinct().sorted()
         val evidence = derive(flattened + ordinary, symbols, references = symbols)
 
         assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
         assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
         assertTrue(evidence.applicabilityExclusions.isEmpty())
-        assertEquals(12, evidence.projectionClaims.size)
+        assertEquals(16, evidence.projectionClaims.size)
         val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
         listOf(settingsConstructor, settingsApproval, settingsServiceTier).forEach { key ->
             assertEquals(listOf(OPEN_CONVERSATION), claims.getValue(key).publicSymbols)
         }
         listOf(conversationIdConstructor, conversationIdValue).forEach { key ->
             assertEquals(
-                listOf(DELETE_CONVERSATION, OPEN_CONVERSATION, RENAME_CONVERSATION).sorted(),
+                listOf(
+                    DELETE_CONVERSATION,
+                    OPEN_CONVERSATION,
+                    READ_CONVERSATION,
+                    RENAME_CONVERSATION,
+                ).sorted(),
                 claims.getValue(key).publicSymbols,
             )
         }
@@ -2747,7 +2921,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
 
         listOf(
             settingsConstructor.replace("default=true", "default=false"),
-            settingsApproval.replace("example/AgentApprovalPreset!!", "kotlin/String!!"),
+            settingsApproval.replace(
+                "$CANONICAL_AGENT_PACKAGE/AgentApprovalPreset!!",
+                "kotlin/String!!",
+            ),
             settingsServiceTier.replace("serviceTier", "futureTier"),
             conversationIdConstructor.replace("kotlin/String!!", "kotlin/Int!!"),
             pathConstructor.replace("CodexPathWorkspaceSelection.<init>", "CodexPathWorkspaceSelection.future"),
@@ -2770,11 +2947,12 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
                 "class:CodexAgent",
                 DELETE_CONVERSATION,
                 OPEN_CONVERSATION,
+                READ_CONVERSATION,
                 RENAME_CONVERSATION,
             ).sorted(),
             pathValue to listOf("class:CodexHost", SELECT_WORKSPACE).sorted(),
         ).forEach { (key, projectedSymbols) ->
-            val foreign = key.replace("example/", "foreign/")
+            val foreign = key.replace(CANONICAL_AGENT_PACKAGE, "foreign")
             val crossPackage = derive(
                 listOf(key, foreign).sorted(),
                 projectedSymbols,
@@ -2843,7 +3021,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 269 + 12 + 275)
         assertEquals(57, 58 - 1)
         assertEquals(
-            276,
+            281,
             currentPublicSymbols().size + (clientProjectionSymbols - currentPublicSymbols().toSet()).size,
         )
         assertEquals(references, evidence.packedApi.referencedSymbols)
@@ -3033,7 +3211,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             listOf(SKILL_SCOPE_DISPLAY_NAME),
             currentSymbols.filter { it == SKILL_SCOPE_DISPLAY_NAME },
         )
-        assertEquals(276, currentSymbols.size)
+        assertEquals(281, currentSymbols.size)
 
         val canonicalDrift = listOf(
             agentProperty("OtherSkillScope", "displayName", "kotlin/String!!"),
@@ -3882,6 +4060,94 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         HOST_STATE_WORKSPACE,
     ).sorted()
 
+    private fun d045ConversationKeys(): List<String> = listOf(
+        canonicalConstructor(
+            "AgentConversation",
+            listOf(
+                "example/AgentConversationSummary!!",
+                "kotlin.collections/List<INVARIANT:example/AgentMessage!!>!!",
+            ),
+        ),
+        canonicalProperty(
+            "AgentConversation",
+            "messages",
+            "kotlin.collections/List<INVARIANT:example/AgentMessage!!>!!",
+        ),
+        canonicalProperty("AgentConversation", "summary", "example/AgentConversationSummary!!"),
+        canonicalFunction(
+            "CodexConversations",
+            "read",
+            returnType = "example/AgentConversation!!",
+            suspendFunction = true,
+            parameters = listOf("example/ConversationId!!"),
+        ),
+        canonicalProperty("CodexAgent", "conversations", "example/CodexConversations!!"),
+    ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }.sorted()
+
+    private fun d045ConversationAggregateKeys(): List<String> = (
+        d045ConversationKeys() + listOf(
+            canonicalProperty(
+                "CodexConversations",
+                "active",
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/CodexConversation?>!!",
+            ),
+            canonicalFunction(
+                "CodexConversations",
+                "list",
+                returnType =
+                    "kotlin.collections/List<INVARIANT:example/AgentConversationSummary!!>!!",
+                suspendFunction = true,
+            ),
+            canonicalFunction(
+                "CodexConversations",
+                "open",
+                returnType = "example/CodexConversation!!",
+                suspendFunction = true,
+                parameters = listOf("example/ConversationId?", "example/AgentConversationSettings!!"),
+                defaultParameterIndices = setOf(0, 1),
+            ),
+            canonicalFunction(
+                "CodexConversations",
+                "rename",
+                suspendFunction = true,
+                parameters = listOf("example/ConversationId!!", "kotlin/String!!"),
+            ),
+            canonicalFunction(
+                "CodexConversations",
+                "delete",
+                suspendFunction = true,
+                parameters = listOf("example/ConversationId!!"),
+            ),
+            canonicalConstructor(
+                "AgentConversationSettings",
+                listOf("example/AgentApprovalPreset!!", "kotlin/String?"),
+                defaultParameterIndices = setOf(0, 1),
+            ),
+            canonicalProperty(
+                "AgentConversationSettings",
+                "approvalPreset",
+                "example/AgentApprovalPreset!!",
+            ),
+            canonicalProperty("AgentConversationSettings", "serviceTier", "kotlin/String?"),
+            canonicalConstructor("ConversationId", listOf("kotlin/String!!")),
+            canonicalProperty("ConversationId", "value", "kotlin/String!!"),
+        ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }
+    ).sorted()
+
+    private fun d045ConversationEnvelope(): List<String> = listOf(
+        ACTIVE_CONVERSATION,
+        DELETE_CONVERSATION,
+        LIST_CONVERSATIONS,
+        OBSERVE_ACTIVE_CONVERSATION,
+        OPEN_CONVERSATION,
+        READ_CONVERSATION,
+        RENAME_CONVERSATION,
+    ).sorted()
+
+    private fun d045ConversationSymbols(): List<String> = (
+        d045PublicSymbols() + d045ConversationEnvelope() + "class:CodexAgent"
+    ).distinct().sorted().also { assertEquals(12, it.size) }
+
     private fun symbolExports(symbols: List<String>): Pair<List<String>, List<String>> {
         val classes = symbols.filter { it.startsWith("class:") }
             .map { it.substringAfter(':').substringBefore(':') }
@@ -4092,10 +4358,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             .also { assertEquals(208, it.size) }
         return (
             baseline + modelPublicSymbols() + SKILL_SCOPE_DISPLAY_NAME + skillsPublicSymbols() +
-                d043PublicSymbols()
+                d043PublicSymbols() + d045PublicSymbols()
             )
             .sorted()
-            .also { assertEquals(276, it.size) }
+            .also { assertEquals(281, it.size) }
     }
 
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
@@ -4122,6 +4388,14 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             assertEquals(it.sorted(), it)
         }
 
+    private fun d045PublicSymbols(): List<String> = listOf(
+        "class:AgentConversation",
+        AGENT_CONVERSATION_CONSTRUCTOR,
+        AGENT_CONVERSATION_MESSAGES,
+        AGENT_CONVERSATION_SUMMARY,
+        READ_CONVERSATION,
+    ).sorted().also { assertEquals(5, it.size) }
+
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
         private const val OPEN_CONVERSATION =
@@ -4137,6 +4411,26 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "method:CodexAgent#rename:" +
                 "(conversationId: string, name: string, " +
                 "signal?: AbortSignal | null | undefined): Promise<void>"
+        private const val READ_CONVERSATION =
+            "method:CodexAgent#readConversation:" +
+                "(conversationId: string, " +
+                "signal?: AbortSignal | null | undefined): Promise<AgentConversation>"
+        private const val LIST_CONVERSATIONS =
+            "method:CodexAgent#listConversations:" +
+                "(signal?: AbortSignal | null | undefined): " +
+                "Promise<ReadonlyArray<AgentConversationSummary>>"
+        private const val ACTIVE_CONVERSATION =
+            "getter:CodexAgent#activeConversation:CodexConversation | null | undefined"
+        private const val OBSERVE_ACTIVE_CONVERSATION =
+            "method:CodexAgent#observeActiveConversation:" +
+                "(listener: (conversation: CodexConversation | null | undefined) => void): CodexObservation"
+        private const val AGENT_CONVERSATION_CONSTRUCTOR =
+            "constructor:AgentConversation#" +
+                "(summary: AgentConversationSummary, messages: ReadonlyArray<CodexMessage>)"
+        private const val AGENT_CONVERSATION_MESSAGES =
+            "getter:AgentConversation#messages:ReadonlyArray<CodexMessage>"
+        private const val AGENT_CONVERSATION_SUMMARY =
+            "getter:AgentConversation#summary:AgentConversationSummary"
         private const val APPROVAL_PRESET_DISPLAY_NAME =
             "function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string"
         private const val AGENT_CAPABILITY_ALIAS = "type:AgentCapability:\"web_search\""

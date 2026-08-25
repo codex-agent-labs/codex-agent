@@ -355,6 +355,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
   const esmExports = Object.keys(sdk).sort();
   assert.deepEqual(esmExports, commonJsExports);
   assert.equal(sdk.AgentConnector, commonJsSdk.AgentConnector);
+  assert.equal(sdk.AgentConversation, commonJsSdk.AgentConversation);
   assert.equal(sdk.AgentConversationSummary, commonJsSdk.AgentConversationSummary);
   assert.equal(sdk.AgentPluginInvocation, commonJsSdk.AgentPluginInvocation);
   assert.equal(sdk.AgentSkillInvocation, commonJsSdk.AgentSkillInvocation);
@@ -381,6 +382,10 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(
     sdk.CodexAgent.prototype.listConversations,
     commonJsSdk.CodexAgent.prototype.listConversations,
+  );
+  assert.equal(
+    sdk.CodexAgent.prototype.readConversation,
+    commonJsSdk.CodexAgent.prototype.readConversation,
   );
   assert.equal(sdk.CodexConnectors, commonJsSdk.CodexConnectors);
   assert.equal(sdk.CodexModels, commonJsSdk.CodexModels);
@@ -556,8 +561,20 @@ test('typescript compiler discovers the exact installed public API', () => {
     'constructor:AgentConversationSummary#(conversationId: string, title: string, updatedAtEpochSeconds: bigint)',
   ), 'Conversation summaries must preserve typed IDs, titles, and bigint timestamps');
   assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentConversation#(summary: AgentConversationSummary, messages: ReadonlyArray<CodexMessage>)',
+  ), 'Historical conversations must preserve their summary and immutable message collection');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:AgentConversation#summary:AgentConversationSummary',
+  ), 'Historical conversation summaries must remain readonly');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:AgentConversation#messages:ReadonlyArray<CodexMessage>',
+  ), 'Historical conversation messages must remain readonly');
+  assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexAgent#listConversations:(signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentConversationSummary>>',
   ), 'Conversation listing must preserve cancellation and immutable result semantics');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexAgent#readConversation:(conversationId: string, signal?: AbortSignal | null | undefined): Promise<AgentConversation>',
+  ), 'Conversation reading must preserve typed IDs, cancellation, and immutable result semantics');
   assert.ok(compilerApi.publicSymbols.includes(
     'function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string',
   ), 'Approval-preset display names must preserve the finite preset domain');

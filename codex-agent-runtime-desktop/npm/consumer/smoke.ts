@@ -1,5 +1,6 @@
 import {
   AgentConnector,
+  AgentConversation,
   AgentConversationSummary,
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
@@ -379,8 +380,12 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   await agent.delete("conversation", signal);
   const conversationSummaries: ReadonlyArray<AgentConversationSummary> = await agent.listConversations();
   await agent.listConversations(signal);
+  const historicalConversation: AgentConversation = await agent.readConversation("conversation", signal);
+  const historicalSummary: AgentConversationSummary = historicalConversation.summary;
+  const historicalMessages = historicalConversation.messages;
   const conversationState: CodexConversationState = conversation.state;
   const messages = conversationState.messages;
+  const constructedConversation = new AgentConversation(conversationSummary, messages);
   const messageCollaborationModes: ReadonlyArray<AgentCollaborationMode> =
     messages.map((message) => message.collaborationMode);
   const messageCapabilities: ReadonlyArray<ReadonlyArray<AgentCapability>> =
@@ -434,6 +439,10 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     authenticationFailure,
     activeConversation,
     conversationSummaries,
+    historicalConversation,
+    historicalSummary,
+    historicalMessages,
+    constructedConversation,
     conversationState,
     messages,
     messageCollaborationModes,
