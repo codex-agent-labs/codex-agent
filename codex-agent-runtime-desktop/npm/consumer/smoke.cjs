@@ -19,6 +19,10 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.createCodexHost, 'function');
   assert.equal(typeof sdk.codexApprovalPresetDisplayName, 'function');
   assert.equal(typeof sdk.agentSkillScopeDisplayName, 'function');
+  assert.equal(typeof sdk.agentCapabilityId, 'function');
+  assert.equal(typeof sdk.agentCapabilityDisplayLabel, 'function');
+  assert.equal(typeof sdk.agentCapabilityIcon, 'function');
+  assert.equal(typeof sdk.agentCapabilityPromptLabel, 'function');
   for (const [clientInfo, message] of [
     [[Object.create(null), 'Client', '1.0'], 'clientName must be a string'],
     [['client', [], '1.0'], 'clientTitle must be a string'],
@@ -61,6 +65,25 @@ test('cjs exposes the exact Node-only SDK surface', () => {
       (error) => error?.message === message,
     );
   }
+  for (const [project, expected] of [
+    [sdk.agentCapabilityId, 'web_search'],
+    [sdk.agentCapabilityDisplayLabel, 'Web search'],
+    [sdk.agentCapabilityIcon, '🌐'],
+    [sdk.agentCapabilityPromptLabel, 'Use 🌐 Web search'],
+  ]) {
+    assert.equal(project('web_search'), expected);
+    for (const [invalid, message] of [
+      ['unknown', 'Unknown agent capability: unknown'],
+      ['WEB_SEARCH', 'Unknown agent capability: WEB_SEARCH'],
+      [0, 'capability must be a string'],
+      [null, 'capability must be a string'],
+      [undefined, 'capability must be a string'],
+      [new String('web_search'), 'capability must be a string'],
+      [new Proxy({}, {}), 'capability must be a string'],
+    ]) {
+      assert.throws(() => project(invalid), (error) => error?.message === message);
+    }
+  }
   assert.throws(() => new sdk.CodexHost());
   assert.throws(() => new sdk.CodexAgent());
   assert.throws(() => new sdk.CodexAuthentication());
@@ -95,10 +118,12 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentModel,
     sdk.AgentPlanProgress,
     sdk.AgentPlanStep,
+    sdk.AgentPluginInvocation,
     sdk.AgentServiceTier,
     sdk.AgentSkill,
     sdk.AgentSkillCatalog,
     sdk.AgentSkillChunk,
+    sdk.AgentSkillInvocation,
     sdk.CodexAgent,
     sdk.CodexAuthentication,
     sdk.CodexAuthenticationState,
@@ -762,6 +787,35 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     ));
   }
 
+  const skillInvocation = new sdk.AgentSkillInvocation('review', '/skills/review/SKILL.md');
+  const pluginInvocation = new sdk.AgentPluginInvocation('tools', 'plugin://tools@official');
+  assert.deepEqual(
+    [skillInvocation.name, skillInvocation.path, skillInvocation.key],
+    ['review', '/skills/review/SKILL.md', 'skill:/skills/review/SKILL.md'],
+  );
+  assert.deepEqual(
+    [pluginInvocation.name, pluginInvocation.uri, pluginInvocation.key],
+    ['tools', 'plugin://tools@official', 'plugin:plugin://tools@official'],
+  );
+  for (const invalid of [null, undefined, 0, false, {}, [], new String('value'), new Proxy({}, {})]) {
+    assert.throws(
+      () => new sdk.AgentSkillInvocation(invalid, '/skills/review/SKILL.md'),
+      (error) => error?.message === 'name must be a string',
+    );
+    assert.throws(
+      () => new sdk.AgentSkillInvocation('review', invalid),
+      (error) => error?.message === 'path must be a string',
+    );
+    assert.throws(
+      () => new sdk.AgentPluginInvocation(invalid, 'plugin://tools@official'),
+      (error) => error?.message === 'name must be a string',
+    );
+    assert.throws(
+      () => new sdk.AgentPluginInvocation('tools', invalid),
+      (error) => error?.message === 'uri must be a string',
+    );
+  }
+
   const conversationSummary = new sdk.AgentConversationSummary(
     'conversation', 'Conversation title', 1n,
   );
@@ -1111,6 +1165,8 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     undefinedConnector,
     customConnector,
     proxyConnector,
+    skillInvocation,
+    pluginInvocation,
     conversationSummary,
     permissiveConversationSummary,
     serviceTier,

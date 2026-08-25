@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 258-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 276-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(258, evidence.packedApi.publicSymbols.size)
+        assertEquals(276, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -1011,7 +1011,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(250, 274 - claims.size)
         assertEquals(556, 294 + 12 + 250)
         assertEquals(52, 56 - setOf("AgentSkill", "AgentSkillCatalog", "AgentSkillChunk", "CodexSkills").size)
-        assertEquals(258, currentPublicSymbols().size)
+        assertEquals(276, currentPublicSymbols().size)
         assertTrue(skillSymbols.all { it in currentPublicSymbols() })
         assertTrue(evidence.projectionClaims.filter { "|owner=example/CodexSkills|" in it.capabilityKey && "|kind=function|" in it.capabilityKey }.all {
             it.sharedScenarios.toSet() ==
@@ -1108,6 +1108,263 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         val futureEvidence = derive(keys + future, symbols, references = references)
         assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
         assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey == future })
+    }
+
+    @Test
+    fun `capability invocation and message metadata project seventeen exact capabilities and reject drift`() {
+        fun agentProperty(
+            owner: String,
+            name: String,
+            type: String,
+            propertyKind: String = "VAL",
+        ): String = canonicalProperty(owner, name, type, propertyKind)
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+
+        fun agentConstructor(
+            owner: String,
+            parameters: List<String>,
+            defaultParameterIndices: Set<Int> = emptySet(),
+        ): String = canonicalConstructor(owner, parameters, defaultParameterIndices)
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+
+        val capabilityDisplayLabel = agentProperty("AgentCapability", "displayLabel", "kotlin/String!!")
+        val capabilityIcon = agentProperty("AgentCapability", "icon", "kotlin/String?")
+        val capabilityId = agentProperty("AgentCapability", "id", "kotlin/String!!")
+        val capabilityPromptLabel = agentProperty("AgentCapability", "promptLabel", "kotlin/String!!")
+        val invocationKey = agentProperty("AgentInvocation", "key", "kotlin/String!!")
+        val invocationName = agentProperty("AgentInvocation", "name", "kotlin/String!!")
+        val pluginConstructor = agentConstructor(
+            "AgentInvocation.Plugin",
+            listOf("kotlin/String!!", "kotlin/String!!"),
+        )
+        val pluginKey = agentProperty("AgentInvocation.Plugin", "key", "kotlin/String!!")
+        val pluginName = agentProperty("AgentInvocation.Plugin", "name", "kotlin/String!!")
+        val pluginUri = agentProperty("AgentInvocation.Plugin", "uri", "kotlin/String!!")
+        val skillConstructor = agentConstructor(
+            "AgentInvocation.Skill",
+            listOf("kotlin/String!!", "kotlin/String!!"),
+        )
+        val skillKey = agentProperty("AgentInvocation.Skill", "key", "kotlin/String!!")
+        val skillName = agentProperty("AgentInvocation.Skill", "name", "kotlin/String!!")
+        val skillPath = agentProperty("AgentInvocation.Skill", "path", "kotlin/String!!")
+        val messageCapabilities = agentProperty(
+            "AgentMessage",
+            "capabilities",
+            "kotlin.collections/Set<INVARIANT:$CANONICAL_AGENT_PACKAGE/AgentCapability!!>!!",
+        )
+        val messageCollaborationMode = agentProperty(
+            "AgentMessage",
+            "collaborationMode",
+            "$CANONICAL_AGENT_PACKAGE/AgentCollaborationMode!!",
+        )
+        val messageInvocations = agentProperty(
+            "AgentMessage",
+            "invocations",
+            "kotlin.collections/List<INVARIANT:$CANONICAL_AGENT_PACKAGE/AgentInvocation!!>!!",
+        )
+        val keys = listOf(
+            capabilityDisplayLabel,
+            capabilityIcon,
+            capabilityId,
+            capabilityPromptLabel,
+            invocationKey,
+            invocationName,
+            pluginConstructor,
+            pluginKey,
+            pluginName,
+            pluginUri,
+            skillConstructor,
+            skillKey,
+            skillName,
+            skillPath,
+            messageCapabilities,
+            messageCollaborationMode,
+            messageInvocations,
+        ).sorted()
+        val familySymbols = d043PublicSymbols()
+        val symbols = (familySymbols + "class:CodexMessage").sorted()
+        val evidence = derive(keys, symbols, references = familySymbols)
+        val claims = evidence.projectionClaims.associate { it.capabilityKey to it.publicSymbols }
+        val pluginConstructorSymbol = familySymbols.single { it.startsWith("constructor:AgentPluginInvocation#") }
+        val skillConstructorSymbol = familySymbols.single { it.startsWith("constructor:AgentSkillInvocation#") }
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(17, keys.size)
+        assertEquals(17, claims.size)
+        assertEquals(18, familySymbols.size)
+        assertEquals(familySymbols, evidence.packedApi.referencedSymbols)
+        assertEquals(
+            mapOf(
+                capabilityDisplayLabel to listOf(AGENT_CAPABILITY_DISPLAY_LABEL),
+                capabilityIcon to listOf(AGENT_CAPABILITY_ICON),
+                capabilityId to listOf(AGENT_CAPABILITY_ID),
+                capabilityPromptLabel to listOf(AGENT_CAPABILITY_PROMPT_LABEL),
+                invocationKey to listOf(
+                    "getter:AgentPluginInvocation#key:string",
+                    "getter:AgentSkillInvocation#key:string",
+                    AGENT_INVOCATION_TYPE,
+                ).sorted(),
+                invocationName to listOf(
+                    "getter:AgentPluginInvocation#name:string",
+                    "getter:AgentSkillInvocation#name:string",
+                    AGENT_INVOCATION_TYPE,
+                ).sorted(),
+                pluginConstructor to listOf(pluginConstructorSymbol),
+                pluginKey to listOf("getter:AgentPluginInvocation#key:string"),
+                pluginName to listOf("getter:AgentPluginInvocation#name:string"),
+                pluginUri to listOf("getter:AgentPluginInvocation#uri:string"),
+                skillConstructor to listOf(skillConstructorSymbol),
+                skillKey to listOf("getter:AgentSkillInvocation#key:string"),
+                skillName to listOf("getter:AgentSkillInvocation#name:string"),
+                skillPath to listOf("getter:AgentSkillInvocation#path:string"),
+                messageCapabilities to listOf("getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"),
+                messageCollaborationMode to listOf("getter:CodexMessage#collaborationMode:AgentCollaborationMode"),
+                messageInvocations to listOf("getter:CodexMessage#invocations:ReadonlyArray<AgentInvocation>"),
+            ),
+            claims,
+        )
+        assertEquals(
+            listOf(CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING),
+            evidence.projectionClaims.single { it.capabilityKey == messageCapabilities }.sharedScenarios,
+        )
+        assertTrue(evidence.projectionClaims.filterNot { it.capabilityKey == messageCapabilities }.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
+        assertEquals(311, 294 + claims.size)
+        assertEquals(233, 250 - claims.size)
+        assertEquals(556, 311 + 12 + 233)
+        assertEquals(47, 52 - 5)
+        val currentSymbols = currentPublicSymbols()
+        assertEquals(276, currentSymbols.size)
+        assertTrue(familySymbols.all { it in currentSymbols })
+        assertEquals(71, symbolExports(currentSymbols).first.size)
+        assertEquals(45, symbolExports(currentSymbols).second.size)
+
+        val canonicalDrift = listOf(
+            capabilityId.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            agentProperty("OtherCapability", "id", "kotlin/String!!"),
+            capabilityId.replace("AgentCapability.id", "AgentCapability.otherId"),
+            agentProperty("AgentCapability", "id", "kotlin/String!!", propertyKind = "VAR"),
+            agentProperty("AgentCapability", "id", "kotlin/Int!!"),
+            agentProperty("AgentCapability", "id", "kotlin/String?"),
+            agentProperty("AgentCapability", "icon", "kotlin/String!!"),
+            "$capabilityId|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+            "$capabilityId|suspend=true",
+            canonicalFunction("AgentCapability", "id", returnType = "kotlin/String!!")
+                .replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+            invocationName.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            agentProperty("OtherInvocation", "name", "kotlin/String!!"),
+            agentProperty("AgentInvocation", "name", "kotlin/String?"),
+            pluginConstructor.replace("default=false", "default=true"),
+            pluginConstructor.replace(
+                "return=$CANONICAL_AGENT_PACKAGE/AgentInvocation.Plugin",
+                "return=$CANONICAL_AGENT_PACKAGE/AgentInvocation.Skill",
+            ),
+            pluginConstructor.replace("kotlin/String!!:default=false", "kotlin/Int!!:default=false"),
+            skillConstructor.replace("suspend=false", "suspend=true"),
+            pluginUri.replace("AgentInvocation.Plugin.uri", "AgentInvocation.Plugin.otherUri"),
+            skillPath.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            messageCapabilities.replace("kotlin.collections/Set", "kotlin.collections/List"),
+            messageCollaborationMode.replace("AgentCollaborationMode!!", "AgentCollaborationMode?"),
+            messageInvocations.replace("AgentInvocation!!", "AgentInvocation?"),
+        )
+        canonicalDrift.forEach { drifted ->
+            val drift = derive(listOf(drifted), symbols, references = familySymbols)
+            assertEquals(listOf(drifted), drift.missingCapabilityKeys, "Accepted canonical drift: $drifted")
+            assertTrue(drift.projectionClaims.isEmpty())
+        }
+
+        val publicDrift = listOf(
+            capabilityId to AGENT_CAPABILITY_ID.replace("agentCapabilityId", "futureCapabilityId"),
+            capabilityId to AGENT_CAPABILITY_ID.replace("capability:", "value:"),
+            capabilityId to AGENT_CAPABILITY_ID.replace("AgentCapability", "string"),
+            capabilityId to AGENT_CAPABILITY_ID.replace("capability:", "capability?:"),
+            capabilityId to AGENT_CAPABILITY_ID.replace("capability:", "...capability:"),
+            capabilityId to AGENT_CAPABILITY_ID.replace("): string", "): number"),
+            capabilityIcon to AGENT_CAPABILITY_ICON.replace(" | null | undefined", ""),
+            invocationKey to AGENT_INVOCATION_TYPE.replace("AgentSkillInvocation", "FutureSkillInvocation"),
+            pluginConstructor to pluginConstructorSymbol.replace("uri: string", "uri?: string"),
+            pluginConstructor to "$pluginConstructorSymbol: AgentPluginInvocation",
+            skillConstructor to skillConstructorSymbol.replace("path: string", "path: number"),
+            pluginUri to "getter:AgentPluginInvocation#uri:number",
+            skillPath to "property:AgentSkillInvocation#path:string",
+            messageCapabilities to "getter:CodexMessage#capabilities:ReadonlySet<AgentCapability>",
+            messageCapabilities to "getter:CodexMessage#capabilities:Array<AgentCapability>",
+            messageCollaborationMode to "getter:CodexMessage#collaborationMode:string",
+            messageInvocations to "getter:CodexMessage#invocations:Array<AgentInvocation>",
+            messageInvocations to "getter:CodexMessage#invocations:ReadonlyArray<AgentSkillInvocation>",
+        )
+        publicDrift.forEach { (key, drifted) ->
+            val exact = when (key) {
+                capabilityId -> AGENT_CAPABILITY_ID
+                capabilityIcon -> AGENT_CAPABILITY_ICON
+                invocationKey -> AGENT_INVOCATION_TYPE
+                pluginConstructor -> pluginConstructorSymbol
+                skillConstructor -> skillConstructorSymbol
+                pluginUri -> "getter:AgentPluginInvocation#uri:string"
+                skillPath -> "getter:AgentSkillInvocation#path:string"
+                messageCapabilities -> "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"
+                messageCollaborationMode -> "getter:CodexMessage#collaborationMode:AgentCollaborationMode"
+                messageInvocations -> "getter:CodexMessage#invocations:ReadonlyArray<AgentInvocation>"
+                else -> error("Unknown drift key: $key")
+            }
+            val driftSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(keys, driftSymbols, references = driftSymbols)
+            assertTrue(key in drift.missingCapabilityKeys, "Accepted public drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        listOf(
+            AGENT_CAPABILITY_ID,
+            AGENT_INVOCATION_TYPE,
+            pluginConstructorSymbol,
+            skillConstructorSymbol,
+            "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>",
+            "getter:CodexMessage#collaborationMode:AgentCollaborationMode",
+            "getter:CodexMessage#invocations:ReadonlyArray<AgentInvocation>",
+        ).forEach { removed ->
+            val partial = derive(
+                keys,
+                symbols - removed,
+                references = familySymbols - removed,
+            )
+            assertTrue(partial.missingCapabilityKeys.isNotEmpty(), "Accepted partial inventory without $removed")
+        }
+
+        listOf(
+            AGENT_CAPABILITY_ID to capabilityId,
+            AGENT_INVOCATION_TYPE to invocationKey,
+            "getter:AgentPluginInvocation#name:string" to invocationName,
+            pluginConstructorSymbol to pluginConstructor,
+            skillConstructorSymbol to skillConstructor,
+            "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>" to messageCapabilities,
+        ).forEach { (symbol, key) ->
+            val unreferenced = derive(keys, symbols, references = familySymbols - symbol)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && key in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        val future = agentProperty("AgentInvocation.Skill", "future", "kotlin/String!!")
+        val futureEvidence = derive(keys + future, symbols, references = familySymbols)
+        assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
+        assertEquals(17, futureEvidence.projectionClaims.size)
+
+        val aliasOnly = derive(
+            keys,
+            listOf(AGENT_CAPABILITY_ALIAS, AGENT_INVOCATION_TYPE),
+            references = listOf(AGENT_CAPABILITY_ALIAS, AGENT_INVOCATION_TYPE),
+        )
+        assertEquals(keys, aliasOnly.missingCapabilityKeys)
+        assertTrue(aliasOnly.projectionClaims.isEmpty())
+
+        val unauthorized = agentProperty("AgentPluginInvocation", "name", "kotlin/String!!")
+        val unauthorizedEvidence = derive(keys + unauthorized, symbols, references = familySymbols)
+        assertTrue(unauthorizedEvidence.errors.any {
+            "Reused JavaScript/TypeScript public symbol getter:AgentPluginInvocation#name:string" in it
+        })
+        assertTrue(unauthorizedEvidence.projectionClaims.none { it.capabilityKey == unauthorized })
     }
 
     @Test
@@ -2394,7 +2651,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 269 + 12 + 275)
         assertEquals(57, 58 - 1)
         assertEquals(
-            258,
+            276,
             currentPublicSymbols().size + (clientProjectionSymbols - currentPublicSymbols().toSet()).size,
         )
         assertEquals(references, evidence.packedApi.referencedSymbols)
@@ -2584,7 +2841,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             listOf(SKILL_SCOPE_DISPLAY_NAME),
             currentSymbols.filter { it == SKILL_SCOPE_DISPLAY_NAME },
         )
-        assertEquals(258, currentSymbols.size)
+        assertEquals(276, currentSymbols.size)
 
         val canonicalDrift = listOf(
             agentProperty("OtherSkillScope", "displayName", "kotlin/String!!"),
@@ -3581,9 +3838,12 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             .filter(String::isNotBlank)
             .toList()
             .also { assertEquals(208, it.size) }
-        return (baseline + modelPublicSymbols() + SKILL_SCOPE_DISPLAY_NAME + skillsPublicSymbols())
+        return (
+            baseline + modelPublicSymbols() + SKILL_SCOPE_DISPLAY_NAME + skillsPublicSymbols() +
+                d043PublicSymbols()
+            )
             .sorted()
-            .also { assertEquals(258, it.size) }
+            .also { assertEquals(276, it.size) }
     }
 
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
@@ -3599,6 +3859,14 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         .toList()
         .also {
             assertEquals(28, it.size)
+            assertEquals(it.sorted(), it)
+        }
+
+    private fun d043PublicSymbols(): List<String> = D043_PUBLIC_SYMBOLS.lineSequence()
+        .filter(String::isNotBlank)
+        .toList()
+        .also {
+            assertEquals(18, it.size)
             assertEquals(it.sorted(), it)
         }
 
@@ -3619,6 +3887,17 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
                 "signal?: AbortSignal | null | undefined): Promise<void>"
         private const val APPROVAL_PRESET_DISPLAY_NAME =
             "function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string"
+        private const val AGENT_CAPABILITY_ALIAS = "type:AgentCapability:\"web_search\""
+        private const val AGENT_CAPABILITY_DISPLAY_LABEL =
+            "function:agentCapabilityDisplayLabel:(capability: AgentCapability): string"
+        private const val AGENT_CAPABILITY_ICON =
+            "function:agentCapabilityIcon:(capability: AgentCapability): string | null | undefined"
+        private const val AGENT_CAPABILITY_ID =
+            "function:agentCapabilityId:(capability: AgentCapability): string"
+        private const val AGENT_CAPABILITY_PROMPT_LABEL =
+            "function:agentCapabilityPromptLabel:(capability: AgentCapability): string"
+        private const val AGENT_INVOCATION_TYPE =
+            "type:AgentInvocation:AgentPluginInvocation | AgentSkillInvocation"
         private const val CANONICAL_AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent"
         private const val CREATE_CODEX_HOST =
             "function:createCodexHost:" +
@@ -3944,6 +4223,27 @@ method:CodexSkills#install:(directory: string, scope: AgentInstallationScope, si
 method:CodexSkills#list:(forceReload?: boolean, signal?: AbortSignal | null | undefined): Promise<AgentSkillCatalog>
 method:CodexSkills#read:(path: string, offset?: bigint, signal?: AbortSignal | null | undefined): Promise<AgentSkillChunk>
 method:CodexSkills#uninstall:(skill: AgentSkill, signal?: AbortSignal | null | undefined): Promise<void>
+""".trimIndent()
+
+        private val D043_PUBLIC_SYMBOLS = """
+class:AgentPluginInvocation
+class:AgentSkillInvocation
+constructor:AgentPluginInvocation#(name: string, uri: string)
+constructor:AgentSkillInvocation#(name: string, path: string)
+function:agentCapabilityDisplayLabel:(capability: AgentCapability): string
+function:agentCapabilityIcon:(capability: AgentCapability): string | null | undefined
+function:agentCapabilityId:(capability: AgentCapability): string
+function:agentCapabilityPromptLabel:(capability: AgentCapability): string
+getter:AgentPluginInvocation#key:string
+getter:AgentPluginInvocation#name:string
+getter:AgentPluginInvocation#uri:string
+getter:AgentSkillInvocation#key:string
+getter:AgentSkillInvocation#name:string
+getter:AgentSkillInvocation#path:string
+getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>
+getter:CodexMessage#collaborationMode:AgentCollaborationMode
+getter:CodexMessage#invocations:ReadonlyArray<AgentInvocation>
+type:AgentInvocation:AgentPluginInvocation | AgentSkillInvocation
 """.trimIndent()
     }
 }

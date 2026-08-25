@@ -1,4 +1,5 @@
 import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
+import io.github.codex_agent_labs.codexmobile.agent.AgentCapability as CoreCapability
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationBrowser
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationPresentation
 import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo
@@ -58,6 +59,57 @@ class CodexNodeApiTest {
         }
         val invalidPreset = runCatching { codexApprovalPresetDisplayName("sometimes") }.exceptionOrNull()
         assertEquals("Unknown approval preset: sometimes", invalidPreset?.message)
+
+        val webSearch = CoreCapability.WEB_SEARCH
+        assertEquals(webSearch.id, agentCapabilityId("web_search"))
+        assertEquals(webSearch.displayLabel, agentCapabilityDisplayLabel("web_search"))
+        assertEquals(webSearch.icon, agentCapabilityIcon("web_search"))
+        assertEquals(webSearch.promptLabel, agentCapabilityPromptLabel("web_search"))
+        val invalidCapability = runCatching { agentCapabilityId("filesystem") }.exceptionOrNull()
+        assertEquals("Unknown agent capability: filesystem", invalidCapability?.message)
+        listOf(
+            runCatching {
+                agentCapabilityId(js("({})").unsafeCast<String>())
+            }.exceptionOrNull(),
+            runCatching {
+                agentCapabilityDisplayLabel(js("1").unsafeCast<String>())
+            }.exceptionOrNull(),
+            runCatching {
+                agentCapabilityIcon(js("true").unsafeCast<String>())
+            }.exceptionOrNull(),
+            runCatching {
+                agentCapabilityPromptLabel(js("BigInt(1)").unsafeCast<String>())
+            }.exceptionOrNull(),
+        ).forEach { error -> assertEquals("capability must be a string", error?.message) }
+
+        val skillInvocation = AgentSkillInvocation("review", "/skills/review/SKILL.md")
+        val pluginInvocation = AgentPluginInvocation("drive", "plugin://drive@catalog")
+        val localInvocations: Array<AgentInvocation> = arrayOf(skillInvocation, pluginInvocation)
+        assertEquals(listOf("review", "drive"), localInvocations.map(AgentInvocation::name))
+        assertEquals(
+            listOf("skill:/skills/review/SKILL.md", "plugin:plugin://drive@catalog"),
+            localInvocations.map(AgentInvocation::key),
+        )
+        assertEquals("/skills/review/SKILL.md", skillInvocation.path)
+        assertEquals("plugin://drive@catalog", pluginInvocation.uri)
+        localInvocations.forEach {
+            assertTrue(isFrozen(it))
+            assertEquals(0, enumerablePropertyCount(it))
+        }
+        listOf(
+            runCatching {
+                AgentSkillInvocation(js("({})").unsafeCast<String>(), "/skill")
+            }.exceptionOrNull() to "name must be a string",
+            runCatching {
+                AgentSkillInvocation("skill", js("({})").unsafeCast<String>())
+            }.exceptionOrNull() to "path must be a string",
+            runCatching {
+                AgentPluginInvocation(js("({})").unsafeCast<String>(), "plugin://drive@catalog")
+            }.exceptionOrNull() to "name must be a string",
+            runCatching {
+                AgentPluginInvocation("drive", js("({})").unsafeCast<String>())
+            }.exceptionOrNull() to "uri must be a string",
+        ).forEach { (error, message) -> assertEquals(message, error?.message) }
 
         val sourcePluginNames = arrayOf("Plugin one", "Plugin two")
         val localConnector = AgentConnector(
@@ -326,6 +378,12 @@ class CodexNodeApiTest {
         awaitCondition { conversation.state.status == "running_turn" }
         val activeState = conversation.state
         assertEquals(listOf("hello"), activeState.messages.map(CodexMessage::text))
+        val pendingMessage = activeState.messages.single()
+        assertEquals("default", pendingMessage.collaborationMode)
+        assertTrue(pendingMessage.capabilities.isEmpty())
+        assertTrue(pendingMessage.invocations.isEmpty())
+        assertTrue(isFrozen(pendingMessage.capabilities))
+        assertTrue(isFrozen(pendingMessage.invocations))
         assertNull(activeState.turnProgress)
         assertFalse(activeState.canStartTurn)
         assertFalse(activeState.canReload)
@@ -389,8 +447,33 @@ class CodexNodeApiTest {
         val messageState = conversation.state
         val messages = messageState.messages
         assertEquals(listOf("user-1", "assistant-1"), messages.map(CodexMessage::id))
-        assertEquals(listOf("hello", "world"), messages.map(CodexMessage::text))
+        assertEquals(
+            listOf(
+                "hello\n${CoreCapability.WEB_SEARCH.promptLabel}\n\$review\n@drive\n\nmalformed",
+                "world",
+            ),
+            messages.map(CodexMessage::text),
+        )
         assertEquals(listOf("user", "assistant"), messages.map(CodexMessage::role))
+        val liveUserMessage = messages[0]
+        assertEquals("client-plan", liveUserMessage.clientMessageId)
+        assertEquals("plan", liveUserMessage.collaborationMode)
+        assertEquals(listOf("web_search"), liveUserMessage.capabilities.toList())
+        assertEquals(listOf("review", "drive"), liveUserMessage.invocations.map(AgentInvocation::name))
+        assertEquals(
+            listOf("skill:/skills/review/SKILL.md", "plugin:plugin://drive@catalog"),
+            liveUserMessage.invocations.map(AgentInvocation::key),
+        )
+        assertEquals("/skills/review/SKILL.md", assertIs<AgentSkillInvocation>(
+            liveUserMessage.invocations[0],
+        ).path)
+        assertEquals("plugin://drive@catalog", assertIs<AgentPluginInvocation>(
+            liveUserMessage.invocations[1],
+        ).uri)
+        val liveAssistantMessage = messages[1]
+        assertEquals("default", liveAssistantMessage.collaborationMode)
+        assertTrue(liveAssistantMessage.capabilities.isEmpty())
+        assertTrue(liveAssistantMessage.invocations.isEmpty())
         assertNull(messageState.turnProgress)
         assertTrue(messageState.canStartTurn)
         assertTrue(messageState.canReload)
@@ -399,7 +482,16 @@ class CodexNodeApiTest {
         assertFalse(messageState.isTurnActive)
         assertTrue(isFrozen(messageState))
         assertTrue(isFrozen(messages))
-        messages.forEach { assertTrue(isFrozen(it)) }
+        messages.forEach { message ->
+            assertTrue(isFrozen(message))
+            assertTrue(isFrozen(message.capabilities))
+            assertTrue(isFrozen(message.invocations))
+            assertEquals(0, enumerablePropertyCount(message))
+            message.invocations.forEach {
+                assertTrue(isFrozen(it))
+                assertEquals(0, enumerablePropertyCount(it))
+            }
+        }
         assertTrue(conversationStates.any { it.isTurnActive && it.canCancelTurn })
         assertTrue(conversationStates.any { it.turnProgress?.text == "working" })
         assertTrue(conversationStates.any { it.messages.size == 2 && !it.isTurnActive })
@@ -419,6 +511,32 @@ class CodexNodeApiTest {
                     plan.steps.forEach { step -> assertTrue(isFrozen(step)) }
                 }
             }
+        }
+
+        conversation.reload().await()
+        awaitCondition { conversation.state.status == "ready" && conversation.state.messages.size == 2 }
+        assertSame(conversation, agent.activeConversation)
+        assertSame(conversation, active.last())
+        val reloadedMessages = conversation.state.messages
+        val reloadedUserMessage = reloadedMessages[0]
+        assertEquals("plan", reloadedUserMessage.collaborationMode)
+        assertEquals(listOf("web_search"), reloadedUserMessage.capabilities.toList())
+        assertEquals(listOf("review", "drive"), reloadedUserMessage.invocations.map(AgentInvocation::name))
+        assertEquals(
+            listOf("skill:/skills/review/SKILL.md", "plugin:plugin://drive@catalog"),
+            reloadedUserMessage.invocations.map(AgentInvocation::key),
+        )
+        assertFalse(messages === reloadedMessages)
+        assertFalse(liveUserMessage === reloadedUserMessage)
+        assertFalse(liveUserMessage.capabilities === reloadedUserMessage.capabilities)
+        assertFalse(liveUserMessage.invocations === reloadedUserMessage.invocations)
+        assertFalse(liveUserMessage.invocations[0] === reloadedUserMessage.invocations[0])
+        assertTrue(isFrozen(reloadedMessages))
+        reloadedMessages.forEach { message ->
+            assertTrue(isFrozen(message))
+            assertTrue(isFrozen(message.capabilities))
+            assertTrue(isFrozen(message.invocations))
+            message.invocations.forEach { assertTrue(isFrozen(it)) }
         }
 
         val failure = runCatching { conversation.runShellCommand("pwd").await() }.exceptionOrNull()
@@ -850,6 +968,15 @@ class CodexNodeApiTest {
             assertEquals(skillFixture.workspacePath, resumedOpen["cwd"]?.jsonPrimitive?.content)
             assertEquals("thread-resumed", resumed.state.conversationId)
             assertEquals("fast", resumed.state.serviceTier)
+            val resumedUserMessage = resumed.state.messages.first()
+            assertEquals("plan", resumedUserMessage.collaborationMode)
+            assertEquals(listOf("web_search"), resumedUserMessage.capabilities.toList())
+            assertEquals(
+                listOf("skill:/skills/review/SKILL.md", "plugin:plugin://drive@catalog"),
+                resumedUserMessage.invocations.map(AgentInvocation::key),
+            )
+            assertTrue(isFrozen(resumedUserMessage.capabilities))
+            assertTrue(isFrozen(resumedUserMessage.invocations))
             assertEquals("closed", shellConversation.state.status)
             shellHost.close().await()
             assertSame(connectors, shellAgent.connectors)
@@ -1801,10 +1928,49 @@ private fun completedTurn(): JsonObject = buildJsonObject {
         add(buildJsonObject {
             put("id", "user-1")
             put("type", "userMessage")
+            put("clientId", "codex-agent:plan:client-plan")
             putJsonArray("content") {
                 add(buildJsonObject {
                     put("type", "text")
-                    put("text", "hello")
+                    put(
+                        "text",
+                        "${CoreCapability.WEB_SEARCH.promptLabel}\n\$review\n@drive\n\nhello",
+                    )
+                    putJsonArray("text_elements") {
+                        add(buildJsonObject {
+                            putJsonObject("byteRange") {
+                                put("start", 0)
+                                put("end", CoreCapability.WEB_SEARCH.promptLabel.encodeToByteArray().size)
+                            }
+                            put("placeholder", CoreCapability.WEB_SEARCH.displayLabel)
+                        })
+                    }
+                })
+                add(buildJsonObject {
+                    put("type", "text")
+                    put(
+                        "text",
+                        "${CoreCapability.WEB_SEARCH.promptLabel}\n\$review\n@drive\n\nmalformed",
+                    )
+                    putJsonArray("text_elements") {
+                        add(buildJsonObject {
+                            putJsonObject("byteRange") {
+                                put("start", 0)
+                                put("end", 1)
+                            }
+                            put("placeholder", CoreCapability.WEB_SEARCH.displayLabel)
+                        })
+                    }
+                })
+                add(buildJsonObject {
+                    put("type", "skill")
+                    put("name", "review")
+                    put("path", "/skills/review/SKILL.md")
+                })
+                add(buildJsonObject {
+                    put("type", "mention")
+                    put("name", "drive")
+                    put("path", "plugin://drive@catalog")
                 })
             }
         })

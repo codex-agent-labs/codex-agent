@@ -356,6 +356,8 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.deepEqual(esmExports, commonJsExports);
   assert.equal(sdk.AgentConnector, commonJsSdk.AgentConnector);
   assert.equal(sdk.AgentConversationSummary, commonJsSdk.AgentConversationSummary);
+  assert.equal(sdk.AgentPluginInvocation, commonJsSdk.AgentPluginInvocation);
+  assert.equal(sdk.AgentSkillInvocation, commonJsSdk.AgentSkillInvocation);
   assert.equal(sdk.AgentModel, commonJsSdk.AgentModel);
   assert.equal(sdk.AgentServiceTier, commonJsSdk.AgentServiceTier);
   assert.equal(sdk.AgentSkill, commonJsSdk.AgentSkill);
@@ -399,6 +401,14 @@ test('esm exposes the same runtime values as CommonJS', () => {
     sdk.agentSkillScopeDisplayName,
     commonJsSdk.agentSkillScopeDisplayName,
   );
+  for (const name of [
+    'agentCapabilityId',
+    'agentCapabilityDisplayLabel',
+    'agentCapabilityIcon',
+    'agentCapabilityPromptLabel',
+  ]) {
+    assert.equal(sdk[name], commonJsSdk[name]);
+  }
   for (const [preset, displayName] of [
     ['never', 'Never'],
     ['auto_review', 'Auto review'],
@@ -435,6 +445,41 @@ test('esm exposes the same runtime values as CommonJS', () => {
       () => commonJsSdk.agentSkillScopeDisplayName(invalid),
       (error) => error?.message === message,
     );
+  }
+  for (const [name, expected] of [
+    ['agentCapabilityId', 'web_search'],
+    ['agentCapabilityDisplayLabel', 'Web search'],
+    ['agentCapabilityIcon', '🌐'],
+    ['agentCapabilityPromptLabel', 'Use 🌐 Web search'],
+  ]) {
+    assert.equal(sdk[name]('web_search'), expected);
+    assert.equal(commonJsSdk[name]('web_search'), expected);
+    for (const [invalid, message] of [
+      ['unknown', 'Unknown agent capability: unknown'],
+      ['WEB_SEARCH', 'Unknown agent capability: WEB_SEARCH'],
+      [0, 'capability must be a string'],
+      [null, 'capability must be a string'],
+      [undefined, 'capability must be a string'],
+      [new String('web_search'), 'capability must be a string'],
+      [new Proxy({}, {}), 'capability must be a string'],
+    ]) {
+      assert.throws(() => sdk[name](invalid), (error) => error?.message === message);
+      assert.throws(() => commonJsSdk[name](invalid), (error) => error?.message === message);
+    }
+  }
+  const skillInvocation = new sdk.AgentSkillInvocation('review', '/skills/review/SKILL.md');
+  const pluginInvocation = new sdk.AgentPluginInvocation('tools', 'plugin://tools@official');
+  assert.deepEqual(
+    [skillInvocation.name, skillInvocation.path, skillInvocation.key],
+    ['review', '/skills/review/SKILL.md', 'skill:/skills/review/SKILL.md'],
+  );
+  assert.deepEqual(
+    [pluginInvocation.name, pluginInvocation.uri, pluginInvocation.key],
+    ['tools', 'plugin://tools@official', 'plugin:plugin://tools@official'],
+  );
+  for (const invocation of [skillInvocation, pluginInvocation]) {
+    assert.equal(Object.isFrozen(invocation), true);
+    assert.deepEqual(Object.keys(invocation), []);
   }
   assert.equal(typeof sdk.CodexHost, 'function');
   assert.equal(typeof sdk.CodexAuthentication, 'function');

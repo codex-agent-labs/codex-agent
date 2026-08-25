@@ -15,10 +15,12 @@ import {
   AgentModel,
   AgentPlanProgress,
   AgentPlanStep,
+  AgentPluginInvocation,
   AgentServiceTier,
   AgentSkill,
   AgentSkillCatalog,
   AgentSkillChunk,
+  AgentSkillInvocation,
   CodexAgent,
   CodexAuthentication,
   CodexAuthenticationState,
@@ -31,6 +33,10 @@ import {
   CodexModels,
   CodexObservation,
   CodexSkills,
+  agentCapabilityDisplayLabel,
+  agentCapabilityIcon,
+  agentCapabilityId,
+  agentCapabilityPromptLabel,
   agentSkillScopeDisplayName,
   codexApprovalPresetDisplayName,
   createCodexHost,
@@ -48,6 +54,7 @@ import type {
   AgentHookTrustStatus,
   AgentInstallationScope,
   AgentIntegrationAuthorizationStatus,
+  AgentInvocation,
   AgentMcpAuthStatus,
   AgentMcpAuthentication,
   AgentMcpEnvironmentSource,
@@ -78,6 +85,11 @@ const approvalPreset: CodexApprovalPreset = "auto_review";
 const approvalPresetDisplayName: string = codexApprovalPresetDisplayName(approvalPreset);
 const skillScope: AgentSkillScope = "system";
 const skillScopeDisplayName: string = agentSkillScopeDisplayName(skillScope);
+const capability: AgentCapability = "web_search";
+const capabilityId: string = agentCapabilityId(capability);
+const capabilityDisplayLabel: string = agentCapabilityDisplayLabel(capability);
+const capabilityIcon: string | null | undefined = agentCapabilityIcon(capability);
+const capabilityPromptLabel: string = agentCapabilityPromptLabel(capability);
 const formOption = new AgentFormOption("value");
 const formOptionValue: string = formOption.value;
 const formOptionTitle: string = formOption.title;
@@ -162,6 +174,17 @@ const connectorInstallUrl: string | null | undefined = customConnector.installUr
 const connectorIsAccessible: boolean = customConnector.isAccessible;
 const connectorIsEnabled: boolean = customConnector.isEnabled;
 const connectorPluginNames: ReadonlyArray<string> = customConnector.pluginNames;
+const skillInvocation = new AgentSkillInvocation("review", "/skills/review/SKILL.md");
+const pluginInvocation = new AgentPluginInvocation("tools", "plugin://tools@official");
+const skillInvocationClass: typeof AgentSkillInvocation = AgentSkillInvocation;
+const pluginInvocationClass: typeof AgentPluginInvocation = AgentPluginInvocation;
+const invocations: ReadonlyArray<AgentInvocation> = [skillInvocation, pluginInvocation];
+const skillInvocationName: string = skillInvocation.name;
+const skillInvocationPath: string = skillInvocation.path;
+const skillInvocationKey: string = skillInvocation.key;
+const pluginInvocationName: string = pluginInvocation.name;
+const pluginInvocationUri: string = pluginInvocation.uri;
+const pluginInvocationKey: string = pluginInvocation.key;
 const conversationSummary = new AgentConversationSummary("conversation", "Conversation title", 1n);
 const summaryConversationId: string = conversationSummary.conversationId;
 const summaryTitle: string = conversationSummary.title;
@@ -353,6 +376,12 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   await agent.listConversations(signal);
   const conversationState: CodexConversationState = conversation.state;
   const messages = conversationState.messages;
+  const messageCollaborationModes: ReadonlyArray<AgentCollaborationMode> =
+    messages.map((message) => message.collaborationMode);
+  const messageCapabilities: ReadonlyArray<ReadonlyArray<AgentCapability>> =
+    messages.map((message) => message.capabilities);
+  const messageInvocations: ReadonlyArray<ReadonlyArray<AgentInvocation>> =
+    messages.map((message) => message.invocations);
   const turnProgress = conversationState.turnProgress;
   const turnPlanProgress: AgentPlanProgress | null | undefined = turnProgress?.planProgress;
   const turnHookActivities: ReadonlyArray<AgentHookActivity> | undefined = turnProgress?.hookActivities;
@@ -402,6 +431,9 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     conversationSummaries,
     conversationState,
     messages,
+    messageCollaborationModes,
+    messageCapabilities,
+    messageInvocations,
     turnProgress,
     turnPlanProgress,
     turnHookActivities,
@@ -431,6 +463,10 @@ void hostStatus;
 void [
   approvalPresetDisplayName,
   skillScopeDisplayName,
+  capabilityId,
+  capabilityDisplayLabel,
+  capabilityIcon,
+  capabilityPromptLabel,
   formOptionValue,
   formOptionTitle,
   formOptionDescription,
@@ -462,6 +498,15 @@ void [
   connectorIsAccessible,
   connectorIsEnabled,
   connectorPluginNames,
+  skillInvocationClass,
+  pluginInvocationClass,
+  invocations,
+  skillInvocationName,
+  skillInvocationPath,
+  skillInvocationKey,
+  pluginInvocationName,
+  pluginInvocationUri,
+  pluginInvocationKey,
   summaryConversationId,
   summaryTitle,
   summaryUpdatedAtEpochSeconds,

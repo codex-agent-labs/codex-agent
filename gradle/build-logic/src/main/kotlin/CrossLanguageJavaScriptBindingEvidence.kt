@@ -157,6 +157,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
             !isAllowedLiteralTypeReuse(symbol, projections) &&
             !isAllowedConversationStateEnvelopeReuse(symbol, projections) &&
             !isAllowedConversationStateLeafReuse(symbol, projections) &&
+            !isAllowedAgentInvocationMemberReuse(symbol, projections) &&
             !isAllowedFlattenedValueReuse(symbol, projections)
         ) {
             errors += "Reused JavaScript/TypeScript public symbol $symbol for capabilities " +
@@ -818,8 +819,9 @@ private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.isD043SurfaceMember() && !member.isExactD043SurfaceMember()) return emptyList()
     val flattened = flattenedValueProjectionCandidates(member, symbols)
-    if (flattened.isNotEmpty()) return flattened
+    if (flattened.isNotEmpty() || member.requiresExactD043FlattenedProjection()) return flattened
     return when (member.kind) {
         CanonicalJavaScriptMemberKind.OBJECT -> objectProjectionCandidates(member, symbols)
         CanonicalJavaScriptMemberKind.ENUM_ENTRY -> enumProjectionCandidates(member, symbols)
@@ -831,6 +833,18 @@ private fun javaScriptProjectionCandidates(
 
 private const val javaScriptApprovalPresetDisplayName =
     "function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string"
+private const val javaScriptAgentCapabilityDisplayLabel =
+    "function:agentCapabilityDisplayLabel:(capability: AgentCapability): string"
+private const val javaScriptAgentCapabilityIcon =
+    "function:agentCapabilityIcon:(capability: AgentCapability): string | null | undefined"
+private const val javaScriptAgentCapabilityId =
+    "function:agentCapabilityId:(capability: AgentCapability): string"
+private const val javaScriptAgentCapabilityPromptLabel =
+    "function:agentCapabilityPromptLabel:(capability: AgentCapability): string"
+private const val javaScriptAgentInvocationType =
+    "type:AgentInvocation:AgentPluginInvocation | AgentSkillInvocation"
+private const val javaScriptAgentMessageCapabilities =
+    "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"
 private const val javaScriptApiKeyAuthentication =
     "method:CodexAuthentication#authenticate:" +
         "(method: \"api_key\", apiKey: string, signal?: AbortSignal | null | undefined): Promise<void>"
@@ -857,6 +871,12 @@ private val javaScriptConversationIdSymbols = listOf(
     javaScriptRenameConversation,
 ).sorted()
 
+private fun agentInvocationBaseSymbols(name: String): List<String> = listOf(
+    javaScriptAgentInvocationType,
+    "getter:AgentPluginInvocation#$name:string",
+    "getter:AgentSkillInvocation#$name:string",
+).sorted()
+
 private fun flattenedValueProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
@@ -864,6 +884,11 @@ private fun flattenedValueProjectionCandidates(
     val projectedSymbols = when {
         member.isExactProperty("AgentApprovalPreset", "displayName", "kotlin/String!!") ->
             listOf(javaScriptApprovalPresetDisplayName)
+        member.exactAgentCapabilityMetadataSymbol() != null ->
+            listOf(checkNotNull(member.exactAgentCapabilityMetadataSymbol()))
+        member.exactAgentInvocationBaseName() != null ->
+            agentInvocationBaseSymbols(checkNotNull(member.exactAgentInvocationBaseName()))
+        member.isExactAgentMessageCapabilities() -> listOf(javaScriptAgentMessageCapabilities)
         member.isExactApiKeyAuthenticationMethodMember() -> listOf(javaScriptApiKeyAuthentication)
         member.isExactConversationSettingsMember() -> listOf(javaScriptOpenConversation)
         member.isExactConversationIdMember() -> javaScriptConversationIdSymbols
@@ -881,11 +906,79 @@ private fun flattenedValueProjectionCandidates(
     return listOf(
         JavaScriptProjectionCandidate(
             publicSymbols = projectedSymbols,
-            scenarios = listOf(CrossLanguageBindingScenario.VALUE_CONVERSION),
+            scenarios = listOf(
+                if (member.isExactAgentMessageCapabilities()) {
+                    CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING
+                } else {
+                    CrossLanguageBindingScenario.VALUE_CONVERSION
+                },
+            ),
             requiresConsumerReference = true,
         )
     )
 }
+
+private fun CanonicalJavaScriptMember.exactAgentCapabilityMetadataSymbol(): String? {
+    if (owner != "io.github.codex_agent_labs.codexmobile.agent/AgentCapability") return null
+    return when {
+        isExactProperty("AgentCapability", "displayLabel", "kotlin/String!!") ->
+            javaScriptAgentCapabilityDisplayLabel
+        isExactProperty("AgentCapability", "icon", "kotlin/String?") -> javaScriptAgentCapabilityIcon
+        isExactProperty("AgentCapability", "id", "kotlin/String!!") -> javaScriptAgentCapabilityId
+        isExactProperty("AgentCapability", "promptLabel", "kotlin/String!!") ->
+            javaScriptAgentCapabilityPromptLabel
+        else -> null
+    }
+}
+
+private fun CanonicalJavaScriptMember.exactAgentInvocationBaseName(): String? {
+    if (owner != "io.github.codex_agent_labs.codexmobile.agent/AgentInvocation") return null
+    return listOf("key", "name").singleOrNull { isExactProperty("AgentInvocation", it, "kotlin/String!!") }
+}
+
+private fun CanonicalJavaScriptMember.isExactAgentMessageCapabilities(): Boolean =
+    owner == "io.github.codex_agent_labs.codexmobile.agent/AgentMessage" && isExactProperty(
+        "AgentMessage",
+        "capabilities",
+        "kotlin.collections/Set<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentCapability!!>!!",
+    )
+
+private fun CanonicalJavaScriptMember.requiresExactD043FlattenedProjection(): Boolean =
+    exactAgentCapabilityMetadataSymbol() != null || exactAgentInvocationBaseName() != null ||
+        isExactAgentMessageCapabilities()
+
+private fun CanonicalJavaScriptMember.isD043SurfaceMember(): Boolean = when (simpleOwner) {
+    "AgentCapability" -> name in setOf("displayLabel", "icon", "id", "promptLabel")
+    "AgentInvocation" -> name in setOf("key", "name")
+    "AgentInvocation.Plugin" -> name == "<init>" || name in setOf("key", "name", "uri")
+    "AgentInvocation.Skill" -> name == "<init>" || name in setOf("key", "name", "path")
+    "AgentMessage" -> name in setOf("capabilities", "collaborationMode", "invocations")
+    else -> false
+}
+
+private fun CanonicalJavaScriptMember.isExactD043SurfaceMember(): Boolean {
+    if (owner.substringBeforeLast('/') != "io.github.codex_agent_labs.codexmobile.agent") return false
+    return exactAgentCapabilityMetadataSymbol() != null || exactAgentInvocationBaseName() != null ||
+        isExactAgentMessageCapabilities() ||
+        isExactProperty("AgentMessage", "collaborationMode", "$canonicalAgentPackage/AgentCollaborationMode!!") ||
+        isExactProperty(
+            "AgentMessage",
+            "invocations",
+            "kotlin.collections/List<INVARIANT:$canonicalAgentPackage/AgentInvocation!!>!!",
+        ) || isExactConstructor(
+            "AgentInvocation.Plugin",
+            List(2) { CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false) },
+        ) || listOf("key", "name", "uri").any {
+            isExactProperty("AgentInvocation.Plugin", it, "kotlin/String!!")
+        } || isExactConstructor(
+            "AgentInvocation.Skill",
+            List(2) { CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false) },
+        ) || listOf("key", "name", "path").any {
+            isExactProperty("AgentInvocation.Skill", it, "kotlin/String!!")
+        }
+}
+
+private const val canonicalAgentPackage = "io.github.codex_agent_labs.codexmobile.agent"
 
 private fun CanonicalJavaScriptMember.isExactConversationSettingsMember(): Boolean {
     val canonicalPackage = owner.substringBeforeLast('/')
@@ -1692,6 +1785,8 @@ private fun javascriptOwnerName(canonical: String): String = when (canonical) {
     "AgentFormValue.Number" -> "AgentFormNumberValue"
     "AgentFormValue.Text" -> "AgentFormTextValue"
     "AgentFormValue.TextList" -> "AgentFormTextListValue"
+    "AgentInvocation.Plugin" -> "AgentPluginInvocation"
+    "AgentInvocation.Skill" -> "AgentSkillInvocation"
     "AgentMessageRole" -> "CodexMessageRole"
     "AgentWorkActivity" -> "CodexWorkActivity"
     "AgentMessage" -> "CodexMessage"
@@ -1766,6 +1861,35 @@ private fun isAllowedConversationStateLeafReuse(
         "static" !in leaf.qualifiers && "optional" !in leaf.qualifiers &&
         (leaf.kind == JavaScriptPublicSymbolKind.GETTER || "readonly" in leaf.qualifiers) &&
         javascriptTypeCompatible(leaf.signature.orEmpty(), ordinaryType)
+}
+
+private fun isAllowedAgentInvocationMemberReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean {
+    val leaf = when {
+        symbol == javaScriptAgentInvocationType -> null
+        symbol.startsWith("getter:AgentPluginInvocation#") -> "AgentInvocation.Plugin"
+        symbol.startsWith("getter:AgentSkillInvocation#") -> "AgentInvocation.Skill"
+        else -> return false
+    }
+    if (symbol == javaScriptAgentInvocationType) {
+        return projections.size == 2 && projections.all { projection ->
+            val name = projection.member.exactAgentInvocationBaseName() ?: return@all false
+            projection.publicSymbols == agentInvocationBaseSymbols(name)
+        } && projections.mapNotNull { it.member.exactAgentInvocationBaseName() }.toSet() == setOf("key", "name")
+    }
+    val parsed = parseJavaScriptPublicSymbol(symbol)
+    val name = parsed.name
+    val base = projections.singleOrNull {
+        it.member.exactAgentInvocationBaseName() == name && it.publicSymbols == agentInvocationBaseSymbols(name)
+    } ?: return false
+    val nested = projections.singleOrNull {
+        it.member.owner == "$canonicalAgentPackage/$leaf" &&
+            it.member.isExactProperty(checkNotNull(leaf), name, "kotlin/String!!") &&
+            it.publicSymbols == listOf(symbol)
+    } ?: return false
+    return base !== nested && projections.size == 2
 }
 
 private fun isAllowedFlattenedValueReuse(

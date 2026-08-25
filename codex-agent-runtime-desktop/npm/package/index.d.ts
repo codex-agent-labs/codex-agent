@@ -106,6 +106,19 @@ export declare class AgentConnector {
     get isEnabled(): boolean;
     get pluginNames(): ReadonlyArray<string>;
 }
+export type AgentInvocation = AgentPluginInvocation | AgentSkillInvocation;
+export declare class AgentSkillInvocation {
+    constructor(name: string, path: string);
+    get name(): string;
+    get path(): string;
+    get key(): string;
+}
+export declare class AgentPluginInvocation {
+    constructor(name: string, uri: string);
+    get name(): string;
+    get uri(): string;
+    get key(): string;
+}
 export declare class AgentServiceTier {
     constructor(id: string, name: string, description: string);
     get id(): string;
@@ -193,10 +206,13 @@ export declare class CodexMessage {
     get clientMessageId(): Nullable<string>;
     get role(): CodexMessageRole;
     get text(): string;
+    get collaborationMode(): AgentCollaborationMode;
     get reasoning(): Nullable<string>;
     get plan(): Nullable<string>;
     get shellCommand(): Nullable<string>;
     get exitCode(): Nullable<number>;
+    get capabilities(): ReadonlyArray<AgentCapability>;
+    get invocations(): ReadonlyArray<AgentInvocation>;
 }
 export declare class CodexTurnProgress {
     private constructor();
@@ -249,6 +265,10 @@ export declare class CodexHost {
 export declare function createCodexHost(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost;
 export declare function codexApprovalPresetDisplayName(preset: CodexApprovalPreset): string;
 export declare function agentSkillScopeDisplayName(scope: AgentSkillScope): string;
+export declare function agentCapabilityId(capability: AgentCapability): string;
+export declare function agentCapabilityDisplayLabel(capability: AgentCapability): string;
+export declare function agentCapabilityIcon(capability: AgentCapability): Nullable<string>;
+export declare function agentCapabilityPromptLabel(capability: AgentCapability): string;
 export declare class CodexAgent {
     private constructor();
     get workspace(): CodexWorkspace;

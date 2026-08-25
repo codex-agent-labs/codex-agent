@@ -153,6 +153,22 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
             "export declare function agentSkillScopeDisplayName(scope: string): string;"
         val reviewedAgentSkillScopeDisplayNameDeclaration =
             "export declare function agentSkillScopeDisplayName(scope: AgentSkillScope): string;"
+        val rawAgentCapabilityIdDeclaration =
+            "export declare function agentCapabilityId(capability: string): string;"
+        val reviewedAgentCapabilityIdDeclaration =
+            "export declare function agentCapabilityId(capability: AgentCapability): string;"
+        val rawAgentCapabilityDisplayLabelDeclaration =
+            "export declare function agentCapabilityDisplayLabel(capability: string): string;"
+        val reviewedAgentCapabilityDisplayLabelDeclaration =
+            "export declare function agentCapabilityDisplayLabel(capability: AgentCapability): string;"
+        val rawAgentCapabilityIconDeclaration =
+            "export declare function agentCapabilityIcon(capability: string): Nullable<string>;"
+        val reviewedAgentCapabilityIconDeclaration =
+            "export declare function agentCapabilityIcon(capability: AgentCapability): Nullable<string>;"
+        val rawAgentCapabilityPromptLabelDeclaration =
+            "export declare function agentCapabilityPromptLabel(capability: string): string;"
+        val reviewedAgentCapabilityPromptLabelDeclaration =
+            "export declare function agentCapabilityPromptLabel(capability: AgentCapability): string;"
         val rawApprovalPresetDisplayNameDeclaration =
             "export declare function codexApprovalPresetDisplayName(preset: string): string;"
         val reviewedApprovalPresetDisplayNameDeclaration =
@@ -178,6 +194,46 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get isAccessible(): boolean;
     get isEnabled(): boolean;
     get pluginNames(): ReadonlyArray<string>;
+}"""
+        val rawAgentInvocationDeclaration =
+            """export declare interface AgentInvocation {
+    readonly name: string;
+    readonly key: string;
+    readonly __doNotUseOrImplementIt: {
+        readonly AgentInvocation: unique symbol;
+    };
+}"""
+        val reviewedAgentInvocationDeclaration =
+            "export type AgentInvocation = AgentPluginInvocation | AgentSkillInvocation;"
+        val rawAgentSkillInvocationDeclaration =
+            """export declare class AgentSkillInvocation implements AgentInvocation {
+    constructor(name: string, path: string);
+    get name(): string;
+    get path(): string;
+    get key(): string;
+    readonly __doNotUseOrImplementIt: AgentInvocation["__doNotUseOrImplementIt"];
+}"""
+        val reviewedAgentSkillInvocationDeclaration =
+            """export declare class AgentSkillInvocation {
+    constructor(name: string, path: string);
+    get name(): string;
+    get path(): string;
+    get key(): string;
+}"""
+        val rawAgentPluginInvocationDeclaration =
+            """export declare class AgentPluginInvocation implements AgentInvocation {
+    constructor(name: string, uri: string);
+    get name(): string;
+    get uri(): string;
+    get key(): string;
+    readonly __doNotUseOrImplementIt: AgentInvocation["__doNotUseOrImplementIt"];
+}"""
+        val reviewedAgentPluginInvocationDeclaration =
+            """export declare class AgentPluginInvocation {
+    constructor(name: string, uri: string);
+    get name(): string;
+    get uri(): string;
+    get key(): string;
 }"""
         val expectedAgentConversationSummaryDeclaration =
             """export declare class AgentConversationSummary {
@@ -264,6 +320,36 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get nextOffset(): Nullable<bigint>;
     get totalBytes(): bigint;
 }"""
+        val rawCodexMessageDeclaration =
+            """export declare class CodexMessage {
+    private constructor();
+    get id(): string;
+    get clientMessageId(): Nullable<string>;
+    get role(): string;
+    get text(): string;
+    get collaborationMode(): string;
+    get reasoning(): Nullable<string>;
+    get plan(): Nullable<string>;
+    get shellCommand(): Nullable<string>;
+    get exitCode(): Nullable<number>;
+    get capabilities(): Array<string>;
+    get invocations(): Array<AgentInvocation>;
+}"""
+        val reviewedCodexMessageDeclaration =
+            """export declare class CodexMessage {
+    private constructor();
+    get id(): string;
+    get clientMessageId(): Nullable<string>;
+    get role(): string;
+    get text(): string;
+    get collaborationMode(): AgentCollaborationMode;
+    get reasoning(): Nullable<string>;
+    get plan(): Nullable<string>;
+    get shellCommand(): Nullable<string>;
+    get exitCode(): Nullable<number>;
+    get capabilities(): ReadonlyArray<AgentCapability>;
+    get invocations(): ReadonlyArray<AgentInvocation>;
+}"""
         val rawListConversationsDeclaration =
             "    listConversations(signal?: Nullable<AbortSignal>): Promise<Array<AgentConversationSummary>>;"
         val reviewedListConversationsDeclaration =
@@ -317,11 +403,32 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.lineSequence().count { it == rawAgentSkillScopeDisplayNameDeclaration } == 1) {
             "Unexpected agentSkillScopeDisplayName TypeScript declaration"
         }
+        check(actual.lineSequence().count { it == rawAgentCapabilityIdDeclaration } == 1) {
+            "Unexpected agentCapabilityId TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == rawAgentCapabilityDisplayLabelDeclaration } == 1) {
+            "Unexpected agentCapabilityDisplayLabel TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == rawAgentCapabilityIconDeclaration } == 1) {
+            "Unexpected agentCapabilityIcon TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == rawAgentCapabilityPromptLabelDeclaration } == 1) {
+            "Unexpected agentCapabilityPromptLabel TypeScript declaration"
+        }
         check(actual.lineSequence().count { it == rawApprovalPresetDisplayNameDeclaration } == 1) {
             "Unexpected codexApprovalPresetDisplayName TypeScript declaration"
         }
         check(actual.split(rawAgentConnectorDeclaration).size == 2) {
             "Unexpected AgentConnector TypeScript declaration"
+        }
+        check(actual.split(rawAgentInvocationDeclaration).size == 2) {
+            "Unexpected AgentInvocation TypeScript declaration"
+        }
+        check(actual.split(rawAgentSkillInvocationDeclaration).size == 2) {
+            "Unexpected AgentSkillInvocation TypeScript declaration"
+        }
+        check(actual.split(rawAgentPluginInvocationDeclaration).size == 2) {
+            "Unexpected AgentPluginInvocation TypeScript declaration"
         }
         check(actual.split(expectedAgentConversationSummaryDeclaration).size == 2) {
             "Unexpected AgentConversationSummary TypeScript declaration"
@@ -340,6 +447,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         }
         check(actual.split(expectedAgentSkillChunkDeclaration).size == 2) {
             "Unexpected AgentSkillChunk TypeScript declaration"
+        }
+        check(actual.split(rawCodexMessageDeclaration).size == 2) {
+            "Unexpected CodexMessage TypeScript declaration"
         }
         check(actual.lineSequence().count { it == rawListConversationsDeclaration } == 1) {
             "Unexpected CodexAgent.listConversations TypeScript declaration"
@@ -370,11 +480,32 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
             rawAgentSkillScopeDisplayNameDeclaration,
             reviewedAgentSkillScopeDisplayNameDeclaration,
         ).replace(
+            rawAgentCapabilityIdDeclaration,
+            reviewedAgentCapabilityIdDeclaration,
+        ).replace(
+            rawAgentCapabilityDisplayLabelDeclaration,
+            reviewedAgentCapabilityDisplayLabelDeclaration,
+        ).replace(
+            rawAgentCapabilityIconDeclaration,
+            reviewedAgentCapabilityIconDeclaration,
+        ).replace(
+            rawAgentCapabilityPromptLabelDeclaration,
+            reviewedAgentCapabilityPromptLabelDeclaration,
+        ).replace(
             rawApprovalPresetDisplayNameDeclaration,
             reviewedApprovalPresetDisplayNameDeclaration,
         ).replace(
             rawAgentConnectorDeclaration,
             reviewedAgentConnectorDeclaration,
+        ).replace(
+            rawAgentInvocationDeclaration,
+            reviewedAgentInvocationDeclaration,
+        ).replace(
+            rawAgentSkillInvocationDeclaration,
+            reviewedAgentSkillInvocationDeclaration,
+        ).replace(
+            rawAgentPluginInvocationDeclaration,
+            reviewedAgentPluginInvocationDeclaration,
         ).replace(
             rawAgentModelDeclaration,
             reviewedAgentModelDeclaration,
@@ -384,6 +515,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawAgentSkillCatalogDeclaration,
             reviewedAgentSkillCatalogDeclaration,
+        ).replace(
+            rawCodexMessageDeclaration,
+            reviewedCodexMessageDeclaration,
         ).replace(
             rawListConversationsDeclaration,
             reviewedListConversationsDeclaration,

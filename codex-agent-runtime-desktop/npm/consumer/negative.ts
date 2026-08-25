@@ -15,22 +15,90 @@ import {
   AgentModel,
   AgentPlanProgress,
   AgentPlanStep,
+  AgentPluginInvocation,
   AgentServiceTier,
   AgentSkill,
   AgentSkillCatalog,
   AgentSkillChunk,
+  AgentSkillInvocation,
   CodexConnectors,
   CodexModels,
   CodexSkills,
+  agentCapabilityDisplayLabel,
+  agentCapabilityIcon,
+  agentCapabilityId,
+  agentCapabilityPromptLabel,
   agentSkillScopeDisplayName,
   codexApprovalPresetDisplayName,
 } from "@codex-agent-labs/codex-agent";
-import type { CodexAgent, CodexTurnProgress } from "@codex-agent-labs/codex-agent";
+import type {
+  AgentCapability,
+  AgentInvocation,
+  CodexAgent,
+  CodexMessage,
+  CodexTurnProgress,
+} from "@codex-agent-labs/codex-agent";
 
 // @ts-expect-error Raw Kotlin enum names are outside the public TypeScript domain.
 codexApprovalPresetDisplayName("AUTO_REVIEW");
 // @ts-expect-error Raw Kotlin enum names are outside the public TypeScript domain.
 agentSkillScopeDisplayName("SYSTEM");
+// @ts-expect-error Raw Kotlin enum names are outside the public TypeScript domain.
+agentCapabilityId("WEB_SEARCH");
+// @ts-expect-error Raw Kotlin enum names are outside the public TypeScript domain.
+agentCapabilityDisplayLabel("WEB_SEARCH");
+// @ts-expect-error Raw Kotlin enum names are outside the public TypeScript domain.
+agentCapabilityIcon("WEB_SEARCH");
+// @ts-expect-error Raw Kotlin enum names are outside the public TypeScript domain.
+agentCapabilityPromptLabel("WEB_SEARCH");
+
+const skillInvocation = new AgentSkillInvocation("review", "/skills/review/SKILL.md");
+// @ts-expect-error Skill invocation names are strings.
+new AgentSkillInvocation(1, "/skills/review/SKILL.md");
+// @ts-expect-error Skill invocation paths are strings.
+new AgentSkillInvocation("review", 1);
+// @ts-expect-error Skill invocation paths are required.
+new AgentSkillInvocation("review");
+// @ts-expect-error Immutable skill invocation names are readonly.
+skillInvocation.name = "changed";
+// @ts-expect-error Immutable skill invocation paths are readonly.
+skillInvocation.path = "/changed";
+// @ts-expect-error Derived skill invocation keys are readonly.
+skillInvocation.key = "changed";
+
+const pluginInvocation = new AgentPluginInvocation("tools", "plugin://tools@official");
+// @ts-expect-error Plugin invocation names are strings.
+new AgentPluginInvocation(1, "plugin://tools@official");
+// @ts-expect-error Plugin invocation URIs are strings.
+new AgentPluginInvocation("tools", 1);
+// @ts-expect-error Plugin invocation URIs are required.
+new AgentPluginInvocation("tools");
+// @ts-expect-error Immutable plugin invocation names are readonly.
+pluginInvocation.name = "changed";
+// @ts-expect-error Immutable plugin invocation URIs are readonly.
+pluginInvocation.uri = "plugin://changed@official";
+// @ts-expect-error Derived plugin invocation keys are readonly.
+pluginInvocation.key = "changed";
+
+// @ts-expect-error Invocation values must use one of the reviewed concrete shapes.
+const invalidInvocation: AgentInvocation = { name: "invalid", key: "invalid" };
+// @ts-expect-error Capabilities remain a closed typed domain.
+const invalidCapabilities: ReadonlyArray<AgentCapability> = ["WEB_SEARCH"];
+declare const message: CodexMessage;
+// @ts-expect-error Message collaboration modes remain a closed typed domain.
+const invalidCollaborationMode: typeof message.collaborationMode = "PLAN";
+// @ts-expect-error Immutable message collaboration modes are readonly.
+message.collaborationMode = "plan";
+// @ts-expect-error Immutable message capability collections cannot be replaced.
+message.capabilities = [];
+// @ts-expect-error Message capability collections are readonly.
+message.capabilities.push("web_search");
+// @ts-expect-error Immutable message invocation collections cannot be replaced.
+message.invocations = [];
+// @ts-expect-error Message invocation collections are readonly.
+message.invocations.push(skillInvocation);
+// @ts-expect-error Message invocation collections contain reviewed invocation values.
+const invalidInvocations: ReadonlyArray<AgentInvocation> = [{}];
 
 const option = new AgentFormOption("value");
 // @ts-expect-error Immutable form-option values are readonly.

@@ -2,6 +2,7 @@
 
 import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
 import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as CoreAuthenticationState
+import io.github.codex_agent_labs.codexmobile.agent.AgentCapability as CoreCapability
 import io.github.codex_agent_labs.codexmobile.agent.AgentConnector as CoreConnector
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSummary as CoreConversationSummary
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSettings
@@ -18,6 +19,7 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.TextList as C
 import io.github.codex_agent_labs.codexmobile.agent.AgentHookActivity as CoreHookActivity
 import io.github.codex_agent_labs.codexmobile.agent.AgentHookRunStatus as CoreHookRunStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentInstallationScope as CoreInstallationScope
+import io.github.codex_agent_labs.codexmobile.agent.AgentInvocation as CoreInvocation
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable as CoreMcpEnvironmentVariable
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpOauthConfiguration as CoreMcpOauthConfiguration
@@ -387,6 +389,57 @@ public class AgentConnector public constructor(
     }
 }
 
+/** Common immutable skill/plugin invocation projection. */
+@JsExport
+public interface AgentInvocation {
+    public val name: String
+    public val key: String
+}
+
+/** Immutable skill invocation value. */
+@JsExport
+public class AgentSkillInvocation public constructor(
+    name: String,
+    path: String,
+) : AgentInvocation {
+    public override val name: String
+    public val path: String
+    public override val key: String
+
+    init {
+        val core = CoreInvocation.Skill(
+            name.requireJavaScriptString("name"),
+            path.requireJavaScriptString("path"),
+        )
+        this.name = core.name
+        this.path = core.path
+        this.key = core.key
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable plugin invocation value. */
+@JsExport
+public class AgentPluginInvocation public constructor(
+    name: String,
+    uri: String,
+) : AgentInvocation {
+    public override val name: String
+    public val uri: String
+    public override val key: String
+
+    init {
+        val core = CoreInvocation.Plugin(
+            name.requireJavaScriptString("name"),
+            uri.requireJavaScriptString("uri"),
+        )
+        this.name = core.name
+        this.uri = core.uri
+        this.key = core.key
+        freezeSnapshot(this)
+    }
+}
+
 /** Immutable model service-tier metadata. */
 @JsExport
 public class AgentServiceTier public constructor(
@@ -666,12 +719,17 @@ public class CodexMessage internal constructor(
     public val clientMessageId: String?,
     public val role: String,
     public val text: String,
+    public val collaborationMode: String,
     public val reasoning: String?,
     public val plan: String?,
     public val shellCommand: String?,
     public val exitCode: Int?,
+    public val capabilities: Array<String>,
+    public val invocations: Array<AgentInvocation>,
 ) {
     init {
+        freezeSnapshot(capabilities)
+        freezeSnapshot(invocations)
         freezeSnapshot(this)
     }
 }
@@ -892,6 +950,18 @@ public fun codexApprovalPresetDisplayName(preset: String): String = preset.toApp
 
 @JsExport
 public fun agentSkillScopeDisplayName(scope: String): String = scope.toAgentSkillScope().displayName
+
+@JsExport
+public fun agentCapabilityId(capability: String): String = capability.toAgentCapability().id
+
+@JsExport
+public fun agentCapabilityDisplayLabel(capability: String): String = capability.toAgentCapability().displayLabel
+
+@JsExport
+public fun agentCapabilityIcon(capability: String): String? = capability.toAgentCapability().icon
+
+@JsExport
+public fun agentCapabilityPromptLabel(capability: String): String = capability.toAgentCapability().promptLabel
 
 internal fun wrapCodexHost(core: CoreHost): CodexHost = CodexHost(core, jsApiToken)
 
@@ -1256,6 +1326,12 @@ private fun String.toAgentSkillScope(): CoreAgentSkillScope {
         ?: throw IllegalArgumentException("Unknown skill scope: $value")
 }
 
+private fun String.toAgentCapability(): CoreCapability {
+    val value = requireJavaScriptString("capability")
+    return CoreCapability.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown agent capability: $value")
+}
+
 private fun String.toCoreInstallationScope(): CoreInstallationScope {
     val value = requireJavaScriptString("scope")
     return CoreInstallationScope.entries.singleOrNull { it.name.lowercase() == value }
@@ -1551,11 +1627,19 @@ private fun CoreMessage.project(): CodexMessage = CodexMessage(
     clientMessageId = clientMessageId,
     role = role.name.lowercase(),
     text = text,
+    collaborationMode = collaborationMode.name.lowercase(),
     reasoning = reasoning,
     plan = plan,
     shellCommand = shellCommand,
     exitCode = exitCode,
+    capabilities = capabilities.map(CoreCapability::id).toTypedArray(),
+    invocations = invocations.map(CoreInvocation::project).toTypedArray(),
 )
+
+private fun CoreInvocation.project(): AgentInvocation = when (this) {
+    is CoreInvocation.Skill -> AgentSkillInvocation(name, path)
+    is CoreInvocation.Plugin -> AgentPluginInvocation(name, uri)
+}
 
 private fun CorePlanProgress.project(): AgentPlanProgress = AgentPlanProgress(
     explanation = explanation,
