@@ -158,7 +158,9 @@ case "$lane" in
     [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-ios:verifyCodexAgentSwiftSimulatorCompilation "${args[@]}"
     ;;
   ios-swift-tests)
-    [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests "${args[@]}"
+    [ "$test_lane" != true ] || ./gradlew \
+      :codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests \
+      :codex-agent-runtime-ios:generateCodexAgentAppleCompilerEvidence "${args[@]}"
     ;;
   ios-package)
     tasks=()

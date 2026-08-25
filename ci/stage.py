@@ -99,6 +99,7 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
     "ios-swift-tests": (
         ("test", "codex-agent-runtime-ios/build/swift-authentication-tests-summary.json", "xctest-summary"),
         ("test", "codex-agent-runtime-ios/build/swift-authentication-tests.xcresult/**/*", "xctest-result"),
+        ("test", "codex-agent-runtime-ios/build/reports/cross-language-api/apple/compiler-evidence.json", "apple-compiler-evidence"),
     ),
     "ios-package": (
         ("build", "codex-agent-runtime-ios/build/distributions/CodexAgent-*.xcframework.zip", "swift-package-binary"),

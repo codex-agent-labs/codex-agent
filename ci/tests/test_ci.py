@@ -54,6 +54,12 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertNotIn(":codex-agent-core:verifyJavaBindingParity", contracts)
         self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", contracts)
 
+    def test_swift_tests_run_exact_apple_compiler_observation(self) -> None:
+        driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
+        swift_tests = driver.split("  ios-swift-tests)", 1)[1].split("  ios-package)", 1)[0]
+        self.assertEqual(1, swift_tests.count(":codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests"))
+        self.assertEqual(1, swift_tests.count(":codex-agent-runtime-ios:generateCodexAgentAppleCompilerEvidence"))
+
 
 class GitFixture(unittest.TestCase):
     def setUp(self) -> None:
@@ -787,6 +793,25 @@ class RealImpactPlanTest(unittest.TestCase):
         )
         self.assertEqual({"contracts"}, matching_lanes("test", imported))
 
+        apple_compiler_sources = (
+            prefix + "AppleCompilerEvidenceTask.kt",
+            prefix + "codexagent.ios-runtime.gradle.kts",
+        )
+        for source in apple_compiler_sources:
+            with self.subTest(apple_compiler_source=source):
+                self.assertEqual({"contracts", "ios-swift-tests"}, matching_lanes("test", source))
+        apple_compiler_task = prefix + "AppleCompilerEvidenceTask.kt"
+        self.assertEqual(set(), matching_lanes("production", apple_compiler_task))
+        self.assertEqual(set(), matching_lanes("metadata", apple_compiler_task))
+        for consumer in (
+            "codex-agent-runtime-ios/apple/CompilerEvidence/CodexFailureSwiftConsumer.swift",
+            "codex-agent-runtime-ios/apple/CompilerEvidence/CodexFailureObjectiveCConsumer.m",
+        ):
+            with self.subTest(apple_compiler_consumer=consumer):
+                self.assertEqual({"ios-swift-tests"}, matching_lanes("test", consumer))
+                self.assertEqual(set(), matching_lanes("production", consumer))
+                self.assertEqual(set(), matching_lanes("metadata", consumer))
+
         gradle_tasks = prefix + "ReleaseToolingGradleTasks.kt"
         self.assertEqual(
             {
@@ -975,6 +1000,23 @@ class StageArchiveTest(unittest.TestCase):
                 with self.subTest(pattern=pattern):
                     with self.assertRaisesRegex(ValueError, "Required lane output did not match"):
                         copy_matches(root, root / "staged", pattern)
+
+    def test_swift_tests_stage_exact_compiler_observation_and_reject_missing_output(self) -> None:
+        compiler_evidence = (
+            "test",
+            "codex-agent-runtime-ios/build/reports/cross-language-api/apple/compiler-evidence.json",
+            "apple-compiler-evidence",
+        )
+        self.assertEqual((
+            ("test", "codex-agent-runtime-ios/build/swift-authentication-tests-summary.json", "xctest-summary"),
+            ("test", "codex-agent-runtime-ios/build/swift-authentication-tests.xcresult/**/*", "xctest-result"),
+            compiler_evidence,
+        ), OUTPUTS["ios-swift-tests"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(ValueError, "Required lane output did not match"):
+                copy_matches(root, root / "staged", compiler_evidence[1])
 
     def test_recursive_output_globs_are_python_312_compatible(self) -> None:
         self.assertFalse([
