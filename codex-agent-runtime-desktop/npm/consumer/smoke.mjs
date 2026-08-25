@@ -120,6 +120,20 @@ function renderType(node, source, aliases, substitutions = new Map(), expanding 
   if (ts.isTypeOperatorNode(node)) {
     return `${ts.tokenToString(node.operator)} ${renderType(node.type, source, aliases, substitutions, expanding)}`;
   }
+  if (ts.isTypeLiteralNode(node)) {
+    const members = node.members.map((member) => {
+      assert.ok(ts.isPropertySignature(member), 'Public type literals support only property signatures');
+      assertModifiers(member, [ts.SyntaxKind.ReadonlyKeyword], 'Public type literal property');
+      assert.ok(
+        hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
+        'Public type literal properties must be readonly',
+      );
+      assert.ok(ts.isIdentifier(member.name), 'Public type literal property names must be identifiers');
+      assert.ok(member.type, `Public type literal property ${member.name.text} must have a type`);
+      return `readonly ${member.name.text}${member.questionToken ? '?' : ''}: ${renderType(member.type, source, aliases, substitutions, expanding)}`;
+    });
+    return `{ ${members.join('; ')}; }`;
+  }
   if (ts.isLiteralTypeNode(node) || ts.isThisTypeNode(node) || keywordTypeKinds.has(node.kind)) {
     return node.getText(source);
   }
@@ -644,6 +658,9 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'getter:CodexAuthenticationState#failure:CodexFailure | null | undefined',
   ), 'Authentication structured state failure must be discoverable');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'type:AgentTurnRequest:{ readonly prompt: string; readonly clientMessageId?: string | null | undefined; readonly model?: string | null | undefined; readonly effort?: string | null | undefined; readonly serviceTier?: string | null | undefined; readonly approvalPreset?: CodexApprovalPreset; readonly capabilities?: ReadonlyArray<AgentCapability>; readonly invocations?: ReadonlyArray<AgentInvocation>; readonly collaborationMode?: AgentCollaborationMode; }',
+  ), 'Structured turn requests must preserve exact readonly fields, defaults, and finite domains');
   const privateSurface = ts.createSourceFile(
     'private-surface.d.ts',
     'export declare class Visible { private constructor(); protected hidden(): void; #secret: string; }',
@@ -668,6 +685,22 @@ test('typescript compiler discovers the exact installed public API', () => {
     ts.ScriptKind.TS,
   );
   assert.throws(() => discoverPublicApi(unsupportedMember), /Unsupported public TypeScript class member/);
+  for (const declarationText of [
+    'export type Mutable = { value: string };',
+    'export type Method = { readonly run: string; execute(): void };',
+    'export type Indexed = { readonly [key: string]: string };',
+    'export type Callable = { (): void };',
+    'export type Modified = { public readonly value: string };',
+  ]) {
+    const unsupportedTypeLiteral = ts.createSourceFile(
+      'unsupported-type-literal.d.ts',
+      declarationText,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    assert.throws(() => discoverPublicApi(unsupportedTypeLiteral), /Public type literal/);
+  }
   const aliasBefore = ts.createSourceFile(
     'alias-before.d.ts',
     'type Maybe<T> = T | null; export declare class Projection { observe(listener: (value: Maybe<string>) => void): void; }',

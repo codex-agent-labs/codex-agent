@@ -1042,6 +1042,7 @@ class CodexNodeApiTest {
                 CodexRuntimeFeature.SHELL_COMMANDS,
                 CodexRuntimeFeature.CONNECTORS,
                 CodexRuntimeFeature.SKILLS,
+                CodexRuntimeFeature.PLUGINS,
             ), workspacePath = skillFixture.workspacePath),
             CodexClientInfo("node_test", "Node Test", "test"),
         ))
@@ -1344,6 +1345,165 @@ class CodexNodeApiTest {
             assertEquals(3, shellRuntime.threadListRequests.size)
 
             val shellConversation = shellAgent.openConversation().await()
+            val turnStartsBeforeAbort = shellRuntime.turnStartRequests.size
+            val requestsBeforeAbort = shellRuntime.requestMethods.size
+            val unreadRequest = js(
+                "Object.defineProperty({ reads: 0 }, 'prompt', " +
+                    "{ get: function () { this.reads += 1; return 'unread'; } })",
+            ).unsafeCast<AgentTurnRequest>()
+            val abortedRequest = runCatching {
+                shellConversation.sendRequest(
+                    unreadRequest,
+                    controller.signal.unsafeCast<AbortSignal>(),
+                ).await()
+            }.exceptionOrNull()
+            assertEquals("AbortError", abortedRequest?.asDynamic()?.name as String)
+            assertEquals(0, unreadRequest.asDynamic().reads as Int)
+            assertEquals(turnStartsBeforeAbort, shellRuntime.turnStartRequests.size)
+            assertEquals(requestsBeforeAbort, shellRuntime.requestMethods.size)
+
+            val defaultRequest: dynamic = js("({ prompt: 'typed default' })")
+            defaultRequest.clientMessageId = null
+            defaultRequest.effort = null
+            defaultRequest.approvalPreset = null
+            defaultRequest.invocations = null
+            shellConversation.sendRequest(defaultRequest.unsafeCast<AgentTurnRequest>()).await()
+            val defaultTurn = shellRuntime.turnStartRequests.last()
+            assertEquals("thread-js", defaultTurn["threadId"]?.jsonPrimitive?.content)
+            assertEquals("on-request", defaultTurn["approvalPolicy"]?.jsonPrimitive?.content)
+            assertEquals("auto_review", defaultTurn["approvalsReviewer"]?.jsonPrimitive?.content)
+            assertEquals(skillFixture.workspacePath, defaultTurn["cwd"]?.jsonPrimitive?.content)
+            assertNull(defaultTurn["model"])
+            assertNull(defaultTurn["effort"])
+            assertNull(defaultTurn["serviceTier"])
+            assertNull(defaultTurn["collaborationMode"])
+            assertEquals("auto", defaultTurn["summary"]?.jsonPrimitive?.content)
+            assertFalse(
+                checkNotNull(defaultTurn["clientUserMessageId"]).jsonPrimitive.content
+                    .startsWith("codex-agent:plan:"),
+            )
+            val defaultInput = checkNotNull(defaultTurn["input"]).jsonArray.single().jsonObject
+            assertEquals("text", defaultInput["type"]?.jsonPrimitive?.content)
+            assertEquals("typed default", defaultInput["text"]?.jsonPrimitive?.content)
+            assertNull(defaultInput["text_elements"])
+            shellRuntime.completeTurn()
+            awaitCondition { shellConversation.state.status == "ready" }
+
+            val sourceCapabilities = arrayOf("web_search", "web_search")
+            val sourceInvocations = arrayOf<AgentInvocation>(
+                skillInvocation,
+                pluginInvocation,
+                skillInvocation,
+            )
+            val customRequest: dynamic = js("({})")
+            customRequest.prompt = "typed custom"
+            customRequest.clientMessageId = "client-custom"
+            customRequest.model = "model-preferred"
+            customRequest.effort = "high"
+            customRequest.serviceTier = "fast"
+            customRequest.approvalPreset = "strict"
+            customRequest.capabilities = sourceCapabilities
+            customRequest.invocations = sourceInvocations
+            customRequest.collaborationMode = "plan"
+            shellConversation.sendRequest(customRequest.unsafeCast<AgentTurnRequest>()).await()
+            sourceCapabilities[0] = "changed"
+            sourceInvocations[0] = pluginInvocation
+            val customTurn = shellRuntime.turnStartRequests.last()
+            assertEquals("thread-js", customTurn["threadId"]?.jsonPrimitive?.content)
+            assertEquals("untrusted", customTurn["approvalPolicy"]?.jsonPrimitive?.content)
+            assertEquals("user", customTurn["approvalsReviewer"]?.jsonPrimitive?.content)
+            assertEquals("codex-agent:plan:client-custom", customTurn["clientUserMessageId"]?.jsonPrimitive?.content)
+            assertEquals(skillFixture.workspacePath, customTurn["cwd"]?.jsonPrimitive?.content)
+            assertEquals("high", customTurn["effort"]?.jsonPrimitive?.content)
+            assertEquals("model-preferred", customTurn["model"]?.jsonPrimitive?.content)
+            assertEquals("fast", customTurn["serviceTier"]?.jsonPrimitive?.content)
+            assertEquals("auto", customTurn["summary"]?.jsonPrimitive?.content)
+            val customMode = checkNotNull(customTurn["collaborationMode"]).jsonObject
+            assertEquals("plan", customMode["mode"]?.jsonPrimitive?.content)
+            val customSettings = checkNotNull(customMode["settings"]).jsonObject
+            assertEquals("model-preferred", customSettings["model"]?.jsonPrimitive?.content)
+            assertEquals("medium", customSettings["reasoning_effort"]?.jsonPrimitive?.content)
+            assertNull(customSettings["developer_instructions"])
+            val customInput = checkNotNull(customTurn["input"]).jsonArray
+            assertEquals(3, customInput.size)
+            assertEquals(
+                "${CoreCapability.WEB_SEARCH.promptLabel}\n\$review\n@drive\n\ntyped custom",
+                customInput[0].jsonObject["text"]?.jsonPrimitive?.content,
+            )
+            val customTextElement = checkNotNull(
+                customInput[0].jsonObject["text_elements"],
+            ).jsonArray.single().jsonObject
+            assertEquals(CoreCapability.WEB_SEARCH.displayLabel, customTextElement["placeholder"]?.jsonPrimitive?.content)
+            val customRange = checkNotNull(customTextElement["byteRange"]).jsonObject
+            assertEquals("0", customRange["start"]?.jsonPrimitive?.content)
+            assertEquals(
+                CoreCapability.WEB_SEARCH.promptLabel.encodeToByteArray().size.toString(),
+                customRange["end"]?.jsonPrimitive?.content,
+            )
+            assertEquals("skill", customInput[1].jsonObject["type"]?.jsonPrimitive?.content)
+            assertEquals("review", customInput[1].jsonObject["name"]?.jsonPrimitive?.content)
+            assertEquals("/skills/review/SKILL.md", customInput[1].jsonObject["path"]?.jsonPrimitive?.content)
+            assertEquals("mention", customInput[2].jsonObject["type"]?.jsonPrimitive?.content)
+            assertEquals("drive", customInput[2].jsonObject["name"]?.jsonPrimitive?.content)
+            assertEquals("plugin://drive@catalog", customInput[2].jsonObject["path"]?.jsonPrimitive?.content)
+            shellRuntime.completeTurn()
+            awaitCondition { shellConversation.state.status == "ready" }
+
+            val hostileRequests = listOf(
+                js("null").unsafeCast<AgentTurnRequest>() to "request must be an object",
+                js("1").unsafeCast<AgentTurnRequest>() to "request must be an object",
+                js("({})").unsafeCast<AgentTurnRequest>() to "prompt must be a string",
+                js("({ prompt: new String('boxed') })").unsafeCast<AgentTurnRequest>() to
+                    "prompt must be a string",
+                js("({ prompt: 'x', clientMessageId: {} })").unsafeCast<AgentTurnRequest>() to
+                    "clientMessageId must be a string or null",
+                js("({ prompt: 'x', model: 1 })").unsafeCast<AgentTurnRequest>() to
+                    "model must be a string or null",
+                js("({ prompt: 'x', effort: true })").unsafeCast<AgentTurnRequest>() to
+                    "effort must be a string or null",
+                js("({ prompt: 'x', serviceTier: [] })").unsafeCast<AgentTurnRequest>() to
+                    "serviceTier must be a string or null",
+                js("({ prompt: 'x', approvalPreset: 'sometimes' })").unsafeCast<AgentTurnRequest>() to
+                    "Unknown approval preset: sometimes",
+                js("({ prompt: 'x', capabilities: { length: 0 } })").unsafeCast<AgentTurnRequest>() to
+                    "capabilities must be an array",
+                js("({ prompt: 'x', capabilities: new Array(1) })").unsafeCast<AgentTurnRequest>() to
+                    "capabilities must not contain sparse elements",
+                js("({ prompt: 'x', capabilities: ['filesystem'] })").unsafeCast<AgentTurnRequest>() to
+                    "Unknown agent capability: filesystem",
+                js("({ prompt: 'x', invocations: { length: 0 } })").unsafeCast<AgentTurnRequest>() to
+                    "invocations must be an array",
+                js("({ prompt: 'x', invocations: new Array(1) })").unsafeCast<AgentTurnRequest>() to
+                    "invocations must not contain sparse elements",
+                js("({ prompt: 'x', invocations: [{}] })").unsafeCast<AgentTurnRequest>() to
+                    "invocations[0] must be an AgentSkillInvocation or AgentPluginInvocation",
+                js("({ prompt: 'x', collaborationMode: 'pair' })").unsafeCast<AgentTurnRequest>() to
+                    "Unknown collaboration mode: pair",
+            )
+            hostileRequests.forEach { (request, message) ->
+                val requestsBeforeInvalid = shellRuntime.turnStartRequests.size
+                val methodsBeforeInvalid = shellRuntime.requestMethods.size
+                val invalid = runCatching { shellConversation.sendRequest(request).await() }.exceptionOrNull()
+                assertEquals(message, invalid?.message)
+                assertEquals(requestsBeforeInvalid, shellRuntime.turnStartRequests.size)
+                assertEquals(methodsBeforeInvalid, shellRuntime.requestMethods.size)
+            }
+
+            val turnStartsBeforeBlank = shellRuntime.turnStartRequests.size
+            val methodsBeforeBlank = shellRuntime.requestMethods.size
+            val blankFailure = runCatching {
+                shellConversation.sendRequest(
+                    js("({ prompt: ' ' })").unsafeCast<AgentTurnRequest>(),
+                ).await()
+            }.exceptionOrNull()
+            val blankError = assertIs<CodexError>(blankFailure)
+            assertEquals("turn_start_failed", blankError.code)
+            assertEquals("Could not start turn", blankError.message)
+            assertTrue(blankError.recoverable)
+            assertEquals("Prompt must not be blank", blankError.cause?.message)
+            assertEquals(turnStartsBeforeBlank, shellRuntime.turnStartRequests.size)
+            assertEquals(methodsBeforeBlank, shellRuntime.requestMethods.size)
+
             val listedConnectors = connectors.list(forceReload = true).await()
             assertEquals(listOf("connector-custom", "connector-default"), listedConnectors.map(AgentConnector::id))
             assertEquals(2, shellRuntime.appListRequests.size)
@@ -1428,6 +1588,16 @@ class CodexNodeApiTest {
             assertTrue(isFrozen(resumedUserMessage.capabilities))
             assertTrue(isFrozen(resumedUserMessage.invocations))
             assertEquals("closed", shellConversation.state.status)
+            val turnStartsBeforeClosedSend = shellRuntime.turnStartRequests.size
+            val requestsBeforeClosedSend = shellRuntime.requestMethods.size
+            val closedSend = runCatching {
+                shellConversation.sendRequest(
+                    js("({ prompt: 'closed' })").unsafeCast<AgentTurnRequest>(),
+                ).await()
+            }.exceptionOrNull()
+            assertEquals("Conversation is closed", closedSend?.message)
+            assertEquals(turnStartsBeforeClosedSend, shellRuntime.turnStartRequests.size)
+            assertEquals(requestsBeforeClosedSend, shellRuntime.requestMethods.size)
             shellHost.close().await()
             assertSame(connectors, shellAgent.connectors)
             assertSame(models, shellAgent.models)
@@ -1886,6 +2056,7 @@ private class ApiTestRuntime : CodexRuntime {
     var deleteRelease: CompletableDeferred<Unit>? = null
     var threadStartParams: JsonObject? = null
     var threadResumeParams: JsonObject? = null
+    val turnStartRequests: MutableList<JsonObject> = mutableListOf()
     val threadReadRequests: MutableList<JsonObject> = mutableListOf()
     var failNextThreadRead: Boolean = false
     var mismatchNextThreadRead: Boolean = false
@@ -2085,6 +2256,7 @@ private class ApiTestRuntime : CodexRuntime {
                 respond(id, buildJsonObject {})
             }
             "turn/start" -> {
+                turnStartRequests += checkNotNull(request["params"]).jsonObject
                 activeTurnId = "turn-js-${++turnStarts}"
                 respond(id, turnStartResult(activeTurnId))
             }

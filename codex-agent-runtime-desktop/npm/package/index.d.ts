@@ -31,6 +31,17 @@ export type CodexMessageRole = "assistant" | "user";
 export type CodexWorkActivity = "running_command" | "writing_files";
 export type CodexWorkspaceSelectionReason = "access_revoked" | "invalid_selection" | "not_found" | "not_selected";
 export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code" | "api_key";
+export type AgentTurnRequest = {
+    readonly prompt: string;
+    readonly clientMessageId?: Nullable<string>;
+    readonly model?: Nullable<string>;
+    readonly effort?: Nullable<string>;
+    readonly serviceTier?: Nullable<string>;
+    readonly approvalPreset?: CodexApprovalPreset;
+    readonly capabilities?: ReadonlyArray<AgentCapability>;
+    readonly invocations?: ReadonlyArray<AgentInvocation>;
+    readonly collaborationMode?: AgentCollaborationMode;
+};
 export declare class AgentFormOption {
     constructor(value: string, title?: string, description?: Nullable<string>);
     get value(): string;
@@ -328,6 +339,7 @@ export declare class CodexConversation {
     private constructor();
     get state(): CodexConversationState;
     send(prompt: string, signal?: Nullable<AbortSignal>): Promise<void>;
+    sendRequest(request: AgentTurnRequest, signal?: Nullable<AbortSignal>): Promise<void>;
     runShellCommand(command: string, signal?: Nullable<AbortSignal>): Promise<void>;
     cancelTurn(): Promise<void>;
     reload(signal?: Nullable<AbortSignal>): Promise<void>;

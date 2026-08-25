@@ -67,6 +67,7 @@ import type {
   AgentResolution,
   AgentResourceOrigin,
   AgentSkillScope,
+  AgentTurnRequest,
   CodexApprovalPreset,
   CodexAuthenticationMethod,
   CodexAuthenticationStatus,
@@ -414,6 +415,18 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     ];
   }).dispose();
   await conversation.send("hello", signal);
+  const turnRequest: AgentTurnRequest = {
+    prompt: "review",
+    clientMessageId: "client-request",
+    model: "model",
+    effort: "medium",
+    serviceTier: "fast",
+    approvalPreset,
+    capabilities: [capability],
+    invocations: [skillInvocation, pluginInvocation],
+    collaborationMode: "plan",
+  };
+  await conversation.sendRequest(turnRequest, signal);
   await conversation.runShellCommand("pwd", signal);
   await conversation.cancelTurn();
   await conversation.reload(signal);

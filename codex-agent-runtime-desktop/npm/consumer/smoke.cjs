@@ -97,6 +97,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.CodexAgent.prototype.delete, 'function');
   assert.equal(typeof sdk.CodexAgent.prototype.listConversations, 'function');
   assert.equal(typeof sdk.CodexAgent.prototype.readConversation, 'function');
+  assert.equal(typeof sdk.CodexConversation.prototype.sendRequest, 'function');
   assert.equal(typeof Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'skills')?.get, 'function');
   assert.equal(typeof sdk.CodexSkills.prototype.list, 'function');
   assert.equal(typeof sdk.CodexSkills.prototype.read, 'function');

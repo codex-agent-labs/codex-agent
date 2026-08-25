@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 282-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 284-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(282, evidence.packedApi.publicSymbols.size)
+        assertEquals(284, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -1011,7 +1011,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(250, 274 - claims.size)
         assertEquals(556, 294 + 12 + 250)
         assertEquals(52, 56 - setOf("AgentSkill", "AgentSkillCatalog", "AgentSkillChunk", "CodexSkills").size)
-        assertEquals(282, currentPublicSymbols().size)
+        assertEquals(284, currentPublicSymbols().size)
         assertTrue(skillSymbols.all { it in currentPublicSymbols() })
         assertTrue(evidence.projectionClaims.filter { "|owner=example/CodexSkills|" in it.capabilityKey && "|kind=function|" in it.capabilityKey }.all {
             it.sharedScenarios.toSet() ==
@@ -1237,9 +1237,9 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 311 + 12 + 233)
         assertEquals(47, 52 - 5)
         val currentSymbols = currentPublicSymbols()
-        assertEquals(282, currentSymbols.size)
+        assertEquals(284, currentSymbols.size)
         assertTrue(familySymbols.all { it in currentSymbols })
-        assertEquals(72, symbolExports(currentSymbols).first.size)
+        assertEquals(73, symbolExports(currentSymbols).first.size)
         assertEquals(46, symbolExports(currentSymbols).second.size)
 
         val canonicalDrift = listOf(
@@ -1427,7 +1427,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(225, 233 - hostStateClaims.size)
         assertEquals(556, 319 + 12 + 225)
         assertEquals(41, 47 - 6)
-        assertEquals(282, currentPublicSymbols().size)
+        assertEquals(284, currentPublicSymbols().size)
         assertTrue(symbols.all { it in currentPublicSymbols() })
         assertEquals(5, references.count { it.startsWith("getter:CodexHostState#") && it != HOST_STATE_STATUS })
     }
@@ -1599,7 +1599,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(220, 225 - historyClaims.size)
         assertEquals(556, 324 + 12 + 220)
         assertEquals(39, 41 - 2)
-        assertEquals(282, currentPublicSymbols().size)
+        assertEquals(284, currentPublicSymbols().size)
         assertTrue(symbols.all { it in currentPublicSymbols() })
         assertEquals(5, d045PublicSymbols().size)
     }
@@ -3021,7 +3021,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 269 + 12 + 275)
         assertEquals(57, 58 - 1)
         assertEquals(
-            282,
+            284,
             currentPublicSymbols().size + (clientProjectionSymbols - currentPublicSymbols().toSet()).size,
         )
         assertEquals(references, evidence.packedApi.referencedSymbols)
@@ -3211,7 +3211,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             listOf(SKILL_SCOPE_DISPLAY_NAME),
             currentSymbols.filter { it == SKILL_SCOPE_DISPLAY_NAME },
         )
-        assertEquals(282, currentSymbols.size)
+        assertEquals(284, currentSymbols.size)
 
         val canonicalDrift = listOf(
             agentProperty("OtherSkillScope", "displayName", "kotlin/String!!"),
@@ -3408,9 +3408,9 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 326 + 12 + 218)
         assertEquals(38, 39 - 1)
         val currentSymbols = currentPublicSymbols()
-        assertEquals(282, currentSymbols.size)
+        assertEquals(284, currentSymbols.size)
         assertEquals(listOf(D046_CONVERSATION), currentSymbols.filter { it == D046_CONVERSATION })
-        assertEquals(72, symbolExports(currentSymbols).first.size)
+        assertEquals(73, symbolExports(currentSymbols).first.size)
         assertEquals(46, symbolExports(currentSymbols).second.size)
     }
 
@@ -3515,6 +3515,225 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         val crossPackage = derive(aggregateKeys + foreign, symbols, references = symbols)
         assertEquals(listOf(foreign), crossPackage.missingCapabilityKeys)
         assertTrue(crossPackage.projectionClaims.none { it.capabilityKey == foreign })
+    }
+
+    @Test
+    fun `typed turn request closes ten exact values and canonical send through two symbols`() {
+        val keys = d047AgentTurnRequestKeys()
+        val symbols = d047AgentTurnRequestSymbols()
+        val references = listOf(D047_AGENT_TURN_REQUEST, D047_SEND_REQUEST).sorted()
+        val evidence = derive(keys, symbols, references = references)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+        val requestKeys = keys.filter { "owner=$CANONICAL_AGENT_PACKAGE/AgentTurnRequest|" in it }
+        val constructor = requestKeys.single { "|kind=constructor|" in it }
+        val capabilities = requestKeys.single { "AgentTurnRequest.capabilities" in it }
+        val invocations = requestKeys.single { "AgentTurnRequest.invocations" in it }
+        val nullable = requestKeys.filter {
+            listOf("clientMessageId", "model", "effort", "serviceTier").any { name ->
+                "AgentTurnRequest.$name" in it
+            }
+        }
+        val send = keys.single { "CodexConversation.send" in it }
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(11, keys.size)
+        assertEquals(10, requestKeys.size)
+        assertEquals(11, claims.size)
+        requestKeys.forEach { key ->
+            assertEquals(listOf(D047_AGENT_TURN_REQUEST), claims.getValue(key).publicSymbols)
+            assertTrue(CrossLanguageBindingScenario.VALUE_CONVERSION in claims.getValue(key).sharedScenarios)
+        }
+        assertEquals(
+            setOf(
+                CrossLanguageBindingScenario.VALUE_CONVERSION,
+                CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING,
+                CrossLanguageBindingScenario.NULLABILITY,
+            ),
+            claims.getValue(constructor).sharedScenarios.toSet(),
+        )
+        listOf(capabilities, invocations).forEach { key ->
+            assertTrue(
+                CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING in
+                    claims.getValue(key).sharedScenarios,
+            )
+        }
+        nullable.forEach { key ->
+            assertTrue(CrossLanguageBindingScenario.NULLABILITY in claims.getValue(key).sharedScenarios)
+        }
+        assertEquals(
+            listOf(D047_AGENT_TURN_REQUEST, D047_SEND_REQUEST).sorted(),
+            claims.getValue(send).publicSymbols,
+        )
+        assertEquals(
+            setOf(
+                CrossLanguageBindingScenario.ASYNC_SUCCESS,
+                CrossLanguageBindingScenario.ASYNC_FAILURE,
+                CrossLanguageBindingScenario.CANCELLATION,
+                CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP,
+            ),
+            claims.getValue(send).sharedScenarios.toSet(),
+        )
+        assertEquals(337, 326 + claims.size)
+        assertEquals(207, 218 - claims.size)
+        assertEquals(556, 337 + 12 + 207)
+        assertEquals(36, 38 - 2)
+        assertEquals(references, evidence.packedApi.referencedSymbols)
+        val currentSymbols = currentPublicSymbols()
+        assertEquals(284, currentSymbols.size)
+        assertTrue(references.all { it in currentSymbols })
+        assertEquals(73, symbolExports(currentSymbols).first.size)
+        assertEquals(46, symbolExports(currentSymbols).second.size)
+        assertEquals(242, 240 + references.size)
+    }
+
+    @Test
+    fun `typed turn request rejects family canonical symbol reference and reuse drift`() {
+        val keys = d047AgentTurnRequestKeys()
+        val symbols = d047AgentTurnRequestSymbols()
+        val references = listOf(D047_AGENT_TURN_REQUEST, D047_SEND_REQUEST).sorted()
+        val constructor = keys.single { "AgentTurnRequest.<init>" in it }
+        val prompt = keys.single { "AgentTurnRequest.prompt" in it }
+        val clientMessageId = keys.single { "AgentTurnRequest.clientMessageId" in it }
+        val model = keys.single { "AgentTurnRequest.model" in it }
+        val effort = keys.single { "AgentTurnRequest.effort" in it }
+        val serviceTier = keys.single { "AgentTurnRequest.serviceTier" in it }
+        val approvalPreset = keys.single { "AgentTurnRequest.approvalPreset" in it }
+        val capabilities = keys.single { "AgentTurnRequest.capabilities" in it }
+        val invocations = keys.single { "AgentTurnRequest.invocations" in it }
+        val collaborationMode = keys.single { "AgentTurnRequest.collaborationMode" in it }
+        val send = keys.single { "CodexConversation.send" in it }
+
+        val canonicalDrift = listOf(
+            constructor.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            constructor.replace("kind=constructor", "kind=function"),
+            constructor.replaceFirst("kotlin/String!!", "kotlin/Int!!"),
+            constructor.replaceFirst("default=false", "default=true"),
+            constructor.replaceFirst("default=true", "default=false"),
+            constructor.replaceFirst("vararg=false", "vararg=true"),
+            constructor.replace("return=$CANONICAL_AGENT_PACKAGE/AgentTurnRequest", "return=kotlin/String"),
+            constructor.replace("suspend=false", "suspend=true"),
+            canonicalConstructor(
+                "AgentTurnRequest",
+                listOf(
+                    "kotlin/String?",
+                    "kotlin/String!!",
+                    "kotlin/String?",
+                    "kotlin/String?",
+                    "kotlin/String?",
+                    "example/AgentApprovalPreset!!",
+                    "kotlin.collections/Set<INVARIANT:example/AgentCapability!!>!!",
+                    "kotlin.collections/List<INVARIANT:example/AgentInvocation!!>!!",
+                    "example/AgentCollaborationMode!!",
+                ),
+                defaultParameterIndices = (1..8).toSet(),
+            ).replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+            canonicalConstructor(
+                "AgentTurnRequest",
+                listOf("kotlin/String!!"),
+            ).replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+            prompt.replace("kotlin/String!!", "kotlin/String?"),
+            clientMessageId.replace("kotlin/String?", "kotlin/String!!"),
+            model.replace("kotlin/String?", "kotlin/Int?"),
+            effort.replace("kotlin/String?", "kotlin/Boolean?"),
+            serviceTier.replace("kotlin/String?", "kotlin/Long?"),
+            approvalPreset.replace("AgentApprovalPreset!!", "AgentCollaborationMode!!"),
+            capabilities.replace("kotlin.collections/Set", "kotlin.collections/List"),
+            invocations.replace("kotlin.collections/List", "kotlin.collections/Set"),
+            collaborationMode.replace("AgentCollaborationMode!!", "AgentCollaborationMode?"),
+            prompt.replace("propertyKind=VAL", "propertyKind=VAR"),
+            "$prompt|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+            "$prompt|suspend=true",
+            prompt.replace("AgentTurnRequest.prompt", "AgentTurnRequest.future"),
+            send.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            send.replace("return=kotlin/Unit", "return=kotlin/String!!"),
+            send.replace("suspend=true", "suspend=false"),
+            send.replace("AgentTurnRequest!!:default=false", "AgentTurnRequest?:default=false"),
+            send.replace("default=false", "default=true"),
+            send.replace("vararg=false", "vararg=true"),
+            send.replace(".send|send()", ".future|future()"),
+        )
+        canonicalDrift.forEach { drifted ->
+            val drift = derive(listOf(drifted), symbols, references = references)
+            assertTrue(drifted in drift.missingCapabilityKeys, "Accepted canonical drift: $drifted")
+            assertTrue(drift.projectionClaims.isEmpty())
+        }
+
+        val aliasDrift = listOf(
+            D047_AGENT_TURN_REQUEST.replace("readonly prompt: string; ", ""),
+            D047_AGENT_TURN_REQUEST.replace("readonly model?: string | null | undefined; ", ""),
+            D047_AGENT_TURN_REQUEST.replace(
+                "readonly model?: string | null | undefined; readonly effort?: string | null | undefined; ",
+                "readonly effort?: string | null | undefined; readonly model?: string | null | undefined; ",
+            ),
+            D047_AGENT_TURN_REQUEST.replace("readonly prompt", "prompt"),
+            D047_AGENT_TURN_REQUEST.replace("prompt: string", "prompt?: string"),
+            D047_AGENT_TURN_REQUEST.replace("clientMessageId?:", "clientMessageId:"),
+            D047_AGENT_TURN_REQUEST.replace("model?: string", "model?: number"),
+            D047_AGENT_TURN_REQUEST.replace("approvalPreset?: CodexApprovalPreset", "approvalPreset?: string"),
+            D047_AGENT_TURN_REQUEST.replace("ReadonlyArray<AgentCapability>", "Array<AgentCapability>"),
+            D047_AGENT_TURN_REQUEST.replace("ReadonlyArray<AgentInvocation>", "ReadonlyArray<string>"),
+            D047_AGENT_TURN_REQUEST.replace("AgentCollaborationMode; }", "string; }"),
+            D047_AGENT_TURN_REQUEST.replace("; }", "; readonly future?: string; }"),
+        )
+        aliasDrift.forEach { drifted ->
+            val driftSymbols = symbols.map { if (it == D047_AGENT_TURN_REQUEST) drifted else it }.sorted()
+            val drift = derive(keys, driftSymbols, references = listOf(drifted, D047_SEND_REQUEST).sorted())
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted alias drift: $drifted")
+        }
+
+        listOf(
+            D047_SEND_REQUEST.replace("sendRequest", "sendStructured"),
+            D047_SEND_REQUEST.replace("request: AgentTurnRequest", "request?: AgentTurnRequest"),
+            D047_SEND_REQUEST.replace("request: AgentTurnRequest", "request: string"),
+            D047_SEND_REQUEST.replace("signal?:", "signal:"),
+            D047_SEND_REQUEST.replace("AbortSignal | null | undefined", "AbortSignal"),
+            D047_SEND_REQUEST.replace("Promise<void>", "Promise<string>"),
+        ).forEach { drifted ->
+            val driftSymbols = symbols.map { if (it == D047_SEND_REQUEST) drifted else it }.sorted()
+            val drift = derive(keys, driftSymbols, references = listOf(D047_AGENT_TURN_REQUEST, drifted).sorted())
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted method drift: $drifted")
+        }
+
+        keys.forEach { omitted ->
+            val partial = derive(keys - omitted, symbols, references = references)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys }, "Accepted without $omitted")
+        }
+        references.forEach { omitted ->
+            val unreferenced = derive(keys, symbols, references = references - omitted)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && omitted in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey in keys })
+        }
+        listOf(D047_AGENT_TURN_REQUEST, D047_SEND_REQUEST).forEach { omitted ->
+            val partialSymbols = symbols - omitted
+            val partial = derive(keys, partialSymbols, references = references - omitted)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        listOf(
+            D047_SEND_REQUEST.replace("signal?: AbortSignal | null | undefined", "signal?: AbortSignal"),
+        ).forEach { extra ->
+            val ambiguousSymbols = (symbols + extra).sorted()
+            val ambiguous = derive(keys, ambiguousSymbols, references = (references + extra).sorted())
+            assertTrue(ambiguous.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        val future = canonicalProperty("AgentTurnRequest", "future", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureEvidence = derive(keys + future, symbols, references = references)
+        assertTrue(future in futureEvidence.missingCapabilityKeys)
+        assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey in keys })
+
+        val foreign = prompt.replace(CANONICAL_AGENT_PACKAGE, "foreign")
+        val crossPackage = derive(keys + foreign, symbols, references = references)
+        assertTrue(foreign in crossPackage.missingCapabilityKeys)
+        assertTrue(crossPackage.projectionClaims.none { it.capabilityKey in keys })
+
+        val unrelated = canonicalProperty("OtherRequest", "prompt", "kotlin/String!!")
+        val arbitrary = derive(keys + unrelated, symbols, references = references)
+        assertTrue(unrelated in arbitrary.missingCapabilityKeys)
+        assertTrue(arbitrary.projectionClaims.none { it.capabilityKey == unrelated })
     }
 
     @Test
@@ -4010,6 +4229,57 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         CONVERSATION_STATE_OBSERVER,
         D046_CONVERSATION,
         D046_TURN_PROGRESS,
+    ).sorted()
+
+    private fun d047AgentTurnRequestKeys(): List<String> = listOf(
+        canonicalConstructor(
+            "AgentTurnRequest",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String?",
+                "kotlin/String?",
+                "kotlin/String?",
+                "kotlin/String?",
+                "example/AgentApprovalPreset!!",
+                "kotlin.collections/Set<INVARIANT:example/AgentCapability!!>!!",
+                "kotlin.collections/List<INVARIANT:example/AgentInvocation!!>!!",
+                "example/AgentCollaborationMode!!",
+            ),
+            defaultParameterIndices = (1..8).toSet(),
+        ),
+        canonicalProperty("AgentTurnRequest", "prompt", "kotlin/String!!"),
+        canonicalProperty("AgentTurnRequest", "clientMessageId", "kotlin/String?"),
+        canonicalProperty("AgentTurnRequest", "model", "kotlin/String?"),
+        canonicalProperty("AgentTurnRequest", "effort", "kotlin/String?"),
+        canonicalProperty("AgentTurnRequest", "serviceTier", "kotlin/String?"),
+        canonicalProperty("AgentTurnRequest", "approvalPreset", "example/AgentApprovalPreset!!"),
+        canonicalProperty(
+            "AgentTurnRequest",
+            "capabilities",
+            "kotlin.collections/Set<INVARIANT:example/AgentCapability!!>!!",
+        ),
+        canonicalProperty(
+            "AgentTurnRequest",
+            "invocations",
+            "kotlin.collections/List<INVARIANT:example/AgentInvocation!!>!!",
+        ),
+        canonicalProperty(
+            "AgentTurnRequest",
+            "collaborationMode",
+            "example/AgentCollaborationMode!!",
+        ),
+        canonicalFunction(
+            "CodexConversation",
+            "send",
+            suspendFunction = true,
+            parameters = listOf("example/AgentTurnRequest!!"),
+        ),
+    ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }.sorted()
+
+    private fun d047AgentTurnRequestSymbols(): List<String> = listOf(
+        "class:CodexConversation",
+        D047_AGENT_TURN_REQUEST,
+        D047_SEND_REQUEST,
     ).sorted()
 
     private fun conversationStateSymbols(): List<String> = listOf(
@@ -4556,10 +4826,11 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             .also { assertEquals(208, it.size) }
         return (
             baseline + modelPublicSymbols() + SKILL_SCOPE_DISPLAY_NAME + skillsPublicSymbols() +
-                d043PublicSymbols() + d045PublicSymbols() + D046_CONVERSATION
+                d043PublicSymbols() + d045PublicSymbols() + D046_CONVERSATION +
+                D047_AGENT_TURN_REQUEST + D047_SEND_REQUEST
             )
             .sorted()
-            .also { assertEquals(282, it.size) }
+            .also { assertEquals(284, it.size) }
     }
 
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
@@ -4680,6 +4951,20 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "getter:CodexConversationState#conversation:AgentConversation | null | undefined"
         private const val D046_TURN_PROGRESS =
             "getter:CodexConversationState#turnProgress:CodexTurnProgress | null | undefined"
+        private const val D047_AGENT_TURN_REQUEST =
+            "type:AgentTurnRequest:{ readonly prompt: string; " +
+                "readonly clientMessageId?: string | null | undefined; " +
+                "readonly model?: string | null | undefined; " +
+                "readonly effort?: string | null | undefined; " +
+                "readonly serviceTier?: string | null | undefined; " +
+                "readonly approvalPreset?: CodexApprovalPreset; " +
+                "readonly capabilities?: ReadonlyArray<AgentCapability>; " +
+                "readonly invocations?: ReadonlyArray<AgentInvocation>; " +
+                "readonly collaborationMode?: AgentCollaborationMode; }"
+        private const val D047_SEND_REQUEST =
+            "method:CodexConversation#sendRequest:" +
+                "(request: AgentTurnRequest, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>"
 
         private val AUTHENTICATION_OVERLOADS = listOf(
             "method:CodexAuthentication#authenticate:" +

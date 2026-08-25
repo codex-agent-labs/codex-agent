@@ -160,6 +160,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
             !isAllowedConversationStateEnvelopeReuse(symbol, projections) &&
             !isAllowedConversationStateLeafReuse(symbol, projections) &&
             !isAllowedAgentInvocationMemberReuse(symbol, projections) &&
+            !isAllowedAgentTurnRequestReuse(symbol, projections) &&
             !isAllowedFlattenedValueReuse(symbol, projections)
         ) {
             errors += "Reused JavaScript/TypeScript public symbol $symbol for capabilities " +
@@ -168,6 +169,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
     }
     errors += invalidConversationControllerFlatteningErrors(provisional)
     errors += invalidConversationStateSnapshotErrors(provisional)
+    errors += invalidAgentTurnRequestErrors(canonical.memberKeys, provisional)
 
     val rejectedKeys = errors.flatMap { error ->
         provisional.mapNotNull { projection -> projection.member.key.takeIf(error::contains) }
@@ -823,6 +825,9 @@ private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.isD047AgentTurnRequestSurfaceMember()) {
+        return agentTurnRequestProjectionCandidates(member, symbols)
+    }
     if (member.isD044HostStateOwner()) return hostStateFlatteningProjectionCandidates(member, symbols)
     if (member.simpleOwner == "AgentConversationState" && member.name in d046ConversationStateMemberNames) {
         return conversationStateSnapshotProjectionCandidates(member, symbols)
@@ -854,6 +859,23 @@ private const val javaScriptAgentCapabilityPromptLabel =
     "function:agentCapabilityPromptLabel:(capability: AgentCapability): string"
 private const val javaScriptAgentInvocationType =
     "type:AgentInvocation:AgentPluginInvocation | AgentSkillInvocation"
+private const val javaScriptAgentTurnRequestType =
+    "type:AgentTurnRequest:{ readonly prompt: string; " +
+        "readonly clientMessageId?: string | null | undefined; " +
+        "readonly model?: string | null | undefined; " +
+        "readonly effort?: string | null | undefined; " +
+        "readonly serviceTier?: string | null | undefined; " +
+        "readonly approvalPreset?: CodexApprovalPreset; " +
+        "readonly capabilities?: ReadonlyArray<AgentCapability>; " +
+        "readonly invocations?: ReadonlyArray<AgentInvocation>; " +
+        "readonly collaborationMode?: AgentCollaborationMode; }"
+private const val javaScriptSendRequest =
+    "method:CodexConversation#sendRequest:" +
+        "(request: AgentTurnRequest, signal?: AbortSignal | null | undefined): Promise<void>"
+private val javaScriptAgentTurnRequestSymbols = listOf(
+    javaScriptAgentTurnRequestType,
+    javaScriptSendRequest,
+).sorted()
 private const val javaScriptAgentMessageCapabilities =
     "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"
 private const val javaScriptApiKeyAuthentication =
@@ -969,6 +991,117 @@ private fun flattenedValueProjectionCandidates(
             requiresConsumerReference = true,
         )
     )
+}
+
+private fun agentTurnRequestProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    val requestMember = member.isExactD047AgentTurnRequestMember()
+    val send = member.isExactD047SendRequest()
+    if ((!requestMember && !send) || !hasExactD047AgentTurnRequestInventory(symbols)) return emptyList()
+    val projectedSymbols = if (send) javaScriptAgentTurnRequestSymbols else listOf(javaScriptAgentTurnRequestType)
+    val scenarios = if (send) {
+        listOf(
+            CrossLanguageBindingScenario.ASYNC_SUCCESS,
+            CrossLanguageBindingScenario.ASYNC_FAILURE,
+            CrossLanguageBindingScenario.CANCELLATION,
+            CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP,
+        )
+    } else {
+        buildList {
+            add(CrossLanguageBindingScenario.VALUE_CONVERSION)
+            if (member.kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR ||
+                member.name in setOf("capabilities", "invocations")
+            ) add(CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING)
+            if (member.kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR ||
+                member.name in setOf("clientMessageId", "model", "effort", "serviceTier")
+            ) add(CrossLanguageBindingScenario.NULLABILITY)
+        }
+    }
+    return listOf(
+        JavaScriptProjectionCandidate(
+            publicSymbols = projectedSymbols,
+            scenarios = scenarios,
+            requiresConsumerReference = true,
+            shareablePublicSymbols = setOf(javaScriptAgentTurnRequestType),
+        ),
+    )
+}
+
+private fun CanonicalJavaScriptMember.isD047AgentTurnRequestSurfaceMember(): Boolean =
+    simpleOwner == "AgentTurnRequest" ||
+        simpleOwner == "CodexConversation" && name == "send" &&
+        parameters.any { "/AgentTurnRequest" in it.type }
+
+private fun CanonicalJavaScriptMember.isExactD047AgentTurnRequestMember(): Boolean {
+    if (owner.substringBeforeLast('/') != canonicalAgentPackage || simpleOwner != "AgentTurnRequest") return false
+    val canonical = { name: String -> "$canonicalAgentPackage/$name!!" }
+    val expectedProperties = mapOf(
+        "prompt" to "kotlin/String!!",
+        "clientMessageId" to "kotlin/String?",
+        "model" to "kotlin/String?",
+        "effort" to "kotlin/String?",
+        "serviceTier" to "kotlin/String?",
+        "approvalPreset" to canonical("AgentApprovalPreset"),
+        "capabilities" to
+            "kotlin.collections/Set<INVARIANT:${canonical("AgentCapability")}>!!",
+        "invocations" to
+            "kotlin.collections/List<INVARIANT:${canonical("AgentInvocation")}>!!",
+        "collaborationMode" to canonical("AgentCollaborationMode"),
+    )
+    return when (kind) {
+        CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+            "AgentTurnRequest",
+            listOf(
+                CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                CanonicalJavaScriptParameter(canonical("AgentApprovalPreset"), true, false),
+                CanonicalJavaScriptParameter(
+                    "kotlin.collections/Set<INVARIANT:${canonical("AgentCapability")}>!!",
+                    true,
+                    false,
+                ),
+                CanonicalJavaScriptParameter(
+                    "kotlin.collections/List<INVARIANT:${canonical("AgentInvocation")}>!!",
+                    true,
+                    false,
+                ),
+                CanonicalJavaScriptParameter(canonical("AgentCollaborationMode"), true, false),
+            ),
+        )
+        CanonicalJavaScriptMemberKind.PROPERTY -> expectedProperties[name]?.let { type ->
+            isExactProperty("AgentTurnRequest", name, type)
+        } == true
+        else -> false
+    }
+}
+
+private fun CanonicalJavaScriptMember.isExactD047SendRequest(): Boolean =
+    owner == "$canonicalAgentPackage/CodexConversation" && isExactFunction(
+        expectedOwner = "CodexConversation",
+        expectedName = "send",
+        expectedReturnType = "kotlin/Unit",
+        expectedSuspend = true,
+        expectedParameters = listOf(
+            CanonicalJavaScriptParameter(
+                "$canonicalAgentPackage/AgentTurnRequest!!",
+                hasDefault = false,
+                isVararg = false,
+            ),
+        ),
+    )
+
+private fun hasExactD047AgentTurnRequestInventory(symbols: List<JavaScriptPublicSymbol>): Boolean {
+    if (!hasExactJavaScriptSymbolInventory(symbols, javaScriptAgentTurnRequestSymbols)) return false
+    val related = symbols.filter { symbol ->
+        symbol.owner == "AgentTurnRequest" || symbol.owner == null && symbol.name == "AgentTurnRequest" ||
+            symbol.owner == "CodexConversation" && symbol.name == "sendRequest"
+    }.map(JavaScriptPublicSymbol::raw).sorted()
+    return related == javaScriptAgentTurnRequestSymbols
 }
 
 private fun hostStateFlatteningProjectionCandidates(
@@ -2338,6 +2471,55 @@ private fun invalidConversationStateSnapshotErrors(
     return if (exact) emptyList() else listOf(
         "Incomplete JavaScript/TypeScript conversation state snapshot for capabilities " +
             related.map { it.member.key }.sorted(),
+    )
+}
+
+private fun isAllowedAgentTurnRequestReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean {
+    if (symbol != javaScriptAgentTurnRequestType || projections.size != 11) return false
+    val requestMembers = projections.filter { it.member.isExactD047AgentTurnRequestMember() }
+    val send = projections.singleOrNull { it.member.isExactD047SendRequest() } ?: return false
+    return requestMembers.size == 10 &&
+        requestMembers.map { it.member.key }.distinct().size == 10 &&
+        requestMembers.all {
+            it.publicSymbols == listOf(javaScriptAgentTurnRequestType) &&
+                it.shareablePublicSymbols == setOf(javaScriptAgentTurnRequestType)
+        } &&
+        send.publicSymbols == javaScriptAgentTurnRequestSymbols &&
+        send.shareablePublicSymbols == setOf(javaScriptAgentTurnRequestType)
+}
+
+private fun invalidAgentTurnRequestErrors(
+    canonicalKeys: List<String>,
+    projections: List<JavaScriptProjection>,
+): List<String> {
+    val canonicalMembers = canonicalKeys.map(::parseCanonicalJavaScriptMember)
+        .filter(CanonicalJavaScriptMember::isD047AgentTurnRequestSurfaceMember)
+    val related = projections.filter { projection ->
+        projection.publicSymbols.any(javaScriptAgentTurnRequestSymbols::contains)
+    }
+    if (canonicalMembers.isEmpty() && related.isEmpty()) return emptyList()
+    val requestMembers = canonicalMembers.filter(CanonicalJavaScriptMember::isExactD047AgentTurnRequestMember)
+    val sendMembers = canonicalMembers.filter(CanonicalJavaScriptMember::isExactD047SendRequest)
+    val exact = canonicalMembers.size == 11 && requestMembers.size == 10 && sendMembers.size == 1 &&
+        related.size == 11 && related.map { it.member.key }.distinct().size == 11 &&
+        related.count { projection ->
+            projection.member.isExactD047AgentTurnRequestMember() &&
+                projection.publicSymbols == listOf(javaScriptAgentTurnRequestType) &&
+                projection.shareablePublicSymbols == setOf(javaScriptAgentTurnRequestType)
+        } == 10 &&
+        related.count { projection ->
+            projection.member.isExactD047SendRequest() &&
+                projection.publicSymbols == javaScriptAgentTurnRequestSymbols &&
+                projection.shareablePublicSymbols == setOf(javaScriptAgentTurnRequestType)
+        } == 1
+    return if (exact) emptyList() else listOf(
+        "Incomplete JavaScript/TypeScript AgentTurnRequest family for capabilities " +
+            (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
+                .distinct()
+                .sorted(),
     )
 }
 

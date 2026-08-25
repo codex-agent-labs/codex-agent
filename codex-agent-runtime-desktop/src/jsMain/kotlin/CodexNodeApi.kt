@@ -41,6 +41,7 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentSkillCatalog as CoreSki
 import io.github.codex_agent_labs.codexmobile.agent.AgentSkillChunk as CoreSkillChunk
 import io.github.codex_agent_labs.codexmobile.agent.AgentSkillScope as CoreAgentSkillScope
 import io.github.codex_agent_labs.codexmobile.agent.AgentTurnProgress as CoreTurnProgress
+import io.github.codex_agent_labs.codexmobile.agent.AgentTurnRequest as CoreTurnRequest
 import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication as CoreAuthentication
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthenticationMethod as CoreAuthenticationMethod
@@ -81,6 +82,20 @@ public external interface AbortSignal {
     public val aborted: Boolean
     public fun addEventListener(type: String, listener: () -> Unit)
     public fun removeEventListener(type: String, listener: () -> Unit)
+}
+
+/** Structural turn request accepted by [CodexConversation.sendRequest]. */
+@JsExport
+public external interface AgentTurnRequest {
+    public val prompt: String
+    public val clientMessageId: String?
+    public val model: String?
+    public val effort: String?
+    public val serviceTier: String?
+    public val approvalPreset: String?
+    public val capabilities: Array<String>?
+    public val invocations: Array<AgentInvocation>?
+    public val collaborationMode: String?
 }
 
 /** Immutable form option value. */
@@ -1316,6 +1331,9 @@ public class CodexConversation internal constructor(
     public fun send(prompt: String, signal: AbortSignal? = null): Promise<Unit> =
         host.operationScope().codexUnitPromise(signal) { core.send(prompt) }
 
+    public fun sendRequest(request: AgentTurnRequest, signal: AbortSignal? = null): Promise<Unit> =
+        host.operationScope().codexUnitPromise(signal) { core.send(request.toCoreTurnRequest()) }
+
     public fun runShellCommand(command: String, signal: AbortSignal? = null): Promise<Unit> =
         host.operationScope().codexUnitPromise(signal) { core.runShellCommand(command) }
 
@@ -1676,6 +1694,53 @@ private fun AgentConversationSummary.detachedCopy(): AgentConversationSummary = 
     title = title,
     updatedAtEpochSeconds = updatedAtEpochSeconds,
 )
+
+private fun AgentTurnRequest.toCoreTurnRequest(): CoreTurnRequest {
+    val request: Any? = this
+    require(request != null && jsTypeOf(request) == "object") { "request must be an object" }
+
+    val promptValue = prompt
+    val clientMessageIdValue = clientMessageId
+    val modelValue = model
+    val effortValue = effort
+    val serviceTierValue = serviceTier
+    val approvalPresetValue = approvalPreset
+    val capabilitiesValue = capabilities
+    val invocationsValue = invocations
+    val collaborationModeValue = collaborationMode
+
+    val coreCapabilities = if (capabilitiesValue == null) {
+        emptySet()
+    } else {
+        requireJavaScriptArray(capabilitiesValue, "capabilities")
+        List(capabilitiesValue.size) { index ->
+            requireOwnJavaScriptArrayIndex(capabilitiesValue, index, "capabilities")
+            capabilitiesValue[index].toAgentCapability("capabilities[$index]")
+        }.toSet()
+    }
+    val coreInvocations = if (invocationsValue == null) {
+        emptyList()
+    } else {
+        requireJavaScriptArray(invocationsValue, "invocations")
+        List(invocationsValue.size) { index ->
+            requireOwnJavaScriptArrayIndex(invocationsValue, index, "invocations")
+            invocationsValue[index].toCoreInvocation(index)
+        }
+    }
+
+    return CoreTurnRequest(
+        prompt = promptValue.requireJavaScriptString("prompt"),
+        clientMessageId = clientMessageIdValue.requireJavaScriptNullableString("clientMessageId"),
+        model = modelValue.requireJavaScriptNullableString("model"),
+        effort = effortValue.requireJavaScriptNullableString("effort"),
+        serviceTier = serviceTierValue.requireJavaScriptNullableString("serviceTier"),
+        approvalPreset = approvalPresetValue.requireJavaScriptNullableString("approvalPreset").toApprovalPreset(),
+        capabilities = coreCapabilities,
+        invocations = coreInvocations,
+        collaborationMode = collaborationModeValue.requireJavaScriptNullableString("collaborationMode")
+            ?.toCoreCollaborationMode() ?: CoreCollaborationMode.DEFAULT,
+    )
+}
 
 private fun CodexMessage.detachedCopy(): CodexMessage {
     return CoreMessage(

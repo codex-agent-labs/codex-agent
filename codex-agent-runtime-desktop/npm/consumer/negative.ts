@@ -35,7 +35,9 @@ import {
 import type {
   AgentCapability,
   AgentInvocation,
+  AgentTurnRequest,
   CodexAgent,
+  CodexConversation,
   CodexConversationState,
   CodexHostState,
   CodexMessage,
@@ -403,6 +405,68 @@ declare const conversationState: CodexConversationState;
 conversationState.conversation = null;
 // @ts-expect-error Conversation-state progress is readonly.
 conversationState.turnProgress = null;
+
+const turnRequest: AgentTurnRequest = {
+  prompt: "review",
+  clientMessageId: null,
+  model: null,
+  effort: null,
+  serviceTier: null,
+  approvalPreset: "auto_review",
+  capabilities: ["web_search"],
+  invocations: [skillInvocation, pluginInvocation],
+  collaborationMode: "plan",
+};
+// @ts-expect-error Turn requests require a prompt.
+const missingTurnPrompt: AgentTurnRequest = {};
+// @ts-expect-error Turn-request prompts are strings.
+const numericTurnPrompt: AgentTurnRequest = { prompt: 1 };
+// @ts-expect-error Client message IDs are strings when present.
+const numericClientMessageId: AgentTurnRequest = { prompt: "review", clientMessageId: 1 };
+// @ts-expect-error Model IDs are strings when present.
+const numericTurnModel: AgentTurnRequest = { prompt: "review", model: 1 };
+// @ts-expect-error Effort IDs are strings when present.
+const numericTurnEffort: AgentTurnRequest = { prompt: "review", effort: 1 };
+// @ts-expect-error Service-tier IDs are strings when present.
+const numericTurnServiceTier: AgentTurnRequest = { prompt: "review", serviceTier: 1 };
+// @ts-expect-error Approval presets remain a closed typed domain.
+const rawTurnApproval: AgentTurnRequest = { prompt: "review", approvalPreset: "AUTO_REVIEW" };
+// @ts-expect-error Capability inputs are readonly arrays, not sets.
+const setTurnCapabilities: AgentTurnRequest = { prompt: "review", capabilities: new Set(["web_search"]) };
+// @ts-expect-error Capabilities remain a closed typed domain.
+const rawTurnCapability: AgentTurnRequest = { prompt: "review", capabilities: ["WEB_SEARCH"] };
+// @ts-expect-error Invocation inputs are readonly arrays, not sets.
+const setTurnInvocations: AgentTurnRequest = { prompt: "review", invocations: new Set([skillInvocation]) };
+// @ts-expect-error Invocation inputs require a projected invocation shape.
+const invalidTurnInvocation: AgentTurnRequest = { prompt: "review", invocations: [{}] };
+// @ts-expect-error Collaboration modes remain a closed typed domain.
+const rawCollaborationMode: AgentTurnRequest = { prompt: "review", collaborationMode: "PLAN" };
+// @ts-expect-error Turn-request fields are readonly.
+turnRequest.prompt = "changed";
+// @ts-expect-error Turn-request capability collections are readonly.
+turnRequest.capabilities?.push("web_search");
+// @ts-expect-error Turn-request invocation collections are readonly.
+turnRequest.invocations?.push(skillInvocation);
+declare const typedConversation: CodexConversation;
+// @ts-expect-error Structured sends require a turn-request object.
+typedConversation.sendRequest("review");
+// @ts-expect-error Structured-send signals must be AbortSignal values.
+typedConversation.sendRequest(turnRequest, {});
+
+void [
+  missingTurnPrompt,
+  numericTurnPrompt,
+  numericClientMessageId,
+  numericTurnModel,
+  numericTurnEffort,
+  numericTurnServiceTier,
+  rawTurnApproval,
+  setTurnCapabilities,
+  rawTurnCapability,
+  setTurnInvocations,
+  invalidTurnInvocation,
+  rawCollaborationMode,
+];
 
 async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   // @ts-expect-error Connector controllers are owned by the Agent.

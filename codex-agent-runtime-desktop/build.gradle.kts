@@ -173,6 +173,32 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
             "export declare function codexApprovalPresetDisplayName(preset: string): string;"
         val reviewedApprovalPresetDisplayNameDeclaration =
             "export declare function codexApprovalPresetDisplayName(preset: CodexApprovalPreset): string;"
+        val rawAgentTurnRequestDeclaration =
+            """export declare interface AgentTurnRequest {
+    readonly prompt: string;
+    readonly clientMessageId?: Nullable<string>;
+    readonly model?: Nullable<string>;
+    readonly effort?: Nullable<string>;
+    readonly serviceTier?: Nullable<string>;
+    readonly approvalPreset?: Nullable<string>;
+    readonly capabilities?: Nullable<Array<string>>;
+    readonly invocations?: Nullable<Array<AgentInvocation>>;
+    readonly collaborationMode?: Nullable<string>;
+}"""
+        val reviewedAgentTurnRequestDeclaration =
+            """export type AgentTurnRequest = {
+    readonly prompt: string;
+    readonly clientMessageId?: Nullable<string>;
+    readonly model?: Nullable<string>;
+    readonly effort?: Nullable<string>;
+    readonly serviceTier?: Nullable<string>;
+    readonly approvalPreset?: CodexApprovalPreset;
+    readonly capabilities?: ReadonlyArray<AgentCapability>;
+    readonly invocations?: ReadonlyArray<AgentInvocation>;
+    readonly collaborationMode?: AgentCollaborationMode;
+};"""
+        val expectedSendRequestDeclaration =
+            "    sendRequest(request: AgentTurnRequest, signal?: Nullable<AbortSignal>): Promise<void>;"
         val rawAgentConnectorDeclaration =
             """export declare class AgentConnector {
     constructor(id: string, name: string, description?: string, installUrl?: Nullable<string>, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: Array<string>);
@@ -434,6 +460,12 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.lineSequence().count { it == rawApprovalPresetDisplayNameDeclaration } == 1) {
             "Unexpected codexApprovalPresetDisplayName TypeScript declaration"
         }
+        check(actual.split(rawAgentTurnRequestDeclaration).size == 2) {
+            "Unexpected AgentTurnRequest TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == expectedSendRequestDeclaration } == 1) {
+            "Unexpected CodexConversation.sendRequest TypeScript declaration"
+        }
         check(actual.split(rawAgentConnectorDeclaration).size == 2) {
             "Unexpected AgentConnector TypeScript declaration"
         }
@@ -519,6 +551,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawApprovalPresetDisplayNameDeclaration,
             reviewedApprovalPresetDisplayNameDeclaration,
+        ).replace(
+            rawAgentTurnRequestDeclaration,
+            reviewedAgentTurnRequestDeclaration,
         ).replace(
             rawAgentConnectorDeclaration,
             reviewedAgentConnectorDeclaration,
