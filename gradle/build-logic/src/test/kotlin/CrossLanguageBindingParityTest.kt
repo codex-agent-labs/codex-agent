@@ -54,6 +54,92 @@ class CrossLanguageBindingParityTest {
     }
 
     @Test
+    fun `one future addition advances through coverage and every language independently`() {
+        val capabilities = listOf(CAPABILITY, FUTURE_CAPABILITY).sorted()
+        val uncovered = passingInput().copy(
+            capabilityKeys = capabilities,
+            canonicalCoverageKeys = listOf(CAPABILITY),
+        )
+        val blocked = evaluateCrossLanguageBindingParity(uncovered)
+
+        assertTrue(blocked.obligations.isEmpty())
+        assertEquals(listOf("Missing canonical coverage for $FUTURE_CAPABILITY"), blocked.errors)
+
+        val activeForeignLanguages = activeLanguages(CrossLanguageBindingPhase.M7_5)
+            .filterNot { it == CrossLanguageBinding.KOTLIN }
+        val phasedLanguages = listOf(
+            CrossLanguageBindingPhase.M8 to CrossLanguageBinding.C_ABI,
+            CrossLanguageBindingPhase.M9_PYTHON to CrossLanguageBinding.PYTHON,
+            CrossLanguageBindingPhase.M9_CSHARP to CrossLanguageBinding.CSHARP,
+            CrossLanguageBindingPhase.M9_RUST to CrossLanguageBinding.RUST,
+            CrossLanguageBindingPhase.M9_CPP to CrossLanguageBinding.CPP,
+            CrossLanguageBindingPhase.M9_DART to CrossLanguageBinding.DART,
+        )
+        val futureLanguages = phasedLanguages.mapTo(mutableSetOf()) { it.second }
+        var projectedLanguages = setOf(CrossLanguageBinding.KOTLIN)
+        activeForeignLanguages.forEachIndexed { index, language ->
+            val before = evaluateCrossLanguageBindingParity(
+                futureProjectionInput(passingInput(), capabilities, projectedLanguages),
+            )
+            assertEquals(
+                projectedLanguages,
+                before.futureObligations(CrossLanguageObligationStatus.SATISFIED),
+            )
+            assertEquals(
+                activeForeignLanguages.drop(index).toSet(),
+                before.futureObligations(CrossLanguageObligationStatus.MISSING),
+            )
+            assertEquals(
+                futureLanguages,
+                before.futureObligations(CrossLanguageObligationStatus.PENDING),
+            )
+
+            projectedLanguages += language
+        }
+
+        val m7_5 = verifyCrossLanguageBindingParity(
+            futureProjectionInput(passingInput(), capabilities, projectedLanguages),
+        )
+        assertEquals(
+            activeLanguages(CrossLanguageBindingPhase.M7_5).toSet(),
+            m7_5.futureObligations(CrossLanguageObligationStatus.SATISFIED),
+        )
+        assertEquals(futureLanguages, m7_5.futureObligations(CrossLanguageObligationStatus.PENDING))
+
+        phasedLanguages.forEachIndexed { index, (phase, language) ->
+            val before = evaluateCrossLanguageBindingParity(
+                futureProjectionInput(passingInput(phase), capabilities, projectedLanguages),
+            )
+            val laterLanguages = phasedLanguages.drop(index + 1).mapTo(mutableSetOf()) { it.second }
+            assertEquals(projectedLanguages, before.futureObligations(CrossLanguageObligationStatus.SATISFIED))
+            assertEquals(setOf(language), before.futureObligations(CrossLanguageObligationStatus.MISSING))
+            assertEquals(laterLanguages, before.futureObligations(CrossLanguageObligationStatus.PENDING))
+            assertEquals(
+                listOf("Missing active binding projection ${language.id}:$FUTURE_CAPABILITY"),
+                before.errors,
+            )
+
+            projectedLanguages += language
+            val after = verifyCrossLanguageBindingParity(
+                futureProjectionInput(passingInput(phase), capabilities, projectedLanguages),
+            )
+            assertEquals(projectedLanguages, after.futureObligations(CrossLanguageObligationStatus.SATISFIED))
+            assertTrue(after.futureObligations(CrossLanguageObligationStatus.MISSING).isEmpty())
+            assertEquals(laterLanguages, after.futureObligations(CrossLanguageObligationStatus.PENDING))
+        }
+
+        val m11 = verifyCrossLanguageBindingParity(
+            futureProjectionInput(passingInput(CrossLanguageBindingPhase.M11), capabilities, projectedLanguages),
+        )
+        assertEquals(
+            CrossLanguageBinding.entries.toSet(),
+            m11.futureObligations(CrossLanguageObligationStatus.SATISFIED),
+        )
+        assertTrue(m11.futureObligations(CrossLanguageObligationStatus.MISSING).isEmpty())
+        assertTrue(m11.futureObligations(CrossLanguageObligationStatus.PENDING).isEmpty())
+    }
+
+    @Test
     fun `invalid or stale coverage also returns no obligations`() {
         val inputs = listOf(
             passingInput().copy(canonicalCoverageKeys = listOf(CAPABILITY, "removed#member")),
@@ -300,6 +386,37 @@ class CrossLanguageBindingParityTest {
         assertTrue(report.errors.any { expected in it }, report.errors.joinToString("\n"))
     }
 
+    private fun futureProjectionInput(
+        input: CrossLanguageBindingParityInput,
+        capabilities: List<String>,
+        projectedLanguages: Set<CrossLanguageBinding>,
+    ): CrossLanguageBindingParityInput = input.copy(
+        capabilityKeys = capabilities,
+        canonicalCoverageKeys = capabilities,
+        projectionClaims = input.projectionClaims + projectedLanguages
+            .filterNot { it == CrossLanguageBinding.KOTLIN }
+            .map { language ->
+                claim(language).copy(
+                    capabilityKey = FUTURE_CAPABILITY,
+                    publicSymbols = listOf(futureSymbol(language)),
+                )
+            },
+        publicSymbols = input.publicSymbols.mapValues { (language, symbols) ->
+            if (language !in projectedLanguages) {
+                symbols
+            } else {
+                (symbols + if (language == CrossLanguageBinding.KOTLIN) FUTURE_CAPABILITY else futureSymbol(language))
+                    .sorted()
+            }
+        },
+    )
+
+    private fun CrossLanguageBindingParityReport.futureObligations(
+        status: CrossLanguageObligationStatus,
+    ): Set<CrossLanguageBinding> = obligations
+        .filter { it.capabilityKey == FUTURE_CAPABILITY && it.status == status }
+        .mapTo(mutableSetOf(), CrossLanguageBindingObligation::language)
+
     private companion object {
         const val CAPABILITY =
             "io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication|property|isAuthenticated|" +
@@ -373,5 +490,7 @@ class CrossLanguageBindingParityTest {
         }
 
         fun testId(language: CrossLanguageBinding): String = "${language.id}-binding-test"
+
+        fun futureSymbol(language: CrossLanguageBinding): String = "${symbol(language)}#future"
     }
 }

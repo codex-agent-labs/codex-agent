@@ -31,15 +31,39 @@ class CrossLanguageBindingTasksTest {
                 }
                 val coverageGate = tasks.register("verifyCrossLanguageApiCoverage") {
                     dependsOn(preflight, failingPrerequisite)
+                    doLast {
+                        coverage.get().asFile.apply {
+                            parentFile.mkdirs()
+                            writeText("unexpected coverage success")
+                        }
+                    }
                 }
                 val kotlinGate = tasks.register("verifyKotlinBindingParity") {
                     dependsOn(coverageGate)
+                    doLast {
+                        receipt.get().asFile.apply {
+                            parentFile.mkdirs()
+                            writeText("unexpected Kotlin success")
+                        }
+                    }
                 }
                 val javaGate = tasks.register("verifyJavaBindingParity") {
                     dependsOn(coverageGate)
+                    doLast {
+                        javaReceipt.get().asFile.apply {
+                            parentFile.mkdirs()
+                            writeText("unexpected Java success")
+                        }
+                    }
                 }
                 tasks.register("auditCrossLanguageBindingParity") {
                     dependsOn(kotlinGate, javaGate)
+                    doLast {
+                        audit.get().asFile.apply {
+                            parentFile.mkdirs()
+                            writeText("unexpected audit success")
+                        }
+                    }
                 }
             """.trimIndent())
             val coverage = root.staleOutput("reports/cross-language-api/canonical-coverage.json")
