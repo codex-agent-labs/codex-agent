@@ -153,8 +153,48 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
             "export declare function codexApprovalPresetDisplayName(preset: string): string;"
         val reviewedApprovalPresetDisplayNameDeclaration =
             "export declare function codexApprovalPresetDisplayName(preset: CodexApprovalPreset): string;"
+        val rawAgentConnectorDeclaration =
+            """export declare class AgentConnector {
+    constructor(id: string, name: string, description?: string, installUrl?: Nullable<string>, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: Array<string>);
+    get id(): string;
+    get name(): string;
+    get description(): string;
+    get installUrl(): Nullable<string>;
+    get isAccessible(): boolean;
+    get isEnabled(): boolean;
+    get pluginNames(): Array<string>;
+}"""
+        val reviewedAgentConnectorDeclaration =
+            """export declare class AgentConnector {
+    constructor(id: string, name: string, description?: string, installUrl?: Nullable<string>, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: ReadonlyArray<string>);
+    get id(): string;
+    get name(): string;
+    get description(): string;
+    get installUrl(): Nullable<string>;
+    get isAccessible(): boolean;
+    get isEnabled(): boolean;
+    get pluginNames(): ReadonlyArray<string>;
+}"""
+        val rawCodexConnectorsDeclaration =
+            """export declare class CodexConnectors {
+    private constructor();
+    get isAvailable(): boolean;
+    list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<Array<AgentConnector>>;
+}"""
+        val reviewedCodexConnectorsDeclaration =
+            """export declare class CodexConnectors {
+    private constructor();
+    get isAvailable(): boolean;
+    list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConnector>>;
+}"""
         check(actual.lineSequence().count { it == rawApprovalPresetDisplayNameDeclaration } == 1) {
             "Unexpected codexApprovalPresetDisplayName TypeScript declaration"
+        }
+        check(actual.split(rawAgentConnectorDeclaration).size == 2) {
+            "Unexpected AgentConnector TypeScript declaration"
+        }
+        check(actual.split(rawCodexConnectorsDeclaration).size == 2) {
+            "Unexpected CodexConnectors TypeScript declaration"
         }
         actual = actual.replace(
             "type Nullable<T> = T | null | undefined\n",
@@ -166,6 +206,12 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawApprovalPresetDisplayNameDeclaration,
             reviewedApprovalPresetDisplayNameDeclaration,
+        ).replace(
+            rawAgentConnectorDeclaration,
+            reviewedAgentConnectorDeclaration,
+        ).replace(
+            rawCodexConnectorsDeclaration,
+            reviewedCodexConnectorsDeclaration,
         ).replace(
             """export declare class AgentFormTextListValue {
     constructor(value: Array<string>);

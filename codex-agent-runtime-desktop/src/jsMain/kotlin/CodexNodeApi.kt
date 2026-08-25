@@ -2,6 +2,7 @@
 
 import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
 import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as CoreAuthenticationState
+import io.github.codex_agent_labs.codexmobile.agent.AgentConnector as CoreConnector
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSettings
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState as CoreConversationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationStatus
@@ -29,6 +30,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication as CoreAuthentication
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthenticationMethod as CoreAuthenticationMethod
 import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo
+import io.github.codex_agent_labs.codexmobile.agent.CodexConnectors as CoreConnectors
 import io.github.codex_agent_labs.codexmobile.agent.CodexConversation as CoreConversation
 import io.github.codex_agent_labs.codexmobile.agent.CodexFailure as CoreFailure
 import io.github.codex_agent_labs.codexmobile.agent.CodexHost as CoreHost
@@ -324,6 +326,51 @@ public class AgentHookActivity public constructor(
         this.statusMessage = core.statusMessage
         this.details = core.details.toTypedArray()
         freezeSnapshot(this.details)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable connector metadata value. */
+@JsExport
+public class AgentConnector public constructor(
+    id: String,
+    name: String,
+    description: String = "",
+    installUrl: String? = null,
+    isAccessible: Boolean = false,
+    isEnabled: Boolean = true,
+    pluginNames: Array<String> = emptyArray(),
+) {
+    public val id: String
+    public val name: String
+    public val description: String
+    public val installUrl: String?
+    public val isAccessible: Boolean
+    public val isEnabled: Boolean
+    public val pluginNames: Array<String>
+
+    init {
+        requireJavaScriptArray(pluginNames, "pluginNames")
+        val core = CoreConnector(
+            id = id.requireJavaScriptString("id"),
+            name = name.requireJavaScriptString("name"),
+            description = description.requireJavaScriptString("description"),
+            installUrl = installUrl.requireJavaScriptNullableString("installUrl"),
+            isAccessible = isAccessible.requireJavaScriptBoolean("isAccessible"),
+            isEnabled = isEnabled.requireJavaScriptBoolean("isEnabled"),
+            pluginNames = List(pluginNames.size) { index ->
+                requireOwnJavaScriptArrayIndex(pluginNames, index, "pluginNames")
+                pluginNames[index].requireJavaScriptString("pluginNames[$index]")
+            },
+        )
+        this.id = core.id
+        this.name = core.name
+        this.description = core.description
+        this.installUrl = core.installUrl
+        this.isAccessible = core.isAccessible
+        this.isEnabled = core.isEnabled
+        this.pluginNames = core.pluginNames.toTypedArray()
+        freezeSnapshot(this.pluginNames)
         freezeSnapshot(this)
     }
 }
@@ -633,6 +680,8 @@ public class CodexAgent internal constructor(
 ) {
     private val authenticationProjection: CodexAuthentication =
         CodexAuthentication(host, core, core.authentication, jsApiToken)
+    private val connectorsProjection: CodexConnectors =
+        CodexConnectors(host, core.connectors, jsApiToken)
     private var cachedCoreConversation: CoreConversation? = null
     private var cachedConversation: CodexConversation? = null
 
@@ -646,6 +695,9 @@ public class CodexAgent internal constructor(
 
     public val authentication: CodexAuthentication
         get() = authenticationProjection
+
+    public val connectors: CodexConnectors
+        get() = connectorsProjection
 
     public val activeConversation: CodexConversation?
         get() = if (host.owns(core)) core.conversations.active.value?.let(::wrapConversation) else null
@@ -703,6 +755,33 @@ public class CodexAgent internal constructor(
             cachedConversation = CodexConversation(host, conversation, jsApiToken)
         }
         return checkNotNull(cachedConversation)
+    }
+}
+
+/** Agent-owned connector catalog. */
+@JsExport
+public class CodexConnectors internal constructor(
+    private val host: CodexHost,
+    private val core: CoreConnectors,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex connector catalogs are created by an Agent" }
+        hideBackingFields(this)
+    }
+
+    public val isAvailable: Boolean
+        get() = core.isAvailable
+
+    public fun list(
+        forceReload: Boolean = false,
+        signal: AbortSignal? = null,
+    ): Promise<Array<AgentConnector>> = host.operationScope().codexPromise(signal) {
+        val connectors = core.list(forceReload.requireJavaScriptBoolean("forceReload"))
+            .map(CoreConnector::project)
+            .toTypedArray()
+        freezeSnapshot(connectors)
+        connectors
     }
 }
 
@@ -906,6 +985,16 @@ private fun requireOwnJavaScriptArrayIndex(value: Any?, index: Int, name: String
 }
 
 private fun CoreWorkspace.project(): CodexWorkspace = CodexWorkspace(path, displayName)
+
+private fun CoreConnector.project(): AgentConnector = AgentConnector(
+    id = id,
+    name = name,
+    description = description,
+    installUrl = installUrl,
+    isAccessible = isAccessible,
+    isEnabled = isEnabled,
+    pluginNames = pluginNames.toTypedArray(),
+)
 
 private fun CoreFailure.project(): CodexFailure = CodexFailure(code, message, isRecoverable)
 

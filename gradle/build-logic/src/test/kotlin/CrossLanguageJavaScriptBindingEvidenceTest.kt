@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 189-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 202-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(189, evidence.packedApi.publicSymbols.size)
+        assertEquals(202, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -396,6 +396,175 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             evidence.projectionClaims.single().sharedScenarios)
         assertTrue(derive(listOf(key), listOf("class:Value", "constructor:Value#(value: number)").sorted())
             .missingCapabilityKeys.contains(key))
+    }
+
+    @Test
+    fun `connector family projects eleven generic capabilities and rejects drift`() {
+        val constructor = canonicalConstructor(
+            "AgentConnector",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/String?",
+                "kotlin/Boolean!!",
+                "kotlin/Boolean!!",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+            ),
+            defaultParameterIndices = setOf(2, 3, 4, 5, 6),
+        )
+        val description = canonicalProperty("AgentConnector", "description", "kotlin/String!!")
+        val id = canonicalProperty("AgentConnector", "id", "kotlin/String!!")
+        val installUrl = canonicalProperty("AgentConnector", "installUrl", "kotlin/String?")
+        val isAccessible = canonicalProperty("AgentConnector", "isAccessible", "kotlin/Boolean!!")
+        val isEnabled = canonicalProperty("AgentConnector", "isEnabled", "kotlin/Boolean!!")
+        val name = canonicalProperty("AgentConnector", "name", "kotlin/String!!")
+        val pluginNames = canonicalProperty(
+            "AgentConnector",
+            "pluginNames",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        )
+        val agentConnectors = canonicalProperty("CodexAgent", "connectors", "example/CodexConnectors!!")
+        val isAvailable = canonicalProperty("CodexConnectors", "isAvailable", "kotlin/Boolean!!")
+        val list = canonicalFunction(
+            "CodexConnectors",
+            "list",
+            returnType = "kotlin.collections/List<INVARIANT:example/AgentConnector!!>!!",
+            suspendFunction = true,
+            parameters = listOf("kotlin/Boolean!!"),
+            defaultParameterIndices = setOf(0),
+        )
+        val keys = listOf(
+            constructor,
+            description,
+            id,
+            installUrl,
+            isAccessible,
+            isEnabled,
+            name,
+            pluginNames,
+            agentConnectors,
+            isAvailable,
+            list,
+        ).sorted()
+        val constructorSymbol =
+            "constructor:AgentConnector#(id: string, name: string, description?: string, " +
+                "installUrl?: string | null | undefined, isAccessible?: boolean, isEnabled?: boolean, " +
+                "pluginNames?: ReadonlyArray<string>)"
+        val installUrlSymbol = "getter:AgentConnector#installUrl:string | null | undefined"
+        val pluginNamesSymbol = "getter:AgentConnector#pluginNames:ReadonlyArray<string>"
+        val listSymbol =
+            "method:CodexConnectors#list:(forceReload?: boolean, " +
+                "signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentConnector>>"
+        val symbols = listOf(
+            "class:AgentConnector",
+            "class:CodexAgent",
+            "class:CodexConnectors",
+            constructorSymbol,
+            "getter:AgentConnector#description:string",
+            "getter:AgentConnector#id:string",
+            installUrlSymbol,
+            "getter:AgentConnector#isAccessible:boolean",
+            "getter:AgentConnector#isEnabled:boolean",
+            "getter:AgentConnector#name:string",
+            pluginNamesSymbol,
+            "getter:CodexAgent#connectors:CodexConnectors",
+            "getter:CodexConnectors#isAvailable:boolean",
+            listSymbol,
+        ).sorted()
+        val references = symbols - "class:CodexAgent"
+        val evidence = derive(keys, symbols, references = references)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(11, evidence.projectionClaims.size)
+        assertEquals(14, symbols.size) // Thirteen new symbols plus the existing CodexAgent owner class.
+        assertEquals(13, references.size)
+        assertEquals(references, evidence.packedApi.referencedSymbols)
+        assertEquals(
+            mapOf(
+                constructor to listOf(constructorSymbol),
+                description to listOf("getter:AgentConnector#description:string"),
+                id to listOf("getter:AgentConnector#id:string"),
+                installUrl to listOf(installUrlSymbol),
+                isAccessible to listOf("getter:AgentConnector#isAccessible:boolean"),
+                isEnabled to listOf("getter:AgentConnector#isEnabled:boolean"),
+                name to listOf("getter:AgentConnector#name:string"),
+                pluginNames to listOf(pluginNamesSymbol),
+                agentConnectors to listOf("getter:CodexAgent#connectors:CodexConnectors"),
+                isAvailable to listOf("getter:CodexConnectors#isAvailable:boolean"),
+                list to listOf(listSymbol),
+            ),
+            evidence.projectionClaims.associate { it.capabilityKey to it.publicSymbols },
+        )
+        assertEquals(
+            setOf(CrossLanguageBindingScenario.ASYNC_SUCCESS, CrossLanguageBindingScenario.ASYNC_FAILURE),
+            evidence.projectionClaims.single { it.capabilityKey == list }.sharedScenarios.toSet(),
+        )
+        assertTrue(evidence.projectionClaims.filterNot { it.capabilityKey == list }.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
+
+        listOf(
+            constructorSymbol.replace("description?: string", "description: string"),
+            constructorSymbol.replace(
+                "installUrl?: string | null | undefined",
+                "installUrl?: string",
+            ),
+            constructorSymbol.replace("ReadonlyArray<string>", "Array<string>"),
+        ).forEach { drifted ->
+            val driftedSymbols = symbols.map { if (it == constructorSymbol) drifted else it }.sorted()
+            val driftedReferences = references.map { if (it == constructorSymbol) drifted else it }.sorted()
+            val drift = derive(keys, driftedSymbols, references = driftedReferences)
+            assertTrue(constructor in drift.missingCapabilityKeys, "Accepted constructor drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == constructor })
+        }
+        listOf(
+            installUrl to installUrlSymbol.replace("string | null | undefined", "string"),
+            pluginNames to pluginNamesSymbol.replace("ReadonlyArray<string>", "Array<string>"),
+        ).forEach { (key, drifted) ->
+            val exact = if (key == installUrl) installUrlSymbol else pluginNamesSymbol
+            val driftedSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val driftedReferences = references.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(keys, driftedSymbols, references = driftedReferences)
+            assertTrue(key in drift.missingCapabilityKeys, "Accepted property drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+        listOf(
+            listSymbol.replace("forceReload?: boolean", "forceReload: boolean"),
+            listSymbol.replace("AbortSignal | null | undefined", "string"),
+            listSymbol.replace(
+                "Promise<ReadonlyArray<AgentConnector>>",
+                "Promise<Array<AgentConnector>>",
+            ),
+        ).forEach { drifted ->
+            val driftedSymbols = symbols.map { if (it == listSymbol) drifted else it }.sorted()
+            val driftedReferences = references.map { if (it == listSymbol) drifted else it }.sorted()
+            val drift = derive(keys, driftedSymbols, references = driftedReferences)
+            assertTrue(list in drift.missingCapabilityKeys, "Accepted list drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == list })
+        }
+
+        listOf(constructorSymbol to constructor, listSymbol to list).forEach { (symbol, key) ->
+            val unreferenced = derive(keys, symbols, references = references - symbol)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && key in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        val listOverload = listSymbol.replace("forceReload?: boolean", "reload?: boolean")
+        val ambiguous = derive(
+            keys,
+            (symbols + listOverload).sorted(),
+            references = (references + listOverload).sorted(),
+        )
+        assertTrue(ambiguous.errors.any { "Ambiguous" in it && list in it })
+        assertTrue(ambiguous.projectionClaims.none { it.capabilityKey == list })
+
+        val future = canonicalProperty("CodexConnectors", "future", "kotlin/String!!")
+        val futureEvidence = derive(keys + future, symbols, references = references)
+        assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
+        assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey == future })
     }
 
     @Test
@@ -2372,7 +2541,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(189, it.size) }
+        .also { assertEquals(202, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -2444,6 +2613,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         private fun digest(character: Char): String = character.toString().repeat(64)
 
         private val CURRENT_PUBLIC_SYMBOLS = """
+class:AgentConnector
 class:AgentElicitationValidation
 class:AgentElicitationValidationIssue
 class:AgentFormBooleanValue
@@ -2460,6 +2630,7 @@ class:AgentPlanStep
 class:CodexAgent
 class:CodexAuthentication
 class:CodexAuthenticationState
+class:CodexConnectors
 class:CodexConversation
 class:CodexConversationState
 class:CodexError:extends=Error
@@ -2470,6 +2641,7 @@ class:CodexMessage
 class:CodexObservation
 class:CodexTurnProgress
 class:CodexWorkspace
+constructor:AgentConnector#(id: string, name: string, description?: string, installUrl?: string | null | undefined, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: ReadonlyArray<string>)
 constructor:AgentElicitationValidation#(issues: ReadonlyArray<AgentElicitationValidationIssue>)
 constructor:AgentElicitationValidationIssue#(fieldName: string, reason: AgentElicitationValidationReason)
 constructor:AgentFormBooleanValue#(value: boolean)
@@ -2485,6 +2657,13 @@ constructor:AgentPlanProgress#(explanation?: string | null | undefined, steps?: 
 constructor:AgentPlanStep#(text: string, status: AgentPlanStepStatus)
 function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string
 function:createCodexHost:(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost
+getter:AgentConnector#description:string
+getter:AgentConnector#id:string
+getter:AgentConnector#installUrl:string | null | undefined
+getter:AgentConnector#isAccessible:boolean
+getter:AgentConnector#isEnabled:boolean
+getter:AgentConnector#name:string
+getter:AgentConnector#pluginNames:ReadonlyArray<string>
 getter:AgentElicitationValidation#isValid:boolean
 getter:AgentElicitationValidation#issues:ReadonlyArray<AgentElicitationValidationIssue>
 getter:AgentElicitationValidationIssue#fieldName:string
@@ -2513,6 +2692,7 @@ getter:AgentPlanStep#status:AgentPlanStepStatus
 getter:AgentPlanStep#text:string
 getter:CodexAgent#activeConversation:CodexConversation | null | undefined
 getter:CodexAgent#authentication:CodexAuthentication
+getter:CodexAgent#connectors:CodexConnectors
 getter:CodexAgent#workspace:CodexWorkspace
 getter:CodexAuthentication#isAuthenticated:boolean
 getter:CodexAuthentication#isAuthenticating:boolean
@@ -2522,6 +2702,7 @@ getter:CodexAuthenticationState#deviceVerificationUrl:string | null | undefined
 getter:CodexAuthenticationState#failure:CodexFailure | null | undefined
 getter:CodexAuthenticationState#pendingSignInUrl:string | null | undefined
 getter:CodexAuthenticationState#status:CodexAuthenticationStatus
+getter:CodexConnectors#isAvailable:boolean
 getter:CodexConversation#state:CodexConversationState
 getter:CodexConversationState#canCancelTurn:boolean
 getter:CodexConversationState#canReload:boolean
@@ -2583,6 +2764,7 @@ method:CodexAuthentication#observeAuthenticated:(listener: (isAuthenticated: boo
 method:CodexAuthentication#observeAuthenticating:(listener: (isAuthenticating: boolean) => void): CodexObservation
 method:CodexAuthentication#observeState:(listener: (state: CodexAuthenticationState) => void): CodexObservation
 method:CodexAuthentication#signOut:(signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexConnectors#list:(forceReload?: boolean, signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentConnector>>
 method:CodexConversation#[Symbol.asyncDispose]:(): Promise<void>
 method:CodexConversation#cancelTurn:(): Promise<void>
 method:CodexConversation#close:(): Promise<void>

@@ -1,4 +1,5 @@
 import {
+  AgentConnector,
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormBooleanValue,
@@ -53,6 +54,7 @@ import type {
   CodexAuthenticationMethod,
   CodexAuthenticationStatus,
   CodexAuthorizationPurpose,
+  CodexConnectors,
   CodexConversationStatus,
   CodexHostStatus,
   CodexMessageRole,
@@ -131,6 +133,24 @@ const hookActivityHandlerType: string = hookActivity.handlerType;
 const hookActivityStatus: AgentHookRunStatus = hookActivity.status;
 const hookActivityStatusMessage: string | null | undefined = hookActivity.statusMessage;
 const hookActivityDetails: ReadonlyArray<string> = hookActivity.details;
+const defaultConnector = new AgentConnector("drive", "Google Drive");
+const customConnector = new AgentConnector(
+  "slack",
+  "Slack",
+  "Team messaging",
+  "https://example.com/install",
+  true,
+  false,
+  ["Collaboration"],
+);
+const connectorValues: ReadonlyArray<AgentConnector> = [defaultConnector, customConnector];
+const connectorId: string = customConnector.id;
+const connectorName: string = customConnector.name;
+const connectorDescription: string = customConnector.description;
+const connectorInstallUrl: string | null | undefined = customConnector.installUrl;
+const connectorIsAccessible: boolean = customConnector.isAccessible;
+const connectorIsEnabled: boolean = customConnector.isEnabled;
+const connectorPluginNames: ReadonlyArray<string> = customConnector.pluginNames;
 const enumEvidence: {
   approvalDecision: AgentApprovalDecision;
   capability: AgentCapability;
@@ -203,6 +223,10 @@ observation.dispose();
 observation[Symbol.dispose]();
 
 async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
+  const connectors: CodexConnectors = agent.connectors;
+  const connectorsAvailable: boolean = connectors.isAvailable;
+  const listedConnectors: ReadonlyArray<AgentConnector> = await connectors.list();
+  await connectors.list(true, signal);
   const activeConversation: CodexConversation | null | undefined = agent.activeConversation;
   agent.observeActiveConversation(
     (next: CodexConversation | null | undefined): void => void next,
@@ -264,6 +288,8 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   await conversation[Symbol.asyncDispose]();
   void [
     authenticationStatus,
+    connectorsAvailable,
+    listedConnectors,
     isAuthenticated,
     isAuthenticating,
     pendingSignInUrl,
@@ -324,6 +350,14 @@ void [
   hookActivityStatus,
   hookActivityStatusMessage,
   hookActivityDetails,
+  connectorValues,
+  connectorId,
+  connectorName,
+  connectorDescription,
+  connectorInstallUrl,
+  connectorIsAccessible,
+  connectorIsEnabled,
+  connectorPluginNames,
 ];
 void enumEvidence;
 void useAgent;

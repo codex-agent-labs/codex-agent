@@ -28,12 +28,14 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexHost());
   assert.throws(() => new sdk.CodexAgent());
   assert.throws(() => new sdk.CodexAuthentication());
+  assert.throws(() => new sdk.CodexConnectors());
   assert.throws(() => new sdk.CodexAuthenticationState());
   assert.throws(() => new sdk.CodexConversation());
   assert.throws(() => new sdk.CodexObservation());
   assert.equal(typeof sdk.CodexAgent.prototype.rename, 'function');
   assert.equal(typeof sdk.CodexAgent.prototype.delete, 'function');
   for (const constructor of [
+    sdk.AgentConnector,
     sdk.AgentElicitationValidation,
     sdk.AgentElicitationValidationIssue,
     sdk.AgentFormBooleanValue,
@@ -50,6 +52,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.CodexAgent,
     sdk.CodexAuthentication,
     sdk.CodexAuthenticationState,
+    sdk.CodexConnectors,
     sdk.CodexConversation,
     sdk.CodexConversationState,
     sdk.CodexError,
@@ -619,6 +622,94 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     ));
   }
 
+  const defaultConnector = new sdk.AgentConnector('drive', 'Google Drive');
+  assert.equal(defaultConnector.id, 'drive');
+  assert.equal(defaultConnector.name, 'Google Drive');
+  assert.equal(defaultConnector.description, '');
+  assert.equal(defaultConnector.installUrl, null);
+  assert.equal(defaultConnector.isAccessible, false);
+  assert.equal(defaultConnector.isEnabled, true);
+  assert.deepEqual(defaultConnector.pluginNames, []);
+  const undefinedConnector = new sdk.AgentConnector(
+    'drive', 'Google Drive', undefined, undefined, undefined, undefined, undefined,
+  );
+  assert.equal(undefinedConnector.description, '');
+  assert.equal(undefinedConnector.installUrl, null);
+  assert.equal(undefinedConnector.isAccessible, false);
+  assert.equal(undefinedConnector.isEnabled, true);
+  assert.deepEqual(undefinedConnector.pluginNames, []);
+
+  const sourceConnectorPluginNames = ['Drive', 'Workspace'];
+  const customConnector = new sdk.AgentConnector(
+    'slack',
+    'Slack',
+    'Team messaging',
+    'https://example.com/install',
+    true,
+    false,
+    sourceConnectorPluginNames,
+  );
+  assert.equal(customConnector.id, 'slack');
+  assert.equal(customConnector.name, 'Slack');
+  assert.equal(customConnector.description, 'Team messaging');
+  assert.equal(customConnector.installUrl, 'https://example.com/install');
+  assert.equal(customConnector.isAccessible, true);
+  assert.equal(customConnector.isEnabled, false);
+  assert.deepEqual(customConnector.pluginNames, ['Drive', 'Workspace']);
+  assert.notEqual(customConnector.pluginNames, sourceConnectorPluginNames);
+  sourceConnectorPluginNames.splice(0, sourceConnectorPluginNames.length, 'mutated');
+  assert.deepEqual(customConnector.pluginNames, ['Drive', 'Workspace']);
+
+  const proxyConnectorPluginNamesTarget = ['Proxy'];
+  const proxyConnectorPluginNames = new Proxy(proxyConnectorPluginNamesTarget, {});
+  const proxyConnector = new sdk.AgentConnector(
+    'proxy', 'Proxy', '', null, false, true, proxyConnectorPluginNames,
+  );
+  assert.notEqual(proxyConnector.pluginNames, proxyConnectorPluginNames);
+  assert.notEqual(proxyConnector.pluginNames, proxyConnectorPluginNamesTarget);
+  proxyConnectorPluginNamesTarget[0] = 'mutated';
+  assert.deepEqual(proxyConnector.pluginNames, ['Proxy']);
+
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentConnector(invalid, 'Google Drive'));
+    assert.throws(() => new sdk.AgentConnector('drive', invalid));
+    if (invalid !== undefined) {
+      assert.throws(() => new sdk.AgentConnector('drive', 'Google Drive', invalid));
+    }
+    if (invalid !== null && invalid !== undefined) {
+      assert.throws(() => new sdk.AgentConnector('drive', 'Google Drive', '', invalid));
+    }
+  }
+  for (const invalidBoolean of [null, 0, 1, '', 'true', {}, [], new Boolean(true), new Proxy({}, {})]) {
+    assert.throws(() => new sdk.AgentConnector('drive', 'Google Drive', '', null, invalidBoolean));
+    assert.throws(() => new sdk.AgentConnector('drive', 'Google Drive', '', null, true, invalidBoolean));
+  }
+  for (const invalidPluginNames of [null, '', 0, false, {}, { length: 0 }, () => {}]) {
+    assert.throws(() => new sdk.AgentConnector(
+      'drive', 'Google Drive', '', null, false, true, invalidPluginNames,
+    ));
+  }
+  const sparseConnectorPluginNames = new Array(2);
+  sparseConnectorPluginNames[1] = 'Drive';
+  assert.throws(() => new sdk.AgentConnector(
+    'drive', 'Google Drive', '', null, false, true, sparseConnectorPluginNames,
+  ));
+  const inheritedConnectorPluginNames = new Array(1);
+  Object.setPrototypeOf(inheritedConnectorPluginNames, { 0: 'inherited' });
+  assert.throws(() => new sdk.AgentConnector(
+    'drive', 'Google Drive', '', null, false, true, inheritedConnectorPluginNames,
+  ));
+  const revokedConnectorPluginNames = Proxy.revocable(['Drive'], {});
+  revokedConnectorPluginNames.revoke();
+  assert.throws(() => new sdk.AgentConnector(
+    'drive', 'Google Drive', '', null, false, true, revokedConnectorPluginNames.proxy,
+  ));
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentConnector(
+      'drive', 'Google Drive', '', null, false, true, [invalid],
+    ));
+  }
+
   const assertImmutableOwnGraph = (root) => {
     const seen = new Set();
     const visit = (value) => {
@@ -674,6 +765,10 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     permissiveHookActivity,
     detachedHookActivity,
     proxyHookActivity,
+    defaultConnector,
+    undefinedConnector,
+    customConnector,
+    proxyConnector,
   ]) {
     assertImmutableOwnGraph(snapshot);
   }
@@ -721,6 +816,12 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     assert.deepEqual(
       Reflect.ownKeys(activity),
       ['id', 'eventName', 'handlerType', 'status', 'statusMessage', 'details'],
+    );
+  }
+  for (const connector of [defaultConnector, undefinedConnector, customConnector, proxyConnector]) {
+    assert.deepEqual(
+      Reflect.ownKeys(connector),
+      ['id', 'name', 'description', 'installUrl', 'isAccessible', 'isEnabled', 'pluginNames'],
     );
   }
 

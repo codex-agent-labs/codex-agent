@@ -1,4 +1,5 @@
 import {
+  AgentConnector,
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormBooleanValue,
@@ -12,6 +13,7 @@ import {
   AgentMcpToolConfiguration,
   AgentPlanProgress,
   AgentPlanStep,
+  CodexConnectors,
   codexApprovalPresetDisplayName,
 } from "@codex-agent-labs/codex-agent";
 import type { CodexAgent, CodexTurnProgress } from "@codex-agent-labs/codex-agent";
@@ -139,6 +141,34 @@ hookActivity.status = "completed";
 // @ts-expect-error Hook-activity details are readonly.
 hookActivity.details.push("changed");
 
+const connector = new AgentConnector("drive", "Google Drive", "Drive connector", null, true, true, ["Drive"]);
+// @ts-expect-error Connector names are required.
+new AgentConnector("drive");
+// @ts-expect-error Connector IDs are strings.
+new AgentConnector(1, "Google Drive");
+// @ts-expect-error Defaulted connector descriptions remain non-null strings.
+new AgentConnector("drive", "Google Drive", null);
+// @ts-expect-error Connector install URLs are nullable strings.
+new AgentConnector("drive", "Google Drive", "", 1);
+// @ts-expect-error Connector accessibility is boolean.
+new AgentConnector("drive", "Google Drive", "", null, "yes");
+// @ts-expect-error Connector enablement is boolean.
+new AgentConnector("drive", "Google Drive", "", null, true, "yes");
+// @ts-expect-error Connector plugin names are strings.
+new AgentConnector("drive", "Google Drive", "", null, true, true, [1]);
+// @ts-expect-error Immutable connector IDs are readonly.
+connector.id = "changed";
+// @ts-expect-error Immutable connector plugin-name collections cannot be replaced.
+connector.pluginNames = [];
+// @ts-expect-error Connector plugin-name collections are readonly.
+connector.pluginNames.push("Changed");
+
+declare const connectors: CodexConnectors;
+// @ts-expect-error Connector controllers are created by an Agent.
+new CodexConnectors();
+// @ts-expect-error Connector feature availability is readonly.
+connectors.isAvailable = false;
+
 declare const turnProgress: CodexTurnProgress;
 // @ts-expect-error Immutable turn progress cannot replace plan progress.
 turnProgress.planProgress = null;
@@ -148,6 +178,15 @@ turnProgress.hookActivities = [];
 turnProgress.hookActivities.push(hookActivity);
 
 async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
+  // @ts-expect-error Connector controllers are owned by the Agent.
+  agent.connectors = connectors;
+  // @ts-expect-error Connector reload flags are boolean.
+  await connectors.list("true");
+  // @ts-expect-error Connector list signals must be AbortSignal values.
+  await connectors.list(false, {});
+  const listedConnectors = await connectors.list();
+  // @ts-expect-error Connector list results are readonly.
+  listedConnectors.push(connector);
   // @ts-expect-error Conversation IDs are strings.
   await agent.rename(1, "Renamed conversation");
   // @ts-expect-error Conversation names are strings.

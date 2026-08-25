@@ -32,6 +32,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -56,6 +57,26 @@ class CodexNodeApiTest {
         val invalidPreset = runCatching { codexApprovalPresetDisplayName("sometimes") }.exceptionOrNull()
         assertEquals("Unknown approval preset: sometimes", invalidPreset?.message)
 
+        val sourcePluginNames = arrayOf("Plugin one", "Plugin two")
+        val localConnector = AgentConnector(
+            id = "connector-local",
+            name = "Local connector",
+            pluginNames = sourcePluginNames,
+        )
+        sourcePluginNames[0] = "Changed"
+        assertEquals("", localConnector.description)
+        assertNull(localConnector.installUrl)
+        assertFalse(localConnector.isAccessible)
+        assertTrue(localConnector.isEnabled)
+        assertEquals(listOf("Plugin one", "Plugin two"), localConnector.pluginNames.toList())
+        assertTrue(isFrozen(localConnector))
+        assertTrue(isFrozen(localConnector.pluginNames))
+        assertEquals(0, enumerablePropertyCount(localConnector))
+        val invalidConnector = runCatching {
+            AgentConnector(js("({})").unsafeCast<String>(), "Invalid")
+        }.exceptionOrNull()
+        assertEquals("id must be a string", invalidConnector?.message)
+
         yield()
         assertEquals(listOf("new"), hostStates)
         assertTrue(isFrozen(host.state))
@@ -67,6 +88,15 @@ class CodexNodeApiTest {
 
         val agent = assertIs<CodexAgent>(host.agent)
         assertSame(agent, host.state.agent)
+        val unavailableConnectors = agent.connectors
+        assertSame(unavailableConnectors, agent.connectors)
+        assertFalse(unavailableConnectors.isAvailable)
+        assertEquals(0, enumerablePropertyCount(unavailableConnectors))
+        val unsupportedConnectors = runCatching { unavailableConnectors.list().await() }.exceptionOrNull()
+        val unsupportedConnectorsError = assertIs<CodexError>(unsupportedConnectors)
+        assertEquals("unsupported_feature", unsupportedConnectorsError.code)
+        assertFalse(unsupportedConnectorsError.recoverable)
+        assertTrue(runtime.appListRequests.isEmpty())
         val active = mutableListOf<CodexConversation?>()
         val activeObservation = agent.observeActiveConversation { active += it }
         awaitCondition { active.isNotEmpty() }
@@ -252,13 +282,68 @@ class CodexNodeApiTest {
 
         val shellRuntime = ApiTestRuntime()
         val shellHost = wrapCodexHost(CoreHost(
-            ApiTestPlatform(shellRuntime, features = setOf(CodexRuntimeFeature.SHELL_COMMANDS)),
+            ApiTestPlatform(shellRuntime, features = setOf(
+                CodexRuntimeFeature.SHELL_COMMANDS,
+                CodexRuntimeFeature.CONNECTORS,
+            )),
             CodexClientInfo("node_test", "Node Test", "test"),
         ))
         try {
             shellHost.start().await()
             val shellAgent = assertIs<CodexAgent>(shellHost.agent)
+            val connectors = shellAgent.connectors
+            assertSame(connectors, shellAgent.connectors)
+            assertTrue(connectors.isAvailable)
+            assertEquals(0, enumerablePropertyCount(connectors))
+
+            val controller = js("new AbortController()")
+            controller.abort()
+            val abortedList = runCatching {
+                connectors.list(signal = controller.signal.unsafeCast<AbortSignal>()).await()
+            }.exceptionOrNull()
+            assertEquals("AbortError", abortedList?.asDynamic()?.name as String)
+            assertTrue(shellRuntime.appListRequests.isEmpty())
+
             val shellConversation = shellAgent.openConversation().await()
+            val listedConnectors = connectors.list(forceReload = true).await()
+            assertEquals(listOf("connector-custom", "connector-default"), listedConnectors.map(AgentConnector::id))
+            assertEquals(2, shellRuntime.appListRequests.size)
+            val firstListRequest = shellRuntime.appListRequests[0]
+            val secondListRequest = shellRuntime.appListRequests[1]
+            assertNull(firstListRequest["cursor"])
+            assertEquals("true", firstListRequest["forceRefetch"]?.jsonPrimitive?.content)
+            assertEquals("thread-js", firstListRequest["threadId"]?.jsonPrimitive?.content)
+            assertEquals("page-2", secondListRequest["cursor"]?.jsonPrimitive?.content)
+            assertEquals("true", secondListRequest["forceRefetch"]?.jsonPrimitive?.content)
+            assertEquals("thread-js", secondListRequest["threadId"]?.jsonPrimitive?.content)
+            val customConnector = listedConnectors[0]
+            assertEquals("Custom connector", customConnector.name)
+            assertEquals("Custom description", customConnector.description)
+            assertEquals("https://example.com/install", customConnector.installUrl)
+            assertTrue(customConnector.isAccessible)
+            assertFalse(customConnector.isEnabled)
+            assertEquals(listOf("Plugin one", "Plugin two"), customConnector.pluginNames.toList())
+            val defaultConnector = listedConnectors[1]
+            assertEquals("Default connector", defaultConnector.name)
+            assertEquals("", defaultConnector.description)
+            assertNull(defaultConnector.installUrl)
+            assertFalse(defaultConnector.isAccessible)
+            assertTrue(defaultConnector.isEnabled)
+            assertTrue(defaultConnector.pluginNames.isEmpty())
+            assertTrue(isFrozen(listedConnectors))
+            listedConnectors.forEach { connector ->
+                assertTrue(isFrozen(connector))
+                assertTrue(isFrozen(connector.pluginNames))
+            }
+
+            shellRuntime.failNextAppList = true
+            val listFailure = runCatching { connectors.list().await() }.exceptionOrNull()
+            val listError = assertIs<CodexError>(listFailure)
+            assertEquals("connector_list_failed", listError.code)
+            assertEquals("connector list denied", listError.message)
+            assertTrue(listError.recoverable)
+            assertEquals(3, shellRuntime.appListRequests.size)
+
             val shellAvailability = mutableListOf<Boolean>()
             shellConversation.observeState { shellAvailability += it.canRunShellCommand }
             awaitCondition { shellAvailability.lastOrNull() == true }
@@ -295,6 +380,13 @@ class CodexNodeApiTest {
             assertEquals("thread-resumed", resumed.state.conversationId)
             assertEquals("fast", resumed.state.serviceTier)
             assertEquals("closed", shellConversation.state.status)
+            shellHost.close().await()
+            assertSame(connectors, shellAgent.connectors)
+            val requestsBeforeClosedList = shellRuntime.appListRequests.size
+            val closedList = runCatching { connectors.list().await() }.exceptionOrNull()
+            assertEquals("IllegalStateException", closedList?.asDynamic()?.name as String)
+            assertEquals("Codex agent is closed", closedList.message)
+            assertEquals(requestsBeforeClosedList, shellRuntime.appListRequests.size)
         } finally {
             shellHost.close().await()
         }
@@ -608,6 +700,8 @@ private class ApiTestRuntime : CodexRuntime {
     var deleteRelease: CompletableDeferred<Unit>? = null
     var threadStartParams: JsonObject? = null
     var threadResumeParams: JsonObject? = null
+    val appListRequests: MutableList<JsonObject> = mutableListOf()
+    var failNextAppList: Boolean = false
     private var loginAttempts: Int = 0
 
     suspend fun completeTurn(): Unit = notify("turn/completed", buildJsonObject {
@@ -667,6 +761,19 @@ private class ApiTestRuntime : CodexRuntime {
             "thread/read" -> {
                 val params = checkNotNull(request["params"]).jsonObject
                 respond(id, threadReadResult(checkNotNull(params["threadId"]).jsonPrimitive.content))
+            }
+            "app/list" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                appListRequests += params
+                if (failNextAppList) {
+                    failNextAppList = false
+                    respondError(id, "connector list denied")
+                } else {
+                    val cursor = params["cursor"]?.let {
+                        if (it == JsonNull) null else it.jsonPrimitive.content
+                    }
+                    respond(id, appListResult(cursor))
+                }
             }
             "thread/name/set" -> {
                 val params = checkNotNull(request["params"]).jsonObject
@@ -826,6 +933,31 @@ private fun threadResumeResult(threadId: String): JsonObject = buildJsonObject {
 
 private fun threadReadResult(threadId: String): JsonObject = buildJsonObject {
     put("thread", threadResult(buildJsonArray { add(completedTurn()) }, threadId))
+}
+
+private fun appListResult(cursor: String?): JsonObject = buildJsonObject {
+    putJsonArray("data") {
+        when (cursor) {
+            null -> add(buildJsonObject {
+                put("id", "connector-custom")
+                put("name", "Custom connector")
+                put("description", "Custom description")
+                put("installUrl", "https://example.com/install")
+                put("isAccessible", true)
+                put("isEnabled", false)
+                putJsonArray("pluginDisplayNames") {
+                    add(JsonPrimitive("Plugin one"))
+                    add(JsonPrimitive("Plugin two"))
+                }
+            })
+            "page-2" -> add(buildJsonObject {
+                put("id", "connector-default")
+                put("name", "Default connector")
+            })
+            else -> error("Unexpected app/list cursor: $cursor")
+        }
+    }
+    if (cursor == null) put("nextCursor", "page-2")
 }
 
 private fun threadResult(

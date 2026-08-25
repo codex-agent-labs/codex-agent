@@ -96,6 +96,16 @@ export declare class AgentHookActivity {
     get statusMessage(): Nullable<string>;
     get details(): ReadonlyArray<string>;
 }
+export declare class AgentConnector {
+    constructor(id: string, name: string, description?: string, installUrl?: Nullable<string>, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: ReadonlyArray<string>);
+    get id(): string;
+    get name(): string;
+    get description(): string;
+    get installUrl(): Nullable<string>;
+    get isAccessible(): boolean;
+    get isEnabled(): boolean;
+    get pluginNames(): ReadonlyArray<string>;
+}
 export declare class CodexFailure {
     private constructor();
     get code(): string;
@@ -195,11 +205,17 @@ export declare class CodexAgent {
     private constructor();
     get workspace(): CodexWorkspace;
     get authentication(): CodexAuthentication;
+    get connectors(): CodexConnectors;
     get activeConversation(): Nullable<CodexConversation>;
     openConversation(conversationId?: Nullable<string>, approvalPreset?: Nullable<CodexApprovalPreset>, serviceTier?: Nullable<string>, signal?: Nullable<AbortSignal>): Promise<CodexConversation>;
     rename(conversationId: string, name: string, signal?: Nullable<AbortSignal>): Promise<void>;
     delete(conversationId: string, signal?: Nullable<AbortSignal>): Promise<void>;
     observeActiveConversation(listener: (conversation: Nullable<CodexConversation>) => void): CodexObservation;
+}
+export declare class CodexConnectors {
+    private constructor();
+    get isAvailable(): boolean;
+    list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConnector>>;
 }
 export declare class CodexAuthentication {
     private constructor();

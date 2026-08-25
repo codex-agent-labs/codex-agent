@@ -354,6 +354,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
   const commonJsExports = Object.getOwnPropertyNames(commonJsSdk).sort();
   const esmExports = Object.keys(sdk).sort();
   assert.deepEqual(esmExports, commonJsExports);
+  assert.equal(sdk.AgentConnector, commonJsSdk.AgentConnector);
   assert.equal(sdk.AgentElicitationValidation, commonJsSdk.AgentElicitationValidation);
   assert.equal(sdk.AgentElicitationValidationIssue, commonJsSdk.AgentElicitationValidationIssue);
   assert.equal(sdk.AgentFormOption, commonJsSdk.AgentFormOption);
@@ -369,6 +370,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.AgentPlanStep, commonJsSdk.AgentPlanStep);
   assert.equal(sdk.CodexAgent.prototype.rename, commonJsSdk.CodexAgent.prototype.rename);
   assert.equal(sdk.CodexAgent.prototype.delete, commonJsSdk.CodexAgent.prototype.delete);
+  assert.equal(sdk.CodexConnectors, commonJsSdk.CodexConnectors);
   assert.equal(
     sdk.codexApprovalPresetDisplayName,
     commonJsSdk.codexApprovalPresetDisplayName,
@@ -456,6 +458,15 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string',
   ), 'Approval-preset display names must preserve the finite preset domain');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentConnector#(id: string, name: string, description?: string, installUrl?: string | null | undefined, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: ReadonlyArray<string>)',
+  ), 'Connector values must preserve canonical defaults and immutable plugin names');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:CodexAgent#connectors:CodexConnectors',
+  ), 'Connector controller ownership must be discoverable from an Agent');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexConnectors#list:(forceReload?: boolean, signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentConnector>>',
+  ), 'Connector listing must preserve reload, cancellation, and immutable result semantics');
   assert.ok(compilerApi.publicSymbols.includes(
     'getter:CodexAgent#authentication:CodexAuthentication',
   ), 'Agent authentication ownership must be discoverable');
