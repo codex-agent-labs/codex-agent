@@ -13,7 +13,11 @@ import {
   AgentHook,
   AgentHookCatalog,
   AgentMcpEnvironmentVariable,
+  AgentMcpHttpTransport,
   AgentMcpOauthConfiguration,
+  AgentMcpServer,
+  AgentMcpServerConfiguration,
+  AgentMcpStdioTransport,
   AgentMcpToolConfiguration,
   AgentModel,
   AgentPlanProgress,
@@ -36,6 +40,7 @@ import {
   CodexHostState,
   CodexHooks,
   CodexModels,
+  CodexMcpServers,
   CodexObservation,
   CodexSkills,
   agentCapabilityDisplayLabel,
@@ -66,6 +71,7 @@ import type {
   AgentMcpEnvironmentSource,
   AgentMcpToolApproval,
   AgentMcpToolExposureSurface,
+  AgentMcpTransport,
   AgentPlanStepStatus,
   AgentPluginAuthPolicy,
   AgentPluginInstallPolicy,
@@ -147,6 +153,100 @@ const mcpToolApprovals: ReadonlyArray<AgentMcpToolApproval | null | undefined> =
   new AgentMcpToolConfiguration("prompt").approval,
   new AgentMcpToolConfiguration("writes").approval,
 ];
+const mcpStdioTransportClass: typeof AgentMcpStdioTransport = AgentMcpStdioTransport;
+const mcpHttpTransportClass: typeof AgentMcpHttpTransport = AgentMcpHttpTransport;
+const mcpServerConfigurationClass: typeof AgentMcpServerConfiguration = AgentMcpServerConfiguration;
+const mcpServerClass: typeof AgentMcpServer = AgentMcpServer;
+const mcpStdioTransport = new AgentMcpStdioTransport(
+  "node",
+  ["server.js"],
+  "/workspace",
+  { STATIC_TOKEN: "value" },
+  mcpEnvironmentVariables,
+);
+const mcpTransport: AgentMcpTransport = mcpStdioTransport;
+const mcpStdioCommand: string = mcpStdioTransport.command;
+const mcpStdioArguments: ReadonlyArray<string> = mcpStdioTransport.arguments;
+const mcpStdioWorkingDirectory: string | null | undefined = mcpStdioTransport.workingDirectory;
+const mcpStdioEnvironment: Readonly<Record<string, string>> | null | undefined =
+  mcpStdioTransport.environment;
+const mcpStdioForwardedEnvironment: ReadonlyArray<AgentMcpEnvironmentVariable> =
+  mcpStdioTransport.forwardedEnvironment;
+const mcpHttpTransport = new AgentMcpHttpTransport(
+  "https://mcp.example.com",
+  "MCP_TOKEN",
+  { "X-Static": "value" },
+  { Authorization: "MCP_AUTH" },
+  "mcp-headers",
+);
+const mcpHttpUrl: string = mcpHttpTransport.url;
+const mcpHttpBearerTokenEnvironmentVariable: string | null | undefined =
+  mcpHttpTransport.bearerTokenEnvironmentVariable;
+const mcpHttpHeaders: Readonly<Record<string, string>> | null | undefined = mcpHttpTransport.headers;
+const mcpHttpEnvironmentHeaders: Readonly<Record<string, string>> | null | undefined =
+  mcpHttpTransport.environmentHeaders;
+const mcpHttpHeadersHelper: string | null | undefined = mcpHttpTransport.headersHelper;
+const mcpServerConfiguration = new AgentMcpServerConfiguration(
+  "remote",
+  mcpHttpTransport,
+  "chat_gpt",
+  "local",
+  false,
+  true,
+  true,
+  ["code_mode", "deferred"],
+  3.5,
+  9,
+  "writes",
+  ["read"],
+  [],
+  ["files.read"],
+  new AgentMcpOauthConfiguration("client", 9876),
+  "https://mcp.example.com/resource",
+  { write: new AgentMcpToolConfiguration("prompt") },
+);
+const mcpConfigurationName: string = mcpServerConfiguration.name;
+const mcpConfigurationTransport: AgentMcpTransport = mcpServerConfiguration.transport;
+const mcpConfigurationAuthentication: AgentMcpAuthentication | null | undefined =
+  mcpServerConfiguration.authentication;
+const mcpConfigurationEnvironmentId: string = mcpServerConfiguration.environmentId;
+const mcpConfigurationIsEnabled: boolean = mcpServerConfiguration.isEnabled;
+const mcpConfigurationIsRequired: boolean = mcpServerConfiguration.isRequired;
+const mcpConfigurationSupportsParallelToolCalls: boolean =
+  mcpServerConfiguration.supportsParallelToolCalls;
+const mcpConfigurationOmitToolsFrom: ReadonlyArray<AgentMcpToolExposureSurface> | null | undefined =
+  mcpServerConfiguration.omitToolsFrom;
+const mcpConfigurationStartupTimeoutSeconds: number | null | undefined =
+  mcpServerConfiguration.startupTimeoutSeconds;
+const mcpConfigurationToolTimeoutSeconds: number | null | undefined =
+  mcpServerConfiguration.toolTimeoutSeconds;
+const mcpConfigurationDefaultToolApproval: AgentMcpToolApproval | null | undefined =
+  mcpServerConfiguration.defaultToolApproval;
+const mcpConfigurationEnabledTools: ReadonlyArray<string> | null | undefined =
+  mcpServerConfiguration.enabledTools;
+const mcpConfigurationDisabledTools: ReadonlyArray<string> | null | undefined =
+  mcpServerConfiguration.disabledTools;
+const mcpConfigurationScopes: ReadonlyArray<string> | null | undefined = mcpServerConfiguration.scopes;
+const mcpConfigurationOauth: AgentMcpOauthConfiguration | null | undefined = mcpServerConfiguration.oauth;
+const mcpConfigurationOauthResource: string | null | undefined = mcpServerConfiguration.oauthResource;
+const mcpConfigurationTools: Readonly<Record<string, AgentMcpToolConfiguration>> =
+  mcpServerConfiguration.tools;
+const mcpServer = new AgentMcpServer(
+  "remote",
+  "Remote",
+  "oauth",
+  mcpServerConfiguration,
+  "user",
+  true,
+);
+const mcpServerName: string = mcpServer.name;
+const mcpServerDisplayName: string = mcpServer.displayName;
+const mcpServerAuthStatus: AgentMcpAuthStatus = mcpServer.authStatus;
+const mcpServerEffectiveConfiguration: AgentMcpServerConfiguration | null | undefined =
+  mcpServer.configuration;
+const mcpServerOrigin: AgentResourceOrigin = mcpServer.origin;
+const mcpServerCanRemove: boolean = mcpServer.canRemove;
+const mcpServerIsAuthorized: boolean = mcpServer.isAuthorized;
 const validationIssue = new AgentElicitationValidationIssue("field", "missing_required");
 const validationFieldName: string = validationIssue.fieldName;
 const validationReason: AgentElicitationValidationReason = validationIssue.reason;
@@ -407,6 +507,12 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   const installedHook: AgentHook = await hooks.install("/hooks/review", "workspace", signal);
   await hooks.uninstall(installedHook, signal);
   await hooks.trust(hook, signal);
+  const mcpServers: CodexMcpServers = agent.mcpServers;
+  const mcpServersClass: typeof CodexMcpServers = CodexMcpServers;
+  const mcpServersAvailable: boolean = mcpServers.isAvailable;
+  const listedMcpServers: ReadonlyArray<AgentMcpServer> = await mcpServers.list(signal);
+  const addedMcpServer: AgentMcpServer = await mcpServers.add(mcpServerConfiguration, signal);
+  await mcpServers.remove(addedMcpServer, signal);
   const activeConversation: CodexConversation | null | undefined = agent.activeConversation;
   agent.observeActiveConversation(
     (next: CodexConversation | null | undefined): void => void next,
@@ -509,6 +615,10 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     hooksAvailable,
     listedHooks,
     installedHook,
+    mcpServersClass,
+    mcpServersAvailable,
+    listedMcpServers,
+    addedMcpServer,
     isAuthenticated,
     isAuthenticating,
     pendingSignInUrl,
@@ -581,6 +691,45 @@ void [
   mcpOauthClientIds,
   mcpOauthCallbackPorts,
   mcpToolApprovals,
+  mcpStdioTransportClass,
+  mcpHttpTransportClass,
+  mcpServerConfigurationClass,
+  mcpServerClass,
+  mcpTransport,
+  mcpStdioCommand,
+  mcpStdioArguments,
+  mcpStdioWorkingDirectory,
+  mcpStdioEnvironment,
+  mcpStdioForwardedEnvironment,
+  mcpHttpUrl,
+  mcpHttpBearerTokenEnvironmentVariable,
+  mcpHttpHeaders,
+  mcpHttpEnvironmentHeaders,
+  mcpHttpHeadersHelper,
+  mcpConfigurationName,
+  mcpConfigurationTransport,
+  mcpConfigurationAuthentication,
+  mcpConfigurationEnvironmentId,
+  mcpConfigurationIsEnabled,
+  mcpConfigurationIsRequired,
+  mcpConfigurationSupportsParallelToolCalls,
+  mcpConfigurationOmitToolsFrom,
+  mcpConfigurationStartupTimeoutSeconds,
+  mcpConfigurationToolTimeoutSeconds,
+  mcpConfigurationDefaultToolApproval,
+  mcpConfigurationEnabledTools,
+  mcpConfigurationDisabledTools,
+  mcpConfigurationScopes,
+  mcpConfigurationOauth,
+  mcpConfigurationOauthResource,
+  mcpConfigurationTools,
+  mcpServerName,
+  mcpServerDisplayName,
+  mcpServerAuthStatus,
+  mcpServerEffectiveConfiguration,
+  mcpServerOrigin,
+  mcpServerCanRemove,
+  mcpServerIsAuthorized,
   validationFieldName,
   validationReason,
   validationIssues,

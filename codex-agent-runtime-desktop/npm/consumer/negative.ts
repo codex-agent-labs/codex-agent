@@ -13,7 +13,11 @@ import {
   AgentHook,
   AgentHookCatalog,
   AgentMcpEnvironmentVariable,
+  AgentMcpHttpTransport,
   AgentMcpOauthConfiguration,
+  AgentMcpServer,
+  AgentMcpServerConfiguration,
+  AgentMcpStdioTransport,
   AgentMcpToolConfiguration,
   AgentModel,
   AgentPlanProgress,
@@ -27,6 +31,7 @@ import {
   CodexAuthorizationUrl,
   CodexConnectors,
   CodexModels,
+  CodexMcpServers,
   CodexSkills,
   CodexHooks,
   agentCapabilityDisplayLabel,
@@ -41,6 +46,7 @@ import type {
   AgentHookHandler,
   AgentHookTrustStatus,
   AgentInvocation,
+  AgentMcpTransport,
   AgentTurnRequest,
   CodexAgent,
   CodexAuthenticationState,
@@ -210,6 +216,95 @@ new AgentMcpToolConfiguration("not_an_approval");
 new AgentMcpToolConfiguration(1);
 // @ts-expect-error Immutable MCP tool configurations are readonly.
 mcpToolConfiguration.approval = "prompt";
+
+const stdioTransport = new AgentMcpStdioTransport("node", ["server.js"]);
+// @ts-expect-error MCP stdio commands are required.
+new AgentMcpStdioTransport();
+// @ts-expect-error MCP stdio commands are strings.
+new AgentMcpStdioTransport(1);
+// @ts-expect-error MCP stdio arguments contain strings.
+new AgentMcpStdioTransport("node", [1]);
+// @ts-expect-error MCP stdio working directories are nullable strings.
+new AgentMcpStdioTransport("node", [], 1);
+// @ts-expect-error MCP stdio environment values are strings.
+new AgentMcpStdioTransport("node", [], null, { TOKEN: 1 });
+// @ts-expect-error Immutable MCP stdio commands are readonly.
+stdioTransport.command = "changed";
+// @ts-expect-error MCP stdio argument collections are readonly.
+stdioTransport.arguments.push("changed");
+
+const httpTransport = new AgentMcpHttpTransport("https://mcp.example.com");
+// @ts-expect-error MCP HTTP URLs are required.
+new AgentMcpHttpTransport();
+// @ts-expect-error MCP HTTP URLs are strings.
+new AgentMcpHttpTransport(1);
+// @ts-expect-error MCP bearer-token environment variables are nullable strings.
+new AgentMcpHttpTransport("https://mcp.example.com", 1);
+// @ts-expect-error MCP HTTP header values are strings.
+new AgentMcpHttpTransport("https://mcp.example.com", null, { Header: 1 });
+// @ts-expect-error MCP HTTP environment-header values are strings.
+new AgentMcpHttpTransport("https://mcp.example.com", null, null, { Header: 1 });
+// @ts-expect-error MCP HTTP headers helpers are nullable strings.
+new AgentMcpHttpTransport("https://mcp.example.com", null, null, null, 1);
+// @ts-expect-error Immutable MCP HTTP URLs are readonly.
+httpTransport.url = "https://changed.example.com";
+// @ts-expect-error MCP HTTP header records are readonly.
+if (httpTransport.headers) httpTransport.headers.Header = "changed";
+
+const validMcpTransport: AgentMcpTransport = stdioTransport;
+// @ts-expect-error MCP transports use one of the two reviewed concrete shapes.
+const invalidMcpTransport: AgentMcpTransport = {};
+const mcpServerConfiguration = new AgentMcpServerConfiguration("server", validMcpTransport);
+// @ts-expect-error MCP server configurations require a transport.
+new AgentMcpServerConfiguration("server");
+// @ts-expect-error MCP server names are strings.
+new AgentMcpServerConfiguration(1, validMcpTransport);
+// @ts-expect-error MCP server transports use the reviewed union.
+new AgentMcpServerConfiguration("server", {});
+// @ts-expect-error MCP authentication remains a closed typed domain.
+new AgentMcpServerConfiguration("server", httpTransport, "api_key");
+// @ts-expect-error MCP environment IDs are strings.
+new AgentMcpServerConfiguration("server", httpTransport, null, 1);
+// @ts-expect-error MCP enablement is boolean.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", "yes");
+// @ts-expect-error MCP required status is boolean.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", true, "yes");
+// @ts-expect-error MCP parallel-call status is boolean.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", true, false, "yes");
+// @ts-expect-error MCP tool-exposure surfaces remain a closed typed domain.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", true, false, false, ["shell"]);
+// @ts-expect-error MCP startup timeouts are nullable numbers.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", true, false, false, null, "3");
+// @ts-expect-error MCP tool timeouts are nullable numbers.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", true, false, false, null, null, "9");
+// @ts-expect-error MCP default tool approvals remain a closed typed domain.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", true, false, false, null, null, null, "always");
+// @ts-expect-error MCP enabled-tool collections contain strings.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", true, false, false, null, null, null, null, [1]);
+// @ts-expect-error MCP OAuth values use the canonical class.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", true, false, false, null, null, null, null, null, null, null, {});
+// @ts-expect-error MCP tool records contain canonical tool configurations.
+new AgentMcpServerConfiguration("server", httpTransport, null, "local", true, false, false, null, null, null, null, null, null, null, null, null, { read: "auto" });
+// @ts-expect-error Immutable MCP configuration names are readonly.
+mcpServerConfiguration.name = "changed";
+// @ts-expect-error MCP configuration collections are readonly.
+mcpServerConfiguration.enabledTools?.push("changed");
+// @ts-expect-error MCP tool records are readonly.
+mcpServerConfiguration.tools.read = mcpToolConfiguration;
+
+const mcpServer = new AgentMcpServer("server", "Server", "oauth", mcpServerConfiguration, "user", true);
+// @ts-expect-error MCP server auth statuses remain a closed typed domain.
+new AgentMcpServer("server", "Server", "authorized");
+// @ts-expect-error MCP server configurations use the canonical class.
+new AgentMcpServer("server", "Server", "oauth", {});
+// @ts-expect-error MCP server origins remain a closed typed domain.
+new AgentMcpServer("server", "Server", "oauth", null, "repo");
+// @ts-expect-error MCP server removability is boolean.
+new AgentMcpServer("server", "Server", "oauth", null, "user", "yes");
+// @ts-expect-error Immutable MCP server names are readonly.
+mcpServer.name = "changed";
+// @ts-expect-error Derived MCP authorization status is readonly.
+mcpServer.isAuthorized = false;
 
 const issue = new AgentElicitationValidationIssue("field", "missing_required");
 // @ts-expect-error Validation reasons remain a closed typed domain.
@@ -476,6 +571,12 @@ new CodexConnectors();
 // @ts-expect-error Connector feature availability is readonly.
 connectors.isAvailable = false;
 
+declare const mcpServers: CodexMcpServers;
+// @ts-expect-error MCP server controllers are created by an Agent.
+new CodexMcpServers();
+// @ts-expect-error MCP server feature availability is readonly.
+mcpServers.isAvailable = false;
+
 declare const turnProgress: CodexTurnProgress;
 // @ts-expect-error Immutable turn progress cannot replace plan progress.
 turnProgress.planProgress = null;
@@ -635,6 +736,21 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   await hooks.trust({});
   // @ts-expect-error Hook-trust signals must be AbortSignal values.
   await hooks.trust(hook, {});
+  // @ts-expect-error MCP server controllers are owned by the Agent.
+  agent.mcpServers = mcpServers;
+  // @ts-expect-error MCP server-list signals must be AbortSignal values.
+  await mcpServers.list({});
+  const listedMcpServers = await mcpServers.list();
+  // @ts-expect-error MCP server-list results are readonly.
+  listedMcpServers.push(mcpServer);
+  // @ts-expect-error MCP server installation requires canonical configuration.
+  await mcpServers.add({});
+  // @ts-expect-error MCP server-install signals must be AbortSignal values.
+  await mcpServers.add(mcpServerConfiguration, {});
+  // @ts-expect-error MCP server removal requires a canonical server.
+  await mcpServers.remove({});
+  // @ts-expect-error MCP server-remove signals must be AbortSignal values.
+  await mcpServers.remove(mcpServer, {});
   // @ts-expect-error Conversation IDs are strings.
   await agent.rename(1, "Renamed conversation");
   // @ts-expect-error Conversation names are strings.

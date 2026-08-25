@@ -343,6 +343,113 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `mcp servers close exact transport configuration value and controller family`() {
+        val keys = d050McpServersKeys()
+        val symbols = d050McpServersSymbols()
+        val evidence = derive(keys, symbols, references = D050_PUBLIC_SYMBOLS)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(43, keys.size)
+        assertEquals(43, claims.size)
+        assertEquals(D050_PUBLIC_SYMBOLS, evidence.packedApi.referencedSymbols)
+        assertEquals(D050_PUBLIC_SYMBOLS.toSet(), claims.values.flatMap { it.publicSymbols }.toSet())
+        assertEquals(419, 376 + claims.size)
+        assertEquals(125, 168 - claims.size)
+        assertEquals(556, 419 + 12 + 125)
+        assertEquals(22, 27 - 5)
+
+        val controllerClaims = claims.values.filter { "owner=$CANONICAL_AGENT_PACKAGE/CodexMcpServers" in it.capabilityKey }
+        assertEquals(4, controllerClaims.size)
+        controllerClaims.forEach { claim ->
+            if ("kind=function" in claim.capabilityKey) {
+                assertTrue(CrossLanguageBindingScenario.ASYNC_SUCCESS in claim.sharedScenarios)
+                assertTrue(CrossLanguageBindingScenario.ASYNC_FAILURE in claim.sharedScenarios)
+                assertTrue(CrossLanguageBindingScenario.CANCELLATION in claim.sharedScenarios)
+            }
+            assertTrue(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP in claim.sharedScenarios)
+        }
+        val currentSymbols = d050CurrentPublicSymbols()
+        assertEquals(369, currentSymbols.size)
+        assertEquals(84, symbolExports(currentSymbols).first.size)
+        assertEquals(55, symbolExports(currentSymbols).second.size)
+    }
+
+    @Test
+    fun `mcp servers reject canonical public declaration reference and family drift`() {
+        val keys = d050McpServersKeys()
+        val symbols = d050McpServersSymbols()
+
+        keys.forEach { exact ->
+            val drifted = when {
+                "|kind=constructor|" in exact -> exact.replace("suspend=false", "suspend=true")
+                "|kind=property|" in exact -> exact.replace("propertyKind=VAL", "propertyKind=VAR")
+                else -> exact.replace("suspend=true", "suspend=false")
+            }
+            val drift = derive(keys - exact + drifted, symbols, references = D050_PUBLIC_SYMBOLS)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted canonical drift: $drifted")
+        }
+
+        D050_PUBLIC_SYMBOLS.forEach { exact ->
+            val drifted = when {
+                exact.startsWith("class:") -> "${exact}Drift"
+                exact.startsWith("type:") ->
+                    exact.replace("AgentMcpStdioTransport | AgentMcpHttpTransport", "AgentMcpHttpTransport | AgentMcpStdioTransport")
+                exact.startsWith("constructor:") -> exact.replaceFirst("string", "number")
+                exact.startsWith("getter:") -> "$exact | false"
+                else -> exact.replaceFirst("#", "#drift")
+            }
+            val renameClass = exact.removePrefix("class:").takeIf { exact.startsWith("class:") }
+            val driftSymbols = if (renameClass != null) {
+                val pattern = Regex("\\b${Regex.escape(renameClass)}\\b")
+                symbols.map { it.replace(pattern, "${renameClass}Drift") }.sorted()
+            } else {
+                symbols.map { if (it == exact) drifted else it }.sorted()
+            }
+            val references = if (renameClass != null) {
+                val pattern = Regex("\\b${Regex.escape(renameClass)}\\b")
+                D050_PUBLIC_SYMBOLS.map { it.replace(pattern, "${renameClass}Drift") }.sorted()
+            } else {
+                D050_PUBLIC_SYMBOLS.map { if (it == exact) drifted else it }.sorted()
+            }
+            val drift = derive(keys, driftSymbols, references = references)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted public drift: $drifted")
+        }
+
+        keys.forEach { omitted ->
+            val partial = derive(keys - omitted, symbols, references = D050_PUBLIC_SYMBOLS)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys }, "Accepted without $omitted")
+        }
+        D050_PUBLIC_SYMBOLS.forEach { omitted ->
+            val unreferenced = derive(keys, symbols, references = D050_PUBLIC_SYMBOLS - omitted)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && omitted in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        val future = canonicalProperty("CodexMcpServers", "future", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureEvidence = derive(keys + future, symbols, references = D050_PUBLIC_SYMBOLS)
+        assertTrue(future in futureEvidence.missingCapabilityKeys)
+        assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey in keys })
+
+        val foreign = keys.first().replace(CANONICAL_AGENT_PACKAGE, "foreign")
+        val crossPackage = derive(keys + foreign, symbols, references = D050_PUBLIC_SYMBOLS)
+        assertTrue(foreign in crossPackage.missingCapabilityKeys)
+        assertTrue(crossPackage.projectionClaims.none { it.capabilityKey in keys })
+
+        val exactGetter = D050_PUBLIC_SYMBOLS.single { it == "getter:AgentMcpServer#name:string" }
+        val ambiguousGetter = exactGetter.replace(":string", ":number")
+        val ambiguous = derive(
+            keys,
+            (symbols + ambiguousGetter).sorted(),
+            references = (D050_PUBLIC_SYMBOLS + ambiguousGetter).sorted(),
+        )
+        assertTrue(ambiguous.projectionClaims.none { it.capabilityKey in keys })
+    }
+
+    @Test
     fun `state projection requires exact current callback and observation return types`() {
         val key = canonicalProperty(
             "Stream",
@@ -4594,6 +4701,164 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "type:CodexAuthorizationPurpose:\"chat_gpt\" | \"external\""
     ).sorted()
 
+    private fun d050McpServersKeys(): List<String> = listOf(
+        canonicalConstructor(
+            "AgentMcpTransport.Stdio",
+            listOf(
+                "kotlin/String!!",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+                "kotlin/String?",
+                "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?",
+                "kotlin.collections/List<INVARIANT:example/AgentMcpEnvironmentVariable!!>!!",
+            ),
+            defaultParameterIndices = setOf(1, 2, 3, 4),
+        ),
+        canonicalProperty("AgentMcpTransport.Stdio", "command", "kotlin/String!!"),
+        canonicalProperty(
+            "AgentMcpTransport.Stdio",
+            "arguments",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        ),
+        canonicalProperty("AgentMcpTransport.Stdio", "workingDirectory", "kotlin/String?"),
+        canonicalProperty(
+            "AgentMcpTransport.Stdio",
+            "environment",
+            "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?",
+        ),
+        canonicalProperty(
+            "AgentMcpTransport.Stdio",
+            "forwardedEnvironment",
+            "kotlin.collections/List<INVARIANT:example/AgentMcpEnvironmentVariable!!>!!",
+        ),
+        canonicalConstructor(
+            "AgentMcpTransport.Http",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String?",
+                "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?",
+                "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?",
+                "kotlin/String?",
+            ),
+            defaultParameterIndices = setOf(1, 2, 3, 4),
+        ),
+        canonicalProperty("AgentMcpTransport.Http", "url", "kotlin/String!!"),
+        canonicalProperty("AgentMcpTransport.Http", "bearerTokenEnvironmentVariable", "kotlin/String?"),
+        canonicalProperty(
+            "AgentMcpTransport.Http",
+            "headers",
+            "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?",
+        ),
+        canonicalProperty(
+            "AgentMcpTransport.Http",
+            "environmentHeaders",
+            "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?",
+        ),
+        canonicalProperty("AgentMcpTransport.Http", "headersHelper", "kotlin/String?"),
+        canonicalConstructor(
+            "AgentMcpServerConfiguration",
+            listOf(
+                "kotlin/String!!",
+                "example/AgentMcpTransport!!",
+                "example/AgentMcpAuthentication?",
+                "kotlin/String!!",
+                "kotlin/Boolean!!",
+                "kotlin/Boolean!!",
+                "kotlin/Boolean!!",
+                "kotlin.collections/List<INVARIANT:example/AgentMcpToolExposureSurface!!>?",
+                "kotlin/Double?",
+                "kotlin/Double?",
+                "example/AgentMcpToolApproval?",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>?",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>?",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>?",
+                "example/AgentMcpOauthConfiguration?",
+                "kotlin/String?",
+                "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:example/AgentMcpToolConfiguration!!>!!",
+            ),
+            defaultParameterIndices = (2..16).toSet(),
+        ),
+        canonicalProperty("AgentMcpServerConfiguration", "name", "kotlin/String!!"),
+        canonicalProperty("AgentMcpServerConfiguration", "transport", "example/AgentMcpTransport!!"),
+        canonicalProperty("AgentMcpServerConfiguration", "authentication", "example/AgentMcpAuthentication?"),
+        canonicalProperty("AgentMcpServerConfiguration", "environmentId", "kotlin/String!!"),
+        canonicalProperty("AgentMcpServerConfiguration", "isEnabled", "kotlin/Boolean!!"),
+        canonicalProperty("AgentMcpServerConfiguration", "isRequired", "kotlin/Boolean!!"),
+        canonicalProperty("AgentMcpServerConfiguration", "supportsParallelToolCalls", "kotlin/Boolean!!"),
+        canonicalProperty(
+            "AgentMcpServerConfiguration",
+            "omitToolsFrom",
+            "kotlin.collections/List<INVARIANT:example/AgentMcpToolExposureSurface!!>?",
+        ),
+        canonicalProperty("AgentMcpServerConfiguration", "startupTimeoutSeconds", "kotlin/Double?"),
+        canonicalProperty("AgentMcpServerConfiguration", "toolTimeoutSeconds", "kotlin/Double?"),
+        canonicalProperty("AgentMcpServerConfiguration", "defaultToolApproval", "example/AgentMcpToolApproval?"),
+        canonicalProperty(
+            "AgentMcpServerConfiguration",
+            "enabledTools",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>?",
+        ),
+        canonicalProperty(
+            "AgentMcpServerConfiguration",
+            "disabledTools",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>?",
+        ),
+        canonicalProperty(
+            "AgentMcpServerConfiguration",
+            "scopes",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>?",
+        ),
+        canonicalProperty("AgentMcpServerConfiguration", "oauth", "example/AgentMcpOauthConfiguration?"),
+        canonicalProperty("AgentMcpServerConfiguration", "oauthResource", "kotlin/String?"),
+        canonicalProperty(
+            "AgentMcpServerConfiguration",
+            "tools",
+            "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:example/AgentMcpToolConfiguration!!>!!",
+        ),
+        canonicalConstructor(
+            "AgentMcpServer",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "example/AgentMcpAuthStatus!!",
+                "example/AgentMcpServerConfiguration?",
+                "example/AgentResourceOrigin!!",
+                "kotlin/Boolean!!",
+            ),
+            defaultParameterIndices = setOf(3, 4, 5),
+        ),
+        canonicalProperty("AgentMcpServer", "name", "kotlin/String!!"),
+        canonicalProperty("AgentMcpServer", "displayName", "kotlin/String!!"),
+        canonicalProperty("AgentMcpServer", "authStatus", "example/AgentMcpAuthStatus!!"),
+        canonicalProperty("AgentMcpServer", "configuration", "example/AgentMcpServerConfiguration?"),
+        canonicalProperty("AgentMcpServer", "origin", "example/AgentResourceOrigin!!"),
+        canonicalProperty("AgentMcpServer", "canRemove", "kotlin/Boolean!!"),
+        canonicalProperty("AgentMcpServer", "isAuthorized", "kotlin/Boolean!!"),
+        canonicalProperty("CodexMcpServers", "isAvailable", "kotlin/Boolean!!"),
+        canonicalFunction(
+            "CodexMcpServers",
+            "list",
+            returnType = "kotlin.collections/List<INVARIANT:example/AgentMcpServer!!>!!",
+            suspendFunction = true,
+        ),
+        canonicalFunction(
+            "CodexMcpServers",
+            "add",
+            returnType = "example/AgentMcpServer!!",
+            suspendFunction = true,
+            parameters = listOf("example/AgentMcpServerConfiguration!!"),
+        ),
+        canonicalFunction(
+            "CodexMcpServers",
+            "remove",
+            suspendFunction = true,
+            parameters = listOf("example/AgentMcpServer!!"),
+        ),
+        canonicalProperty("CodexAgent", "mcpServers", "example/CodexMcpServers!!"),
+    ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }.sorted()
+
+    private fun d050McpServersSymbols(): List<String> =
+        (D050_PUBLIC_SYMBOLS + "class:CodexAgent").distinct().sorted()
+
     private fun conversationStateSymbols(): List<String> = listOf(
         "class:CodexConversation",
         "class:CodexConversationState",
@@ -5163,6 +5428,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         } + D049_PUBLIC_SYMBOLS
     ).distinct().sorted().also { assertEquals(320, it.size) }
 
+    private fun d050CurrentPublicSymbols(): List<String> =
+        (d049CurrentPublicSymbols() + D050_PUBLIC_SYMBOLS).distinct().sorted()
+            .also { assertEquals(369, it.size) }
+
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
@@ -5356,6 +5625,89 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             D049_CHAT_GPT,
             D049_EXTERNAL,
         ).sorted()
+        private val D050_PUBLIC_SYMBOLS = listOf(
+            "class:AgentMcpHttpTransport",
+            "class:AgentMcpServer",
+            "class:AgentMcpServerConfiguration",
+            "class:AgentMcpStdioTransport",
+            "class:CodexMcpServers",
+            "constructor:AgentMcpHttpTransport#(url: string, " +
+                "bearerTokenEnvironmentVariable?: string | null | undefined, " +
+                "headers?: Readonly<Record<string, string>> | null | undefined, " +
+                "environmentHeaders?: Readonly<Record<string, string>> | null | undefined, " +
+                "headersHelper?: string | null | undefined)",
+            "constructor:AgentMcpServer#(name: string, displayName: string, " +
+                "authStatus: AgentMcpAuthStatus, " +
+                "configuration?: AgentMcpServerConfiguration | null | undefined, " +
+                "origin?: AgentResourceOrigin, canRemove?: boolean)",
+            "constructor:AgentMcpServerConfiguration#(name: string, transport: AgentMcpTransport, " +
+                "authentication?: AgentMcpAuthentication | null | undefined, environmentId?: string, " +
+                "isEnabled?: boolean, isRequired?: boolean, supportsParallelToolCalls?: boolean, " +
+                "omitToolsFrom?: ReadonlyArray<AgentMcpToolExposureSurface> | null | undefined, " +
+                "startupTimeoutSeconds?: number | null | undefined, " +
+                "toolTimeoutSeconds?: number | null | undefined, " +
+                "defaultToolApproval?: AgentMcpToolApproval | null | undefined, " +
+                "enabledTools?: ReadonlyArray<string> | null | undefined, " +
+                "disabledTools?: ReadonlyArray<string> | null | undefined, " +
+                "scopes?: ReadonlyArray<string> | null | undefined, " +
+                "oauth?: AgentMcpOauthConfiguration | null | undefined, " +
+                "oauthResource?: string | null | undefined, " +
+                "tools?: Readonly<Record<string, AgentMcpToolConfiguration>>)",
+            "constructor:AgentMcpStdioTransport#(command: string, arguments?: ReadonlyArray<string>, " +
+                "workingDirectory?: string | null | undefined, " +
+                "environment?: Readonly<Record<string, string>> | null | undefined, " +
+                "forwardedEnvironment?: ReadonlyArray<AgentMcpEnvironmentVariable>)",
+            "getter:AgentMcpHttpTransport#bearerTokenEnvironmentVariable:string | null | undefined",
+            "getter:AgentMcpHttpTransport#environmentHeaders:" +
+                "Readonly<Record<string, string>> | null | undefined",
+            "getter:AgentMcpHttpTransport#headers:Readonly<Record<string, string>> | null | undefined",
+            "getter:AgentMcpHttpTransport#headersHelper:string | null | undefined",
+            "getter:AgentMcpHttpTransport#url:string",
+            "getter:AgentMcpServer#authStatus:AgentMcpAuthStatus",
+            "getter:AgentMcpServer#canRemove:boolean",
+            "getter:AgentMcpServer#configuration:AgentMcpServerConfiguration | null | undefined",
+            "getter:AgentMcpServer#displayName:string",
+            "getter:AgentMcpServer#isAuthorized:boolean",
+            "getter:AgentMcpServer#name:string",
+            "getter:AgentMcpServer#origin:AgentResourceOrigin",
+            "getter:AgentMcpServerConfiguration#authentication:" +
+                "AgentMcpAuthentication | null | undefined",
+            "getter:AgentMcpServerConfiguration#defaultToolApproval:" +
+                "AgentMcpToolApproval | null | undefined",
+            "getter:AgentMcpServerConfiguration#disabledTools:ReadonlyArray<string> | null | undefined",
+            "getter:AgentMcpServerConfiguration#enabledTools:ReadonlyArray<string> | null | undefined",
+            "getter:AgentMcpServerConfiguration#environmentId:string",
+            "getter:AgentMcpServerConfiguration#isEnabled:boolean",
+            "getter:AgentMcpServerConfiguration#isRequired:boolean",
+            "getter:AgentMcpServerConfiguration#name:string",
+            "getter:AgentMcpServerConfiguration#oauth:AgentMcpOauthConfiguration | null | undefined",
+            "getter:AgentMcpServerConfiguration#oauthResource:string | null | undefined",
+            "getter:AgentMcpServerConfiguration#omitToolsFrom:" +
+                "ReadonlyArray<AgentMcpToolExposureSurface> | null | undefined",
+            "getter:AgentMcpServerConfiguration#scopes:ReadonlyArray<string> | null | undefined",
+            "getter:AgentMcpServerConfiguration#startupTimeoutSeconds:number | null | undefined",
+            "getter:AgentMcpServerConfiguration#supportsParallelToolCalls:boolean",
+            "getter:AgentMcpServerConfiguration#toolTimeoutSeconds:number | null | undefined",
+            "getter:AgentMcpServerConfiguration#tools:" +
+                "Readonly<Record<string, AgentMcpToolConfiguration>>",
+            "getter:AgentMcpServerConfiguration#transport:AgentMcpTransport",
+            "getter:AgentMcpStdioTransport#arguments:ReadonlyArray<string>",
+            "getter:AgentMcpStdioTransport#command:string",
+            "getter:AgentMcpStdioTransport#environment:" +
+                "Readonly<Record<string, string>> | null | undefined",
+            "getter:AgentMcpStdioTransport#forwardedEnvironment:" +
+                "ReadonlyArray<AgentMcpEnvironmentVariable>",
+            "getter:AgentMcpStdioTransport#workingDirectory:string | null | undefined",
+            "getter:CodexAgent#mcpServers:CodexMcpServers",
+            "getter:CodexMcpServers#isAvailable:boolean",
+            "method:CodexMcpServers#add:(configuration: AgentMcpServerConfiguration, " +
+                "signal?: AbortSignal | null | undefined): Promise<AgentMcpServer>",
+            "method:CodexMcpServers#list:(signal?: AbortSignal | null | undefined): " +
+                "Promise<ReadonlyArray<AgentMcpServer>>",
+            "method:CodexMcpServers#remove:(server: AgentMcpServer, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+            "type:AgentMcpTransport:AgentMcpStdioTransport | AgentMcpHttpTransport",
+        ).sorted().also { assertEquals(49, it.size) }
 
         private val AUTHENTICATION_OVERLOADS = listOf(
             "method:CodexAuthentication#authenticate:" +

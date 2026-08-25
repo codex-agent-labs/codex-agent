@@ -172,6 +172,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
     errors += invalidConversationStateSnapshotErrors(provisional)
     errors += invalidAgentTurnRequestErrors(canonical.memberKeys, provisional)
     errors += invalidAgentHookHandlerErrors(canonical.memberKeys, provisional)
+    errors += invalidMcpServersErrors(canonical.memberKeys, provisional)
 
     val rejectedKeys = errors.flatMap { error ->
         provisional.mapNotNull { projection -> projection.member.key.takeIf(error::contains) }
@@ -827,6 +828,9 @@ private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.isD050McpServersSurfaceMember()) {
+        return mcpServersProjectionCandidates(member, symbols)
+    }
     if (member.isD048AgentHookHandlerSurfaceMember()) {
         return agentHookHandlerProjectionCandidates(member, symbols)
     }
@@ -886,6 +890,86 @@ private const val javaScriptAgentHookHandlerType =
         "{ readonly type: \"command\"; readonly command: string; readonly isAsync: boolean; } | " +
         "{ readonly type: \"mcp_tool\"; readonly server: string; readonly tool: string; } | " +
         "{ readonly type: \"prompt\"; }"
+private const val javaScriptAgentMcpTransportType =
+    "type:AgentMcpTransport:AgentMcpStdioTransport | AgentMcpHttpTransport"
+private val javaScriptMcpServersSymbols = listOf(
+    "class:AgentMcpHttpTransport",
+    "class:AgentMcpServer",
+    "class:AgentMcpServerConfiguration",
+    "class:AgentMcpStdioTransport",
+    "class:CodexMcpServers",
+    "constructor:AgentMcpHttpTransport#(url: string, " +
+        "bearerTokenEnvironmentVariable?: string | null | undefined, " +
+        "headers?: Readonly<Record<string, string>> | null | undefined, " +
+        "environmentHeaders?: Readonly<Record<string, string>> | null | undefined, " +
+        "headersHelper?: string | null | undefined)",
+    "constructor:AgentMcpServer#(name: string, displayName: string, " +
+        "authStatus: AgentMcpAuthStatus, " +
+        "configuration?: AgentMcpServerConfiguration | null | undefined, " +
+        "origin?: AgentResourceOrigin, canRemove?: boolean)",
+    "constructor:AgentMcpServerConfiguration#(name: string, transport: AgentMcpTransport, " +
+        "authentication?: AgentMcpAuthentication | null | undefined, environmentId?: string, " +
+        "isEnabled?: boolean, isRequired?: boolean, supportsParallelToolCalls?: boolean, " +
+        "omitToolsFrom?: ReadonlyArray<AgentMcpToolExposureSurface> | null | undefined, " +
+        "startupTimeoutSeconds?: number | null | undefined, " +
+        "toolTimeoutSeconds?: number | null | undefined, " +
+        "defaultToolApproval?: AgentMcpToolApproval | null | undefined, " +
+        "enabledTools?: ReadonlyArray<string> | null | undefined, " +
+        "disabledTools?: ReadonlyArray<string> | null | undefined, " +
+        "scopes?: ReadonlyArray<string> | null | undefined, " +
+        "oauth?: AgentMcpOauthConfiguration | null | undefined, " +
+        "oauthResource?: string | null | undefined, " +
+        "tools?: Readonly<Record<string, AgentMcpToolConfiguration>>)",
+    "constructor:AgentMcpStdioTransport#(command: string, arguments?: ReadonlyArray<string>, " +
+        "workingDirectory?: string | null | undefined, " +
+        "environment?: Readonly<Record<string, string>> | null | undefined, " +
+        "forwardedEnvironment?: ReadonlyArray<AgentMcpEnvironmentVariable>)",
+    "getter:AgentMcpHttpTransport#bearerTokenEnvironmentVariable:string | null | undefined",
+    "getter:AgentMcpHttpTransport#environmentHeaders:" +
+        "Readonly<Record<string, string>> | null | undefined",
+    "getter:AgentMcpHttpTransport#headers:Readonly<Record<string, string>> | null | undefined",
+    "getter:AgentMcpHttpTransport#headersHelper:string | null | undefined",
+    "getter:AgentMcpHttpTransport#url:string",
+    "getter:AgentMcpServer#authStatus:AgentMcpAuthStatus",
+    "getter:AgentMcpServer#canRemove:boolean",
+    "getter:AgentMcpServer#configuration:AgentMcpServerConfiguration | null | undefined",
+    "getter:AgentMcpServer#displayName:string",
+    "getter:AgentMcpServer#isAuthorized:boolean",
+    "getter:AgentMcpServer#name:string",
+    "getter:AgentMcpServer#origin:AgentResourceOrigin",
+    "getter:AgentMcpServerConfiguration#authentication:AgentMcpAuthentication | null | undefined",
+    "getter:AgentMcpServerConfiguration#defaultToolApproval:AgentMcpToolApproval | null | undefined",
+    "getter:AgentMcpServerConfiguration#disabledTools:ReadonlyArray<string> | null | undefined",
+    "getter:AgentMcpServerConfiguration#enabledTools:ReadonlyArray<string> | null | undefined",
+    "getter:AgentMcpServerConfiguration#environmentId:string",
+    "getter:AgentMcpServerConfiguration#isEnabled:boolean",
+    "getter:AgentMcpServerConfiguration#isRequired:boolean",
+    "getter:AgentMcpServerConfiguration#name:string",
+    "getter:AgentMcpServerConfiguration#oauth:AgentMcpOauthConfiguration | null | undefined",
+    "getter:AgentMcpServerConfiguration#oauthResource:string | null | undefined",
+    "getter:AgentMcpServerConfiguration#omitToolsFrom:" +
+        "ReadonlyArray<AgentMcpToolExposureSurface> | null | undefined",
+    "getter:AgentMcpServerConfiguration#scopes:ReadonlyArray<string> | null | undefined",
+    "getter:AgentMcpServerConfiguration#startupTimeoutSeconds:number | null | undefined",
+    "getter:AgentMcpServerConfiguration#supportsParallelToolCalls:boolean",
+    "getter:AgentMcpServerConfiguration#toolTimeoutSeconds:number | null | undefined",
+    "getter:AgentMcpServerConfiguration#tools:Readonly<Record<string, AgentMcpToolConfiguration>>",
+    "getter:AgentMcpServerConfiguration#transport:AgentMcpTransport",
+    "getter:AgentMcpStdioTransport#arguments:ReadonlyArray<string>",
+    "getter:AgentMcpStdioTransport#command:string",
+    "getter:AgentMcpStdioTransport#environment:Readonly<Record<string, string>> | null | undefined",
+    "getter:AgentMcpStdioTransport#forwardedEnvironment:ReadonlyArray<AgentMcpEnvironmentVariable>",
+    "getter:AgentMcpStdioTransport#workingDirectory:string | null | undefined",
+    "getter:CodexAgent#mcpServers:CodexMcpServers",
+    "getter:CodexMcpServers#isAvailable:boolean",
+    "method:CodexMcpServers#add:(configuration: AgentMcpServerConfiguration, " +
+        "signal?: AbortSignal | null | undefined): Promise<AgentMcpServer>",
+    "method:CodexMcpServers#list:(signal?: AbortSignal | null | undefined): " +
+        "Promise<ReadonlyArray<AgentMcpServer>>",
+    "method:CodexMcpServers#remove:(server: AgentMcpServer, " +
+        "signal?: AbortSignal | null | undefined): Promise<void>",
+    javaScriptAgentMcpTransportType,
+).sorted()
 private const val javaScriptAgentMessageCapabilities =
     "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"
 private const val javaScriptApiKeyAuthentication =
@@ -1108,6 +1192,255 @@ private fun hasExactD048AgentHookHandlerInventory(symbols: List<JavaScriptPublic
     hasExactJavaScriptSymbolInventory(symbols, listOf(javaScriptAgentHookHandlerType)) &&
         symbols.filter { it.owner == null && it.name == "AgentHookHandler" }
             .map(JavaScriptPublicSymbol::raw) == listOf(javaScriptAgentHookHandlerType)
+
+private fun mcpServersProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    if (!member.isExactD050McpServersMember() ||
+        !hasExactJavaScriptSymbolInventory(symbols, javaScriptMcpServersSymbols)
+    ) return emptyList()
+    val projected = member.d050McpServersPublicSymbols()
+    val scenarios = buildList {
+        add(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        if (member.kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR || member.name in setOf(
+                "arguments",
+                "environment",
+                "forwardedEnvironment",
+                "headers",
+                "environmentHeaders",
+                "omitToolsFrom",
+                "enabledTools",
+                "disabledTools",
+                "scopes",
+                "tools",
+                "configuration",
+            )
+        ) add(CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING)
+        if (member.kind == CanonicalJavaScriptMemberKind.FUNCTION) {
+            add(CrossLanguageBindingScenario.ASYNC_SUCCESS)
+            add(CrossLanguageBindingScenario.ASYNC_FAILURE)
+            add(CrossLanguageBindingScenario.CANCELLATION)
+            add(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP)
+        } else if (member.simpleOwner == "CodexAgent" || member.simpleOwner == "CodexMcpServers") {
+            add(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP)
+        }
+    }
+    return listOf(JavaScriptProjectionCandidate(
+        publicSymbols = projected,
+        scenarios = scenarios.distinct(),
+        requiresConsumerReference = true,
+    ))
+}
+
+private fun CanonicalJavaScriptMember.isD050McpServersSurfaceMember(): Boolean =
+    simpleOwner in setOf(
+        "AgentMcpTransport.Stdio",
+        "AgentMcpTransport.Http",
+        "AgentMcpServerConfiguration",
+        "AgentMcpServer",
+        "CodexMcpServers",
+    ) || simpleOwner == "CodexAgent" && name == "mcpServers"
+
+private fun CanonicalJavaScriptMember.isExactD050McpServersMember(): Boolean {
+    if (owner.substringBeforeLast('/') != canonicalAgentPackage) return false
+    fun canonical(name: String, nullable: Boolean = false): String =
+        "$canonicalAgentPackage/$name${if (nullable) "?" else "!!"}"
+    fun list(type: String, nullable: Boolean = false): String =
+        "kotlin.collections/List<INVARIANT:$type>${if (nullable) "?" else "!!"}"
+    fun map(value: String, nullable: Boolean = false): String =
+        "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:$value>" +
+            if (nullable) "?" else "!!"
+    return when (simpleOwner) {
+        "AgentMcpTransport.Stdio" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter(list("kotlin/String!!"), true, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                    CanonicalJavaScriptParameter(map("kotlin/String!!", nullable = true), true, false),
+                    CanonicalJavaScriptParameter(
+                        list(canonical("AgentMcpEnvironmentVariable")),
+                        true,
+                        false,
+                    ),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "command" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "arguments" -> isExactProperty(simpleOwner, name, list("kotlin/String!!"))
+                "workingDirectory" -> isExactProperty(simpleOwner, name, "kotlin/String?")
+                "environment" -> isExactProperty(simpleOwner, name, map("kotlin/String!!", nullable = true))
+                "forwardedEnvironment" ->
+                    isExactProperty(simpleOwner, name, list(canonical("AgentMcpEnvironmentVariable")))
+                else -> false
+            }
+            else -> false
+        }
+        "AgentMcpTransport.Http" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                    CanonicalJavaScriptParameter(map("kotlin/String!!", nullable = true), true, false),
+                    CanonicalJavaScriptParameter(map("kotlin/String!!", nullable = true), true, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "url" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "bearerTokenEnvironmentVariable", "headersHelper" ->
+                    isExactProperty(simpleOwner, name, "kotlin/String?")
+                "headers", "environmentHeaders" ->
+                    isExactProperty(simpleOwner, name, map("kotlin/String!!", nullable = true))
+                else -> false
+            }
+            else -> false
+        }
+        "AgentMcpServerConfiguration" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter(canonical("AgentMcpTransport"), false, false),
+                    CanonicalJavaScriptParameter(canonical("AgentMcpAuthentication", true), true, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", true, false),
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", true, false),
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", true, false),
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", true, false),
+                    CanonicalJavaScriptParameter(
+                        list(canonical("AgentMcpToolExposureSurface"), nullable = true),
+                        true,
+                        false,
+                    ),
+                    CanonicalJavaScriptParameter("kotlin/Double?", true, false),
+                    CanonicalJavaScriptParameter("kotlin/Double?", true, false),
+                    CanonicalJavaScriptParameter(canonical("AgentMcpToolApproval", true), true, false),
+                    CanonicalJavaScriptParameter(list("kotlin/String!!", nullable = true), true, false),
+                    CanonicalJavaScriptParameter(list("kotlin/String!!", nullable = true), true, false),
+                    CanonicalJavaScriptParameter(list("kotlin/String!!", nullable = true), true, false),
+                    CanonicalJavaScriptParameter(canonical("AgentMcpOauthConfiguration", true), true, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                    CanonicalJavaScriptParameter(
+                        map(canonical("AgentMcpToolConfiguration")),
+                        true,
+                        false,
+                    ),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "name", "environmentId" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "transport" -> isExactProperty(simpleOwner, name, canonical("AgentMcpTransport"))
+                "authentication" ->
+                    isExactProperty(simpleOwner, name, canonical("AgentMcpAuthentication", true))
+                "isEnabled", "isRequired", "supportsParallelToolCalls" ->
+                    isExactProperty(simpleOwner, name, "kotlin/Boolean!!")
+                "omitToolsFrom" -> isExactProperty(
+                    simpleOwner,
+                    name,
+                    list(canonical("AgentMcpToolExposureSurface"), nullable = true),
+                )
+                "startupTimeoutSeconds", "toolTimeoutSeconds" ->
+                    isExactProperty(simpleOwner, name, "kotlin/Double?")
+                "defaultToolApproval" ->
+                    isExactProperty(simpleOwner, name, canonical("AgentMcpToolApproval", true))
+                "enabledTools", "disabledTools", "scopes" ->
+                    isExactProperty(simpleOwner, name, list("kotlin/String!!", nullable = true))
+                "oauth" -> isExactProperty(simpleOwner, name, canonical("AgentMcpOauthConfiguration", true))
+                "oauthResource" -> isExactProperty(simpleOwner, name, "kotlin/String?")
+                "tools" -> isExactProperty(simpleOwner, name, map(canonical("AgentMcpToolConfiguration")))
+                else -> false
+            }
+            else -> false
+        }
+        "AgentMcpServer" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter(canonical("AgentMcpAuthStatus"), false, false),
+                    CanonicalJavaScriptParameter(canonical("AgentMcpServerConfiguration", true), true, false),
+                    CanonicalJavaScriptParameter(canonical("AgentResourceOrigin"), true, false),
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "name", "displayName" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "authStatus" -> isExactProperty(simpleOwner, name, canonical("AgentMcpAuthStatus"))
+                "configuration" ->
+                    isExactProperty(simpleOwner, name, canonical("AgentMcpServerConfiguration", true))
+                "origin" -> isExactProperty(simpleOwner, name, canonical("AgentResourceOrigin"))
+                "canRemove", "isAuthorized" -> isExactProperty(simpleOwner, name, "kotlin/Boolean!!")
+                else -> false
+            }
+            else -> false
+        }
+        "CodexMcpServers" -> when (name) {
+            "isAvailable" -> isExactProperty(simpleOwner, name, "kotlin/Boolean!!")
+            "list" -> isExactFunction(
+                simpleOwner,
+                name,
+                list(canonical("AgentMcpServer")),
+                expectedSuspend = true,
+                expectedParameters = emptyList(),
+            )
+            "add" -> isExactFunction(
+                simpleOwner,
+                name,
+                canonical("AgentMcpServer"),
+                expectedSuspend = true,
+                expectedParameters = listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentMcpServerConfiguration"), false, false),
+                ),
+            )
+            "remove" -> isExactFunction(
+                simpleOwner,
+                name,
+                "kotlin/Unit",
+                expectedSuspend = true,
+                expectedParameters = listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentMcpServer"), false, false),
+                ),
+            )
+            else -> false
+        }
+        "CodexAgent" -> name == "mcpServers" &&
+            isExactProperty(simpleOwner, name, canonical("CodexMcpServers"))
+        else -> false
+    }
+}
+
+private fun CanonicalJavaScriptMember.d050McpServersPublicSymbols(): List<String> {
+    val publicOwner = when (simpleOwner) {
+        "AgentMcpTransport.Stdio" -> "AgentMcpStdioTransport"
+        "AgentMcpTransport.Http" -> "AgentMcpHttpTransport"
+        else -> simpleOwner
+    }
+    val expectedKind = when (kind) {
+        CanonicalJavaScriptMemberKind.CONSTRUCTOR -> JavaScriptPublicSymbolKind.CONSTRUCTOR
+        CanonicalJavaScriptMemberKind.FUNCTION -> JavaScriptPublicSymbolKind.METHOD
+        CanonicalJavaScriptMemberKind.PROPERTY -> JavaScriptPublicSymbolKind.GETTER
+        else -> error("Unsupported D050 MCP Servers capability kind: $key")
+    }
+    val memberSymbol = javaScriptMcpServersSymbols.single { raw ->
+        val symbol = parseJavaScriptPublicSymbol(raw)
+        symbol.kind == expectedKind && symbol.owner == publicOwner &&
+            symbol.name == if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR) "constructor" else name
+    }
+    return buildList {
+        when {
+            kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR -> add("class:$publicOwner")
+            simpleOwner == "CodexMcpServers" && name == "isAvailable" -> add("class:CodexMcpServers")
+        }
+        if (simpleOwner == "AgentMcpServerConfiguration" && name == "transport") {
+            add(javaScriptAgentMcpTransportType)
+        }
+        add(memberSymbol)
+    }.sorted()
+}
 
 private fun CanonicalJavaScriptMember.isD047AgentTurnRequestSurfaceMember(): Boolean =
     simpleOwner == "AgentTurnRequest" ||
@@ -2633,6 +2966,34 @@ private fun invalidAgentHookHandlerErrors(
         }
     return if (exact) emptyList() else listOf(
         "Incomplete JavaScript/TypeScript AgentHookHandler family for capabilities " +
+            (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
+                .distinct()
+                .sorted(),
+    )
+}
+
+private fun invalidMcpServersErrors(
+    canonicalKeys: List<String>,
+    projections: List<JavaScriptProjection>,
+): List<String> {
+    val canonicalMembers = canonicalKeys.map(::parseCanonicalJavaScriptMember)
+        .filter(CanonicalJavaScriptMember::isD050McpServersSurfaceMember)
+    val related = projections.filter { projection ->
+        projection.publicSymbols.any(javaScriptMcpServersSymbols::contains)
+    }
+    if (canonicalMembers.isEmpty() && related.isEmpty()) return emptyList()
+    val exact = canonicalMembers.size == 43 &&
+        canonicalMembers.all(CanonicalJavaScriptMember::isExactD050McpServersMember) &&
+        canonicalMembers.map(CanonicalJavaScriptMember::key).distinct().size == 43 &&
+        related.size == 43 && related.map { it.member.key }.distinct().size == 43 &&
+        related.all { projection ->
+            projection.member.isExactD050McpServersMember() &&
+                projection.publicSymbols == projection.member.d050McpServersPublicSymbols() &&
+                projection.shareablePublicSymbols.isEmpty()
+        } && related.flatMap(JavaScriptProjection::publicSymbols).toSet() ==
+        javaScriptMcpServersSymbols.toSet()
+    return if (exact) emptyList() else listOf(
+        "Incomplete JavaScript/TypeScript MCP Servers family for capabilities " +
             (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
                 .distinct()
                 .sorted(),

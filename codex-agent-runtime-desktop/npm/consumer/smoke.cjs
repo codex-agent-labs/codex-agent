@@ -130,6 +130,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexModels());
   assert.throws(() => new sdk.CodexSkills());
   assert.throws(() => new sdk.CodexHooks());
+  assert.throws(() => new sdk.CodexMcpServers());
   assert.throws(() => new sdk.CodexAuthenticationState());
   assert.throws(() => new sdk.CodexConversation());
   assert.throws(() => new sdk.CodexObservation());
@@ -148,6 +149,10 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.CodexHooks.prototype.install, 'function');
   assert.equal(typeof sdk.CodexHooks.prototype.uninstall, 'function');
   assert.equal(typeof sdk.CodexHooks.prototype.trust, 'function');
+  assert.equal(typeof Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'mcpServers')?.get, 'function');
+  assert.equal(typeof sdk.CodexMcpServers.prototype.list, 'function');
+  assert.equal(typeof sdk.CodexMcpServers.prototype.add, 'function');
+  assert.equal(typeof sdk.CodexMcpServers.prototype.remove, 'function');
   for (const constructor of [
     sdk.AgentConnector,
     sdk.AgentConversation,
@@ -165,6 +170,10 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentMcpEnvironmentVariable,
     sdk.AgentMcpOauthConfiguration,
     sdk.AgentMcpToolConfiguration,
+    sdk.AgentMcpStdioTransport,
+    sdk.AgentMcpHttpTransport,
+    sdk.AgentMcpServerConfiguration,
+    sdk.AgentMcpServer,
     sdk.AgentModel,
     sdk.AgentPlanProgress,
     sdk.AgentPlanStep,
@@ -188,6 +197,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.CodexModels,
     sdk.CodexSkills,
     sdk.CodexHooks,
+    sdk.CodexMcpServers,
     sdk.CodexObservation,
     sdk.CodexTurnProgress,
     sdk.CodexWorkspace,
@@ -521,6 +531,207 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   ]) {
     assert.throws(() => new sdk.AgentMcpToolConfiguration(invalid));
   }
+
+  const defaultStdioTransport = new sdk.AgentMcpStdioTransport('node');
+  assert.deepEqual(
+    [
+      defaultStdioTransport.command,
+      defaultStdioTransport.arguments,
+      defaultStdioTransport.workingDirectory,
+      defaultStdioTransport.environment,
+      defaultStdioTransport.forwardedEnvironment,
+    ],
+    ['node', [], null, null, []],
+  );
+  const sourceArguments = ['server.js', '--stdio'];
+  const sourceEnvironment = { TOKEN: 'secret', EMPTY: '' };
+  const sourceForwardedEnvironment = [new sdk.AgentMcpEnvironmentVariable('HOME', 'local')];
+  const stdioTransport = new sdk.AgentMcpStdioTransport(
+    'node', sourceArguments, '/workspace', sourceEnvironment, sourceForwardedEnvironment,
+  );
+  sourceArguments[0] = 'changed';
+  sourceEnvironment.TOKEN = 'changed';
+  sourceForwardedEnvironment.length = 0;
+  assert.deepEqual(stdioTransport.arguments, ['server.js', '--stdio']);
+  assert.deepEqual(stdioTransport.environment, { TOKEN: 'secret', EMPTY: '' });
+  assert.deepEqual(
+    stdioTransport.forwardedEnvironment.map(({ name, source }) => [name, source]),
+    [['HOME', 'local']],
+  );
+  assert.equal(Object.isFrozen(stdioTransport), true);
+  assert.equal(Object.isFrozen(stdioTransport.arguments), true);
+  assert.equal(Object.isFrozen(stdioTransport.environment), true);
+  assert.equal(Object.isFrozen(stdioTransport.forwardedEnvironment), true);
+  assert.equal(Object.isFrozen(stdioTransport.forwardedEnvironment[0]), true);
+  assert.deepEqual(Reflect.ownKeys(stdioTransport), [
+    'command', 'arguments', 'workingDirectory', 'environment', 'forwardedEnvironment',
+  ]);
+  assert.throws(() => new sdk.AgentMcpStdioTransport('   '), /MCP command must not be blank/);
+  assert.throws(() => new sdk.AgentMcpStdioTransport('node', new Array(1)));
+  assert.throws(() => new sdk.AgentMcpStdioTransport('node', [1]));
+  assert.throws(() => new sdk.AgentMcpStdioTransport('node', [], null, []));
+  assert.throws(() => new sdk.AgentMcpStdioTransport('node', [], null, { TOKEN: 1 }));
+  assert.throws(() => new sdk.AgentMcpStdioTransport('node', [], null, null, [{}]));
+
+  const httpTransport = new sdk.AgentMcpHttpTransport(
+    'https://mcp.example.com:443/path',
+    'MCP_TOKEN',
+    { 'X-Static': 'value' },
+    { Authorization: 'MCP_AUTH' },
+    'mcp-headers',
+  );
+  assert.deepEqual(
+    [
+      httpTransport.url,
+      httpTransport.bearerTokenEnvironmentVariable,
+      httpTransport.headers,
+      httpTransport.environmentHeaders,
+      httpTransport.headersHelper,
+    ],
+    [
+      'https://mcp.example.com:443/path',
+      'MCP_TOKEN',
+      { 'X-Static': 'value' },
+      { Authorization: 'MCP_AUTH' },
+      'mcp-headers',
+    ],
+  );
+  assert.equal(Object.isFrozen(httpTransport), true);
+  assert.equal(Object.isFrozen(httpTransport.headers), true);
+  assert.equal(Object.isFrozen(httpTransport.environmentHeaders), true);
+  assert.deepEqual(Reflect.ownKeys(httpTransport), [
+    'url', 'bearerTokenEnvironmentVariable', 'headers', 'environmentHeaders', 'headersHelper',
+  ]);
+  assert.equal(new sdk.AgentMcpHttpTransport('http://127.0.0.1:8787/mcp').url,
+    'http://127.0.0.1:8787/mcp');
+  for (const unsafeUrl of [
+    'http://example.com/mcp', 'http://localhost.evil.example/mcp', 'https:///missing-host',
+  ]) {
+    assert.throws(() => new sdk.AgentMcpHttpTransport(unsafeUrl),
+      /MCP HTTP URL must use HTTPS or a loopback HTTP address/);
+  }
+  assert.throws(() => new sdk.AgentMcpHttpTransport('https://mcp.example.com', ' '));
+  assert.throws(() => new sdk.AgentMcpHttpTransport('https://mcp.example.com', null, null, null, ' '));
+
+  const hiddenRecord = {};
+  Object.defineProperty(hiddenRecord, 'TOKEN', { value: 'secret', enumerable: false });
+  const symbolRecord = { TOKEN: 'secret', [Symbol('hidden')]: 'value' };
+  const inheritedRecord = Object.create({ TOKEN: 'inherited' });
+  inheritedRecord.OWN = 'value';
+  for (const invalidRecord of [[], new Map(), inheritedRecord, hiddenRecord, symbolRecord]) {
+    assert.throws(() => new sdk.AgentMcpStdioTransport('node', [], null, invalidRecord));
+    assert.throws(() => new sdk.AgentMcpHttpTransport('https://mcp.example.com', null, invalidRecord));
+  }
+
+  const toolConfiguration = new sdk.AgentMcpToolConfiguration('prompt');
+  const oauthConfiguration = new sdk.AgentMcpOauthConfiguration('client', 9876);
+  const mcpConfiguration = new sdk.AgentMcpServerConfiguration(
+    'remote', httpTransport, 'chat_gpt', 'local', false, true, true,
+    ['code_mode', 'deferred'], 3.5, 9, 'writes', ['read'], [], ['files.read'],
+    oauthConfiguration, 'https://mcp.example.com/resource', { write: toolConfiguration },
+  );
+  assert.deepEqual(
+    [
+      mcpConfiguration.name,
+      mcpConfiguration.authentication,
+      mcpConfiguration.environmentId,
+      mcpConfiguration.isEnabled,
+      mcpConfiguration.isRequired,
+      mcpConfiguration.supportsParallelToolCalls,
+      mcpConfiguration.omitToolsFrom,
+      mcpConfiguration.startupTimeoutSeconds,
+      mcpConfiguration.toolTimeoutSeconds,
+      mcpConfiguration.defaultToolApproval,
+      mcpConfiguration.enabledTools,
+      mcpConfiguration.disabledTools,
+      mcpConfiguration.scopes,
+      mcpConfiguration.oauth.clientId,
+      mcpConfiguration.oauth.callbackPort,
+      mcpConfiguration.oauthResource,
+      mcpConfiguration.tools.write.approval,
+    ],
+    [
+      'remote', 'chat_gpt', 'local', false, true, true, ['code_mode', 'deferred'],
+      3.5, 9, 'writes', ['read'], [], ['files.read'], 'client', 9876,
+      'https://mcp.example.com/resource', 'prompt',
+    ],
+  );
+  assert.notEqual(mcpConfiguration.transport, httpTransport);
+  assert.notEqual(mcpConfiguration.oauth, oauthConfiguration);
+  assert.notEqual(mcpConfiguration.tools.write, toolConfiguration);
+  assert.equal(Object.isFrozen(mcpConfiguration), true);
+  assert.equal(Object.isFrozen(mcpConfiguration.transport), true);
+  assert.equal(Object.isFrozen(mcpConfiguration.omitToolsFrom), true);
+  assert.equal(Object.isFrozen(mcpConfiguration.enabledTools), true);
+  assert.equal(Object.isFrozen(mcpConfiguration.disabledTools), true);
+  assert.equal(Object.isFrozen(mcpConfiguration.scopes), true);
+  assert.equal(Object.isFrozen(mcpConfiguration.tools), true);
+  assert.equal(Object.isFrozen(mcpConfiguration.tools.write), true);
+  assert.deepEqual(Reflect.ownKeys(mcpConfiguration), [
+    'name', 'transport', 'authentication', 'environmentId', 'isEnabled', 'isRequired',
+    'supportsParallelToolCalls', 'omitToolsFrom', 'startupTimeoutSeconds',
+    'toolTimeoutSeconds', 'defaultToolApproval', 'enabledTools', 'disabledTools', 'scopes',
+    'oauth', 'oauthResource', 'tools',
+  ]);
+  const defaultMcpConfiguration = new sdk.AgentMcpServerConfiguration('local', defaultStdioTransport);
+  assert.deepEqual(
+    [
+      defaultMcpConfiguration.authentication,
+      defaultMcpConfiguration.environmentId,
+      defaultMcpConfiguration.isEnabled,
+      defaultMcpConfiguration.isRequired,
+      defaultMcpConfiguration.supportsParallelToolCalls,
+      defaultMcpConfiguration.omitToolsFrom,
+      defaultMcpConfiguration.startupTimeoutSeconds,
+      defaultMcpConfiguration.toolTimeoutSeconds,
+      defaultMcpConfiguration.defaultToolApproval,
+      defaultMcpConfiguration.enabledTools,
+      defaultMcpConfiguration.disabledTools,
+      defaultMcpConfiguration.scopes,
+      defaultMcpConfiguration.oauth,
+      defaultMcpConfiguration.oauthResource,
+      defaultMcpConfiguration.tools,
+    ],
+    [null, 'local', true, false, false, null, null, null, null, null, null, null, null, null, {}],
+  );
+  assert.throws(() => new sdk.AgentMcpServerConfiguration('invalid.name', defaultStdioTransport));
+  assert.throws(() => new sdk.AgentMcpServerConfiguration(
+    'stdio-auth', defaultStdioTransport, 'oauth',
+  ), /MCP stdio servers do not support authentication/);
+  assert.throws(() => new sdk.AgentMcpServerConfiguration(
+    'remote-helper', httpTransport, null, 'remote', true, false, false,
+  ), /MCP HTTP headers helpers are only supported for local servers/);
+  for (const invalidTimeout of [0, -1, NaN, Infinity, Number.MAX_VALUE]) {
+    assert.throws(() => new sdk.AgentMcpServerConfiguration(
+      'invalid-timeout', defaultStdioTransport, null, 'local', true, false, false,
+      null, invalidTimeout,
+    ));
+  }
+  assert.throws(() => new sdk.AgentMcpServerConfiguration(
+    'invalid-tools', defaultStdioTransport, null, 'local', true, false, false,
+    null, null, null, null, null, null, null, null, null, { read: {} },
+  ));
+
+  const mcpServer = new sdk.AgentMcpServer(
+    'remote', 'Remote', 'oauth', mcpConfiguration, 'user', true,
+  );
+  assert.deepEqual(
+    [
+      mcpServer.name, mcpServer.displayName, mcpServer.authStatus, mcpServer.origin,
+      mcpServer.canRemove, mcpServer.isAuthorized,
+    ],
+    ['remote', 'Remote', 'oauth', 'user', true, true],
+  );
+  assert.notEqual(mcpServer.configuration, mcpConfiguration);
+  assert.equal(Object.isFrozen(mcpServer), true);
+  assert.equal(Object.isFrozen(mcpServer.configuration), true);
+  assert.deepEqual(Reflect.ownKeys(mcpServer), [
+    'name', 'displayName', 'authStatus', 'configuration', 'origin', 'canRemove', 'isAuthorized',
+  ]);
+  assert.equal(new sdk.AgentMcpServer('new', 'New', 'not_logged_in').isAuthorized, false);
+  assert.equal(new sdk.AgentMcpServer('token', 'Token', 'bearer_token').isAuthorized, true);
+  assert.throws(() => new sdk.AgentMcpServer('server', 'Server', 'AUTHORIZED'));
+  assert.throws(() => new sdk.AgentMcpServer('server', 'Server', 'oauth', {}));
 
   const firstIssue = new sdk.AgentElicitationValidationIssue('first', 'missing_required');
   const secondIssue = new sdk.AgentElicitationValidationIssue('second', 'invalid_format');

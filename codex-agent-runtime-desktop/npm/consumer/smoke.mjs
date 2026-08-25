@@ -400,6 +400,10 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.AgentMcpEnvironmentVariable, commonJsSdk.AgentMcpEnvironmentVariable);
   assert.equal(sdk.AgentMcpOauthConfiguration, commonJsSdk.AgentMcpOauthConfiguration);
   assert.equal(sdk.AgentMcpToolConfiguration, commonJsSdk.AgentMcpToolConfiguration);
+  assert.equal(sdk.AgentMcpStdioTransport, commonJsSdk.AgentMcpStdioTransport);
+  assert.equal(sdk.AgentMcpHttpTransport, commonJsSdk.AgentMcpHttpTransport);
+  assert.equal(sdk.AgentMcpServerConfiguration, commonJsSdk.AgentMcpServerConfiguration);
+  assert.equal(sdk.AgentMcpServer, commonJsSdk.AgentMcpServer);
   assert.equal(sdk.AgentPlanProgress, commonJsSdk.AgentPlanProgress);
   assert.equal(sdk.AgentPlanStep, commonJsSdk.AgentPlanStep);
   assert.equal(sdk.CodexAgent.prototype.rename, commonJsSdk.CodexAgent.prototype.rename);
@@ -416,6 +420,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.CodexModels, commonJsSdk.CodexModels);
   assert.equal(sdk.CodexSkills, commonJsSdk.CodexSkills);
   assert.equal(sdk.CodexHooks, commonJsSdk.CodexHooks);
+  assert.equal(sdk.CodexMcpServers, commonJsSdk.CodexMcpServers);
   assert.equal(
     Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'skills').get,
     Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'skills').get,
@@ -432,6 +437,13 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.CodexHooks.prototype.install, commonJsSdk.CodexHooks.prototype.install);
   assert.equal(sdk.CodexHooks.prototype.uninstall, commonJsSdk.CodexHooks.prototype.uninstall);
   assert.equal(sdk.CodexHooks.prototype.trust, commonJsSdk.CodexHooks.prototype.trust);
+  assert.equal(
+    Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'mcpServers').get,
+    Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'mcpServers').get,
+  );
+  assert.equal(sdk.CodexMcpServers.prototype.list, commonJsSdk.CodexMcpServers.prototype.list);
+  assert.equal(sdk.CodexMcpServers.prototype.add, commonJsSdk.CodexMcpServers.prototype.add);
+  assert.equal(sdk.CodexMcpServers.prototype.remove, commonJsSdk.CodexMcpServers.prototype.remove);
   assert.equal(
     sdk.codexApprovalPresetDisplayName,
     commonJsSdk.codexApprovalPresetDisplayName,
@@ -479,6 +491,22 @@ test('esm exposes the same runtime values as CommonJS', () => {
     ),
     (error) => error?.message === 'timeoutSeconds must be a bigint',
   );
+  const esmTransport = new sdk.AgentMcpStdioTransport(
+    'node', ['server.js'], '/workspace', { TOKEN: 'value' },
+    [new sdk.AgentMcpEnvironmentVariable('HOME', 'local')],
+  );
+  const esmConfiguration = new sdk.AgentMcpServerConfiguration('esm', esmTransport);
+  const esmServer = new sdk.AgentMcpServer(
+    'esm', 'ESM', 'bearer_token', esmConfiguration, 'user', true,
+  );
+  assert.deepEqual(
+    [esmServer.name, esmServer.configuration.transport.command, esmServer.isAuthorized],
+    ['esm', 'node', true],
+  );
+  assert.equal(Object.isFrozen(esmServer), true);
+  assert.equal(Object.isFrozen(esmServer.configuration), true);
+  assert.equal(Object.isFrozen(esmServer.configuration.transport.arguments), true);
+  assert.equal(Object.isFrozen(esmServer.configuration.transport.environment), true);
   for (const [preset, displayName] of [
     ['never', 'Never'],
     ['auto_review', 'Auto review'],
@@ -706,6 +734,18 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexHooks#trust:(hook: AgentHook, signal?: AbortSignal | null | undefined): Promise<void>',
   ), 'Hook trust must preserve canonical hook identity and cancellation');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'type:AgentMcpTransport:AgentMcpStdioTransport | AgentMcpHttpTransport',
+  ), 'MCP transports must remain the exact two-variant reviewed union');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentMcpServerConfiguration#(name: string, transport: AgentMcpTransport, authentication?: AgentMcpAuthentication | null | undefined, environmentId?: string, isEnabled?: boolean, isRequired?: boolean, supportsParallelToolCalls?: boolean, omitToolsFrom?: ReadonlyArray<AgentMcpToolExposureSurface> | null | undefined, startupTimeoutSeconds?: number | null | undefined, toolTimeoutSeconds?: number | null | undefined, defaultToolApproval?: AgentMcpToolApproval | null | undefined, enabledTools?: ReadonlyArray<string> | null | undefined, disabledTools?: ReadonlyArray<string> | null | undefined, scopes?: ReadonlyArray<string> | null | undefined, oauth?: AgentMcpOauthConfiguration | null | undefined, oauthResource?: string | null | undefined, tools?: Readonly<Record<string, AgentMcpToolConfiguration>>)',
+  ), 'MCP configurations must preserve every typed option and immutable collection');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:CodexAgent#mcpServers:CodexMcpServers',
+  ), 'MCP server controller ownership must be discoverable from an Agent');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexMcpServers#add:(configuration: AgentMcpServerConfiguration, signal?: AbortSignal | null | undefined): Promise<AgentMcpServer>',
+  ), 'MCP server installation must preserve canonical configuration and cancellation');
   assert.ok(compilerApi.publicSymbols.includes(
     'getter:CodexAgent#authentication:CodexAuthentication',
   ), 'Agent authentication ownership must be discoverable');

@@ -208,6 +208,14 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     | { readonly type: "command"; readonly command: string; readonly isAsync: boolean }
     | { readonly type: "mcp_tool"; readonly server: string; readonly tool: string }
     | { readonly type: "prompt" };"""
+        val rawAgentMcpTransportDeclaration =
+            """export declare interface AgentMcpTransport {
+    readonly __doNotUseOrImplementIt: {
+        readonly AgentMcpTransport: unique symbol;
+    };
+}"""
+        val reviewedAgentMcpTransportDeclaration =
+            "export type AgentMcpTransport = AgentMcpStdioTransport | AgentMcpHttpTransport;"
         val rawAgentConnectorDeclaration =
             """export declare class AgentConnector {
     constructor(id: string, name: string, description?: string, installUrl?: Nullable<string>, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: Array<string>);
@@ -539,6 +547,124 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     uninstall(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
     trust(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
 }"""
+        val rawAgentMcpStdioTransportDeclaration =
+            """export declare class AgentMcpStdioTransport implements AgentMcpTransport {
+    constructor(command: string, arguments?: Array<string>, workingDirectory?: Nullable<string>, environment?: Nullable<any>, forwardedEnvironment?: Array<AgentMcpEnvironmentVariable>);
+    get command(): string;
+    get arguments(): Array<string>;
+    get workingDirectory(): Nullable<string>;
+    get environment(): Nullable<any>;
+    get forwardedEnvironment(): Array<AgentMcpEnvironmentVariable>;
+    readonly __doNotUseOrImplementIt: AgentMcpTransport["__doNotUseOrImplementIt"];
+}"""
+        val reviewedAgentMcpStdioTransportDeclaration =
+            """export declare class AgentMcpStdioTransport {
+    constructor(command: string, arguments?: ReadonlyArray<string>, workingDirectory?: Nullable<string>, environment?: Nullable<Readonly<Record<string, string>>>, forwardedEnvironment?: ReadonlyArray<AgentMcpEnvironmentVariable>);
+    get command(): string;
+    get arguments(): ReadonlyArray<string>;
+    get workingDirectory(): Nullable<string>;
+    get environment(): Nullable<Readonly<Record<string, string>>>;
+    get forwardedEnvironment(): ReadonlyArray<AgentMcpEnvironmentVariable>;
+}"""
+        val rawAgentMcpHttpTransportDeclaration =
+            """export declare class AgentMcpHttpTransport implements AgentMcpTransport {
+    constructor(url: string, bearerTokenEnvironmentVariable?: Nullable<string>, headers?: Nullable<any>, environmentHeaders?: Nullable<any>, headersHelper?: Nullable<string>);
+    get url(): string;
+    get bearerTokenEnvironmentVariable(): Nullable<string>;
+    get headers(): Nullable<any>;
+    get environmentHeaders(): Nullable<any>;
+    get headersHelper(): Nullable<string>;
+    readonly __doNotUseOrImplementIt: AgentMcpTransport["__doNotUseOrImplementIt"];
+}"""
+        val reviewedAgentMcpHttpTransportDeclaration =
+            """export declare class AgentMcpHttpTransport {
+    constructor(url: string, bearerTokenEnvironmentVariable?: Nullable<string>, headers?: Nullable<Readonly<Record<string, string>>>, environmentHeaders?: Nullable<Readonly<Record<string, string>>>, headersHelper?: Nullable<string>);
+    get url(): string;
+    get bearerTokenEnvironmentVariable(): Nullable<string>;
+    get headers(): Nullable<Readonly<Record<string, string>>>;
+    get environmentHeaders(): Nullable<Readonly<Record<string, string>>>;
+    get headersHelper(): Nullable<string>;
+}"""
+        val rawAgentMcpServerConfigurationDeclaration =
+            """export declare class AgentMcpServerConfiguration {
+    constructor(name: string, transport: AgentMcpTransport, authentication?: Nullable<string>, environmentId?: string, isEnabled?: boolean, isRequired?: boolean, supportsParallelToolCalls?: boolean, omitToolsFrom?: Nullable<Array<string>>, startupTimeoutSeconds?: Nullable<number>, toolTimeoutSeconds?: Nullable<number>, defaultToolApproval?: Nullable<string>, enabledTools?: Nullable<Array<string>>, disabledTools?: Nullable<Array<string>>, scopes?: Nullable<Array<string>>, oauth?: Nullable<AgentMcpOauthConfiguration>, oauthResource?: Nullable<string>, tools?: any);
+    get name(): string;
+    get transport(): AgentMcpTransport;
+    get authentication(): Nullable<string>;
+    get environmentId(): string;
+    get isEnabled(): boolean;
+    get isRequired(): boolean;
+    get supportsParallelToolCalls(): boolean;
+    get omitToolsFrom(): Nullable<Array<string>>;
+    get startupTimeoutSeconds(): Nullable<number>;
+    get toolTimeoutSeconds(): Nullable<number>;
+    get defaultToolApproval(): Nullable<string>;
+    get enabledTools(): Nullable<Array<string>>;
+    get disabledTools(): Nullable<Array<string>>;
+    get scopes(): Nullable<Array<string>>;
+    get oauth(): Nullable<AgentMcpOauthConfiguration>;
+    get oauthResource(): Nullable<string>;
+    get tools(): any;
+}"""
+        val reviewedAgentMcpServerConfigurationDeclaration =
+            """export declare class AgentMcpServerConfiguration {
+    constructor(name: string, transport: AgentMcpTransport, authentication?: Nullable<AgentMcpAuthentication>, environmentId?: string, isEnabled?: boolean, isRequired?: boolean, supportsParallelToolCalls?: boolean, omitToolsFrom?: Nullable<ReadonlyArray<AgentMcpToolExposureSurface>>, startupTimeoutSeconds?: Nullable<number>, toolTimeoutSeconds?: Nullable<number>, defaultToolApproval?: Nullable<AgentMcpToolApproval>, enabledTools?: Nullable<ReadonlyArray<string>>, disabledTools?: Nullable<ReadonlyArray<string>>, scopes?: Nullable<ReadonlyArray<string>>, oauth?: Nullable<AgentMcpOauthConfiguration>, oauthResource?: Nullable<string>, tools?: Readonly<Record<string, AgentMcpToolConfiguration>>);
+    get name(): string;
+    get transport(): AgentMcpTransport;
+    get authentication(): Nullable<AgentMcpAuthentication>;
+    get environmentId(): string;
+    get isEnabled(): boolean;
+    get isRequired(): boolean;
+    get supportsParallelToolCalls(): boolean;
+    get omitToolsFrom(): Nullable<ReadonlyArray<AgentMcpToolExposureSurface>>;
+    get startupTimeoutSeconds(): Nullable<number>;
+    get toolTimeoutSeconds(): Nullable<number>;
+    get defaultToolApproval(): Nullable<AgentMcpToolApproval>;
+    get enabledTools(): Nullable<ReadonlyArray<string>>;
+    get disabledTools(): Nullable<ReadonlyArray<string>>;
+    get scopes(): Nullable<ReadonlyArray<string>>;
+    get oauth(): Nullable<AgentMcpOauthConfiguration>;
+    get oauthResource(): Nullable<string>;
+    get tools(): Readonly<Record<string, AgentMcpToolConfiguration>>;
+}"""
+        val rawAgentMcpServerDeclaration =
+            """export declare class AgentMcpServer {
+    constructor(name: string, displayName: string, authStatus: string, configuration?: Nullable<AgentMcpServerConfiguration>, origin?: string, canRemove?: boolean);
+    get name(): string;
+    get displayName(): string;
+    get authStatus(): string;
+    get configuration(): Nullable<AgentMcpServerConfiguration>;
+    get origin(): string;
+    get canRemove(): boolean;
+    get isAuthorized(): boolean;
+}"""
+        val reviewedAgentMcpServerDeclaration =
+            """export declare class AgentMcpServer {
+    constructor(name: string, displayName: string, authStatus: AgentMcpAuthStatus, configuration?: Nullable<AgentMcpServerConfiguration>, origin?: AgentResourceOrigin, canRemove?: boolean);
+    get name(): string;
+    get displayName(): string;
+    get authStatus(): AgentMcpAuthStatus;
+    get configuration(): Nullable<AgentMcpServerConfiguration>;
+    get origin(): AgentResourceOrigin;
+    get canRemove(): boolean;
+    get isAuthorized(): boolean;
+}"""
+        val rawCodexMcpServersDeclaration =
+            """export declare class CodexMcpServers {
+    private constructor();
+    get isAvailable(): boolean;
+    list(signal?: Nullable<AbortSignal>): Promise<Array<AgentMcpServer>>;
+    add(configuration: AgentMcpServerConfiguration, signal?: Nullable<AbortSignal>): Promise<AgentMcpServer>;
+    remove(server: AgentMcpServer, signal?: Nullable<AbortSignal>): Promise<void>;
+}"""
+        val reviewedCodexMcpServersDeclaration =
+            """export declare class CodexMcpServers {
+    private constructor();
+    get isAvailable(): boolean;
+    list(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentMcpServer>>;
+    add(configuration: AgentMcpServerConfiguration, signal?: Nullable<AbortSignal>): Promise<AgentMcpServer>;
+    remove(server: AgentMcpServer, signal?: Nullable<AbortSignal>): Promise<void>;
+}"""
         check(actual.lineSequence().count { it == rawAgentSkillScopeDisplayNameDeclaration } == 1) {
             "Unexpected agentSkillScopeDisplayName TypeScript declaration"
         }
@@ -565,6 +691,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         }
         check(actual.split(rawAgentHookHandlerDeclaration).size == 2) {
             "Unexpected AgentHookHandler TypeScript declaration"
+        }
+        check(actual.split(rawAgentMcpTransportDeclaration).size == 2) {
+            "Unexpected AgentMcpTransport TypeScript declaration"
         }
         check(actual.split(rawAgentConnectorDeclaration).size == 2) {
             "Unexpected AgentConnector TypeScript declaration"
@@ -641,6 +770,24 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawCodexHooksDeclaration).size == 2) {
             "Unexpected CodexHooks TypeScript declaration"
         }
+        check(actual.split(rawAgentMcpStdioTransportDeclaration).size == 2) {
+            "Unexpected AgentMcpStdioTransport TypeScript declaration"
+        }
+        check(actual.split(rawAgentMcpHttpTransportDeclaration).size == 2) {
+            "Unexpected AgentMcpHttpTransport TypeScript declaration"
+        }
+        check(actual.split(rawAgentMcpServerConfigurationDeclaration).size == 2) {
+            "Unexpected AgentMcpServerConfiguration TypeScript declaration"
+        }
+        check(actual.split(rawAgentMcpServerDeclaration).size == 2) {
+            "Unexpected AgentMcpServer TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == "    get mcpServers(): CodexMcpServers;" } == 1) {
+            "Unexpected CodexAgent.mcpServers TypeScript declaration"
+        }
+        check(actual.split(rawCodexMcpServersDeclaration).size == 2) {
+            "Unexpected CodexMcpServers TypeScript declaration"
+        }
         actual = actual.replace(
             "type Nullable<T> = T | null | undefined\n",
             """type Nullable<T> = T | null | undefined;
@@ -672,6 +819,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawAgentHookHandlerDeclaration,
             reviewedAgentHookHandlerDeclaration,
+        ).replace(
+            rawAgentMcpTransportDeclaration,
+            reviewedAgentMcpTransportDeclaration,
         ).replace(
             rawAgentConnectorDeclaration,
             reviewedAgentConnectorDeclaration,
@@ -723,6 +873,21 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawCodexHooksDeclaration,
             reviewedCodexHooksDeclaration,
+        ).replace(
+            rawAgentMcpStdioTransportDeclaration,
+            reviewedAgentMcpStdioTransportDeclaration,
+        ).replace(
+            rawAgentMcpHttpTransportDeclaration,
+            reviewedAgentMcpHttpTransportDeclaration,
+        ).replace(
+            rawAgentMcpServerConfigurationDeclaration,
+            reviewedAgentMcpServerConfigurationDeclaration,
+        ).replace(
+            rawAgentMcpServerDeclaration,
+            reviewedAgentMcpServerDeclaration,
+        ).replace(
+            rawCodexMcpServersDeclaration,
+            reviewedCodexMcpServersDeclaration,
         ).replace(
             """export declare class AgentFormTextListValue {
     constructor(value: Array<string>);

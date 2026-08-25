@@ -47,6 +47,7 @@ export type AgentHookHandler =
     | { readonly type: "command"; readonly command: string; readonly isAsync: boolean }
     | { readonly type: "mcp_tool"; readonly server: string; readonly tool: string }
     | { readonly type: "prompt" };
+export type AgentMcpTransport = AgentMcpStdioTransport | AgentMcpHttpTransport;
 export declare class AgentFormOption {
     constructor(value: string, title?: string, description?: Nullable<string>);
     get value(): string;
@@ -82,6 +83,52 @@ export declare class AgentMcpOauthConfiguration {
 export declare class AgentMcpToolConfiguration {
     constructor(approval?: Nullable<AgentMcpToolApproval>);
     get approval(): Nullable<AgentMcpToolApproval>;
+}
+export declare class AgentMcpStdioTransport {
+    constructor(command: string, arguments?: ReadonlyArray<string>, workingDirectory?: Nullable<string>, environment?: Nullable<Readonly<Record<string, string>>>, forwardedEnvironment?: ReadonlyArray<AgentMcpEnvironmentVariable>);
+    get command(): string;
+    get arguments(): ReadonlyArray<string>;
+    get workingDirectory(): Nullable<string>;
+    get environment(): Nullable<Readonly<Record<string, string>>>;
+    get forwardedEnvironment(): ReadonlyArray<AgentMcpEnvironmentVariable>;
+}
+export declare class AgentMcpHttpTransport {
+    constructor(url: string, bearerTokenEnvironmentVariable?: Nullable<string>, headers?: Nullable<Readonly<Record<string, string>>>, environmentHeaders?: Nullable<Readonly<Record<string, string>>>, headersHelper?: Nullable<string>);
+    get url(): string;
+    get bearerTokenEnvironmentVariable(): Nullable<string>;
+    get headers(): Nullable<Readonly<Record<string, string>>>;
+    get environmentHeaders(): Nullable<Readonly<Record<string, string>>>;
+    get headersHelper(): Nullable<string>;
+}
+export declare class AgentMcpServerConfiguration {
+    constructor(name: string, transport: AgentMcpTransport, authentication?: Nullable<AgentMcpAuthentication>, environmentId?: string, isEnabled?: boolean, isRequired?: boolean, supportsParallelToolCalls?: boolean, omitToolsFrom?: Nullable<ReadonlyArray<AgentMcpToolExposureSurface>>, startupTimeoutSeconds?: Nullable<number>, toolTimeoutSeconds?: Nullable<number>, defaultToolApproval?: Nullable<AgentMcpToolApproval>, enabledTools?: Nullable<ReadonlyArray<string>>, disabledTools?: Nullable<ReadonlyArray<string>>, scopes?: Nullable<ReadonlyArray<string>>, oauth?: Nullable<AgentMcpOauthConfiguration>, oauthResource?: Nullable<string>, tools?: Readonly<Record<string, AgentMcpToolConfiguration>>);
+    get name(): string;
+    get transport(): AgentMcpTransport;
+    get authentication(): Nullable<AgentMcpAuthentication>;
+    get environmentId(): string;
+    get isEnabled(): boolean;
+    get isRequired(): boolean;
+    get supportsParallelToolCalls(): boolean;
+    get omitToolsFrom(): Nullable<ReadonlyArray<AgentMcpToolExposureSurface>>;
+    get startupTimeoutSeconds(): Nullable<number>;
+    get toolTimeoutSeconds(): Nullable<number>;
+    get defaultToolApproval(): Nullable<AgentMcpToolApproval>;
+    get enabledTools(): Nullable<ReadonlyArray<string>>;
+    get disabledTools(): Nullable<ReadonlyArray<string>>;
+    get scopes(): Nullable<ReadonlyArray<string>>;
+    get oauth(): Nullable<AgentMcpOauthConfiguration>;
+    get oauthResource(): Nullable<string>;
+    get tools(): Readonly<Record<string, AgentMcpToolConfiguration>>;
+}
+export declare class AgentMcpServer {
+    constructor(name: string, displayName: string, authStatus: AgentMcpAuthStatus, configuration?: Nullable<AgentMcpServerConfiguration>, origin?: AgentResourceOrigin, canRemove?: boolean);
+    get name(): string;
+    get displayName(): string;
+    get authStatus(): AgentMcpAuthStatus;
+    get configuration(): Nullable<AgentMcpServerConfiguration>;
+    get origin(): AgentResourceOrigin;
+    get canRemove(): boolean;
+    get isAuthorized(): boolean;
 }
 export declare class AgentElicitationValidationIssue {
     constructor(fieldName: string, reason: AgentElicitationValidationReason);
@@ -331,6 +378,7 @@ export declare class CodexAgent {
     get models(): CodexModels;
     get skills(): CodexSkills;
     get hooks(): CodexHooks;
+    get mcpServers(): CodexMcpServers;
     get activeConversation(): Nullable<CodexConversation>;
     listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;
     readConversation(conversationId: string, signal?: Nullable<AbortSignal>): Promise<AgentConversation>;
@@ -366,6 +414,13 @@ export declare class CodexHooks {
     install(directory: string, scope: AgentInstallationScope, signal?: Nullable<AbortSignal>): Promise<AgentHook>;
     uninstall(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
     trust(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
+}
+export declare class CodexMcpServers {
+    private constructor();
+    get isAvailable(): boolean;
+    list(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentMcpServer>>;
+    add(configuration: AgentMcpServerConfiguration, signal?: Nullable<AbortSignal>): Promise<AgentMcpServer>;
+    remove(server: AgentMcpServer, signal?: Nullable<AbortSignal>): Promise<void>;
 }
 export declare class CodexAuthentication {
     private constructor();

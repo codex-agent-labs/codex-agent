@@ -28,9 +28,15 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentInstallationScope as Co
 import io.github.codex_agent_labs.codexmobile.agent.AgentInvocation as CoreInvocation
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable as CoreMcpEnvironmentVariable
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpAuthStatus as CoreMcpAuthStatus
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpAuthentication as CoreMcpAuthentication
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpOauthConfiguration as CoreMcpOauthConfiguration
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpServer as CoreMcpServer
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpServerConfiguration as CoreMcpServerConfiguration
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolApproval as CoreMcpToolApproval
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolConfiguration as CoreMcpToolConfiguration
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolExposureSurface as CoreMcpToolExposureSurface
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpTransport as CoreMcpTransport
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessageRole as CoreMessageRole
 import io.github.codex_agent_labs.codexmobile.agent.AgentModel as CoreModel
@@ -58,6 +64,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexHost as CoreHost
 import io.github.codex_agent_labs.codexmobile.agent.CodexHostState as CoreHostState
 import io.github.codex_agent_labs.codexmobile.agent.CodexHooks as CoreHooks
 import io.github.codex_agent_labs.codexmobile.agent.CodexModels as CoreModels
+import io.github.codex_agent_labs.codexmobile.agent.CodexMcpServers as CoreMcpServers
 import io.github.codex_agent_labs.codexmobile.agent.CodexOperationException
 import io.github.codex_agent_labs.codexmobile.agent.CodexPathWorkspaceSelection
 import io.github.codex_agent_labs.codexmobile.agent.CodexSkills as CoreSkills
@@ -109,6 +116,10 @@ public external interface AgentTurnRequest {
 /** Structural hook handler projected as a reviewed discriminated union. */
 @JsExport
 public external interface AgentHookHandler
+
+/** Immutable MCP transport projected as a reviewed union of the two supported transports. */
+@JsExport
+public interface AgentMcpTransport
 
 /** Immutable form option value. */
 @JsExport
@@ -239,6 +250,196 @@ public class AgentMcpToolConfiguration public constructor(approval: String? = nu
             approval.requireJavaScriptNullableString("approval")?.toCoreMcpToolApproval(),
         )
         this.approval = core.approval?.name?.lowercase()
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable local-process MCP transport. */
+@JsExport
+public class AgentMcpStdioTransport public constructor(
+    command: String,
+    arguments: Array<String> = emptyArray(),
+    workingDirectory: String? = null,
+    environment: Any? = null,
+    forwardedEnvironment: Array<AgentMcpEnvironmentVariable> = emptyArray(),
+) : AgentMcpTransport {
+    public val command: String
+    public val arguments: Array<String>
+    public val workingDirectory: String?
+    public val environment: Any?
+    public val forwardedEnvironment: Array<AgentMcpEnvironmentVariable>
+
+    init {
+        val core = canonicalMcpStdioTransport(
+            command,
+            arguments,
+            workingDirectory,
+            environment,
+            forwardedEnvironment,
+        )
+        this.command = core.command
+        this.arguments = core.arguments.toTypedArray()
+        this.workingDirectory = core.workingDirectory
+        this.environment = core.environment?.projectRecord { it }
+        this.forwardedEnvironment = core.forwardedEnvironment
+            .map(CoreMcpEnvironmentVariable::project)
+            .toTypedArray()
+        freezeSnapshot(this.arguments)
+        freezeSnapshot(this.forwardedEnvironment)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable HTTP MCP transport. */
+@JsExport
+public class AgentMcpHttpTransport public constructor(
+    url: String,
+    bearerTokenEnvironmentVariable: String? = null,
+    headers: Any? = null,
+    environmentHeaders: Any? = null,
+    headersHelper: String? = null,
+) : AgentMcpTransport {
+    public val url: String
+    public val bearerTokenEnvironmentVariable: String?
+    public val headers: Any?
+    public val environmentHeaders: Any?
+    public val headersHelper: String?
+
+    init {
+        val core = canonicalMcpHttpTransport(
+            url,
+            bearerTokenEnvironmentVariable,
+            headers,
+            environmentHeaders,
+            headersHelper,
+        )
+        this.url = core.url
+        this.bearerTokenEnvironmentVariable = core.bearerTokenEnvironmentVariable
+        this.headers = core.headers?.projectRecord { it }
+        this.environmentHeaders = core.environmentHeaders?.projectRecord { it }
+        this.headersHelper = core.headersHelper
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable complete MCP server configuration. */
+@JsExport
+public class AgentMcpServerConfiguration public constructor(
+    name: String,
+    transport: AgentMcpTransport,
+    authentication: String? = null,
+    environmentId: String = "local",
+    isEnabled: Boolean = true,
+    isRequired: Boolean = false,
+    supportsParallelToolCalls: Boolean = false,
+    omitToolsFrom: Array<String>? = null,
+    startupTimeoutSeconds: Double? = null,
+    toolTimeoutSeconds: Double? = null,
+    defaultToolApproval: String? = null,
+    enabledTools: Array<String>? = null,
+    disabledTools: Array<String>? = null,
+    scopes: Array<String>? = null,
+    oauth: AgentMcpOauthConfiguration? = null,
+    oauthResource: String? = null,
+    tools: Any = emptyJavaScriptRecord(),
+) {
+    public val name: String
+    public val transport: AgentMcpTransport
+    public val authentication: String?
+    public val environmentId: String
+    public val isEnabled: Boolean
+    public val isRequired: Boolean
+    public val supportsParallelToolCalls: Boolean
+    public val omitToolsFrom: Array<String>?
+    public val startupTimeoutSeconds: Double?
+    public val toolTimeoutSeconds: Double?
+    public val defaultToolApproval: String?
+    public val enabledTools: Array<String>?
+    public val disabledTools: Array<String>?
+    public val scopes: Array<String>?
+    public val oauth: AgentMcpOauthConfiguration?
+    public val oauthResource: String?
+    public val tools: Any
+
+    init {
+        val core = canonicalMcpServerConfiguration(
+            name,
+            transport,
+            authentication,
+            environmentId,
+            isEnabled,
+            isRequired,
+            supportsParallelToolCalls,
+            omitToolsFrom,
+            startupTimeoutSeconds,
+            toolTimeoutSeconds,
+            defaultToolApproval,
+            enabledTools,
+            disabledTools,
+            scopes,
+            oauth,
+            oauthResource,
+            tools,
+        )
+        this.name = core.name
+        this.transport = core.transport.project()
+        this.authentication = core.authentication?.name?.lowercase()
+        this.environmentId = core.environmentId
+        this.isEnabled = core.isEnabled
+        this.isRequired = core.isRequired
+        this.supportsParallelToolCalls = core.supportsParallelToolCalls
+        this.omitToolsFrom = core.omitToolsFrom?.map { it.name.lowercase() }?.toTypedArray()
+        this.startupTimeoutSeconds = core.startupTimeoutSeconds
+        this.toolTimeoutSeconds = core.toolTimeoutSeconds
+        this.defaultToolApproval = core.defaultToolApproval?.name?.lowercase()
+        this.enabledTools = core.enabledTools?.toTypedArray()
+        this.disabledTools = core.disabledTools?.toTypedArray()
+        this.scopes = core.scopes?.toTypedArray()
+        this.oauth = core.oauth?.project()
+        this.oauthResource = core.oauthResource
+        this.tools = core.tools.projectRecord(CoreMcpToolConfiguration::project)
+        this.omitToolsFrom?.let(::freezeSnapshot)
+        this.enabledTools?.let(::freezeSnapshot)
+        this.disabledTools?.let(::freezeSnapshot)
+        this.scopes?.let(::freezeSnapshot)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable MCP server status and effective configuration. */
+@JsExport
+public class AgentMcpServer public constructor(
+    name: String,
+    displayName: String,
+    authStatus: String,
+    configuration: AgentMcpServerConfiguration? = null,
+    origin: String = CoreResourceOrigin.UNKNOWN.name.lowercase(),
+    canRemove: Boolean = false,
+) {
+    public val name: String
+    public val displayName: String
+    public val authStatus: String
+    public val configuration: AgentMcpServerConfiguration?
+    public val origin: String
+    public val canRemove: Boolean
+    public val isAuthorized: Boolean
+
+    init {
+        val core = canonicalMcpServer(
+            name,
+            displayName,
+            authStatus,
+            configuration,
+            origin,
+            canRemove,
+        )
+        this.name = core.name
+        this.displayName = core.displayName
+        this.authStatus = core.authStatus.name.lowercase()
+        this.configuration = core.configuration?.project()
+        this.origin = core.origin.name.lowercase()
+        this.canRemove = core.canRemove
+        this.isAuthorized = core.isAuthorized
         freezeSnapshot(this)
     }
 }
@@ -1178,6 +1379,8 @@ public class CodexAgent internal constructor(
         CodexSkills(host, core.skills, jsApiToken)
     private val hooksProjection: CodexHooks =
         CodexHooks(host, core.hooks, jsApiToken)
+    private val mcpServersProjection: CodexMcpServers =
+        CodexMcpServers(host, core.mcpServers, jsApiToken)
     private var cachedCoreConversation: CoreConversation? = null
     private var cachedConversation: CodexConversation? = null
 
@@ -1203,6 +1406,9 @@ public class CodexAgent internal constructor(
 
     public val hooks: CodexHooks
         get() = hooksProjection
+
+    public val mcpServers: CodexMcpServers
+        get() = mcpServersProjection
 
     public val activeConversation: CodexConversation?
         get() = if (host.owns(core)) core.conversations.active.value?.let(::wrapConversation) else null
@@ -1456,6 +1662,50 @@ public class CodexHooks internal constructor(
     }
 }
 
+/** Agent-owned MCP server catalog and configuration lifecycle. */
+@JsExport
+public class CodexMcpServers internal constructor(
+    private val host: CodexHost,
+    private val core: CoreMcpServers,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex MCP server catalogs are created by an Agent" }
+        hideBackingFields(this)
+    }
+
+    public val isAvailable: Boolean
+        get() = core.isAvailable
+
+    public fun list(
+        signal: AbortSignal? = null,
+    ): Promise<Array<AgentMcpServer>> = host.operationScope().codexPromise(signal) {
+        val servers = core.list().map(CoreMcpServer::project).toTypedArray()
+        freezeSnapshot(servers)
+        servers
+    }
+
+    public fun add(
+        configuration: AgentMcpServerConfiguration,
+        signal: AbortSignal? = null,
+    ): Promise<AgentMcpServer> = host.operationScope().codexPromise(signal) {
+        val value: Any? = configuration
+        require(value is AgentMcpServerConfiguration) {
+            "configuration must be an AgentMcpServerConfiguration"
+        }
+        core.add(value.canonicalCopy()).project()
+    }
+
+    public fun remove(
+        server: AgentMcpServer,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        val value: Any? = server
+        require(value is AgentMcpServer) { "server must be an AgentMcpServer" }
+        core.remove(value.canonicalCopy())
+    }
+}
+
 /** Agent-owned authentication projection. */
 @JsExport
 public class CodexAuthentication internal constructor(
@@ -1702,6 +1952,24 @@ private fun String.toCoreMcpToolApproval(): CoreMcpToolApproval = when (this) {
     else -> throw IllegalArgumentException("Unknown MCP tool approval: $this")
 }
 
+private fun String.toCoreMcpAuthentication(): CoreMcpAuthentication {
+    val value = requireJavaScriptString("authentication")
+    return CoreMcpAuthentication.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown MCP authentication: $value")
+}
+
+private fun String.toCoreMcpToolExposureSurface(name: String): CoreMcpToolExposureSurface {
+    val value = requireJavaScriptString(name)
+    return CoreMcpToolExposureSurface.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown MCP tool exposure surface: $value")
+}
+
+private fun String.toCoreMcpAuthStatus(): CoreMcpAuthStatus {
+    val value = requireJavaScriptString("authStatus")
+    return CoreMcpAuthStatus.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown MCP auth status: $value")
+}
+
 private fun String.requireJavaScriptString(name: String): String {
     require(jsTypeOf(this) == "string") { "$name must be a string" }
     return this
@@ -1722,6 +1990,11 @@ private fun requireJavaScriptNullableInteger(value: Int?, name: String): Int? {
 
 private fun Double.requireJavaScriptNumber(name: String): Double {
     require(jsTypeOf(this) == "number") { "$name must be a number" }
+    return this
+}
+
+private fun Double?.requireJavaScriptNullableNumber(name: String): Double? {
+    require(this == null || jsTypeOf(this) == "number") { "$name must be a number or null" }
     return this
 }
 
@@ -1756,6 +2029,245 @@ private fun requireJavaScriptArray(value: Any?, name: String): Unit {
 private fun requireOwnJavaScriptArrayIndex(value: Any?, index: Int, name: String): Unit {
     require(js("Object.hasOwn(value, index)") as Boolean) { "$name must not contain sparse elements" }
 }
+
+private fun requireJavaScriptRecord(value: Any?, name: String): List<Pair<String, Any?>> {
+    require(value != null && jsTypeOf(value) == "object" && !(js("Array.isArray(value)") as Boolean)) {
+        "$name must be an object"
+    }
+    val prototype: dynamic = js("Object.getPrototypeOf(value)")
+    require(prototype == null || prototype === js("Object.prototype")) { "$name must be a plain object" }
+    val keys = js("Object.keys(value)").unsafeCast<Array<String>>()
+    val ownKeyCount = js("Reflect.ownKeys(value).length").unsafeCast<Int>()
+    require(keys.size == ownKeyCount) { "$name must contain only enumerable string keys" }
+    return List(keys.size) { index ->
+        val key = keys[index]
+        key to value.asDynamic()[key].unsafeCast<Any?>()
+    }
+}
+
+private fun requireJavaScriptStringRecord(value: Any?, name: String): Map<String, String>? {
+    if (value == null) return null
+    return requireJavaScriptRecord(value, name).associate { (key, entry) ->
+        key to entry.unsafeCast<String>().requireJavaScriptString("$name.$key")
+    }
+}
+
+private fun requireJavaScriptToolRecord(value: Any, name: String): Map<String, CoreMcpToolConfiguration> =
+    requireJavaScriptRecord(value, name).associate { (key, entry) ->
+        require(entry is AgentMcpToolConfiguration) {
+            "$name.$key must be an AgentMcpToolConfiguration"
+        }
+        key to entry.canonicalCopy()
+    }
+
+private fun <T> Map<String, T>.projectRecord(project: (T) -> Any?): Any {
+    val record: dynamic = js("({})")
+    forEach { (key, value) ->
+        val projected = project(value)
+        js("Object.defineProperty(record, key, { value: projected, enumerable: true, writable: false, configurable: false })")
+    }
+    js("Object.freeze(record)")
+    return record.unsafeCast<Any>()
+}
+
+private fun emptyJavaScriptRecord(): Any = emptyMap<String, String>().projectRecord { it }
+
+private fun Array<String>?.canonicalStringList(name: String): List<String>? {
+    if (this == null) return null
+    requireJavaScriptArray(this, name)
+    return List(size) { index ->
+        requireOwnJavaScriptArrayIndex(this, index, name)
+        this[index].requireJavaScriptString("$name[$index]")
+    }
+}
+
+private fun canonicalMcpStdioTransport(
+    command: String,
+    arguments: Array<String>,
+    workingDirectory: String?,
+    environment: Any?,
+    forwardedEnvironment: Array<AgentMcpEnvironmentVariable>,
+): CoreMcpTransport.Stdio {
+    requireJavaScriptArray(arguments, "arguments")
+    requireJavaScriptArray(forwardedEnvironment, "forwardedEnvironment")
+    return CoreMcpTransport.Stdio(
+        command = command.requireJavaScriptString("command"),
+        arguments = List(arguments.size) { index ->
+            requireOwnJavaScriptArrayIndex(arguments, index, "arguments")
+            arguments[index].requireJavaScriptString("arguments[$index]")
+        },
+        workingDirectory = workingDirectory.requireJavaScriptNullableString("workingDirectory"),
+        environment = requireJavaScriptStringRecord(environment, "environment"),
+        forwardedEnvironment = List(forwardedEnvironment.size) { index ->
+            requireOwnJavaScriptArrayIndex(forwardedEnvironment, index, "forwardedEnvironment")
+            val entry: Any? = forwardedEnvironment[index]
+            require(entry is AgentMcpEnvironmentVariable) {
+                "forwardedEnvironment[$index] must be an AgentMcpEnvironmentVariable"
+            }
+            entry.canonicalCopy()
+        },
+    )
+}
+
+private fun canonicalMcpHttpTransport(
+    url: String,
+    bearerTokenEnvironmentVariable: String?,
+    headers: Any?,
+    environmentHeaders: Any?,
+    headersHelper: String?,
+): CoreMcpTransport.Http = CoreMcpTransport.Http(
+    url = url.requireJavaScriptString("url"),
+    bearerTokenEnvironmentVariable = bearerTokenEnvironmentVariable
+        .requireJavaScriptNullableString("bearerTokenEnvironmentVariable"),
+    headers = requireJavaScriptStringRecord(headers, "headers"),
+    environmentHeaders = requireJavaScriptStringRecord(environmentHeaders, "environmentHeaders"),
+    headersHelper = headersHelper.requireJavaScriptNullableString("headersHelper"),
+)
+
+private fun AgentMcpTransport.canonicalCopy(): CoreMcpTransport {
+    val value: Any? = this
+    return when (value) {
+        is AgentMcpStdioTransport -> canonicalMcpStdioTransport(
+            value.command,
+            value.arguments,
+            value.workingDirectory,
+            value.environment,
+            value.forwardedEnvironment,
+        )
+        is AgentMcpHttpTransport -> canonicalMcpHttpTransport(
+            value.url,
+            value.bearerTokenEnvironmentVariable,
+            value.headers,
+            value.environmentHeaders,
+            value.headersHelper,
+        )
+        else -> throw IllegalArgumentException(
+            "transport must be an AgentMcpStdioTransport or AgentMcpHttpTransport",
+        )
+    }
+}
+
+private fun AgentMcpEnvironmentVariable.canonicalCopy(): CoreMcpEnvironmentVariable =
+    CoreMcpEnvironmentVariable(
+        name.requireJavaScriptString("name"),
+        source.requireJavaScriptNullableString("source")?.toCoreMcpEnvironmentSource(),
+    )
+
+private fun AgentMcpOauthConfiguration.canonicalCopy(): CoreMcpOauthConfiguration =
+    CoreMcpOauthConfiguration(
+        clientId.requireJavaScriptNullableString("clientId"),
+        requireJavaScriptNullableInteger(callbackPort, "callbackPort"),
+    )
+
+private fun AgentMcpToolConfiguration.canonicalCopy(): CoreMcpToolConfiguration =
+    CoreMcpToolConfiguration(
+        approval.requireJavaScriptNullableString("approval")?.toCoreMcpToolApproval(),
+    )
+
+@Suppress("LongParameterList")
+private fun canonicalMcpServerConfiguration(
+    name: String,
+    transport: AgentMcpTransport,
+    authentication: String?,
+    environmentId: String,
+    isEnabled: Boolean,
+    isRequired: Boolean,
+    supportsParallelToolCalls: Boolean,
+    omitToolsFrom: Array<String>?,
+    startupTimeoutSeconds: Double?,
+    toolTimeoutSeconds: Double?,
+    defaultToolApproval: String?,
+    enabledTools: Array<String>?,
+    disabledTools: Array<String>?,
+    scopes: Array<String>?,
+    oauth: AgentMcpOauthConfiguration?,
+    oauthResource: String?,
+    tools: Any,
+): CoreMcpServerConfiguration {
+    val transportValue: Any? = transport
+    require(transportValue is AgentMcpTransport) { "transport must be an AgentMcpTransport" }
+    val oauthValue: Any? = oauth
+    require(oauthValue == null || oauthValue is AgentMcpOauthConfiguration) {
+        "oauth must be an AgentMcpOauthConfiguration or null"
+    }
+    return CoreMcpServerConfiguration(
+        name = name.requireJavaScriptString("name"),
+        transport = transportValue.canonicalCopy(),
+        authentication = authentication.requireJavaScriptNullableString("authentication")
+            ?.toCoreMcpAuthentication(),
+        environmentId = environmentId.requireJavaScriptString("environmentId"),
+        isEnabled = isEnabled.requireJavaScriptBoolean("isEnabled"),
+        isRequired = isRequired.requireJavaScriptBoolean("isRequired"),
+        supportsParallelToolCalls = supportsParallelToolCalls
+            .requireJavaScriptBoolean("supportsParallelToolCalls"),
+        omitToolsFrom = omitToolsFrom.canonicalStringList("omitToolsFrom")?.mapIndexed { index, value ->
+            value.toCoreMcpToolExposureSurface("omitToolsFrom[$index]")
+        },
+        startupTimeoutSeconds = startupTimeoutSeconds
+            .requireJavaScriptNullableNumber("startupTimeoutSeconds"),
+        toolTimeoutSeconds = toolTimeoutSeconds.requireJavaScriptNullableNumber("toolTimeoutSeconds"),
+        defaultToolApproval = defaultToolApproval.requireJavaScriptNullableString("defaultToolApproval")
+            ?.toCoreMcpToolApproval(),
+        enabledTools = enabledTools.canonicalStringList("enabledTools"),
+        disabledTools = disabledTools.canonicalStringList("disabledTools"),
+        scopes = scopes.canonicalStringList("scopes"),
+        oauth = oauthValue?.canonicalCopy(),
+        oauthResource = oauthResource.requireJavaScriptNullableString("oauthResource"),
+        tools = requireJavaScriptToolRecord(tools, "tools"),
+    )
+}
+
+private fun AgentMcpServerConfiguration.canonicalCopy(): CoreMcpServerConfiguration =
+    canonicalMcpServerConfiguration(
+        name,
+        transport,
+        authentication,
+        environmentId,
+        isEnabled,
+        isRequired,
+        supportsParallelToolCalls,
+        omitToolsFrom,
+        startupTimeoutSeconds,
+        toolTimeoutSeconds,
+        defaultToolApproval,
+        enabledTools,
+        disabledTools,
+        scopes,
+        oauth,
+        oauthResource,
+        tools,
+    )
+
+private fun canonicalMcpServer(
+    name: String,
+    displayName: String,
+    authStatus: String,
+    configuration: AgentMcpServerConfiguration?,
+    origin: String,
+    canRemove: Boolean,
+): CoreMcpServer {
+    val configurationValue: Any? = configuration
+    require(configurationValue == null || configurationValue is AgentMcpServerConfiguration) {
+        "configuration must be an AgentMcpServerConfiguration or null"
+    }
+    return CoreMcpServer(
+        name = name.requireJavaScriptString("name"),
+        displayName = displayName.requireJavaScriptString("displayName"),
+        authStatus = authStatus.toCoreMcpAuthStatus(),
+        configuration = configurationValue?.canonicalCopy(),
+        origin = origin.toCoreResourceOrigin(),
+        canRemove = canRemove.requireJavaScriptBoolean("canRemove"),
+    )
+}
+
+private fun AgentMcpServer.canonicalCopy(): CoreMcpServer = canonicalMcpServer(
+    name,
+    displayName,
+    authStatus,
+    configuration,
+    origin,
+    canRemove,
+)
 
 private fun canonicalServiceTier(
     id: String,
@@ -1941,6 +2453,62 @@ private fun CoreConnector.project(): AgentConnector = AgentConnector(
     isAccessible = isAccessible,
     isEnabled = isEnabled,
     pluginNames = pluginNames.toTypedArray(),
+)
+
+private fun CoreMcpEnvironmentVariable.project(): AgentMcpEnvironmentVariable =
+    AgentMcpEnvironmentVariable(name, source?.name?.lowercase())
+
+private fun CoreMcpOauthConfiguration.project(): AgentMcpOauthConfiguration =
+    AgentMcpOauthConfiguration(clientId, callbackPort)
+
+private fun CoreMcpToolConfiguration.project(): AgentMcpToolConfiguration =
+    AgentMcpToolConfiguration(approval?.name?.lowercase())
+
+private fun CoreMcpTransport.project(): AgentMcpTransport = when (this) {
+    is CoreMcpTransport.Stdio -> AgentMcpStdioTransport(
+        command = command,
+        arguments = arguments.toTypedArray(),
+        workingDirectory = workingDirectory,
+        environment = environment?.projectRecord { it },
+        forwardedEnvironment = forwardedEnvironment.map(CoreMcpEnvironmentVariable::project).toTypedArray(),
+    )
+    is CoreMcpTransport.Http -> AgentMcpHttpTransport(
+        url = url,
+        bearerTokenEnvironmentVariable = bearerTokenEnvironmentVariable,
+        headers = headers?.projectRecord { it },
+        environmentHeaders = environmentHeaders?.projectRecord { it },
+        headersHelper = headersHelper,
+    )
+}
+
+private fun CoreMcpServerConfiguration.project(): AgentMcpServerConfiguration =
+    AgentMcpServerConfiguration(
+        name = name,
+        transport = transport.project(),
+        authentication = authentication?.name?.lowercase(),
+        environmentId = environmentId,
+        isEnabled = isEnabled,
+        isRequired = isRequired,
+        supportsParallelToolCalls = supportsParallelToolCalls,
+        omitToolsFrom = omitToolsFrom?.map { it.name.lowercase() }?.toTypedArray(),
+        startupTimeoutSeconds = startupTimeoutSeconds,
+        toolTimeoutSeconds = toolTimeoutSeconds,
+        defaultToolApproval = defaultToolApproval?.name?.lowercase(),
+        enabledTools = enabledTools?.toTypedArray(),
+        disabledTools = disabledTools?.toTypedArray(),
+        scopes = scopes?.toTypedArray(),
+        oauth = oauth?.project(),
+        oauthResource = oauthResource,
+        tools = tools.projectRecord(CoreMcpToolConfiguration::project),
+    )
+
+private fun CoreMcpServer.project(): AgentMcpServer = AgentMcpServer(
+    name = name,
+    displayName = displayName,
+    authStatus = authStatus.name.lowercase(),
+    configuration = configuration?.project(),
+    origin = origin.name.lowercase(),
+    canRemove = canRemove,
 )
 
 private fun CoreServiceTier.project(): AgentServiceTier = AgentServiceTier(id, name, description)

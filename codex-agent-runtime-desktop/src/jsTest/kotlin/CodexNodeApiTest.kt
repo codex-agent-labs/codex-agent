@@ -143,6 +143,105 @@ class CodexNodeApiTest {
         }.exceptionOrNull()
         assertEquals("id must be a string", invalidConnector?.message)
 
+        val sourceMcpArguments = arrayOf("server.js")
+        val sourceMcpEnvironment: dynamic = js("({ TOKEN: 'value' })")
+        val sourceForwardedEnvironment = arrayOf(AgentMcpEnvironmentVariable("HOME", "local"))
+        val localMcpTransport = AgentMcpStdioTransport(
+            "node",
+            sourceMcpArguments,
+            "/workspace",
+            sourceMcpEnvironment,
+            sourceForwardedEnvironment,
+        )
+        sourceMcpArguments[0] = "changed"
+        sourceMcpEnvironment.TOKEN = "changed"
+        sourceForwardedEnvironment[0] = AgentMcpEnvironmentVariable("CHANGED")
+        assertEquals(listOf("server.js"), localMcpTransport.arguments.toList())
+        assertEquals("value", localMcpTransport.environment.asDynamic().TOKEN as String)
+        assertEquals(listOf("HOME"), localMcpTransport.forwardedEnvironment.map { it.name })
+        assertTrue(isFrozen(localMcpTransport))
+        assertTrue(isFrozen(localMcpTransport.arguments))
+        assertTrue(isFrozen(checkNotNull(localMcpTransport.environment)))
+        assertTrue(isFrozen(localMcpTransport.forwardedEnvironment))
+        assertTrue(isFrozen(localMcpTransport.forwardedEnvironment.single()))
+
+        val localMcpHttpTransport = AgentMcpHttpTransport(
+            "https://mcp.example.com",
+            "MCP_TOKEN",
+            js("({ 'X-Static': 'value' })"),
+            js("({ Authorization: 'MCP_AUTH' })"),
+            "mcp-headers",
+        )
+        val localMcpTools: dynamic = js("({})")
+        localMcpTools.write = AgentMcpToolConfiguration("prompt")
+        val localMcpConfiguration = AgentMcpServerConfiguration(
+            name = "remote",
+            transport = localMcpHttpTransport,
+            authentication = "chat_gpt",
+            isEnabled = false,
+            isRequired = true,
+            supportsParallelToolCalls = true,
+            omitToolsFrom = arrayOf("code_mode", "deferred"),
+            startupTimeoutSeconds = 3.5,
+            toolTimeoutSeconds = 9.0,
+            defaultToolApproval = "writes",
+            enabledTools = arrayOf("read"),
+            disabledTools = emptyArray(),
+            scopes = arrayOf("files.read"),
+            oauth = AgentMcpOauthConfiguration("client", 9876),
+            oauthResource = "https://mcp.example.com/resource",
+            tools = localMcpTools,
+        )
+        assertEquals("remote", localMcpConfiguration.name)
+        assertEquals("chat_gpt", localMcpConfiguration.authentication)
+        assertEquals("local", localMcpConfiguration.environmentId)
+        assertFalse(localMcpConfiguration.isEnabled)
+        assertTrue(localMcpConfiguration.isRequired)
+        assertTrue(localMcpConfiguration.supportsParallelToolCalls)
+        assertEquals(listOf("code_mode", "deferred"), localMcpConfiguration.omitToolsFrom?.toList())
+        assertEquals(3.5, localMcpConfiguration.startupTimeoutSeconds)
+        assertEquals(9.0, localMcpConfiguration.toolTimeoutSeconds)
+        assertEquals("writes", localMcpConfiguration.defaultToolApproval)
+        assertEquals(listOf("read"), localMcpConfiguration.enabledTools?.toList())
+        assertEquals(emptyList(), localMcpConfiguration.disabledTools?.toList())
+        assertEquals(listOf("files.read"), localMcpConfiguration.scopes?.toList())
+        assertEquals("client", localMcpConfiguration.oauth?.clientId)
+        assertEquals(9876, localMcpConfiguration.oauth?.callbackPort)
+        assertEquals("https://mcp.example.com/resource", localMcpConfiguration.oauthResource)
+        assertEquals("prompt", localMcpConfiguration.tools.asDynamic().write.approval as String)
+        assertTrue(isFrozen(localMcpConfiguration))
+        assertTrue(isFrozen(localMcpConfiguration.transport))
+        assertTrue(isFrozen(localMcpConfiguration.tools))
+        assertTrue(isFrozen(localMcpConfiguration.tools.asDynamic().write.unsafeCast<Any>()))
+
+        val localMcpServer = AgentMcpServer(
+            "remote",
+            "Remote",
+            "oauth",
+            localMcpConfiguration,
+            "user",
+            true,
+        )
+        assertEquals("oauth", localMcpServer.authStatus)
+        assertTrue(localMcpServer.isAuthorized)
+        assertTrue(localMcpServer.canRemove)
+        assertTrue(isFrozen(localMcpServer))
+        assertTrue(isFrozen(checkNotNull(localMcpServer.configuration)))
+        listOf(
+            runCatching {
+                AgentMcpStdioTransport(js("({})").unsafeCast<String>())
+            }.exceptionOrNull() to "command must be a string",
+            runCatching {
+                AgentMcpHttpTransport("http://example.com")
+            }.exceptionOrNull() to "MCP HTTP URL must use HTTPS or a loopback HTTP address",
+            runCatching {
+                AgentMcpServerConfiguration("stdio", localMcpTransport, authentication = "oauth")
+            }.exceptionOrNull() to "MCP stdio servers do not support authentication",
+            runCatching {
+                AgentMcpServer("remote", "Remote", "AUTHORIZED")
+            }.exceptionOrNull() to "Unknown MCP auth status: AUTHORIZED",
+        ).forEach { (error, message) -> assertEquals(message, error?.message) }
+
         val sourceEfforts = arrayOf("low", "medium")
         val sourceTiers = arrayOf(AgentServiceTier("fast", "Fast", "Faster responses"))
         val localModel = AgentModel(
@@ -1139,6 +1238,7 @@ class CodexNodeApiTest {
                 CodexRuntimeFeature.SKILLS,
                 CodexRuntimeFeature.HOOKS,
                 CodexRuntimeFeature.PLUGINS,
+                CodexRuntimeFeature.MCP_SERVERS,
             ), workspacePath = skillFixture.workspacePath),
             CodexClientInfo("node_test", "Node Test", "test"),
         ))
@@ -1160,6 +1260,10 @@ class CodexNodeApiTest {
             assertSame(hooks, shellAgent.hooks)
             assertTrue(hooks.isAvailable)
             assertEquals(0, enumerablePropertyCount(hooks))
+            val mcpServers = shellAgent.mcpServers
+            assertSame(mcpServers, shellAgent.mcpServers)
+            assertTrue(mcpServers.isAvailable)
+            assertEquals(0, enumerablePropertyCount(mcpServers))
 
             val controller = js("new AbortController()")
             controller.abort()
@@ -1232,6 +1336,39 @@ class CodexNodeApiTest {
             assertTrue(shellRuntime.hookListRequests.isEmpty())
             assertTrue(shellRuntime.configBatchWriteRequests.isEmpty())
             assertFalse(nodeFileExists(skillFixture.installedHookConfigPath))
+
+            listOf(
+                runCatching {
+                    mcpServers.list(controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    mcpServers.add(
+                        localMcpConfiguration,
+                        controller.signal.unsafeCast<AbortSignal>(),
+                    ).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    mcpServers.remove(localMcpServer, controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+            ).forEach { aborted ->
+                assertEquals("AbortError", aborted?.asDynamic()?.name as String)
+            }
+            assertTrue(shellRuntime.mcpStatusRequests.isEmpty())
+            assertTrue(shellRuntime.mcpReloadRequests.isEmpty())
+            val invalidMcpConfiguration = runCatching {
+                mcpServers.add(js("({})").unsafeCast<AgentMcpServerConfiguration>()).await()
+            }.exceptionOrNull()
+            assertEquals(
+                "configuration must be an AgentMcpServerConfiguration",
+                invalidMcpConfiguration?.message,
+            )
+            val invalidMcpServer = runCatching {
+                mcpServers.remove(js("({})").unsafeCast<AgentMcpServer>()).await()
+            }.exceptionOrNull()
+            assertEquals("server must be an AgentMcpServer", invalidMcpServer?.message)
+            assertTrue(shellRuntime.mcpStatusRequests.isEmpty())
+            assertTrue(shellRuntime.mcpReloadRequests.isEmpty())
+            assertTrue(shellRuntime.mcpBatchWriteRequests.isEmpty())
 
             listOf(
                 runCatching {
@@ -1520,6 +1657,76 @@ class CodexNodeApiTest {
             val emptyCatalog = runCatching { models.resolve().await() }.exceptionOrNull()
             assertEquals("No Codex models are available", emptyCatalog?.message)
             assertEquals(configReadsBeforeEmptyCatalog, shellRuntime.configReadRequests.size)
+
+            val listedMcpServers = mcpServers.list().await()
+            assertEquals(listOf("configured"), listedMcpServers.map(AgentMcpServer::name))
+            val configuredMcpServer = listedMcpServers.single()
+            assertEquals("Configured server", configuredMcpServer.displayName)
+            assertEquals("bearer_token", configuredMcpServer.authStatus)
+            assertTrue(configuredMcpServer.isAuthorized)
+            assertEquals("user", configuredMcpServer.origin)
+            assertTrue(configuredMcpServer.canRemove)
+            val configuredMcp = checkNotNull(configuredMcpServer.configuration)
+            val configuredTransport = assertIs<AgentMcpStdioTransport>(configuredMcp.transport)
+            assertEquals("node", configuredTransport.command)
+            assertEquals(listOf("server.js"), configuredTransport.arguments.toList())
+            assertEquals(skillFixture.workspacePath, configuredTransport.workingDirectory)
+            assertEquals("value", configuredTransport.environment.asDynamic().TOKEN as String)
+            assertEquals(listOf("HOME"), configuredTransport.forwardedEnvironment.map { it.name })
+            assertTrue(isFrozen(listedMcpServers))
+            assertTrue(isFrozen(configuredMcpServer))
+            assertTrue(isFrozen(configuredMcp))
+            assertTrue(isFrozen(configuredTransport))
+            assertTrue(isFrozen(configuredTransport.arguments))
+            assertTrue(isFrozen(checkNotNull(configuredTransport.environment)))
+            assertTrue(isFrozen(configuredTransport.forwardedEnvironment))
+            assertEquals(1, shellRuntime.mcpStatusRequests.size)
+            assertEquals(
+                setOf("cwd", "includeLayers"),
+                shellRuntime.configReadRequests.last().keys,
+            )
+            assertEquals(
+                skillFixture.workspacePath,
+                shellRuntime.configReadRequests.last()["cwd"]?.jsonPrimitive?.content,
+            )
+            assertEquals(
+                "true",
+                shellRuntime.configReadRequests.last()["includeLayers"]?.jsonPrimitive?.content,
+            )
+
+            shellRuntime.failNextMcpStatus = true
+            val mcpListFailure = assertIs<CodexError>(
+                runCatching { mcpServers.list().await() }.exceptionOrNull(),
+            )
+            assertEquals("mcp_server_list_failed", mcpListFailure.code)
+            assertEquals("MCP server list denied", mcpListFailure.message)
+            assertTrue(mcpListFailure.recoverable)
+
+            val addedMcpServer = mcpServers.add(localMcpConfiguration).await()
+            assertEquals("remote", addedMcpServer.name)
+            assertEquals("Remote server", addedMcpServer.displayName)
+            assertEquals("oauth", addedMcpServer.authStatus)
+            assertEquals("user", addedMcpServer.origin)
+            assertTrue(addedMcpServer.canRemove)
+            assertTrue(addedMcpServer.isAuthorized)
+            assertEquals("chat_gpt", addedMcpServer.configuration?.authentication)
+            assertIs<AgentMcpHttpTransport>(addedMcpServer.configuration?.transport)
+            assertTrue(isFrozen(addedMcpServer))
+            assertTrue(isFrozen(checkNotNull(addedMcpServer.configuration)))
+            assertEquals(1, shellRuntime.mcpReloadRequests.size)
+            val addWrite = shellRuntime.mcpBatchWriteRequests.last()
+            assertEquals("mcp_servers.\"remote\"", addWrite["keyPath"]?.jsonPrimitive?.content)
+            assertEquals("replace", addWrite["mergeStrategy"]?.jsonPrimitive?.content)
+            val writtenMcp = checkNotNull(addWrite["value"]).jsonObject
+            assertEquals("https://mcp.example.com", writtenMcp["url"]?.jsonPrimitive?.content)
+            assertEquals("chatgpt", writtenMcp["auth"]?.jsonPrimitive?.content)
+            assertEquals("local", writtenMcp["environment_id"]?.jsonPrimitive?.content)
+            assertEquals("false", writtenMcp["enabled"]?.jsonPrimitive?.content)
+
+            mcpServers.remove(addedMcpServer).await()
+            assertEquals(2, shellRuntime.mcpReloadRequests.size)
+            assertEquals(JsonNull, shellRuntime.mcpBatchWriteRequests.last()["value"])
+            assertEquals(listOf("configured"), mcpServers.list().await().map(AgentMcpServer::name))
 
             val conversationSummaries = shellAgent.listConversations().await()
             assertEquals(
@@ -1822,6 +2029,7 @@ class CodexNodeApiTest {
             assertSame(models, shellAgent.models)
             assertSame(skills, shellAgent.skills)
             assertSame(hooks, shellAgent.hooks)
+            assertSame(mcpServers, shellAgent.mcpServers)
             val requestsBeforeClosedList = shellRuntime.appListRequests.size
             val conversationRequestsBeforeClosedList = shellRuntime.threadListRequests.size
             val conversationRequestsBeforeClosedRead = shellRuntime.threadReadRequests.size
@@ -1829,6 +2037,9 @@ class CodexNodeApiTest {
             val skillRequestsBeforeClosedList = shellRuntime.skillListRequests.size
             val hookRequestsBeforeClosedList = shellRuntime.hookListRequests.size
             val hookWritesBeforeClosed = shellRuntime.configBatchWriteRequests.size
+            val mcpStatusBeforeClosed = shellRuntime.mcpStatusRequests.size
+            val mcpReloadsBeforeClosed = shellRuntime.mcpReloadRequests.size
+            val mcpWritesBeforeClosed = shellRuntime.mcpBatchWriteRequests.size
             val closedList = runCatching { connectors.list().await() }.exceptionOrNull()
             assertEquals("IllegalStateException", closedList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedList.message)
@@ -1870,6 +2081,17 @@ class CodexNodeApiTest {
             }
             assertEquals(hookRequestsBeforeClosedList, shellRuntime.hookListRequests.size)
             assertEquals(hookWritesBeforeClosed, shellRuntime.configBatchWriteRequests.size)
+            listOf(
+                runCatching { mcpServers.list().await() }.exceptionOrNull(),
+                runCatching { mcpServers.add(localMcpConfiguration).await() }.exceptionOrNull(),
+                runCatching { mcpServers.remove(localMcpServer).await() }.exceptionOrNull(),
+            ).forEach { closedMcpOperation ->
+                assertEquals("IllegalStateException", closedMcpOperation?.asDynamic()?.name as String)
+                assertEquals("Codex agent is closed", closedMcpOperation.message)
+            }
+            assertEquals(mcpStatusBeforeClosed, shellRuntime.mcpStatusRequests.size)
+            assertEquals(mcpReloadsBeforeClosed, shellRuntime.mcpReloadRequests.size)
+            assertEquals(mcpWritesBeforeClosed, shellRuntime.mcpBatchWriteRequests.size)
             val requestsBeforePureResolution = shellRuntime.requestMethods.size
             assertEquals("medium", models.resolveEffort(preferredModel, "default").await())
             assertEquals("low", models.resolveEffort(preferredModel, "first").await())
@@ -2377,7 +2599,11 @@ private class ApiTestRuntime : CodexRuntime {
     var skillManifestPath: String? = null
     val hookListRequests: MutableList<JsonObject> = mutableListOf()
     val configBatchWriteRequests: MutableList<JsonObject> = mutableListOf()
+    val mcpStatusRequests: MutableList<JsonObject> = mutableListOf()
+    val mcpReloadRequests: MutableList<JsonObject> = mutableListOf()
+    val mcpBatchWriteRequests: MutableList<JsonObject> = mutableListOf()
     var failNextHookList: Boolean = false
+    var failNextMcpStatus: Boolean = false
     var hookInstalledSourcePath: String? = null
     var hookVisible: Boolean = false
     var revealHookAtRequest: Int? = null
@@ -2385,6 +2611,8 @@ private class ApiTestRuntime : CodexRuntime {
     var modelPreference: String = "model-preferred"
     var effortPreference: String = "low"
     var serviceTierPreference: String = "fast"
+    private val mcpConfigurations: MutableMap<String, JsonObject> = linkedMapOf()
+    private var mcpConfigurationVersion: Int = 1
     private var loginAttempts: Int = 0
     private var turnStarts: Int = 0
     private var activeTurnId: String = "turn-js"
@@ -2554,24 +2782,68 @@ private class ApiTestRuntime : CodexRuntime {
                     failNextConfigRead = false
                     respondError(id, "model preferences denied")
                 } else {
-                    respond(id, buildJsonObject {
-                        putJsonObject("config") {
-                            put("model", modelPreference)
-                            put("model_reasoning_effort", effortPreference)
-                            put("service_tier", serviceTierPreference)
-                        }
-                        putJsonObject("origins") {}
-                    })
+                    respond(id, configReadResult())
                 }
             }
             "config/batchWrite" -> {
                 val params = checkNotNull(request["params"]).jsonObject
                 configBatchWriteRequests += params
+                checkNotNull(params["edits"]).jsonArray.forEach { element ->
+                    val edit = element.jsonObject
+                    val keyPath = edit["keyPath"]?.jsonPrimitive?.content.orEmpty()
+                    if (keyPath.startsWith("mcp_servers.\"")) {
+                        mcpBatchWriteRequests += edit
+                        val name = keyPath.removePrefix("mcp_servers.\"").removeSuffix("\"")
+                        val value = checkNotNull(edit["value"])
+                        if (value == JsonNull) {
+                            mcpConfigurations.remove(name)
+                        } else {
+                            mcpConfigurations[name] = value.jsonObject
+                        }
+                        mcpConfigurationVersion += 1
+                    }
+                }
                 respond(id, buildJsonObject {
                     put("filePath", "/tmp/codex/config.toml")
                     put("status", "ok")
-                    put("version", "1")
+                    put("version", mcpConfigurationVersion.toString())
                 })
+            }
+            "config/mcpServer/reload" -> {
+                mcpReloadRequests += checkNotNull(request["params"]).jsonObject
+                respond(id, buildJsonObject {})
+            }
+            "mcpServerStatus/list" -> {
+                ensureMcpConfiguration()
+                val params = checkNotNull(request["params"]).jsonObject
+                mcpStatusRequests += params
+                if (failNextMcpStatus) {
+                    failNextMcpStatus = false
+                    respondError(id, "MCP server list denied")
+                } else {
+                    respond(id, buildJsonObject {
+                        putJsonArray("data") {
+                            mcpConfigurations.keys.sorted().forEach { name ->
+                                add(buildJsonObject {
+                                    put("name", name)
+                                    put("authStatus", if (name == "configured") "bearerToken" else "oAuth")
+                                    putJsonArray("resourceTemplates") {}
+                                    putJsonArray("resources") {}
+                                    putJsonObject("tools") {}
+                                    putJsonObject("serverInfo") {
+                                        put("name", name)
+                                        put("title", if (name == "configured") {
+                                            "Configured server"
+                                        } else {
+                                            "Remote server"
+                                        })
+                                        put("version", "1")
+                                    }
+                                })
+                            }
+                        }
+                    })
+                }
             }
             "thread/name/set" -> {
                 val params = checkNotNull(request["params"]).jsonObject
@@ -2645,6 +2917,60 @@ private class ApiTestRuntime : CodexRuntime {
                 respond(id, buildJsonObject {})
             }
             else -> respond(id, buildJsonObject {})
+        }
+    }
+
+    private fun ensureMcpConfiguration(): Unit {
+        if (mcpConfigurations.isNotEmpty()) return
+        mcpConfigurations["configured"] = buildJsonObject {
+            put("command", "node")
+            putJsonArray("args") { add(JsonPrimitive("server.js")) }
+            put("cwd", skillWorkspacePath)
+            putJsonObject("env") { put("TOKEN", "value") }
+            putJsonArray("env_vars") { add(JsonPrimitive("HOME")) }
+            put("environment_id", "local")
+            put("enabled", true)
+            put("required", false)
+            put("supports_parallel_tool_calls", false)
+        }
+    }
+
+    private fun configReadResult(): JsonObject {
+        ensureMcpConfiguration()
+        return buildJsonObject {
+            putJsonObject("config") {
+                put("model", modelPreference)
+                put("model_reasoning_effort", effortPreference)
+                put("service_tier", serviceTierPreference)
+                putJsonObject("mcp_servers") {
+                    mcpConfigurations.forEach { (name, configuration) -> put(name, configuration) }
+                }
+            }
+            putJsonObject("origins") {
+                mcpConfigurations.keys.forEach { name ->
+                    putJsonObject("mcp_servers.$name.url") {
+                        putJsonObject("name") {
+                            put("type", "user")
+                            put("file", "/tmp/codex/config.toml")
+                        }
+                        put("version", mcpConfigurationVersion.toString())
+                    }
+                }
+            }
+            putJsonArray("layers") {
+                add(buildJsonObject {
+                    putJsonObject("config") {
+                        putJsonObject("mcp_servers") {
+                            mcpConfigurations.forEach { (name, configuration) -> put(name, configuration) }
+                        }
+                    }
+                    putJsonObject("name") {
+                        put("type", "user")
+                        put("file", "/tmp/codex/config.toml")
+                    }
+                    put("version", mcpConfigurationVersion.toString())
+                })
+            }
         }
     }
 
