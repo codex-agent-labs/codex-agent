@@ -70,27 +70,66 @@ class CodexNodeApiTest {
         assertSame(conversation, active.last())
         assertEquals("ready", conversation.state.status)
         assertEquals("thread-js", conversation.state.conversationId)
+        assertTrue(conversation.state.messages.isEmpty())
+        assertNull(conversation.state.turnProgress)
+        assertTrue(conversation.state.canStartTurn)
+        assertTrue(conversation.state.canReload)
+        assertFalse(conversation.state.canCancelTurn)
+        assertFalse(conversation.state.canRunShellCommand)
         assertFalse(conversation.state.isTurnActive)
         assertTrue(isFrozen(conversation.state))
         assertTrue(isFrozen(conversation.state.messages))
         assertEquals(0, enumerablePropertyCount(conversation))
 
-        val conversationStates = mutableListOf<String>()
-        val conversationObservation = conversation.observeState { conversationStates += it.status }
+        val conversationStates = mutableListOf<CodexConversationState>()
+        val conversationObservation = conversation.observeState { conversationStates += it }
         awaitCondition { conversationStates.isNotEmpty() }
-        assertEquals(listOf("ready"), conversationStates)
+        assertEquals(listOf("ready"), conversationStates.map(CodexConversationState::status))
 
         conversation.send("hello").await()
+        awaitCondition { conversation.state.status == "running_turn" }
+        val activeState = conversation.state
+        assertEquals(listOf("hello"), activeState.messages.map(CodexMessage::text))
+        assertNull(activeState.turnProgress)
+        assertFalse(activeState.canStartTurn)
+        assertFalse(activeState.canReload)
+        assertTrue(activeState.canCancelTurn)
+        assertFalse(activeState.canRunShellCommand)
+        assertTrue(activeState.isTurnActive)
+
+        runtime.emitAgentMessageDelta("working")
+        awaitCondition {
+            conversation.state.turnProgress?.text == "working" &&
+                conversationStates.any { it.turnProgress?.text == "working" }
+        }
+        val progressState = conversation.state
+        assertEquals("working", progressState.turnProgress?.text)
+        assertTrue(isFrozen(checkNotNull(progressState.turnProgress)))
+
         runtime.completeTurn()
         awaitCondition { conversation.state.status == "ready" && conversation.state.messages.size == 2 }
+        awaitCondition { conversationStates.any { it.messages.size == 2 && !it.isTurnActive } }
         val messageState = conversation.state
         val messages = messageState.messages
         assertEquals(listOf("user-1", "assistant-1"), messages.map(CodexMessage::id))
         assertEquals(listOf("hello", "world"), messages.map(CodexMessage::text))
         assertEquals(listOf("user", "assistant"), messages.map(CodexMessage::role))
+        assertNull(messageState.turnProgress)
+        assertTrue(messageState.canStartTurn)
+        assertTrue(messageState.canReload)
+        assertFalse(messageState.canCancelTurn)
+        assertFalse(messageState.canRunShellCommand)
+        assertFalse(messageState.isTurnActive)
         assertTrue(isFrozen(messageState))
         assertTrue(isFrozen(messages))
         messages.forEach { assertTrue(isFrozen(it)) }
+        assertTrue(conversationStates.any { it.isTurnActive && it.canCancelTurn })
+        assertTrue(conversationStates.any { it.turnProgress?.text == "working" })
+        assertTrue(conversationStates.any { it.messages.size == 2 && !it.isTurnActive })
+        conversationStates.forEach {
+            assertTrue(isFrozen(it))
+            assertTrue(isFrozen(it.messages))
+        }
 
         val failure = runCatching { conversation.runShellCommand("pwd").await() }.exceptionOrNull()
         val codexError = assertIs<CodexError>(failure)
@@ -100,7 +139,7 @@ class CodexNodeApiTest {
 
         conversation.dispose().await()
         awaitCondition { conversationObservation.isClosed }
-        assertEquals("closed", conversationStates.last())
+        assertEquals("closed", conversationStates.last().status)
         assertTrue(conversationObservation.isClosed)
         assertNull(agent.activeConversation)
 
@@ -111,6 +150,35 @@ class CodexNodeApiTest {
         assertTrue(hostObservation.isClosed)
         assertTrue(activeObservation.isClosed)
         assertTrue(runtime.closed)
+
+        val shellRuntime = ApiTestRuntime()
+        val shellHost = wrapCodexHost(CoreHost(
+            ApiTestPlatform(shellRuntime, features = setOf(CodexRuntimeFeature.SHELL_COMMANDS)),
+            CodexClientInfo("node_test", "Node Test", "test"),
+        ))
+        try {
+            shellHost.start().await()
+            val shellConversation = assertIs<CodexAgent>(shellHost.agent).openConversation().await()
+            val shellAvailability = mutableListOf<Boolean>()
+            shellConversation.observeState { shellAvailability += it.canRunShellCommand }
+            awaitCondition { shellAvailability.lastOrNull() == true }
+            assertTrue(shellConversation.state.canRunShellCommand)
+
+            shellConversation.send("hello").await()
+            awaitCondition {
+                !shellConversation.state.canRunShellCommand && shellAvailability.lastOrNull() == false
+            }
+            shellRuntime.completeTurn()
+            awaitCondition {
+                shellConversation.state.status == "ready" && shellConversation.state.canRunShellCommand &&
+                    shellAvailability.lastOrNull() == true
+            }
+            assertTrue(shellAvailability.first())
+            assertTrue(false in shellAvailability)
+            assertTrue(shellAvailability.last())
+        } finally {
+            shellHost.close().await()
+        }
     }
 
     @Test
@@ -340,6 +408,7 @@ private class ApiTestPlatform(
     private val runtime: ApiTestRuntime,
     private val restoreEntered: CompletableDeferred<Unit>? = null,
     private val restoreRelease: CompletableDeferred<Unit>? = null,
+    private val features: Set<CodexRuntimeFeature> = emptySet(),
 ) : CodexPlatform {
     override val authorizationBrowser: CodexAuthorizationBrowser =
         CodexAuthorizationBrowser { CodexAuthorizationPresentation.None }
@@ -359,7 +428,7 @@ private class ApiTestPlatform(
     override suspend fun prepare(workspace: CodexWorkspace): PreparedCodexRuntime = PreparedCodexRuntime(
         runtimeFactory = { runtime },
         workspacePath = workspace.path,
-        features = emptySet<CodexRuntimeFeature>(),
+        features = features,
     )
 }
 
@@ -403,6 +472,13 @@ private class ApiTestRuntime : CodexRuntime {
     suspend fun completeTurn(): Unit = notify("turn/completed", buildJsonObject {
         put("threadId", "thread-js")
         put("turn", completedTurn())
+    })
+
+    suspend fun emitAgentMessageDelta(text: String): Unit = notify("item/agentMessage/delta", buildJsonObject {
+        put("threadId", "thread-js")
+        put("turnId", "turn-js")
+        put("itemId", "assistant-live")
+        put("delta", text)
     })
 
     override suspend fun start(): Unit {

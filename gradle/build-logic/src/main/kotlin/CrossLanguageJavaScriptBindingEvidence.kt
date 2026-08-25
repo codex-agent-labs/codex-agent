@@ -129,7 +129,12 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
                 if (unreferenced.isNotEmpty()) {
                     errors += "Unreferenced exceptional JavaScript/TypeScript projection for $key: $unreferenced"
                 } else {
-                    provisional += JavaScriptProjection(member, candidate.publicSymbols, candidate.scenarios)
+                    provisional += JavaScriptProjection(
+                        member,
+                        candidate.publicSymbols,
+                        candidate.scenarios,
+                        candidate.shareablePublicSymbols,
+                    )
                 }
             }
         }
@@ -139,7 +144,11 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
         projection.publicSymbols.map { symbol -> symbol to projection }
     }.groupBy(Pair<String, JavaScriptProjection>::first).forEach { (symbol, uses) ->
         val projections = uses.map(Pair<String, JavaScriptProjection>::second)
-        if (projections.size > 1 && !isAllowedLiteralTypeReuse(symbol, projections)) {
+        if (projections.size > 1 &&
+            !isAllowedLiteralTypeReuse(symbol, projections) &&
+            !isAllowedConversationStateEnvelopeReuse(symbol, projections) &&
+            !isAllowedConversationStateLeafReuse(symbol, projections)
+        ) {
             errors += "Reused JavaScript/TypeScript public symbol $symbol for capabilities " +
                 projections.map { it.member.key }.sorted()
         }
@@ -624,12 +633,14 @@ private data class JavaScriptProjectionCandidate(
     val publicSymbols: List<String>,
     val scenarios: List<CrossLanguageBindingScenario>,
     val requiresConsumerReference: Boolean,
+    val shareablePublicSymbols: Set<String> = emptySet(),
 )
 
 private data class JavaScriptProjection(
     val member: CanonicalJavaScriptMember,
     val publicSymbols: List<String>,
     val scenarios: List<CrossLanguageBindingScenario>,
+    val shareablePublicSymbols: Set<String>,
 )
 
 private fun parseCanonicalJavaScriptMember(key: String): CanonicalJavaScriptMember {
@@ -885,11 +896,13 @@ private fun stateFlowProjectionCandidates(
     type: String,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.simpleOwner == "CodexConversation") {
+        return conversationStateFlowProjectionCandidates(member, type, symbols)
+    }
     val elementType = unwrapStateFlowType(type)
     val target = when (member.simpleOwner to member.name) {
         "CodexHost" to "lifecycleState" -> Triple("CodexHost", "state", "observeState")
         "CodexConversations" to "active" -> Triple("CodexAgent", "activeConversation", "observeActiveConversation")
-        "CodexConversation" to "state" -> Triple("CodexConversation", "state", "observeState")
         "CodexAuthentication" to "isAuthenticated" ->
             Triple("CodexAuthentication", "isAuthenticated", "observeAuthenticated")
         "CodexAuthentication" to "isAuthenticating" ->
@@ -924,6 +937,78 @@ private fun stateFlowProjectionCandidates(
     }
 }
 
+private const val javaScriptConversationStateGetter =
+    "getter:CodexConversation#state:CodexConversationState"
+private const val javaScriptConversationStateObserver =
+    "method:CodexConversation#observeState:(listener: (state: CodexConversationState) => void): CodexObservation"
+private val javaScriptConversationStateEnvelope = setOf(
+    javaScriptConversationStateGetter,
+    javaScriptConversationStateObserver,
+)
+
+private fun conversationStateFlowProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    type: String,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    if (!type.startsWith("kotlinx.coroutines.flow/StateFlow<") || !type.endsWith(">!!")) return emptyList()
+    val elementType = unwrapStateFlowType(type)
+    val stateGetters = symbols.filter {
+        it.owner == "CodexConversation" && it.name == "state" &&
+            it.kind in setOf(JavaScriptPublicSymbolKind.GETTER, JavaScriptPublicSymbolKind.PROPERTY)
+    }
+    val stateObservers = symbols.filter {
+        it.owner == "CodexConversation" && it.name == "observeState" &&
+            it.kind == JavaScriptPublicSymbolKind.METHOD
+    }
+    if (stateGetters.map(JavaScriptPublicSymbol::raw) != listOf(javaScriptConversationStateGetter) ||
+        stateObservers.map(JavaScriptPublicSymbol::raw) != listOf(javaScriptConversationStateObserver)
+    ) return emptyList()
+    val projectedSymbols = if (member.name == "state") {
+        val canonicalPackage = member.owner.substringBeforeLast('/')
+        if (elementType != "$canonicalPackage/AgentConversationState!!") return emptyList()
+        listOf(javaScriptConversationStateGetter, javaScriptConversationStateObserver)
+    } else {
+        val leafName = when (member.name) {
+            "activeTurnProgress" -> "turnProgress"
+            "currentMessages" -> "messages"
+            else -> member.name
+        }
+        val namedLeaves = symbols.filter {
+            it.owner == "CodexConversationState" && it.name == leafName &&
+                it.kind in setOf(JavaScriptPublicSymbolKind.GETTER, JavaScriptPublicSymbolKind.PROPERTY)
+        }
+        val leaves = namedLeaves.filter {
+            "static" !in it.qualifiers &&
+                (it.kind == JavaScriptPublicSymbolKind.GETTER || "readonly" in it.qualifiers) &&
+                "optional" !in it.qualifiers && javascriptTypeCompatible(it.signature.orEmpty(), elementType)
+        }
+        if (leaves.isEmpty() || leaves.size != namedLeaves.size) return emptyList()
+        return leaves.map { leaf ->
+            JavaScriptProjectionCandidate(
+                publicSymbols = (javaScriptConversationStateEnvelope + leaf.raw).sorted(),
+                scenarios = javaScriptStateScenarios,
+                requiresConsumerReference = true,
+                shareablePublicSymbols = javaScriptConversationStateEnvelope,
+            )
+        }
+    }
+    return listOf(
+        JavaScriptProjectionCandidate(
+            publicSymbols = projectedSymbols.sorted(),
+            scenarios = javaScriptStateScenarios,
+            requiresConsumerReference = true,
+            shareablePublicSymbols = javaScriptConversationStateEnvelope,
+        )
+    )
+}
+
+private val javaScriptStateScenarios = listOf(
+    CrossLanguageBindingScenario.STATE_CURRENT_VALUE,
+    CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE,
+    CrossLanguageBindingScenario.SUBSCRIPTION_CANCELLATION,
+)
+
 private fun constructorProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
@@ -953,12 +1038,17 @@ private fun functionProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    when (member.simpleOwner to member.name) {
+        "CodexAuthentication" to "authenticate" ->
+            return authenticationProjectionCandidates(member, symbols)
+        "CodexConversations" to "open" ->
+            return openConversationProjectionCandidates(member, symbols)
+    }
     val targetOwner = when (member.simpleOwner) {
         "CodexConversations" -> "CodexAgent"
         else -> javascriptOwnerName(member.simpleOwner.removeSuffix(".Companion"))
     }
     val targetName = when {
-        member.simpleOwner == "CodexConversations" && member.name == "open" -> "openConversation"
         member.simpleOwner == "CodexConversation" && member.name == "send" &&
             member.parameters.firstOrNull()?.type?.contains("AgentTurnRequest") == true -> "sendRequest"
         else -> javascriptMemberName(member.simpleOwner, member.name)
@@ -979,6 +1069,85 @@ private fun functionProjectionCandidates(
     return candidates.map {
         JavaScriptProjectionCandidate(listOf(it.raw), scenarios, requiresConsumerReference = true)
     }
+}
+
+private val javaScriptAuthenticationOverloads = setOf(
+    "method:CodexAuthentication#authenticate:" +
+        "(method: \"api_key\", apiKey: string, signal?: AbortSignal | null | undefined): Promise<void>",
+    "method:CodexAuthentication#authenticate:" +
+        "(method: \"chatgpt_device_code\", apiKey?: null, signal?: AbortSignal | null | undefined): Promise<void>",
+    "method:CodexAuthentication#authenticate:" +
+        "(method?: \"chatgpt_browser\" | null | undefined, apiKey?: null, " +
+        "signal?: AbortSignal | null | undefined): Promise<void>",
+)
+
+private fun authenticationProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    val canonicalPackage = member.owner.substringBeforeLast('/')
+    val parameter = member.parameters.singleOrNull()
+    val canonicalShape = member.isSuspend && member.returnType == "kotlin/Unit" &&
+        parameter != null && parameter.hasDefault && !parameter.isVararg &&
+        parameter.type == "$canonicalPackage/CodexAuthenticationMethod!!"
+    val overloads = symbols.filter {
+        it.owner == "CodexAuthentication" && it.name == "authenticate" &&
+            it.kind == JavaScriptPublicSymbolKind.METHOD
+    }.map(JavaScriptPublicSymbol::raw)
+    if (!canonicalShape || overloads.size != javaScriptAuthenticationOverloads.size ||
+        overloads.toSet() != javaScriptAuthenticationOverloads
+    ) return emptyList()
+    return listOf(
+        JavaScriptProjectionCandidate(
+            publicSymbols = javaScriptAuthenticationOverloads.sorted(),
+            scenarios = listOf(
+                CrossLanguageBindingScenario.ASYNC_SUCCESS,
+                CrossLanguageBindingScenario.ASYNC_FAILURE,
+                CrossLanguageBindingScenario.CANCELLATION,
+            ),
+            requiresConsumerReference = true,
+        )
+    )
+}
+
+private const val javaScriptOpenConversation =
+    "method:CodexAgent#openConversation:" +
+        "(conversationId?: string | null | undefined, approvalPreset?: CodexApprovalPreset | null | undefined, " +
+        "serviceTier?: string | null | undefined, signal?: AbortSignal | null | undefined): Promise<CodexConversation>"
+
+private fun openConversationProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    val canonicalPackage = member.owner.substringBeforeLast('/')
+    val canonicalShape = member.isSuspend &&
+        member.returnType == "$canonicalPackage/CodexConversation!!" && member.parameters.size == 2 &&
+        member.parameters[0] == CanonicalJavaScriptParameter(
+            "$canonicalPackage/ConversationId?",
+            hasDefault = true,
+            isVararg = false,
+        ) && member.parameters[1] == CanonicalJavaScriptParameter(
+            "$canonicalPackage/AgentConversationSettings!!",
+            hasDefault = true,
+            isVararg = false,
+        )
+    val overloads = symbols.filter {
+        it.owner == "CodexAgent" && it.name == "openConversation" &&
+            it.kind == JavaScriptPublicSymbolKind.METHOD
+    }.map(JavaScriptPublicSymbol::raw)
+    if (!canonicalShape || overloads != listOf(javaScriptOpenConversation)) return emptyList()
+    return listOf(
+        JavaScriptProjectionCandidate(
+            publicSymbols = overloads,
+            scenarios = listOf(
+                CrossLanguageBindingScenario.ASYNC_SUCCESS,
+                CrossLanguageBindingScenario.ASYNC_FAILURE,
+                CrossLanguageBindingScenario.CANCELLATION,
+                CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP,
+            ),
+            requiresConsumerReference = true,
+        )
+    )
 }
 
 private fun javascriptSignatureCompatible(
@@ -1214,6 +1383,49 @@ private fun isAllowedLiteralTypeReuse(symbol: String, projections: List<JavaScri
             projections.map { it.member.owner.substringBeforeLast('.') }.distinct().size == 1
         else -> false
     }
+}
+
+private fun isAllowedConversationStateEnvelopeReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean = symbol in javaScriptConversationStateEnvelope && projections.all { projection ->
+    symbol in projection.shareablePublicSymbols && projection.member.simpleOwner == "CodexConversation" &&
+        projection.member.kind == CanonicalJavaScriptMemberKind.PROPERTY &&
+        projection.member.propertyKind == CanonicalJavaScriptPropertyKind.VAL &&
+        projection.member.returnType?.let(::isStateFlowType) == true
+} && projections.map { it.member.owner }.distinct().size == 1
+
+private fun isAllowedConversationStateLeafReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean {
+    if (projections.size != 2 || symbol in javaScriptConversationStateEnvelope) return false
+    val ordinary = projections.singleOrNull {
+        it.member.simpleOwner == "AgentConversationState" &&
+            it.member.kind == CanonicalJavaScriptMemberKind.PROPERTY &&
+            it.member.propertyKind == CanonicalJavaScriptPropertyKind.VAL &&
+            it.member.returnType?.let(::isStateFlowType) == false
+    } ?: return false
+    val aggregate = projections.singleOrNull {
+        it.member.simpleOwner == "CodexConversation" &&
+            it.member.kind == CanonicalJavaScriptMemberKind.PROPERTY &&
+            it.member.propertyKind == CanonicalJavaScriptPropertyKind.VAL &&
+            it.member.returnType?.let(::isStateFlowType) == true
+    } ?: return false
+    val ordinaryType = ordinary.member.returnType ?: return false
+    val aggregateType = aggregate.member.returnType ?: return false
+    if (ordinary.member.owner.substringBeforeLast('/') != aggregate.member.owner.substringBeforeLast('/') ||
+        ordinary.member.name != aggregate.member.name || unwrapStateFlowType(aggregateType) != ordinaryType ||
+        ordinary.publicSymbols != listOf(symbol) || ordinary.shareablePublicSymbols.isNotEmpty() ||
+        aggregate.publicSymbols.toSet() != javaScriptConversationStateEnvelope + symbol ||
+        aggregate.shareablePublicSymbols != javaScriptConversationStateEnvelope
+    ) return false
+    val leaf = parseJavaScriptPublicSymbol(symbol)
+    return leaf.owner == "CodexConversationState" && leaf.name == ordinary.member.name &&
+        leaf.kind in setOf(JavaScriptPublicSymbolKind.GETTER, JavaScriptPublicSymbolKind.PROPERTY) &&
+        "static" !in leaf.qualifiers && "optional" !in leaf.qualifiers &&
+        (leaf.kind == JavaScriptPublicSymbolKind.GETTER || "readonly" in leaf.qualifiers) &&
+        javascriptTypeCompatible(leaf.signature.orEmpty(), ordinaryType)
 }
 
 private fun splitJavaScriptTopLevel(value: String, separator: Char = ','): List<String> {

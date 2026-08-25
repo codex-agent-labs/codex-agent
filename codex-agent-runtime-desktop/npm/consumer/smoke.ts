@@ -60,8 +60,25 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     signal,
   );
   const conversationState: CodexConversationState = conversation.state;
+  const messages = conversationState.messages;
+  const turnProgress = conversationState.turnProgress;
+  const canStartTurn: boolean = conversationState.canStartTurn;
+  const canReload: boolean = conversationState.canReload;
+  const canCancelTurn: boolean = conversationState.canCancelTurn;
+  const canRunShellCommand: boolean = conversationState.canRunShellCommand;
   const isTurnActive: boolean = conversationState.isTurnActive;
-  conversation.observeState((next: CodexConversationState): void => void next.status).dispose();
+  conversation.observeState((next: CodexConversationState): void => {
+    void [
+      next.status,
+      next.messages,
+      next.turnProgress,
+      next.canStartTurn,
+      next.canReload,
+      next.canCancelTurn,
+      next.canRunShellCommand,
+      next.isTurnActive,
+    ];
+  }).dispose();
   await conversation.send("hello", signal);
   await conversation.runShellCommand("pwd", signal);
   await conversation.cancelTurn();
@@ -79,6 +96,12 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     authenticationFailure,
     activeConversation,
     conversationState,
+    messages,
+    turnProgress,
+    canStartTurn,
+    canReload,
+    canCancelTurn,
+    canRunShellCommand,
     isTurnActive,
   ];
 }

@@ -355,6 +355,259 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `authentication projection requires the exact canonical shape and all three referenced overloads`() {
+        val key = canonicalFunction(
+            "CodexAuthentication",
+            "authenticate",
+            suspendFunction = true,
+            parameters = listOf("example/CodexAuthenticationMethod!!"),
+            defaultParameterIndices = setOf(0),
+        )
+        val symbols = (listOf("class:CodexAuthentication") + AUTHENTICATION_OVERLOADS).sorted()
+        val evidence = derive(listOf(key), symbols)
+
+        assertEquals(listOf(key), evidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
+        assertEquals(
+            AUTHENTICATION_OVERLOADS.sorted(),
+            evidence.projectionClaims.single().publicSymbols,
+        )
+        assertTrue(CrossLanguageBindingScenario.CANCELLATION in evidence.projectionClaims.single().sharedScenarios)
+
+        listOf(
+            AUTHENTICATION_OVERLOADS.dropLast(1),
+            AUTHENTICATION_OVERLOADS.mapIndexed { index, symbol ->
+                if (index == 0) symbol.replace("apiKey: string", "apiKey?: string") else symbol
+            },
+            AUTHENTICATION_OVERLOADS +
+                "method:CodexAuthentication#authenticate:(method: string): Promise<void>",
+        ).forEach { overloads ->
+            assertTrue(derive(listOf(key), (listOf("class:CodexAuthentication") + overloads).sorted())
+                .missingCapabilityKeys.contains(key))
+        }
+
+        val unreferenced = derive(listOf(key), symbols, references = AUTHENTICATION_OVERLOADS.dropLast(1).sorted())
+        assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && key in it })
+        assertTrue(unreferenced.projectionClaims.isEmpty())
+
+        listOf(
+            canonicalFunction(
+                "CodexAuthentication",
+                "authenticate",
+                suspendFunction = false,
+                parameters = listOf("example/CodexAuthenticationMethod!!"),
+                defaultParameterIndices = setOf(0),
+            ),
+            canonicalFunction(
+                "CodexAuthentication",
+                "authenticate",
+                suspendFunction = true,
+                parameters = listOf("example/CodexAuthenticationMethod!!"),
+            ),
+            canonicalFunction(
+                "CodexAuthentication",
+                "authenticate",
+                suspendFunction = true,
+                parameters = listOf("kotlin/String!!"),
+                defaultParameterIndices = setOf(0),
+            ),
+        ).forEach { changedCanonical ->
+            assertTrue(derive(listOf(changedCanonical), symbols).missingCapabilityKeys.contains(changedCanonical))
+        }
+    }
+
+    @Test
+    fun `open projection requires exact defaulted settings flattening and one public overload`() {
+        val key = canonicalFunction(
+            "CodexConversations",
+            "open",
+            returnType = "example/CodexConversation!!",
+            suspendFunction = true,
+            parameters = listOf("example/ConversationId?", "example/AgentConversationSettings!!"),
+            defaultParameterIndices = setOf(0, 1),
+        )
+        val symbols = listOf("class:CodexAgent", OPEN_CONVERSATION).sorted()
+        val evidence = derive(listOf(key), symbols)
+
+        assertEquals(listOf(key), evidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
+        assertEquals(listOf(OPEN_CONVERSATION), evidence.projectionClaims.single().publicSymbols)
+        assertTrue(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP in evidence.projectionClaims.single().sharedScenarios)
+
+        listOf(
+            OPEN_CONVERSATION.replace("conversationId?:", "conversationId:"),
+            OPEN_CONVERSATION.replace("serviceTier?: string", "serviceTier?: number"),
+            OPEN_CONVERSATION.replace(": Promise<CodexConversation>", ": Promise<void>"),
+        ).forEach { wrong ->
+            assertTrue(derive(listOf(key), listOf("class:CodexAgent", wrong).sorted())
+                .missingCapabilityKeys.contains(key))
+        }
+        assertTrue(derive(
+            listOf(key),
+            (symbols + "method:CodexAgent#openConversation:(): Promise<CodexConversation>").sorted(),
+        ).missingCapabilityKeys.contains(key))
+
+        val changedCanonical = canonicalFunction(
+            "CodexConversations",
+            "open",
+            returnType = "example/CodexConversation!!",
+            suspendFunction = true,
+            parameters = listOf("example/ConversationId?", "example/AgentConversationSettings!!"),
+            defaultParameterIndices = setOf(0),
+        )
+        assertTrue(derive(listOf(changedCanonical), symbols).missingCapabilityKeys.contains(changedCanonical))
+        val unreferenced = derive(listOf(key), symbols, references = emptyList())
+        assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && key in it })
+        assertTrue(unreferenced.projectionClaims.isEmpty())
+    }
+
+    @Test
+    fun `conversation StateFlows share only the exact aggregate envelope and retain unique typed leaves`() {
+        val aggregateKeys = conversationStateFlowKeys()
+        val keys = aggregateKeys + conversationOrdinaryStateKeys()
+        val symbols = conversationStateSymbols()
+        val evidence = derive(keys, symbols)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertEquals(11, evidence.projectionClaims.size)
+        val aggregateClaims = evidence.projectionClaims.filter {
+            "|owner=example/CodexConversation|" in it.capabilityKey
+        }
+        assertEquals(8, aggregateClaims.size)
+        aggregateClaims.forEach { claim ->
+            assertTrue(CONVERSATION_STATE_GETTER in claim.publicSymbols)
+            assertTrue(CONVERSATION_STATE_OBSERVER in claim.publicSymbols)
+            assertEquals(
+                setOf(
+                    CrossLanguageBindingScenario.STATE_CURRENT_VALUE,
+                    CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE,
+                    CrossLanguageBindingScenario.SUBSCRIPTION_CANCELLATION,
+                ),
+                claim.sharedScenarios.toSet(),
+            )
+        }
+        val ordinaryClaims = evidence.projectionClaims.filter {
+            "|owner=example/AgentConversationState|" in it.capabilityKey
+        }
+        assertEquals(3, ordinaryClaims.size)
+        ordinaryClaims.forEach { claim ->
+            assertEquals(1, claim.publicSymbols.size)
+            assertTrue(claim.publicSymbols.single().startsWith("getter:CodexConversationState#"))
+        }
+        assertEquals(
+            listOf("getter:CodexConversationState#turnProgress:CodexTurnProgress | null | undefined"),
+            evidence.projectionClaims.single { "activeTurnProgress" in it.capabilityKey }.publicSymbols
+                .filter { it !in setOf(CONVERSATION_STATE_GETTER, CONVERSATION_STATE_OBSERVER) },
+        )
+        assertEquals(
+            listOf("getter:CodexConversationState#messages:ReadonlyArray<CodexMessage>"),
+            evidence.projectionClaims.single { "currentMessages" in it.capabilityKey }.publicSymbols
+                .filter { it !in setOf(CONVERSATION_STATE_GETTER, CONVERSATION_STATE_OBSERVER) },
+        )
+    }
+
+    @Test
+    fun `conversation aggregate mapping rejects malformed unreferenced ambiguous and reused leaves`() {
+        val active = conversationStateFlowKeys().single { "activeTurnProgress" in it }
+        val symbols = conversationStateSymbols()
+        listOf(
+            symbols.filterNot { it == CONVERSATION_STATE_GETTER },
+            symbols.map { if (it == CONVERSATION_STATE_GETTER) it.replace("CodexConversationState", "string") else it },
+            symbols.map { if (it == CONVERSATION_STATE_OBSERVER) it.replace("state: CodexConversationState", "state: string") else it },
+            symbols + "property:CodexConversation#state[readonly]:CodexConversationState",
+            symbols + "method:CodexConversation#observeState:(listener: (state: string) => void): CodexObservation",
+            symbols.filterNot { "#turnProgress:" in it },
+            symbols.map { if ("#turnProgress:" in it) it.replace("CodexTurnProgress", "string") else it },
+        ).forEach { malformed ->
+            assertTrue(derive(listOf(active), malformed.sorted()).missingCapabilityKeys.contains(active))
+        }
+
+        val unreferenced = derive(
+            listOf(active),
+            symbols,
+            references = symbols.filterNot { "#turnProgress:" in it },
+        )
+        assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && active in it })
+
+        val ambiguous = derive(
+            listOf(active),
+            (symbols + "property:CodexConversationState#turnProgress[readonly]:CodexTurnProgress | null | undefined")
+                .sorted(),
+        )
+        assertTrue(ambiguous.errors.any { "Ambiguous" in it && active in it })
+
+        val duplicateLeaf = canonicalProperty(
+            "CodexConversation",
+            "turnProgress",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/AgentTurnProgress?>!!",
+        )
+        val reused = derive(listOf(active, duplicateLeaf).sorted(), symbols)
+        assertTrue(reused.errors.any { "Reused" in it && active in it && duplicateLeaf in it })
+        assertTrue(reused.projectionClaims.isEmpty())
+
+        val unrelated = canonicalProperty(
+            "OtherConversation",
+            "activeTurnProgress",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/AgentTurnProgress?>!!",
+        )
+        assertTrue(derive(listOf(unrelated), symbols).missingCapabilityKeys.contains(unrelated))
+
+        val foreign = active.replace("owner=example/CodexConversation", "owner=foreign/CodexConversation")
+            .replace("abi=example/CodexConversation", "abi=foreign/CodexConversation")
+        val crossOwnerReuse = derive(listOf(active, foreign).sorted(), symbols)
+        assertTrue(crossOwnerReuse.errors.any { "Reused" in it && active in it && foreign in it })
+        assertTrue(crossOwnerReuse.projectionClaims.isEmpty())
+    }
+
+    @Test
+    fun `conversation leaf sharing rejects aliases type changes foreign owners excess claims and absent envelope`() {
+        val aggregateCanCancel = conversationStateFlowKeys().single { "canCancelTurn" in it }
+        val ordinaryCanCancel = conversationOrdinaryStateKeys().single { "canCancelTurn" in it }
+        val symbols = conversationStateSymbols()
+
+        val aliasAggregate = conversationStateFlowKeys().single { "currentMessages" in it }
+        val aliasOrdinary = canonicalProperty(
+            "AgentConversationState",
+            "messages",
+            "kotlin.collections/List<INVARIANT:example/AgentMessage!!>!!",
+        )
+        val alias = derive(listOf(aliasAggregate, aliasOrdinary).sorted(), symbols)
+        assertTrue(alias.errors.any { "Reused" in it && aliasAggregate in it && aliasOrdinary in it })
+
+        val aggregateValue = canonicalProperty(
+            "CodexConversation",
+            "value",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/ConversationId?>!!",
+        )
+        val ordinaryValue = canonicalProperty("AgentConversationState", "value", "kotlin/String?")
+        val valueSymbols = (symbols + "getter:CodexConversationState#value:string | null | undefined").sorted()
+        val changedType = derive(listOf(aggregateValue, ordinaryValue).sorted(), valueSymbols)
+        assertTrue(changedType.errors.any { "Reused" in it && aggregateValue in it && ordinaryValue in it })
+
+        val foreignOrdinary = ordinaryCanCancel
+            .replace("owner=example/AgentConversationState", "owner=foreign/AgentConversationState")
+            .replace("abi=example/AgentConversationState", "abi=foreign/AgentConversationState")
+        val foreign = derive(listOf(aggregateCanCancel, foreignOrdinary).sorted(), symbols)
+        assertTrue(foreign.errors.any { "Reused" in it && aggregateCanCancel in it && foreignOrdinary in it })
+
+        val excess = derive(listOf(aggregateCanCancel, ordinaryCanCancel, foreignOrdinary).sorted(), symbols)
+        assertTrue(excess.errors.any {
+            "Reused" in it && aggregateCanCancel in it && ordinaryCanCancel in it && foreignOrdinary in it
+        })
+        assertTrue(excess.projectionClaims.isEmpty())
+
+        val envelopeFreeSymbols = listOf(
+            "class:CodexConversationState",
+            "getter:CodexConversationState#canCancelTurn:boolean",
+        )
+        val envelopeFree = derive(
+            listOf(aggregateCanCancel, ordinaryCanCancel).sorted(),
+            envelopeFreeSymbols.sorted(),
+        )
+        assertEquals(setOf(aggregateCanCancel), envelopeFree.missingCapabilityKeys.toSet())
+        assertEquals(listOf(ordinaryCanCancel), envelopeFree.projectionClaims.map { it.capabilityKey })
+    }
+
+    @Test
     fun `mutable canonical property requires a writable TypeScript property`() {
         val key = canonicalProperty("Mutable", "value", "kotlin/String!!", propertyKind = "VAR")
         val classSymbol = "class:Mutable"
@@ -632,6 +885,49 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         packedApi = packedEvidence(symbols.sorted(), schema, references.sorted()),
     )
 
+    private fun conversationStateFlowKeys(): List<String> = listOf(
+        canonicalProperty(
+            "CodexConversation",
+            "state",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/AgentConversationState!!>!!",
+        ),
+        canonicalProperty(
+            "CodexConversation",
+            "activeTurnProgress",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/AgentTurnProgress?>!!",
+        ),
+        canonicalProperty(
+            "CodexConversation",
+            "currentMessages",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin.collections/List<INVARIANT:example/AgentMessage!!>!!>!!",
+        ),
+    ) + listOf("canCancelTurn", "canReload", "canRunShellCommand", "canStartTurn", "isTurnActive").map { name ->
+        canonicalProperty(
+            "CodexConversation",
+            name,
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+        )
+    }.sorted()
+
+    private fun conversationOrdinaryStateKeys(): List<String> =
+        listOf("canCancelTurn", "canReload", "canStartTurn").map { name ->
+            canonicalProperty("AgentConversationState", name, "kotlin/Boolean!!")
+        }.sorted()
+
+    private fun conversationStateSymbols(): List<String> = listOf(
+        "class:CodexConversation",
+        "class:CodexConversationState",
+        CONVERSATION_STATE_GETTER,
+        CONVERSATION_STATE_OBSERVER,
+        "getter:CodexConversationState#canCancelTurn:boolean",
+        "getter:CodexConversationState#canReload:boolean",
+        "getter:CodexConversationState#canRunShellCommand:boolean",
+        "getter:CodexConversationState#canStartTurn:boolean",
+        "getter:CodexConversationState#isTurnActive:boolean",
+        "getter:CodexConversationState#messages:ReadonlyArray<CodexMessage>",
+        "getter:CodexConversationState#turnProgress:CodexTurnProgress | null | undefined",
+    ).sorted()
+
     private fun receiptFiles(
         keys: List<String>,
         symbols: List<String>,
@@ -734,17 +1030,24 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         returnType: String = "kotlin/Unit",
         suspendFunction: Boolean = false,
         parameters: List<String> = emptyList(),
+        defaultParameterIndices: Set<Int> = emptySet(),
     ): String = "common|owner=example/$owner|kind=function|abi=example/$owner.$name|" +
-        "$name(){}[0]|return=$returnType|suspend=$suspendFunction|parameters=" + canonicalParameters(parameters)
+        "$name(){}[0]|return=$returnType|suspend=$suspendFunction|parameters=" +
+        canonicalParameters(parameters, defaultParameterIndices)
 
     private fun canonicalConstructor(owner: String, parameters: List<String>): String =
         "common|owner=example/$owner|kind=constructor|abi=example/$owner.<init>|<init>(){}[0]|" +
             "return=example/$owner|suspend=false|parameters=${canonicalParameters(parameters)}"
 
-    private fun canonicalParameters(parameters: List<String>): String = parameters.joinToString(
+    private fun canonicalParameters(
+        parameters: List<String>,
+        defaultParameterIndices: Set<Int> = emptySet(),
+    ): String = parameters.mapIndexed { index, type ->
+        "REGULAR:$type:default=${index in defaultParameterIndices}:vararg=false"
+    }.joinToString(
         prefix = "[",
         postfix = "]",
-    ) { "REGULAR:$it:default=false:vararg=false" }
+    )
 
     private fun writePackedReport(
         file: File,
@@ -898,6 +1201,29 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
+        private const val OPEN_CONVERSATION =
+            "method:CodexAgent#openConversation:" +
+                "(conversationId?: string | null | undefined, " +
+                "approvalPreset?: CodexApprovalPreset | null | undefined, " +
+                "serviceTier?: string | null | undefined, " +
+                "signal?: AbortSignal | null | undefined): Promise<CodexConversation>"
+        private const val CONVERSATION_STATE_GETTER =
+            "getter:CodexConversation#state:CodexConversationState"
+        private const val CONVERSATION_STATE_OBSERVER =
+            "method:CodexConversation#observeState:" +
+                "(listener: (state: CodexConversationState) => void): CodexObservation"
+
+        private val AUTHENTICATION_OVERLOADS = listOf(
+            "method:CodexAuthentication#authenticate:" +
+                "(method: \"api_key\", apiKey: string, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+            "method:CodexAuthentication#authenticate:" +
+                "(method: \"chatgpt_device_code\", apiKey?: null, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+            "method:CodexAuthentication#authenticate:" +
+                "(method?: \"chatgpt_browser\" | null | undefined, apiKey?: null, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+        )
 
         private val PACKED_TEST_IDS = listOf(
             "cjs exposes the exact Node-only SDK surface",
