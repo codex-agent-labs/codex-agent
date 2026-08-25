@@ -166,6 +166,30 @@ val appleDistributionTasks = registerIosAppleDistributionTasks(
     importedDeviceFramework,
     importedSimulatorFramework,
 )
+val appleCompilerMinimumIosVersion = minimumIosVersion
+tasks.register<AppleCompilerEvidenceTask>("generateCodexAgentAppleCompilerEvidence") {
+    group = "verification"
+    description = "Extracts compiler-authored Swift and Objective-C evidence for the CodexFailure slice."
+    dependsOn(
+        verifyAppleToolchain,
+        appleDistributionTasks.prepareCodexAgentReleaseXCFramework,
+        ":codex-agent-core:verifyCrossLanguageApiCoverage",
+    )
+    xcframeworkDirectory.set(appleDistributionTasks.releaseXCFrameworkDirectory)
+    canonicalApiReport.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
+    ))
+    canonicalCoverageReceipt.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json",
+    ))
+    swiftConsumer.set(layout.projectDirectory.file("apple/CompilerEvidence/CodexFailureSwiftConsumer.swift"))
+    objectiveCConsumer.set(layout.projectDirectory.file("apple/CompilerEvidence/CodexFailureObjectiveCConsumer.m"))
+    minimumIosVersion.set(appleCompilerMinimumIosVersion)
+    expectedXcodeVersion.set(pinnedXcodeVersion)
+    expectedXcodeBuild.set(pinnedXcodeBuild)
+    expectedSwiftVersion.set(pinnedSwiftVersion)
+    evidenceFile.set(layout.buildDirectory.file("reports/cross-language-api/apple/compiler-evidence.json"))
+}
 val appleReleaseTasks = registerIosAppleReleaseVerificationTasks(
     appleDistributionTasks,
     minimumIosVersion,
