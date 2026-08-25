@@ -2086,6 +2086,166 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `client info flattens only into the exact referenced host factory`() {
+        val hostConstructor = canonicalConstructor(
+            "CodexHost",
+            listOf("example/CodexPlatform!!", "example/CodexClientInfo!!"),
+        )
+        val clientConstructor = canonicalConstructor(
+            "CodexClientInfo",
+            listOf("kotlin/String!!", "kotlin/String!!", "kotlin/String!!"),
+        )
+        val clientName = canonicalProperty("CodexClientInfo", "name", "kotlin/String!!")
+        val clientTitle = canonicalProperty("CodexClientInfo", "title", "kotlin/String!!")
+        val clientVersion = canonicalProperty("CodexClientInfo", "version", "kotlin/String!!")
+        val clientKeys = listOf(clientConstructor, clientName, clientTitle, clientVersion).sorted()
+        val keys = (clientKeys + hostConstructor).sorted()
+        val symbols = listOf("class:CodexHost", CREATE_CODEX_HOST).sorted()
+        val references = listOf(CREATE_CODEX_HOST)
+        val evidence = derive(keys, symbols, references = references)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(5, claims.size)
+        assertEquals(
+            listOf(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP),
+            claims.getValue(hostConstructor).sharedScenarios,
+        )
+        clientKeys.forEach { key ->
+            assertEquals(listOf(CREATE_CODEX_HOST), claims.getValue(key).publicSymbols)
+            assertEquals(
+                listOf(CrossLanguageBindingScenario.VALUE_CONVERSION),
+                claims.getValue(key).sharedScenarios,
+            )
+        }
+        val clientProjectionSymbols = clientKeys.flatMap { claims.getValue(it).publicSymbols }.toSet()
+        assertEquals(setOf(CREATE_CODEX_HOST), clientProjectionSymbols)
+        assertEquals(269, 265 + clientKeys.size)
+        assertEquals(275, 279 - clientKeys.size)
+        assertEquals(556, 269 + 12 + 275)
+        assertEquals(57, 58 - 1)
+        assertEquals(
+            229,
+            currentPublicSymbols().size + (clientProjectionSymbols - currentPublicSymbols().toSet()).size,
+        )
+        assertEquals(references, evidence.packedApi.referencedSymbols)
+
+        val canonicalDrift = listOf(
+            clientConstructor to canonicalConstructor(
+                "OtherClientInfo",
+                listOf("kotlin/String!!", "kotlin/String!!", "kotlin/String!!"),
+            ),
+            clientConstructor to canonicalConstructor(
+                "CodexClientInfo",
+                listOf("kotlin/String?", "kotlin/String!!", "kotlin/String!!"),
+            ),
+            clientConstructor to canonicalConstructor(
+                "CodexClientInfo",
+                listOf("kotlin/String!!", "kotlin/String!!"),
+            ),
+            clientConstructor to canonicalConstructor(
+                "CodexClientInfo",
+                listOf("kotlin/String!!", "kotlin/String!!", "kotlin/String!!", "kotlin/String!!"),
+            ),
+            clientConstructor to clientConstructor.replaceFirst("default=false", "default=true"),
+            clientConstructor to clientConstructor.replaceFirst("vararg=false", "vararg=true"),
+            clientConstructor to clientConstructor.replace("suspend=false", "suspend=true"),
+            clientConstructor to clientConstructor.replace(
+                "return=example/CodexClientInfo",
+                "return=example/OtherClientInfo",
+            ),
+            clientName to canonicalProperty("OtherClientInfo", "name", "kotlin/String!!"),
+            clientName to canonicalFunction("CodexClientInfo", "name", returnType = "kotlin/String!!"),
+            clientName to canonicalProperty("CodexClientInfo", "futureName", "kotlin/String!!"),
+            clientName to canonicalProperty("CodexClientInfo", "name", "kotlin/Int!!"),
+            clientName to canonicalProperty("CodexClientInfo", "name", "kotlin/String!!", propertyKind = "VAR"),
+            clientName to "$clientName|suspend=true",
+            clientName to "$clientName|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+            clientTitle to canonicalProperty("CodexClientInfo", "title", "kotlin/String?"),
+            clientVersion to canonicalProperty("CodexClientInfo", "version", "kotlin/Int!!"),
+        )
+        canonicalDrift.forEach { (exact, drifted) ->
+            val driftedKeys = keys.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(driftedKeys, symbols, references = references)
+            assertTrue(drift.projectionClaims.isEmpty(), "Accepted canonical drift: $drifted")
+            assertTrue(
+                drifted in drift.missingCapabilityKeys || drift.errors.any { "Reused" in it },
+                "Did not reject canonical drift: $drifted",
+            )
+        }
+        listOf(clientConstructor, clientName).forEach { exact ->
+            val malformedAbi = exact.replace(
+                "abi=example/CodexClientInfo.",
+                "abi=example/OtherClientInfo.",
+            )
+            val malformed = derive(
+                keys.map { if (it == exact) malformedAbi else it }.sorted(),
+                symbols,
+                references = references,
+            )
+            assertTrue(malformed.projectionClaims.isEmpty())
+            assertTrue(malformedAbi in malformed.missingCapabilityKeys || malformed.errors.any { "Reused" in it })
+        }
+
+        listOf(
+            CREATE_CODEX_HOST.replace("bundleDirectory", "bundle"),
+            CREATE_CODEX_HOST.replace(
+                "clientName: string, clientTitle: string",
+                "clientTitle: string, clientName: string",
+            ),
+            CREATE_CODEX_HOST.replace("clientName: string", "clientName?: string"),
+            CREATE_CODEX_HOST.replace("clientTitle: string", "...clientTitle: string"),
+            CREATE_CODEX_HOST.replace("clientVersion: string", "clientVersion: number"),
+            CREATE_CODEX_HOST.replace(", clientVersion: string", ""),
+            CREATE_CODEX_HOST.replace("): CodexHost", ", future: string): CodexHost"),
+            CREATE_CODEX_HOST.replace(": CodexHost", ": OtherHost"),
+            CREATE_CODEX_HOST.replace("createCodexHost", "createFutureHost"),
+        ).forEach { driftedFactory ->
+            val drift = derive(
+                keys,
+                listOf("class:CodexHost", driftedFactory).sorted(),
+                references = listOf(driftedFactory),
+            )
+            assertEquals(keys, drift.missingCapabilityKeys, "Accepted factory drift: $driftedFactory")
+            assertTrue(drift.projectionClaims.isEmpty())
+        }
+
+        keys.indices.forEach { omittedIndex ->
+            val partial = derive(
+                keys.filterIndexed { index, _ -> index != omittedIndex },
+                symbols,
+                references = references,
+            )
+            assertTrue(partial.errors.any { "Reused" in it }, "Accepted partial reuse without ${keys[omittedIndex]}")
+            assertTrue(partial.projectionClaims.isEmpty())
+        }
+
+        val future = canonicalProperty("CodexClientInfo", "future", "kotlin/String!!")
+        val futureEvidence = derive((keys + future).sorted(), symbols, references = references)
+        assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
+        assertEquals(keys, futureEvidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
+
+        val arbitrary = canonicalProperty("OtherValue", "name", "kotlin/String!!")
+        val arbitraryEvidence = derive((keys + arbitrary).sorted(), symbols, references = references)
+        assertEquals(listOf(arbitrary), arbitraryEvidence.missingCapabilityKeys)
+        assertEquals(keys, arbitraryEvidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
+
+        val crossPackage = derive(
+            (keys + clientKeys.map { it.replace("example/", "foreign/") }).sorted(),
+            symbols,
+            references = references,
+        )
+        assertTrue(crossPackage.errors.any { "Reused" in it })
+        assertTrue(crossPackage.projectionClaims.isEmpty())
+
+        val unreferenced = derive(keys, symbols, references = emptyList())
+        assertEquals(5, unreferenced.errors.count { "Unreferenced exceptional" in it })
+        assertTrue(unreferenced.projectionClaims.isEmpty())
+    }
+
+    @Test
     fun `approval preset display name requires one exact referenced public function`() {
         val key = canonicalProperty("AgentApprovalPreset", "displayName", "kotlin/String!!")
         val evidence = derive(
@@ -3078,6 +3238,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
                 "signal?: AbortSignal | null | undefined): Promise<void>"
         private const val APPROVAL_PRESET_DISPLAY_NAME =
             "function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string"
+        private const val CREATE_CODEX_HOST =
+            "function:createCodexHost:" +
+                "(bundleDirectory: string, dataDirectory: string, clientName: string, " +
+                "clientTitle: string, clientVersion: string): CodexHost"
         private const val CONVERSATION_ID_GETTER =
             "getter:CodexConversationState#conversationId:string | null | undefined"
         private const val SELECT_WORKSPACE =

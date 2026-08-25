@@ -18,6 +18,22 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   process.argv.push('--not-an-evidence-argument');
   assert.equal(typeof sdk.createCodexHost, 'function');
   assert.equal(typeof sdk.codexApprovalPresetDisplayName, 'function');
+  for (const [clientInfo, message] of [
+    [[Object.create(null), 'Client', '1.0'], 'clientName must be a string'],
+    [['client', [], '1.0'], 'clientTitle must be a string'],
+    [['client', 'Client', new String('1.0')], 'clientVersion must be a string'],
+    [[' ', 'Client', '1.0'], 'Client name must not be blank or contain control characters'],
+    [['client\u0000', 'Client', '1.0'], 'Client name must not be blank or contain control characters'],
+    [['client', ' ', '1.0'], 'Client title must not be blank or contain control characters'],
+    [['client', 'Client\u0000', '1.0'], 'Client title must not be blank or contain control characters'],
+    [['client', 'Client', ' '], 'Client version must not be blank or contain control characters'],
+    [['client', 'Client', '1.0\u0000'], 'Client version must not be blank or contain control characters'],
+  ]) {
+    assert.throws(
+      () => sdk.createCodexHost('/bundle', '/data', ...clientInfo),
+      (error) => error?.message === message,
+    );
+  }
   assert.deepEqual(
     ['never', 'auto_review', 'ask_me', 'strict'].map((preset) =>
       sdk.codexApprovalPresetDisplayName(preset)),

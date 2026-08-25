@@ -760,13 +760,18 @@ public fun createCodexHost(
     clientName: String,
     clientTitle: String,
     clientVersion: String,
-): CodexHost = CodexHost(
-    CoreHost(
-        NodeCodexPlatform(bundleDirectory.toPath(), dataDirectory.toPath()),
-        CodexClientInfo(clientName, clientTitle, clientVersion),
-    ),
-    jsApiToken,
-)
+): CodexHost {
+    val name = clientName.requireJavaScriptString("clientName")
+    val title = clientTitle.requireJavaScriptString("clientTitle")
+    val version = clientVersion.requireJavaScriptString("clientVersion")
+    return CodexHost(
+        CoreHost(
+            NodeCodexPlatform(bundleDirectory.toPath(), dataDirectory.toPath()),
+            CodexClientInfo(name, title, version),
+        ),
+        jsApiToken,
+    )
+}
 
 @JsExport
 public fun codexApprovalPresetDisplayName(preset: String): String = preset.toApprovalPreset().displayName

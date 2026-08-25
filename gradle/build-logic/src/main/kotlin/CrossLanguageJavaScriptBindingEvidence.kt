@@ -834,6 +834,10 @@ private const val javaScriptApprovalPresetDisplayName =
 private const val javaScriptApiKeyAuthentication =
     "method:CodexAuthentication#authenticate:" +
         "(method: \"api_key\", apiKey: string, signal?: AbortSignal | null | undefined): Promise<void>"
+private const val javaScriptCreateCodexHost =
+    "function:createCodexHost:" +
+        "(bundleDirectory: string, dataDirectory: string, clientName: string, " +
+        "clientTitle: string, clientVersion: string): CodexHost"
 private const val javaScriptDeleteConversation =
     "method:CodexAgent#delete:" +
         "(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>"
@@ -861,6 +865,7 @@ private fun flattenedValueProjectionCandidates(
         member.isExactApiKeyAuthenticationMethodMember() -> listOf(javaScriptApiKeyAuthentication)
         member.isExactConversationSettingsMember() -> listOf(javaScriptOpenConversation)
         member.isExactConversationIdMember() -> javaScriptConversationIdSymbols
+        member.isExactCodexClientInfoMember() -> listOf(javaScriptCreateCodexHost)
         member.isExactPathWorkspaceSelectionMember() -> listOf(javaScriptSelectWorkspace)
         else -> return emptyList()
     }
@@ -903,6 +908,16 @@ private fun CanonicalJavaScriptMember.isExactConversationIdMember(): Boolean =
         "ConversationId",
         listOf(CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false)),
     ) || isExactProperty("ConversationId", "value", "kotlin/String!!")
+
+private fun CanonicalJavaScriptMember.isExactCodexClientInfoMember(): Boolean =
+    isExactConstructor(
+        "CodexClientInfo",
+        List(3) {
+            CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false)
+        },
+    ) || listOf("name", "title", "version").any {
+        isExactProperty("CodexClientInfo", it, "kotlin/String!!")
+    }
 
 private fun CanonicalJavaScriptMember.isExactPathWorkspaceSelectionMember(): Boolean =
     isExactConstructor(
@@ -1543,15 +1558,28 @@ private fun javascriptHostFactorySignatureCompatible(
 ): Boolean {
     val actual = parseJavaScriptSignatureOrNull(signature, requireReturn = true) ?: return false
     val expectedNames = listOf("bundleDirectory", "dataDirectory", "clientName", "clientTitle", "clientVersion")
-    val canonicalParameters = member.parameters
-    val canonicalPackage = member.owner.substringBeforeLast('/')
-    val canonicalShape = !member.isSuspend && member.returnType == member.owner &&
-        canonicalParameters.size == 2 && canonicalParameters.none { it.hasDefault || it.isVararg } &&
-        canonicalParameters[0].type == "$canonicalPackage/CodexPlatform!!" &&
-        canonicalParameters[1].type == "$canonicalPackage/CodexClientInfo!!"
-    return canonicalShape && actual.returnType == "CodexHost" &&
+    return member.isExactCodexHostFactoryConstructor() && actual.returnType == "CodexHost" &&
         actual.parameters.map(JavaScriptParameter::name) == expectedNames &&
         actual.parameters.all { !it.optional && !it.vararg && normalizeJavaScriptType(it.type) == "string" }
+}
+
+private fun CanonicalJavaScriptMember.isExactCodexHostFactoryConstructor(): Boolean {
+    val canonicalPackage = owner.substringBeforeLast('/')
+    return isExactConstructor(
+        "CodexHost",
+        listOf(
+            CanonicalJavaScriptParameter(
+                "$canonicalPackage/CodexPlatform!!",
+                hasDefault = false,
+                isVararg = false,
+            ),
+            CanonicalJavaScriptParameter(
+                "$canonicalPackage/CodexClientInfo!!",
+                hasDefault = false,
+                isVararg = false,
+            ),
+        ),
+    )
 }
 
 private fun javascriptSelectWorkspaceSignatureCompatible(
@@ -1739,6 +1767,11 @@ private fun isAllowedFlattenedValueReuse(
 ): Boolean {
     val members = projections.map(JavaScriptProjection::member)
     if (members.map { it.owner.substringBeforeLast('/') }.distinct().size != 1) return false
+    if (symbol == javaScriptCreateCodexHost) {
+        return members.size == 5 && members.map(CanonicalJavaScriptMember::key).distinct().size == 5 &&
+            members.count(CanonicalJavaScriptMember::isExactCodexHostFactoryConstructor) == 1 &&
+            members.count(CanonicalJavaScriptMember::isExactCodexClientInfoMember) == 4
+    }
     if (symbol == javaScriptApiKeyAuthentication) {
         return members.size == 3 && members.map(CanonicalJavaScriptMember::key).distinct().size == 3 &&
             members.count(CanonicalJavaScriptMember::isExactAuthenticationFunction) == 1 &&
