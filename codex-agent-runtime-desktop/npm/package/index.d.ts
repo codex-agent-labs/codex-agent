@@ -123,6 +123,30 @@ export declare class AgentModel {
     get serviceTiers(): ReadonlyArray<AgentServiceTier>;
     get defaultServiceTier(): Nullable<string>;
 }
+export declare class AgentSkill {
+    constructor(name: string, displayName: string, description: string, path: string, scope: AgentSkillScope, isEnabled: boolean, brandColor?: Nullable<string>, dependencies?: ReadonlyArray<string>, canUninstall?: boolean, origin?: AgentResourceOrigin);
+    get name(): string;
+    get displayName(): string;
+    get description(): string;
+    get path(): string;
+    get scope(): AgentSkillScope;
+    get isEnabled(): boolean;
+    get brandColor(): Nullable<string>;
+    get dependencies(): ReadonlyArray<string>;
+    get canUninstall(): boolean;
+    get origin(): AgentResourceOrigin;
+}
+export declare class AgentSkillCatalog {
+    constructor(skills: ReadonlyArray<AgentSkill>, errors?: ReadonlyArray<string>);
+    get skills(): ReadonlyArray<AgentSkill>;
+    get errors(): ReadonlyArray<string>;
+}
+export declare class AgentSkillChunk {
+    constructor(content: string, nextOffset: Nullable<bigint>, totalBytes: bigint);
+    get content(): string;
+    get nextOffset(): Nullable<bigint>;
+    get totalBytes(): bigint;
+}
 export declare class AgentConversationSummary {
     constructor(conversationId: string, title: string, updatedAtEpochSeconds: bigint);
     get conversationId(): string;
@@ -231,6 +255,7 @@ export declare class CodexAgent {
     get authentication(): CodexAuthentication;
     get connectors(): CodexConnectors;
     get models(): CodexModels;
+    get skills(): CodexSkills;
     get activeConversation(): Nullable<CodexConversation>;
     listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;
     openConversation(conversationId?: Nullable<string>, approvalPreset?: Nullable<CodexApprovalPreset>, serviceTier?: Nullable<string>, signal?: Nullable<AbortSignal>): Promise<CodexConversation>;
@@ -249,6 +274,14 @@ export declare class CodexModels {
     resolve(resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<AgentModel>;
     resolveEffort(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<string>;
     resolveServiceTier(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<Nullable<AgentServiceTier>>;
+}
+export declare class CodexSkills {
+    private constructor();
+    get isAvailable(): boolean;
+    list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<AgentSkillCatalog>;
+    read(path: string, offset?: bigint, signal?: Nullable<AbortSignal>): Promise<AgentSkillChunk>;
+    install(directory: string, scope: AgentInstallationScope, signal?: Nullable<AbortSignal>): Promise<AgentSkill>;
+    uninstall(skill: AgentSkill, signal?: Nullable<AbortSignal>): Promise<void>;
 }
 export declare class CodexAuthentication {
     private constructor();

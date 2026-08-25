@@ -36,6 +36,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -108,6 +109,73 @@ class CodexNodeApiTest {
         assertTrue(isFrozen(localModel.serviceTiers.single()))
         assertEquals(0, enumerablePropertyCount(localModel))
         assertEquals(0, enumerablePropertyCount(localModel.serviceTiers.single()))
+
+        val sourceDependencies = arrayOf("git", "rg")
+        val localSkill = AgentSkill(
+            name = "review-skill",
+            displayName = "Review skill",
+            description = "Reviews a change",
+            path = "/skills/review-skill/SKILL.md",
+            scope = "repo",
+            isEnabled = true,
+            brandColor = "#123456",
+            dependencies = sourceDependencies,
+            canUninstall = true,
+        )
+        sourceDependencies[0] = "changed"
+        assertEquals("review-skill", localSkill.name)
+        assertEquals("Review skill", localSkill.displayName)
+        assertEquals("Reviews a change", localSkill.description)
+        assertEquals("/skills/review-skill/SKILL.md", localSkill.path)
+        assertEquals("repo", localSkill.scope)
+        assertTrue(localSkill.isEnabled)
+        assertEquals("#123456", localSkill.brandColor)
+        assertEquals(listOf("git", "rg"), localSkill.dependencies.toList())
+        assertTrue(localSkill.canUninstall)
+        assertEquals("workspace", localSkill.origin)
+        assertTrue(isFrozen(localSkill))
+        assertTrue(isFrozen(localSkill.dependencies))
+        assertEquals(0, enumerablePropertyCount(localSkill))
+
+        val sourceSkills = arrayOf(localSkill)
+        val sourceErrors = arrayOf("warning")
+        val localCatalog = AgentSkillCatalog(sourceSkills, sourceErrors)
+        sourceSkills[0] = AgentSkill("changed", "Changed", "Changed", "/changed", "user", false)
+        sourceErrors[0] = "changed"
+        assertEquals(listOf("review-skill"), localCatalog.skills.map(AgentSkill::name))
+        assertEquals(listOf("warning"), localCatalog.errors.toList())
+        assertTrue(isFrozen(localCatalog))
+        assertTrue(isFrozen(localCatalog.skills))
+        assertTrue(isFrozen(localCatalog.errors))
+        assertTrue(isFrozen(localCatalog.skills.single()))
+        val localChunk = AgentSkillChunk(
+            "content",
+            javaScriptBigInt("7"),
+            javaScriptBigInt("20"),
+        )
+        assertEquals("content", localChunk.content)
+        assertEquals("7", localChunk.nextOffset?.toString())
+        assertEquals("20", localChunk.totalBytes.toString())
+        assertEquals("bigint", jsTypeOf(localChunk.totalBytes))
+        assertTrue(isFrozen(localChunk))
+        assertEquals(0, enumerablePropertyCount(localChunk))
+
+        val invalidSkillScope = runCatching {
+            AgentSkill("invalid", "Invalid", "Invalid", "/invalid", "temporary", true)
+        }.exceptionOrNull()
+        assertEquals("Unknown skill scope: temporary", invalidSkillScope?.message)
+        val invalidSkillDependencies = runCatching {
+            AgentSkill(
+                "invalid",
+                "Invalid",
+                "Invalid",
+                "/invalid",
+                "user",
+                true,
+                dependencies = js("({ length: 0 })").unsafeCast<Array<String>>(),
+            )
+        }.exceptionOrNull()
+        assertEquals("dependencies must be an array", invalidSkillDependencies?.message)
 
         val defaultModel = AgentModel("model-defaults", "Defaults", "", emptyArray(), "medium", false)
         assertTrue(defaultModel.serviceTiers.isEmpty())
@@ -405,12 +473,17 @@ class CodexNodeApiTest {
         assertTrue(activeObservation.isClosed)
         assertTrue(runtime.closed)
 
-        val shellRuntime = ApiTestRuntime()
+        val skillFixture = createSkillTestFixture()
+        val shellRuntime = ApiTestRuntime().apply {
+            skillWorkspacePath = skillFixture.workspacePath
+            skillManifestPath = skillFixture.sourceManifestPath
+        }
         val shellHost = wrapCodexHost(CoreHost(
             ApiTestPlatform(shellRuntime, features = setOf(
                 CodexRuntimeFeature.SHELL_COMMANDS,
                 CodexRuntimeFeature.CONNECTORS,
-            )),
+                CodexRuntimeFeature.SKILLS,
+            ), workspacePath = skillFixture.workspacePath),
             CodexClientInfo("node_test", "Node Test", "test"),
         ))
         try {
@@ -423,6 +496,10 @@ class CodexNodeApiTest {
             val models = shellAgent.models
             assertSame(models, shellAgent.models)
             assertEquals(0, enumerablePropertyCount(models))
+            val skills = shellAgent.skills
+            assertSame(skills, shellAgent.skills)
+            assertTrue(skills.isAvailable)
+            assertEquals(0, enumerablePropertyCount(skills))
 
             val controller = js("new AbortController()")
             controller.abort()
@@ -437,6 +514,31 @@ class CodexNodeApiTest {
             }.exceptionOrNull()
             assertEquals("AbortError", abortedConversationList?.asDynamic()?.name as String)
             assertTrue(shellRuntime.threadListRequests.isEmpty())
+
+            listOf(
+                runCatching {
+                    skills.list(signal = controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    skills.read(
+                        skillFixture.sourceManifestPath,
+                        signal = controller.signal.unsafeCast<AbortSignal>(),
+                    ).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    skills.install(
+                        skillFixture.sourceDirectory,
+                        "workspace",
+                        controller.signal.unsafeCast<AbortSignal>(),
+                    ).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    skills.uninstall(localSkill, controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+            ).forEach { aborted ->
+                assertEquals("AbortError", aborted?.asDynamic()?.name as String)
+            }
+            assertTrue(shellRuntime.skillListRequests.isEmpty())
 
             listOf(
                 runCatching {
@@ -462,6 +564,86 @@ class CodexNodeApiTest {
             }
             assertTrue(shellRuntime.modelListRequests.isEmpty())
             assertTrue(shellRuntime.configReadRequests.isEmpty())
+
+            val skillCatalog = skills.list(forceReload = true).await()
+            assertEquals(listOf("fixture-skill"), skillCatalog.skills.map(AgentSkill::name))
+            assertEquals(
+                listOf("${skillFixture.sourceManifestPath}.warning: ignored entry"),
+                skillCatalog.errors.toList(),
+            )
+            val listedSkill = skillCatalog.skills.single()
+            assertEquals("Fixture skill", listedSkill.displayName)
+            assertEquals("Projected description", listedSkill.description)
+            assertEquals(skillFixture.sourceManifestPath, listedSkill.path)
+            assertEquals("repo", listedSkill.scope)
+            assertTrue(listedSkill.isEnabled)
+            assertEquals("#abcdef", listedSkill.brandColor)
+            assertEquals(listOf("git", "rg"), listedSkill.dependencies.toList())
+            assertFalse(listedSkill.canUninstall)
+            assertEquals("workspace", listedSkill.origin)
+            assertTrue(isFrozen(skillCatalog))
+            assertTrue(isFrozen(skillCatalog.skills))
+            assertTrue(isFrozen(skillCatalog.errors))
+            assertTrue(isFrozen(listedSkill))
+            assertTrue(isFrozen(listedSkill.dependencies))
+            assertEquals(1, shellRuntime.skillListRequests.size)
+            val firstSkillList = shellRuntime.skillListRequests.single()
+            assertEquals(
+                listOf(skillFixture.workspacePath),
+                firstSkillList["cwds"]?.jsonArray?.map { it.jsonPrimitive.content },
+            )
+            assertEquals("true", firstSkillList["forceReload"]?.jsonPrimitive?.content)
+
+            val skillChunk = skills.read(skillFixture.sourceManifestPath).await()
+            assertEquals(SKILL_FIXTURE_CONTENT, skillChunk.content)
+            assertNull(skillChunk.nextOffset)
+            assertEquals(SKILL_FIXTURE_CONTENT.encodeToByteArray().size.toString(), skillChunk.totalBytes.toString())
+            assertEquals("bigint", jsTypeOf(skillChunk.totalBytes))
+            assertTrue(isFrozen(skillChunk))
+
+            val requestsBeforeInvalidSkillInputs = shellRuntime.requestMethods.size
+            val invalidSkillPath = runCatching { skills.read("relative/SKILL.md").await() }.exceptionOrNull()
+            assertEquals("Skill path must be absolute", invalidSkillPath?.message)
+            val invalidSkillOffset = runCatching {
+                skills.read(skillFixture.sourceManifestPath, javaScriptBigInt("-1")).await()
+            }.exceptionOrNull()
+            assertEquals("Offset must not be negative", invalidSkillOffset?.message)
+            val invalidInstallationScope = runCatching {
+                skills.install(skillFixture.sourceDirectory, "temporary").await()
+            }.exceptionOrNull()
+            assertEquals("Unknown installation scope: temporary", invalidInstallationScope?.message)
+            assertEquals(requestsBeforeInvalidSkillInputs, shellRuntime.requestMethods.size)
+
+            val unownedFailure = assertIs<CodexError>(
+                runCatching { skills.uninstall(listedSkill).await() }.exceptionOrNull(),
+            )
+            assertEquals("skill_uninstall_failed", unownedFailure.code)
+            assertEquals("Could not uninstall skill", unownedFailure.message)
+            assertTrue(unownedFailure.recoverable)
+            assertEquals(requestsBeforeInvalidSkillInputs, shellRuntime.requestMethods.size)
+
+            shellRuntime.skillManifestPath = skillFixture.installedManifestPath
+            val installedSkill = skills.install(skillFixture.sourceDirectory, "workspace").await()
+            assertEquals(skillFixture.installedManifestPath, installedSkill.path)
+            assertTrue(installedSkill.canUninstall)
+            assertEquals("workspace", installedSkill.origin)
+            assertTrue(isFrozen(installedSkill))
+            assertTrue(nodeFileExists(skillFixture.installedManifestPath))
+            assertEquals(2, shellRuntime.skillListRequests.size)
+
+            shellRuntime.skillManifestPath = null
+            skills.uninstall(installedSkill).await()
+            assertFalse(nodeFileExists(skillFixture.installedManifestPath))
+            assertEquals(3, shellRuntime.skillListRequests.size)
+
+            shellRuntime.failNextSkillList = true
+            val skillListFailure = assertIs<CodexError>(
+                runCatching { skills.list().await() }.exceptionOrNull(),
+            )
+            assertEquals("skill_list_failed", skillListFailure.code)
+            assertEquals("skill list denied", skillListFailure.message)
+            assertTrue(skillListFailure.recoverable)
+            assertEquals(4, shellRuntime.skillListRequests.size)
 
             val listedModels = models.list().await()
             assertEquals(
@@ -506,7 +688,8 @@ class CodexNodeApiTest {
             assertNull(models.resolveServiceTier(listedModels.first(), "first").await())
             assertEquals(3, shellRuntime.configReadRequests.size)
             assertTrue(shellRuntime.configReadRequests.all { request ->
-                request["cwd"]?.jsonPrimitive?.content == "/workspace" && request["includeLayers"] == null
+                request["cwd"]?.jsonPrimitive?.content == skillFixture.workspacePath &&
+                    request["includeLayers"] == null
             })
 
             shellRuntime.modelPreference = "missing"
@@ -664,16 +847,18 @@ class CodexNodeApiTest {
             assertEquals("untrusted", resumedOpen["approvalPolicy"]?.jsonPrimitive?.content)
             assertEquals("user", resumedOpen["approvalsReviewer"]?.jsonPrimitive?.content)
             assertEquals("fast", resumedOpen["serviceTier"]?.jsonPrimitive?.content)
-            assertEquals("/workspace", resumedOpen["cwd"]?.jsonPrimitive?.content)
+            assertEquals(skillFixture.workspacePath, resumedOpen["cwd"]?.jsonPrimitive?.content)
             assertEquals("thread-resumed", resumed.state.conversationId)
             assertEquals("fast", resumed.state.serviceTier)
             assertEquals("closed", shellConversation.state.status)
             shellHost.close().await()
             assertSame(connectors, shellAgent.connectors)
             assertSame(models, shellAgent.models)
+            assertSame(skills, shellAgent.skills)
             val requestsBeforeClosedList = shellRuntime.appListRequests.size
             val conversationRequestsBeforeClosedList = shellRuntime.threadListRequests.size
             val modelRequestsBeforeClosedList = shellRuntime.modelListRequests.size
+            val skillRequestsBeforeClosedList = shellRuntime.skillListRequests.size
             val closedList = runCatching { connectors.list().await() }.exceptionOrNull()
             assertEquals("IllegalStateException", closedList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedList.message)
@@ -686,6 +871,16 @@ class CodexNodeApiTest {
             assertEquals("IllegalStateException", closedModelList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedModelList.message)
             assertEquals(modelRequestsBeforeClosedList, shellRuntime.modelListRequests.size)
+            listOf(
+                runCatching { skills.list().await() }.exceptionOrNull(),
+                runCatching { skills.read(skillFixture.sourceManifestPath).await() }.exceptionOrNull(),
+                runCatching { skills.install(skillFixture.sourceDirectory, "workspace").await() }.exceptionOrNull(),
+                runCatching { skills.uninstall(listedSkill).await() }.exceptionOrNull(),
+            ).forEach { closedSkillOperation ->
+                assertEquals("IllegalStateException", closedSkillOperation?.asDynamic()?.name as String)
+                assertEquals("Codex agent is closed", closedSkillOperation.message)
+            }
+            assertEquals(skillRequestsBeforeClosedList, shellRuntime.skillListRequests.size)
             val requestsBeforePureResolution = shellRuntime.requestMethods.size
             assertEquals("medium", models.resolveEffort(preferredModel, "default").await())
             assertEquals("low", models.resolveEffort(preferredModel, "first").await())
@@ -694,6 +889,7 @@ class CodexNodeApiTest {
             assertEquals(requestsBeforePureResolution, shellRuntime.requestMethods.size)
         } finally {
             shellHost.close().await()
+            deleteSkillTestFixture(skillFixture.root)
         }
     }
 
@@ -967,6 +1163,7 @@ private class ApiTestPlatform(
     private val restoreEntered: CompletableDeferred<Unit>? = null,
     private val restoreRelease: CompletableDeferred<Unit>? = null,
     private val features: Set<CodexRuntimeFeature> = emptySet(),
+    private val workspacePath: String = "/workspace",
 ) : CodexPlatform {
     var selectedWorkspacePath: String? = null
 
@@ -982,7 +1179,7 @@ private class ApiTestPlatform(
         override suspend fun restore(): CodexWorkspaceResolution {
             restoreEntered?.complete(Unit)
             restoreRelease?.await()
-            return CodexWorkspaceResolution.Available(CodexWorkspace("/workspace"))
+            return CodexWorkspaceResolution.Available(CodexWorkspace(workspacePath))
         }
 
         override suspend fun clear(): Unit = Unit
@@ -1021,6 +1218,53 @@ private fun enumerablePropertyCount(value: Any): Int = js("Object.keys(value).le
 
 private fun javaScriptBigInt(value: String): Long = js("BigInt(value)").unsafeCast<Long>()
 
+private const val SKILL_FIXTURE_CONTENT =
+    "---\nname: fixture-skill\ndescription: Fixture skill\n---\nBinding projection body.\n"
+
+private data class SkillTestFixture(
+    val root: String,
+    val workspacePath: String,
+    val sourceDirectory: String,
+    val sourceManifestPath: String,
+    val installedManifestPath: String,
+)
+
+private fun createSkillTestFixture(): SkillTestFixture {
+    val fs: dynamic = js("require('node:fs')")
+    val os: dynamic = js("require('node:os')")
+    val path: dynamic = js("require('node:path')")
+    val root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codex-js-skills-"))) as String
+    val workspacePath = path.join(root, "workspace") as String
+    val sourceDirectory = path.join(root, "fixture-skill") as String
+    val sourceManifestPath = path.join(sourceDirectory, "SKILL.md") as String
+    fs.mkdirSync(workspacePath, js("({ recursive: true })"))
+    fs.mkdirSync(sourceDirectory, js("({ recursive: true })"))
+    fs.writeFileSync(sourceManifestPath, SKILL_FIXTURE_CONTENT, "utf8")
+    return SkillTestFixture(
+        root = root,
+        workspacePath = workspacePath,
+        sourceDirectory = sourceDirectory,
+        sourceManifestPath = sourceManifestPath,
+        installedManifestPath = path.join(
+            workspacePath,
+            ".agents",
+            "skills",
+            "fixture-skill",
+            "SKILL.md",
+        ) as String,
+    )
+}
+
+private fun nodeFileExists(path: String): Boolean {
+    val fs: dynamic = js("require('node:fs')")
+    return fs.existsSync(path) as Boolean
+}
+
+private fun deleteSkillTestFixture(path: String) {
+    val fs: dynamic = js("require('node:fs')")
+    fs.rmSync(path, js("({ recursive: true, force: true })"))
+}
+
 private class ApiTestRuntime : CodexRuntime {
     private val eventChannel = Channel<CodexRuntimeEvent>(Channel.UNLIMITED)
     override val events: Flow<CodexRuntimeEvent> = eventChannel.receiveAsFlow()
@@ -1050,6 +1294,10 @@ private class ApiTestRuntime : CodexRuntime {
     var failNextModelList: Boolean = false
     var failNextConfigRead: Boolean = false
     var emptyNextModelList: Boolean = false
+    val skillListRequests: MutableList<JsonObject> = mutableListOf()
+    var failNextSkillList: Boolean = false
+    var skillWorkspacePath: String = "/workspace"
+    var skillManifestPath: String? = null
     var modelPreference: String = "model-preferred"
     var effortPreference: String = "low"
     var serviceTierPreference: String = "fast"
@@ -1159,6 +1407,16 @@ private class ApiTestRuntime : CodexRuntime {
                         }
                         respond(id, modelListResult(cursor))
                     }
+                }
+            }
+            "skills/list" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                skillListRequests += params
+                if (failNextSkillList) {
+                    failNextSkillList = false
+                    respondError(id, "skill list denied")
+                } else {
+                    respond(id, skillListResult(skillWorkspacePath, skillManifestPath))
                 }
             }
             "config/read" -> {
@@ -1311,6 +1569,49 @@ private fun initializeResult(): JsonObject = buildJsonObject {
     put("platformFamily", "unix")
     put("platformOs", "node")
     put("userAgent", "test")
+}
+
+private fun skillListResult(workspacePath: String, manifestPath: String?): JsonObject = buildJsonObject {
+    putJsonArray("data") {
+        add(buildJsonObject {
+            put("cwd", workspacePath)
+            putJsonArray("errors") {
+                add(buildJsonObject {
+                    put("path", "${manifestPath ?: workspacePath}.warning")
+                    put("message", "ignored entry")
+                })
+            }
+            putJsonArray("skills") {
+                if (manifestPath != null) {
+                    add(skillMetadata(manifestPath))
+                    add(skillMetadata(manifestPath))
+                }
+            }
+        })
+    }
+}
+
+private fun skillMetadata(manifestPath: String): JsonObject = buildJsonObject {
+    put("name", "fixture-skill")
+    put("description", "Protocol description")
+    put("enabled", true)
+    put("path", manifestPath)
+    put("scope", "repo")
+    putJsonObject("dependencies") {
+        putJsonArray("tools") {
+            listOf("git", "rg").forEach { tool ->
+                add(buildJsonObject {
+                    put("type", "command")
+                    put("value", tool)
+                })
+            }
+        }
+    }
+    putJsonObject("interface") {
+        put("displayName", "Fixture skill")
+        put("shortDescription", "Projected description")
+        put("brandColor", "#abcdef")
+    }
 }
 
 private fun threadStartResult(): JsonObject = buildJsonObject {

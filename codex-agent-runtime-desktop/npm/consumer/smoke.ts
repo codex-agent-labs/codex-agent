@@ -16,6 +16,9 @@ import {
   AgentPlanProgress,
   AgentPlanStep,
   AgentServiceTier,
+  AgentSkill,
+  AgentSkillCatalog,
+  AgentSkillChunk,
   CodexAgent,
   CodexAuthentication,
   CodexAuthenticationState,
@@ -27,6 +30,7 @@ import {
   CodexHostState,
   CodexModels,
   CodexObservation,
+  CodexSkills,
   agentSkillScopeDisplayName,
   codexApprovalPresetDisplayName,
   createCodexHost,
@@ -192,6 +196,35 @@ const modelDefaultEffort: string = model.defaultEffort;
 const modelIsDefault: boolean = model.isDefault;
 const modelServiceTiers: ReadonlyArray<AgentServiceTier> = model.serviceTiers;
 const modelDefaultServiceTier: string | null | undefined = model.defaultServiceTier;
+const skill: AgentSkill = new AgentSkill(
+  "review",
+  "Review",
+  "Review the current changes",
+  "/skills/review/SKILL.md",
+  "user",
+  true,
+  "#123456",
+  ["git"],
+  true,
+  "user",
+);
+const skillName: string = skill.name;
+const skillDisplayName: string = skill.displayName;
+const skillDescription: string = skill.description;
+const skillPath: string = skill.path;
+const skillValueScope: AgentSkillScope = skill.scope;
+const skillIsEnabled: boolean = skill.isEnabled;
+const skillBrandColor: string | null | undefined = skill.brandColor;
+const skillDependencies: ReadonlyArray<string> = skill.dependencies;
+const skillCanUninstall: boolean = skill.canUninstall;
+const skillOrigin: AgentResourceOrigin = skill.origin;
+const skillCatalog: AgentSkillCatalog = new AgentSkillCatalog([skill], ["warning"]);
+const catalogSkills: ReadonlyArray<AgentSkill> = skillCatalog.skills;
+const catalogErrors: ReadonlyArray<string> = skillCatalog.errors;
+const skillChunk: AgentSkillChunk = new AgentSkillChunk("content", 7n, 20n);
+const skillChunkContent: string = skillChunk.content;
+const skillChunkNextOffset: bigint | null | undefined = skillChunk.nextOffset;
+const skillChunkTotalBytes: bigint = skillChunk.totalBytes;
 const enumEvidence: {
   approvalDecision: AgentApprovalDecision;
   capability: AgentCapability;
@@ -278,6 +311,14 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   const resolvedServiceTier: AgentServiceTier | null | undefined =
     await models.resolveServiceTier(model);
   await models.resolveServiceTier(model, "preferred", signal);
+  const skills: CodexSkills = agent.skills;
+  const skillsAvailable: boolean = skills.isAvailable;
+  const listedSkills: AgentSkillCatalog = await skills.list();
+  await skills.list(true, signal);
+  const readSkill: AgentSkillChunk = await skills.read("/skills/review/SKILL.md");
+  await skills.read("/skills/review/SKILL.md", 7n, signal);
+  const installedSkill: AgentSkill = await skills.install("/skills/review", "workspace", signal);
+  await skills.uninstall(installedSkill, signal);
   const activeConversation: CodexConversation | null | undefined = agent.activeConversation;
   agent.observeActiveConversation(
     (next: CodexConversation | null | undefined): void => void next,
@@ -347,6 +388,10 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     resolvedModel,
     resolvedEffort,
     resolvedServiceTier,
+    skillsAvailable,
+    listedSkills,
+    readSkill,
+    installedSkill,
     isAuthenticated,
     isAuthenticating,
     pendingSignInUrl,
@@ -432,6 +477,21 @@ void [
   modelIsDefault,
   modelServiceTiers,
   modelDefaultServiceTier,
+  skillName,
+  skillDisplayName,
+  skillDescription,
+  skillPath,
+  skillValueScope,
+  skillIsEnabled,
+  skillBrandColor,
+  skillDependencies,
+  skillCanUninstall,
+  skillOrigin,
+  catalogSkills,
+  catalogErrors,
+  skillChunkContent,
+  skillChunkNextOffset,
+  skillChunkTotalBytes,
 ];
 void enumEvidence;
 void useAgent;

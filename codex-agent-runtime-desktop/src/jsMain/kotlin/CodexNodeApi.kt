@@ -17,6 +17,7 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Text as CoreF
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.TextList as CoreFormTextListValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentHookActivity as CoreHookActivity
 import io.github.codex_agent_labs.codexmobile.agent.AgentHookRunStatus as CoreHookRunStatus
+import io.github.codex_agent_labs.codexmobile.agent.AgentInstallationScope as CoreInstallationScope
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable as CoreMcpEnvironmentVariable
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpOauthConfiguration as CoreMcpOauthConfiguration
@@ -28,7 +29,11 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentPlanProgress as CorePla
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanStep
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStepStatus as CorePlanStepStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentResolution as CoreResolution
+import io.github.codex_agent_labs.codexmobile.agent.AgentResourceOrigin as CoreResourceOrigin
 import io.github.codex_agent_labs.codexmobile.agent.AgentServiceTier as CoreServiceTier
+import io.github.codex_agent_labs.codexmobile.agent.AgentSkill as CoreSkill
+import io.github.codex_agent_labs.codexmobile.agent.AgentSkillCatalog as CoreSkillCatalog
+import io.github.codex_agent_labs.codexmobile.agent.AgentSkillChunk as CoreSkillChunk
 import io.github.codex_agent_labs.codexmobile.agent.AgentSkillScope as CoreAgentSkillScope
 import io.github.codex_agent_labs.codexmobile.agent.AgentTurnProgress as CoreTurnProgress
 import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
@@ -43,6 +48,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexHostState as CoreHostSt
 import io.github.codex_agent_labs.codexmobile.agent.CodexModels as CoreModels
 import io.github.codex_agent_labs.codexmobile.agent.CodexOperationException
 import io.github.codex_agent_labs.codexmobile.agent.CodexPathWorkspaceSelection
+import io.github.codex_agent_labs.codexmobile.agent.CodexSkills as CoreSkills
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace as CoreWorkspace
 import io.github.codex_agent_labs.codexmobile.agent.ConversationId
 import io.github.codex_agent_labs.codexmobile.agent.runtime.NodeCodexPlatform
@@ -451,6 +457,113 @@ public class AgentModel public constructor(
     }
 }
 
+/** Immutable skill metadata. */
+@JsExport
+public class AgentSkill public constructor(
+    name: String,
+    displayName: String,
+    description: String,
+    path: String,
+    scope: String,
+    isEnabled: Boolean,
+    brandColor: String? = null,
+    dependencies: Array<String> = emptyArray(),
+    canUninstall: Boolean = false,
+    origin: String = canonicalDefaultAgentSkillOrigin(scope),
+) {
+    public val name: String
+    public val displayName: String
+    public val description: String
+    public val path: String
+    public val scope: String
+    public val isEnabled: Boolean
+    public val brandColor: String?
+    public val dependencies: Array<String>
+    public val canUninstall: Boolean
+    public val origin: String
+
+    init {
+        val core = canonicalSkill(
+            name = name,
+            displayName = displayName,
+            description = description,
+            path = path,
+            scope = scope,
+            isEnabled = isEnabled,
+            brandColor = brandColor,
+            dependencies = dependencies,
+            canUninstall = canUninstall,
+            origin = origin,
+        )
+        this.name = core.name
+        this.displayName = core.displayName
+        this.description = core.description
+        this.path = core.path
+        this.scope = core.scope.name.lowercase()
+        this.isEnabled = core.isEnabled
+        this.brandColor = core.brandColor
+        this.dependencies = core.dependencies.toTypedArray()
+        this.canUninstall = core.canUninstall
+        this.origin = core.origin.name.lowercase()
+        freezeSnapshot(this.dependencies)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable skill catalog. */
+@JsExport
+public class AgentSkillCatalog public constructor(
+    skills: Array<AgentSkill>,
+    errors: Array<String> = emptyArray(),
+) {
+    public val skills: Array<AgentSkill>
+    public val errors: Array<String>
+
+    init {
+        requireJavaScriptArray(skills, "skills")
+        requireJavaScriptArray(errors, "errors")
+        val core = CoreSkillCatalog(
+            skills = List(skills.size) { index ->
+                requireOwnJavaScriptArrayIndex(skills, index, "skills")
+                skills[index].canonicalCopy()
+            },
+            errors = List(errors.size) { index ->
+                requireOwnJavaScriptArrayIndex(errors, index, "errors")
+                errors[index].requireJavaScriptString("errors[$index]")
+            },
+        )
+        this.skills = core.skills.map(CoreSkill::project).toTypedArray()
+        this.errors = core.errors.toTypedArray()
+        freezeSnapshot(this.skills)
+        freezeSnapshot(this.errors)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable bounded skill-source chunk. */
+@JsExport
+public class AgentSkillChunk public constructor(
+    content: String,
+    nextOffset: Long?,
+    totalBytes: Long,
+) {
+    public val content: String
+    public val nextOffset: Long?
+    public val totalBytes: Long
+
+    init {
+        val core = CoreSkillChunk(
+            content = content.requireJavaScriptString("content"),
+            nextOffset = nextOffset.requireJavaScriptNullableBigInt("nextOffset")?.toString()?.toLong(),
+            totalBytes = totalBytes.requireJavaScriptBigInt("totalBytes").toString().toLong(),
+        )
+        this.content = core.content
+        this.nextOffset = core.nextOffset?.toJavaScriptBigInt()
+        this.totalBytes = core.totalBytes.toJavaScriptBigInt()
+        freezeSnapshot(this)
+    }
+}
+
 /** Immutable conversation-history summary. */
 @JsExport
 public class AgentConversationSummary public constructor(
@@ -795,6 +908,8 @@ public class CodexAgent internal constructor(
         CodexConnectors(host, core.connectors, jsApiToken)
     private val modelsProjection: CodexModels =
         CodexModels(host, core.models, jsApiToken)
+    private val skillsProjection: CodexSkills =
+        CodexSkills(host, core.skills, jsApiToken)
     private var cachedCoreConversation: CoreConversation? = null
     private var cachedConversation: CodexConversation? = null
 
@@ -814,6 +929,9 @@ public class CodexAgent internal constructor(
 
     public val models: CodexModels
         get() = modelsProjection
+
+    public val skills: CodexSkills
+        get() = skillsProjection
 
     public val activeConversation: CodexConversation?
         get() = if (host.owns(core)) core.conversations.active.value?.let(::wrapConversation) else null
@@ -955,6 +1073,58 @@ public class CodexModels internal constructor(
     }
 }
 
+/** Agent-owned skill catalog, source reader, and installation lifecycle. */
+@JsExport
+public class CodexSkills internal constructor(
+    private val host: CodexHost,
+    private val core: CoreSkills,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex skill catalogs are created by an Agent" }
+        hideBackingFields(this)
+    }
+
+    public val isAvailable: Boolean
+        get() = core.isAvailable
+
+    public fun list(
+        forceReload: Boolean = false,
+        signal: AbortSignal? = null,
+    ): Promise<AgentSkillCatalog> = host.operationScope().codexPromise(signal) {
+        core.list(forceReload.requireJavaScriptBoolean("forceReload")).project()
+    }
+
+    public fun read(
+        path: String,
+        offset: Long = 0L,
+        signal: AbortSignal? = null,
+    ): Promise<AgentSkillChunk> = host.operationScope().codexPromise(signal) {
+        core.read(
+            path.requireJavaScriptString("path"),
+            offset.requireJavaScriptBigInt("offset").toString().toLong(),
+        ).project()
+    }
+
+    public fun install(
+        directory: String,
+        scope: String,
+        signal: AbortSignal? = null,
+    ): Promise<AgentSkill> = host.operationScope().codexPromise(signal) {
+        core.install(
+            directory.requireJavaScriptString("directory"),
+            scope.toCoreInstallationScope(),
+        ).project()
+    }
+
+    public fun uninstall(
+        skill: AgentSkill,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        core.uninstall(skill.canonicalCopy())
+    }
+}
+
 /** Agent-owned authentication projection. */
 @JsExport
 public class CodexAuthentication internal constructor(
@@ -1086,6 +1256,27 @@ private fun String.toAgentSkillScope(): CoreAgentSkillScope {
         ?: throw IllegalArgumentException("Unknown skill scope: $value")
 }
 
+private fun String.toCoreInstallationScope(): CoreInstallationScope {
+    val value = requireJavaScriptString("scope")
+    return CoreInstallationScope.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown installation scope: $value")
+}
+
+private fun String.toCoreResourceOrigin(): CoreResourceOrigin {
+    val value = requireJavaScriptString("origin")
+    return CoreResourceOrigin.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown resource origin: $value")
+}
+
+private fun canonicalDefaultAgentSkillOrigin(scope: String): String = CoreSkill(
+    name = "",
+    displayName = "",
+    description = "",
+    path = "",
+    scope = scope.toAgentSkillScope(),
+    isEnabled = false,
+).origin.name.lowercase()
+
 private fun String.toCoreResolution(): CoreResolution {
     val value = requireJavaScriptString("resolution")
     return CoreResolution.entries.singleOrNull { it.name.lowercase() == value }
@@ -1169,6 +1360,11 @@ private fun Long.requireJavaScriptBigInt(name: String): Long {
     return this
 }
 
+private fun Long?.requireJavaScriptNullableBigInt(name: String): Long? {
+    if (this == null) return null
+    return requireJavaScriptBigInt(name)
+}
+
 private fun Long.toJavaScriptBigInt(): Long {
     val value = toString()
     return js("BigInt(value)").unsafeCast<Long>()
@@ -1234,6 +1430,49 @@ private fun AgentModel.canonicalCopy(): CoreModel = canonicalModel(
     defaultServiceTier = defaultServiceTier,
 )
 
+private fun canonicalSkill(
+    name: String,
+    displayName: String,
+    description: String,
+    path: String,
+    scope: String,
+    isEnabled: Boolean,
+    brandColor: String?,
+    dependencies: Array<String>,
+    canUninstall: Boolean,
+    origin: String,
+): CoreSkill {
+    requireJavaScriptArray(dependencies, "dependencies")
+    return CoreSkill(
+        name = name.requireJavaScriptString("name"),
+        displayName = displayName.requireJavaScriptString("displayName"),
+        description = description.requireJavaScriptString("description"),
+        path = path.requireJavaScriptString("path"),
+        scope = scope.toAgentSkillScope(),
+        isEnabled = isEnabled.requireJavaScriptBoolean("isEnabled"),
+        brandColor = brandColor.requireJavaScriptNullableString("brandColor"),
+        dependencies = List(dependencies.size) { index ->
+            requireOwnJavaScriptArrayIndex(dependencies, index, "dependencies")
+            dependencies[index].requireJavaScriptString("dependencies[$index]")
+        },
+        canUninstall = canUninstall.requireJavaScriptBoolean("canUninstall"),
+        origin = origin.toCoreResourceOrigin(),
+    )
+}
+
+private fun AgentSkill.canonicalCopy(): CoreSkill = canonicalSkill(
+    name = name,
+    displayName = displayName,
+    description = description,
+    path = path,
+    scope = scope,
+    isEnabled = isEnabled,
+    brandColor = brandColor,
+    dependencies = dependencies,
+    canUninstall = canUninstall,
+    origin = origin,
+)
+
 private fun modelResolutionScope(host: CodexHost, resolution: String): CoroutineScope =
     if (jsTypeOf(resolution) == "string" && (resolution == "default" || resolution == "first")) {
         CoroutineScope(Dispatchers.Default)
@@ -1264,6 +1503,30 @@ private fun CoreModel.project(): AgentModel = AgentModel(
     isDefault = isDefault,
     serviceTiers = serviceTiers.map(CoreServiceTier::project).toTypedArray(),
     defaultServiceTier = defaultServiceTier,
+)
+
+private fun CoreSkill.project(): AgentSkill = AgentSkill(
+    name = name,
+    displayName = displayName,
+    description = description,
+    path = path,
+    scope = scope.name.lowercase(),
+    isEnabled = isEnabled,
+    brandColor = brandColor,
+    dependencies = dependencies.toTypedArray(),
+    canUninstall = canUninstall,
+    origin = origin.name.lowercase(),
+)
+
+private fun CoreSkillCatalog.project(): AgentSkillCatalog = AgentSkillCatalog(
+    skills = skills.map(CoreSkill::project).toTypedArray(),
+    errors = errors.toTypedArray(),
+)
+
+private fun CoreSkillChunk.project(): AgentSkillChunk = AgentSkillChunk(
+    content = content,
+    nextOffset = nextOffset?.toJavaScriptBigInt(),
+    totalBytes = totalBytes.toJavaScriptBigInt(),
 )
 
 private fun CoreConversationSummary.project(): AgentConversationSummary = AgentConversationSummary(

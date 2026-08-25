@@ -217,6 +217,53 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get serviceTiers(): ReadonlyArray<AgentServiceTier>;
     get defaultServiceTier(): Nullable<string>;
 }"""
+        val rawAgentSkillDeclaration =
+            """export declare class AgentSkill {
+    constructor(name: string, displayName: string, description: string, path: string, scope: string, isEnabled: boolean, brandColor?: Nullable<string>, dependencies?: Array<string>, canUninstall?: boolean, origin?: string);
+    get name(): string;
+    get displayName(): string;
+    get description(): string;
+    get path(): string;
+    get scope(): string;
+    get isEnabled(): boolean;
+    get brandColor(): Nullable<string>;
+    get dependencies(): Array<string>;
+    get canUninstall(): boolean;
+    get origin(): string;
+}"""
+        val reviewedAgentSkillDeclaration =
+            """export declare class AgentSkill {
+    constructor(name: string, displayName: string, description: string, path: string, scope: AgentSkillScope, isEnabled: boolean, brandColor?: Nullable<string>, dependencies?: ReadonlyArray<string>, canUninstall?: boolean, origin?: AgentResourceOrigin);
+    get name(): string;
+    get displayName(): string;
+    get description(): string;
+    get path(): string;
+    get scope(): AgentSkillScope;
+    get isEnabled(): boolean;
+    get brandColor(): Nullable<string>;
+    get dependencies(): ReadonlyArray<string>;
+    get canUninstall(): boolean;
+    get origin(): AgentResourceOrigin;
+}"""
+        val rawAgentSkillCatalogDeclaration =
+            """export declare class AgentSkillCatalog {
+    constructor(skills: Array<AgentSkill>, errors?: Array<string>);
+    get skills(): Array<AgentSkill>;
+    get errors(): Array<string>;
+}"""
+        val reviewedAgentSkillCatalogDeclaration =
+            """export declare class AgentSkillCatalog {
+    constructor(skills: ReadonlyArray<AgentSkill>, errors?: ReadonlyArray<string>);
+    get skills(): ReadonlyArray<AgentSkill>;
+    get errors(): ReadonlyArray<string>;
+}"""
+        val expectedAgentSkillChunkDeclaration =
+            """export declare class AgentSkillChunk {
+    constructor(content: string, nextOffset: Nullable<bigint>, totalBytes: bigint);
+    get content(): string;
+    get nextOffset(): Nullable<bigint>;
+    get totalBytes(): bigint;
+}"""
         val rawListConversationsDeclaration =
             "    listConversations(signal?: Nullable<AbortSignal>): Promise<Array<AgentConversationSummary>>;"
         val reviewedListConversationsDeclaration =
@@ -249,6 +296,24 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     resolveEffort(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<string>;
     resolveServiceTier(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<Nullable<AgentServiceTier>>;
 }"""
+        val rawCodexSkillsDeclaration =
+            """export declare class CodexSkills {
+    private constructor();
+    get isAvailable(): boolean;
+    list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<AgentSkillCatalog>;
+    read(path: string, offset?: bigint, signal?: Nullable<AbortSignal>): Promise<AgentSkillChunk>;
+    install(directory: string, scope: string, signal?: Nullable<AbortSignal>): Promise<AgentSkill>;
+    uninstall(skill: AgentSkill, signal?: Nullable<AbortSignal>): Promise<void>;
+}"""
+        val reviewedCodexSkillsDeclaration =
+            """export declare class CodexSkills {
+    private constructor();
+    get isAvailable(): boolean;
+    list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<AgentSkillCatalog>;
+    read(path: string, offset?: bigint, signal?: Nullable<AbortSignal>): Promise<AgentSkillChunk>;
+    install(directory: string, scope: AgentInstallationScope, signal?: Nullable<AbortSignal>): Promise<AgentSkill>;
+    uninstall(skill: AgentSkill, signal?: Nullable<AbortSignal>): Promise<void>;
+}"""
         check(actual.lineSequence().count { it == rawAgentSkillScopeDisplayNameDeclaration } == 1) {
             "Unexpected agentSkillScopeDisplayName TypeScript declaration"
         }
@@ -267,6 +332,15 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawAgentModelDeclaration).size == 2) {
             "Unexpected AgentModel TypeScript declaration"
         }
+        check(actual.split(rawAgentSkillDeclaration).size == 2) {
+            "Unexpected AgentSkill TypeScript declaration"
+        }
+        check(actual.split(rawAgentSkillCatalogDeclaration).size == 2) {
+            "Unexpected AgentSkillCatalog TypeScript declaration"
+        }
+        check(actual.split(expectedAgentSkillChunkDeclaration).size == 2) {
+            "Unexpected AgentSkillChunk TypeScript declaration"
+        }
         check(actual.lineSequence().count { it == rawListConversationsDeclaration } == 1) {
             "Unexpected CodexAgent.listConversations TypeScript declaration"
         }
@@ -278,6 +352,12 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         }
         check(actual.split(rawCodexModelsDeclaration).size == 2) {
             "Unexpected CodexModels TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == "    get skills(): CodexSkills;" } == 1) {
+            "Unexpected CodexAgent.skills TypeScript declaration"
+        }
+        check(actual.split(rawCodexSkillsDeclaration).size == 2) {
+            "Unexpected CodexSkills TypeScript declaration"
         }
         actual = actual.replace(
             "type Nullable<T> = T | null | undefined\n",
@@ -299,6 +379,12 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
             rawAgentModelDeclaration,
             reviewedAgentModelDeclaration,
         ).replace(
+            rawAgentSkillDeclaration,
+            reviewedAgentSkillDeclaration,
+        ).replace(
+            rawAgentSkillCatalogDeclaration,
+            reviewedAgentSkillCatalogDeclaration,
+        ).replace(
             rawListConversationsDeclaration,
             reviewedListConversationsDeclaration,
         ).replace(
@@ -307,6 +393,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawCodexModelsDeclaration,
             reviewedCodexModelsDeclaration,
+        ).replace(
+            rawCodexSkillsDeclaration,
+            reviewedCodexSkillsDeclaration,
         ).replace(
             """export declare class AgentFormTextListValue {
     constructor(value: Array<string>);

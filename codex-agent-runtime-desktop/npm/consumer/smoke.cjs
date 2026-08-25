@@ -66,12 +66,18 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexAuthentication());
   assert.throws(() => new sdk.CodexConnectors());
   assert.throws(() => new sdk.CodexModels());
+  assert.throws(() => new sdk.CodexSkills());
   assert.throws(() => new sdk.CodexAuthenticationState());
   assert.throws(() => new sdk.CodexConversation());
   assert.throws(() => new sdk.CodexObservation());
   assert.equal(typeof sdk.CodexAgent.prototype.rename, 'function');
   assert.equal(typeof sdk.CodexAgent.prototype.delete, 'function');
   assert.equal(typeof sdk.CodexAgent.prototype.listConversations, 'function');
+  assert.equal(typeof Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'skills')?.get, 'function');
+  assert.equal(typeof sdk.CodexSkills.prototype.list, 'function');
+  assert.equal(typeof sdk.CodexSkills.prototype.read, 'function');
+  assert.equal(typeof sdk.CodexSkills.prototype.install, 'function');
+  assert.equal(typeof sdk.CodexSkills.prototype.uninstall, 'function');
   for (const constructor of [
     sdk.AgentConnector,
     sdk.AgentConversationSummary,
@@ -90,6 +96,9 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentPlanProgress,
     sdk.AgentPlanStep,
     sdk.AgentServiceTier,
+    sdk.AgentSkill,
+    sdk.AgentSkillCatalog,
+    sdk.AgentSkillChunk,
     sdk.CodexAgent,
     sdk.CodexAuthentication,
     sdk.CodexAuthenticationState,
@@ -102,6 +111,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.CodexHostState,
     sdk.CodexMessage,
     sdk.CodexModels,
+    sdk.CodexSkills,
     sdk.CodexObservation,
     sdk.CodexTurnProgress,
     sdk.CodexWorkspace,
@@ -864,6 +874,184 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     'model', 'Model', 'Description', ['medium'], 'medium', true, revokedServiceTiers.proxy,
   ));
 
+  const defaultSkillOrigins = new Map([
+    ['admin', 'managed'],
+    ['plugin', 'plugin'],
+    ['repo', 'workspace'],
+    ['system', 'managed'],
+    ['user', 'user'],
+  ]);
+  const defaultSkills = [...defaultSkillOrigins].map(([scope, origin]) => {
+    const value = new sdk.AgentSkill(
+      `${scope}-skill`, `${scope} skill`, 'Description', `/skills/${scope}/SKILL.md`, scope, true,
+    );
+    assert.equal(value.brandColor, null);
+    assert.deepEqual(value.dependencies, []);
+    assert.equal(value.canUninstall, false);
+    assert.equal(value.origin, origin);
+    return value;
+  });
+  const sourceSkillDependencies = ['git', 'rg'];
+  const skill = new sdk.AgentSkill(
+    'review', 'Review', 'Review changes', '/skills/review/SKILL.md', 'user', true,
+    '#123456', sourceSkillDependencies, true, 'plugin',
+  );
+  assert.deepEqual(
+    [
+      skill.name,
+      skill.displayName,
+      skill.description,
+      skill.path,
+      skill.scope,
+      skill.isEnabled,
+      skill.brandColor,
+      skill.canUninstall,
+      skill.origin,
+    ],
+    [
+      'review',
+      'Review',
+      'Review changes',
+      '/skills/review/SKILL.md',
+      'user',
+      true,
+      '#123456',
+      true,
+      'plugin',
+    ],
+  );
+  assert.notEqual(skill.dependencies, sourceSkillDependencies);
+  assert.deepEqual(skill.dependencies, ['git', 'rg']);
+  sourceSkillDependencies.reverse();
+  assert.deepEqual(skill.dependencies, ['git', 'rg']);
+
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentSkill(
+      invalid, 'Review', 'Description', '/skills/review/SKILL.md', 'user', true,
+    ));
+    assert.throws(() => new sdk.AgentSkill(
+      'review', invalid, 'Description', '/skills/review/SKILL.md', 'user', true,
+    ));
+    assert.throws(() => new sdk.AgentSkill(
+      'review', 'Review', invalid, '/skills/review/SKILL.md', 'user', true,
+    ));
+    assert.throws(() => new sdk.AgentSkill(
+      'review', 'Review', 'Description', invalid, 'user', true,
+    ));
+    assert.throws(() => new sdk.AgentSkill(
+      'review', 'Review', 'Description', '/skills/review/SKILL.md', invalid, true,
+    ));
+  }
+  for (const invalidScope of ['', 'USER', 'workspace', 'unknown']) {
+    assert.throws(() => new sdk.AgentSkill(
+      'review', 'Review', 'Description', '/skills/review/SKILL.md', invalidScope, true,
+    ));
+  }
+  for (const invalidBoolean of [null, undefined, 0, 1, '', 'true', {}, [], new Boolean(true)]) {
+    assert.throws(() => new sdk.AgentSkill(
+      'review', 'Review', 'Description', '/skills/review/SKILL.md', 'user', invalidBoolean,
+    ));
+    if (invalidBoolean !== undefined) {
+      assert.throws(() => new sdk.AgentSkill(
+        'review', 'Review', 'Description', '/skills/review/SKILL.md', 'user', true,
+        null, [], invalidBoolean,
+      ));
+    }
+  }
+  for (const invalidColor of [0, false, 1n, {}, [], new String('#123456')]) {
+    assert.throws(() => new sdk.AgentSkill(
+      'review', 'Review', 'Description', '/skills/review/SKILL.md', 'user', true, invalidColor,
+    ));
+  }
+  for (const invalidOrigin of [null, '', 'USER', 'repo', 0, false, {}, [], new String('user')]) {
+    assert.throws(() => new sdk.AgentSkill(
+      'review', 'Review', 'Description', '/skills/review/SKILL.md', 'user', true,
+      null, [], false, invalidOrigin,
+    ));
+  }
+  for (const invalidDependencies of [null, '', 0, false, {}, { length: 0 }, () => {}]) {
+    assert.throws(() => new sdk.AgentSkill(
+      'review', 'Review', 'Description', '/skills/review/SKILL.md', 'user', true,
+      null, invalidDependencies,
+    ));
+  }
+  const sparseSkillDependencies = new Array(2);
+  sparseSkillDependencies[1] = 'git';
+  assert.throws(() => new sdk.AgentSkill(
+    'review', 'Review', 'Description', '/skills/review/SKILL.md', 'user', true,
+    null, sparseSkillDependencies,
+  ));
+  const inheritedSkillDependencies = new Array(1);
+  Object.setPrototypeOf(inheritedSkillDependencies, { 0: 'inherited' });
+  assert.throws(() => new sdk.AgentSkill(
+    'review', 'Review', 'Description', '/skills/review/SKILL.md', 'user', true,
+    null, inheritedSkillDependencies,
+  ));
+  const revokedSkillDependencies = Proxy.revocable(['git'], {});
+  revokedSkillDependencies.revoke();
+  assert.throws(() => new sdk.AgentSkill(
+    'review', 'Review', 'Description', '/skills/review/SKILL.md', 'user', true,
+    null, revokedSkillDependencies.proxy,
+  ));
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentSkill(
+      'review', 'Review', 'Description', '/skills/review/SKILL.md', 'user', true,
+      null, [invalid],
+    ));
+  }
+
+  const sourceCatalogSkills = [skill, defaultSkills[0]];
+  const sourceCatalogErrors = ['first warning', 'second warning'];
+  const skillCatalog = new sdk.AgentSkillCatalog(sourceCatalogSkills, sourceCatalogErrors);
+  assert.notEqual(skillCatalog.skills, sourceCatalogSkills);
+  assert.notEqual(skillCatalog.errors, sourceCatalogErrors);
+  assert.notEqual(skillCatalog.skills[0], skill);
+  assert.deepEqual(skillCatalog.skills.map(({ name }) => name), ['review', 'admin-skill']);
+  assert.deepEqual(skillCatalog.errors, ['first warning', 'second warning']);
+  sourceCatalogSkills.reverse();
+  sourceCatalogErrors.reverse();
+  assert.deepEqual(skillCatalog.skills.map(({ name }) => name), ['review', 'admin-skill']);
+  assert.deepEqual(skillCatalog.errors, ['first warning', 'second warning']);
+  assert.deepEqual(new sdk.AgentSkillCatalog([]).errors, []);
+  for (const invalid of [null, undefined, '', 0, false, {}, { length: 0 }, () => {}]) {
+    assert.throws(() => new sdk.AgentSkillCatalog(invalid));
+    if (invalid !== undefined) assert.throws(() => new sdk.AgentSkillCatalog([], invalid));
+  }
+  assert.throws(() => new sdk.AgentSkillCatalog(new Array(1)));
+  assert.throws(() => new sdk.AgentSkillCatalog([], new Array(1)));
+  assert.throws(() => new sdk.AgentSkillCatalog([{}]));
+  assert.throws(() => new sdk.AgentSkillCatalog([], [0]));
+  const revokedCatalogSkills = Proxy.revocable([skill], {});
+  revokedCatalogSkills.revoke();
+  assert.throws(() => new sdk.AgentSkillCatalog(revokedCatalogSkills.proxy));
+
+  const skillChunk = new sdk.AgentSkillChunk('content', 7n, 20n);
+  const terminalSkillChunk = new sdk.AgentSkillChunk('', null, 0n);
+  assert.deepEqual(
+    [skillChunk.content, skillChunk.nextOffset, skillChunk.totalBytes],
+    ['content', 7n, 20n],
+  );
+  assert.deepEqual(
+    [terminalSkillChunk.content, terminalSkillChunk.nextOffset, terminalSkillChunk.totalBytes],
+    ['', null, 0n],
+  );
+  for (const boundary of [-9223372036854775808n, 9223372036854775807n]) {
+    assert.equal(new sdk.AgentSkillChunk('boundary', boundary, boundary).totalBytes, boundary);
+  }
+  for (const invalidContent of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentSkillChunk(invalidContent, null, 0n));
+  }
+  for (const invalidOffset of [0, 1, '', false, {}, [], Object(1n)]) {
+    assert.throws(() => new sdk.AgentSkillChunk('content', invalidOffset, 20n));
+  }
+  for (const invalidTotal of [null, undefined, 0, 1, '', false, {}, [], Object(20n)]) {
+    assert.throws(() => new sdk.AgentSkillChunk('content', null, invalidTotal));
+  }
+  for (const outOfRange of [-9223372036854775809n, 9223372036854775808n]) {
+    assert.throws(() => new sdk.AgentSkillChunk('range', outOfRange, 0n));
+    assert.throws(() => new sdk.AgentSkillChunk('range', null, outOfRange));
+  }
+
   const assertImmutableOwnGraph = (root) => {
     const seen = new Set();
     const visit = (value) => {
@@ -928,6 +1116,11 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     serviceTier,
     defaultModel,
     model,
+    ...defaultSkills,
+    skill,
+    skillCatalog,
+    skillChunk,
+    terminalSkillChunk,
   ]) {
     assertImmutableOwnGraph(snapshot);
   }
@@ -1006,6 +1199,27 @@ test('cjs exposes the exact Node-only SDK surface', () => {
         'defaultServiceTier',
       ],
     );
+  }
+  for (const candidate of [...defaultSkills, skill, ...skillCatalog.skills]) {
+    assert.deepEqual(
+      Reflect.ownKeys(candidate),
+      [
+        'name',
+        'displayName',
+        'description',
+        'path',
+        'scope',
+        'isEnabled',
+        'brandColor',
+        'dependencies',
+        'canUninstall',
+        'origin',
+      ],
+    );
+  }
+  assert.deepEqual(Reflect.ownKeys(skillCatalog), ['skills', 'errors']);
+  for (const candidate of [skillChunk, terminalSkillChunk]) {
+    assert.deepEqual(Reflect.ownKeys(candidate), ['content', 'nextOffset', 'totalBytes']);
   }
   const browserImport = childProcess.spawnSync(
     process.execPath,

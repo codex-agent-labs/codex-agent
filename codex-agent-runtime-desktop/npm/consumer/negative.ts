@@ -16,8 +16,12 @@ import {
   AgentPlanProgress,
   AgentPlanStep,
   AgentServiceTier,
+  AgentSkill,
+  AgentSkillCatalog,
+  AgentSkillChunk,
   CodexConnectors,
   CodexModels,
+  CodexSkills,
   agentSkillScopeDisplayName,
   codexApprovalPresetDisplayName,
 } from "@codex-agent-labs/codex-agent";
@@ -225,6 +229,60 @@ model.supportedEfforts.push("high");
 // @ts-expect-error Model service-tier collections are readonly.
 model.serviceTiers.push(serviceTier);
 
+const skill = new AgentSkill(
+  "review", "Review", "Review changes", "/skills/review/SKILL.md", "user", true,
+);
+// @ts-expect-error Skill enablement is required.
+new AgentSkill("review", "Review", "Review changes", "/skills/review/SKILL.md", "user");
+// @ts-expect-error Skill names are strings.
+new AgentSkill(1, "Review", "Review changes", "/skills/review/SKILL.md", "user", true);
+// @ts-expect-error Skill scopes remain a closed typed domain.
+new AgentSkill("review", "Review", "Review changes", "/skills/review/SKILL.md", "workspace", true);
+// @ts-expect-error Skill enablement is boolean.
+new AgentSkill("review", "Review", "Review changes", "/skills/review/SKILL.md", "user", "yes");
+// @ts-expect-error Skill brand colors are nullable strings.
+new AgentSkill("review", "Review", "Review changes", "/skills/review/SKILL.md", "user", true, 1);
+// @ts-expect-error Skill dependencies are strings.
+new AgentSkill("review", "Review", "Review changes", "/skills/review/SKILL.md", "user", true, null, [1]);
+// @ts-expect-error Skill uninstallability is boolean.
+new AgentSkill("review", "Review", "Review changes", "/skills/review/SKILL.md", "user", true, null, [], "yes");
+// @ts-expect-error Skill origins remain a closed typed domain.
+new AgentSkill("review", "Review", "Review changes", "/skills/review/SKILL.md", "user", true, null, [], false, "repo");
+// @ts-expect-error Immutable skill names are readonly.
+skill.name = "changed";
+// @ts-expect-error Immutable skill dependency collections cannot be replaced.
+skill.dependencies = [];
+// @ts-expect-error Skill dependency collections are readonly.
+skill.dependencies.push("changed");
+
+const skillCatalog = new AgentSkillCatalog([skill], ["warning"]);
+// @ts-expect-error Skill catalogs contain canonical skill values.
+new AgentSkillCatalog(["review"]);
+// @ts-expect-error Skill catalog errors are strings.
+new AgentSkillCatalog([skill], [1]);
+// @ts-expect-error Immutable skill catalogs cannot replace their skill collection.
+skillCatalog.skills = [];
+// @ts-expect-error Skill catalog collections are readonly.
+skillCatalog.skills.push(skill);
+// @ts-expect-error Skill catalog error collections are readonly.
+skillCatalog.errors.push("changed");
+
+const skillChunk = new AgentSkillChunk("content", 7n, 20n);
+// @ts-expect-error Skill chunk offsets are bigint values, not numbers.
+new AgentSkillChunk("content", 7, 20n);
+// @ts-expect-error Skill chunk totals are bigint values, not numbers.
+new AgentSkillChunk("content", null, 20);
+// @ts-expect-error Skill chunks require a total byte count.
+new AgentSkillChunk("content", null);
+// @ts-expect-error Immutable skill chunk content is readonly.
+skillChunk.content = "changed";
+// @ts-expect-error Immutable skill chunk offsets are readonly.
+skillChunk.nextOffset = 8n;
+
+declare const skills: CodexSkills;
+// @ts-expect-error Skill controllers are created by an Agent.
+new CodexSkills();
+
 declare const models: CodexModels;
 // @ts-expect-error Model controllers are created by an Agent.
 new CodexModels();
@@ -279,6 +337,33 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   // @ts-expect-error Service-tier resolution may return no tier.
   const resolvedServiceTier: AgentServiceTier = await models.resolveServiceTier(model);
   void resolvedServiceTier;
+  // @ts-expect-error Skill controllers are owned by the Agent.
+  agent.skills = skills;
+  // @ts-expect-error Skill feature availability is readonly.
+  skills.isAvailable = false;
+  // @ts-expect-error Skill reload flags are boolean.
+  await skills.list("true");
+  // @ts-expect-error Skill-list signals must be AbortSignal values.
+  await skills.list(false, {});
+  const listedSkills = await skills.list();
+  // @ts-expect-error Listed skill collections are readonly.
+  listedSkills.skills.push(skill);
+  // @ts-expect-error Skill paths are strings.
+  await skills.read(1);
+  // @ts-expect-error Skill offsets are bigint values, not numbers.
+  await skills.read("/skills/review/SKILL.md", 0);
+  // @ts-expect-error Skill-read signals must be AbortSignal values.
+  await skills.read("/skills/review/SKILL.md", 0n, {});
+  // @ts-expect-error Skill installation directories are strings.
+  await skills.install(1, "user");
+  // @ts-expect-error Skill installation scopes remain a closed typed domain.
+  await skills.install("/skills/review", "repo");
+  // @ts-expect-error Skill-install signals must be AbortSignal values.
+  await skills.install("/skills/review", "workspace", {});
+  // @ts-expect-error Skill uninstallation requires a canonical skill value.
+  await skills.uninstall({});
+  // @ts-expect-error Skill-uninstall signals must be AbortSignal values.
+  await skills.uninstall(skill, {});
   // @ts-expect-error Conversation IDs are strings.
   await agent.rename(1, "Renamed conversation");
   // @ts-expect-error Conversation names are strings.

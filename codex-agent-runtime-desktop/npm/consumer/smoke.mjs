@@ -358,6 +358,9 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.AgentConversationSummary, commonJsSdk.AgentConversationSummary);
   assert.equal(sdk.AgentModel, commonJsSdk.AgentModel);
   assert.equal(sdk.AgentServiceTier, commonJsSdk.AgentServiceTier);
+  assert.equal(sdk.AgentSkill, commonJsSdk.AgentSkill);
+  assert.equal(sdk.AgentSkillCatalog, commonJsSdk.AgentSkillCatalog);
+  assert.equal(sdk.AgentSkillChunk, commonJsSdk.AgentSkillChunk);
   assert.equal(sdk.AgentElicitationValidation, commonJsSdk.AgentElicitationValidation);
   assert.equal(sdk.AgentElicitationValidationIssue, commonJsSdk.AgentElicitationValidationIssue);
   assert.equal(sdk.AgentFormOption, commonJsSdk.AgentFormOption);
@@ -379,6 +382,15 @@ test('esm exposes the same runtime values as CommonJS', () => {
   );
   assert.equal(sdk.CodexConnectors, commonJsSdk.CodexConnectors);
   assert.equal(sdk.CodexModels, commonJsSdk.CodexModels);
+  assert.equal(sdk.CodexSkills, commonJsSdk.CodexSkills);
+  assert.equal(
+    Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'skills').get,
+    Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'skills').get,
+  );
+  assert.equal(sdk.CodexSkills.prototype.list, commonJsSdk.CodexSkills.prototype.list);
+  assert.equal(sdk.CodexSkills.prototype.read, commonJsSdk.CodexSkills.prototype.read);
+  assert.equal(sdk.CodexSkills.prototype.install, commonJsSdk.CodexSkills.prototype.install);
+  assert.equal(sdk.CodexSkills.prototype.uninstall, commonJsSdk.CodexSkills.prototype.uninstall);
   assert.equal(
     sdk.codexApprovalPresetDisplayName,
     commonJsSdk.codexApprovalPresetDisplayName,
@@ -528,6 +540,30 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexModels#resolveServiceTier:(model: AgentModel, resolution?: AgentResolution, signal?: AbortSignal | null | undefined): Promise<AgentServiceTier | null | undefined>',
   ), 'Service-tier resolution must preserve typed resolution, cancellation, and nullability');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentSkill#(name: string, displayName: string, description: string, path: string, scope: AgentSkillScope, isEnabled: boolean, brandColor?: string | null | undefined, dependencies?: ReadonlyArray<string>, canUninstall?: boolean, origin?: AgentResourceOrigin)',
+  ), 'Skills must preserve enum domains, canonical defaults, and immutable dependencies');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentSkillCatalog#(skills: ReadonlyArray<AgentSkill>, errors?: ReadonlyArray<string>)',
+  ), 'Skill catalogs must preserve immutable nested skills and errors');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentSkillChunk#(content: string, nextOffset: bigint | null | undefined, totalBytes: bigint)',
+  ), 'Skill chunks must preserve nullable bigint offsets and bigint totals');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:CodexAgent#skills:CodexSkills',
+  ), 'Skill controller ownership must be discoverable from an Agent');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexSkills#list:(forceReload?: boolean, signal?: AbortSignal | null | undefined): Promise<AgentSkillCatalog>',
+  ), 'Skill listing must preserve reload, cancellation, and immutable catalog semantics');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexSkills#read:(path: string, offset?: bigint, signal?: AbortSignal | null | undefined): Promise<AgentSkillChunk>',
+  ), 'Skill reading must preserve path, bigint offset, and cancellation semantics');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexSkills#install:(directory: string, scope: AgentInstallationScope, signal?: AbortSignal | null | undefined): Promise<AgentSkill>',
+  ), 'Skill installation must preserve the finite installation scope and cancellation');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexSkills#uninstall:(skill: AgentSkill, signal?: AbortSignal | null | undefined): Promise<void>',
+  ), 'Skill uninstallation must preserve canonical skill identity and cancellation');
   assert.ok(compilerApi.publicSymbols.includes(
     'getter:CodexAgent#authentication:CodexAuthentication',
   ), 'Agent authentication ownership must be discoverable');

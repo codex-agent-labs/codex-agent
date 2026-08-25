@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 230-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 258-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(230, evidence.packedApi.publicSymbols.size)
+        assertEquals(258, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -841,6 +841,273 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             assertTrue(ambiguous.errors.any { "Ambiguous" in it && key in it })
             assertTrue(ambiguous.projectionClaims.none { it.capabilityKey == key })
         }
+    }
+
+    @Test
+    fun `skills family projects twenty four generic capabilities and rejects drift`() {
+        val skillConstructor = canonicalConstructor(
+            "AgentSkill",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "example/AgentSkillScope!!",
+                "kotlin/Boolean!!",
+                "kotlin/String?",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+                "kotlin/Boolean!!",
+                "example/AgentResourceOrigin!!",
+            ),
+            defaultParameterIndices = setOf(6, 7, 8, 9),
+        )
+        val skillBrandColor = canonicalProperty("AgentSkill", "brandColor", "kotlin/String?")
+        val skillCanUninstall = canonicalProperty("AgentSkill", "canUninstall", "kotlin/Boolean!!")
+        val skillDependencies = canonicalProperty(
+            "AgentSkill",
+            "dependencies",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        )
+        val skillDescription = canonicalProperty("AgentSkill", "description", "kotlin/String!!")
+        val skillDisplayName = canonicalProperty("AgentSkill", "displayName", "kotlin/String!!")
+        val skillIsEnabled = canonicalProperty("AgentSkill", "isEnabled", "kotlin/Boolean!!")
+        val skillName = canonicalProperty("AgentSkill", "name", "kotlin/String!!")
+        val skillOrigin = canonicalProperty("AgentSkill", "origin", "example/AgentResourceOrigin!!")
+        val skillPath = canonicalProperty("AgentSkill", "path", "kotlin/String!!")
+        val skillScope = canonicalProperty("AgentSkill", "scope", "example/AgentSkillScope!!")
+        val catalogConstructor = canonicalConstructor(
+            "AgentSkillCatalog",
+            listOf(
+                "kotlin.collections/List<INVARIANT:example/AgentSkill!!>!!",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+            ),
+            defaultParameterIndices = setOf(1),
+        )
+        val catalogErrors = canonicalProperty(
+            "AgentSkillCatalog",
+            "errors",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        )
+        val catalogSkills = canonicalProperty(
+            "AgentSkillCatalog",
+            "skills",
+            "kotlin.collections/List<INVARIANT:example/AgentSkill!!>!!",
+        )
+        val chunkConstructor = canonicalConstructor(
+            "AgentSkillChunk",
+            listOf("kotlin/String!!", "kotlin/Long?", "kotlin/Long!!"),
+        )
+        val chunkContent = canonicalProperty("AgentSkillChunk", "content", "kotlin/String!!")
+        val chunkNextOffset = canonicalProperty("AgentSkillChunk", "nextOffset", "kotlin/Long?")
+        val chunkTotalBytes = canonicalProperty("AgentSkillChunk", "totalBytes", "kotlin/Long!!")
+        val agentSkills = canonicalProperty("CodexAgent", "skills", "example/CodexSkills!!")
+        val isAvailable = canonicalProperty("CodexSkills", "isAvailable", "kotlin/Boolean!!")
+        val install = canonicalFunction(
+            "CodexSkills",
+            "install",
+            returnType = "example/AgentSkill!!",
+            suspendFunction = true,
+            parameters = listOf("kotlin/String!!", "example/AgentInstallationScope!!"),
+        )
+        val list = canonicalFunction(
+            "CodexSkills",
+            "list",
+            returnType = "example/AgentSkillCatalog!!",
+            suspendFunction = true,
+            parameters = listOf("kotlin/Boolean!!"),
+            defaultParameterIndices = setOf(0),
+        )
+        val read = canonicalFunction(
+            "CodexSkills",
+            "read",
+            returnType = "example/AgentSkillChunk!!",
+            suspendFunction = true,
+            parameters = listOf("kotlin/String!!", "kotlin/Long!!"),
+            defaultParameterIndices = setOf(1),
+        )
+        val uninstall = canonicalFunction(
+            "CodexSkills",
+            "uninstall",
+            suspendFunction = true,
+            parameters = listOf("example/AgentSkill!!"),
+        )
+        val keys = listOf(
+            skillConstructor,
+            skillBrandColor,
+            skillCanUninstall,
+            skillDependencies,
+            skillDescription,
+            skillDisplayName,
+            skillIsEnabled,
+            skillName,
+            skillOrigin,
+            skillPath,
+            skillScope,
+            catalogConstructor,
+            catalogErrors,
+            catalogSkills,
+            chunkConstructor,
+            chunkContent,
+            chunkNextOffset,
+            chunkTotalBytes,
+            agentSkills,
+            isAvailable,
+            install,
+            list,
+            read,
+            uninstall,
+        ).sorted()
+        val skillSymbols = skillsPublicSymbols()
+        val symbols = (skillSymbols + "class:CodexAgent").sorted()
+        val references = skillSymbols
+        val evidence = derive(keys, symbols, references = references)
+        val claims = evidence.projectionClaims.associate { it.capabilityKey to it.publicSymbols }
+        val skillConstructorSymbol = skillSymbols.single { it.startsWith("constructor:AgentSkill#") }
+        val catalogConstructorSymbol = skillSymbols.single { it.startsWith("constructor:AgentSkillCatalog#") }
+        val chunkConstructorSymbol = skillSymbols.single { it.startsWith("constructor:AgentSkillChunk#") }
+        val installSymbol = skillSymbols.single { it.startsWith("method:CodexSkills#install:") }
+        val listSymbol = skillSymbols.single { it.startsWith("method:CodexSkills#list:") }
+        val readSymbol = skillSymbols.single { it.startsWith("method:CodexSkills#read:") }
+        val uninstallSymbol = skillSymbols.single { it.startsWith("method:CodexSkills#uninstall:") }
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(24, keys.size)
+        assertEquals(24, claims.size)
+        assertEquals(28, references.size)
+        assertEquals(references, evidence.packedApi.referencedSymbols)
+        assertEquals(
+            mapOf(
+                skillConstructor to listOf(skillConstructorSymbol),
+                skillBrandColor to listOf("getter:AgentSkill#brandColor:string | null | undefined"),
+                skillCanUninstall to listOf("getter:AgentSkill#canUninstall:boolean"),
+                skillDependencies to listOf("getter:AgentSkill#dependencies:ReadonlyArray<string>"),
+                skillDescription to listOf("getter:AgentSkill#description:string"),
+                skillDisplayName to listOf("getter:AgentSkill#displayName:string"),
+                skillIsEnabled to listOf("getter:AgentSkill#isEnabled:boolean"),
+                skillName to listOf("getter:AgentSkill#name:string"),
+                skillOrigin to listOf("getter:AgentSkill#origin:AgentResourceOrigin"),
+                skillPath to listOf("getter:AgentSkill#path:string"),
+                skillScope to listOf("getter:AgentSkill#scope:AgentSkillScope"),
+                catalogConstructor to listOf(catalogConstructorSymbol),
+                catalogErrors to listOf("getter:AgentSkillCatalog#errors:ReadonlyArray<string>"),
+                catalogSkills to listOf("getter:AgentSkillCatalog#skills:ReadonlyArray<AgentSkill>"),
+                chunkConstructor to listOf(chunkConstructorSymbol),
+                chunkContent to listOf("getter:AgentSkillChunk#content:string"),
+                chunkNextOffset to listOf("getter:AgentSkillChunk#nextOffset:bigint | null | undefined"),
+                chunkTotalBytes to listOf("getter:AgentSkillChunk#totalBytes:bigint"),
+                agentSkills to listOf("getter:CodexAgent#skills:CodexSkills"),
+                isAvailable to listOf("getter:CodexSkills#isAvailable:boolean"),
+                install to listOf(installSymbol),
+                list to listOf(listSymbol),
+                read to listOf(readSymbol),
+                uninstall to listOf(uninstallSymbol),
+            ),
+            claims,
+        )
+        assertTrue(claims.values.all { it.size == 1 })
+        assertEquals(294, 270 + claims.size)
+        assertEquals(250, 274 - claims.size)
+        assertEquals(556, 294 + 12 + 250)
+        assertEquals(52, 56 - setOf("AgentSkill", "AgentSkillCatalog", "AgentSkillChunk", "CodexSkills").size)
+        assertEquals(258, currentPublicSymbols().size)
+        assertTrue(skillSymbols.all { it in currentPublicSymbols() })
+        assertTrue(evidence.projectionClaims.filter { "|owner=example/CodexSkills|" in it.capabilityKey && "|kind=function|" in it.capabilityKey }.all {
+            it.sharedScenarios.toSet() ==
+                setOf(CrossLanguageBindingScenario.ASYNC_SUCCESS, CrossLanguageBindingScenario.ASYNC_FAILURE)
+        })
+        assertTrue(evidence.projectionClaims.filterNot { "|owner=example/CodexSkills|" in it.capabilityKey && "|kind=function|" in it.capabilityKey }.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
+
+        mapOf(
+            skillConstructor to skillConstructorSymbol.replace("scope: AgentSkillScope", "scope: string"),
+            skillBrandColor to "getter:AgentSkill#brandColor:string",
+            skillCanUninstall to "getter:AgentSkill#canUninstall:string",
+            skillDependencies to "getter:AgentSkill#dependencies:Array<string>",
+            skillDescription to "getter:AgentSkill#description:number",
+            skillDisplayName to "getter:AgentSkill#displayName:number",
+            skillIsEnabled to "getter:AgentSkill#isEnabled:string",
+            skillName to "getter:AgentSkill#name:number",
+            skillOrigin to "getter:AgentSkill#origin:string",
+            skillPath to "getter:AgentSkill#path:number",
+            skillScope to "getter:AgentSkill#scope:string",
+            catalogConstructor to catalogConstructorSymbol.replace("ReadonlyArray<AgentSkill>", "Array<AgentSkill>"),
+            catalogErrors to "getter:AgentSkillCatalog#errors:Array<string>",
+            catalogSkills to "getter:AgentSkillCatalog#skills:Array<AgentSkill>",
+            chunkConstructor to chunkConstructorSymbol.replace("nextOffset: bigint | null | undefined", "nextOffset: bigint"),
+            chunkContent to "getter:AgentSkillChunk#content:number",
+            chunkNextOffset to "getter:AgentSkillChunk#nextOffset:number | null | undefined",
+            chunkTotalBytes to "getter:AgentSkillChunk#totalBytes:number",
+            agentSkills to "getter:CodexAgent#skills:string",
+            isAvailable to "getter:CodexSkills#isAvailable:string",
+            install to installSymbol.replace("scope: AgentInstallationScope", "scope: string"),
+            list to listSymbol.replace("forceReload?: boolean", "forceReload: boolean"),
+            read to readSymbol.replace("offset?: bigint", "offset?: number"),
+            uninstall to uninstallSymbol.replace("Promise<void>", "Promise<string>"),
+        ).forEach { (key, drifted) ->
+            val exact = claims.getValue(key).single()
+            val drift = derive(
+                keys,
+                symbols.map { if (it == exact) drifted else it }.sorted(),
+                references = references.map { if (it == exact) drifted else it }.sorted(),
+            )
+            assertTrue(key in drift.missingCapabilityKeys, "Accepted drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        listOf(
+            Triple(skillConstructor, skillConstructorSymbol, skillConstructorSymbol.replace("origin?:", "origin:")),
+            Triple(skillConstructor, skillConstructorSymbol, skillConstructorSymbol.replace("dependencies?: ReadonlyArray<string>", "dependencies?: Array<string>")),
+            Triple(catalogConstructor, catalogConstructorSymbol, catalogConstructorSymbol.replace("errors?:", "errors:")),
+            Triple(chunkConstructor, chunkConstructorSymbol, chunkConstructorSymbol.replace("totalBytes: bigint", "totalBytes?: bigint")),
+            Triple(install, installSymbol, installSymbol.replace("signal?: AbortSignal | null | undefined", "signal?: string")),
+            Triple(list, listSymbol, listSymbol.replace("Promise<AgentSkillCatalog>", "Promise<ReadonlyArray<AgentSkill>>")),
+            Triple(read, readSymbol, readSymbol.replace("offset?: bigint", "offset: bigint")),
+            Triple(uninstall, uninstallSymbol, uninstallSymbol.replace("skill: AgentSkill", "skill: string")),
+        ).forEach { (key, exact, drifted) ->
+            val drift = derive(
+                keys,
+                symbols.map { if (it == exact) drifted else it }.sorted(),
+                references = references.map { if (it == exact) drifted else it }.sorted(),
+            )
+            assertTrue(key in drift.missingCapabilityKeys, "Accepted shape drift: $drifted")
+        }
+
+        listOf(
+            skillConstructorSymbol to skillConstructor,
+            catalogConstructorSymbol to catalogConstructor,
+            chunkConstructorSymbol to chunkConstructor,
+            installSymbol to install,
+            listSymbol to list,
+            readSymbol to read,
+            uninstallSymbol to uninstall,
+        ).forEach { (symbol, key) ->
+            val unreferenced = derive(keys, symbols, references = references - symbol)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && key in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        listOf(
+            list to listSymbol.replace("forceReload?: boolean", "reload?: boolean"),
+            read to readSymbol.replace("offset?: bigint", "start?: bigint"),
+            install to installSymbol.replace(", signal?: AbortSignal | null | undefined", ""),
+            uninstall to uninstallSymbol.replace(", signal?: AbortSignal | null | undefined", ""),
+        ).forEach { (key, overload) ->
+            val ambiguous = derive(
+                keys,
+                (symbols + overload).sorted(),
+                references = (references + overload).sorted(),
+            )
+            assertTrue(ambiguous.errors.any { "Ambiguous" in it && key in it })
+            assertTrue(ambiguous.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        val future = canonicalProperty("CodexSkills", "future", "kotlin/String!!")
+        val futureEvidence = derive(keys + future, symbols, references = references)
+        assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
+        assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey == future })
     }
 
     @Test
@@ -2127,7 +2394,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 269 + 12 + 275)
         assertEquals(57, 58 - 1)
         assertEquals(
-            230,
+            258,
             currentPublicSymbols().size + (clientProjectionSymbols - currentPublicSymbols().toSet()).size,
         )
         assertEquals(references, evidence.packedApi.referencedSymbols)
@@ -2317,7 +2584,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             listOf(SKILL_SCOPE_DISPLAY_NAME),
             currentSymbols.filter { it == SKILL_SCOPE_DISPLAY_NAME },
         )
-        assertEquals(230, currentSymbols.size)
+        assertEquals(258, currentSymbols.size)
 
         val canonicalDrift = listOf(
             agentProperty("OtherSkillScope", "displayName", "kotlin/String!!"),
@@ -3314,9 +3581,9 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             .filter(String::isNotBlank)
             .toList()
             .also { assertEquals(208, it.size) }
-        return (baseline + modelPublicSymbols() + SKILL_SCOPE_DISPLAY_NAME)
+        return (baseline + modelPublicSymbols() + SKILL_SCOPE_DISPLAY_NAME + skillsPublicSymbols())
             .sorted()
-            .also { assertEquals(230, it.size) }
+            .also { assertEquals(258, it.size) }
     }
 
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
@@ -3324,6 +3591,14 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         .toList()
         .also {
             assertEquals(21, it.size)
+            assertEquals(it.sorted(), it)
+        }
+
+    private fun skillsPublicSymbols(): List<String> = SKILLS_PUBLIC_SYMBOLS.lineSequence()
+        .filter(String::isNotBlank)
+        .toList()
+        .also {
+            assertEquals(28, it.size)
             assertEquals(it.sorted(), it)
         }
 
@@ -3638,6 +3913,37 @@ method:CodexModels#list:(signal?: AbortSignal | null | undefined): Promise<Reado
 method:CodexModels#resolve:(resolution?: AgentResolution, signal?: AbortSignal | null | undefined): Promise<AgentModel>
 method:CodexModels#resolveEffort:(model: AgentModel, resolution?: AgentResolution, signal?: AbortSignal | null | undefined): Promise<string>
 method:CodexModels#resolveServiceTier:(model: AgentModel, resolution?: AgentResolution, signal?: AbortSignal | null | undefined): Promise<AgentServiceTier | null | undefined>
+""".trimIndent()
+
+        private val SKILLS_PUBLIC_SYMBOLS = """
+class:AgentSkill
+class:AgentSkillCatalog
+class:AgentSkillChunk
+class:CodexSkills
+constructor:AgentSkill#(name: string, displayName: string, description: string, path: string, scope: AgentSkillScope, isEnabled: boolean, brandColor?: string | null | undefined, dependencies?: ReadonlyArray<string>, canUninstall?: boolean, origin?: AgentResourceOrigin)
+constructor:AgentSkillCatalog#(skills: ReadonlyArray<AgentSkill>, errors?: ReadonlyArray<string>)
+constructor:AgentSkillChunk#(content: string, nextOffset: bigint | null | undefined, totalBytes: bigint)
+getter:AgentSkill#brandColor:string | null | undefined
+getter:AgentSkill#canUninstall:boolean
+getter:AgentSkill#dependencies:ReadonlyArray<string>
+getter:AgentSkill#description:string
+getter:AgentSkill#displayName:string
+getter:AgentSkill#isEnabled:boolean
+getter:AgentSkill#name:string
+getter:AgentSkill#origin:AgentResourceOrigin
+getter:AgentSkill#path:string
+getter:AgentSkill#scope:AgentSkillScope
+getter:AgentSkillCatalog#errors:ReadonlyArray<string>
+getter:AgentSkillCatalog#skills:ReadonlyArray<AgentSkill>
+getter:AgentSkillChunk#content:string
+getter:AgentSkillChunk#nextOffset:bigint | null | undefined
+getter:AgentSkillChunk#totalBytes:bigint
+getter:CodexAgent#skills:CodexSkills
+getter:CodexSkills#isAvailable:boolean
+method:CodexSkills#install:(directory: string, scope: AgentInstallationScope, signal?: AbortSignal | null | undefined): Promise<AgentSkill>
+method:CodexSkills#list:(forceReload?: boolean, signal?: AbortSignal | null | undefined): Promise<AgentSkillCatalog>
+method:CodexSkills#read:(path: string, offset?: bigint, signal?: AbortSignal | null | undefined): Promise<AgentSkillChunk>
+method:CodexSkills#uninstall:(skill: AgentSkill, signal?: AbortSignal | null | undefined): Promise<void>
 """.trimIndent()
     }
 }
