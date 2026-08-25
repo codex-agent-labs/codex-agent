@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 202-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 208-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(202, evidence.packedApi.publicSymbols.size)
+        assertEquals(208, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -1392,6 +1392,136 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `conversation listing projects one immutable bigint summary family and rejects drift`() {
+        val constructor = canonicalConstructor(
+            "AgentConversationSummary",
+            listOf("example/ConversationId!!", "kotlin/String!!", "kotlin/Long!!"),
+        )
+        val conversationId = canonicalProperty(
+            "AgentConversationSummary",
+            "conversationId",
+            "example/ConversationId!!",
+        )
+        val title = canonicalProperty("AgentConversationSummary", "title", "kotlin/String!!")
+        val updatedAt = canonicalProperty(
+            "AgentConversationSummary",
+            "updatedAtEpochSeconds",
+            "kotlin/Long!!",
+        )
+        val list = canonicalFunction(
+            "CodexConversations",
+            "list",
+            returnType =
+                "kotlin.collections/List<INVARIANT:example/AgentConversationSummary!!>!!",
+            suspendFunction = true,
+        )
+        val keys = listOf(constructor, conversationId, title, updatedAt, list).sorted()
+        val constructorSymbol =
+            "constructor:AgentConversationSummary#" +
+                "(conversationId: string, title: string, updatedAtEpochSeconds: bigint)"
+        val conversationIdSymbol = "getter:AgentConversationSummary#conversationId:string"
+        val titleSymbol = "getter:AgentConversationSummary#title:string"
+        val updatedAtSymbol = "getter:AgentConversationSummary#updatedAtEpochSeconds:bigint"
+        val listSymbol =
+            "method:CodexAgent#listConversations:" +
+                "(signal?: AbortSignal | null | undefined): " +
+                "Promise<ReadonlyArray<AgentConversationSummary>>"
+        val familySymbols = listOf(
+            "class:AgentConversationSummary",
+            constructorSymbol,
+            conversationIdSymbol,
+            titleSymbol,
+            updatedAtSymbol,
+            listSymbol,
+        ).sorted()
+        val references = familySymbols
+        val symbols = (familySymbols + "class:CodexAgent").sorted()
+        val evidence = derive(keys, symbols, references = references)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(5, evidence.projectionClaims.size)
+        assertEquals(6, familySymbols.size)
+        assertEquals(6, references.size)
+        assertEquals(
+            mapOf(
+                constructor to listOf(constructorSymbol),
+                conversationId to listOf(conversationIdSymbol),
+                title to listOf(titleSymbol),
+                updatedAt to listOf(updatedAtSymbol),
+                list to listOf(listSymbol),
+            ),
+            evidence.projectionClaims.associate { it.capabilityKey to it.publicSymbols },
+        )
+        assertEquals(
+            setOf(CrossLanguageBindingScenario.ASYNC_SUCCESS, CrossLanguageBindingScenario.ASYNC_FAILURE),
+            evidence.projectionClaims.single { it.capabilityKey == list }.sharedScenarios.toSet(),
+        )
+
+        listOf(
+            constructor to constructorSymbol.replace("bigint", "number"),
+            conversationId to conversationIdSymbol.replace(":string", ":number"),
+            title to titleSymbol.replace(":string", ":number"),
+            updatedAt to updatedAtSymbol.replace(":bigint", ":number"),
+            list to listSymbol.replace("AbortSignal | null | undefined", "string"),
+            list to listSymbol.replace("ReadonlyArray", "Array"),
+            list to listSymbol.replace("Promise<", "ReadonlyArray<"),
+        ).forEach { (key, drifted) ->
+            val exact = when (key) {
+                constructor -> constructorSymbol
+                conversationId -> conversationIdSymbol
+                title -> titleSymbol
+                updatedAt -> updatedAtSymbol
+                else -> listSymbol
+            }
+            val driftedSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val driftedReferences = references.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(keys, driftedSymbols, references = driftedReferences)
+            assertTrue(key in drift.missingCapabilityKeys, "Accepted drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        listOf(constructorSymbol to constructor, listSymbol to list).forEach { (symbol, key) ->
+            val unreferenced = derive(keys, symbols, references = references - symbol)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && key in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        val signalFreeOverload =
+            "method:CodexAgent#listConversations:" +
+                "(): Promise<ReadonlyArray<AgentConversationSummary>>"
+        val ambiguous = derive(
+            keys,
+            (symbols + signalFreeOverload).sorted(),
+            references = (references + signalFreeOverload).sorted(),
+        )
+        assertTrue(ambiguous.errors.any { "Ambiguous" in it && list in it })
+        assertTrue(ambiguous.projectionClaims.none { it.capabilityKey == list })
+
+        listOf(
+            canonicalFunction(
+                "CodexConversations",
+                "list",
+                returnType = "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+                suspendFunction = true,
+            ),
+            canonicalFunction(
+                "OtherConversations",
+                "list",
+                returnType =
+                    "kotlin.collections/List<INVARIANT:example/AgentConversationSummary!!>!!",
+                suspendFunction = true,
+            ),
+        ).forEach { wrongCanonical ->
+            assertEquals(
+                listOf(wrongCanonical),
+                derive(listOf(wrongCanonical), symbols, references = references).missingCapabilityKeys,
+            )
+        }
+    }
+
+    @Test
     fun `open projection requires exact defaulted settings flattening and one public overload`() {
         val key = canonicalFunction(
             "CodexConversations",
@@ -2541,7 +2671,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(202, it.size) }
+        .also { assertEquals(208, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -2614,6 +2744,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
 
         private val CURRENT_PUBLIC_SYMBOLS = """
 class:AgentConnector
+class:AgentConversationSummary
 class:AgentElicitationValidation
 class:AgentElicitationValidationIssue
 class:AgentFormBooleanValue
@@ -2642,6 +2773,7 @@ class:CodexObservation
 class:CodexTurnProgress
 class:CodexWorkspace
 constructor:AgentConnector#(id: string, name: string, description?: string, installUrl?: string | null | undefined, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: ReadonlyArray<string>)
+constructor:AgentConversationSummary#(conversationId: string, title: string, updatedAtEpochSeconds: bigint)
 constructor:AgentElicitationValidation#(issues: ReadonlyArray<AgentElicitationValidationIssue>)
 constructor:AgentElicitationValidationIssue#(fieldName: string, reason: AgentElicitationValidationReason)
 constructor:AgentFormBooleanValue#(value: boolean)
@@ -2664,6 +2796,9 @@ getter:AgentConnector#isAccessible:boolean
 getter:AgentConnector#isEnabled:boolean
 getter:AgentConnector#name:string
 getter:AgentConnector#pluginNames:ReadonlyArray<string>
+getter:AgentConversationSummary#conversationId:string
+getter:AgentConversationSummary#title:string
+getter:AgentConversationSummary#updatedAtEpochSeconds:bigint
 getter:AgentElicitationValidation#isValid:boolean
 getter:AgentElicitationValidation#issues:ReadonlyArray<AgentElicitationValidationIssue>
 getter:AgentElicitationValidationIssue#fieldName:string
@@ -2753,6 +2888,7 @@ getter:CodexTurnProgress#workActivity:CodexWorkActivity | null | undefined
 getter:CodexWorkspace#displayName:string
 getter:CodexWorkspace#path:string
 method:CodexAgent#delete:(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexAgent#listConversations:(signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentConversationSummary>>
 method:CodexAgent#observeActiveConversation:(listener: (conversation: CodexConversation | null | undefined) => void): CodexObservation
 method:CodexAgent#openConversation:(conversationId?: string | null | undefined, approvalPreset?: CodexApprovalPreset | null | undefined, serviceTier?: string | null | undefined, signal?: AbortSignal | null | undefined): Promise<CodexConversation>
 method:CodexAgent#rename:(conversationId: string, name: string, signal?: AbortSignal | null | undefined): Promise<void>

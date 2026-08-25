@@ -1,5 +1,6 @@
 import {
   AgentConnector,
+  AgentConversationSummary,
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormBooleanValue,
@@ -151,6 +152,10 @@ const connectorInstallUrl: string | null | undefined = customConnector.installUr
 const connectorIsAccessible: boolean = customConnector.isAccessible;
 const connectorIsEnabled: boolean = customConnector.isEnabled;
 const connectorPluginNames: ReadonlyArray<string> = customConnector.pluginNames;
+const conversationSummary = new AgentConversationSummary("conversation", "Conversation title", 1n);
+const summaryConversationId: string = conversationSummary.conversationId;
+const summaryTitle: string = conversationSummary.title;
+const summaryUpdatedAtEpochSeconds: bigint = conversationSummary.updatedAtEpochSeconds;
 const enumEvidence: {
   approvalDecision: AgentApprovalDecision;
   capability: AgentCapability;
@@ -257,6 +262,8 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   );
   await agent.rename("conversation", "Renamed conversation", signal);
   await agent.delete("conversation", signal);
+  const conversationSummaries: ReadonlyArray<AgentConversationSummary> = await agent.listConversations();
+  await agent.listConversations(signal);
   const conversationState: CodexConversationState = conversation.state;
   const messages = conversationState.messages;
   const turnProgress = conversationState.turnProgress;
@@ -297,6 +304,7 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     deviceUserCode,
     authenticationFailure,
     activeConversation,
+    conversationSummaries,
     conversationState,
     messages,
     turnProgress,
@@ -358,6 +366,9 @@ void [
   connectorIsAccessible,
   connectorIsEnabled,
   connectorPluginNames,
+  summaryConversationId,
+  summaryTitle,
+  summaryUpdatedAtEpochSeconds,
 ];
 void enumEvidence;
 void useAgent;

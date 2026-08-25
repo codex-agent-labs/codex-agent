@@ -14,6 +14,7 @@ import io.github.codex_agent_labs.codexmobile.agent.PreparedCodexRuntime
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.CodexJsonLine
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.CodexRuntime
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.CodexRuntimeEvent
+import kotlin.js.jsTypeOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -76,6 +77,46 @@ class CodexNodeApiTest {
             AgentConnector(js("({})").unsafeCast<String>(), "Invalid")
         }.exceptionOrNull()
         assertEquals("id must be a string", invalidConnector?.message)
+
+        val localSummary = AgentConversationSummary(
+            conversationId = "thread-local",
+            title = "Local title",
+            updatedAtEpochSeconds = javaScriptBigInt("9007199254740993"),
+        )
+        assertEquals("thread-local", localSummary.conversationId)
+        assertEquals("Local title", localSummary.title)
+        assertEquals("9007199254740993", localSummary.updatedAtEpochSeconds.toString())
+        assertEquals("bigint", jsTypeOf(localSummary.updatedAtEpochSeconds))
+        assertTrue(isFrozen(localSummary))
+        assertEquals(0, enumerablePropertyCount(localSummary))
+        val blankSummaryId = runCatching {
+            AgentConversationSummary("  ", "Invalid", javaScriptBigInt("1"))
+        }.exceptionOrNull()
+        assertEquals("Conversation ID must not be blank", blankSummaryId?.message)
+        val invalidSummaryId = runCatching {
+            AgentConversationSummary(
+                js("({})").unsafeCast<String>(),
+                "Invalid",
+                javaScriptBigInt("1"),
+            )
+        }.exceptionOrNull()
+        assertEquals("conversationId must be a string", invalidSummaryId?.message)
+        val invalidSummaryTitle = runCatching {
+            AgentConversationSummary(
+                "thread-invalid",
+                js("BigInt(1)").unsafeCast<String>(),
+                javaScriptBigInt("1"),
+            )
+        }.exceptionOrNull()
+        assertEquals("title must be a string", invalidSummaryTitle?.message)
+        val numericSummaryTimestamp = runCatching {
+            AgentConversationSummary("thread-invalid", "Invalid", js("1").unsafeCast<Long>())
+        }.exceptionOrNull()
+        assertEquals("updatedAtEpochSeconds must be a bigint", numericSummaryTimestamp?.message)
+        val stringSummaryTimestamp = runCatching {
+            AgentConversationSummary("thread-invalid", "Invalid", js("'1'").unsafeCast<Long>())
+        }.exceptionOrNull()
+        assertEquals("updatedAtEpochSeconds must be a bigint", stringSummaryTimestamp?.message)
 
         yield()
         assertEquals(listOf("new"), hostStates)
@@ -304,6 +345,54 @@ class CodexNodeApiTest {
             assertEquals("AbortError", abortedList?.asDynamic()?.name as String)
             assertTrue(shellRuntime.appListRequests.isEmpty())
 
+            val abortedConversationList = runCatching {
+                shellAgent.listConversations(controller.signal.unsafeCast<AbortSignal>()).await()
+            }.exceptionOrNull()
+            assertEquals("AbortError", abortedConversationList?.asDynamic()?.name as String)
+            assertTrue(shellRuntime.threadListRequests.isEmpty())
+
+            val conversationSummaries = shellAgent.listConversations().await()
+            assertEquals(
+                listOf("thread-recent", "thread-older"),
+                conversationSummaries.map(AgentConversationSummary::conversationId),
+            )
+            assertEquals(
+                listOf("Recent title", "Older preview"),
+                conversationSummaries.map(AgentConversationSummary::title),
+            )
+            assertEquals(
+                listOf("9007199254740993", "7"),
+                conversationSummaries.map { it.updatedAtEpochSeconds.toString() },
+            )
+            assertEquals("bigint", jsTypeOf(conversationSummaries[0].updatedAtEpochSeconds))
+            assertEquals(2, shellRuntime.threadListRequests.size)
+            val firstConversationListRequest = shellRuntime.threadListRequests[0]
+            val secondConversationListRequest = shellRuntime.threadListRequests[1]
+            assertNull(firstConversationListRequest["cursor"])
+            assertEquals("updated_at", firstConversationListRequest["sortKey"]?.jsonPrimitive?.content)
+            assertEquals("desc", firstConversationListRequest["sortDirection"]?.jsonPrimitive?.content)
+            assertEquals(
+                "history-page-2",
+                secondConversationListRequest["cursor"]?.jsonPrimitive?.content,
+            )
+            assertEquals("updated_at", secondConversationListRequest["sortKey"]?.jsonPrimitive?.content)
+            assertEquals("desc", secondConversationListRequest["sortDirection"]?.jsonPrimitive?.content)
+            assertTrue(isFrozen(conversationSummaries))
+            conversationSummaries.forEach {
+                assertTrue(isFrozen(it))
+                assertEquals(0, enumerablePropertyCount(it))
+            }
+
+            shellRuntime.failNextThreadList = true
+            val conversationListFailure = runCatching {
+                shellAgent.listConversations().await()
+            }.exceptionOrNull()
+            val conversationListError = assertIs<CodexError>(conversationListFailure)
+            assertEquals("conversation_list_failed", conversationListError.code)
+            assertEquals("conversation list denied", conversationListError.message)
+            assertTrue(conversationListError.recoverable)
+            assertEquals(3, shellRuntime.threadListRequests.size)
+
             val shellConversation = shellAgent.openConversation().await()
             val listedConnectors = connectors.list(forceReload = true).await()
             assertEquals(listOf("connector-custom", "connector-default"), listedConnectors.map(AgentConnector::id))
@@ -383,10 +472,15 @@ class CodexNodeApiTest {
             shellHost.close().await()
             assertSame(connectors, shellAgent.connectors)
             val requestsBeforeClosedList = shellRuntime.appListRequests.size
+            val conversationRequestsBeforeClosedList = shellRuntime.threadListRequests.size
             val closedList = runCatching { connectors.list().await() }.exceptionOrNull()
             assertEquals("IllegalStateException", closedList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedList.message)
             assertEquals(requestsBeforeClosedList, shellRuntime.appListRequests.size)
+            val closedConversationList = runCatching { shellAgent.listConversations().await() }.exceptionOrNull()
+            assertEquals("IllegalStateException", closedConversationList?.asDynamic()?.name as String)
+            assertEquals("Codex agent is closed", closedConversationList.message)
+            assertEquals(conversationRequestsBeforeClosedList, shellRuntime.threadListRequests.size)
         } finally {
             shellHost.close().await()
         }
@@ -681,6 +775,8 @@ private fun isFrozen(value: Any): Boolean = js("Object.isFrozen(value)")
 
 private fun enumerablePropertyCount(value: Any): Int = js("Object.keys(value).length")
 
+private fun javaScriptBigInt(value: String): Long = js("BigInt(value)").unsafeCast<Long>()
+
 private class ApiTestRuntime : CodexRuntime {
     private val eventChannel = Channel<CodexRuntimeEvent>(Channel.UNLIMITED)
     override val events: Flow<CodexRuntimeEvent> = eventChannel.receiveAsFlow()
@@ -700,6 +796,8 @@ private class ApiTestRuntime : CodexRuntime {
     var deleteRelease: CompletableDeferred<Unit>? = null
     var threadStartParams: JsonObject? = null
     var threadResumeParams: JsonObject? = null
+    val threadListRequests: MutableList<JsonObject> = mutableListOf()
+    var failNextThreadList: Boolean = false
     val appListRequests: MutableList<JsonObject> = mutableListOf()
     var failNextAppList: Boolean = false
     private var loginAttempts: Int = 0
@@ -761,6 +859,19 @@ private class ApiTestRuntime : CodexRuntime {
             "thread/read" -> {
                 val params = checkNotNull(request["params"]).jsonObject
                 respond(id, threadReadResult(checkNotNull(params["threadId"]).jsonPrimitive.content))
+            }
+            "thread/list" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                threadListRequests += params
+                if (failNextThreadList) {
+                    failNextThreadList = false
+                    respondError(id, "conversation list denied")
+                } else {
+                    val cursor = params["cursor"]?.let {
+                        if (it == JsonNull) null else it.jsonPrimitive.content
+                    }
+                    respond(id, threadListResult(cursor))
+                }
             }
             "app/list" -> {
                 val params = checkNotNull(request["params"]).jsonObject
@@ -960,9 +1071,32 @@ private fun appListResult(cursor: String?): JsonObject = buildJsonObject {
     if (cursor == null) put("nextCursor", "page-2")
 }
 
+private fun threadListResult(cursor: String?): JsonObject = buildJsonObject {
+    putJsonArray("data") {
+        when (cursor) {
+            null -> add(threadResult(
+                threadId = "thread-recent",
+                name = "Recent title",
+                preview = "Ignored preview",
+                updatedAt = 9_007_199_254_740_993L,
+            ))
+            "history-page-2" -> add(threadResult(
+                threadId = "thread-older",
+                preview = "  Older preview\nIgnored suffix",
+                updatedAt = 7L,
+            ))
+            else -> error("Unexpected thread/list cursor: $cursor")
+        }
+    }
+    if (cursor == null) put("nextCursor", "history-page-2")
+}
+
 private fun threadResult(
     turns: JsonArray = buildJsonArray {},
     threadId: String = "thread-js",
+    name: String? = null,
+    preview: String = "",
+    updatedAt: Long = 0,
 ): JsonObject = buildJsonObject {
     put("id", threadId)
     put("cliVersion", "0.149.0")
@@ -970,13 +1104,14 @@ private fun threadResult(
     put("cwd", "/workspace")
     put("ephemeral", false)
     put("modelProvider", "openai")
-    put("preview", "")
+    if (name != null) put("name", name)
+    put("preview", preview)
     put("conversationId", threadId)
     put("sessionId", threadId)
     put("source", "cli")
     putJsonObject("status") { put("type", "idle") }
     put("turns", turns)
-    put("updatedAt", 0)
+    put("updatedAt", updatedAt)
 }
 
 private fun turnStartResult(): JsonObject = buildJsonObject {

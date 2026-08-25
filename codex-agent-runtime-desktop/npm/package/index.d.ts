@@ -106,6 +106,12 @@ export declare class AgentConnector {
     get isEnabled(): boolean;
     get pluginNames(): ReadonlyArray<string>;
 }
+export declare class AgentConversationSummary {
+    constructor(conversationId: string, title: string, updatedAtEpochSeconds: bigint);
+    get conversationId(): string;
+    get title(): string;
+    get updatedAtEpochSeconds(): bigint;
+}
 export declare class CodexFailure {
     private constructor();
     get code(): string;
@@ -207,6 +213,7 @@ export declare class CodexAgent {
     get authentication(): CodexAuthentication;
     get connectors(): CodexConnectors;
     get activeConversation(): Nullable<CodexConversation>;
+    listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;
     openConversation(conversationId?: Nullable<string>, approvalPreset?: Nullable<CodexApprovalPreset>, serviceTier?: Nullable<string>, signal?: Nullable<AbortSignal>): Promise<CodexConversation>;
     rename(conversationId: string, name: string, signal?: Nullable<AbortSignal>): Promise<void>;
     delete(conversationId: string, signal?: Nullable<AbortSignal>): Promise<void>;

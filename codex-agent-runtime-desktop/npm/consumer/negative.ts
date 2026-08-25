@@ -1,5 +1,6 @@
 import {
   AgentConnector,
+  AgentConversationSummary,
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormBooleanValue,
@@ -163,6 +164,22 @@ connector.pluginNames = [];
 // @ts-expect-error Connector plugin-name collections are readonly.
 connector.pluginNames.push("Changed");
 
+const conversationSummary = new AgentConversationSummary("conversation", "Title", 1n);
+// @ts-expect-error Conversation-summary timestamps are bigint values, not numbers.
+new AgentConversationSummary("conversation", "Title", 1);
+// @ts-expect-error Conversation summaries require an updated timestamp.
+new AgentConversationSummary("conversation", "Title");
+// @ts-expect-error Conversation-summary IDs are strings.
+new AgentConversationSummary(1, "Title", 1n);
+// @ts-expect-error Conversation-summary titles are strings.
+new AgentConversationSummary("conversation", 1, 1n);
+// @ts-expect-error Immutable conversation-summary IDs are readonly.
+conversationSummary.conversationId = "changed";
+// @ts-expect-error Immutable conversation-summary titles are readonly.
+conversationSummary.title = "Changed";
+// @ts-expect-error Immutable conversation-summary timestamps are readonly.
+conversationSummary.updatedAtEpochSeconds = 2n;
+
 declare const connectors: CodexConnectors;
 // @ts-expect-error Connector controllers are created by an Agent.
 new CodexConnectors();
@@ -201,6 +218,11 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   await agent.delete(1);
   // @ts-expect-error Delete signals must be AbortSignal values.
   await agent.delete("conversation", "signal");
+  // @ts-expect-error Conversation-list signals must be AbortSignal values.
+  await agent.listConversations({});
+  const summaries = await agent.listConversations();
+  // @ts-expect-error Conversation-list results are readonly.
+  summaries.push(conversationSummary);
   // @ts-expect-error API-key authentication requires a key.
   await agent.authentication.authenticate("api_key");
   // @ts-expect-error Browser authentication does not accept an API key.

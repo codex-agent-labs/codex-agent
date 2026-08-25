@@ -355,6 +355,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
   const esmExports = Object.keys(sdk).sort();
   assert.deepEqual(esmExports, commonJsExports);
   assert.equal(sdk.AgentConnector, commonJsSdk.AgentConnector);
+  assert.equal(sdk.AgentConversationSummary, commonJsSdk.AgentConversationSummary);
   assert.equal(sdk.AgentElicitationValidation, commonJsSdk.AgentElicitationValidation);
   assert.equal(sdk.AgentElicitationValidationIssue, commonJsSdk.AgentElicitationValidationIssue);
   assert.equal(sdk.AgentFormOption, commonJsSdk.AgentFormOption);
@@ -370,6 +371,10 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.AgentPlanStep, commonJsSdk.AgentPlanStep);
   assert.equal(sdk.CodexAgent.prototype.rename, commonJsSdk.CodexAgent.prototype.rename);
   assert.equal(sdk.CodexAgent.prototype.delete, commonJsSdk.CodexAgent.prototype.delete);
+  assert.equal(
+    sdk.CodexAgent.prototype.listConversations,
+    commonJsSdk.CodexAgent.prototype.listConversations,
+  );
   assert.equal(sdk.CodexConnectors, commonJsSdk.CodexConnectors);
   assert.equal(
     sdk.codexApprovalPresetDisplayName,
@@ -455,6 +460,12 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexAgent#delete:(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>',
   ), 'Conversation deletion must preserve typed IDs and AbortSignal cancellation');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentConversationSummary#(conversationId: string, title: string, updatedAtEpochSeconds: bigint)',
+  ), 'Conversation summaries must preserve typed IDs, titles, and bigint timestamps');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexAgent#listConversations:(signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentConversationSummary>>',
+  ), 'Conversation listing must preserve cancellation and immutable result semantics');
   assert.ok(compilerApi.publicSymbols.includes(
     'function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string',
   ), 'Approval-preset display names must preserve the finite preset domain');

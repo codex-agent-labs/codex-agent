@@ -175,6 +175,17 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get isEnabled(): boolean;
     get pluginNames(): ReadonlyArray<string>;
 }"""
+        val expectedAgentConversationSummaryDeclaration =
+            """export declare class AgentConversationSummary {
+    constructor(conversationId: string, title: string, updatedAtEpochSeconds: bigint);
+    get conversationId(): string;
+    get title(): string;
+    get updatedAtEpochSeconds(): bigint;
+}"""
+        val rawListConversationsDeclaration =
+            "    listConversations(signal?: Nullable<AbortSignal>): Promise<Array<AgentConversationSummary>>;"
+        val reviewedListConversationsDeclaration =
+            "    listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;"
         val rawCodexConnectorsDeclaration =
             """export declare class CodexConnectors {
     private constructor();
@@ -193,6 +204,12 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawAgentConnectorDeclaration).size == 2) {
             "Unexpected AgentConnector TypeScript declaration"
         }
+        check(actual.split(expectedAgentConversationSummaryDeclaration).size == 2) {
+            "Unexpected AgentConversationSummary TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == rawListConversationsDeclaration } == 1) {
+            "Unexpected CodexAgent.listConversations TypeScript declaration"
+        }
         check(actual.split(rawCodexConnectorsDeclaration).size == 2) {
             "Unexpected CodexConnectors TypeScript declaration"
         }
@@ -209,6 +226,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawAgentConnectorDeclaration,
             reviewedAgentConnectorDeclaration,
+        ).replace(
+            rawListConversationsDeclaration,
+            reviewedListConversationsDeclaration,
         ).replace(
             rawCodexConnectorsDeclaration,
             reviewedCodexConnectorsDeclaration,

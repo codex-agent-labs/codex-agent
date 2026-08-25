@@ -3,6 +3,7 @@
 import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
 import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as CoreAuthenticationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentConnector as CoreConnector
+import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSummary as CoreConversationSummary
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSettings
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState as CoreConversationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationStatus
@@ -375,6 +376,33 @@ public class AgentConnector public constructor(
     }
 }
 
+/** Immutable conversation-history summary. */
+@JsExport
+public class AgentConversationSummary public constructor(
+    conversationId: String,
+    title: String,
+    updatedAtEpochSeconds: Long,
+) {
+    public val conversationId: String
+    public val title: String
+    public val updatedAtEpochSeconds: Long
+
+    init {
+        val core = CoreConversationSummary(
+            conversationId = ConversationId(conversationId.requireJavaScriptString("conversationId")),
+            title = title.requireJavaScriptString("title"),
+            updatedAtEpochSeconds = updatedAtEpochSeconds
+                .requireJavaScriptBigInt("updatedAtEpochSeconds")
+                .toString()
+                .toLong(),
+        )
+        this.conversationId = core.conversationId.value
+        this.title = core.title
+        this.updatedAtEpochSeconds = core.updatedAtEpochSeconds.toJavaScriptBigInt()
+        freezeSnapshot(this)
+    }
+}
+
 /** Structured failure data exposed by observable state snapshots. */
 @JsExport
 public class CodexFailure internal constructor(
@@ -702,6 +730,16 @@ public class CodexAgent internal constructor(
     public val activeConversation: CodexConversation?
         get() = if (host.owns(core)) core.conversations.active.value?.let(::wrapConversation) else null
 
+    public fun listConversations(
+        signal: AbortSignal? = null,
+    ): Promise<Array<AgentConversationSummary>> = host.operationScope().codexPromise(signal) {
+        val conversations = core.conversations.list()
+            .map(CoreConversationSummary::project)
+            .toTypedArray()
+        freezeSnapshot(conversations)
+        conversations
+    }
+
     public fun openConversation(
         conversationId: String? = null,
         approvalPreset: String? = null,
@@ -976,6 +1014,20 @@ private fun Boolean.requireJavaScriptBoolean(name: String): Boolean {
     return this
 }
 
+private fun Long.requireJavaScriptBigInt(name: String): Long {
+    val value: Any = this
+    require(jsTypeOf(value) == "bigint") { "$name must be a bigint" }
+    require(
+        js("value >= BigInt('-9223372036854775808') && value <= BigInt('9223372036854775807')") as Boolean,
+    ) { "$name must fit a signed 64-bit integer" }
+    return this
+}
+
+private fun Long.toJavaScriptBigInt(): Long {
+    val value = toString()
+    return js("BigInt(value)").unsafeCast<Long>()
+}
+
 private fun requireJavaScriptArray(value: Any?, name: String): Unit {
     require(js("Array.isArray(value)") as Boolean) { "$name must be an array" }
 }
@@ -994,6 +1046,12 @@ private fun CoreConnector.project(): AgentConnector = AgentConnector(
     isAccessible = isAccessible,
     isEnabled = isEnabled,
     pluginNames = pluginNames.toTypedArray(),
+)
+
+private fun CoreConversationSummary.project(): AgentConversationSummary = AgentConversationSummary(
+    conversationId = conversationId.value,
+    title = title,
+    updatedAtEpochSeconds = updatedAtEpochSeconds.toJavaScriptBigInt(),
 )
 
 private fun CoreFailure.project(): CodexFailure = CodexFailure(code, message, isRecoverable)

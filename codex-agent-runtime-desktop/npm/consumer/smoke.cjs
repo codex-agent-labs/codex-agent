@@ -34,8 +34,10 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexObservation());
   assert.equal(typeof sdk.CodexAgent.prototype.rename, 'function');
   assert.equal(typeof sdk.CodexAgent.prototype.delete, 'function');
+  assert.equal(typeof sdk.CodexAgent.prototype.listConversations, 'function');
   for (const constructor of [
     sdk.AgentConnector,
+    sdk.AgentConversationSummary,
     sdk.AgentElicitationValidation,
     sdk.AgentElicitationValidationIssue,
     sdk.AgentFormBooleanValue,
@@ -710,6 +712,46 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     ));
   }
 
+  const conversationSummary = new sdk.AgentConversationSummary(
+    'conversation', 'Conversation title', 1n,
+  );
+  assert.equal(conversationSummary.conversationId, 'conversation');
+  assert.equal(conversationSummary.title, 'Conversation title');
+  assert.equal(conversationSummary.updatedAtEpochSeconds, 1n);
+  assert.equal(Object.isFrozen(conversationSummary), true);
+  const permissiveConversationSummary = new sdk.AgentConversationSummary(
+    'conversation-negative-time', '', -1n,
+  );
+  assert.equal(permissiveConversationSummary.title, '');
+  assert.equal(permissiveConversationSummary.updatedAtEpochSeconds, -1n);
+  for (const boundary of [-9223372036854775808n, 9223372036854775807n]) {
+    assert.equal(
+      new sdk.AgentConversationSummary('conversation-boundary', 'Boundary', boundary)
+        .updatedAtEpochSeconds,
+      boundary,
+    );
+  }
+  for (const outOfRange of [-9223372036854775809n, 9223372036854775808n]) {
+    assert.throws(
+      () => new sdk.AgentConversationSummary('conversation-range', 'Range', outOfRange),
+      /updatedAtEpochSeconds must fit a signed 64-bit integer/,
+    );
+  }
+  for (const boxed of [Object(1n), new Proxy(Object(1n), {})]) {
+    assert.throws(
+      () => new sdk.AgentConversationSummary('conversation-boxed', 'Boxed', boxed),
+      /updatedAtEpochSeconds must be a bigint/,
+    );
+  }
+  assert.throws(() => new sdk.AgentConversationSummary('', 'Title', 1n));
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentConversationSummary(invalid, 'Title', 1n));
+    assert.throws(() => new sdk.AgentConversationSummary('conversation', invalid, 1n));
+  }
+  for (const invalid of [null, undefined, 0, 1, -1, '', false, {}, []]) {
+    assert.throws(() => new sdk.AgentConversationSummary('conversation', 'Title', invalid));
+  }
+
   const assertImmutableOwnGraph = (root) => {
     const seen = new Set();
     const visit = (value) => {
@@ -769,6 +811,8 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     undefinedConnector,
     customConnector,
     proxyConnector,
+    conversationSummary,
+    permissiveConversationSummary,
   ]) {
     assertImmutableOwnGraph(snapshot);
   }
@@ -822,6 +866,12 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     assert.deepEqual(
       Reflect.ownKeys(connector),
       ['id', 'name', 'description', 'installUrl', 'isAccessible', 'isEnabled', 'pluginNames'],
+    );
+  }
+  for (const summary of [conversationSummary, permissiveConversationSummary]) {
+    assert.deepEqual(
+      Reflect.ownKeys(summary),
+      ['conversationId', 'title', 'updatedAtEpochSeconds'],
     );
   }
 

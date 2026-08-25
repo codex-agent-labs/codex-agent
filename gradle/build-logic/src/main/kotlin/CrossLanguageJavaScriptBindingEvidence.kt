@@ -1283,6 +1283,7 @@ private fun functionProjectionCandidates(
         else -> javascriptOwnerName(member.simpleOwner.removeSuffix(".Companion"))
     }
     val targetName = when {
+        member.isExactListConversationsFunction() -> "listConversations"
         member.simpleOwner == "CodexConversation" && member.name == "send" &&
             member.parameters.firstOrNull()?.type?.contains("AgentTurnRequest") == true -> "sendRequest"
         else -> javascriptMemberName(member.simpleOwner, member.name)
@@ -1393,6 +1394,18 @@ private fun CanonicalJavaScriptMember.isExactOpenConversationFunction(): Boolean
                 isVararg = false,
             ),
         ),
+    )
+}
+
+private fun CanonicalJavaScriptMember.isExactListConversationsFunction(): Boolean {
+    val canonicalPackage = owner.substringBeforeLast('/')
+    return isExactFunction(
+        expectedOwner = "CodexConversations",
+        expectedName = "list",
+        expectedReturnType =
+            "kotlin.collections/List<INVARIANT:$canonicalPackage/AgentConversationSummary!!>!!",
+        expectedSuspend = true,
+        expectedParameters = emptyList(),
     )
 }
 

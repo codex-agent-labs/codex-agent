@@ -117,6 +117,9 @@ extensions.configure<KotlinMultiplatformExtension> {
         nodejs()
         binaries.executable()
         generateTypeScriptDefinitions()
+        compilerOptions {
+            freeCompilerArgs.add("-Xes-long-as-bigint")
+        }
     }
     wasmJs {
         nodejs()
