@@ -195,7 +195,7 @@ desktopManifest.distributions.forEach { distribution ->
         distributionManifest.set(layout.projectDirectory.file("codex-app-server-distributions.json"))
         testReport.set(layout.buildDirectory.file(
             "test-results/${distribution.target}Test/TEST-${distribution.target}Test." +
-                "io.github.codex_agent_labs.codexmobile.appserver.runtime.DesktopCodexRuntimeTest.xml",
+                "io.github.codex_agent_labs.codexagent.appserver.runtime.DesktopCodexRuntimeTest.xml",
         ))
         evidenceFile.set(layout.buildDirectory.file(
             "reports/desktop-runtime-evidence/${desktopRuntimeEvidenceFileName(distribution.target)}",

@@ -52,10 +52,9 @@ internal fun verifyFirebaseAndroidRuntimeEvidenceArtifacts(
     pinnedRuntimeSha256: String,
     applicationId: (File) -> String,
     testIdentity: (File) -> AndroidManifestIdentity,
-    expectedTestClass: String = ANDROID_RUNTIME_TEST_CLASS,
 ): FirebaseAndroidEvidenceVerification {
     val evidence = evidenceFile.readReleaseObject()
-    val errors = validateFirebaseAndroidEvidence(evidence, expectedCommit, expectedTestClass)
+    val errors = validateFirebaseAndroidEvidence(evidence, expectedCommit)
     check(errors.isEmpty()) { "Firebase Android runtime evidence is invalid: ${errors.joinToString()}" }
     check(pinnedRuntimeSha256.matches(Regex("[0-9a-f]{64}"))) { "Pinned Android runtime SHA-256 is invalid" }
 
@@ -72,7 +71,7 @@ internal fun verifyFirebaseAndroidRuntimeEvidenceArtifacts(
     check(report.isFile && report.releaseDigest() == evidence.releaseString("testReportSha256")) {
         "Firebase JUnit report hash mismatch"
     }
-    requirePassingAndroidRuntimeReport(report, expectedTestClass)
+    requirePassingAndroidRuntimeReport(report)
 
     val app = firebaseEvidenceFile(evidenceDirectory, "applicationApkFileName", evidence)
     val test = firebaseEvidenceFile(evidenceDirectory, "testApkFileName", evidence)

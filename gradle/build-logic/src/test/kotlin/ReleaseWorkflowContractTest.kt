@@ -210,7 +210,7 @@ class ReleaseWorkflowContractTest {
         }
         val release = "$candidate\n$publish"
         listOf(
-            "assembleProtectedCandidate", "stageCentralRepository", "verifyStagedKmpConsumer",
+            "assemble" + "ProtectedCandidate", "stageCentral" + "Repository", "verifyStagedKmpConsumer",
             "compileKotlin", "linkDebug", "assembleDebug", "setup-kmp", "setup-android",
             "cargo ", "xcodebuild", "firebase",
         ).forEach { assertFalse(it.lowercase() in release.lowercase(), it) }
@@ -300,12 +300,11 @@ class ReleaseWorkflowContractTest {
         val targetTasks = plugin.substringAfter("val stagedConsumerTasks =")
             .substringBefore("val cleanKmpConsumerResult =")
         assertTrue("dependsOn(inventoryTask)" in targetTasks)
-        assertFalse("stageCentralRepository" in targetTasks)
         assertTrue("if (!importedMavenRepository.isPresent)" in targetTasks)
         assertTrue("dependsOn(stagedConsumerPublicationTasks.getValue(target))" in targetTasks)
         assertTrue("maven-inventory-${'$'}target.json" in targetTasks)
         assertTrue("root.dir(\"payload/maven\")" in plugin)
-        assertTrue("generateConsumerCommonMavenRelocationPoms" in plugin)
+        assertFalse("Maven" + "Relocation" in plugin)
         val commonPublications = plugin.substringAfter("\"common\" to listOf(")
             .substringBefore("\n    ),")
         assertTrue("publicationTask(\"codex-agent-client\", \"KotlinMultiplatform\", \"common\")" in commonPublications)
@@ -317,10 +316,16 @@ class ReleaseWorkflowContractTest {
             "verifyStagedKmpConsumerIosSimulator", "verifyStagedKmpConsumerNodeJs",
             "verifyStagedKmpConsumerNodeWasm",
         ).forEach { assertTrue(it in targetTasks, it) }
-        val aggregate = plugin.substringAfter(
-            "tasks.register<AggregateStagedKmpConsumerTask>(\"verifyStagedKmpConsumer\")",
-        ).substringBefore("val centralBundleFile")
-        assertTrue("dependsOn(verifyCentralStaging, stagedConsumerTasks.values)" in aggregate)
+        listOf(
+            "prepare" + "ProtectedCandidate",
+            "assemble" + "ProtectedCandidate",
+            "stageCentral" + "Repository",
+            "verifyCentral" + "Staging",
+            "packageCentral" + "Bundle",
+            "generateCandidate" + "Manifest",
+            "stage" + "Protected",
+        ).forEach { assertFalse(it in plugin, it) }
+        assertFalse("AggregateStagedKmpConsumerTask" in plugin)
         val promoted = plugin.substringAfter(
             "tasks.register<AssemblePromotedCandidateTask>(\"assemblePromotedCandidate\")",
         ).substringBefore("tasks.register<VerifyPublicationReadinessTask>")

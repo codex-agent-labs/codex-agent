@@ -1,3 +1,6 @@
+internal const val FIREBASE_ANDROID_EVIDENCE_DIRECTORY_PROPERTY =
+    "codexAgent.androidRuntimeEvidenceDirectory"
+
 internal const val FIREBASE_ANDROID_VERIFICATION_RECEIPT_FILE =
     "firebase-android-runtime-verification.json"
 

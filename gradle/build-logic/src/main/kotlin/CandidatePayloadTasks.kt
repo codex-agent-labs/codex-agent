@@ -7,8 +7,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
-
-private const val ANDROID_RUNTIME_EVIDENCE_FIELD = "androidRuntime"
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 internal fun verifyCandidatePayload(
     manifestFile: File,
@@ -41,23 +41,7 @@ internal fun verifyCandidatePayload(
         "Candidate payload file set mismatch: expected=${expectedFiles.toSet().sorted()} actual=${actualFiles.sorted()}"
     }
     records.forEach { verifyPayloadRecord(payload, it) }
-    if (manifest.releaseInt("schemaVersion") == PROMOTED_CANDIDATE_SCHEMA) {
-        verifyPromotedCandidatePayload(manifest, payload, expectedVersion, expectedCommit)
-    } else {
-        val androidFiles = evidence.releaseArray(ANDROID_RUNTIME_EVIDENCE_FIELD).map { record ->
-            safePayloadFile(payload, (record as JsonObject).releaseString("fileName"))
-        }
-        verifyCandidateFirebaseAndroidEvidence(androidFiles, expectedCommit)
-        verifyCandidateCentralAndroidRuntimeBinding(
-            androidFiles,
-            safePayloadFile(payload, artifacts.releaseObject("centralBundle").releaseString("fileName")),
-            expectedVersion,
-        )
-        verifyCandidateCiProvenance(
-            safePayloadFile(payload, evidence.releaseObject("ciProvenance").releaseString("fileName")),
-            expectedCommit,
-        )
-    }
+    verifyPromotedCandidatePayload(manifest, payload, expectedVersion, expectedCommit)
     check(policyFiles.keys == policies.keys) { "Candidate policy verifier is incomplete" }
     policyFiles.forEach { (name, file) ->
         val record = policies.releaseObject(name)
@@ -69,23 +53,18 @@ internal fun verifyCandidatePayload(
         put("result", JsonPrimitive("passed"))
         put("releaseTag", JsonPrimitive(expectedTag))
         put("swiftAsset", JsonPrimitive(artifacts.releaseObject("swiftPackage").releaseString("fileName")))
-        if (manifest.releaseInt("schemaVersion") == PROMOTED_CANDIDATE_SCHEMA) {
-            put("centralBundles", buildJsonArray {
-                promotedCentralBundleRecords(manifest).forEach { record ->
-                    add(JsonPrimitive(record.releaseString("fileName")))
-                }
-            })
-        } else {
-            put("centralBundle", JsonPrimitive(artifacts.releaseObject("centralBundle").releaseString("fileName")))
-        }
+        put("centralBundles", buildJsonArray {
+            promotedCentralBundleRecords(manifest).forEach { record ->
+                add(JsonPrimitive(record.releaseString("fileName")))
+            }
+        })
     }
 }
 
 internal fun candidatePayloadRecords(manifest: JsonObject): List<JsonObject> = buildList {
     val artifacts = manifest.releaseObject("artifacts")
     add(artifacts.releaseObject("swiftPackage"))
-    if ("centralBundles" in artifacts) promotedCentralBundleRecords(manifest).forEach(::add)
-    else add(artifacts.releaseObject("centralBundle"))
+    promotedCentralBundleRecords(manifest).forEach(::add)
     val evidence = manifest.releaseObject("evidence")
     evidence.filterKeys { it !in candidateEvidenceArrayNames }.values.forEach { add(it as JsonObject) }
     candidateEvidenceArrayNames.forEach { name ->
@@ -190,13 +169,15 @@ private fun verifyPromotedCandidatePayload(
 
     val mavenFile = safePayloadFile(payload, evidence.releaseObject("mavenInventory").releaseString("fileName"))
     val maven = mavenFile.readReleaseObject()
-    val expectedPrimaryCount = expectedMavenPrimaryPaths(expectedVersion).size +
-        expectedMavenRelocationPaths(expectedVersion).size
-    check(maven.releaseInt("schemaVersion") == 2 &&
+    val expectedArtifactIds = expectedMavenPrimaryPaths(expectedVersion).map { it.substringBefore('/') }.toSet()
+    val artifactIds = maven.releaseArray("artifactIds").map { it.jsonPrimitive.content }
+    check(maven.keys == setOf(
+        "schemaVersion", "groupId", "version", "artifactIds", "signaturesRequired", "primaryArtifactCount", "files",
+    ) && maven.releaseInt("schemaVersion") == 3 &&
         maven.releaseString("groupId") == CodexAgentBuild.MAVEN_GROUP &&
         maven.releaseString("version") == expectedVersion && maven.releaseBoolean("signaturesRequired") &&
-        maven.releaseString("relocationGroupId") == OLD_MAVEN_GROUP &&
-        maven.releaseInt("primaryArtifactCount") == expectedPrimaryCount) {
+        artifactIds.size == expectedArtifactIds.size && artifactIds.toSet() == expectedArtifactIds &&
+        maven.releaseInt("primaryArtifactCount") == expectedMavenPrimaryPaths(expectedVersion).size) {
         "Transported Maven inventory is not the signed promoted repository"
     }
     val centralFile = safePayloadFile(
@@ -535,11 +516,7 @@ private fun extractCandidateDesktopClassifiers(
 internal fun candidateGithubOutputs(result: JsonObject): String = buildString {
     append("releaseTag=").append(result.releaseString("releaseTag")).append('\n')
     append("swiftAsset=").append(result.releaseString("swiftAsset")).append('\n')
-    if ("centralBundles" in result) {
-        append("centralBundles=").append(result.releaseArray("centralBundles")).append('\n')
-    } else {
-        append("centralBundle=").append(result.releaseString("centralBundle")).append('\n')
-    }
+    append("centralBundles=").append(result.releaseArray("centralBundles")).append('\n')
 }
 
 internal fun resolveCandidatePrivacyReview(
@@ -547,12 +524,11 @@ internal fun resolveCandidatePrivacyReview(
     payload: File,
     explicitReview: File?,
     decisionTemplate: File?,
-): File? {
-    val payloadReview = manifest.releaseObject("policies")["privacyRequiredReasonReviews"]
-        ?.jsonObject?.releaseString("fileName")?.let { safePayloadFile(payload, it) }
+): File {
+    val payloadReview = manifest.releaseObject("policies").releaseObject("privacyRequiredReasonReviews")
+        .releaseString("fileName").let { safePayloadFile(payload, it) }
     val exactReview = explicitReview ?: payloadReview
     decisionTemplate?.let { template ->
-        check(exactReview != null) { "Candidate required-reason review is missing" }
         val auditName = manifest.releaseObject("evidence").releaseObject("privacyAudit").releaseString("fileName")
         verifyBoundIosPrivacyReview(template, exactReview, safePayloadFile(payload, auditName))
     }
@@ -561,4 +537,22 @@ internal fun resolveCandidatePrivacyReview(
 
 private fun verifyPayloadRecord(payload: File, record: JsonObject) {
     verifyReleaseRecord(safePayloadFile(payload, record.releaseString("fileName")), record)
+}
+
+internal fun validateIosRuntimeMetrics(metrics: JsonObject) {
+    fun durations(name: String) = metrics.releaseArray(name).map { value ->
+        (value as? JsonPrimitive)?.longOrNull ?: error("Invalid $name value")
+    }
+    val startup = durations("startupMilliseconds")
+    val shutdown = durations("shutdownMilliseconds")
+    check(metrics.releaseInt("warmupCycles") == 1 && metrics.releaseInt("measuredCycles") == 5) {
+        "iOS runtime metrics use the wrong cycle counts"
+    }
+    check(startup.size == 5 && startup.all { it in 0L until 30_000L }) { "iOS runtime startup gate failed" }
+    check(shutdown.size == 5 && shutdown.all { it in 0L until 5_000L }) { "iOS runtime shutdown gate failed" }
+    check(metrics.releaseLong("coldStartupMilliseconds") in 0L until 30_000L) { "iOS cold startup gate failed" }
+    check(metrics.releaseLong("startupMaximumMilliseconds") == startup.max()) { "iOS startup maximum mismatch" }
+    check(metrics.releaseLong("shutdownMaximumMilliseconds") == shutdown.max()) { "iOS shutdown maximum mismatch" }
+    check(metrics.releaseLong("idleCurrentResidentBytes") >= 0L) { "iOS idle memory is invalid" }
+    check(metrics.releaseLong("recursiveSearchCurrentResidentBytes") >= 0L) { "iOS search memory is invalid" }
 }

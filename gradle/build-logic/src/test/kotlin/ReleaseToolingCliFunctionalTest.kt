@@ -71,12 +71,6 @@ class ReleaseToolingCliFunctionalTest {
                 source.writeText(relative)
                 source.resolveSibling(source.name + ".sha256").writeText("verification-only checksum")
             }
-            expectedMavenRelocationPaths(version).forEach { relative ->
-                repositories.getValue("common").resolve(relative).apply {
-                    parentFile.mkdirs()
-                    writeText(relative)
-                }
-            }
             val result = runTool(
                 root,
                 "stage-promoted-maven",
@@ -87,7 +81,7 @@ class ReleaseToolingCliFunctionalTest {
             )
             assertEquals(0, result.first, result.second)
             assertEquals(
-                expectedMavenPrimaryPaths(version).size + expectedMavenRelocationPaths(version).size,
+                expectedMavenPrimaryPaths(version).size,
                 output.walkTopDown().count(File::isFile),
             )
         } finally {

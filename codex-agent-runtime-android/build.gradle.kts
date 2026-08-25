@@ -20,7 +20,7 @@ bundledSqliteTest.attributes {
 }
 
 extensions.configure<LibraryExtension> {
-    namespace = "io.github.codex_agent_labs.codexmobile.agent.runtime.android"
+    namespace = "io.github.codex_agent_labs.codexagent.agent.runtime.android"
     compileSdk = 37
 
     defaultConfig {
