@@ -49,6 +49,15 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 
 - (void)run {
     self.keepAlive = self;
+    CodexAgentAgentApprovalDecision *accept = [CodexAgentAgentApprovalDecision accept];
+    CodexAgentAgentApprovalDecision *decline = [CodexAgentAgentApprovalDecision decline];
+    if (![accept.name isEqualToString:@"ACCEPT"] || accept.ordinal != 0 ||
+        ![decline.name isEqualToString:@"DECLINE"] || decline.ordinal != 1 ||
+        accept == decline || accept != [CodexAgentAgentApprovalDecision accept] ||
+        decline != [CodexAgentAgentApprovalDecision decline]) {
+        [self finishWithFailure:@"Objective-C approval decisions changed"];
+        return;
+    }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CDXConsumerTimeoutSeconds * NSEC_PER_SEC)),

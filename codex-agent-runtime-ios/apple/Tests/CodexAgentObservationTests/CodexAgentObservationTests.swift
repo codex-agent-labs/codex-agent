@@ -47,6 +47,16 @@ final class CodexAgentObservationTests: XCTestCase {
     }
 
     func testCodexOperationErrorsExposeStructuredFailure() {
+        let accept = AgentApprovalDecision.accept
+        let decline = AgentApprovalDecision.decline
+        XCTAssertEqual(accept.name, "ACCEPT")
+        XCTAssertEqual(accept.ordinal, 0)
+        XCTAssertEqual(decline.name, "DECLINE")
+        XCTAssertEqual(decline.ordinal, 1)
+        XCTAssertFalse(accept === decline)
+        XCTAssertTrue(accept === AgentApprovalDecision.accept)
+        XCTAssertTrue(decline === AgentApprovalDecision.decline)
+
         let failure = CodexFailure(
             code: "workspace_unavailable",
             message: "Workspace is unavailable",

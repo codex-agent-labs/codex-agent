@@ -9,3 +9,9 @@ static BOOL consumeCodexFailure(void) {
         failure.message.length > 0 &&
         failure.isRecoverable;
 }
+
+static BOOL consumeAgentApprovalDecisions(void) {
+    CodexAgentAgentApprovalDecision *accept = [CodexAgentAgentApprovalDecision accept];
+    CodexAgentAgentApprovalDecision *decline = [CodexAgentAgentApprovalDecision decline];
+    return accept != decline;
+}

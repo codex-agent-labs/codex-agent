@@ -71,24 +71,27 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `canonical selection derives exactly the four complete CodexFailure capabilities`() {
+    fun `canonical selection derives exactly six complete Apple binding capabilities`() {
         val keys = listOf(
             canonicalConstructor(),
             canonicalProperty("code", "kotlin/String!!"),
             canonicalProperty("isRecoverable", "kotlin/Boolean!!"),
             canonicalProperty("message", "kotlin/String!!"),
+            canonicalApprovalDecision("ACCEPT"),
+            canonicalApprovalDecision("DECLINE"),
             canonicalProperty("value", "kotlin/String!!", owner = "Other"),
         )
-        assertEquals(keys.take(4).sorted(), codexFailureCapabilityKeys(keys))
-        assertFailsWith<IllegalStateException> { codexFailureCapabilityKeys(keys.drop(1)) }
+        val expected = keys.take(6)
+        assertEquals(expected.sorted(), appleBindingCapabilityKeys(keys))
+        assertFailsWith<IllegalStateException> { appleBindingCapabilityKeys(expected.drop(1)) }
         assertFailsWith<IllegalStateException> {
-            codexFailureCapabilityKeys(keys + canonicalProperty("future", "kotlin/String!!"))
+            appleBindingCapabilityKeys(keys + canonicalProperty("future", "kotlin/String!!"))
         }
         assertFailsWith<IllegalStateException> {
-            codexFailureCapabilityKeys(keys + canonicalConstructor().replace("kotlin.Boolean", "kotlin.Int"))
+            appleBindingCapabilityKeys(keys + canonicalConstructor().replace("kotlin.Boolean", "kotlin.Int"))
         }
         assertFailsWith<IllegalStateException> {
-            codexFailureCapabilityKeys(keys.take(4).map {
+            appleBindingCapabilityKeys(expected.map {
                 it.replace("|kind=constructor|", "|kind=unsupported|")
             })
         }
@@ -99,7 +102,9 @@ class AppleCompilerEvidenceTaskTest {
             canonicalConstructor().replace("return=$CANONICAL_OWNER", "return=kotlin/String!!"),
             canonicalConstructor().replace("$CANONICAL_OWNER.<init>", "$CANONICAL_OWNER.changed"),
         ).forEach { replacement ->
-            assertFailsWith<IllegalStateException> { codexFailureCapabilityKeys(listOf(replacement) + keys.slice(1..3)) }
+            assertFailsWith<IllegalStateException> {
+                appleBindingCapabilityKeys(listOf(replacement) + expected.drop(1))
+            }
         }
         listOf(
             canonicalProperty("code", "kotlin/String?"),
@@ -107,17 +112,26 @@ class AppleCompilerEvidenceTaskTest {
             canonicalProperty("code", "kotlin/String!!").replace(".code|{}code[0]", ".changed|{}code[0]"),
         ).forEach { replacement ->
             assertFailsWith<IllegalStateException> {
-                codexFailureCapabilityKeys(listOf(keys[0], replacement, keys[2], keys[3]))
+                appleBindingCapabilityKeys(listOf(keys[0], replacement) + expected.drop(2))
+            }
+        }
+        listOf(
+            canonicalApprovalDecision("ACCEPT").replace(".ACCEPT", ".FUTURE"),
+            canonicalApprovalDecision("ACCEPT").replace("|kind=enum-entry|", "|kind=property|"),
+            canonicalApprovalDecision("ACCEPT").replace("null[0]", "null[1]"),
+        ).forEach { replacement ->
+            assertFailsWith<IllegalStateException> {
+                appleBindingCapabilityKeys(expected.dropLast(2) + replacement + expected.last())
             }
         }
     }
 
     @Test
-    fun `real compiler shapes normalize to one exact four-member contract per language`() {
-        val swift = parseSwiftCodexFailureSurface(swiftSurfaceJson())
-        val objectiveC = parseObjectiveCCodexFailureSurface(objectiveCSurfaceJson())
-        assertEquals(5, swift.size)
-        assertEquals(5, objectiveC.size)
+    fun `real compiler shapes normalize to one exact six-member contract per language`() {
+        val swift = parseSwiftAppleBindingSurface(swiftSurfaceJson())
+        val objectiveC = parseObjectiveCAppleBindingSurface(objectiveCSurfaceJson())
+        assertEquals(8, swift.size)
+        assertEquals(8, objectiveC.size)
         assertEquals(swift.map(AppleCompilerSymbol::precise), objectiveC.map(AppleCompilerSymbol::precise))
         assertEquals("swift.init", swift.single { "initWithCode" in it.precise }.kind)
         assertEquals("objective-c.method", objectiveC.single { "initWithCode" in it.precise }.kind)
@@ -125,47 +139,66 @@ class AppleCompilerEvidenceTaskTest {
         assertTrue(objectiveC.none { it.path.first() == "CDXFailure" })
 
         assertFailsWith<IllegalStateException> {
-            parseSwiftCodexFailureSurface(swiftSurfaceJson().replace("swift.init", "swift.method"))
+            parseSwiftAppleBindingSurface(swiftSurfaceJson().replace("swift.init", "swift.method"))
         }
         assertFailsWith<IllegalStateException> {
-            parseObjectiveCCodexFailureSurface(
+            parseObjectiveCAppleBindingSurface(
                 objectiveCSurfaceJson().replaceFirst("readonly", "readwrite"),
             )
         }
         assertFailsWith<IllegalStateException> {
-            parseObjectiveCCodexFailureSurface(objectiveCSurfaceJson(includeMessageRelationship = false))
+            parseObjectiveCAppleBindingSurface(objectiveCSurfaceJson(includeMessageRelationship = false))
+        }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingSurface(
+                swiftSurfaceJson().replace("\"title\": \"accept\"", "\"title\": \"approve\""),
+            )
         }
     }
 
     @Test
-    fun `compiled AST references bind four exact USRs and reject drift`() {
-        val swift = parseSwiftCodexFailureReferences(swiftReferencesJson())
-        val objectiveC = parseObjectiveCCodexFailureReferences(objectiveCReferencesJson())
-        assertEquals(4, swift.size)
-        assertEquals(4, objectiveC.size)
+    fun `compiled AST references bind six exact USRs and reject drift`() {
+        val swift = parseSwiftAppleBindingReferences(swiftReferencesJson())
+        val objectiveC = parseObjectiveCAppleBindingReferences(objectiveCReferencesJson())
+        assertEquals(6, swift.size)
+        assertEquals(6, objectiveC.size)
         assertEquals(swift.map(AppleCompilerReference::precise), objectiveC.map(AppleCompilerReference::precise))
-        assertEquals(4, swift.map(AppleCompilerReference::precise).distinct().size)
+        assertEquals(6, swift.map(AppleCompilerReference::precise).distinct().size)
 
         assertFailsWith<IllegalStateException> {
-            parseSwiftCodexFailureReferences(swiftReferencesJson().replace("(py)message", "(py)removed"))
+            parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(py)message", "(py)removed"))
         }
         assertFailsWith<IllegalStateException> {
-            parseObjectiveCCodexFailureReferences(objectiveCReferencesJson().replace("\"BOOL\"", "\"int\""))
+            parseObjectiveCAppleBindingReferences(objectiveCReferencesJson().replace("\"BOOL\"", "\"int\""))
         }
         assertFailsWith<IllegalStateException> {
-            parseObjectiveCCodexFailureReferences(
+            parseObjectiveCAppleBindingReferences(
                 objectiveCReferencesJson().replace("CodexAgentCodexFailure *", "CDXFailure *"),
             )
         }
         assertFailsWith<IllegalStateException> {
-            parseObjectiveCCodexFailureReferences(objectiveCReferencesJson().replaceFirst("true", "false"))
+            parseObjectiveCAppleBindingReferences(objectiveCReferencesJson().replaceFirst("true", "false"))
+        }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(cpy)decline", "(cpy)removed"))
+        }
+        assertFailsWith<IllegalStateException> {
+            parseObjectiveCAppleBindingReferences(objectiveCReferencesJson().replace("\"decline\"", "\"removed\""))
+        }
+        assertFailsWith<IllegalStateException> {
+            parseObjectiveCAppleBindingReferences(
+                objectiveCReferencesJson().replaceFirst(
+                    "CodexAgentAgentApprovalDecision * _Nonnull",
+                    "CodexAgentAgentApprovalDecision *",
+                ),
+            )
         }
     }
 
     @Test
     fun `normalization digest is deterministic and semantic drift changes it`() {
-        val first = JsonArray(parseSwiftCodexFailureSurface(swiftSurfaceJson()).map { JsonPrimitive(it.precise) })
-        val same = JsonArray(parseSwiftCodexFailureSurface(swiftSurfaceJson()).map { JsonPrimitive(it.precise) })
+        val first = JsonArray(parseSwiftAppleBindingSurface(swiftSurfaceJson()).map { JsonPrimitive(it.precise) })
+        val same = JsonArray(parseSwiftAppleBindingSurface(swiftSurfaceJson()).map { JsonPrimitive(it.precise) })
         val drift = JsonArray(first + JsonPrimitive("c:objc(cs)Foreign"))
         assertEquals(appleCompilerJsonDigest(first), appleCompilerJsonDigest(same))
         assertNotEquals(appleCompilerJsonDigest(first), appleCompilerJsonDigest(drift))
@@ -183,6 +216,10 @@ class AppleCompilerEvidenceTaskTest {
         return "common|owner=$canonicalOwner|kind=property|abi=$canonicalOwner.$name|{}$name[0]|" +
             "propertyKind=VAL|type=$type"
     }
+
+    private fun canonicalApprovalDecision(name: String): String =
+        "common|owner=$APPROVAL_CANONICAL_OWNER|kind=enum-entry|" +
+            "abi=$APPROVAL_CANONICAL_OWNER.$name|null[0]"
 
     private fun swiftSurfaceJson(includeMessageRelationship: Boolean = true): String = surfaceJson(
         language = "swift",
@@ -208,6 +245,13 @@ class AppleCompilerEvidenceTaskTest {
             swiftProperty(CODE, "code", "String", "s:SS"),
             swiftProperty(RECOVERABLE, "isRecoverable", "Bool", "s:Sb"),
             swiftProperty(MESSAGE, "message", "String", "s:SS"),
+            symbol(
+                APPROVAL_OWNER, "swift", "swift.class", listOf("AgentApprovalDecision"),
+                "AgentApprovalDecision", "public",
+                fragments(keyword("class"), text(" "), identifier("AgentApprovalDecision")),
+            ),
+            swiftTypeProperty(ACCEPT, "accept"),
+            swiftTypeProperty(DECLINE, "decline"),
         ),
         includeMessageRelationship = includeMessageRelationship,
     )
@@ -244,6 +288,16 @@ class AppleCompilerEvidenceTaskTest {
             objectiveCProperty(CODE, "code", "NSString", "c:objc(cs)NSString", pointer = true),
             objectiveCProperty(RECOVERABLE, "isRecoverable", "BOOL", "c:@T@BOOL", pointer = false),
             objectiveCProperty(MESSAGE, "message", "NSString", "c:objc(cs)NSString", pointer = true),
+            symbol(
+                APPROVAL_OWNER, "objective-c", "objective-c.class", listOf("CodexAgentAgentApprovalDecision"),
+                "CodexAgentAgentApprovalDecision", "public",
+                fragments(
+                    keyword("@interface"), text(" "), identifier("CodexAgentAgentApprovalDecision"), text(" : "),
+                    type("CodexAgentKotlinEnum", "c:objc(cs)CodexAgentKotlinEnum"),
+                ),
+            ),
+            objectiveCTypeProperty(ACCEPT, "accept"),
+            objectiveCTypeProperty(DECLINE, "decline"),
         ),
         includeMessageRelationship = includeMessageRelationship,
     )
@@ -262,6 +316,7 @@ class AppleCompilerEvidenceTaskTest {
         put("relationships", buildJsonArray {
             listOf(CONSTRUCTOR, CODE, RECOVERABLE).forEach { add(relationship(it)) }
             if (includeMessageRelationship) add(relationship(MESSAGE))
+            listOf(ACCEPT, DECLINE).forEach { add(relationship(it, APPROVAL_OWNER)) }
         })
     })
 
@@ -296,6 +351,14 @@ class AppleCompilerEvidenceTaskTest {
         ),
     )
 
+    private fun swiftTypeProperty(precise: String, name: String) = symbol(
+        precise, "swift", "swift.type.property", listOf("AgentApprovalDecision", name), name, "open",
+        fragments(
+            keyword("class"), text(" "), keyword("var"), text(" "), identifier(name), text(": "),
+            type("AgentApprovalDecision", APPROVAL_OWNER), text(" { "), keyword("get"), text(" }"),
+        ),
+    )
+
     private fun objectiveCProperty(
         precise: String,
         name: String,
@@ -310,8 +373,17 @@ class AppleCompilerEvidenceTaskTest {
         ),
     )
 
-    private fun relationship(source: String) = buildJsonObject {
-        put("kind", JsonPrimitive("memberOf")); put("source", JsonPrimitive(source)); put("target", JsonPrimitive(OWNER))
+    private fun objectiveCTypeProperty(precise: String, name: String) = symbol(
+        precise, "objective-c", "objective-c.type.property",
+        listOf("CodexAgentAgentApprovalDecision", name), name, "public",
+        fragments(
+            keyword("@property"), text(" ("), keyword("class"), text(", "), keyword("readonly"), text(") "),
+            type("CodexAgentAgentApprovalDecision", APPROVAL_OWNER), text(" * "), identifier(name), text(";"),
+        ),
+    )
+
+    private fun relationship(source: String, target: String = OWNER) = buildJsonObject {
+        put("kind", JsonPrimitive("memberOf")); put("source", JsonPrimitive(source)); put("target", JsonPrimitive(target))
     }
 
     private fun parameter(name: String, fragments: JsonArray) = buildJsonObject {
@@ -338,6 +410,8 @@ class AppleCompilerEvidenceTaskTest {
             add(swiftReference("member_ref_expr", "code", CODE, "\$sSSD"))
             add(swiftReference("member_ref_expr", "isRecoverable", RECOVERABLE, "\$sSbD"))
             add(swiftReference("member_ref_expr", "message", MESSAGE, "\$sSSD"))
+            add(swiftReference("member_ref_expr", "accept", ACCEPT, APPROVAL_SWIFT_TYPE))
+            add(swiftReference("member_ref_expr", "decline", DECLINE, APPROVAL_SWIFT_TYPE))
         }) },
     )
 
@@ -366,6 +440,8 @@ class AppleCompilerEvidenceTaskTest {
             add(objectiveCPropertyReference("code"))
             add(objectiveCPropertyReference("isRecoverable"))
             add(objectiveCPropertyReference("message"))
+            add(objectiveCDecisionReference("accept"))
+            add(objectiveCDecisionReference("decline"))
         }) },
     )
 
@@ -378,6 +454,13 @@ class AppleCompilerEvidenceTaskTest {
         })
     }
 
+    private fun objectiveCDecisionReference(name: String) = buildJsonObject {
+        put("kind", JsonPrimitive("ObjCMessageExpr")); put("selector", JsonPrimitive(name))
+        put("type", qualifiedType("CodexAgentAgentApprovalDecision * _Nonnull"))
+        put("receiverKind", JsonPrimitive("class"))
+        put("classType", qualifiedType("CodexAgentAgentApprovalDecision"))
+    }
+
     private fun qualifiedType(value: String) = buildJsonObject { put("qualType", JsonPrimitive(value)) }
 
     private companion object {
@@ -387,5 +470,11 @@ class AppleCompilerEvidenceTaskTest {
         const val CODE = "$OWNER(py)code"
         const val RECOVERABLE = "$OWNER(py)isRecoverable"
         const val MESSAGE = "$OWNER(py)message"
+        const val APPROVAL_CANONICAL_OWNER =
+            "io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision"
+        const val APPROVAL_OWNER = "c:objc(cs)CodexAgentAgentApprovalDecision"
+        const val ACCEPT = "$APPROVAL_OWNER(cpy)accept"
+        const val DECLINE = "$APPROVAL_OWNER(cpy)decline"
+        const val APPROVAL_SWIFT_TYPE = "\$sSo010CodexAgentB16ApprovalDecisionCD"
     }
 }

@@ -25,8 +25,11 @@ import org.gradle.work.DisableCachingByDefault
 
 internal const val APPLE_COMPILER_EVIDENCE_PROTOCOL = "codex-agent-apple-compiler-evidence-v1"
 internal const val APPLE_CODEX_FAILURE_OWNER_USR = "c:objc(cs)CodexAgentCodexFailure"
+internal const val APPLE_APPROVAL_DECISION_OWNER_USR = "c:objc(cs)CodexAgentAgentApprovalDecision"
 private const val APPLE_CODEX_FAILURE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/CodexFailure"
+private const val APPLE_APPROVAL_DECISION_CANONICAL_OWNER =
+    "io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision"
 
 private val appleCodexFailureMembers = linkedMapOf(
     "constructor:<init>" to "$APPLE_CODEX_FAILURE_OWNER_USR(im)initWithCode:message:isRecoverable:",
@@ -46,10 +49,25 @@ private val appleCodexFailureCoverageTokens = mapOf(
         "api-v1:CodexFailure#property:message#sha256:8bc0e280b734d05df8b06e7f8f5544ba9323faa14cd59b35531b05ea3023ddad",
 )
 
-private fun appleCodexFailureShape(capability: String): String {
+private val appleApprovalDecisionMembers = linkedMapOf(
+    "enum-entry:ACCEPT" to "$APPLE_APPROVAL_DECISION_OWNER_USR(cpy)accept",
+    "enum-entry:DECLINE" to "$APPLE_APPROVAL_DECISION_OWNER_USR(cpy)decline",
+)
+
+private val appleApprovalDecisionCoverageTokens = mapOf(
+    "enum-entry:ACCEPT" to
+        "api-v1:AgentApprovalDecision#enum-entry:ACCEPT#sha256:c6613f75901ffd0146f3c8f945f73fabdc67efb237d52809c8a1e062835dc868",
+    "enum-entry:DECLINE" to
+        "api-v1:AgentApprovalDecision#enum-entry:DECLINE#sha256:db4d1df5ec20f42363a10d2b7a416c5e114a21663f8f70e0b32f4608dade7d56",
+)
+
+private val appleBindingMembers = appleCodexFailureMembers + appleApprovalDecisionMembers
+private val appleBindingCoverageTokens = appleCodexFailureCoverageTokens + appleApprovalDecisionCoverageTokens
+
+private fun appleBindingShape(capability: String): String {
     val token = crossLanguageApiCoverageToken(capability)
-    return appleCodexFailureCoverageTokens.entries.singleOrNull { it.value == token }?.key
-        ?: error("Unexpected canonical CodexFailure capability: $capability")
+    return appleBindingCoverageTokens.entries.singleOrNull { it.value == token }?.key
+        ?: error("Unexpected canonical Apple binding capability: $capability")
 }
 
 internal data class AppleCompilerSymbol(
@@ -106,7 +124,7 @@ private val appleCompilerSlices = listOf(
     AppleCompilerSlice("ios-arm64-simulator", "iphonesimulator", "arm64-apple-ios15.0-simulator"),
 )
 
-private val expectedSwiftCodexFailureSymbols = linkedMapOf(
+private val expectedSwiftAppleBindingSymbols = linkedMapOf(
     APPLE_CODEX_FAILURE_OWNER_USR to ExpectedAppleCompilerSymbol(
         "swift.class", listOf("CodexFailure"), "CodexFailure", "public", "class CodexFailure", emptyList(),
     ),
@@ -128,9 +146,21 @@ private val expectedSwiftCodexFailureSymbols = linkedMapOf(
         "swift.property", listOf("CodexFailure", "message"), "message", "open",
         "var message: String { get }", listOf("s:SS"),
     ),
+    APPLE_APPROVAL_DECISION_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("AgentApprovalDecision"), "AgentApprovalDecision", "public",
+        "class AgentApprovalDecision", emptyList(),
+    ),
+    appleApprovalDecisionMembers.getValue("enum-entry:ACCEPT") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentApprovalDecision", "accept"), "accept", "open",
+        "class var accept: AgentApprovalDecision { get }", listOf(APPLE_APPROVAL_DECISION_OWNER_USR),
+    ),
+    appleApprovalDecisionMembers.getValue("enum-entry:DECLINE") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentApprovalDecision", "decline"), "decline", "open",
+        "class var decline: AgentApprovalDecision { get }", listOf(APPLE_APPROVAL_DECISION_OWNER_USR),
+    ),
 )
 
-private val expectedObjectiveCCodexFailureSymbols = linkedMapOf(
+private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
     APPLE_CODEX_FAILURE_OWNER_USR to ExpectedAppleCompilerSymbol(
         "objective-c.class", listOf("CodexAgentCodexFailure"), "CodexAgentCodexFailure", "public",
         "@interface CodexAgentCodexFailure : CodexAgentBase", listOf("c:objc(cs)CodexAgentBase"),
@@ -160,17 +190,35 @@ private val expectedObjectiveCCodexFailureSymbols = linkedMapOf(
         "objective-c.property", listOf("CodexAgentCodexFailure", "message"), "message", "public",
         "@property (readonly) NSString * message;", listOf("c:objc(cs)NSString"),
     ),
+    APPLE_APPROVAL_DECISION_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentAgentApprovalDecision"), "CodexAgentAgentApprovalDecision", "public",
+        "@interface CodexAgentAgentApprovalDecision : CodexAgentKotlinEnum",
+        listOf("c:objc(cs)CodexAgentKotlinEnum"),
+    ),
+    appleApprovalDecisionMembers.getValue("enum-entry:ACCEPT") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentApprovalDecision", "accept"), "accept", "public",
+        "@property (class, readonly) CodexAgentAgentApprovalDecision * accept;",
+        listOf(APPLE_APPROVAL_DECISION_OWNER_USR),
+    ),
+    appleApprovalDecisionMembers.getValue("enum-entry:DECLINE") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentApprovalDecision", "decline"), "decline", "public",
+        "@property (class, readonly) CodexAgentAgentApprovalDecision * decline;",
+        listOf(APPLE_APPROVAL_DECISION_OWNER_USR),
+    ),
 )
 
-internal fun codexFailureCapabilityKeys(memberKeys: List<String>): List<String> {
-    val ownerPrefix = "common|owner=$APPLE_CODEX_FAILURE_CANONICAL_OWNER|"
-    val byShape = memberKeys.filter { it.startsWith(ownerPrefix) }.groupBy { key ->
-        appleCodexFailureShape(key)
+internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> {
+    val ownerPrefixes = setOf(
+        "common|owner=$APPLE_CODEX_FAILURE_CANONICAL_OWNER|",
+        "common|owner=$APPLE_APPROVAL_DECISION_CANONICAL_OWNER|",
+    )
+    val byShape = memberKeys.filter { key -> ownerPrefixes.any { prefix -> key.startsWith(prefix) } }.groupBy { key ->
+        appleBindingShape(key)
     }
-    check(byShape.keys == appleCodexFailureMembers.keys) {
-        "Canonical CodexFailure capability set changed: ${byShape.keys.sorted()}"
+    check(byShape.keys == appleBindingMembers.keys) {
+        "Canonical Apple binding capability set changed: ${byShape.keys.sorted()}"
     }
-    check(byShape.values.all { it.size == 1 }) { "Canonical CodexFailure capabilities are overloaded" }
+    check(byShape.values.all { it.size == 1 }) { "Canonical Apple binding capabilities are overloaded" }
     return byShape.values.map { it.single() }.sorted()
 }
 
@@ -224,13 +272,13 @@ internal fun objectiveCConsumerAstCommand(
     "-F", frameworkSearchPath.absolutePath, "-Xclang", "-ast-dump=json", consumer.absolutePath,
 )
 
-internal fun parseSwiftCodexFailureSurface(json: String): List<AppleCompilerSymbol> =
-    parseCodexFailureSurface(json, "swift", expectedSwiftCodexFailureSymbols)
+internal fun parseSwiftAppleBindingSurface(json: String): List<AppleCompilerSymbol> =
+    parseAppleBindingSurface(json, "swift", expectedSwiftAppleBindingSymbols)
 
-internal fun parseObjectiveCCodexFailureSurface(json: String): List<AppleCompilerSymbol> =
-    parseCodexFailureSurface(json, "objective-c", expectedObjectiveCCodexFailureSymbols)
+internal fun parseObjectiveCAppleBindingSurface(json: String): List<AppleCompilerSymbol> =
+    parseAppleBindingSurface(json, "objective-c", expectedObjectiveCAppleBindingSymbols)
 
-private fun parseCodexFailureSurface(
+private fun parseAppleBindingSurface(
     json: String,
     language: String,
     expected: Map<String, ExpectedAppleCompilerSymbol>,
@@ -240,7 +288,7 @@ private fun parseCodexFailureSurface(
         .filter { symbol -> symbol.appleObject("identifier").appleString("precise") in expected }
         .map(::normalizeAppleCompilerSymbol)
     check(symbols.map(AppleCompilerSymbol::precise).toSet() == expected.keys && symbols.size == expected.size) {
-        "$language CodexFailure symbol set changed"
+        "$language Apple binding symbol set changed"
     }
     symbols.forEach { actual ->
         val contract = expected.getValue(actual.precise)
@@ -248,20 +296,22 @@ private fun parseCodexFailureSurface(
             actual.title == contract.title && actual.accessLevel == contract.access &&
             actual.declaration == contract.declaration && actual.typeIdentifiers == contract.typeIdentifiers &&
             actual.parameters == contract.parameters && actual.returns == contract.returns) {
-            "$language CodexFailure symbol changed: ${actual.precise}"
+            "$language Apple binding symbol changed: ${actual.precise}"
         }
     }
-    val memberUsrs = appleCodexFailureMembers.values.toSet()
+    val memberOwners = appleCodexFailureMembers.values.associateWith { APPLE_CODEX_FAILURE_OWNER_USR } +
+        appleApprovalDecisionMembers.values.associateWith { APPLE_APPROVAL_DECISION_OWNER_USR }
     val relationships = root.appleArray("relationships").map { it.appleObject("$language relationship") }
         .filter { relationship ->
             relationship.appleString("kind") == "memberOf" &&
-                relationship.appleString("source") in memberUsrs
+                relationship.appleString("source") in memberOwners
         }.map { relationship ->
             relationship.appleString("source") to relationship.appleString("target")
         }
-    check(relationships.size == memberUsrs.size && relationships.map(Pair<String, String>::first).toSet() == memberUsrs &&
-        relationships.all { it.second == APPLE_CODEX_FAILURE_OWNER_USR }) {
-        "$language CodexFailure ownership relationships changed"
+    check(relationships.size == memberOwners.size &&
+        relationships.map(Pair<String, String>::first).toSet() == memberOwners.keys &&
+        relationships.all { (source, target) -> target == memberOwners.getValue(source) }) {
+        "$language Apple binding ownership relationships changed"
     }
     return symbols.sortedBy(AppleCompilerSymbol::precise)
 }
@@ -290,11 +340,11 @@ private fun normalizeAppleCompilerSymbol(symbol: JsonObject): AppleCompilerSymbo
     )
 }
 
-internal fun parseSwiftCodexFailureReferences(json: String): List<AppleCompilerReference> {
+internal fun parseSwiftAppleBindingReferences(json: String): List<AppleCompilerReference> {
     val references = appleJsonObject(json, "Swift consumer AST").walkAppleObjects().mapNotNull { node ->
         val declaration = node["decl"] as? JsonObject ?: return@mapNotNull null
         val precise = declaration.appleStringOrNull("decl_usr") ?: return@mapNotNull null
-        if (precise !in appleCodexFailureMembers.values) return@mapNotNull null
+        if (precise !in appleBindingMembers.values) return@mapNotNull null
         AppleCompilerReference(
             precise, node.appleString("_kind"), declaration.appleString("base_name"), null,
             node.appleString("type"), emptyList(),
@@ -303,14 +353,16 @@ internal fun parseSwiftCodexFailureReferences(json: String): List<AppleCompilerR
         check(values.distinct().size == 1) { "Swift reference is ambiguous: $precise" }
         values.first()
     }.sortedBy(AppleCompilerReference::precise)
-    check(references.map(AppleCompilerReference::precise).toSet() == appleCodexFailureMembers.values.toSet()) {
-        "Swift CodexFailure reference set changed"
+    check(references.map(AppleCompilerReference::precise).toSet() == appleBindingMembers.values.toSet()) {
+        "Swift Apple binding reference set changed"
     }
     val expectedKinds = mapOf(
         appleCodexFailureMembers.getValue("constructor:<init>") to ("declref_expr" to "init"),
         appleCodexFailureMembers.getValue("property:code") to ("member_ref_expr" to "code"),
         appleCodexFailureMembers.getValue("property:isRecoverable") to ("member_ref_expr" to "isRecoverable"),
         appleCodexFailureMembers.getValue("property:message") to ("member_ref_expr" to "message"),
+        appleApprovalDecisionMembers.getValue("enum-entry:ACCEPT") to ("member_ref_expr" to "accept"),
+        appleApprovalDecisionMembers.getValue("enum-entry:DECLINE") to ("member_ref_expr" to "decline"),
     )
     references.forEach { reference ->
         check(reference.kind to reference.name == expectedKinds.getValue(reference.precise) &&
@@ -319,7 +371,7 @@ internal fun parseSwiftCodexFailureReferences(json: String): List<AppleCompilerR
     return references
 }
 
-internal fun parseObjectiveCCodexFailureReferences(json: String): List<AppleCompilerReference> {
+internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleCompilerReference> {
     val nodes = appleJsonObject(json, "Objective-C consumer AST").walkAppleObjects().toList()
     val constructor = nodes.filter { node ->
         node.appleStringOrNull("kind") == "ObjCMessageExpr" &&
@@ -364,7 +416,29 @@ internal fun parseObjectiveCCodexFailureReferences(json: String): List<AppleComp
         )
     }.sortedBy(AppleCompilerReference::precise)
     check(properties == expectedProperties) { "Objective-C CodexFailure property references changed" }
-    return (constructor + properties).sortedBy(AppleCompilerReference::precise)
+    val decisions = listOf("accept", "decline").map { name ->
+        val node = nodes.singleOrNull { candidate ->
+            candidate.appleStringOrNull("kind") == "ObjCMessageExpr" &&
+                candidate.appleStringOrNull("selector") == name
+        } ?: error("Objective-C AgentApprovalDecision reference changed: $name")
+        check(node.appleString("receiverKind") == "class") {
+            "Objective-C AgentApprovalDecision receiver changed: $name"
+        }
+        AppleCompilerReference(
+            appleApprovalDecisionMembers.getValue("enum-entry:${name.uppercase()}"),
+            "ObjCMessageExpr", name, node.appleObject("classType").appleString("qualType"),
+            node.appleObject("type").appleString("qualType"), emptyList(),
+        )
+    }
+    val expectedDecisions = listOf("accept", "decline").map { name ->
+        AppleCompilerReference(
+            appleApprovalDecisionMembers.getValue("enum-entry:${name.uppercase()}"),
+            "ObjCMessageExpr", name, "CodexAgentAgentApprovalDecision",
+            "CodexAgentAgentApprovalDecision * _Nonnull", emptyList(),
+        )
+    }
+    check(decisions == expectedDecisions) { "Objective-C AgentApprovalDecision references changed" }
+    return (constructor + properties + decisions).sortedBy(AppleCompilerReference::precise)
 }
 
 private fun JsonObject.walkAppleObjects(): Sequence<JsonObject> = sequence {
@@ -464,7 +538,7 @@ abstract class AppleCompilerEvidenceTask @Inject constructor(
         val canonical = readCrossLanguageCanonicalApiEvidence(
             canonicalApiReport.get().asFile, canonicalCoverageReceipt.get().asFile,
         )
-        val capabilities = codexFailureCapabilityKeys(canonical.memberKeys)
+        val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
         val xcodeOutput = processes.captureReleaseProcess(listOf("/usr/bin/xcodebuild", "-version"))
         val swiftOutput = processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "swift", "--version"))
         verifyAppleToolchainOutput(
@@ -477,16 +551,16 @@ abstract class AppleCompilerEvidenceTask @Inject constructor(
         val work = temporaryDir.resolve("compiler-evidence").also { deleteReleaseTree(it); Files.createDirectories(it.toPath()) }
         val slices = appleCompilerSlices.map { specification -> inspectSlice(specification, xcframework, work) }
         check(slices.map(InspectedAppleCompilerSlice::swiftSurface).distinct().size == 1) {
-            "Swift CodexFailure device and simulator surfaces differ"
+            "Swift Apple binding device and simulator surfaces differ"
         }
         check(slices.map(InspectedAppleCompilerSlice::objectiveCSurface).distinct().size == 1) {
-            "Objective-C CodexFailure device and simulator surfaces differ"
+            "Objective-C Apple binding device and simulator surfaces differ"
         }
         check(slices.map(InspectedAppleCompilerSlice::swiftReferences).distinct().size == 1) {
-            "Swift CodexFailure device and simulator references differ"
+            "Swift Apple binding device and simulator references differ"
         }
         check(slices.map(InspectedAppleCompilerSlice::objectiveCReferences).distinct().size == 1) {
-            "Objective-C CodexFailure device and simulator references differ"
+            "Objective-C Apple binding device and simulator references differ"
         }
         val swiftSurface = slices.first().swiftSurface
         val objectiveCSurface = slices.first().objectiveCSurface
@@ -528,8 +602,8 @@ abstract class AppleCompilerEvidenceTask @Inject constructor(
                 put("swift", swiftReferencesJson); put("objectiveC", objectiveCReferencesJson)
             })
             put("claims", buildJsonArray { capabilities.forEach { capability ->
-                val shape = appleCodexFailureShape(capability)
-                val precise = appleCodexFailureMembers.getValue(shape)
+                val shape = appleBindingShape(capability)
+                val precise = appleBindingMembers.getValue(shape)
                 add(buildJsonObject {
                     put("canonicalKey", JsonPrimitive(capability))
                     put("swiftUsr", JsonPrimitive(precise)); put("objectiveCUsr", JsonPrimitive(precise))
@@ -585,10 +659,10 @@ abstract class AppleCompilerEvidenceTask @Inject constructor(
         ))
         return InspectedAppleCompilerSlice(
             specification, sdkVersion, framework,
-            parseSwiftCodexFailureSurface(swiftSymbolGraph.readText()),
-            parseObjectiveCCodexFailureSurface(objectiveCExtractApi.readText()),
-            parseSwiftCodexFailureReferences(swiftAst),
-            parseObjectiveCCodexFailureReferences(objectiveCAst),
+            parseSwiftAppleBindingSurface(swiftSymbolGraph.readText()),
+            parseObjectiveCAppleBindingSurface(objectiveCExtractApi.readText()),
+            parseSwiftAppleBindingReferences(swiftAst),
+            parseObjectiveCAppleBindingReferences(objectiveCAst),
         )
     }
 }

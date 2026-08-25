@@ -8,3 +8,7 @@ func consumeCodexFailure() -> (String, String, Bool) {
     )
     return (failure.code, failure.message, failure.isRecoverable)
 }
+
+func consumeAgentApprovalDecisions() -> (AgentApprovalDecision, AgentApprovalDecision) {
+    (AgentApprovalDecision.accept, AgentApprovalDecision.decline)
+}
