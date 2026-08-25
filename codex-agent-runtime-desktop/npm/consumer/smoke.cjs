@@ -29,6 +29,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexAgent());
   assert.throws(() => new sdk.CodexAuthentication());
   assert.throws(() => new sdk.CodexConnectors());
+  assert.throws(() => new sdk.CodexModels());
   assert.throws(() => new sdk.CodexAuthenticationState());
   assert.throws(() => new sdk.CodexConversation());
   assert.throws(() => new sdk.CodexObservation());
@@ -49,8 +50,10 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentMcpEnvironmentVariable,
     sdk.AgentMcpOauthConfiguration,
     sdk.AgentMcpToolConfiguration,
+    sdk.AgentModel,
     sdk.AgentPlanProgress,
     sdk.AgentPlanStep,
+    sdk.AgentServiceTier,
     sdk.CodexAgent,
     sdk.CodexAuthentication,
     sdk.CodexAuthenticationState,
@@ -62,6 +65,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.CodexHost,
     sdk.CodexHostState,
     sdk.CodexMessage,
+    sdk.CodexModels,
     sdk.CodexObservation,
     sdk.CodexTurnProgress,
     sdk.CodexWorkspace,
@@ -752,6 +756,78 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     assert.throws(() => new sdk.AgentConversationSummary('conversation', 'Title', invalid));
   }
 
+  const serviceTier = new sdk.AgentServiceTier('fast', 'Fast', 'Lowest latency');
+  assert.equal(serviceTier.id, 'fast');
+  assert.equal(serviceTier.name, 'Fast');
+  assert.equal(serviceTier.description, 'Lowest latency');
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentServiceTier(invalid, 'Fast', 'Lowest latency'));
+    assert.throws(() => new sdk.AgentServiceTier('fast', invalid, 'Lowest latency'));
+    assert.throws(() => new sdk.AgentServiceTier('fast', 'Fast', invalid));
+  }
+
+  const defaultModel = new sdk.AgentModel(
+    'model-default', 'Default model', 'Default description', ['medium'], 'medium', true,
+  );
+  assert.deepEqual(defaultModel.serviceTiers, []);
+  assert.equal(defaultModel.defaultServiceTier, null);
+  const sourceEfforts = ['low', 'medium', 'high'];
+  const sourceServiceTiers = [serviceTier];
+  const model = new sdk.AgentModel(
+    'model', 'Model', 'Description', sourceEfforts, 'medium', false, sourceServiceTiers, 'fast',
+  );
+  assert.equal(model.id, 'model');
+  assert.equal(model.displayName, 'Model');
+  assert.equal(model.description, 'Description');
+  assert.deepEqual(model.supportedEfforts, ['low', 'medium', 'high']);
+  assert.equal(model.defaultEffort, 'medium');
+  assert.equal(model.isDefault, false);
+  assert.deepEqual(model.serviceTiers.map(({ id }) => id), ['fast']);
+  assert.equal(model.defaultServiceTier, 'fast');
+  assert.notEqual(model.supportedEfforts, sourceEfforts);
+  assert.notEqual(model.serviceTiers, sourceServiceTiers);
+  sourceEfforts.splice(0, sourceEfforts.length, 'mutated');
+  sourceServiceTiers.length = 0;
+  assert.deepEqual(model.supportedEfforts, ['low', 'medium', 'high']);
+  assert.deepEqual(model.serviceTiers.map(({ id }) => id), ['fast']);
+  assert.equal(Object.isFrozen(model.supportedEfforts), true);
+  assert.equal(Object.isFrozen(model.serviceTiers), true);
+  assert.equal(Object.isFrozen(serviceTier), true);
+  assert.equal(Object.isFrozen(defaultModel), true);
+  assert.equal(Object.isFrozen(model), true);
+  assert.equal(Object.isFrozen(model.serviceTiers[0]), true);
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentModel(
+      invalid, 'Model', 'Description', ['medium'], 'medium', true,
+    ));
+    assert.throws(() => new sdk.AgentModel(
+      'model', 'Model', 'Description', ['medium'], invalid, true,
+    ));
+    if (invalid !== null && invalid !== undefined) {
+      assert.throws(() => new sdk.AgentModel(
+        'model', 'Model', 'Description', ['medium'], 'medium', true, [], invalid,
+      ));
+    }
+  }
+  assert.throws(() => new sdk.AgentModel(
+    'model', 'Model', 'Description', ['medium', 1], 'medium', true,
+  ));
+  assert.throws(() => new sdk.AgentModel(
+    'model', 'Model', 'Description', ['medium'], 'medium', 'true',
+  ));
+  assert.throws(() => new sdk.AgentModel(
+    'model', 'Model', 'Description', ['medium'], 'medium', true, [{}],
+  ));
+  const sparseEfforts = new Array(1);
+  assert.throws(() => new sdk.AgentModel(
+    'model', 'Model', 'Description', sparseEfforts, 'medium', true,
+  ));
+  const revokedServiceTiers = Proxy.revocable([serviceTier], {});
+  revokedServiceTiers.revoke();
+  assert.throws(() => new sdk.AgentModel(
+    'model', 'Model', 'Description', ['medium'], 'medium', true, revokedServiceTiers.proxy,
+  ));
+
   const assertImmutableOwnGraph = (root) => {
     const seen = new Set();
     const visit = (value) => {
@@ -813,6 +889,9 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     proxyConnector,
     conversationSummary,
     permissiveConversationSummary,
+    serviceTier,
+    defaultModel,
+    model,
   ]) {
     assertImmutableOwnGraph(snapshot);
   }
@@ -874,7 +953,24 @@ test('cjs exposes the exact Node-only SDK surface', () => {
       ['conversationId', 'title', 'updatedAtEpochSeconds'],
     );
   }
-
+  for (const tier of [serviceTier, ...model.serviceTiers]) {
+    assert.deepEqual(Reflect.ownKeys(tier), ['id', 'name', 'description']);
+  }
+  for (const candidate of [defaultModel, model]) {
+    assert.deepEqual(
+      Reflect.ownKeys(candidate),
+      [
+        'id',
+        'displayName',
+        'description',
+        'supportedEfforts',
+        'defaultEffort',
+        'isDefault',
+        'serviceTiers',
+        'defaultServiceTier',
+      ],
+    );
+  }
   const browserImport = childProcess.spawnSync(
     process.execPath,
     ['-e', "global.process=undefined;require('@codex-agent-labs/codex-agent')"],

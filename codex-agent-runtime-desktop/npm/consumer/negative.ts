@@ -12,9 +12,12 @@ import {
   AgentMcpEnvironmentVariable,
   AgentMcpOauthConfiguration,
   AgentMcpToolConfiguration,
+  AgentModel,
   AgentPlanProgress,
   AgentPlanStep,
+  AgentServiceTier,
   CodexConnectors,
+  CodexModels,
   codexApprovalPresetDisplayName,
 } from "@codex-agent-labs/codex-agent";
 import type { CodexAgent, CodexTurnProgress } from "@codex-agent-labs/codex-agent";
@@ -180,6 +183,49 @@ conversationSummary.title = "Changed";
 // @ts-expect-error Immutable conversation-summary timestamps are readonly.
 conversationSummary.updatedAtEpochSeconds = 2n;
 
+const serviceTier = new AgentServiceTier("fast", "Fast", "Lowest latency");
+// @ts-expect-error Service-tier descriptions are required.
+new AgentServiceTier("fast", "Fast");
+// @ts-expect-error Service-tier IDs are strings.
+new AgentServiceTier(1, "Fast", "Lowest latency");
+// @ts-expect-error Immutable service-tier IDs are readonly.
+serviceTier.id = "changed";
+
+const model = new AgentModel(
+  "model",
+  "Model",
+  "Description",
+  ["medium"],
+  "medium",
+  true,
+  [serviceTier],
+  "fast",
+);
+// @ts-expect-error Model default status is required.
+new AgentModel("model", "Model", "Description", ["medium"], "medium");
+// @ts-expect-error Model IDs are strings.
+new AgentModel(1, "Model", "Description", ["medium"], "medium", true);
+// @ts-expect-error Supported model efforts are strings.
+new AgentModel("model", "Model", "Description", [1], "medium", true);
+// @ts-expect-error Model default status is boolean.
+new AgentModel("model", "Model", "Description", ["medium"], "medium", "yes");
+// @ts-expect-error Model service tiers must use the canonical value shape.
+new AgentModel("model", "Model", "Description", ["medium"], "medium", true, ["fast"]);
+// @ts-expect-error Default service-tier IDs are nullable strings.
+new AgentModel("model", "Model", "Description", ["medium"], "medium", true, [], 1);
+// @ts-expect-error Immutable model IDs are readonly.
+model.id = "changed";
+// @ts-expect-error Immutable model effort collections cannot be replaced.
+model.supportedEfforts = [];
+// @ts-expect-error Model effort collections are readonly.
+model.supportedEfforts.push("high");
+// @ts-expect-error Model service-tier collections are readonly.
+model.serviceTiers.push(serviceTier);
+
+declare const models: CodexModels;
+// @ts-expect-error Model controllers are created by an Agent.
+new CodexModels();
+
 declare const connectors: CodexConnectors;
 // @ts-expect-error Connector controllers are created by an Agent.
 new CodexConnectors();
@@ -204,6 +250,32 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   const listedConnectors = await connectors.list();
   // @ts-expect-error Connector list results are readonly.
   listedConnectors.push(connector);
+  // @ts-expect-error Model controllers are owned by the Agent.
+  agent.models = models;
+  // @ts-expect-error Model-list signals must be AbortSignal values.
+  await models.list({});
+  const listedModels = await models.list();
+  // @ts-expect-error Model-list results are readonly.
+  listedModels.push(model);
+  // @ts-expect-error Model resolution remains a closed typed domain.
+  await models.resolve("latest");
+  // @ts-expect-error Model-resolution signals must be AbortSignal values.
+  await models.resolve("preferred", {});
+  // @ts-expect-error Effort resolution requires a canonical model.
+  await models.resolveEffort({});
+  // @ts-expect-error Effort resolution remains a closed typed domain.
+  await models.resolveEffort(model, "latest");
+  // @ts-expect-error Effort-resolution signals must be AbortSignal values.
+  await models.resolveEffort(model, "preferred", {});
+  // @ts-expect-error Service-tier resolution requires a canonical model.
+  await models.resolveServiceTier({});
+  // @ts-expect-error Service-tier resolution remains a closed typed domain.
+  await models.resolveServiceTier(model, "latest");
+  // @ts-expect-error Service-tier-resolution signals must be AbortSignal values.
+  await models.resolveServiceTier(model, "preferred", {});
+  // @ts-expect-error Service-tier resolution may return no tier.
+  const resolvedServiceTier: AgentServiceTier = await models.resolveServiceTier(model);
+  void resolvedServiceTier;
   // @ts-expect-error Conversation IDs are strings.
   await agent.rename(1, "Renamed conversation");
   // @ts-expect-error Conversation names are strings.

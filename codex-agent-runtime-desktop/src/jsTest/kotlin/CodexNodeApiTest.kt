@@ -78,6 +78,90 @@ class CodexNodeApiTest {
         }.exceptionOrNull()
         assertEquals("id must be a string", invalidConnector?.message)
 
+        val sourceEfforts = arrayOf("low", "medium")
+        val sourceTiers = arrayOf(AgentServiceTier("fast", "Fast", "Faster responses"))
+        val localModel = AgentModel(
+            id = "model-local",
+            displayName = "Local model",
+            description = "Local description",
+            supportedEfforts = sourceEfforts,
+            defaultEffort = "medium",
+            isDefault = true,
+            serviceTiers = sourceTiers,
+            defaultServiceTier = "fast",
+        )
+        sourceEfforts[0] = "changed"
+        sourceTiers[0] = AgentServiceTier("changed", "Changed", "Changed")
+        assertEquals("model-local", localModel.id)
+        assertEquals("Local model", localModel.displayName)
+        assertEquals("Local description", localModel.description)
+        assertEquals(listOf("low", "medium"), localModel.supportedEfforts.toList())
+        assertEquals("medium", localModel.defaultEffort)
+        assertTrue(localModel.isDefault)
+        assertEquals(listOf("fast"), localModel.serviceTiers.map(AgentServiceTier::id))
+        assertEquals("Fast", localModel.serviceTiers.single().name)
+        assertEquals("Faster responses", localModel.serviceTiers.single().description)
+        assertEquals("fast", localModel.defaultServiceTier)
+        assertTrue(isFrozen(localModel))
+        assertTrue(isFrozen(localModel.supportedEfforts))
+        assertTrue(isFrozen(localModel.serviceTiers))
+        assertTrue(isFrozen(localModel.serviceTiers.single()))
+        assertEquals(0, enumerablePropertyCount(localModel))
+        assertEquals(0, enumerablePropertyCount(localModel.serviceTiers.single()))
+
+        val defaultModel = AgentModel("model-defaults", "Defaults", "", emptyArray(), "medium", false)
+        assertTrue(defaultModel.serviceTiers.isEmpty())
+        assertNull(defaultModel.defaultServiceTier)
+        val invalidTier = runCatching {
+            AgentServiceTier(js("({})").unsafeCast<String>(), "Invalid", "Invalid")
+        }.exceptionOrNull()
+        assertEquals("id must be a string", invalidTier?.message)
+        val nonArrayEfforts = runCatching {
+            AgentModel(
+                "invalid",
+                "Invalid",
+                "Invalid",
+                js("({})").unsafeCast<Array<String>>(),
+                "medium",
+                false,
+            )
+        }.exceptionOrNull()
+        assertEquals("supportedEfforts must be an array", nonArrayEfforts?.message)
+        val sparseEfforts = runCatching {
+            AgentModel(
+                "invalid",
+                "Invalid",
+                "Invalid",
+                js("new Array(1)").unsafeCast<Array<String>>(),
+                "medium",
+                false,
+            )
+        }.exceptionOrNull()
+        assertEquals("supportedEfforts must not contain sparse elements", sparseEfforts?.message)
+        val hostileEffort = runCatching {
+            AgentModel(
+                "invalid",
+                "Invalid",
+                "Invalid",
+                arrayOf(js("({})").unsafeCast<String>()),
+                "medium",
+                false,
+            )
+        }.exceptionOrNull()
+        assertEquals("supportedEfforts[0] must be a string", hostileEffort?.message)
+        val sparseTiers = runCatching {
+            AgentModel(
+                "invalid",
+                "Invalid",
+                "Invalid",
+                emptyArray(),
+                "medium",
+                false,
+                js("new Array(1)").unsafeCast<Array<AgentServiceTier>>(),
+            )
+        }.exceptionOrNull()
+        assertEquals("serviceTiers must not contain sparse elements", sparseTiers?.message)
+
         val localSummary = AgentConversationSummary(
             conversationId = "thread-local",
             title = "Local title",
@@ -336,6 +420,9 @@ class CodexNodeApiTest {
             assertSame(connectors, shellAgent.connectors)
             assertTrue(connectors.isAvailable)
             assertEquals(0, enumerablePropertyCount(connectors))
+            val models = shellAgent.models
+            assertSame(models, shellAgent.models)
+            assertEquals(0, enumerablePropertyCount(models))
 
             val controller = js("new AbortController()")
             controller.abort()
@@ -350,6 +437,118 @@ class CodexNodeApiTest {
             }.exceptionOrNull()
             assertEquals("AbortError", abortedConversationList?.asDynamic()?.name as String)
             assertTrue(shellRuntime.threadListRequests.isEmpty())
+
+            listOf(
+                runCatching {
+                    models.list(controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    models.resolve(signal = controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    models.resolveEffort(
+                        localModel,
+                        signal = controller.signal.unsafeCast<AbortSignal>(),
+                    ).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    models.resolveServiceTier(
+                        localModel,
+                        signal = controller.signal.unsafeCast<AbortSignal>(),
+                    ).await()
+                }.exceptionOrNull(),
+            ).forEach { aborted ->
+                assertEquals("AbortError", aborted?.asDynamic()?.name as String)
+            }
+            assertTrue(shellRuntime.modelListRequests.isEmpty())
+            assertTrue(shellRuntime.configReadRequests.isEmpty())
+
+            val listedModels = models.list().await()
+            assertEquals(
+                listOf("model-first", "model-default", "model-preferred"),
+                listedModels.map(AgentModel::id),
+            )
+            assertEquals(2, shellRuntime.modelListRequests.size)
+            assertNull(shellRuntime.modelListRequests[0]["cursor"])
+            assertNull(shellRuntime.modelListRequests[0]["includeHidden"])
+            assertNull(shellRuntime.modelListRequests[0]["limit"])
+            assertEquals(
+                "models-page-2",
+                shellRuntime.modelListRequests[1]["cursor"]?.jsonPrimitive?.content,
+            )
+            val preferredModel = listedModels.last()
+            assertEquals("Preferred model", preferredModel.displayName)
+            assertEquals("Preferred model description", preferredModel.description)
+            assertEquals(listOf("low", "medium"), preferredModel.supportedEfforts.toList())
+            assertEquals("medium", preferredModel.defaultEffort)
+            assertFalse(preferredModel.isDefault)
+            assertEquals(listOf("fast", "free"), preferredModel.serviceTiers.map(AgentServiceTier::id))
+            assertEquals("Fast", preferredModel.serviceTiers[0].name)
+            assertEquals("Faster responses", preferredModel.serviceTiers[0].description)
+            assertEquals("free", preferredModel.defaultServiceTier)
+            assertTrue(isFrozen(listedModels))
+            listedModels.forEach { model ->
+                assertTrue(isFrozen(model))
+                assertTrue(isFrozen(model.supportedEfforts))
+                assertTrue(isFrozen(model.serviceTiers))
+                model.serviceTiers.forEach { assertTrue(isFrozen(it)) }
+            }
+
+            assertEquals("model-preferred", models.resolve().await().id)
+            assertEquals("model-default", models.resolve("default").await().id)
+            assertEquals("model-first", models.resolve("first").await().id)
+            assertEquals("low", models.resolveEffort(preferredModel).await())
+            assertEquals("medium", models.resolveEffort(preferredModel, "default").await())
+            assertEquals("low", models.resolveEffort(preferredModel, "first").await())
+            assertEquals("fast", models.resolveServiceTier(preferredModel).await()?.id)
+            assertEquals("free", models.resolveServiceTier(preferredModel, "default").await()?.id)
+            assertEquals("fast", models.resolveServiceTier(preferredModel, "first").await()?.id)
+            assertNull(models.resolveServiceTier(listedModels.first(), "first").await())
+            assertEquals(3, shellRuntime.configReadRequests.size)
+            assertTrue(shellRuntime.configReadRequests.all { request ->
+                request["cwd"]?.jsonPrimitive?.content == "/workspace" && request["includeLayers"] == null
+            })
+
+            shellRuntime.modelPreference = "missing"
+            shellRuntime.effortPreference = "missing"
+            shellRuntime.serviceTierPreference = "missing"
+            assertEquals("model-default", models.resolve().await().id)
+            assertEquals("medium", models.resolveEffort(preferredModel).await())
+            assertEquals("free", models.resolveServiceTier(preferredModel).await()?.id)
+            assertEquals(6, shellRuntime.configReadRequests.size)
+            shellRuntime.modelPreference = "model-preferred"
+            shellRuntime.effortPreference = "low"
+            shellRuntime.serviceTierPreference = "fast"
+
+            val requestsBeforeInvalidResolution = shellRuntime.requestMethods.size
+            val invalidResolution = runCatching { models.resolve("sometimes").await() }.exceptionOrNull()
+            assertEquals("Unknown agent resolution: sometimes", invalidResolution?.message)
+            val hostileResolution = runCatching {
+                models.resolve(js("({})").unsafeCast<String>()).await()
+            }.exceptionOrNull()
+            assertEquals("resolution must be a string", hostileResolution?.message)
+            assertEquals(requestsBeforeInvalidResolution, shellRuntime.requestMethods.size)
+
+            shellRuntime.failNextModelList = true
+            val modelListFailure = runCatching { models.list().await() }.exceptionOrNull()
+            val modelListError = assertIs<CodexError>(modelListFailure)
+            assertEquals("model_list_failed", modelListError.code)
+            assertEquals("model list denied", modelListError.message)
+            assertTrue(modelListError.recoverable)
+
+            shellRuntime.failNextConfigRead = true
+            val preferenceFailure = runCatching { models.resolveEffort(preferredModel).await() }.exceptionOrNull()
+            val preferenceError = assertIs<CodexError>(preferenceFailure)
+            assertEquals("model_preferences_failed", preferenceError.code)
+            assertEquals("model preferences denied", preferenceError.message)
+            assertTrue(preferenceError.recoverable)
+            assertEquals(7, shellRuntime.configReadRequests.size)
+
+            val configReadsBeforeEmptyCatalog = shellRuntime.configReadRequests.size
+            shellRuntime.emptyNextModelList = true
+            val emptyCatalog = runCatching { models.resolve().await() }.exceptionOrNull()
+            assertEquals("No Codex models are available", emptyCatalog?.message)
+            assertEquals(configReadsBeforeEmptyCatalog, shellRuntime.configReadRequests.size)
 
             val conversationSummaries = shellAgent.listConversations().await()
             assertEquals(
@@ -471,8 +670,10 @@ class CodexNodeApiTest {
             assertEquals("closed", shellConversation.state.status)
             shellHost.close().await()
             assertSame(connectors, shellAgent.connectors)
+            assertSame(models, shellAgent.models)
             val requestsBeforeClosedList = shellRuntime.appListRequests.size
             val conversationRequestsBeforeClosedList = shellRuntime.threadListRequests.size
+            val modelRequestsBeforeClosedList = shellRuntime.modelListRequests.size
             val closedList = runCatching { connectors.list().await() }.exceptionOrNull()
             assertEquals("IllegalStateException", closedList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedList.message)
@@ -481,6 +682,16 @@ class CodexNodeApiTest {
             assertEquals("IllegalStateException", closedConversationList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedConversationList.message)
             assertEquals(conversationRequestsBeforeClosedList, shellRuntime.threadListRequests.size)
+            val closedModelList = runCatching { models.list().await() }.exceptionOrNull()
+            assertEquals("IllegalStateException", closedModelList?.asDynamic()?.name as String)
+            assertEquals("Codex agent is closed", closedModelList.message)
+            assertEquals(modelRequestsBeforeClosedList, shellRuntime.modelListRequests.size)
+            val requestsBeforePureResolution = shellRuntime.requestMethods.size
+            assertEquals("medium", models.resolveEffort(preferredModel, "default").await())
+            assertEquals("low", models.resolveEffort(preferredModel, "first").await())
+            assertEquals("free", models.resolveServiceTier(preferredModel, "default").await()?.id)
+            assertEquals("fast", models.resolveServiceTier(preferredModel, "first").await()?.id)
+            assertEquals(requestsBeforePureResolution, shellRuntime.requestMethods.size)
         } finally {
             shellHost.close().await()
         }
@@ -834,6 +1045,14 @@ private class ApiTestRuntime : CodexRuntime {
     var failNextThreadList: Boolean = false
     val appListRequests: MutableList<JsonObject> = mutableListOf()
     var failNextAppList: Boolean = false
+    val modelListRequests: MutableList<JsonObject> = mutableListOf()
+    val configReadRequests: MutableList<JsonObject> = mutableListOf()
+    var failNextModelList: Boolean = false
+    var failNextConfigRead: Boolean = false
+    var emptyNextModelList: Boolean = false
+    var modelPreference: String = "model-preferred"
+    var effortPreference: String = "low"
+    var serviceTierPreference: String = "fast"
     private var loginAttempts: Int = 0
 
     suspend fun completeTurn(): Unit = notify("turn/completed", buildJsonObject {
@@ -920,6 +1139,43 @@ private class ApiTestRuntime : CodexRuntime {
                         if (it == JsonNull) null else it.jsonPrimitive.content
                     }
                     respond(id, appListResult(cursor))
+                }
+            }
+            "model/list" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                modelListRequests += params
+                when {
+                    failNextModelList -> {
+                        failNextModelList = false
+                        respondError(id, "model list denied")
+                    }
+                    emptyNextModelList -> {
+                        emptyNextModelList = false
+                        respond(id, buildJsonObject { putJsonArray("data") {} })
+                    }
+                    else -> {
+                        val cursor = params["cursor"]?.let {
+                            if (it == JsonNull) null else it.jsonPrimitive.content
+                        }
+                        respond(id, modelListResult(cursor))
+                    }
+                }
+            }
+            "config/read" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                configReadRequests += params
+                if (failNextConfigRead) {
+                    failNextConfigRead = false
+                    respondError(id, "model preferences denied")
+                } else {
+                    respond(id, buildJsonObject {
+                        putJsonObject("config") {
+                            put("model", modelPreference)
+                            put("model_reasoning_effort", effortPreference)
+                            put("service_tier", serviceTierPreference)
+                        }
+                        putJsonObject("origins") {}
+                    })
                 }
             }
             "thread/name/set" -> {
@@ -1105,6 +1361,86 @@ private fun appListResult(cursor: String?): JsonObject = buildJsonObject {
         }
     }
     if (cursor == null) put("nextCursor", "page-2")
+}
+
+private fun modelListResult(cursor: String?): JsonObject = buildJsonObject {
+    putJsonArray("data") {
+        when (cursor) {
+            null -> add(modelResult(
+                catalogId = "catalog-first",
+                runtimeId = "model-first",
+                displayName = "First model",
+                supportedEfforts = listOf("low", "medium"),
+                defaultEffort = "medium",
+                isDefault = false,
+            ))
+            "models-page-2" -> {
+                add(modelResult(
+                    catalogId = "catalog-default",
+                    runtimeId = "model-default",
+                    displayName = "Default model",
+                    supportedEfforts = listOf("medium", "high"),
+                    defaultEffort = "medium",
+                    isDefault = true,
+                ))
+                add(modelResult(
+                    catalogId = "catalog-preferred",
+                    runtimeId = "model-preferred",
+                    displayName = "Preferred model",
+                    supportedEfforts = listOf("low", "medium"),
+                    defaultEffort = "medium",
+                    isDefault = false,
+                    serviceTiers = listOf(
+                        Triple("fast", "Fast", "Faster responses"),
+                        Triple("free", "Free", "Default responses"),
+                        Triple("fast", "Ignored duplicate", "Ignored duplicate"),
+                    ),
+                    defaultServiceTier = "free",
+                ))
+            }
+            else -> error("Unexpected model/list cursor: $cursor")
+        }
+    }
+    if (cursor == null) put("nextCursor", "models-page-2")
+}
+
+private fun modelResult(
+    catalogId: String,
+    runtimeId: String,
+    displayName: String,
+    supportedEfforts: List<String>,
+    defaultEffort: String,
+    isDefault: Boolean,
+    serviceTiers: List<Triple<String, String, String>> = emptyList(),
+    defaultServiceTier: String? = null,
+): JsonObject = buildJsonObject {
+    put("id", catalogId)
+    put("model", runtimeId)
+    put("displayName", displayName)
+    put("description", "$displayName description")
+    put("hidden", false)
+    put("isDefault", isDefault)
+    put("defaultReasoningEffort", defaultEffort)
+    putJsonArray("supportedReasoningEfforts") {
+        supportedEfforts.forEach { effort ->
+            add(buildJsonObject {
+                put("reasoningEffort", effort)
+                put("description", "$effort reasoning")
+            })
+        }
+    }
+    if (serviceTiers.isNotEmpty()) {
+        putJsonArray("serviceTiers") {
+            serviceTiers.forEach { (id, name, description) ->
+                add(buildJsonObject {
+                    put("id", id)
+                    put("name", name)
+                    put("description", description)
+                })
+            }
+        }
+    }
+    if (defaultServiceTier != null) put("defaultServiceTier", defaultServiceTier)
 }
 
 private fun threadListResult(cursor: String?): JsonObject = buildJsonObject {

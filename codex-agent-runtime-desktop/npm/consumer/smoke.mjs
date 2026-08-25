@@ -356,6 +356,8 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.deepEqual(esmExports, commonJsExports);
   assert.equal(sdk.AgentConnector, commonJsSdk.AgentConnector);
   assert.equal(sdk.AgentConversationSummary, commonJsSdk.AgentConversationSummary);
+  assert.equal(sdk.AgentModel, commonJsSdk.AgentModel);
+  assert.equal(sdk.AgentServiceTier, commonJsSdk.AgentServiceTier);
   assert.equal(sdk.AgentElicitationValidation, commonJsSdk.AgentElicitationValidation);
   assert.equal(sdk.AgentElicitationValidationIssue, commonJsSdk.AgentElicitationValidationIssue);
   assert.equal(sdk.AgentFormOption, commonJsSdk.AgentFormOption);
@@ -376,6 +378,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
     commonJsSdk.CodexAgent.prototype.listConversations,
   );
   assert.equal(sdk.CodexConnectors, commonJsSdk.CodexConnectors);
+  assert.equal(sdk.CodexModels, commonJsSdk.CodexModels);
   assert.equal(
     sdk.codexApprovalPresetDisplayName,
     commonJsSdk.codexApprovalPresetDisplayName,
@@ -478,6 +481,18 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexConnectors#list:(forceReload?: boolean, signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentConnector>>',
   ), 'Connector listing must preserve reload, cancellation, and immutable result semantics');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentModel#(id: string, displayName: string, description: string, supportedEfforts: ReadonlyArray<string>, defaultEffort: string, isDefault: boolean, serviceTiers?: ReadonlyArray<AgentServiceTier>, defaultServiceTier?: string | null | undefined)',
+  ), 'Models must preserve canonical defaults and immutable nested collections');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:CodexAgent#models:CodexModels',
+  ), 'Model controller ownership must be discoverable from an Agent');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexModels#list:(signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentModel>>',
+  ), 'Model listing must preserve cancellation and immutable result semantics');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexModels#resolveServiceTier:(model: AgentModel, resolution?: AgentResolution, signal?: AbortSignal | null | undefined): Promise<AgentServiceTier | null | undefined>',
+  ), 'Service-tier resolution must preserve typed resolution, cancellation, and nullability');
   assert.ok(compilerApi.publicSymbols.includes(
     'getter:CodexAgent#authentication:CodexAuthentication',
   ), 'Agent authentication ownership must be discoverable');

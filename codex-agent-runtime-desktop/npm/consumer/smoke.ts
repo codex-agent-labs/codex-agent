@@ -12,8 +12,10 @@ import {
   AgentMcpEnvironmentVariable,
   AgentMcpOauthConfiguration,
   AgentMcpToolConfiguration,
+  AgentModel,
   AgentPlanProgress,
   AgentPlanStep,
+  AgentServiceTier,
   CodexAgent,
   CodexAuthentication,
   CodexAuthenticationState,
@@ -23,6 +25,7 @@ import {
   CodexFailure,
   CodexHost,
   CodexHostState,
+  CodexModels,
   CodexObservation,
   codexApprovalPresetDisplayName,
   createCodexHost,
@@ -156,6 +159,36 @@ const conversationSummary = new AgentConversationSummary("conversation", "Conver
 const summaryConversationId: string = conversationSummary.conversationId;
 const summaryTitle: string = conversationSummary.title;
 const summaryUpdatedAtEpochSeconds: bigint = conversationSummary.updatedAtEpochSeconds;
+const serviceTier: AgentServiceTier = new AgentServiceTier("fast", "Fast", "Lowest latency");
+const serviceTierId: string = serviceTier.id;
+const serviceTierName: string = serviceTier.name;
+const serviceTierDescription: string = serviceTier.description;
+const defaultModel: AgentModel = new AgentModel(
+  "model-default",
+  "Default model",
+  "Default description",
+  ["medium"],
+  "medium",
+  true,
+);
+const model: AgentModel = new AgentModel(
+  "model",
+  "Model",
+  "Description",
+  ["low", "medium", "high"],
+  "medium",
+  false,
+  [serviceTier],
+  "fast",
+);
+const modelId: string = model.id;
+const modelDisplayName: string = model.displayName;
+const modelDescription: string = model.description;
+const modelSupportedEfforts: ReadonlyArray<string> = model.supportedEfforts;
+const modelDefaultEffort: string = model.defaultEffort;
+const modelIsDefault: boolean = model.isDefault;
+const modelServiceTiers: ReadonlyArray<AgentServiceTier> = model.serviceTiers;
+const modelDefaultServiceTier: string | null | undefined = model.defaultServiceTier;
 const enumEvidence: {
   approvalDecision: AgentApprovalDecision;
   capability: AgentCapability;
@@ -232,6 +265,16 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   const connectorsAvailable: boolean = connectors.isAvailable;
   const listedConnectors: ReadonlyArray<AgentConnector> = await connectors.list();
   await connectors.list(true, signal);
+  const models: CodexModels = agent.models;
+  const listedModels: ReadonlyArray<AgentModel> = await models.list();
+  await models.list(signal);
+  const resolvedModel: AgentModel = await models.resolve();
+  await models.resolve("default", signal);
+  const resolvedEffort: string = await models.resolveEffort(model);
+  await models.resolveEffort(model, "first", signal);
+  const resolvedServiceTier: AgentServiceTier | null | undefined =
+    await models.resolveServiceTier(model);
+  await models.resolveServiceTier(model, "preferred", signal);
   const activeConversation: CodexConversation | null | undefined = agent.activeConversation;
   agent.observeActiveConversation(
     (next: CodexConversation | null | undefined): void => void next,
@@ -297,6 +340,10 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     authenticationStatus,
     connectorsAvailable,
     listedConnectors,
+    listedModels,
+    resolvedModel,
+    resolvedEffort,
+    resolvedServiceTier,
     isAuthenticated,
     isAuthenticating,
     pendingSignInUrl,
@@ -369,6 +416,18 @@ void [
   summaryConversationId,
   summaryTitle,
   summaryUpdatedAtEpochSeconds,
+  serviceTierId,
+  serviceTierName,
+  serviceTierDescription,
+  defaultModel,
+  modelId,
+  modelDisplayName,
+  modelDescription,
+  modelSupportedEfforts,
+  modelDefaultEffort,
+  modelIsDefault,
+  modelServiceTiers,
+  modelDefaultServiceTier,
 ];
 void enumEvidence;
 void useAgent;

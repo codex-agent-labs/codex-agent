@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 208-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 229-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(208, evidence.packedApi.publicSymbols.size)
+        assertEquals(229, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -565,6 +565,282 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         val futureEvidence = derive(keys + future, symbols, references = references)
         assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
         assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey == future })
+    }
+
+    @Test
+    fun `models family projects eighteen generic capabilities and rejects drift`() {
+        val serviceTierConstructor = canonicalConstructor(
+            "AgentServiceTier",
+            listOf("kotlin/String!!", "kotlin/String!!", "kotlin/String!!"),
+        )
+        val serviceTierDescription = canonicalProperty("AgentServiceTier", "description", "kotlin/String!!")
+        val serviceTierId = canonicalProperty("AgentServiceTier", "id", "kotlin/String!!")
+        val serviceTierName = canonicalProperty("AgentServiceTier", "name", "kotlin/String!!")
+        val modelConstructor = canonicalConstructor(
+            "AgentModel",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+                "kotlin/String!!",
+                "kotlin/Boolean!!",
+                "kotlin.collections/List<INVARIANT:example/AgentServiceTier!!>!!",
+                "kotlin/String?",
+            ),
+            defaultParameterIndices = setOf(6, 7),
+        )
+        val modelDefaultEffort = canonicalProperty("AgentModel", "defaultEffort", "kotlin/String!!")
+        val modelDefaultServiceTier = canonicalProperty("AgentModel", "defaultServiceTier", "kotlin/String?")
+        val modelDescription = canonicalProperty("AgentModel", "description", "kotlin/String!!")
+        val modelDisplayName = canonicalProperty("AgentModel", "displayName", "kotlin/String!!")
+        val modelId = canonicalProperty("AgentModel", "id", "kotlin/String!!")
+        val modelIsDefault = canonicalProperty("AgentModel", "isDefault", "kotlin/Boolean!!")
+        val modelServiceTiers = canonicalProperty(
+            "AgentModel",
+            "serviceTiers",
+            "kotlin.collections/List<INVARIANT:example/AgentServiceTier!!>!!",
+        )
+        val modelSupportedEfforts = canonicalProperty(
+            "AgentModel",
+            "supportedEfforts",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        )
+        val agentModels = canonicalProperty("CodexAgent", "models", "example/CodexModels!!")
+        val list = canonicalFunction(
+            "CodexModels",
+            "list",
+            returnType = "kotlin.collections/List<INVARIANT:example/AgentModel!!>!!",
+            suspendFunction = true,
+        )
+        val resolve = canonicalFunction(
+            "CodexModels",
+            "resolve",
+            returnType = "example/AgentModel!!",
+            suspendFunction = true,
+            parameters = listOf("example/AgentResolution!!"),
+            defaultParameterIndices = setOf(0),
+        )
+        val resolveEffort = canonicalFunction(
+            "CodexModels",
+            "resolveEffort",
+            returnType = "kotlin/String!!",
+            suspendFunction = true,
+            parameters = listOf("example/AgentModel!!", "example/AgentResolution!!"),
+            defaultParameterIndices = setOf(1),
+        )
+        val resolveServiceTier = canonicalFunction(
+            "CodexModels",
+            "resolveServiceTier",
+            returnType = "example/AgentServiceTier?",
+            suspendFunction = true,
+            parameters = listOf("example/AgentModel!!", "example/AgentResolution!!"),
+            defaultParameterIndices = setOf(1),
+        )
+        val keys = listOf(
+            serviceTierConstructor,
+            serviceTierDescription,
+            serviceTierId,
+            serviceTierName,
+            modelConstructor,
+            modelDefaultEffort,
+            modelDefaultServiceTier,
+            modelDescription,
+            modelDisplayName,
+            modelId,
+            modelIsDefault,
+            modelServiceTiers,
+            modelSupportedEfforts,
+            agentModels,
+            list,
+            resolve,
+            resolveEffort,
+            resolveServiceTier,
+        ).sorted()
+        val modelSymbols = modelPublicSymbols()
+        val modelConstructorSymbol = modelSymbols.single { it.startsWith("constructor:AgentModel#") }
+        val serviceTierConstructorSymbol =
+            modelSymbols.single { it.startsWith("constructor:AgentServiceTier#") }
+        val listSymbol = modelSymbols.single { it.startsWith("method:CodexModels#list:") }
+        val resolveSymbol = modelSymbols.single { it.startsWith("method:CodexModels#resolve:") }
+        val resolveEffortSymbol = modelSymbols.single { it.startsWith("method:CodexModels#resolveEffort:") }
+        val resolveServiceTierSymbol =
+            modelSymbols.single { it.startsWith("method:CodexModels#resolveServiceTier:") }
+        val symbols = (modelSymbols + "class:CodexAgent").sorted()
+        val references = modelSymbols
+        val evidence = derive(keys, symbols, references = references)
+        val claims = evidence.projectionClaims.associate { it.capabilityKey to it.publicSymbols }
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(18, keys.size)
+        assertEquals(18, evidence.projectionClaims.size)
+        assertEquals(21, references.size)
+        assertEquals(229, 208 + modelSymbols.size)
+        assertEquals(182, 161 + references.size)
+        assertEquals(references, evidence.packedApi.referencedSymbols)
+        assertEquals(
+            mapOf(
+                serviceTierConstructor to listOf(serviceTierConstructorSymbol),
+                serviceTierDescription to listOf("getter:AgentServiceTier#description:string"),
+                serviceTierId to listOf("getter:AgentServiceTier#id:string"),
+                serviceTierName to listOf("getter:AgentServiceTier#name:string"),
+                modelConstructor to listOf(modelConstructorSymbol),
+                modelDefaultEffort to listOf("getter:AgentModel#defaultEffort:string"),
+                modelDefaultServiceTier to
+                    listOf("getter:AgentModel#defaultServiceTier:string | null | undefined"),
+                modelDescription to listOf("getter:AgentModel#description:string"),
+                modelDisplayName to listOf("getter:AgentModel#displayName:string"),
+                modelId to listOf("getter:AgentModel#id:string"),
+                modelIsDefault to listOf("getter:AgentModel#isDefault:boolean"),
+                modelServiceTiers to listOf("getter:AgentModel#serviceTiers:ReadonlyArray<AgentServiceTier>"),
+                modelSupportedEfforts to listOf("getter:AgentModel#supportedEfforts:ReadonlyArray<string>"),
+                agentModels to listOf("getter:CodexAgent#models:CodexModels"),
+                list to listOf(listSymbol),
+                resolve to listOf(resolveSymbol),
+                resolveEffort to listOf(resolveEffortSymbol),
+                resolveServiceTier to listOf(resolveServiceTierSymbol),
+            ),
+            claims,
+        )
+        assertTrue(claims.values.all { it.size == 1 })
+        assertEquals(265, 247 + claims.size)
+        assertEquals(279, 297 - claims.size)
+        assertEquals(556, 265 + 12 + 279)
+        val completedGapOwners = setOf("AgentModel", "AgentServiceTier", "CodexModels")
+        assertEquals(58, 61 - completedGapOwners.size)
+        assertTrue(evidence.projectionClaims.filter { "|owner=example/CodexModels|" in it.capabilityKey }.all {
+            it.sharedScenarios.toSet() ==
+                setOf(CrossLanguageBindingScenario.ASYNC_SUCCESS, CrossLanguageBindingScenario.ASYNC_FAILURE)
+        })
+        assertTrue(evidence.projectionClaims.filterNot { "|owner=example/CodexModels|" in it.capabilityKey }.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
+
+        listOf(
+            serviceTierConstructor to serviceTierConstructorSymbol.replace("description: string", "description: number"),
+            serviceTierDescription to "getter:AgentServiceTier#description:number",
+            serviceTierId to "getter:AgentServiceTier#id:number",
+            serviceTierName to "getter:AgentServiceTier#name:number",
+            modelConstructor to modelConstructorSymbol.replace("ReadonlyArray<string>", "Array<string>"),
+            modelDefaultEffort to "getter:AgentModel#defaultEffort:number",
+            modelDefaultServiceTier to "getter:AgentModel#defaultServiceTier:string",
+            modelDescription to "getter:AgentModel#description:number",
+            modelDisplayName to "getter:AgentModel#displayName:number",
+            modelId to "getter:AgentModel#id:number",
+            modelIsDefault to "getter:AgentModel#isDefault:string",
+            modelServiceTiers to "getter:AgentModel#serviceTiers:Array<AgentServiceTier>",
+            modelSupportedEfforts to "getter:AgentModel#supportedEfforts:Array<string>",
+            agentModels to "getter:CodexAgent#models:string",
+            list to listSymbol.replace("ReadonlyArray<AgentModel>", "Array<AgentModel>"),
+            resolve to resolveSymbol.replace("resolution?: AgentResolution", "resolution: AgentResolution"),
+            resolveEffort to resolveEffortSymbol.replace("Promise<string>", "Promise<number>"),
+            resolveServiceTier to resolveServiceTierSymbol.replace(
+                "AgentServiceTier | null | undefined",
+                "AgentServiceTier",
+            ),
+        ).forEach { (key, drifted) ->
+            val exact = claims.getValue(key).single()
+            val driftedSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val driftedReferences = references.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(keys, driftedSymbols, references = driftedReferences)
+            assertTrue(key in drift.missingCapabilityKeys, "Accepted drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        listOf(
+            Triple(
+                modelConstructor,
+                modelConstructorSymbol,
+                modelConstructorSymbol.replace("serviceTiers?:", "serviceTiers:"),
+            ),
+            Triple(
+                modelConstructor,
+                modelConstructorSymbol,
+                modelConstructorSymbol.replace(
+                    "defaultServiceTier?: string | null | undefined",
+                    "defaultServiceTier?: string",
+                ),
+            ),
+            Triple(
+                modelConstructor,
+                modelConstructorSymbol,
+                modelConstructorSymbol.replace("defaultServiceTier?:", "defaultServiceTier:"),
+            ),
+            Triple(
+                modelId,
+                "getter:AgentModel#id:string",
+                "property:AgentModel#id:string",
+            ),
+            Triple(
+                resolveEffort,
+                resolveEffortSymbol,
+                resolveEffortSymbol.replace("resolution?: AgentResolution", "resolution: AgentResolution"),
+            ),
+            Triple(
+                resolveEffort,
+                resolveEffortSymbol,
+                resolveEffortSymbol.replace("model: AgentModel", "model: string"),
+            ),
+            Triple(
+                resolveServiceTier,
+                resolveServiceTierSymbol,
+                resolveServiceTierSymbol.replace("resolution?: AgentResolution", "resolution: AgentResolution"),
+            ),
+            Triple(
+                resolveServiceTier,
+                resolveServiceTierSymbol,
+                resolveServiceTierSymbol.replace("AbortSignal | null | undefined", "string"),
+            ),
+        ).forEach { (key, exact, drifted) ->
+            val drift = derive(
+                keys,
+                symbols.map { if (it == exact) drifted else it }.sorted(),
+                references = references.map { if (it == exact) drifted else it }.sorted(),
+            )
+            assertTrue(key in drift.missingCapabilityKeys, "Accepted shape drift: $drifted")
+        }
+
+        val futureOwnerSymbol = resolveServiceTierSymbol.replace("CodexModels#", "FutureModels#")
+        val futureOwner = derive(
+            keys,
+            (symbols.map { if (it == resolveServiceTierSymbol) futureOwnerSymbol else it } +
+                "class:FutureModels").sorted(),
+            references = references.map {
+                if (it == resolveServiceTierSymbol) futureOwnerSymbol else it
+            }.sorted(),
+        )
+        assertTrue(resolveServiceTier in futureOwner.missingCapabilityKeys)
+
+        listOf(
+            serviceTierConstructorSymbol to serviceTierConstructor,
+            modelConstructorSymbol to modelConstructor,
+            listSymbol to list,
+            resolveSymbol to resolve,
+            resolveEffortSymbol to resolveEffort,
+            resolveServiceTierSymbol to resolveServiceTier,
+        ).forEach { (symbol, key) ->
+            val unreferenced = derive(keys, symbols, references = references - symbol)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && key in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        listOf(
+            list to listSymbol.replace("(signal?: AbortSignal | null | undefined)", "()"),
+            resolve to resolveSymbol.replace(", signal?: AbortSignal | null | undefined", ""),
+            resolveEffort to resolveEffortSymbol.replace(", signal?: AbortSignal | null | undefined", ""),
+            resolveServiceTier to
+                resolveServiceTierSymbol.replace(", signal?: AbortSignal | null | undefined", ""),
+        ).forEach { (key, overload) ->
+            val ambiguous = derive(
+                keys,
+                (symbols + overload).sorted(),
+                references = (references + overload).sorted(),
+            )
+            assertTrue(ambiguous.errors.any { "Ambiguous" in it && key in it })
+            assertTrue(ambiguous.projectionClaims.none { it.capabilityKey == key })
+        }
     }
 
     @Test
@@ -2769,10 +3045,21 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         })
     }
 
-    private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
+    private fun currentPublicSymbols(): List<String> {
+        val baseline = CURRENT_PUBLIC_SYMBOLS.lineSequence()
+            .filter(String::isNotBlank)
+            .toList()
+            .also { assertEquals(208, it.size) }
+        return (baseline + modelPublicSymbols()).sorted().also { assertEquals(229, it.size) }
+    }
+
+    private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(208, it.size) }
+        .also {
+            assertEquals(21, it.size)
+            assertEquals(it.sorted(), it)
+        }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -3052,6 +3339,30 @@ type:CodexHostStatus:"new" | "restoring" | "workspace_required" | "preparing" | 
 type:CodexMessageRole:"assistant" | "user"
 type:CodexWorkActivity:"running_command" | "writing_files"
 type:CodexWorkspaceSelectionReason:"access_revoked" | "invalid_selection" | "not_found" | "not_selected"
+""".trimIndent()
+
+        private val MODELS_PUBLIC_SYMBOLS = """
+class:AgentModel
+class:AgentServiceTier
+class:CodexModels
+constructor:AgentModel#(id: string, displayName: string, description: string, supportedEfforts: ReadonlyArray<string>, defaultEffort: string, isDefault: boolean, serviceTiers?: ReadonlyArray<AgentServiceTier>, defaultServiceTier?: string | null | undefined)
+constructor:AgentServiceTier#(id: string, name: string, description: string)
+getter:AgentModel#defaultEffort:string
+getter:AgentModel#defaultServiceTier:string | null | undefined
+getter:AgentModel#description:string
+getter:AgentModel#displayName:string
+getter:AgentModel#id:string
+getter:AgentModel#isDefault:boolean
+getter:AgentModel#serviceTiers:ReadonlyArray<AgentServiceTier>
+getter:AgentModel#supportedEfforts:ReadonlyArray<string>
+getter:AgentServiceTier#description:string
+getter:AgentServiceTier#id:string
+getter:AgentServiceTier#name:string
+getter:CodexAgent#models:CodexModels
+method:CodexModels#list:(signal?: AbortSignal | null | undefined): Promise<ReadonlyArray<AgentModel>>
+method:CodexModels#resolve:(resolution?: AgentResolution, signal?: AbortSignal | null | undefined): Promise<AgentModel>
+method:CodexModels#resolveEffort:(model: AgentModel, resolution?: AgentResolution, signal?: AbortSignal | null | undefined): Promise<string>
+method:CodexModels#resolveServiceTier:(model: AgentModel, resolution?: AgentResolution, signal?: AbortSignal | null | undefined): Promise<AgentServiceTier | null | undefined>
 """.trimIndent()
     }
 }

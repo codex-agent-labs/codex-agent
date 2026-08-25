@@ -23,9 +23,12 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentMcpOauthConfiguration a
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolApproval as CoreMcpToolApproval
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolConfiguration as CoreMcpToolConfiguration
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
+import io.github.codex_agent_labs.codexmobile.agent.AgentModel as CoreModel
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanProgress as CorePlanProgress
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanStep
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStepStatus as CorePlanStepStatus
+import io.github.codex_agent_labs.codexmobile.agent.AgentResolution as CoreResolution
+import io.github.codex_agent_labs.codexmobile.agent.AgentServiceTier as CoreServiceTier
 import io.github.codex_agent_labs.codexmobile.agent.AgentTurnProgress as CoreTurnProgress
 import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication as CoreAuthentication
@@ -36,6 +39,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexConversation as CoreCon
 import io.github.codex_agent_labs.codexmobile.agent.CodexFailure as CoreFailure
 import io.github.codex_agent_labs.codexmobile.agent.CodexHost as CoreHost
 import io.github.codex_agent_labs.codexmobile.agent.CodexHostState as CoreHostState
+import io.github.codex_agent_labs.codexmobile.agent.CodexModels as CoreModels
 import io.github.codex_agent_labs.codexmobile.agent.CodexOperationException
 import io.github.codex_agent_labs.codexmobile.agent.CodexPathWorkspaceSelection
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace as CoreWorkspace
@@ -376,6 +380,76 @@ public class AgentConnector public constructor(
     }
 }
 
+/** Immutable model service-tier metadata. */
+@JsExport
+public class AgentServiceTier public constructor(
+    id: String,
+    name: String,
+    description: String,
+) {
+    public val id: String
+    public val name: String
+    public val description: String
+
+    init {
+        val core = canonicalServiceTier(
+            id = id,
+            name = name,
+            description = description,
+        )
+        this.id = core.id
+        this.name = core.name
+        this.description = core.description
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable model metadata. */
+@JsExport
+public class AgentModel public constructor(
+    id: String,
+    displayName: String,
+    description: String,
+    supportedEfforts: Array<String>,
+    defaultEffort: String,
+    isDefault: Boolean,
+    serviceTiers: Array<AgentServiceTier> = emptyArray(),
+    defaultServiceTier: String? = null,
+) {
+    public val id: String
+    public val displayName: String
+    public val description: String
+    public val supportedEfforts: Array<String>
+    public val defaultEffort: String
+    public val isDefault: Boolean
+    public val serviceTiers: Array<AgentServiceTier>
+    public val defaultServiceTier: String?
+
+    init {
+        val core = canonicalModel(
+            id = id,
+            displayName = displayName,
+            description = description,
+            supportedEfforts = supportedEfforts,
+            defaultEffort = defaultEffort,
+            isDefault = isDefault,
+            serviceTiers = serviceTiers,
+            defaultServiceTier = defaultServiceTier,
+        )
+        this.id = core.id
+        this.displayName = core.displayName
+        this.description = core.description
+        this.supportedEfforts = core.supportedEfforts.toTypedArray()
+        this.defaultEffort = core.defaultEffort
+        this.isDefault = core.isDefault
+        this.serviceTiers = core.serviceTiers.map(CoreServiceTier::project).toTypedArray()
+        this.defaultServiceTier = core.defaultServiceTier
+        freezeSnapshot(this.supportedEfforts)
+        freezeSnapshot(this.serviceTiers)
+        freezeSnapshot(this)
+    }
+}
+
 /** Immutable conversation-history summary. */
 @JsExport
 public class AgentConversationSummary public constructor(
@@ -710,6 +784,8 @@ public class CodexAgent internal constructor(
         CodexAuthentication(host, core, core.authentication, jsApiToken)
     private val connectorsProjection: CodexConnectors =
         CodexConnectors(host, core.connectors, jsApiToken)
+    private val modelsProjection: CodexModels =
+        CodexModels(host, core.models, jsApiToken)
     private var cachedCoreConversation: CoreConversation? = null
     private var cachedConversation: CodexConversation? = null
 
@@ -726,6 +802,9 @@ public class CodexAgent internal constructor(
 
     public val connectors: CodexConnectors
         get() = connectorsProjection
+
+    public val models: CodexModels
+        get() = modelsProjection
 
     public val activeConversation: CodexConversation?
         get() = if (host.owns(core)) core.conversations.active.value?.let(::wrapConversation) else null
@@ -820,6 +899,50 @@ public class CodexConnectors internal constructor(
             .toTypedArray()
         freezeSnapshot(connectors)
         connectors
+    }
+}
+
+/** Agent-owned model catalog and preference resolver. */
+@JsExport
+public class CodexModels internal constructor(
+    private val host: CodexHost,
+    private val core: CoreModels,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex model catalogs are created by an Agent" }
+        hideBackingFields(this)
+    }
+
+    public fun list(
+        signal: AbortSignal? = null,
+    ): Promise<Array<AgentModel>> = host.operationScope().codexPromise(signal) {
+        val models = core.list().map(CoreModel::project).toTypedArray()
+        freezeSnapshot(models)
+        models
+    }
+
+    public fun resolve(
+        resolution: String = "preferred",
+        signal: AbortSignal? = null,
+    ): Promise<AgentModel> = host.operationScope().codexPromise(signal) {
+        core.resolve(resolution.toCoreResolution()).project()
+    }
+
+    public fun resolveEffort(
+        model: AgentModel,
+        resolution: String = "preferred",
+        signal: AbortSignal? = null,
+    ): Promise<String> = modelResolutionScope(host, resolution).codexPromise(signal) {
+        core.resolveEffort(model.canonicalCopy(), resolution.toCoreResolution())
+    }
+
+    public fun resolveServiceTier(
+        model: AgentModel,
+        resolution: String = "preferred",
+        signal: AbortSignal? = null,
+    ): Promise<AgentServiceTier?> = modelResolutionScope(host, resolution).codexPromise(signal) {
+        core.resolveServiceTier(model.canonicalCopy(), resolution.toCoreResolution())?.project()
     }
 }
 
@@ -948,6 +1071,12 @@ private fun String?.toApprovalPreset(): AgentApprovalPreset {
         ?: throw IllegalArgumentException("Unknown approval preset: $this")
 }
 
+private fun String.toCoreResolution(): CoreResolution {
+    val value = requireJavaScriptString("resolution")
+    return CoreResolution.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown agent resolution: $value")
+}
+
 private fun String?.toAuthenticationMethod(apiKey: String?): CoreAuthenticationMethod = when (this) {
     null, "chatgpt_browser" -> {
         require(apiKey == null) { "apiKey is only valid for api_key authentication" }
@@ -1038,6 +1167,65 @@ private fun requireOwnJavaScriptArrayIndex(value: Any?, index: Int, name: String
     require(js("Object.hasOwn(value, index)") as Boolean) { "$name must not contain sparse elements" }
 }
 
+private fun canonicalServiceTier(
+    id: String,
+    name: String,
+    description: String,
+): CoreServiceTier = CoreServiceTier(
+    id = id.requireJavaScriptString("id"),
+    name = name.requireJavaScriptString("name"),
+    description = description.requireJavaScriptString("description"),
+)
+
+private fun canonicalModel(
+    id: String,
+    displayName: String,
+    description: String,
+    supportedEfforts: Array<String>,
+    defaultEffort: String,
+    isDefault: Boolean,
+    serviceTiers: Array<AgentServiceTier>,
+    defaultServiceTier: String?,
+): CoreModel {
+    requireJavaScriptArray(supportedEfforts, "supportedEfforts")
+    requireJavaScriptArray(serviceTiers, "serviceTiers")
+    return CoreModel(
+        id = id.requireJavaScriptString("id"),
+        displayName = displayName.requireJavaScriptString("displayName"),
+        description = description.requireJavaScriptString("description"),
+        supportedEfforts = List(supportedEfforts.size) { index ->
+            requireOwnJavaScriptArrayIndex(supportedEfforts, index, "supportedEfforts")
+            supportedEfforts[index].requireJavaScriptString("supportedEfforts[$index]")
+        },
+        defaultEffort = defaultEffort.requireJavaScriptString("defaultEffort"),
+        isDefault = isDefault.requireJavaScriptBoolean("isDefault"),
+        serviceTiers = List(serviceTiers.size) { index ->
+            requireOwnJavaScriptArrayIndex(serviceTiers, index, "serviceTiers")
+            val tier = serviceTiers[index]
+            canonicalServiceTier(tier.id, tier.name, tier.description)
+        },
+        defaultServiceTier = defaultServiceTier.requireJavaScriptNullableString("defaultServiceTier"),
+    )
+}
+
+private fun AgentModel.canonicalCopy(): CoreModel = canonicalModel(
+    id = id,
+    displayName = displayName,
+    description = description,
+    supportedEfforts = supportedEfforts,
+    defaultEffort = defaultEffort,
+    isDefault = isDefault,
+    serviceTiers = serviceTiers,
+    defaultServiceTier = defaultServiceTier,
+)
+
+private fun modelResolutionScope(host: CodexHost, resolution: String): CoroutineScope =
+    if (jsTypeOf(resolution) == "string" && (resolution == "default" || resolution == "first")) {
+        CoroutineScope(Dispatchers.Default)
+    } else {
+        host.operationScope()
+    }
+
 private fun CoreWorkspace.project(): CodexWorkspace = CodexWorkspace(path, displayName)
 
 private fun CoreConnector.project(): AgentConnector = AgentConnector(
@@ -1048,6 +1236,19 @@ private fun CoreConnector.project(): AgentConnector = AgentConnector(
     isAccessible = isAccessible,
     isEnabled = isEnabled,
     pluginNames = pluginNames.toTypedArray(),
+)
+
+private fun CoreServiceTier.project(): AgentServiceTier = AgentServiceTier(id, name, description)
+
+private fun CoreModel.project(): AgentModel = AgentModel(
+    id = id,
+    displayName = displayName,
+    description = description,
+    supportedEfforts = supportedEfforts.toTypedArray(),
+    defaultEffort = defaultEffort,
+    isDefault = isDefault,
+    serviceTiers = serviceTiers.map(CoreServiceTier::project).toTypedArray(),
+    defaultServiceTier = defaultServiceTier,
 )
 
 private fun CoreConversationSummary.project(): AgentConversationSummary = AgentConversationSummary(

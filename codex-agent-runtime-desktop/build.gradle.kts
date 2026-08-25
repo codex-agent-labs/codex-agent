@@ -182,6 +182,37 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get title(): string;
     get updatedAtEpochSeconds(): bigint;
 }"""
+        val expectedAgentServiceTierDeclaration =
+            """export declare class AgentServiceTier {
+    constructor(id: string, name: string, description: string);
+    get id(): string;
+    get name(): string;
+    get description(): string;
+}"""
+        val rawAgentModelDeclaration =
+            """export declare class AgentModel {
+    constructor(id: string, displayName: string, description: string, supportedEfforts: Array<string>, defaultEffort: string, isDefault: boolean, serviceTiers?: Array<AgentServiceTier>, defaultServiceTier?: Nullable<string>);
+    get id(): string;
+    get displayName(): string;
+    get description(): string;
+    get supportedEfforts(): Array<string>;
+    get defaultEffort(): string;
+    get isDefault(): boolean;
+    get serviceTiers(): Array<AgentServiceTier>;
+    get defaultServiceTier(): Nullable<string>;
+}"""
+        val reviewedAgentModelDeclaration =
+            """export declare class AgentModel {
+    constructor(id: string, displayName: string, description: string, supportedEfforts: ReadonlyArray<string>, defaultEffort: string, isDefault: boolean, serviceTiers?: ReadonlyArray<AgentServiceTier>, defaultServiceTier?: Nullable<string>);
+    get id(): string;
+    get displayName(): string;
+    get description(): string;
+    get supportedEfforts(): ReadonlyArray<string>;
+    get defaultEffort(): string;
+    get isDefault(): boolean;
+    get serviceTiers(): ReadonlyArray<AgentServiceTier>;
+    get defaultServiceTier(): Nullable<string>;
+}"""
         val rawListConversationsDeclaration =
             "    listConversations(signal?: Nullable<AbortSignal>): Promise<Array<AgentConversationSummary>>;"
         val reviewedListConversationsDeclaration =
@@ -198,6 +229,22 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get isAvailable(): boolean;
     list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConnector>>;
 }"""
+        val rawCodexModelsDeclaration =
+            """export declare class CodexModels {
+    private constructor();
+    list(signal?: Nullable<AbortSignal>): Promise<Array<AgentModel>>;
+    resolve(resolution?: string, signal?: Nullable<AbortSignal>): Promise<AgentModel>;
+    resolveEffort(model: AgentModel, resolution?: string, signal?: Nullable<AbortSignal>): Promise<string>;
+    resolveServiceTier(model: AgentModel, resolution?: string, signal?: Nullable<AbortSignal>): Promise<Nullable<AgentServiceTier>>;
+}"""
+        val reviewedCodexModelsDeclaration =
+            """export declare class CodexModels {
+    private constructor();
+    list(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentModel>>;
+    resolve(resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<AgentModel>;
+    resolveEffort(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<string>;
+    resolveServiceTier(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<Nullable<AgentServiceTier>>;
+}"""
         check(actual.lineSequence().count { it == rawApprovalPresetDisplayNameDeclaration } == 1) {
             "Unexpected codexApprovalPresetDisplayName TypeScript declaration"
         }
@@ -207,11 +254,23 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(expectedAgentConversationSummaryDeclaration).size == 2) {
             "Unexpected AgentConversationSummary TypeScript declaration"
         }
+        check(actual.split(expectedAgentServiceTierDeclaration).size == 2) {
+            "Unexpected AgentServiceTier TypeScript declaration"
+        }
+        check(actual.split(rawAgentModelDeclaration).size == 2) {
+            "Unexpected AgentModel TypeScript declaration"
+        }
         check(actual.lineSequence().count { it == rawListConversationsDeclaration } == 1) {
             "Unexpected CodexAgent.listConversations TypeScript declaration"
         }
         check(actual.split(rawCodexConnectorsDeclaration).size == 2) {
             "Unexpected CodexConnectors TypeScript declaration"
+        }
+        check(actual.lineSequence().count { it == "    get models(): CodexModels;" } == 1) {
+            "Unexpected CodexAgent.models TypeScript declaration"
+        }
+        check(actual.split(rawCodexModelsDeclaration).size == 2) {
+            "Unexpected CodexModels TypeScript declaration"
         }
         actual = actual.replace(
             "type Nullable<T> = T | null | undefined\n",
@@ -227,11 +286,17 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
             rawAgentConnectorDeclaration,
             reviewedAgentConnectorDeclaration,
         ).replace(
+            rawAgentModelDeclaration,
+            reviewedAgentModelDeclaration,
+        ).replace(
             rawListConversationsDeclaration,
             reviewedListConversationsDeclaration,
         ).replace(
             rawCodexConnectorsDeclaration,
             reviewedCodexConnectorsDeclaration,
+        ).replace(
+            rawCodexModelsDeclaration,
+            reviewedCodexModelsDeclaration,
         ).replace(
             """export declare class AgentFormTextListValue {
     constructor(value: Array<string>);

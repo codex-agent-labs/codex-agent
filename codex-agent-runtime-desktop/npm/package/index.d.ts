@@ -106,6 +106,23 @@ export declare class AgentConnector {
     get isEnabled(): boolean;
     get pluginNames(): ReadonlyArray<string>;
 }
+export declare class AgentServiceTier {
+    constructor(id: string, name: string, description: string);
+    get id(): string;
+    get name(): string;
+    get description(): string;
+}
+export declare class AgentModel {
+    constructor(id: string, displayName: string, description: string, supportedEfforts: ReadonlyArray<string>, defaultEffort: string, isDefault: boolean, serviceTiers?: ReadonlyArray<AgentServiceTier>, defaultServiceTier?: Nullable<string>);
+    get id(): string;
+    get displayName(): string;
+    get description(): string;
+    get supportedEfforts(): ReadonlyArray<string>;
+    get defaultEffort(): string;
+    get isDefault(): boolean;
+    get serviceTiers(): ReadonlyArray<AgentServiceTier>;
+    get defaultServiceTier(): Nullable<string>;
+}
 export declare class AgentConversationSummary {
     constructor(conversationId: string, title: string, updatedAtEpochSeconds: bigint);
     get conversationId(): string;
@@ -212,6 +229,7 @@ export declare class CodexAgent {
     get workspace(): CodexWorkspace;
     get authentication(): CodexAuthentication;
     get connectors(): CodexConnectors;
+    get models(): CodexModels;
     get activeConversation(): Nullable<CodexConversation>;
     listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;
     openConversation(conversationId?: Nullable<string>, approvalPreset?: Nullable<CodexApprovalPreset>, serviceTier?: Nullable<string>, signal?: Nullable<AbortSignal>): Promise<CodexConversation>;
@@ -223,6 +241,13 @@ export declare class CodexConnectors {
     private constructor();
     get isAvailable(): boolean;
     list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConnector>>;
+}
+export declare class CodexModels {
+    private constructor();
+    list(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentModel>>;
+    resolve(resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<AgentModel>;
+    resolveEffort(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<string>;
+    resolveServiceTier(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<Nullable<AgentServiceTier>>;
 }
 export declare class CodexAuthentication {
     private constructor();
