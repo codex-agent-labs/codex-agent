@@ -9,6 +9,10 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidation a
 import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationIssue as CoreElicitationValidationIssue
 import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationReason as CoreElicitationValidationReason
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormOption as CoreFormOption
+import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.BooleanValue as CoreFormBooleanValue
+import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Number as CoreFormNumberValue
+import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Text as CoreFormTextValue
+import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.TextList as CoreFormTextListValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanProgress as CorePlanProgress
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanStep
@@ -73,6 +77,61 @@ public class AgentFormOption public constructor(
         this.value = core.value
         this.title = core.title
         this.description = core.description
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable text form value. */
+@JsExport
+public class AgentFormTextValue public constructor(value: String) {
+    public val value: String
+
+    init {
+        val core = CoreFormTextValue(value.requireJavaScriptString("value"))
+        this.value = core.value
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable number form value. */
+@JsExport
+public class AgentFormNumberValue public constructor(value: Double) {
+    public val value: Double
+
+    init {
+        val core = CoreFormNumberValue(value.requireJavaScriptNumber("value"))
+        this.value = core.value
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable boolean form value. */
+@JsExport
+public class AgentFormBooleanValue public constructor(value: Boolean) {
+    public val value: Boolean
+
+    init {
+        val core = CoreFormBooleanValue(value.requireJavaScriptBoolean("value"))
+        this.value = core.value
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable text-list form value. */
+@JsExport
+public class AgentFormTextListValue public constructor(value: Array<String>) {
+    public val value: Array<String>
+
+    init {
+        requireJavaScriptArray(value, "value")
+        val core = CoreFormTextListValue(
+            List(value.size) { index ->
+                requireOwnJavaScriptArrayIndex(value, index, "value")
+                value[index].requireJavaScriptString("value[$index]")
+            },
+        )
+        this.value = core.value.toTypedArray()
+        freezeSnapshot(this.value)
         freezeSnapshot(this)
     }
 }
@@ -668,8 +727,22 @@ private fun String?.requireJavaScriptNullableString(name: String): String? {
     return this
 }
 
+private fun Double.requireJavaScriptNumber(name: String): Double {
+    require(jsTypeOf(this) == "number") { "$name must be a number" }
+    return this
+}
+
+private fun Boolean.requireJavaScriptBoolean(name: String): Boolean {
+    require(jsTypeOf(this) == "boolean") { "$name must be a boolean" }
+    return this
+}
+
 private fun requireJavaScriptArray(value: Any?, name: String): Unit {
     require(js("Array.isArray(value)") as Boolean) { "$name must be an array" }
+}
+
+private fun requireOwnJavaScriptArrayIndex(value: Any?, index: Int, name: String): Unit {
+    require(js("Object.hasOwn(value, index)") as Boolean) { "$name must not contain sparse elements" }
 }
 
 private fun CoreWorkspace.project(): CodexWorkspace = CodexWorkspace(path, displayName)

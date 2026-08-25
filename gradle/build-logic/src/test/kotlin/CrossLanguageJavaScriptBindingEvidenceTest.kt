@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 153-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 165-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(153, evidence.packedApi.publicSymbols.size)
+        assertEquals(165, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -507,6 +507,107 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             assertTrue(key in drift.missingCapabilityKeys, "$key accepted drift: $drifted")
             assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
         }
+    }
+
+    @Test
+    fun `nested form values map four finite owners and reject signature drift`() {
+        val shapes = listOf(
+            Triple("AgentFormValue.BooleanValue", "AgentFormBooleanValue", "kotlin/Boolean!!" to "boolean"),
+            Triple("AgentFormValue.Number", "AgentFormNumberValue", "kotlin/Double!!" to "number"),
+            Triple("AgentFormValue.Text", "AgentFormTextValue", "kotlin/String!!" to "string"),
+            Triple(
+                "AgentFormValue.TextList",
+                "AgentFormTextListValue",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!" to "ReadonlyArray<string>",
+            ),
+        )
+        val keys = shapes.flatMap { (canonicalOwner, _, types) ->
+            listOf(
+                canonicalConstructor(canonicalOwner, listOf(types.first)),
+                canonicalProperty(canonicalOwner, "value", types.first),
+            )
+        }.sorted()
+        val symbols = shapes.flatMap { (_, javascriptOwner, types) ->
+            listOf(
+                "class:$javascriptOwner",
+                "constructor:$javascriptOwner#(value: ${types.second})",
+                "getter:$javascriptOwner#value:${types.second}",
+            )
+        }.sorted()
+        val evidence = derive(keys, symbols)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertEquals(8, evidence.projectionClaims.size)
+        assertTrue(evidence.projectionClaims.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
+        assertEquals(symbols, evidence.packedApi.publicSymbols)
+        assertEquals(symbols, evidence.packedApi.referencedSymbols)
+        assertTrue(symbols.none { it == "class:AgentFormValue" || it.startsWith("type:AgentFormValue:") })
+
+        val wrongTypes = mapOf(
+            "boolean" to "string",
+            "number" to "string",
+            "string" to "number",
+            "ReadonlyArray<string>" to "ReadonlyArray<number>",
+        )
+        val driftCases = shapes.flatMap { (canonicalOwner, javascriptOwner, types) ->
+            val wrongType = checkNotNull(wrongTypes[types.second])
+            listOf(
+                Triple(
+                    canonicalConstructor(canonicalOwner, listOf(types.first)),
+                    "constructor:$javascriptOwner#(value: ${types.second})",
+                    "constructor:$javascriptOwner#(value: $wrongType)",
+                ),
+                Triple(
+                    canonicalProperty(canonicalOwner, "value", types.first),
+                    "getter:$javascriptOwner#value:${types.second}",
+                    "getter:$javascriptOwner#value:$wrongType",
+                ),
+            )
+        } + listOf(
+            Triple(
+                canonicalConstructor(
+                    "AgentFormValue.TextList",
+                    listOf("kotlin.collections/List<INVARIANT:kotlin/String!!>!!"),
+                ),
+                "constructor:AgentFormTextListValue#(value: ReadonlyArray<string>)",
+                "constructor:AgentFormTextListValue#(value: Array<string>)",
+            ),
+            Triple(
+                canonicalProperty(
+                    "AgentFormValue.TextList",
+                    "value",
+                    "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+                ),
+                "getter:AgentFormTextListValue#value:ReadonlyArray<string>",
+                "getter:AgentFormTextListValue#value:Array<string>",
+            ),
+        )
+        driftCases.forEach { (key, exact, drifted) ->
+            val drift = derive(keys, symbols.map { if (it == exact) drifted else it }.sorted())
+            assertTrue(key in drift.missingCapabilityKeys, "$key accepted drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        val unreferenced = derive(
+            keys,
+            symbols,
+            references = symbols.filterNot { it.startsWith("constructor:AgentForm") },
+        )
+        assertEquals(4, unreferenced.errors.count { "Unreferenced exceptional" in it })
+        assertEquals(4, unreferenced.projectionClaims.size)
+
+        listOf("AgentFormValue.Other" to "AgentFormOtherValue", "Other.Text" to "AgentFormTextValue")
+            .forEach { (canonicalOwner, javascriptOwner) ->
+                val key = canonicalConstructor(canonicalOwner, listOf("kotlin/String!!"))
+                val unrelated = listOf(
+                    "class:$javascriptOwner",
+                    "constructor:$javascriptOwner#(value: string)",
+                )
+                assertTrue(key in derive(listOf(key), unrelated.sorted()).missingCapabilityKeys)
+            }
     }
 
     @Test
@@ -1357,7 +1458,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(153, it.size) }
+        .also { assertEquals(165, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -1417,7 +1518,11 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         private val CURRENT_PUBLIC_SYMBOLS = """
 class:AgentElicitationValidation
 class:AgentElicitationValidationIssue
+class:AgentFormBooleanValue
+class:AgentFormNumberValue
 class:AgentFormOption
+class:AgentFormTextListValue
+class:AgentFormTextValue
 class:AgentPlanProgress
 class:AgentPlanStep
 class:CodexAgent
@@ -1435,7 +1540,11 @@ class:CodexTurnProgress
 class:CodexWorkspace
 constructor:AgentElicitationValidation#(issues: ReadonlyArray<AgentElicitationValidationIssue>)
 constructor:AgentElicitationValidationIssue#(fieldName: string, reason: AgentElicitationValidationReason)
+constructor:AgentFormBooleanValue#(value: boolean)
+constructor:AgentFormNumberValue#(value: number)
 constructor:AgentFormOption#(value: string, title?: string, description?: string | null | undefined)
+constructor:AgentFormTextListValue#(value: ReadonlyArray<string>)
+constructor:AgentFormTextValue#(value: string)
 constructor:AgentPlanProgress#(explanation?: string | null | undefined, steps?: ReadonlyArray<AgentPlanStep>)
 constructor:AgentPlanStep#(text: string, status: AgentPlanStepStatus)
 function:createCodexHost:(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost
@@ -1443,9 +1552,13 @@ getter:AgentElicitationValidation#isValid:boolean
 getter:AgentElicitationValidation#issues:ReadonlyArray<AgentElicitationValidationIssue>
 getter:AgentElicitationValidationIssue#fieldName:string
 getter:AgentElicitationValidationIssue#reason:AgentElicitationValidationReason
+getter:AgentFormBooleanValue#value:boolean
+getter:AgentFormNumberValue#value:number
 getter:AgentFormOption#description:string | null | undefined
 getter:AgentFormOption#title:string
 getter:AgentFormOption#value:string
+getter:AgentFormTextListValue#value:ReadonlyArray<string>
+getter:AgentFormTextValue#value:string
 getter:AgentPlanProgress#explanation:string | null | undefined
 getter:AgentPlanProgress#steps:ReadonlyArray<AgentPlanStep>
 getter:AgentPlanStep#status:AgentPlanStepStatus

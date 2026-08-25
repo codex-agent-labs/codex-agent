@@ -1,7 +1,11 @@
 import {
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
+  AgentFormBooleanValue,
+  AgentFormNumberValue,
   AgentFormOption,
+  AgentFormTextListValue,
+  AgentFormTextValue,
   AgentPlanProgress,
   AgentPlanStep,
   CodexAgent,
@@ -59,6 +63,14 @@ const formOption = new AgentFormOption("value");
 const formOptionValue: string = formOption.value;
 const formOptionTitle: string = formOption.title;
 const formOptionDescription: string | null | undefined = formOption.description;
+const formTextValue = new AgentFormTextValue("text");
+const formText: string = formTextValue.value;
+const formNumberValue = new AgentFormNumberValue(1.5);
+const formNumber: number = formNumberValue.value;
+const formBooleanValue = new AgentFormBooleanValue(true);
+const formBoolean: boolean = formBooleanValue.value;
+const formTextListValue = new AgentFormTextListValue(["first", "second"]);
+const formTextList: ReadonlyArray<string> = formTextListValue.value;
 const validationIssue = new AgentElicitationValidationIssue("field", "missing_required");
 const validationFieldName: string = validationIssue.fieldName;
 const validationReason: AgentElicitationValidationReason = validationIssue.reason;
@@ -238,6 +250,10 @@ void [
   formOptionValue,
   formOptionTitle,
   formOptionDescription,
+  formText,
+  formNumber,
+  formBoolean,
+  formTextList,
   validationFieldName,
   validationReason,
   validationIssues,

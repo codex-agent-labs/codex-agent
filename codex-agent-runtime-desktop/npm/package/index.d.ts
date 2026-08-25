@@ -37,6 +37,22 @@ export declare class AgentFormOption {
     get title(): string;
     get description(): Nullable<string>;
 }
+export declare class AgentFormTextValue {
+    constructor(value: string);
+    get value(): string;
+}
+export declare class AgentFormNumberValue {
+    constructor(value: number);
+    get value(): number;
+}
+export declare class AgentFormBooleanValue {
+    constructor(value: boolean);
+    get value(): boolean;
+}
+export declare class AgentFormTextListValue {
+    constructor(value: ReadonlyArray<string>);
+    get value(): ReadonlyArray<string>;
+}
 export declare class AgentElicitationValidationIssue {
     constructor(fieldName: string, reason: AgentElicitationValidationReason);
     get fieldName(): string;

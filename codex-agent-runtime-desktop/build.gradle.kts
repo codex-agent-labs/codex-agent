@@ -157,6 +157,15 @@ $canonicalEnumDeclarations
 export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code" | "api_key";
 """,
         ).replace(
+            """export declare class AgentFormTextListValue {
+    constructor(value: Array<string>);
+    get value(): Array<string>;
+}""",
+            """export declare class AgentFormTextListValue {
+    constructor(value: ReadonlyArray<string>);
+    get value(): ReadonlyArray<string>;
+}""",
+        ).replace(
             """export declare class AgentElicitationValidationIssue {
     constructor(fieldName: string, reason: string);
     get fieldName(): string;

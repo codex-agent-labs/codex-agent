@@ -1,7 +1,11 @@
 import {
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
+  AgentFormBooleanValue,
+  AgentFormNumberValue,
   AgentFormOption,
+  AgentFormTextListValue,
+  AgentFormTextValue,
   AgentPlanProgress,
   AgentPlanStep,
 } from "@codex-agent-labs/codex-agent";
@@ -14,6 +18,40 @@ option.value = "changed";
 new AgentFormOption("value", null);
 // @ts-expect-error Descriptions are nullable strings, not numbers.
 new AgentFormOption("value", "title", 1);
+
+const textValue = new AgentFormTextValue("text");
+// @ts-expect-error Text form values require strings.
+new AgentFormTextValue(1);
+// @ts-expect-error Text form values require one argument.
+new AgentFormTextValue();
+// @ts-expect-error Immutable text form values are readonly.
+textValue.value = "changed";
+
+const numberValue = new AgentFormNumberValue(1.5);
+// @ts-expect-error Number form values require numbers.
+new AgentFormNumberValue("1.5");
+// @ts-expect-error Number form values require one argument.
+new AgentFormNumberValue();
+// @ts-expect-error Immutable number form values are readonly.
+numberValue.value = 2;
+
+const booleanValue = new AgentFormBooleanValue(true);
+// @ts-expect-error Boolean form values require booleans.
+new AgentFormBooleanValue(1);
+// @ts-expect-error Boolean form values require one argument.
+new AgentFormBooleanValue();
+// @ts-expect-error Immutable boolean form values are readonly.
+booleanValue.value = false;
+
+const textListValue = new AgentFormTextListValue(["first", "second"]);
+// @ts-expect-error Text-list form values require strings.
+new AgentFormTextListValue(["first", 2]);
+// @ts-expect-error Text-list form values require one argument.
+new AgentFormTextListValue();
+// @ts-expect-error Immutable text-list form values are readonly.
+textListValue.value = [];
+// @ts-expect-error Text-list form value elements are readonly.
+textListValue.value.push("third");
 
 const issue = new AgentElicitationValidationIssue("field", "missing_required");
 // @ts-expect-error Validation reasons remain a closed typed domain.

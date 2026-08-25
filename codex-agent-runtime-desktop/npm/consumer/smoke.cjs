@@ -26,7 +26,11 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   for (const constructor of [
     sdk.AgentElicitationValidation,
     sdk.AgentElicitationValidationIssue,
+    sdk.AgentFormBooleanValue,
+    sdk.AgentFormNumberValue,
     sdk.AgentFormOption,
+    sdk.AgentFormTextListValue,
+    sdk.AgentFormTextValue,
     sdk.AgentPlanProgress,
     sdk.AgentPlanStep,
     sdk.CodexAgent,
@@ -59,6 +63,146 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.AgentFormOption({ mutable: true }));
   assert.throws(() => new sdk.AgentFormOption('value', { mutable: true }));
   assert.throws(() => new sdk.AgentFormOption('value', 'title', { mutable: true }));
+
+  const textValue = new sdk.AgentFormTextValue('');
+  assert.equal(textValue.value, '');
+  for (const invalid of [
+    null,
+    undefined,
+    0,
+    -0,
+    NaN,
+    Infinity,
+    -Infinity,
+    false,
+    1n,
+    Symbol('value'),
+    {},
+    [],
+    () => {},
+    new String('value'),
+    new Number(1),
+    new Boolean(true),
+    new Proxy({}, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentFormTextValue(invalid));
+  }
+
+  const numericEdges = [NaN, Infinity, -Infinity, -0, 0, Number.MIN_VALUE, Number.MAX_VALUE];
+  const numberValues = numericEdges.map((value) => new sdk.AgentFormNumberValue(value));
+  numberValues.forEach((numberValue, index) => {
+    assert.equal(Object.is(numberValue.value, numericEdges[index]), true);
+  });
+  for (const invalid of [
+    null,
+    undefined,
+    '',
+    '1',
+    false,
+    true,
+    1n,
+    Symbol('value'),
+    {},
+    [],
+    () => {},
+    new String('1'),
+    new Number(1),
+    new Boolean(false),
+    new Proxy({}, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentFormNumberValue(invalid));
+  }
+
+  const falseValue = new sdk.AgentFormBooleanValue(false);
+  const trueValue = new sdk.AgentFormBooleanValue(true);
+  assert.equal(falseValue.value, false);
+  assert.equal(trueValue.value, true);
+  for (const invalid of [
+    null,
+    undefined,
+    '',
+    'false',
+    0,
+    1,
+    NaN,
+    Infinity,
+    1n,
+    Symbol('value'),
+    {},
+    [],
+    () => {},
+    new String('false'),
+    new Number(0),
+    new Boolean(false),
+    new Proxy({}, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentFormBooleanValue(invalid));
+  }
+
+  const emptyTextListValue = new sdk.AgentFormTextListValue([]);
+  assert.deepEqual(emptyTextListValue.value, []);
+  const sourceTextList = ['', 'duplicate', 'duplicate'];
+  const textListValue = new sdk.AgentFormTextListValue(sourceTextList);
+  assert.notEqual(textListValue.value, sourceTextList);
+  assert.deepEqual(textListValue.value, ['', 'duplicate', 'duplicate']);
+  sourceTextList.splice(0, sourceTextList.length, 'mutated');
+  assert.deepEqual(textListValue.value, ['', 'duplicate', 'duplicate']);
+  const proxyTextListTarget = ['first', 'second'];
+  const proxyTextListInput = new Proxy(proxyTextListTarget, {});
+  const proxyTextListValue = new sdk.AgentFormTextListValue(proxyTextListInput);
+  assert.notEqual(proxyTextListValue.value, proxyTextListInput);
+  assert.notEqual(proxyTextListValue.value, proxyTextListTarget);
+  proxyTextListTarget.reverse();
+  assert.deepEqual(proxyTextListValue.value, ['first', 'second']);
+
+  for (const invalid of [
+    null,
+    undefined,
+    '',
+    0,
+    false,
+    1n,
+    Symbol('value'),
+    {},
+    { 0: 'value', length: 1 },
+    () => {},
+    new String('value'),
+    new Number(1),
+    new Boolean(true),
+    new Proxy({ 0: 'value', length: 1 }, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentFormTextListValue(invalid));
+  }
+  const sparseTextList = new Array(2);
+  sparseTextList[1] = 'value';
+  assert.throws(() => new sdk.AgentFormTextListValue(sparseTextList));
+  const inheritedSparseTextList = new Array(1);
+  Object.setPrototypeOf(inheritedSparseTextList, { 0: 'inherited' });
+  assert.equal(Object.hasOwn(inheritedSparseTextList, 0), false);
+  assert.throws(() => new sdk.AgentFormTextListValue(inheritedSparseTextList));
+  const proxiedSparseTextList = new Proxy(inheritedSparseTextList, {});
+  assert.throws(() => new sdk.AgentFormTextListValue(proxiedSparseTextList));
+  const revokedTextList = Proxy.revocable(['value'], {});
+  revokedTextList.revoke();
+  assert.throws(() => new sdk.AgentFormTextListValue(revokedTextList.proxy));
+  for (const invalid of [
+    null,
+    undefined,
+    0,
+    false,
+    1n,
+    Symbol('value'),
+    {},
+    [],
+    ['nested'],
+    () => {},
+    new String('value'),
+    new Number(1),
+    new Boolean(true),
+    new Proxy({}, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentFormTextListValue([invalid]));
+  }
 
   const firstIssue = new sdk.AgentElicitationValidationIssue('first', 'missing_required');
   const secondIssue = new sdk.AgentElicitationValidationIssue('second', 'invalid_format');
@@ -214,6 +358,13 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   for (const snapshot of [
     option,
     describedOption,
+    textValue,
+    ...numberValues,
+    falseValue,
+    trueValue,
+    emptyTextListValue,
+    textListValue,
+    proxyTextListValue,
     firstIssue,
     secondIssue,
     validation,
@@ -225,6 +376,9 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     proxiedPlan,
   ]) {
     assertImmutableOwnGraph(snapshot);
+  }
+  for (const value of [textValue, ...numberValues, falseValue, trueValue, textListValue]) {
+    assert.deepEqual(Reflect.ownKeys(value), ['value']);
   }
   assert.deepEqual(Reflect.ownKeys(planSteps[0]).sort(), ['status', 'text']);
   assert.deepEqual(Reflect.ownKeys(plan).sort(), ['explanation', 'steps']);
