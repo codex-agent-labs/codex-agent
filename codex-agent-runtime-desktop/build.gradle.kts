@@ -179,6 +179,28 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
     get isValid(): boolean;
 }""",
         ).replace(
+            """export declare class AgentPlanStep {
+    constructor(text: string, status: string);
+    get text(): string;
+    get status(): string;
+}""",
+            """export declare class AgentPlanStep {
+    constructor(text: string, status: AgentPlanStepStatus);
+    get text(): string;
+    get status(): AgentPlanStepStatus;
+}""",
+        ).replace(
+            """export declare class AgentPlanProgress {
+    constructor(explanation?: Nullable<string>, steps?: Array<AgentPlanStep>);
+    get explanation(): Nullable<string>;
+    get steps(): Array<AgentPlanStep>;
+}""",
+            """export declare class AgentPlanProgress {
+    constructor(explanation?: Nullable<string>, steps?: ReadonlyArray<AgentPlanStep>);
+    get explanation(): Nullable<string>;
+    get steps(): ReadonlyArray<AgentPlanStep>;
+}""",
+        ).replace(
             "    get recoverable(): boolean;\n}\nexport declare class CodexWorkspace",
             "    get recoverable(): boolean;\n    readonly cause?: unknown;\n}\nexport declare class CodexWorkspace",
         ).replace(

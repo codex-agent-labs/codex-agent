@@ -2,6 +2,8 @@ import {
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormOption,
+  AgentPlanProgress,
+  AgentPlanStep,
 } from "@codex-agent-labs/codex-agent";
 import type { CodexAgent } from "@codex-agent-labs/codex-agent";
 
@@ -28,6 +30,28 @@ validation.issues.push(issue);
 new AgentElicitationValidation(["missing_required"]);
 // @ts-expect-error Derived validity is readonly.
 validation.isValid = true;
+
+const planStep = new AgentPlanStep("Ship", "in_progress");
+// @ts-expect-error Plan-step statuses remain a closed typed domain.
+new AgentPlanStep("Ship", "running");
+// @ts-expect-error Plan-step status is required.
+new AgentPlanStep("Ship");
+// @ts-expect-error Immutable plan-step text is readonly.
+planStep.text = "Changed";
+// @ts-expect-error Immutable plan-step status is readonly.
+planStep.status = "completed";
+
+const planProgress = new AgentPlanProgress(null, [planStep]);
+// @ts-expect-error Immutable plan progress cannot replace its explanation.
+planProgress.explanation = "Changed";
+// @ts-expect-error Immutable plan progress cannot replace its steps.
+planProgress.steps = [];
+// @ts-expect-error Plan-progress steps are readonly.
+planProgress.steps.push(planStep);
+// @ts-expect-error Plan-progress explanations are nullable strings, not numbers.
+new AgentPlanProgress(1);
+// @ts-expect-error Nested plan-progress values must be canonical plan steps.
+new AgentPlanProgress(null, ["Ship"]);
 
 async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   // @ts-expect-error API-key authentication requires a key.

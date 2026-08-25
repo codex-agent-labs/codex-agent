@@ -2,6 +2,8 @@ import {
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormOption,
+  AgentPlanProgress,
+  AgentPlanStep,
   CodexAgent,
   CodexAuthentication,
   CodexAuthenticationState,
@@ -63,6 +65,13 @@ const validationReason: AgentElicitationValidationReason = validationIssue.reaso
 const validation = new AgentElicitationValidation([validationIssue]);
 const validationIssues: ReadonlyArray<AgentElicitationValidationIssue> = validation.issues;
 const validationIsValid: boolean = validation.isValid;
+const planStep = new AgentPlanStep("Ship", "in_progress");
+const planStepText: string = planStep.text;
+const planStepStatus: AgentPlanStepStatus = planStep.status;
+const emptyPlanProgress = new AgentPlanProgress();
+const planProgress = new AgentPlanProgress(null, [planStep]);
+const planExplanation: string | null | undefined = planProgress.explanation;
+const planSteps: ReadonlyArray<AgentPlanStep> = planProgress.steps;
 const enumEvidence: {
   approvalDecision: AgentApprovalDecision;
   capability: AgentCapability;

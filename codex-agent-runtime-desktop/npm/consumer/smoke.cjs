@@ -27,6 +27,8 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentElicitationValidation,
     sdk.AgentElicitationValidationIssue,
     sdk.AgentFormOption,
+    sdk.AgentPlanProgress,
+    sdk.AgentPlanStep,
     sdk.CodexAgent,
     sdk.CodexAuthentication,
     sdk.CodexAuthenticationState,
@@ -98,6 +100,103 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(proxyValidation.issues[0].fieldName, 'external');
   assert.equal(proxyValidation.issues[0].reason, 'unknown_field');
 
+  const planStatuses = ['pending', 'in_progress', 'completed'];
+  const planSteps = planStatuses.map((status, index) => new sdk.AgentPlanStep(`step-${index}`, status));
+  assert.deepEqual(planSteps.map((step) => step.status), planStatuses);
+  assert.equal(new sdk.AgentPlanStep('', 'pending').text, '');
+  for (const invalidStatus of ['', 'PENDING', 'inProgress', 'unknown']) {
+    assert.throws(() => new sdk.AgentPlanStep('step', invalidStatus));
+  }
+  const invalidRequiredStrings = [
+    null,
+    undefined,
+    0,
+    false,
+    1n,
+    Symbol('value'),
+    {},
+    [],
+    () => {},
+    new String('value'),
+    new Proxy({}, {}),
+  ];
+  for (const invalid of invalidRequiredStrings) {
+    assert.throws(() => new sdk.AgentPlanStep(invalid, 'pending'));
+    assert.throws(() => new sdk.AgentPlanStep('step', invalid));
+  }
+
+  const defaultPlan = new sdk.AgentPlanProgress();
+  assert.equal(defaultPlan.explanation, null);
+  assert.deepEqual(defaultPlan.steps, []);
+  assert.equal(Object.isFrozen(defaultPlan.steps), true);
+  assert.equal(Object.isFrozen(defaultPlan), true);
+  const undefinedPlan = new sdk.AgentPlanProgress(undefined, undefined);
+  assert.equal(undefinedPlan.explanation, null);
+  assert.deepEqual(undefinedPlan.steps, []);
+  const sourcePlanSteps = [planSteps[0], planSteps[2]];
+  const plan = new sdk.AgentPlanProgress('Ready', sourcePlanSteps);
+  assert.notEqual(plan.steps, sourcePlanSteps);
+  assert.notEqual(plan.steps[0], sourcePlanSteps[0]);
+  assert.notEqual(plan.steps[1], sourcePlanSteps[1]);
+  assert.deepEqual(plan.steps.map((step) => [step.text, step.status]), [
+    ['step-0', 'pending'],
+    ['step-2', 'completed'],
+  ]);
+  sourcePlanSteps.reverse();
+  assert.deepEqual(plan.steps.map((step) => step.status), ['pending', 'completed']);
+
+  const invalidPlanExplanations = [
+    0,
+    false,
+    1n,
+    Symbol('value'),
+    {},
+    [],
+    () => {},
+    new String('value'),
+    new Proxy({}, {}),
+  ];
+  for (const invalidExplanation of invalidPlanExplanations) {
+    assert.throws(() => new sdk.AgentPlanProgress(invalidExplanation));
+  }
+  const invalidPlanStepArrays = [
+    null,
+    '',
+    0,
+    false,
+    1n,
+    Symbol('value'),
+    {},
+    { length: 0 },
+    () => {},
+    new Proxy({ length: 0 }, {}),
+  ];
+  for (const invalidSteps of invalidPlanStepArrays) {
+    assert.throws(() => new sdk.AgentPlanProgress(null, invalidSteps));
+  }
+  assert.throws(() => new sdk.AgentPlanProgress(null, new Array(1)));
+  for (const invalidStep of [null, undefined, '', 0, false, 1n, Symbol('value'), {}, [], () => {}]) {
+    assert.throws(() => new sdk.AgentPlanProgress(null, [invalidStep]));
+  }
+  assert.throws(() => new sdk.AgentPlanProgress(null, [{ text: {}, status: 'pending' }]));
+  assert.throws(() => new sdk.AgentPlanProgress(null, [{ text: 'step', status: {} }]));
+  assert.throws(() => new sdk.AgentPlanProgress(null, [{ text: 'step', status: 'unknown' }]));
+  const revokedPlanSteps = Proxy.revocable([], {});
+  revokedPlanSteps.revoke();
+  assert.throws(() => new sdk.AgentPlanProgress(null, revokedPlanSteps.proxy));
+
+  const mutablePlanStep = { text: 'external-step', status: 'in_progress' };
+  const proxiedPlanStep = new Proxy(mutablePlanStep, {});
+  const proxiedPlanArrayTarget = [proxiedPlanStep];
+  const proxiedPlan = new sdk.AgentPlanProgress('Proxy plan', new Proxy(proxiedPlanArrayTarget, {}));
+  assert.notEqual(proxiedPlan.steps, proxiedPlanArrayTarget);
+  assert.notEqual(proxiedPlan.steps[0], proxiedPlanStep);
+  mutablePlanStep.text = 'mutated';
+  mutablePlanStep.status = 'completed';
+  proxiedPlanArrayTarget.length = 0;
+  assert.equal(proxiedPlan.steps[0].text, 'external-step');
+  assert.equal(proxiedPlan.steps[0].status, 'in_progress');
+
   const assertImmutableOwnGraph = (root) => {
     const seen = new Set();
     const visit = (value) => {
@@ -112,9 +211,23 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     };
     visit(root);
   };
-  for (const snapshot of [option, describedOption, firstIssue, secondIssue, validation, proxyValidation]) {
+  for (const snapshot of [
+    option,
+    describedOption,
+    firstIssue,
+    secondIssue,
+    validation,
+    proxyValidation,
+    ...planSteps,
+    defaultPlan,
+    undefinedPlan,
+    plan,
+    proxiedPlan,
+  ]) {
     assertImmutableOwnGraph(snapshot);
   }
+  assert.deepEqual(Reflect.ownKeys(planSteps[0]).sort(), ['status', 'text']);
+  assert.deepEqual(Reflect.ownKeys(plan).sort(), ['explanation', 'steps']);
 
   const browserImport = childProcess.spawnSync(
     process.execPath,

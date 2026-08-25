@@ -3,6 +3,8 @@ import api from './index.cjs';
 export const AgentElicitationValidation = api.AgentElicitationValidation;
 export const AgentElicitationValidationIssue = api.AgentElicitationValidationIssue;
 export const AgentFormOption = api.AgentFormOption;
+export const AgentPlanProgress = api.AgentPlanProgress;
+export const AgentPlanStep = api.AgentPlanStep;
 export const CodexAgent = api.CodexAgent;
 export const CodexAuthentication = api.CodexAuthentication;
 export const CodexAuthenticationState = api.CodexAuthenticationState;

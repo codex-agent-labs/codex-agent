@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 145-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 153-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(145, evidence.packedApi.publicSymbols.size)
+        assertEquals(153, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -411,6 +411,102 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertTrue(evidence.projectionClaims.filter { "|kind=constructor|" in it.capabilityKey }.all {
             it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
         })
+    }
+
+    @Test
+    fun `current immutable plan values project six generic capabilities and reject signature drift`() {
+        val stepConstructor = canonicalConstructor(
+            "AgentPlanStep",
+            listOf("kotlin/String!!", "example/AgentPlanStepStatus!!"),
+        )
+        val stepStatus = canonicalProperty("AgentPlanStep", "status", "example/AgentPlanStepStatus!!")
+        val stepText = canonicalProperty("AgentPlanStep", "text", "kotlin/String!!")
+        val progressConstructor = canonicalConstructor(
+            "AgentPlanProgress",
+            listOf(
+                "kotlin/String?",
+                "kotlin.collections/List<INVARIANT:example/AgentPlanStep!!>!!",
+            ),
+            defaultParameterIndices = setOf(0, 1),
+        )
+        val progressExplanation = canonicalProperty("AgentPlanProgress", "explanation", "kotlin/String?")
+        val progressSteps = canonicalProperty(
+            "AgentPlanProgress",
+            "steps",
+            "kotlin.collections/List<INVARIANT:example/AgentPlanStep!!>!!",
+        )
+        val keys = listOf(
+            stepConstructor,
+            stepStatus,
+            stepText,
+            progressConstructor,
+            progressExplanation,
+            progressSteps,
+        ).sorted()
+        val symbols = currentPublicSymbols()
+        val evidence = derive(keys, symbols)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertEquals(6, evidence.projectionClaims.size)
+        assertTrue(evidence.projectionClaims.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
+
+        val unreferenced = derive(
+            keys,
+            symbols,
+            references = symbols.filterNot { it.startsWith("constructor:AgentPlan") },
+        )
+        assertEquals(2, unreferenced.errors.count {
+            "Unreferenced exceptional" in it && "AgentPlan" in it
+        })
+        assertEquals(
+            setOf(stepStatus, stepText, progressExplanation, progressSteps),
+            unreferenced.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).toSet(),
+        )
+
+        val stepConstructorSymbol =
+            "constructor:AgentPlanStep#(text: string, status: AgentPlanStepStatus)"
+        val progressConstructorSymbol =
+            "constructor:AgentPlanProgress#" +
+                "(explanation?: string | null | undefined, steps?: ReadonlyArray<AgentPlanStep>)"
+        listOf(
+            Triple(
+                progressConstructor,
+                progressConstructorSymbol,
+                progressConstructorSymbol.replace("explanation?:", "explanation:"),
+            ),
+            Triple(
+                progressConstructor,
+                progressConstructorSymbol,
+                progressConstructorSymbol.replace("steps?:", "steps:"),
+            ),
+            Triple(
+                progressConstructor,
+                progressConstructorSymbol,
+                progressConstructorSymbol.replace("ReadonlyArray<AgentPlanStep>", "Array<AgentPlanStep>"),
+            ),
+            Triple(
+                stepConstructor,
+                stepConstructorSymbol,
+                stepConstructorSymbol.replace("AgentPlanStepStatus", "string"),
+            ),
+            Triple(
+                progressExplanation,
+                "getter:AgentPlanProgress#explanation:string | null | undefined",
+                "getter:AgentPlanProgress#explanation:string",
+            ),
+            Triple(
+                progressSteps,
+                "getter:AgentPlanProgress#steps:ReadonlyArray<AgentPlanStep>",
+                "getter:AgentPlanProgress#steps:Array<AgentPlanStep>",
+            ),
+        ).forEach { (key, exact, drifted) ->
+            val drift = derive(keys, symbols.map { if (it == exact) drifted else it }.sorted())
+            assertTrue(key in drift.missingCapabilityKeys, "$key accepted drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
     }
 
     @Test
@@ -1261,7 +1357,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(145, it.size) }
+        .also { assertEquals(153, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -1322,6 +1418,8 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
 class:AgentElicitationValidation
 class:AgentElicitationValidationIssue
 class:AgentFormOption
+class:AgentPlanProgress
+class:AgentPlanStep
 class:CodexAgent
 class:CodexAuthentication
 class:CodexAuthenticationState
@@ -1338,6 +1436,8 @@ class:CodexWorkspace
 constructor:AgentElicitationValidation#(issues: ReadonlyArray<AgentElicitationValidationIssue>)
 constructor:AgentElicitationValidationIssue#(fieldName: string, reason: AgentElicitationValidationReason)
 constructor:AgentFormOption#(value: string, title?: string, description?: string | null | undefined)
+constructor:AgentPlanProgress#(explanation?: string | null | undefined, steps?: ReadonlyArray<AgentPlanStep>)
+constructor:AgentPlanStep#(text: string, status: AgentPlanStepStatus)
 function:createCodexHost:(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost
 getter:AgentElicitationValidation#isValid:boolean
 getter:AgentElicitationValidation#issues:ReadonlyArray<AgentElicitationValidationIssue>
@@ -1346,6 +1446,10 @@ getter:AgentElicitationValidationIssue#reason:AgentElicitationValidationReason
 getter:AgentFormOption#description:string | null | undefined
 getter:AgentFormOption#title:string
 getter:AgentFormOption#value:string
+getter:AgentPlanProgress#explanation:string | null | undefined
+getter:AgentPlanProgress#steps:ReadonlyArray<AgentPlanStep>
+getter:AgentPlanStep#status:AgentPlanStepStatus
+getter:AgentPlanStep#text:string
 getter:CodexAgent#activeConversation:CodexConversation | null | undefined
 getter:CodexAgent#authentication:CodexAuthentication
 getter:CodexAgent#workspace:CodexWorkspace

@@ -10,6 +10,9 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationIs
 import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationReason as CoreElicitationValidationReason
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormOption as CoreFormOption
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
+import io.github.codex_agent_labs.codexmobile.agent.AgentPlanProgress as CorePlanProgress
+import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanStep
+import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStepStatus as CorePlanStepStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentTurnProgress as CoreTurnProgress
 import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication as CoreAuthentication
@@ -113,6 +116,49 @@ public class AgentElicitationValidation public constructor(
             },
         ).isValid
         freezeSnapshot(this.issues)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable plan step value. */
+@JsExport
+public class AgentPlanStep public constructor(
+    text: String,
+    status: String,
+) {
+    public val text: String
+    public val status: String
+
+    init {
+        val core = CorePlanStep(
+            text.requireJavaScriptString("text"),
+            status.requireJavaScriptString("status").toCorePlanStepStatus(),
+        )
+        this.text = core.text
+        this.status = core.status.name.lowercase()
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable plan progress value. */
+@JsExport
+public class AgentPlanProgress public constructor(
+    explanation: String? = null,
+    steps: Array<AgentPlanStep> = emptyArray(),
+) {
+    public val explanation: String?
+    public val steps: Array<AgentPlanStep>
+
+    init {
+        requireJavaScriptArray(steps, "steps")
+        val stepSnapshots = steps.map { AgentPlanStep(it.text, it.status) }.toTypedArray()
+        val core = CorePlanProgress(
+            explanation.requireJavaScriptNullableString("explanation"),
+            stepSnapshots.map { CorePlanStep(it.text, it.status.toCorePlanStepStatus()) },
+        )
+        this.explanation = core.explanation
+        this.steps = stepSnapshots
+        freezeSnapshot(this.steps)
         freezeSnapshot(this)
     }
 }
@@ -607,6 +653,10 @@ private fun String?.toAuthenticationMethod(apiKey: String?): CoreAuthenticationM
 private fun String.toCoreElicitationValidationReason(): CoreElicitationValidationReason =
     CoreElicitationValidationReason.entries.singleOrNull { it.name.lowercase() == this }
         ?: throw IllegalArgumentException("Unknown elicitation validation reason: $this")
+
+private fun String.toCorePlanStepStatus(): CorePlanStepStatus =
+    CorePlanStepStatus.entries.singleOrNull { it.name.lowercase() == this }
+        ?: throw IllegalArgumentException("Unknown plan step status: $this")
 
 private fun String.requireJavaScriptString(name: String): String {
     require(jsTypeOf(this) == "string") { "$name must be a string" }

@@ -47,6 +47,16 @@ export declare class AgentElicitationValidation {
     get issues(): ReadonlyArray<AgentElicitationValidationIssue>;
     get isValid(): boolean;
 }
+export declare class AgentPlanStep {
+    constructor(text: string, status: AgentPlanStepStatus);
+    get text(): string;
+    get status(): AgentPlanStepStatus;
+}
+export declare class AgentPlanProgress {
+    constructor(explanation?: Nullable<string>, steps?: ReadonlyArray<AgentPlanStep>);
+    get explanation(): Nullable<string>;
+    get steps(): ReadonlyArray<AgentPlanStep>;
+}
 export declare class CodexFailure {
     private constructor();
     get code(): string;
