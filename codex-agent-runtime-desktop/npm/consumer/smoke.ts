@@ -12,16 +12,107 @@ import {
   createCodexHost,
 } from "@codex-agent-labs/codex-agent";
 import type {
+  AgentApprovalDecision,
+  AgentCapability,
+  AgentCatalogFreshness,
+  AgentCollaborationMode,
+  AgentElicitationAction,
+  AgentElicitationValidationReason,
+  AgentFormFieldType,
+  AgentFormStringFormat,
+  AgentHookRunStatus,
+  AgentHookTrustStatus,
+  AgentInstallationScope,
+  AgentIntegrationAuthorizationStatus,
+  AgentMcpAuthStatus,
+  AgentMcpAuthentication,
+  AgentMcpEnvironmentSource,
+  AgentMcpToolApproval,
+  AgentMcpToolExposureSurface,
+  AgentPlanStepStatus,
+  AgentPluginAuthPolicy,
+  AgentPluginInstallPolicy,
+  AgentResolution,
+  AgentResourceOrigin,
+  AgentSkillScope,
   CodexApprovalPreset,
   CodexAuthenticationMethod,
   CodexAuthenticationStatus,
+  CodexAuthorizationPurpose,
+  CodexConversationStatus,
   CodexHostStatus,
+  CodexMessageRole,
+  CodexWorkActivity,
+  CodexWorkspaceSelectionReason,
 } from "@codex-agent-labs/codex-agent";
 
 const host: CodexHost = createCodexHost("/bundle", "/data", "typescript", "TypeScript", "test");
 const state: CodexHostState = host.state;
 const hostStatus: CodexHostStatus = state.status;
 const approvalPreset: CodexApprovalPreset = "auto_review";
+const enumEvidence: {
+  approvalDecision: AgentApprovalDecision;
+  capability: AgentCapability;
+  catalogFreshness: AgentCatalogFreshness;
+  collaborationMode: AgentCollaborationMode;
+  elicitationAction: AgentElicitationAction;
+  elicitationValidationReason: AgentElicitationValidationReason;
+  formFieldType: AgentFormFieldType;
+  formStringFormat: AgentFormStringFormat;
+  hookRunStatus: AgentHookRunStatus;
+  hookTrustStatus: AgentHookTrustStatus;
+  installationScope: AgentInstallationScope;
+  integrationAuthorizationStatus: AgentIntegrationAuthorizationStatus;
+  mcpAuthStatus: AgentMcpAuthStatus;
+  mcpAuthentication: AgentMcpAuthentication;
+  mcpEnvironmentSource: AgentMcpEnvironmentSource;
+  mcpToolApproval: AgentMcpToolApproval;
+  mcpToolExposureSurface: AgentMcpToolExposureSurface;
+  planStepStatus: AgentPlanStepStatus;
+  pluginAuthPolicy: AgentPluginAuthPolicy;
+  pluginInstallPolicy: AgentPluginInstallPolicy;
+  resolution: AgentResolution;
+  resourceOrigin: AgentResourceOrigin;
+  skillScope: AgentSkillScope;
+  approvalPreset: CodexApprovalPreset;
+  authenticationStatus: CodexAuthenticationStatus;
+  authorizationPurpose: CodexAuthorizationPurpose;
+  conversationStatus: CodexConversationStatus;
+  messageRole: CodexMessageRole;
+  workActivity: CodexWorkActivity;
+  workspaceSelectionReason: CodexWorkspaceSelectionReason;
+} = {
+  approvalDecision: "accept",
+  capability: "web_search",
+  catalogFreshness: "fresh_cache",
+  collaborationMode: "default",
+  elicitationAction: "accept",
+  elicitationValidationReason: "above_maximum",
+  formFieldType: "boolean",
+  formStringFormat: "date",
+  hookRunStatus: "blocked",
+  hookTrustStatus: "managed",
+  installationScope: "user",
+  integrationAuthorizationStatus: "authorized",
+  mcpAuthStatus: "bearer_token",
+  mcpAuthentication: "chat_gpt",
+  mcpEnvironmentSource: "local",
+  mcpToolApproval: "approve",
+  mcpToolExposureSurface: "code_mode",
+  planStepStatus: "completed",
+  pluginAuthPolicy: "on_install",
+  pluginInstallPolicy: "available",
+  resolution: "default",
+  resourceOrigin: "managed",
+  skillScope: "admin",
+  approvalPreset: "ask_me",
+  authenticationStatus: "authenticated",
+  authorizationPurpose: "chat_gpt",
+  conversationStatus: "cancelling_turn",
+  messageRole: "assistant",
+  workActivity: "running_command",
+  workspaceSelectionReason: "access_revoked",
+};
 const observation: CodexObservation = host.observeState((next: CodexHostState): void => {
   const status: string = next.status;
   void status;
@@ -121,6 +212,7 @@ async function handleFailure(operation: Promise<void>): Promise<void> {
 
 void state;
 void hostStatus;
+void enumEvidence;
 void useAgent;
 void handleFailure;
 void host.start(new AbortController().signal);

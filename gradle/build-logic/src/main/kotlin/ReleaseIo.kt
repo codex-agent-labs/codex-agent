@@ -60,8 +60,12 @@ internal fun File.atomicReplaceTextIfChanged(contents: String) {
     val bytes = contents.toByteArray()
     if (isFile && readBytes().contentEquals(bytes)) return
     parentFile.mkdirs()
-    val permissions = Files.getFileAttributeView(toPath(), PosixFileAttributeView::class.java)
-        ?.readAttributes()?.permissions()
+    val permissions = if (isFile) {
+        Files.getFileAttributeView(toPath(), PosixFileAttributeView::class.java)
+            ?.readAttributes()?.permissions()
+    } else {
+        null
+    }
     val temporary = Files.createTempFile(parentFile.toPath(), ".$name-", ".tmp")
     try {
         Files.write(temporary, bytes)

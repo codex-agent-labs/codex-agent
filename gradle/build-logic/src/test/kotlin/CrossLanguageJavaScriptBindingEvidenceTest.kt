@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 108-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 132-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(108, evidence.packedApi.publicSymbols.size)
+        assertEquals(132, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -1197,7 +1197,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(108, it.size) }
+        .also { assertEquals(132, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -1355,14 +1355,38 @@ method:CodexObservation#[Symbol.dispose]:(): void
 method:CodexObservation#close:(): void
 method:CodexObservation#dispose:(): void
 property:CodexError#cause[optional,readonly]:unknown
-type:CodexApprovalPreset:"auto_review" | "never" | "ask_me" | "strict"
+type:AgentApprovalDecision:"accept" | "decline"
+type:AgentCapability:"web_search"
+type:AgentCatalogFreshness:"fresh_cache" | "live" | "stale_cache"
+type:AgentCollaborationMode:"default" | "plan"
+type:AgentElicitationAction:"accept" | "cancel" | "decline"
+type:AgentElicitationValidationReason:"above_maximum" | "below_minimum" | "duplicate_selection" | "invalid_format" | "invalid_selection" | "invalid_type" | "missing_required" | "non_finite_number" | "non_integer" | "unknown_field"
+type:AgentFormFieldType:"boolean" | "integer" | "multi_select" | "number" | "single_select" | "string"
+type:AgentFormStringFormat:"date" | "date_time" | "email" | "uri"
+type:AgentHookRunStatus:"blocked" | "completed" | "failed" | "running" | "stopped"
+type:AgentHookTrustStatus:"managed" | "modified" | "trusted" | "untrusted"
+type:AgentInstallationScope:"user" | "workspace"
+type:AgentIntegrationAuthorizationStatus:"authorized" | "awaiting_completion" | "failed" | "idle" | "starting"
+type:AgentMcpAuthStatus:"bearer_token" | "not_logged_in" | "oauth" | "unknown" | "unsupported"
+type:AgentMcpAuthentication:"chat_gpt" | "oauth"
+type:AgentMcpEnvironmentSource:"local" | "remote"
+type:AgentMcpToolApproval:"approve" | "auto" | "prompt" | "writes"
+type:AgentMcpToolExposureSurface:"code_mode" | "deferred" | "direct"
+type:AgentPlanStepStatus:"completed" | "in_progress" | "pending"
+type:AgentPluginAuthPolicy:"on_install" | "on_use"
+type:AgentPluginInstallPolicy:"available" | "installed_by_default" | "not_available"
+type:AgentResolution:"default" | "first" | "preferred"
+type:AgentResourceOrigin:"managed" | "plugin" | "unknown" | "user" | "workspace"
+type:AgentSkillScope:"admin" | "plugin" | "repo" | "system" | "user"
+type:CodexApprovalPreset:"ask_me" | "auto_review" | "never" | "strict"
 type:CodexAuthenticationMethod:"chatgpt_browser" | "chatgpt_device_code" | "api_key"
-type:CodexAuthenticationStatus:"signed_out" | "authenticating" | "authenticated"
-type:CodexConversationStatus:"new" | "opening" | "ready" | "starting_turn" | "running_turn" | "cancelling_turn" | "reloading" | "failed" | "closed"
+type:CodexAuthenticationStatus:"authenticated" | "authenticating" | "signed_out"
+type:CodexAuthorizationPurpose:"chat_gpt" | "external"
+type:CodexConversationStatus:"cancelling_turn" | "closed" | "failed" | "new" | "opening" | "ready" | "reloading" | "running_turn" | "starting_turn"
 type:CodexHostStatus:"new" | "restoring" | "workspace_required" | "preparing" | "ready" | "failed" | "closed"
-type:CodexMessageRole:"user" | "assistant"
+type:CodexMessageRole:"assistant" | "user"
 type:CodexWorkActivity:"running_command" | "writing_files"
-type:CodexWorkspaceSelectionReason:"not_selected" | "not_found" | "access_revoked" | "invalid_selection"
+type:CodexWorkspaceSelectionReason:"access_revoked" | "invalid_selection" | "not_found" | "not_selected"
 """.trimIndent()
     }
 }

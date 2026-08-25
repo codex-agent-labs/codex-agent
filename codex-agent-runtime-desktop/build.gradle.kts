@@ -78,6 +78,11 @@ val npmConsumerSourceDirectory = layout.projectDirectory.dir("npm/consumer")
 val npmCompiledDirectory = layout.buildDirectory.dir("compileSync/js/main/productionExecutable/kotlin")
 val npmGeneratedDeclaration = npmCompiledDirectory.map { it.file("$npmEntryModule.d.ts") }
 val npmReviewedDeclaration = npmSourceDirectory.file("index.d.ts")
+val crossLanguageApiReport = rootProject.layout.projectDirectory.file(
+    "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
+)
+val npmGeneratedEnumDeclarations =
+    layout.buildDirectory.file("generated/cross-language-js/canonical-enums.d.ts")
 val npmDeclarationReport = layout.buildDirectory.file("reports/npm/generated-index.d.ts")
 val npmStageDirectory = layout.buildDirectory.dir("npm/package")
 val npmConsumerDirectory = layout.buildDirectory.dir("npm/consumer")
@@ -94,18 +99,27 @@ val invalidateJavaScriptTypeScriptBindingParityOutput = tasks.register<Delete>(
     delete(javaScriptBindingParityReceipt)
 }
 
+val generateJavaScriptEnumDeclarations = tasks.register<GenerateJavaScriptEnumDeclarationsTask>(
+    "generateJavaScriptEnumDeclarations",
+) {
+    dependsOn(":codex-agent-core:discoverCrossLanguageApi")
+    apiReport.set(crossLanguageApiReport)
+    declarationsFile.set(npmGeneratedEnumDeclarations)
+}
+
 val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     group = "verification"
     description = "Verifies the reviewed Node SDK declaration against the Kotlin compiler output."
-    dependsOn("jsProductionExecutableCompileSync")
+    dependsOn("jsProductionExecutableCompileSync", generateJavaScriptEnumDeclarations)
     inputs.file(npmGeneratedDeclaration)
     inputs.file(npmReviewedDeclaration)
+    inputs.file(npmGeneratedEnumDeclarations)
     outputs.file(npmDeclarationReport)
     doLast {
-        val declarationInputs = inputs.files.files
-        val reviewedDeclaration = declarationInputs.single { it.name == "index.d.ts" }
-        val generatedDeclaration = declarationInputs.single { it != reviewedDeclaration }
-        val raw = generatedDeclaration.readText().replace("\r\n", "\n")
+        val rawCompilerDeclaration = npmGeneratedDeclaration.get().asFile
+        val reviewedGoldenDeclaration = npmReviewedDeclaration.asFile
+        val generatedEnumDeclarations = npmGeneratedEnumDeclarations.get().asFile
+        val raw = rawCompilerDeclaration.readText().replace("\r\n", "\n")
         val lines = raw.lines()
         val sanitized = mutableListOf<String>()
         var index = 0
@@ -132,18 +146,15 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
                 }
             }
         }
+        val canonicalEnumDeclarations =
+            generatedEnumDeclarations.readText().replace("\r\n", "\n").trimEnd()
         var actual = sanitized.joinToString("\n").trimEnd() + "\n"
         actual = actual.replace(
             "type Nullable<T> = T | null | undefined\n",
             """type Nullable<T> = T | null | undefined;
 export type CodexHostStatus = "new" | "restoring" | "workspace_required" | "preparing" | "ready" | "failed" | "closed";
-export type CodexWorkspaceSelectionReason = "not_selected" | "not_found" | "access_revoked" | "invalid_selection";
-export type CodexMessageRole = "user" | "assistant";
-export type CodexWorkActivity = "running_command" | "writing_files";
-export type CodexConversationStatus = "new" | "opening" | "ready" | "starting_turn" | "running_turn" | "cancelling_turn" | "reloading" | "failed" | "closed";
-export type CodexApprovalPreset = "auto_review" | "never" | "ask_me" | "strict";
+$canonicalEnumDeclarations
 export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code" | "api_key";
-export type CodexAuthenticationStatus = "signed_out" | "authenticating" | "authenticated";
 """,
         ).replace(
             "    get recoverable(): boolean;\n}\nexport declare class CodexWorkspace",
@@ -212,7 +223,7 @@ export type CodexAuthenticationStatus = "signed_out" | "authenticating" | "authe
         val output = outputs.files.singleFile
         output.parentFile.mkdirs()
         output.writeText(actual)
-        check(actual == reviewedDeclaration.readText().replace("\r\n", "\n")) {
+        check(actual == reviewedGoldenDeclaration.readText().replace("\r\n", "\n")) {
             "Generated Node SDK declarations differ from npm/package/index.d.ts"
         }
     }
