@@ -7,6 +7,7 @@ export const AgentFormTextValue = api.AgentFormTextValue;
 export const AgentFormNumberValue = api.AgentFormNumberValue;
 export const AgentFormBooleanValue = api.AgentFormBooleanValue;
 export const AgentFormTextListValue = api.AgentFormTextListValue;
+export const AgentHookActivity = api.AgentHookActivity;
 export const AgentMcpEnvironmentVariable = api.AgentMcpEnvironmentVariable;
 export const AgentMcpOauthConfiguration = api.AgentMcpOauthConfiguration;
 export const AgentMcpToolConfiguration = api.AgentMcpToolConfiguration;

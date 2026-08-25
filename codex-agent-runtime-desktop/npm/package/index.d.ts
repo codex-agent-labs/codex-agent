@@ -87,6 +87,15 @@ export declare class AgentPlanProgress {
     get explanation(): Nullable<string>;
     get steps(): ReadonlyArray<AgentPlanStep>;
 }
+export declare class AgentHookActivity {
+    constructor(id: string, eventName: string, handlerType: string, status: AgentHookRunStatus, statusMessage?: Nullable<string>, details?: ReadonlyArray<string>);
+    get id(): string;
+    get eventName(): string;
+    get handlerType(): string;
+    get status(): AgentHookRunStatus;
+    get statusMessage(): Nullable<string>;
+    get details(): ReadonlyArray<string>;
+}
 export declare class CodexFailure {
     private constructor();
     get code(): string;
@@ -138,9 +147,11 @@ export declare class CodexTurnProgress {
     get commentary(): string;
     get reasoning(): string;
     get plan(): string;
+    get planProgress(): Nullable<AgentPlanProgress>;
     get shellOutput(): string;
     get shellExitCode(): Nullable<number>;
     get workActivity(): Nullable<CodexWorkActivity>;
+    get hookActivities(): ReadonlyArray<AgentHookActivity>;
     get truncated(): boolean;
 }
 export declare class CodexConversationState {

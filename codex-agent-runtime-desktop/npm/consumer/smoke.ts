@@ -6,6 +6,7 @@ import {
   AgentFormOption,
   AgentFormTextListValue,
   AgentFormTextValue,
+  AgentHookActivity,
   AgentMcpEnvironmentVariable,
   AgentMcpOauthConfiguration,
   AgentMcpToolConfiguration,
@@ -114,6 +115,20 @@ const emptyPlanProgress = new AgentPlanProgress();
 const planProgress = new AgentPlanProgress(null, [planStep]);
 const planExplanation: string | null | undefined = planProgress.explanation;
 const planSteps: ReadonlyArray<AgentPlanStep> = planProgress.steps;
+const hookActivity = new AgentHookActivity("hook", "SessionStart", "command", "running");
+const hookActivities = [
+  hookActivity,
+  new AgentHookActivity("completed", "SessionStart", "command", "completed", null, ["done"]),
+  new AgentHookActivity("failed", "SessionStart", "command", "failed"),
+  new AgentHookActivity("blocked", "SessionStart", "command", "blocked"),
+  new AgentHookActivity("stopped", "SessionStart", "command", "stopped"),
+];
+const hookActivityId: string = hookActivity.id;
+const hookActivityEventName: string = hookActivity.eventName;
+const hookActivityHandlerType: string = hookActivity.handlerType;
+const hookActivityStatus: AgentHookRunStatus = hookActivity.status;
+const hookActivityStatusMessage: string | null | undefined = hookActivity.statusMessage;
+const hookActivityDetails: ReadonlyArray<string> = hookActivity.details;
 const enumEvidence: {
   approvalDecision: AgentApprovalDecision;
   capability: AgentCapability;
@@ -217,6 +232,8 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   const conversationState: CodexConversationState = conversation.state;
   const messages = conversationState.messages;
   const turnProgress = conversationState.turnProgress;
+  const turnPlanProgress: AgentPlanProgress | null | undefined = turnProgress?.planProgress;
+  const turnHookActivities: ReadonlyArray<AgentHookActivity> | undefined = turnProgress?.hookActivities;
   const canStartTurn: boolean = conversationState.canStartTurn;
   const canReload: boolean = conversationState.canReload;
   const canCancelTurn: boolean = conversationState.canCancelTurn;
@@ -253,6 +270,8 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     conversationState,
     messages,
     turnProgress,
+    turnPlanProgress,
+    turnHookActivities,
     canStartTurn,
     canReload,
     canCancelTurn,
@@ -293,6 +312,13 @@ void [
   validationReason,
   validationIssues,
   validationIsValid,
+  hookActivities,
+  hookActivityId,
+  hookActivityEventName,
+  hookActivityHandlerType,
+  hookActivityStatus,
+  hookActivityStatusMessage,
+  hookActivityDetails,
 ];
 void enumEvidence;
 void useAgent;

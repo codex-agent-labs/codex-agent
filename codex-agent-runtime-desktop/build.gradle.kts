@@ -230,6 +230,52 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
     get steps(): ReadonlyArray<AgentPlanStep>;
 }""",
         ).replace(
+            """export declare class AgentHookActivity {
+    constructor(id: string, eventName: string, handlerType: string, status: string, statusMessage?: Nullable<string>, details?: Array<string>);
+    get id(): string;
+    get eventName(): string;
+    get handlerType(): string;
+    get status(): string;
+    get statusMessage(): Nullable<string>;
+    get details(): Array<string>;
+}""",
+            """export declare class AgentHookActivity {
+    constructor(id: string, eventName: string, handlerType: string, status: AgentHookRunStatus, statusMessage?: Nullable<string>, details?: ReadonlyArray<string>);
+    get id(): string;
+    get eventName(): string;
+    get handlerType(): string;
+    get status(): AgentHookRunStatus;
+    get statusMessage(): Nullable<string>;
+    get details(): ReadonlyArray<string>;
+}""",
+        ).replace(
+            """export declare class CodexTurnProgress {
+    private constructor();
+    get text(): string;
+    get commentary(): string;
+    get reasoning(): string;
+    get plan(): string;
+    get planProgress(): Nullable<AgentPlanProgress>;
+    get shellOutput(): string;
+    get shellExitCode(): Nullable<number>;
+    get workActivity(): Nullable<string>;
+    get hookActivities(): Array<AgentHookActivity>;
+    get truncated(): boolean;
+}""",
+            """export declare class CodexTurnProgress {
+    private constructor();
+    get text(): string;
+    get commentary(): string;
+    get reasoning(): string;
+    get plan(): string;
+    get planProgress(): Nullable<AgentPlanProgress>;
+    get shellOutput(): string;
+    get shellExitCode(): Nullable<number>;
+    get workActivity(): Nullable<string>;
+    get hookActivities(): ReadonlyArray<AgentHookActivity>;
+    get truncated(): boolean;
+}""",
+        ).replace(
             "    get recoverable(): boolean;\n}\nexport declare class CodexWorkspace",
             "    get recoverable(): boolean;\n    readonly cause?: unknown;\n}\nexport declare class CodexWorkspace",
         ).replace(

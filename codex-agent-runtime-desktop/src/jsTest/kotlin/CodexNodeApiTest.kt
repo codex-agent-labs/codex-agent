@@ -104,7 +104,48 @@ class CodexNodeApiTest {
         }
         val progressState = conversation.state
         assertEquals("working", progressState.turnProgress?.text)
-        assertTrue(isFrozen(checkNotNull(progressState.turnProgress)))
+        val textProgress = checkNotNull(progressState.turnProgress)
+        assertNull(textProgress.planProgress)
+        assertTrue(textProgress.hookActivities.isEmpty())
+        assertTrue(isFrozen(textProgress))
+        assertTrue(isFrozen(textProgress.hookActivities))
+
+        runtime.emitPlanUpdated()
+        awaitCondition {
+            conversation.state.turnProgress?.planProgress?.steps?.singleOrNull()?.status == "in_progress"
+        }
+        val planProgress = checkNotNull(checkNotNull(conversation.state.turnProgress).planProgress)
+        assertEquals("Executing the plan", planProgress.explanation)
+        assertEquals(listOf("Inspect runtime"), planProgress.steps.map(AgentPlanStep::text))
+        assertEquals(listOf("in_progress"), planProgress.steps.map(AgentPlanStep::status))
+        assertTrue(isFrozen(planProgress))
+        assertTrue(isFrozen(planProgress.steps))
+        planProgress.steps.forEach { assertTrue(isFrozen(it)) }
+
+        runtime.emitHookStarted()
+        awaitCondition {
+            conversation.state.turnProgress?.hookActivities?.singleOrNull()?.status == "running"
+        }
+        val runningHook = checkNotNull(conversation.state.turnProgress).hookActivities.single()
+        assertEquals("hook-js", runningHook.id)
+        assertEquals("STOP", runningHook.eventName)
+        assertEquals("COMMAND", runningHook.handlerType)
+        assertEquals("Running hook", runningHook.statusMessage)
+        assertEquals(listOf("started"), runningHook.details.toList())
+        assertTrue(isFrozen(runningHook))
+        assertTrue(isFrozen(runningHook.details))
+
+        runtime.emitHookCompleted()
+        awaitCondition {
+            conversation.state.turnProgress?.hookActivities?.singleOrNull()?.status == "completed"
+        }
+        val completedHook = checkNotNull(conversation.state.turnProgress).hookActivities.single()
+        assertEquals("Complete", completedHook.statusMessage)
+        assertEquals(listOf("finished", "detached"), completedHook.details.toList())
+        assertEquals("running", runningHook.status)
+        assertEquals(listOf("started"), runningHook.details.toList())
+        assertTrue(isFrozen(completedHook))
+        assertTrue(isFrozen(completedHook.details))
 
         runtime.completeTurn()
         awaitCondition { conversation.state.status == "ready" && conversation.state.messages.size == 2 }
@@ -129,6 +170,19 @@ class CodexNodeApiTest {
         conversationStates.forEach {
             assertTrue(isFrozen(it))
             assertTrue(isFrozen(it.messages))
+            it.turnProgress?.let { progress ->
+                assertTrue(isFrozen(progress))
+                assertTrue(isFrozen(progress.hookActivities))
+                progress.hookActivities.forEach { activity ->
+                    assertTrue(isFrozen(activity))
+                    assertTrue(isFrozen(activity.details))
+                }
+                progress.planProgress?.let { plan ->
+                    assertTrue(isFrozen(plan))
+                    assertTrue(isFrozen(plan.steps))
+                    plan.steps.forEach { step -> assertTrue(isFrozen(step)) }
+                }
+            }
         }
 
         val failure = runCatching { conversation.runShellCommand("pwd").await() }.exceptionOrNull()
@@ -481,6 +535,30 @@ private class ApiTestRuntime : CodexRuntime {
         put("delta", text)
     })
 
+    suspend fun emitPlanUpdated(): Unit = notify("turn/plan/updated", buildJsonObject {
+        put("threadId", "thread-js")
+        put("turnId", "turn-js")
+        put("explanation", "Executing the plan")
+        putJsonArray("plan") {
+            add(buildJsonObject {
+                put("step", "Inspect runtime")
+                put("status", "inProgress")
+            })
+        }
+    })
+
+    suspend fun emitHookStarted(): Unit = notify("hook/started", buildJsonObject {
+        put("threadId", "thread-js")
+        put("turnId", "turn-js")
+        put("run", hookRun("running", "Running hook", listOf("started")))
+    })
+
+    suspend fun emitHookCompleted(): Unit = notify("hook/completed", buildJsonObject {
+        put("threadId", "thread-js")
+        put("turnId", "turn-js")
+        put("run", hookRun("completed", "Complete", listOf("finished", "detached")))
+    })
+
     override suspend fun start(): Unit {
         started = true
     }
@@ -579,6 +657,27 @@ private class ApiTestRuntime : CodexRuntime {
         closed = true
         eventChannel.close()
     }
+}
+
+private fun hookRun(status: String, statusMessage: String, details: List<String>): JsonObject = buildJsonObject {
+    put("displayOrder", 0)
+    putJsonArray("entries") {
+        details.forEach { detail ->
+            add(buildJsonObject {
+                put("kind", "context")
+                put("text", detail)
+            })
+        }
+    }
+    put("eventName", "stop")
+    put("executionMode", "sync")
+    put("handlerType", "command")
+    put("id", "hook-js")
+    put("scope", "turn")
+    put("sourcePath", "/workspace/.codex/hooks.json")
+    put("startedAt", 0)
+    put("status", status)
+    put("statusMessage", statusMessage)
 }
 
 private fun initializeResult(): JsonObject = buildJsonObject {

@@ -31,6 +31,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentFormOption,
     sdk.AgentFormTextListValue,
     sdk.AgentFormTextValue,
+    sdk.AgentHookActivity,
     sdk.AgentMcpEnvironmentVariable,
     sdk.AgentMcpOauthConfiguration,
     sdk.AgentMcpToolConfiguration,
@@ -495,6 +496,11 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     assert.throws(() => new sdk.AgentPlanProgress(null, invalidSteps));
   }
   assert.throws(() => new sdk.AgentPlanProgress(null, new Array(1)));
+  const inheritedSparsePlanSteps = new Array(1);
+  Object.setPrototypeOf(inheritedSparsePlanSteps, { 0: planSteps[0] });
+  assert.equal(Object.hasOwn(inheritedSparsePlanSteps, 0), false);
+  assert.throws(() => new sdk.AgentPlanProgress(null, inheritedSparsePlanSteps));
+  assert.throws(() => new sdk.AgentPlanProgress(null, new Proxy(inheritedSparsePlanSteps, {})));
   for (const invalidStep of [null, undefined, '', 0, false, 1n, Symbol('value'), {}, [], () => {}]) {
     assert.throws(() => new sdk.AgentPlanProgress(null, [invalidStep]));
   }
@@ -516,6 +522,92 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   proxiedPlanArrayTarget.length = 0;
   assert.equal(proxiedPlan.steps[0].text, 'external-step');
   assert.equal(proxiedPlan.steps[0].status, 'in_progress');
+
+  const defaultHookActivity = new sdk.AgentHookActivity('hook', 'afterTurn', 'command', 'running');
+  assert.equal(defaultHookActivity.id, 'hook');
+  assert.equal(defaultHookActivity.eventName, 'afterTurn');
+  assert.equal(defaultHookActivity.handlerType, 'command');
+  assert.equal(defaultHookActivity.status, 'running');
+  assert.equal(defaultHookActivity.statusMessage, null);
+  assert.deepEqual(defaultHookActivity.details, []);
+  const undefinedHookActivity = new sdk.AgentHookActivity(
+    'hook', 'afterTurn', 'command', 'running', undefined, undefined,
+  );
+  assert.equal(undefinedHookActivity.statusMessage, null);
+  assert.deepEqual(undefinedHookActivity.details, []);
+  const hookStatuses = ['running', 'completed', 'failed', 'blocked', 'stopped'];
+  const hookActivities = hookStatuses.map(
+    (status) => new sdk.AgentHookActivity('hook', 'afterTurn', 'command', status, null, []),
+  );
+  assert.deepEqual(hookActivities.map(({ status }) => status), hookStatuses);
+  const permissiveHookActivity = new sdk.AgentHookActivity('', '', '', 'completed', '', ['', 'same', 'same']);
+  assert.deepEqual(permissiveHookActivity.details, ['', 'same', 'same']);
+
+  const sourceHookDetails = ['first', 'second'];
+  const detachedHookActivity = new sdk.AgentHookActivity(
+    'hook', 'afterTurn', 'command', 'completed', 'Complete', sourceHookDetails,
+  );
+  assert.notEqual(detachedHookActivity.details, sourceHookDetails);
+  sourceHookDetails.splice(0, sourceHookDetails.length, 'mutated');
+  assert.deepEqual(detachedHookActivity.details, ['first', 'second']);
+  const proxyHookDetailsTarget = ['proxy-first', 'proxy-second'];
+  const proxyHookDetails = new Proxy(proxyHookDetailsTarget, {});
+  const proxyHookActivity = new sdk.AgentHookActivity(
+    'hook', 'afterTurn', 'command', 'running', null, proxyHookDetails,
+  );
+  assert.notEqual(proxyHookActivity.details, proxyHookDetails);
+  assert.notEqual(proxyHookActivity.details, proxyHookDetailsTarget);
+  proxyHookDetailsTarget.reverse();
+  assert.deepEqual(proxyHookActivity.details, ['proxy-first', 'proxy-second']);
+
+  const invalidHookStrings = [
+    null, undefined, 0, -0, NaN, Infinity, -Infinity, false, true, 1n, Symbol('value'), {}, [],
+    () => {}, new String('value'), new Number(1), new Boolean(true), new Proxy({}, {}),
+  ];
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentHookActivity(invalid, 'afterTurn', 'command', 'running'));
+    assert.throws(() => new sdk.AgentHookActivity('hook', invalid, 'command', 'running'));
+    assert.throws(() => new sdk.AgentHookActivity('hook', 'afterTurn', invalid, 'running'));
+    assert.throws(() => new sdk.AgentHookActivity('hook', 'afterTurn', 'command', invalid));
+    if (invalid !== null && invalid !== undefined) {
+      assert.throws(() => new sdk.AgentHookActivity('hook', 'afterTurn', 'command', 'running', invalid));
+    }
+  }
+  for (const invalidStatus of ['', 'RUNNING', 'Running', 'inProgress', 'unknown']) {
+    assert.throws(() => new sdk.AgentHookActivity('hook', 'afterTurn', 'command', invalidStatus));
+  }
+  for (const invalidDetails of [
+    null, '', 0, false, 1n, Symbol('details'), {}, { length: 0 }, () => {}, new String('value'),
+    new Proxy({ length: 0 }, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentHookActivity(
+      'hook', 'afterTurn', 'command', 'running', null, invalidDetails,
+    ));
+  }
+  const sparseHookDetails = new Array(2);
+  sparseHookDetails[1] = 'value';
+  assert.throws(() => new sdk.AgentHookActivity(
+    'hook', 'afterTurn', 'command', 'running', null, sparseHookDetails,
+  ));
+  const inheritedSparseHookDetails = new Array(1);
+  Object.setPrototypeOf(inheritedSparseHookDetails, { 0: 'inherited' });
+  assert.equal(Object.hasOwn(inheritedSparseHookDetails, 0), false);
+  assert.throws(() => new sdk.AgentHookActivity(
+    'hook', 'afterTurn', 'command', 'running', null, inheritedSparseHookDetails,
+  ));
+  assert.throws(() => new sdk.AgentHookActivity(
+    'hook', 'afterTurn', 'command', 'running', null, new Proxy(inheritedSparseHookDetails, {}),
+  ));
+  const revokedHookDetails = Proxy.revocable(['value'], {});
+  revokedHookDetails.revoke();
+  assert.throws(() => new sdk.AgentHookActivity(
+    'hook', 'afterTurn', 'command', 'running', null, revokedHookDetails.proxy,
+  ));
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentHookActivity(
+      'hook', 'afterTurn', 'command', 'running', null, [invalid],
+    ));
+  }
 
   const assertImmutableOwnGraph = (root) => {
     const seen = new Set();
@@ -566,6 +658,12 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     undefinedPlan,
     plan,
     proxiedPlan,
+    defaultHookActivity,
+    undefinedHookActivity,
+    ...hookActivities,
+    permissiveHookActivity,
+    detachedHookActivity,
+    proxyHookActivity,
   ]) {
     assertImmutableOwnGraph(snapshot);
   }
@@ -602,6 +700,19 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   }
   assert.deepEqual(Reflect.ownKeys(planSteps[0]).sort(), ['status', 'text']);
   assert.deepEqual(Reflect.ownKeys(plan).sort(), ['explanation', 'steps']);
+  for (const activity of [
+    defaultHookActivity,
+    undefinedHookActivity,
+    ...hookActivities,
+    permissiveHookActivity,
+    detachedHookActivity,
+    proxyHookActivity,
+  ]) {
+    assert.deepEqual(
+      Reflect.ownKeys(activity),
+      ['id', 'eventName', 'handlerType', 'status', 'statusMessage', 'details'],
+    );
+  }
 
   const browserImport = childProcess.spawnSync(
     process.execPath,

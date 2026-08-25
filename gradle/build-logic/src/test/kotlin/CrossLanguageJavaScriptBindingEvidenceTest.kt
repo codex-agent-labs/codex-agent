@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 176-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 186-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(176, evidence.packedApi.publicSymbols.size)
+        assertEquals(186, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -507,6 +507,196 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             assertTrue(key in drift.missingCapabilityKeys, "$key accepted drift: $drifted")
             assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
         }
+    }
+
+    @Test
+    fun `hook activity and nested turn progress values preserve exact immutable shapes`() {
+        val hookConstructor = canonicalConstructor(
+            "AgentHookActivity",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "example/AgentHookRunStatus!!",
+                "kotlin/String?",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+            ),
+            defaultParameterIndices = setOf(4, 5),
+        )
+        val hookDetails = canonicalProperty(
+            "AgentHookActivity",
+            "details",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        )
+        val hookEventName = canonicalProperty("AgentHookActivity", "eventName", "kotlin/String!!")
+        val hookHandlerType = canonicalProperty("AgentHookActivity", "handlerType", "kotlin/String!!")
+        val hookId = canonicalProperty("AgentHookActivity", "id", "kotlin/String!!")
+        val hookStatus = canonicalProperty("AgentHookActivity", "status", "example/AgentHookRunStatus!!")
+        val hookStatusMessage = canonicalProperty("AgentHookActivity", "statusMessage", "kotlin/String?")
+        val turnHookActivities = canonicalProperty(
+            "AgentTurnProgress",
+            "hookActivities",
+            "kotlin.collections/List<INVARIANT:example/AgentHookActivity!!>!!",
+        )
+        val turnPlanProgress = canonicalProperty(
+            "AgentTurnProgress",
+            "planProgress",
+            "example/AgentPlanProgress?",
+        )
+        val keys = listOf(
+            hookConstructor,
+            hookDetails,
+            hookEventName,
+            hookHandlerType,
+            hookId,
+            hookStatus,
+            hookStatusMessage,
+            turnHookActivities,
+            turnPlanProgress,
+        ).sorted()
+        val hookConstructorSymbol =
+            "constructor:AgentHookActivity#" +
+                "(id: string, eventName: string, handlerType: string, status: AgentHookRunStatus, " +
+                "statusMessage?: string | null | undefined, details?: ReadonlyArray<string>)"
+        val hookDetailsSymbol = "getter:AgentHookActivity#details:ReadonlyArray<string>"
+        val hookEventNameSymbol = "getter:AgentHookActivity#eventName:string"
+        val hookHandlerTypeSymbol = "getter:AgentHookActivity#handlerType:string"
+        val hookIdSymbol = "getter:AgentHookActivity#id:string"
+        val hookStatusSymbol = "getter:AgentHookActivity#status:AgentHookRunStatus"
+        val hookStatusMessageSymbol =
+            "getter:AgentHookActivity#statusMessage:string | null | undefined"
+        val turnHookActivitiesSymbol =
+            "getter:CodexTurnProgress#hookActivities:ReadonlyArray<AgentHookActivity>"
+        val turnPlanProgressSymbol =
+            "getter:CodexTurnProgress#planProgress:AgentPlanProgress | null | undefined"
+        val addedSymbols = listOf(
+            "class:AgentHookActivity",
+            hookConstructorSymbol,
+            hookDetailsSymbol,
+            hookEventNameSymbol,
+            hookHandlerTypeSymbol,
+            hookIdSymbol,
+            hookStatusSymbol,
+            hookStatusMessageSymbol,
+            turnHookActivitiesSymbol,
+            turnPlanProgressSymbol,
+        ).sorted()
+        val symbols = (addedSymbols + "class:CodexTurnProgress").sorted()
+        val references = addedSymbols.filterNot { it.startsWith("class:") }
+        val evidence = derive(keys, symbols, references = references)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertEquals(10, addedSymbols.size)
+        assertEquals(9, references.size)
+        assertEquals(9, evidence.projectionClaims.size)
+        assertTrue(evidence.projectionClaims.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
+        assertEquals(symbols, evidence.packedApi.publicSymbols)
+        assertEquals(references, evidence.packedApi.referencedSymbols)
+        assertTrue(symbols.none {
+            it == "class:AgentTurnProgress" || it.startsWith("constructor:AgentTurnProgress#") ||
+                it.startsWith("constructor:CodexTurnProgress#")
+        })
+
+        listOf(
+            Triple(
+                hookConstructor,
+                hookConstructorSymbol,
+                hookConstructorSymbol.replace("AgentHookRunStatus", "string"),
+            ),
+            Triple(
+                hookStatus,
+                hookStatusSymbol,
+                hookStatusSymbol.replace("AgentHookRunStatus", "string"),
+            ),
+            Triple(
+                hookConstructor,
+                hookConstructorSymbol,
+                hookConstructorSymbol.replace("ReadonlyArray<string>", "Array<string>"),
+            ),
+            Triple(
+                hookDetails,
+                hookDetailsSymbol,
+                hookDetailsSymbol.replace("ReadonlyArray<string>", "Array<string>"),
+            ),
+            Triple(
+                turnHookActivities,
+                turnHookActivitiesSymbol,
+                turnHookActivitiesSymbol.replace(
+                    "ReadonlyArray<AgentHookActivity>",
+                    "Array<AgentHookActivity>",
+                ),
+            ),
+            Triple(
+                hookConstructor,
+                hookConstructorSymbol,
+                hookConstructorSymbol.replace("statusMessage?:", "statusMessage:"),
+            ),
+            Triple(
+                hookConstructor,
+                hookConstructorSymbol,
+                hookConstructorSymbol.replace("details?:", "details:"),
+            ),
+            Triple(
+                hookConstructor,
+                hookConstructorSymbol,
+                hookConstructorSymbol.replace("id:", "id?:"),
+            ),
+            Triple(
+                hookConstructor,
+                hookConstructorSymbol,
+                hookConstructorSymbol.replace("string | null | undefined", "string"),
+            ),
+            Triple(
+                hookStatusMessage,
+                hookStatusMessageSymbol,
+                hookStatusMessageSymbol.replace("string | null | undefined", "string"),
+            ),
+            Triple(
+                turnPlanProgress,
+                turnPlanProgressSymbol,
+                turnPlanProgressSymbol.replace(
+                    "AgentPlanProgress | null | undefined",
+                    "AgentPlanProgress",
+                ),
+            ),
+            Triple(
+                turnHookActivities,
+                turnHookActivitiesSymbol,
+                turnHookActivitiesSymbol.replace("AgentHookActivity", "AgentPlanStep"),
+            ),
+            Triple(
+                turnPlanProgress,
+                turnPlanProgressSymbol,
+                turnPlanProgressSymbol.replace("AgentPlanProgress", "AgentHookActivity"),
+            ),
+            Triple(
+                hookConstructor,
+                hookConstructorSymbol,
+                hookConstructorSymbol.replace(")", ", unexpected?: string)"),
+            ),
+        ).forEach { (key, exact, drifted) ->
+            val driftedSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val driftedReferences = references.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(keys, driftedSymbols, references = driftedReferences)
+            assertTrue(key in drift.missingCapabilityKeys, "$key accepted drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        val unreferenced = derive(
+            keys,
+            symbols,
+            references = references.filterNot { it == hookConstructorSymbol },
+        )
+        assertTrue(unreferenced.errors.any {
+            "Unreferenced exceptional" in it && "AgentHookActivity" in it
+        })
+        assertEquals(
+            keys.filterNot { it == hookConstructor },
+            unreferenced.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey),
+        )
     }
 
     @Test
@@ -1721,7 +1911,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(176, it.size) }
+        .also { assertEquals(186, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -1786,6 +1976,7 @@ class:AgentFormNumberValue
 class:AgentFormOption
 class:AgentFormTextListValue
 class:AgentFormTextValue
+class:AgentHookActivity
 class:AgentMcpEnvironmentVariable
 class:AgentMcpOauthConfiguration
 class:AgentMcpToolConfiguration
@@ -1811,6 +2002,7 @@ constructor:AgentFormNumberValue#(value: number)
 constructor:AgentFormOption#(value: string, title?: string, description?: string | null | undefined)
 constructor:AgentFormTextListValue#(value: ReadonlyArray<string>)
 constructor:AgentFormTextValue#(value: string)
+constructor:AgentHookActivity#(id: string, eventName: string, handlerType: string, status: AgentHookRunStatus, statusMessage?: string | null | undefined, details?: ReadonlyArray<string>)
 constructor:AgentMcpEnvironmentVariable#(name: string, source?: AgentMcpEnvironmentSource | null | undefined)
 constructor:AgentMcpOauthConfiguration#(clientId?: string | null | undefined, callbackPort?: number | null | undefined)
 constructor:AgentMcpToolConfiguration#(approval?: AgentMcpToolApproval | null | undefined)
@@ -1828,6 +2020,12 @@ getter:AgentFormOption#title:string
 getter:AgentFormOption#value:string
 getter:AgentFormTextListValue#value:ReadonlyArray<string>
 getter:AgentFormTextValue#value:string
+getter:AgentHookActivity#details:ReadonlyArray<string>
+getter:AgentHookActivity#eventName:string
+getter:AgentHookActivity#handlerType:string
+getter:AgentHookActivity#id:string
+getter:AgentHookActivity#status:AgentHookRunStatus
+getter:AgentHookActivity#statusMessage:string | null | undefined
 getter:AgentMcpEnvironmentVariable#name:string
 getter:AgentMcpEnvironmentVariable#source:AgentMcpEnvironmentSource | null | undefined
 getter:AgentMcpOauthConfiguration#callbackPort:number | null | undefined
@@ -1886,7 +2084,9 @@ getter:CodexMessage#shellCommand:string | null | undefined
 getter:CodexMessage#text:string
 getter:CodexObservation#isClosed:boolean
 getter:CodexTurnProgress#commentary:string
+getter:CodexTurnProgress#hookActivities:ReadonlyArray<AgentHookActivity>
 getter:CodexTurnProgress#plan:string
+getter:CodexTurnProgress#planProgress:AgentPlanProgress | null | undefined
 getter:CodexTurnProgress#reasoning:string
 getter:CodexTurnProgress#shellExitCode:number | null | undefined
 getter:CodexTurnProgress#shellOutput:string

@@ -6,13 +6,14 @@ import {
   AgentFormOption,
   AgentFormTextListValue,
   AgentFormTextValue,
+  AgentHookActivity,
   AgentMcpEnvironmentVariable,
   AgentMcpOauthConfiguration,
   AgentMcpToolConfiguration,
   AgentPlanProgress,
   AgentPlanStep,
 } from "@codex-agent-labs/codex-agent";
-import type { CodexAgent } from "@codex-agent-labs/codex-agent";
+import type { CodexAgent, CodexTurnProgress } from "@codex-agent-labs/codex-agent";
 
 const option = new AgentFormOption("value");
 // @ts-expect-error Immutable form-option values are readonly.
@@ -121,6 +122,26 @@ planProgress.steps.push(planStep);
 new AgentPlanProgress(1);
 // @ts-expect-error Nested plan-progress values must be canonical plan steps.
 new AgentPlanProgress(null, ["Ship"]);
+
+const hookActivity = new AgentHookActivity("hook", "SessionStart", "command", "running");
+// @ts-expect-error Hook-activity statuses remain a closed typed domain.
+new AgentHookActivity("hook", "SessionStart", "command", "waiting");
+// @ts-expect-error Hook-activity identifiers are strings.
+new AgentHookActivity(1, "SessionStart", "command", "running");
+// @ts-expect-error Hook-activity status messages are nullable strings.
+new AgentHookActivity("hook", "SessionStart", "command", "running", 1);
+// @ts-expect-error Immutable hook-activity statuses are readonly.
+hookActivity.status = "completed";
+// @ts-expect-error Hook-activity details are readonly.
+hookActivity.details.push("changed");
+
+declare const turnProgress: CodexTurnProgress;
+// @ts-expect-error Immutable turn progress cannot replace plan progress.
+turnProgress.planProgress = null;
+// @ts-expect-error Immutable turn progress cannot replace hook activities.
+turnProgress.hookActivities = [];
+// @ts-expect-error Turn-progress hook activities are readonly.
+turnProgress.hookActivities.push(hookActivity);
 
 async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   // @ts-expect-error API-key authentication requires a key.

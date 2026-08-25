@@ -13,6 +13,8 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.BooleanValue 
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Number as CoreFormNumberValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Text as CoreFormTextValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.TextList as CoreFormTextListValue
+import io.github.codex_agent_labs.codexmobile.agent.AgentHookActivity as CoreHookActivity
+import io.github.codex_agent_labs.codexmobile.agent.AgentHookRunStatus as CoreHookRunStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable as CoreMcpEnvironmentVariable
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpOauthConfiguration as CoreMcpOauthConfiguration
@@ -269,7 +271,11 @@ public class AgentPlanProgress public constructor(
 
     init {
         requireJavaScriptArray(steps, "steps")
-        val stepSnapshots = steps.map { AgentPlanStep(it.text, it.status) }.toTypedArray()
+        val stepSnapshots = List(steps.size) { index ->
+            requireOwnJavaScriptArrayIndex(steps, index, "steps")
+            val step = steps[index]
+            AgentPlanStep(step.text, step.status)
+        }.toTypedArray()
         val core = CorePlanProgress(
             explanation.requireJavaScriptNullableString("explanation"),
             stepSnapshots.map { CorePlanStep(it.text, it.status.toCorePlanStepStatus()) },
@@ -277,6 +283,47 @@ public class AgentPlanProgress public constructor(
         this.explanation = core.explanation
         this.steps = stepSnapshots
         freezeSnapshot(this.steps)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable hook-run activity value. */
+@JsExport
+public class AgentHookActivity public constructor(
+    id: String,
+    eventName: String,
+    handlerType: String,
+    status: String,
+    statusMessage: String? = null,
+    details: Array<String> = emptyArray(),
+) {
+    public val id: String
+    public val eventName: String
+    public val handlerType: String
+    public val status: String
+    public val statusMessage: String?
+    public val details: Array<String>
+
+    init {
+        requireJavaScriptArray(details, "details")
+        val core = CoreHookActivity(
+            id.requireJavaScriptString("id"),
+            eventName.requireJavaScriptString("eventName"),
+            handlerType.requireJavaScriptString("handlerType"),
+            status.requireJavaScriptString("status").toCoreHookRunStatus(),
+            statusMessage.requireJavaScriptNullableString("statusMessage"),
+            List(details.size) { index ->
+                requireOwnJavaScriptArrayIndex(details, index, "details")
+                details[index].requireJavaScriptString("details[$index]")
+            },
+        )
+        this.id = core.id
+        this.eventName = core.eventName
+        this.handlerType = core.handlerType
+        this.status = core.status.name.lowercase()
+        this.statusMessage = core.statusMessage
+        this.details = core.details.toTypedArray()
+        freezeSnapshot(this.details)
         freezeSnapshot(this)
     }
 }
@@ -369,16 +416,31 @@ public class CodexMessage internal constructor(
 /** Immutable live turn-progress snapshot. */
 @JsExport
 public class CodexTurnProgress internal constructor(
-    public val text: String,
-    public val commentary: String,
-    public val reasoning: String,
-    public val plan: String,
-    public val shellOutput: String,
-    public val shellExitCode: Int?,
-    public val workActivity: String?,
-    public val truncated: Boolean,
+    text: String,
+    commentary: String,
+    reasoning: String,
+    plan: String,
+    planProgress: CorePlanProgress?,
+    shellOutput: String,
+    shellExitCode: Int?,
+    workActivity: String?,
+    hookActivities: List<CoreHookActivity>,
+    truncated: Boolean,
 ) {
+    public val text: String = text
+    public val commentary: String = commentary
+    public val reasoning: String = reasoning
+    public val plan: String = plan
+    public val planProgress: AgentPlanProgress? = planProgress?.project()
+    public val shellOutput: String = shellOutput
+    public val shellExitCode: Int? = shellExitCode
+    public val workActivity: String? = workActivity
+    public val hookActivities: Array<AgentHookActivity> =
+        hookActivities.map { it.project() }.toTypedArray()
+    public val truncated: Boolean = truncated
+
     init {
+        freezeSnapshot(this.hookActivities)
         freezeSnapshot(this)
     }
 }
@@ -776,6 +838,10 @@ private fun String.toCorePlanStepStatus(): CorePlanStepStatus =
     CorePlanStepStatus.entries.singleOrNull { it.name.lowercase() == this }
         ?: throw IllegalArgumentException("Unknown plan step status: $this")
 
+private fun String.toCoreHookRunStatus(): CoreHookRunStatus =
+    CoreHookRunStatus.entries.singleOrNull { it.name.lowercase() == this }
+        ?: throw IllegalArgumentException("Unknown hook run status: $this")
+
 private fun String.toCoreMcpEnvironmentSource(): CoreMcpEnvironmentSource = when (this) {
     "local" -> CoreMcpEnvironmentSource.LOCAL
     "remote" -> CoreMcpEnvironmentSource.REMOTE
@@ -847,14 +913,30 @@ private fun CoreMessage.project(): CodexMessage = CodexMessage(
     exitCode = exitCode,
 )
 
+private fun CorePlanProgress.project(): AgentPlanProgress = AgentPlanProgress(
+    explanation = explanation,
+    steps = steps.map { AgentPlanStep(it.text, it.status.name.lowercase()) }.toTypedArray(),
+)
+
+private fun CoreHookActivity.project(): AgentHookActivity = AgentHookActivity(
+    id = id,
+    eventName = eventName,
+    handlerType = handlerType,
+    status = status.name.lowercase(),
+    statusMessage = statusMessage,
+    details = details.toTypedArray(),
+)
+
 private fun CoreTurnProgress.project(): CodexTurnProgress = CodexTurnProgress(
     text = text,
     commentary = commentary,
     reasoning = reasoning,
     plan = plan,
+    planProgress = planProgress,
     shellOutput = shellOutput,
     shellExitCode = shellExitCode,
     workActivity = workActivity?.name?.lowercase(),
+    hookActivities = hookActivities,
     truncated = isTruncated,
 )
 
