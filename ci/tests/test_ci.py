@@ -737,6 +737,40 @@ class RealImpactPlanTest(unittest.TestCase):
             ),
         )
 
+        canonical_receipt_evidence_inputs = (
+            prefix + "CrossLanguageApiCoverage.kt",
+            prefix + "CrossLanguageBindingParity.kt",
+            prefix + "CrossLanguageBindingReceipt.kt",
+            prefix + "CrossLanguageJavaScriptBindingEvidence.kt",
+            prefix + "codexagent.core-verification.gradle.kts",
+        )
+        for path in canonical_receipt_evidence_inputs:
+            with self.subTest(canonical_receipt_evidence_input=path):
+                self.assertEqual(
+                    {"contracts", "node-js", "consumer-node-js"},
+                    matching_lanes("production", path),
+                )
+                self.assertEqual(
+                    {"contracts", "node-js"},
+                    matching_lanes("test", path),
+                )
+
+        canonical_behavior_inputs = {
+            "codex-agent-core/src/commonMain/kotlin/sample/Canonical.kt": {
+                "contracts", "node-js",
+            },
+            "codex-agent-core/src/commonTest/kotlin/sample/CanonicalTest.kt": {
+                "contracts", "node-js", "ios-kotlin-tests",
+            },
+            "codex-agent-core/src/jvmTest/kotlin/sample/CanonicalJvmTest.kt": {
+                "contracts", "node-js",
+            },
+        }
+        for path, test_lanes in canonical_behavior_inputs.items():
+            with self.subTest(canonical_behavior_input=path):
+                self.assertIn("node-js", matching_lanes("production", path))
+                self.assertEqual(test_lanes, matching_lanes("test", path))
+
         self.assertIn(
             "contracts",
             matching_lanes(

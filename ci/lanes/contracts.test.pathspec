@@ -3,7 +3,10 @@ gradle/build-logic/src/main/kotlin/ProtectedNodeRuntimeRegistration.kt
 gradle/build-logic/src/main/kotlin/ProtectedRuntimeCandidateRegistration.kt
 gradle/build-logic/src/main/kotlin/ReleaseIo.kt
 gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt
+gradle/build-logic/src/main/kotlin/CrossLanguage*.kt
+gradle/build-logic/src/main/kotlin/codexagent.core-verification.gradle.kts
 gradle/build-logic/src/test/**
+codex-agent-core/src/commonMain/**
 codex-agent-core/src/commonTest/**
 codex-agent-core/src/jvmAndAndroidMain/**
 codex-agent-core/src/jvmTest/**

@@ -1,4 +1,12 @@
 codex-agent-runtime-desktop/src/commonTest/**
 codex-agent-runtime-desktop/src/webTest/**
 codex-agent-runtime-desktop/src/jsTest/**
+codex-agent-core/src/commonMain/**
+codex-agent-core/src/commonTest/**
+codex-agent-core/src/jvmTest/**
+gradle/build-logic/src/main/kotlin/CrossLanguageApi*.kt
+gradle/build-logic/src/main/kotlin/CrossLanguageBindingParity.kt
+gradle/build-logic/src/main/kotlin/CrossLanguageBindingReceipt.kt
+gradle/build-logic/src/main/kotlin/CrossLanguageJavaScript*.kt
+gradle/build-logic/src/main/kotlin/codexagent.core-verification.gradle.kts
 gradle/build-logic/src/test/**/*Node*
