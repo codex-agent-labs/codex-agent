@@ -81,6 +81,11 @@ import type {
 const host: CodexHost = createCodexHost("/bundle", "/data", "typescript", "TypeScript", "test");
 const state: CodexHostState = host.state;
 const hostStatus: CodexHostStatus = state.status;
+const hostWorkspace: typeof state.workspace = state.workspace;
+const hostAgent: typeof state.agent = state.agent;
+const hostSelectionReason: typeof state.selectionReason = state.selectionReason;
+const hostSelectionMessage: typeof state.selectionMessage = state.selectionMessage;
+const hostFailure: typeof state.failure = state.failure;
 const approvalPreset: CodexApprovalPreset = "auto_review";
 const approvalPresetDisplayName: string = codexApprovalPresetDisplayName(approvalPreset);
 const skillScope: AgentSkillScope = "system";
@@ -461,6 +466,11 @@ async function handleFailure(operation: Promise<void>): Promise<void> {
 void state;
 void hostStatus;
 void [
+  hostWorkspace,
+  hostAgent,
+  hostSelectionReason,
+  hostSelectionMessage,
+  hostFailure,
   approvalPresetDisplayName,
   skillScopeDisplayName,
   capabilityId,

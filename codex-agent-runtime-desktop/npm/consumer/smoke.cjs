@@ -1310,6 +1310,12 @@ test('cjs projects lifecycle state failure cleanup and terminal delivery', async
   await settleCallbacks();
   assert.equal(host.state.status, 'workspace_required');
   assert.equal(states.at(-1), 'workspace_required');
+  assert.equal(host.state.workspace, null);
+  assert.equal(host.state.agent, null);
+  assert.equal(host.state.selectionReason, 'not_selected');
+  assert.equal(host.state.selectionMessage, 'Select a workspace.');
+  assert.equal(host.state.failure, null);
+  assert.equal(Object.isFrozen(host.state), true);
   assert.equal(host.agent, null);
 
   await assert.rejects(
@@ -1318,8 +1324,13 @@ test('cjs projects lifecycle state failure cleanup and terminal delivery', async
   );
   await settleCallbacks();
   assert.equal(host.state.status, 'failed');
+  assert.equal(host.state.workspace.path, fs.realpathSync(workspace));
+  assert.equal(host.state.agent, null);
+  assert.equal(host.state.selectionReason, null);
+  assert.equal(host.state.selectionMessage, null);
   assert.equal(host.state.failure.code, 'runtime_prepare_failed');
   assert.equal(Object.isFrozen(host.state), true);
+  assert.equal(Object.isFrozen(host.state.workspace), true);
   assert.equal(Object.isFrozen(host.state.failure), true);
 
   assert.equal(await host.close(), undefined);

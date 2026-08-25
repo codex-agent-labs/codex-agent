@@ -1368,6 +1368,198 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `host state variants flatten eight exact discriminated values onto the existing lifecycle surface`() {
+        val lifecycle = d044HostLifecycleKey()
+        val keys = d044HostStateKeys()
+        val references = d044HostStateReferences()
+        val symbols = (references + listOf("class:CodexHost", "class:CodexHostState")).sorted()
+        val evidence = derive((keys + lifecycle).sorted(), symbols, references = references)
+        val claims = evidence.projectionClaims.associate { it.capabilityKey to it.publicSymbols }
+        val hostStateClaims = claims.filterKeys(keys::contains)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(9, claims.size)
+        assertEquals(8, hostStateClaims.size)
+        assertEquals(10, symbols.size)
+        assertEquals(8, references.size)
+        assertEquals(references, evidence.packedApi.referencedSymbols)
+        assertEquals(listOf(HOST_STATE_GETTER, HOST_STATE_OBSERVER).sorted(), claims.getValue(lifecycle))
+
+        keys.forEach { key ->
+            val leaves = when {
+                "CodexHostState.Ready" in key -> setOf(HOST_STATE_AGENT)
+                "CodexHostState.Failed" in key && ".failure|" in key -> setOf(HOST_STATE_FAILURE)
+                "CodexHostState.WorkspaceRequired" in key ->
+                    setOf(HOST_STATE_SELECTION_MESSAGE, HOST_STATE_SELECTION_REASON)
+                "CodexWorkspaceResolution.SelectionRequired" in key && ".reason|" in key ->
+                    setOf(HOST_STATE_SELECTION_REASON)
+                "CodexWorkspaceResolution.SelectionRequired" in key && ".message|" in key ->
+                    setOf(HOST_STATE_SELECTION_MESSAGE)
+                else -> setOf(HOST_STATE_WORKSPACE)
+            }
+            assertEquals(
+                (setOf(HOST_STATE_GETTER, HOST_STATE_OBSERVER, HOST_STATE_STATUS) + leaves).sorted(),
+                hostStateClaims.getValue(key),
+            )
+        }
+        assertTrue(hostStateClaims.values.all { claim ->
+            HOST_STATE_GETTER in claim && HOST_STATE_OBSERVER in claim && HOST_STATE_STATUS in claim
+        })
+        assertTrue(evidence.projectionClaims.filter { it.capabilityKey in keys }.all {
+            it.sharedScenarios.toSet() == setOf(
+                CrossLanguageBindingScenario.STATE_CURRENT_VALUE,
+                CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE,
+                CrossLanguageBindingScenario.SUBSCRIPTION_CANCELLATION,
+                CrossLanguageBindingScenario.VALUE_CONVERSION,
+            )
+        })
+        assertEquals(
+            setOf(
+                CrossLanguageBindingScenario.STATE_CURRENT_VALUE,
+                CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE,
+                CrossLanguageBindingScenario.SUBSCRIPTION_CANCELLATION,
+            ),
+            evidence.projectionClaims.single { it.capabilityKey == lifecycle }.sharedScenarios.toSet(),
+        )
+        assertEquals(319, 311 + hostStateClaims.size)
+        assertEquals(225, 233 - hostStateClaims.size)
+        assertEquals(556, 319 + 12 + 225)
+        assertEquals(41, 47 - 6)
+        assertEquals(276, currentPublicSymbols().size)
+        assertTrue(symbols.all { it in currentPublicSymbols() })
+        assertEquals(5, references.count { it.startsWith("getter:CodexHostState#") && it != HOST_STATE_STATUS })
+    }
+
+    @Test
+    fun `host state flattening rejects canonical public reference cardinality and reuse drift`() {
+        val lifecycle = d044HostLifecycleKey()
+        val keys = d044HostStateKeys()
+        val references = d044HostStateReferences()
+        val symbols = (references + listOf("class:CodexHost", "class:CodexHostState")).sorted()
+        val preparing = keys.single { "CodexHostState.Preparing" in it }
+
+        listOf(
+            preparing.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            preparing.replace("CodexHostState.Preparing", "CodexHostState.Ready"),
+            canonicalProperty(
+                "CodexHostState.Preparing",
+                "future",
+                "$CANONICAL_AGENT_PACKAGE/CodexWorkspace!!",
+            ).replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+            canonicalFunction(
+                "CodexHostState.Preparing",
+                "workspace",
+                returnType = "$CANONICAL_AGENT_PACKAGE/CodexWorkspace!!",
+            ).replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+            canonicalProperty(
+                "CodexHostState.Preparing",
+                "workspace",
+                "$CANONICAL_AGENT_PACKAGE/CodexWorkspace!!",
+                propertyKind = "VAR",
+            ).replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+            preparing.replace("CodexWorkspace!!", "CodexWorkspace?"),
+            "$preparing|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+            "$preparing|suspend=true",
+            preparing.replace(".workspace|{}workspace", ".otherWorkspace|{}workspace"),
+        ).forEach { drifted ->
+            val drift = derive(listOf(drifted), symbols, references = references)
+            assertEquals(listOf(drifted), drift.missingCapabilityKeys, "Accepted canonical drift: $drifted")
+            assertTrue(drift.projectionClaims.isEmpty())
+        }
+
+        listOf(
+            HOST_STATE_GETTER to HOST_STATE_GETTER.replace("CodexHostState", "string"),
+            HOST_STATE_OBSERVER to HOST_STATE_OBSERVER.replace("state: CodexHostState", "state: string"),
+            HOST_STATE_STATUS to HOST_STATE_STATUS.replace("CodexHostStatus", "string"),
+            HOST_STATE_WORKSPACE to HOST_STATE_WORKSPACE.replace(" | null | undefined", ""),
+            HOST_STATE_AGENT to HOST_STATE_AGENT.replace(" | null | undefined", ""),
+            HOST_STATE_FAILURE to HOST_STATE_FAILURE.replace(" | null | undefined", ""),
+            HOST_STATE_SELECTION_REASON to HOST_STATE_SELECTION_REASON.replace(" | null | undefined", ""),
+            HOST_STATE_SELECTION_MESSAGE to HOST_STATE_SELECTION_MESSAGE.replace(" | null | undefined", ""),
+        ).forEach { (exact, drifted) ->
+            val driftSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val driftReferences = references.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive((keys + lifecycle).sorted(), driftSymbols, references = driftReferences)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted public drift: $drifted")
+            assertTrue(drift.missingCapabilityKeys.isNotEmpty() || drift.errors.isNotEmpty())
+        }
+
+        listOf(
+            "property:CodexHostState#status[readonly]:CodexHostStatus",
+            "property:CodexHostState#workspace[readonly]:CodexWorkspace | null | undefined",
+            "method:CodexHost#observeState:(listener: (state: CodexHostState) => string): CodexObservation",
+        ).forEach { extra ->
+            val ambiguous = derive(
+                (keys + lifecycle).sorted(),
+                (symbols + extra).sorted(),
+                references = (references + extra).sorted(),
+            )
+            assertTrue(ambiguous.projectionClaims.none { it.capabilityKey in keys }, "Accepted extra shape: $extra")
+            assertTrue(ambiguous.missingCapabilityKeys.isNotEmpty() || ambiguous.errors.isNotEmpty())
+        }
+
+        symbols.filter { it.startsWith("getter:CodexHostState#") && it != HOST_STATE_STATUS }.forEach { leaf ->
+            val partial = derive(
+                (keys + lifecycle).sorted(),
+                symbols - leaf,
+                references = references - leaf,
+            )
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys }, "Accepted partial surface without $leaf")
+        }
+
+        references.forEach { symbol ->
+            val unreferenced = derive(
+                (keys + lifecycle).sorted(),
+                symbols,
+                references = references - symbol,
+            )
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && symbol in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        val partialCanonical = derive(
+            (keys.dropLast(1) + lifecycle).sorted(),
+            symbols,
+            references = references,
+        )
+        assertTrue(partialCanonical.errors.any { "Reused JavaScript/TypeScript public symbol" in it })
+        assertTrue(partialCanonical.projectionClaims.none { it.capabilityKey in keys })
+
+        listOf(
+            canonicalProperty(
+                "CodexHostState",
+                "workspace",
+                "$CANONICAL_AGENT_PACKAGE/CodexWorkspace?",
+            ).replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+            canonicalProperty(
+                "CodexHostState",
+                "status",
+                "$CANONICAL_AGENT_PACKAGE/CodexHostStatus!!",
+            ).replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+        ).forEach { arbitrary ->
+            val unauthorized = derive(
+                (keys + lifecycle + arbitrary).sorted(),
+                symbols,
+                references = references,
+            )
+            assertTrue(unauthorized.errors.any { "Reused JavaScript/TypeScript public symbol" in it && arbitrary in it })
+            assertTrue(unauthorized.projectionClaims.none { it.capabilityKey == arbitrary })
+        }
+
+        val future = canonicalProperty(
+            "CodexWorkspaceResolution.SelectionRequired",
+            "future",
+            "kotlin/String!!",
+        ).replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureEvidence = derive((keys + lifecycle + future).sorted(), symbols, references = references)
+        assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
+        assertEquals(keys.toSet(), futureEvidence.projectionClaims.mapTo(mutableSetOf()) { it.capabilityKey }
+            .intersect(keys.toSet()))
+    }
+
+    @Test
     fun `current immutable validation values project ten generic capabilities`() {
         val keys = listOf(
             canonicalConstructor(
@@ -3630,6 +3822,66 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         listOf("class:$owner", "getter:$owner#value:string")
     }.sorted()
 
+    private fun d044HostLifecycleKey(): String = canonicalProperty(
+        "CodexHost",
+        "lifecycleState",
+        "kotlinx.coroutines.flow/StateFlow<INVARIANT:$CANONICAL_AGENT_PACKAGE/CodexHostState!!>!!",
+    ).replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+
+    private fun d044HostStateKeys(): List<String> = listOf(
+        canonicalProperty(
+            "CodexHostState.Failed",
+            "failure",
+            "$CANONICAL_AGENT_PACKAGE/CodexFailure!!",
+        ),
+        canonicalProperty(
+            "CodexHostState.Failed",
+            "workspace",
+            "$CANONICAL_AGENT_PACKAGE/CodexWorkspace?",
+        ),
+        canonicalProperty(
+            "CodexHostState.Preparing",
+            "workspace",
+            "$CANONICAL_AGENT_PACKAGE/CodexWorkspace!!",
+        ),
+        canonicalProperty(
+            "CodexHostState.Ready",
+            "agent",
+            "$CANONICAL_AGENT_PACKAGE/CodexAgent!!",
+        ),
+        canonicalProperty(
+            "CodexHostState.WorkspaceRequired",
+            "requirement",
+            "$CANONICAL_AGENT_PACKAGE/CodexWorkspaceResolution.SelectionRequired!!",
+        ),
+        canonicalProperty(
+            "CodexWorkspaceResolution.Available",
+            "workspace",
+            "$CANONICAL_AGENT_PACKAGE/CodexWorkspace!!",
+        ),
+        canonicalProperty(
+            "CodexWorkspaceResolution.SelectionRequired",
+            "message",
+            "kotlin/String!!",
+        ),
+        canonicalProperty(
+            "CodexWorkspaceResolution.SelectionRequired",
+            "reason",
+            "$CANONICAL_AGENT_PACKAGE/CodexWorkspaceSelectionReason!!",
+        ),
+    ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }.sorted()
+
+    private fun d044HostStateReferences(): List<String> = listOf(
+        HOST_STATE_AGENT,
+        HOST_STATE_FAILURE,
+        HOST_STATE_GETTER,
+        HOST_STATE_OBSERVER,
+        HOST_STATE_SELECTION_MESSAGE,
+        HOST_STATE_SELECTION_REASON,
+        HOST_STATE_STATUS,
+        HOST_STATE_WORKSPACE,
+    ).sorted()
+
     private fun symbolExports(symbols: List<String>): Pair<List<String>, List<String>> {
         val classes = symbols.filter { it.startsWith("class:") }
             .map { it.substringAfter(':').substringBefore(':') }
@@ -3899,6 +4151,21 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         private const val AGENT_INVOCATION_TYPE =
             "type:AgentInvocation:AgentPluginInvocation | AgentSkillInvocation"
         private const val CANONICAL_AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent"
+        private const val HOST_STATE_GETTER = "getter:CodexHost#state:CodexHostState"
+        private const val HOST_STATE_OBSERVER =
+            "method:CodexHost#observeState:" +
+                "(listener: (state: CodexHostState) => void): CodexObservation"
+        private const val HOST_STATE_STATUS = "getter:CodexHostState#status:CodexHostStatus"
+        private const val HOST_STATE_WORKSPACE =
+            "getter:CodexHostState#workspace:CodexWorkspace | null | undefined"
+        private const val HOST_STATE_AGENT =
+            "getter:CodexHostState#agent:CodexAgent | null | undefined"
+        private const val HOST_STATE_FAILURE =
+            "getter:CodexHostState#failure:CodexFailure | null | undefined"
+        private const val HOST_STATE_SELECTION_REASON =
+            "getter:CodexHostState#selectionReason:CodexWorkspaceSelectionReason | null | undefined"
+        private const val HOST_STATE_SELECTION_MESSAGE =
+            "getter:CodexHostState#selectionMessage:string | null | undefined"
         private const val CREATE_CODEX_HOST =
             "function:createCodexHost:" +
                 "(bundleDirectory: string, dataDirectory: string, clientName: string, " +

@@ -155,6 +155,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
         val projections = uses.map(Pair<String, JavaScriptProjection>::second)
         if (projections.size > 1 &&
             !isAllowedLiteralTypeReuse(symbol, projections) &&
+            !isAllowedHostStateFlatteningReuse(symbol, projections) &&
             !isAllowedConversationStateEnvelopeReuse(symbol, projections) &&
             !isAllowedConversationStateLeafReuse(symbol, projections) &&
             !isAllowedAgentInvocationMemberReuse(symbol, projections) &&
@@ -819,6 +820,7 @@ private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.isD044HostStateOwner()) return hostStateFlatteningProjectionCandidates(member, symbols)
     if (member.isD043SurfaceMember() && !member.isExactD043SurfaceMember()) return emptyList()
     val flattened = flattenedValueProjectionCandidates(member, symbols)
     if (flattened.isNotEmpty() || member.requiresExactD043FlattenedProjection()) return flattened
@@ -864,6 +866,26 @@ private const val javaScriptRenameConversation =
 private const val javaScriptSelectWorkspace =
     "method:CodexHost#selectWorkspace:" +
         "(path: string, signal?: AbortSignal | null | undefined): Promise<void>"
+private const val javaScriptHostStateGetter = "getter:CodexHost#state:CodexHostState"
+private const val javaScriptHostStateObserver =
+    "method:CodexHost#observeState:(listener: (state: CodexHostState) => void): CodexObservation"
+private const val javaScriptHostStateStatus = "getter:CodexHostState#status:CodexHostStatus"
+private const val javaScriptHostStateWorkspace =
+    "getter:CodexHostState#workspace:CodexWorkspace | null | undefined"
+private const val javaScriptHostStateAgent = "getter:CodexHostState#agent:CodexAgent | null | undefined"
+private const val javaScriptHostStateFailure =
+    "getter:CodexHostState#failure:CodexFailure | null | undefined"
+private const val javaScriptHostStateSelectionReason =
+    "getter:CodexHostState#selectionReason:CodexWorkspaceSelectionReason | null | undefined"
+private const val javaScriptHostStateSelectionMessage =
+    "getter:CodexHostState#selectionMessage:string | null | undefined"
+private val javaScriptHostStateEnvelope = setOf(javaScriptHostStateGetter, javaScriptHostStateObserver)
+private val javaScriptHostStateSharedSymbols = javaScriptHostStateEnvelope + setOf(
+    javaScriptHostStateStatus,
+    javaScriptHostStateWorkspace,
+    javaScriptHostStateSelectionReason,
+    javaScriptHostStateSelectionMessage,
+)
 
 private val javaScriptConversationIdSymbols = listOf(
     javaScriptDeleteConversation,
@@ -917,6 +939,79 @@ private fun flattenedValueProjectionCandidates(
         )
     )
 }
+
+private fun hostStateFlatteningProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    val leaves = member.exactD044HostStateLeaves() ?: return emptyList()
+    val projectedSymbols = (javaScriptHostStateEnvelope + javaScriptHostStateStatus + leaves).sorted()
+    if (!hasExactD044HostStateInventory(symbols, projectedSymbols)) return emptyList()
+    return listOf(
+        JavaScriptProjectionCandidate(
+            publicSymbols = projectedSymbols,
+            scenarios = javaScriptStateScenarios + CrossLanguageBindingScenario.VALUE_CONVERSION,
+            requiresConsumerReference = true,
+            shareablePublicSymbols = projectedSymbols.toSet().intersect(javaScriptHostStateSharedSymbols),
+        ),
+    )
+}
+
+private fun hasExactD044HostStateInventory(
+    symbols: List<JavaScriptPublicSymbol>,
+    expectedSymbols: List<String>,
+): Boolean = hasExactJavaScriptSymbolInventory(symbols, expectedSymbols) && expectedSymbols.all { raw ->
+    val expected = parseJavaScriptPublicSymbol(raw)
+    symbols.filter { it.owner == expected.owner && it.name == expected.name }
+        .map(JavaScriptPublicSymbol::raw) == listOf(raw)
+}
+
+private fun CanonicalJavaScriptMember.isD044HostStateOwner(): Boolean = simpleOwner in setOf(
+    "CodexHostState.Failed",
+    "CodexHostState.Preparing",
+    "CodexHostState.Ready",
+    "CodexHostState.WorkspaceRequired",
+    "CodexWorkspaceResolution.Available",
+    "CodexWorkspaceResolution.SelectionRequired",
+)
+
+private fun CanonicalJavaScriptMember.exactD044HostStateLeaves(): Set<String>? {
+    if (owner.substringBeforeLast('/') != canonicalAgentPackage) return null
+    return when {
+        isExactProperty("CodexHostState.Preparing", "workspace", "$canonicalAgentPackage/CodexWorkspace!!") ||
+            isExactProperty(
+                "CodexWorkspaceResolution.Available",
+                "workspace",
+                "$canonicalAgentPackage/CodexWorkspace!!",
+            ) ||
+            isExactProperty("CodexHostState.Failed", "workspace", "$canonicalAgentPackage/CodexWorkspace?") ->
+            setOf(javaScriptHostStateWorkspace)
+        isExactProperty("CodexHostState.Ready", "agent", "$canonicalAgentPackage/CodexAgent!!") ->
+            setOf(javaScriptHostStateAgent)
+        isExactProperty("CodexHostState.Failed", "failure", "$canonicalAgentPackage/CodexFailure!!") ->
+            setOf(javaScriptHostStateFailure)
+        isExactProperty(
+            "CodexHostState.WorkspaceRequired",
+            "requirement",
+            "$canonicalAgentPackage/CodexWorkspaceResolution.SelectionRequired!!",
+        ) -> setOf(javaScriptHostStateSelectionReason, javaScriptHostStateSelectionMessage)
+        isExactProperty(
+            "CodexWorkspaceResolution.SelectionRequired",
+            "reason",
+            "$canonicalAgentPackage/CodexWorkspaceSelectionReason!!",
+        ) -> setOf(javaScriptHostStateSelectionReason)
+        isExactProperty("CodexWorkspaceResolution.SelectionRequired", "message", "kotlin/String!!") ->
+            setOf(javaScriptHostStateSelectionMessage)
+        else -> null
+    }
+}
+
+private fun CanonicalJavaScriptMember.isExactD044HostLifecycleState(): Boolean =
+    owner == "$canonicalAgentPackage/CodexHost" && isExactProperty(
+        "CodexHost",
+        "lifecycleState",
+        "kotlinx.coroutines.flow/StateFlow<INVARIANT:$canonicalAgentPackage/CodexHostState!!>!!",
+    )
 
 private fun CanonicalJavaScriptMember.exactAgentCapabilityMetadataSymbol(): String? {
     if (owner != "io.github.codex_agent_labs.codexmobile.agent/AgentCapability") return null
@@ -1283,14 +1378,22 @@ private fun stateFlowProjectionCandidates(
             "static" !in it.qualifiers && javascriptObserverSignatureCompatible(it.signature.orEmpty(), elementType)
     }
     return getters.flatMap { getter -> observers.map { observer -> getter to observer } }.map { (getter, observer) ->
+        val publicSymbols = listOf(getter.raw, observer.raw).sorted()
         JavaScriptProjectionCandidate(
-            publicSymbols = listOf(getter.raw, observer.raw).sorted(),
+            publicSymbols = publicSymbols,
             scenarios = listOf(
                 CrossLanguageBindingScenario.STATE_CURRENT_VALUE,
                 CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE,
                 CrossLanguageBindingScenario.SUBSCRIPTION_CANCELLATION,
             ),
             requiresConsumerReference = true,
+            shareablePublicSymbols = if (
+                member.isExactD044HostLifecycleState() && publicSymbols.toSet() == javaScriptHostStateEnvelope
+            ) {
+                javaScriptHostStateEnvelope
+            } else {
+                emptySet()
+            },
         )
     }
 }
@@ -1816,6 +1919,70 @@ private fun isAllowedLiteralTypeReuse(symbol: String, projections: List<JavaScri
             projections.map { it.member.owner }.distinct().size == 1
         projections.all { it.member.kind == CanonicalJavaScriptMemberKind.OBJECT } ->
             projections.map { it.member.owner.substringBeforeLast('.') }.distinct().size == 1
+        else -> false
+    }
+}
+
+private val d044HostStateMembers = setOf(
+    "CodexHostState.Failed" to "failure",
+    "CodexHostState.Failed" to "workspace",
+    "CodexHostState.Preparing" to "workspace",
+    "CodexHostState.Ready" to "agent",
+    "CodexHostState.WorkspaceRequired" to "requirement",
+    "CodexWorkspaceResolution.Available" to "workspace",
+    "CodexWorkspaceResolution.SelectionRequired" to "message",
+    "CodexWorkspaceResolution.SelectionRequired" to "reason",
+)
+
+private fun JavaScriptProjection.isExactD044HostStateProjection(): Boolean {
+    val leaves = member.exactD044HostStateLeaves() ?: return false
+    val expectedSymbols = (javaScriptHostStateEnvelope + javaScriptHostStateStatus + leaves).sorted()
+    return publicSymbols == expectedSymbols &&
+        shareablePublicSymbols == expectedSymbols.toSet().intersect(javaScriptHostStateSharedSymbols)
+}
+
+private fun isAllowedHostStateFlatteningReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean {
+    val hostStateProjections = projections.filter(JavaScriptProjection::isExactD044HostStateProjection)
+    fun exactHostStateMembers(expected: Set<Pair<String, String>>): Boolean =
+        hostStateProjections.size == expected.size &&
+            hostStateProjections.map { it.member.simpleOwner to it.member.name }.toSet() == expected
+
+    return when (symbol) {
+        in javaScriptHostStateEnvelope -> {
+            val lifecycle = projections.singleOrNull { projection ->
+                projection.member.isExactD044HostLifecycleState() &&
+                    projection.publicSymbols == javaScriptHostStateEnvelope.sorted() &&
+                    projection.shareablePublicSymbols == javaScriptHostStateEnvelope
+            }
+            projections.size == 9 && lifecycle != null && exactHostStateMembers(d044HostStateMembers)
+        }
+        javaScriptHostStateStatus ->
+            projections.size == 8 && exactHostStateMembers(d044HostStateMembers)
+        javaScriptHostStateWorkspace ->
+            projections.size == 3 && exactHostStateMembers(
+                setOf(
+                    "CodexHostState.Failed" to "workspace",
+                    "CodexHostState.Preparing" to "workspace",
+                    "CodexWorkspaceResolution.Available" to "workspace",
+                ),
+            )
+        javaScriptHostStateSelectionReason ->
+            projections.size == 2 && exactHostStateMembers(
+                setOf(
+                    "CodexHostState.WorkspaceRequired" to "requirement",
+                    "CodexWorkspaceResolution.SelectionRequired" to "reason",
+                ),
+            )
+        javaScriptHostStateSelectionMessage ->
+            projections.size == 2 && exactHostStateMembers(
+                setOf(
+                    "CodexHostState.WorkspaceRequired" to "requirement",
+                    "CodexWorkspaceResolution.SelectionRequired" to "message",
+                ),
+            )
         else -> false
     }
 }

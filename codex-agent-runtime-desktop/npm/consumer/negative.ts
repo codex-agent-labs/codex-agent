@@ -35,6 +35,7 @@ import type {
   AgentCapability,
   AgentInvocation,
   CodexAgent,
+  CodexHostState,
   CodexMessage,
   CodexTurnProgress,
 } from "@codex-agent-labs/codex-agent";
@@ -51,6 +52,18 @@ agentCapabilityDisplayLabel("WEB_SEARCH");
 agentCapabilityIcon("WEB_SEARCH");
 // @ts-expect-error Raw Kotlin enum names are outside the public TypeScript domain.
 agentCapabilityPromptLabel("WEB_SEARCH");
+
+declare const hostState: CodexHostState;
+// @ts-expect-error Host-state workspaces are readonly.
+hostState.workspace = null;
+// @ts-expect-error Host-state agents are readonly.
+hostState.agent = null;
+// @ts-expect-error Host-state selection reasons are readonly.
+hostState.selectionReason = null;
+// @ts-expect-error Host-state selection messages are readonly.
+hostState.selectionMessage = null;
+// @ts-expect-error Host-state failures are readonly.
+hostState.failure = null;
 
 const skillInvocation = new AgentSkillInvocation("review", "/skills/review/SKILL.md");
 // @ts-expect-error Skill invocation names are strings.

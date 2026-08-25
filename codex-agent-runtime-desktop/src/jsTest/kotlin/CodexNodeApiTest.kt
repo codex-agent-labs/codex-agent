@@ -10,6 +10,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexRuntimeFeature
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceResolution
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelection
+import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelectionReason
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceStore
 import io.github.codex_agent_labs.codexmobile.agent.PreparedCodexRuntime
 import io.github.codex_agent_labs.codexmobile.appserver.runtime.CodexJsonLine
@@ -49,10 +50,21 @@ class CodexNodeApiTest {
     @Test
     fun projectsCanonicalLifecycleIdentityFailureAndOwnership() = runTest {
         val runtime = ApiTestRuntime()
-        val core = CoreHost(ApiTestPlatform(runtime), CodexClientInfo("node_test", "Node Test", "test"))
+        val prepareEntered = CompletableDeferred<Unit>()
+        val prepareRelease = CompletableDeferred<Unit>()
+        val platform = ApiTestPlatform(
+            runtime = runtime,
+            restoreResolution = CodexWorkspaceResolution.SelectionRequired(
+                CodexWorkspaceSelectionReason.NOT_FOUND,
+                "Choose a workspace",
+            ),
+            prepareEntered = prepareEntered,
+            prepareRelease = prepareRelease,
+        )
+        val core = CoreHost(platform, CodexClientInfo("node_test", "Node Test", "test"))
         val host = wrapCodexHost(core)
-        val hostStates = mutableListOf<String>()
-        val hostObservation = host.observeState { hostStates += it.status }
+        val hostStates = mutableListOf<CodexHostState>()
+        val hostObservation = host.observeState { hostStates += it }
 
         AgentApprovalPreset.entries.forEach { preset ->
             assertEquals(preset.displayName, codexApprovalPresetDisplayName(preset.name.lowercase()))
@@ -323,16 +335,56 @@ class CodexNodeApiTest {
         assertEquals("updatedAtEpochSeconds must be a bigint", stringSummaryTimestamp?.message)
 
         yield()
-        assertEquals(listOf("new"), hostStates)
+        assertEquals(listOf("new"), hostStates.map(CodexHostState::status))
         assertTrue(isFrozen(host.state))
         assertEquals(0, enumerablePropertyCount(host))
         host.start().await()
-        yield()
+        awaitCondition { hostStates.lastOrNull()?.status == "workspace_required" }
+        val requiredState = host.state
+        assertEquals("workspace_required", requiredState.status)
+        assertEquals("not_found", requiredState.selectionReason)
+        assertEquals("Choose a workspace", requiredState.selectionMessage)
+        assertNull(requiredState.workspace)
+        assertNull(requiredState.agent)
+        assertNull(requiredState.failure)
+        assertTrue(isFrozen(requiredState))
+        assertEquals(requiredState.selectionReason, hostStates.last().selectionReason)
+        assertEquals(requiredState.selectionMessage, hostStates.last().selectionMessage)
+
+        val selection = host.selectWorkspace("/workspace")
+        prepareEntered.await()
+        awaitCondition { hostStates.lastOrNull()?.status == "preparing" }
+        val preparingState = host.state
+        assertEquals("preparing", preparingState.status)
+        assertEquals("/workspace", preparingState.workspace?.path)
+        assertEquals("/workspace", preparingState.workspace?.displayName)
+        assertNull(preparingState.agent)
+        assertNull(preparingState.selectionReason)
+        assertNull(preparingState.selectionMessage)
+        assertNull(preparingState.failure)
+        assertTrue(isFrozen(preparingState))
+        assertTrue(isFrozen(checkNotNull(preparingState.workspace)))
+        assertEquals(preparingState.workspace.path, hostStates.last().workspace?.path)
+        prepareRelease.complete(Unit)
+        selection.await()
+        awaitCondition { hostStates.lastOrNull()?.status == "ready" }
         assertEquals("ready", host.state.status)
-        assertEquals("ready", hostStates.last())
+        assertEquals("/workspace", platform.selectedWorkspacePath)
 
         val agent = assertIs<CodexAgent>(host.agent)
-        assertSame(agent, host.state.agent)
+        val readyState = host.state
+        assertSame(agent, readyState.agent)
+        assertEquals("/workspace", readyState.workspace?.path)
+        assertEquals("/workspace", readyState.workspace?.displayName)
+        assertNull(readyState.selectionReason)
+        assertNull(readyState.selectionMessage)
+        assertNull(readyState.failure)
+        assertTrue(isFrozen(readyState))
+        assertTrue(isFrozen(checkNotNull(readyState.workspace)))
+        assertSame(agent, hostStates.last().agent)
+        assertEquals(readyState.workspace.path, hostStates.last().workspace?.path)
+        assertEquals("workspace_required", requiredState.status)
+        assertEquals("preparing", preparingState.status)
         val unavailableConnectors = agent.connectors
         assertSame(unavailableConnectors, agent.connectors)
         assertFalse(unavailableConnectors.isAvailable)
@@ -583,13 +635,73 @@ class CodexNodeApiTest {
         assertTrue(conversationObservation.isClosed)
         assertNull(agent.activeConversation)
 
+        platform.failNextPrepare = true
+        val prepareFailure = assertIs<CodexError>(
+            runCatching { host.selectWorkspace("/failed workspace").await() }.exceptionOrNull(),
+        )
+        assertEquals("runtime_prepare_failed", prepareFailure.code)
+        assertEquals("Could not prepare Codex", prepareFailure.message)
+        assertTrue(prepareFailure.recoverable)
+        awaitCondition { hostStates.lastOrNull()?.status == "failed" }
+        val failedState = host.state
+        assertEquals("/failed workspace", failedState.workspace?.path)
+        assertEquals("/failed workspace", failedState.workspace?.displayName)
+        assertNull(failedState.agent)
+        assertNull(failedState.selectionReason)
+        assertNull(failedState.selectionMessage)
+        assertEquals("runtime_prepare_failed", failedState.failure?.code)
+        assertEquals("Could not prepare Codex", failedState.failure?.message)
+        assertTrue(checkNotNull(failedState.failure).recoverable)
+        assertTrue(isFrozen(failedState))
+        assertTrue(isFrozen(checkNotNull(failedState.workspace)))
+        assertTrue(isFrozen(checkNotNull(failedState.failure)))
+        assertEquals(failedState.workspace.path, hostStates.last().workspace?.path)
+        assertEquals(failedState.failure.code, hostStates.last().failure?.code)
+
         host.close().await()
         host.close().await()
         awaitCondition { hostObservation.isClosed && activeObservation.isClosed }
-        assertEquals("closed", hostStates.last())
+        assertEquals("closed", hostStates.last().status)
         assertTrue(hostObservation.isClosed)
         assertTrue(activeObservation.isClosed)
         assertTrue(runtime.closed)
+        hostStates.forEach { state ->
+            assertTrue(isFrozen(state))
+            state.workspace?.let { assertTrue(isFrozen(it)) }
+            state.failure?.let { assertTrue(isFrozen(it)) }
+        }
+
+        val restoreFailureRuntime = ApiTestRuntime()
+        val restoreFailureHost = wrapCodexHost(CoreHost(
+            ApiTestPlatform(
+                runtime = restoreFailureRuntime,
+                restoreFailure = IllegalStateException("restore denied"),
+            ),
+            CodexClientInfo("node_test", "Node Test", "test"),
+        ))
+        val restoreFailureStates = mutableListOf<CodexHostState>()
+        val restoreFailureObservation = restoreFailureHost.observeState { restoreFailureStates += it }
+        val restoreFailure = assertIs<CodexError>(
+            runCatching { restoreFailureHost.start().await() }.exceptionOrNull(),
+        )
+        assertEquals("workspace_restore_failed", restoreFailure.code)
+        assertEquals("Could not restore the Codex workspace", restoreFailure.message)
+        assertTrue(restoreFailure.recoverable)
+        awaitCondition { restoreFailureStates.lastOrNull()?.status == "failed" }
+        val restorationFailedState = restoreFailureHost.state
+        assertNull(restorationFailedState.workspace)
+        assertNull(restorationFailedState.agent)
+        assertNull(restorationFailedState.selectionReason)
+        assertNull(restorationFailedState.selectionMessage)
+        assertEquals("workspace_restore_failed", restorationFailedState.failure?.code)
+        assertTrue(isFrozen(restorationFailedState))
+        assertTrue(isFrozen(checkNotNull(restorationFailedState.failure)))
+        assertNull(restoreFailureStates.last().workspace)
+        assertEquals(restorationFailedState.failure.code, restoreFailureStates.last().failure?.code)
+        restoreFailureHost.close().await()
+        awaitCondition { restoreFailureObservation.isClosed }
+        assertEquals("closed", restoreFailureStates.last().status)
+        assertFalse(restoreFailureRuntime.started)
 
         val skillFixture = createSkillTestFixture()
         val shellRuntime = ApiTestRuntime().apply {
@@ -1291,8 +1403,13 @@ private class ApiTestPlatform(
     private val restoreRelease: CompletableDeferred<Unit>? = null,
     private val features: Set<CodexRuntimeFeature> = emptySet(),
     private val workspacePath: String = "/workspace",
+    private val restoreResolution: CodexWorkspaceResolution? = null,
+    private val restoreFailure: Throwable? = null,
+    private val prepareEntered: CompletableDeferred<Unit>? = null,
+    private val prepareRelease: CompletableDeferred<Unit>? = null,
 ) : CodexPlatform {
     var selectedWorkspacePath: String? = null
+    var failNextPrepare: Boolean = false
 
     override val authorizationBrowser: CodexAuthorizationBrowser =
         CodexAuthorizationBrowser { CodexAuthorizationPresentation.None }
@@ -1306,17 +1423,26 @@ private class ApiTestPlatform(
         override suspend fun restore(): CodexWorkspaceResolution {
             restoreEntered?.complete(Unit)
             restoreRelease?.await()
-            return CodexWorkspaceResolution.Available(CodexWorkspace(workspacePath))
+            restoreFailure?.let { throw it }
+            return restoreResolution ?: CodexWorkspaceResolution.Available(CodexWorkspace(workspacePath))
         }
 
         override suspend fun clear(): Unit = Unit
     }
 
-    override suspend fun prepare(workspace: CodexWorkspace): PreparedCodexRuntime = PreparedCodexRuntime(
-        runtimeFactory = { runtime },
-        workspacePath = workspace.path,
-        features = features,
-    )
+    override suspend fun prepare(workspace: CodexWorkspace): PreparedCodexRuntime {
+        prepareEntered?.complete(Unit)
+        prepareRelease?.await()
+        if (failNextPrepare) {
+            failNextPrepare = false
+            error("prepare denied")
+        }
+        return PreparedCodexRuntime(
+            runtimeFactory = { runtime },
+            workspacePath = workspace.path,
+            features = features,
+        )
+    }
 }
 
 private class CountingAbortSignal : AbortSignal {
