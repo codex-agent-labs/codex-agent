@@ -10,6 +10,8 @@ import {
   AgentFormTextListValue,
   AgentFormTextValue,
   AgentHookActivity,
+  AgentHook,
+  AgentHookCatalog,
   AgentMcpEnvironmentVariable,
   AgentMcpOauthConfiguration,
   AgentMcpToolConfiguration,
@@ -25,6 +27,7 @@ import {
   CodexConnectors,
   CodexModels,
   CodexSkills,
+  CodexHooks,
   agentCapabilityDisplayLabel,
   agentCapabilityIcon,
   agentCapabilityId,
@@ -34,6 +37,8 @@ import {
 } from "@codex-agent-labs/codex-agent";
 import type {
   AgentCapability,
+  AgentHookHandler,
+  AgentHookTrustStatus,
   AgentInvocation,
   AgentTurnRequest,
   CodexAgent,
@@ -237,6 +242,62 @@ hookActivity.status = "completed";
 // @ts-expect-error Hook-activity details are readonly.
 hookActivity.details.push("changed");
 
+const commandHookHandler: AgentHookHandler = { type: "command", command: "./check", isAsync: false };
+const validHookTrustStatus: AgentHookTrustStatus = "untrusted";
+// @ts-expect-error Hook handler discriminants remain a closed typed domain.
+const unknownHookHandler: AgentHookHandler = { type: "future" };
+// @ts-expect-error Command hook handlers require a command.
+const missingHookCommand: AgentHookHandler = { type: "command", isAsync: false };
+// @ts-expect-error Command hook commands are strings.
+const numericHookCommand: AgentHookHandler = { type: "command", command: 1, isAsync: false };
+// @ts-expect-error Command hook async flags are booleans.
+const stringHookAsync: AgentHookHandler = { type: "command", command: "./check", isAsync: "false" };
+// @ts-expect-error MCP-tool hook handlers require a tool name.
+const missingHookTool: AgentHookHandler = { type: "mcp_tool", server: "review" };
+// @ts-expect-error Prompt handlers have no command payload.
+const promptWithCommand: AgentHookHandler = { type: "prompt", command: "./check" };
+// @ts-expect-error Immutable handler discriminants are readonly.
+commandHookHandler.type = "prompt";
+
+const hook = new AgentHook(
+  "review-hook", "sha256:review", true, "preToolUse", commandHookHandler, false,
+  "PROJECT", "/workspace/.codex/hooks.json", 10n, validHookTrustStatus,
+);
+// @ts-expect-error Hook trust statuses remain a closed typed domain.
+new AgentHook("hook", "hash", true, "stop", commandHookHandler, false, "USER", "/hooks.json", 10n, "unknown");
+// @ts-expect-error Hook timeout values are bigint values.
+new AgentHook("hook", "hash", true, "stop", commandHookHandler, false, "USER", "/hooks.json", 10, "trusted");
+// @ts-expect-error Hook handlers use the reviewed structural union.
+new AgentHook("hook", "hash", true, "stop", {}, false, "USER", "/hooks.json", 10n, "trusted");
+// @ts-expect-error Hook origins remain a closed typed domain.
+new AgentHook("hook", "hash", true, "stop", commandHookHandler, false, "USER", "/hooks.json", 10n, "trusted", null, null, null, "repo");
+// @ts-expect-error Hook uninstallability is boolean.
+new AgentHook("hook", "hash", true, "stop", commandHookHandler, false, "USER", "/hooks.json", 10n, "trusted", null, null, null, "user", "yes");
+// @ts-expect-error Hook event names are strings.
+new AgentHook("hook", "hash", true, 1, commandHookHandler, false, "USER", "/hooks.json", 10n, "trusted");
+// @ts-expect-error Immutable hook keys are readonly.
+hook.key = "changed";
+// @ts-expect-error Immutable hook handlers are readonly.
+hook.handler = { type: "prompt" };
+// @ts-expect-error Immutable nested handler fields are readonly.
+if (hook.handler.type === "command") hook.handler.command = "changed";
+// @ts-expect-error Derived hook trustability is readonly.
+hook.canTrust = false;
+
+const hookCatalog = new AgentHookCatalog([hook], ["warning"], ["error"]);
+// @ts-expect-error Hook catalogs contain canonical hook values.
+new AgentHookCatalog(["hook"]);
+// @ts-expect-error Hook catalog warnings are strings.
+new AgentHookCatalog([hook], [1]);
+// @ts-expect-error Hook catalog errors are strings.
+new AgentHookCatalog([hook], [], [1]);
+// @ts-expect-error Hook catalog hook collections are readonly.
+hookCatalog.hooks.push(hook);
+// @ts-expect-error Immutable hook catalogs cannot replace warning collections.
+hookCatalog.warnings = [];
+// @ts-expect-error Hook catalog errors are readonly.
+hookCatalog.errors.push("changed");
+
 const connector = new AgentConnector("drive", "Google Drive", "Drive connector", null, true, true, ["Drive"]);
 // @ts-expect-error Connector names are required.
 new AgentConnector("drive");
@@ -381,6 +442,10 @@ skillChunk.nextOffset = 8n;
 declare const skills: CodexSkills;
 // @ts-expect-error Skill controllers are created by an Agent.
 new CodexSkills();
+
+declare const hooks: CodexHooks;
+// @ts-expect-error Hook controllers are created by an Agent.
+new CodexHooks();
 
 declare const models: CodexModels;
 // @ts-expect-error Model controllers are created by an Agent.
@@ -531,6 +596,26 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   await skills.uninstall({});
   // @ts-expect-error Skill-uninstall signals must be AbortSignal values.
   await skills.uninstall(skill, {});
+  // @ts-expect-error Hook controllers are owned by the Agent.
+  agent.hooks = hooks;
+  // @ts-expect-error Hook feature availability is readonly.
+  hooks.isAvailable = false;
+  // @ts-expect-error Hook-list signals must be AbortSignal values.
+  await hooks.list({});
+  // @ts-expect-error Hook installation directories are strings.
+  await hooks.install(1, "user");
+  // @ts-expect-error Hook installation scopes remain a closed typed domain.
+  await hooks.install("/hooks/review", "repo");
+  // @ts-expect-error Hook-install signals must be AbortSignal values.
+  await hooks.install("/hooks/review", "workspace", {});
+  // @ts-expect-error Hook uninstallation requires a canonical hook value.
+  await hooks.uninstall({});
+  // @ts-expect-error Hook-uninstall signals must be AbortSignal values.
+  await hooks.uninstall(hook, {});
+  // @ts-expect-error Hook trust requires a canonical hook value.
+  await hooks.trust({});
+  // @ts-expect-error Hook-trust signals must be AbortSignal values.
+  await hooks.trust(hook, {});
   // @ts-expect-error Conversation IDs are strings.
   await agent.rename(1, "Renamed conversation");
   // @ts-expect-error Conversation names are strings.

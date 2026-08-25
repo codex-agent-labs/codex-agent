@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 284-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 315-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -24,11 +24,11 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         ).sorted()
         val evidence = deriveCrossLanguageJavaScriptBindingEvidence(
             canonical = canonicalEvidence(keys),
-            packedApi = packedEvidence(currentPublicSymbols(), schema = 1),
+            packedApi = packedEvidence(d048CurrentPublicSymbols(), schema = 1),
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(284, evidence.packedApi.publicSymbols.size)
+        assertEquals(315, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -184,8 +184,8 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         val new = canonicalObject("CodexHostState.New")
         val restoring = canonicalObject("CodexHostState.Restoring")
         val closed = canonicalObject("CodexHostState.Closed")
-        val hookAgent = canonicalObject("AgentHookHandler.Agent")
-        val hookPrompt = canonicalObject("AgentHookHandler.Prompt")
+        val unsupportedFirst = canonicalObject("UnsupportedSingleton.First")
+        val unsupportedSecond = canonicalObject("UnsupportedSingleton.Second")
         val authenticationType =
             "type:CodexAuthenticationMethod:\"chatgpt_browser\" | \"chatgpt_device_code\" | \"api_key\""
         val hostType =
@@ -193,16 +193,16 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         val symbols = listOf(
             authenticationType,
             hostType,
-            "type:AgentHookHandler:\"agent\" | \"prompt\"",
+            "type:UnsupportedSingleton:\"first\" | \"second\"",
         ).sorted()
         val evidence = derive(
-            listOf(browser, device, new, restoring, closed, hookAgent, hookPrompt).sorted(),
+            listOf(browser, device, new, restoring, closed, unsupportedFirst, unsupportedSecond).sorted(),
             symbols,
             references = listOf(authenticationType, hostType),
         )
 
         assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
-        assertEquals(setOf(hookAgent, hookPrompt), evidence.missingCapabilityKeys.toSet())
+        assertEquals(setOf(unsupportedFirst, unsupportedSecond), evidence.missingCapabilityKeys.toSet())
         assertEquals(
             setOf(browser, device, new, restoring, closed),
             evidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).toSet(),
@@ -3737,6 +3737,105 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `hooks close exact canonical values handler union and controller through thirty one symbols`() {
+        val keys = d048HookKeys()
+        val symbols = d048HookSymbols()
+        val evidence = derive(keys, symbols, references = D048_PUBLIC_SYMBOLS)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+        val handlerKeys = keys.filter { "AgentHookHandler." in it }
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(35, keys.size)
+        assertEquals(8, handlerKeys.size)
+        assertEquals(35, claims.size)
+        handlerKeys.forEach { key ->
+            assertEquals(listOf(D048_AGENT_HOOK_HANDLER), claims.getValue(key).publicSymbols)
+            assertEquals(
+                setOf(
+                    CrossLanguageBindingScenario.VALUE_CONVERSION,
+                    CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING,
+                ),
+                claims.getValue(key).sharedScenarios.toSet(),
+            )
+        }
+        assertEquals(372, 337 + claims.size)
+        assertEquals(172, 207 - claims.size)
+        assertEquals(556, 372 + 12 + 172)
+        assertEquals(29, 36 - 7)
+        assertEquals(D048_PUBLIC_SYMBOLS, evidence.packedApi.referencedSymbols)
+        val currentSymbols = d048CurrentPublicSymbols()
+        assertEquals(315, currentSymbols.size)
+        assertTrue(D048_PUBLIC_SYMBOLS.all { it in currentSymbols })
+        assertEquals(77, symbolExports(currentSymbols).first.size)
+        assertEquals(49, symbolExports(currentSymbols).second.size)
+        assertEquals(273, 242 + D048_PUBLIC_SYMBOLS.size)
+    }
+
+    @Test
+    fun `hook handler union rejects canonical declaration reference and reuse drift`() {
+        val keys = d048HookKeys()
+        val symbols = d048HookSymbols()
+        val handlerKeys = keys.filter { "AgentHookHandler." in it }
+        val commandConstructor = handlerKeys.single { "AgentHookHandler.Command.<init>" in it }
+        val command = handlerKeys.single { "AgentHookHandler.Command.command" in it }
+
+        listOf(
+            commandConstructor.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            commandConstructor.replace("kind=constructor", "kind=function"),
+            commandConstructor.replaceFirst("kotlin/String!!", "kotlin/Int!!"),
+            commandConstructor.replaceFirst("default=false", "default=true"),
+            commandConstructor.replaceFirst("vararg=false", "vararg=true"),
+            commandConstructor.replace("suspend=false", "suspend=true"),
+            command.replace("kotlin/String!!", "kotlin/String?"),
+            command.replace("propertyKind=VAL", "propertyKind=VAR"),
+            command.replace("AgentHookHandler.Command.command", "AgentHookHandler.Command.future"),
+        ).forEach { drifted ->
+            val drift = derive(listOf(drifted), symbols, references = D048_PUBLIC_SYMBOLS)
+            assertTrue(drifted in drift.missingCapabilityKeys, "Accepted canonical drift: $drifted")
+            assertTrue(drift.projectionClaims.isEmpty())
+        }
+
+        listOf(
+            D048_AGENT_HOOK_HANDLER.replace("readonly type", "type"),
+            D048_AGENT_HOOK_HANDLER.replace("readonly command: string; ", ""),
+            D048_AGENT_HOOK_HANDLER.replace("readonly isAsync: boolean", "readonly isAsync?: boolean"),
+            D048_AGENT_HOOK_HANDLER.replace("readonly server: string", "readonly server: number"),
+            D048_AGENT_HOOK_HANDLER.replace("readonly server: string; readonly tool: string", "readonly tool: string; readonly server: string"),
+            D048_AGENT_HOOK_HANDLER.replace(" | { readonly type: \"prompt\"; }", ""),
+            "$D048_AGENT_HOOK_HANDLER | { readonly type: \"future\"; }",
+        ).forEach { drifted ->
+            val driftSymbols = symbols.map { if (it == D048_AGENT_HOOK_HANDLER) drifted else it }.sorted()
+            val drift = derive(keys, driftSymbols, references = D048_PUBLIC_SYMBOLS.map {
+                if (it == D048_AGENT_HOOK_HANDLER) drifted else it
+            }.sorted())
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in handlerKeys }, "Accepted alias drift: $drifted")
+        }
+
+        handlerKeys.forEach { omitted ->
+            val partial = derive(keys - omitted, symbols, references = D048_PUBLIC_SYMBOLS)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in handlerKeys }, "Accepted without $omitted")
+        }
+        val unreferenced = derive(keys, symbols, references = D048_PUBLIC_SYMBOLS - D048_AGENT_HOOK_HANDLER)
+        assertTrue(unreferenced.errors.any {
+            "Unreferenced exceptional" in it && D048_AGENT_HOOK_HANDLER in it
+        })
+        assertTrue(unreferenced.projectionClaims.none { it.capabilityKey in handlerKeys })
+
+        val future = canonicalProperty("AgentHookHandler.Command", "future", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureEvidence = derive(keys + future, symbols, references = D048_PUBLIC_SYMBOLS)
+        assertTrue(future in futureEvidence.missingCapabilityKeys)
+        assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey in handlerKeys })
+
+        val foreignReuse = canonicalProperty("ForeignHookHandler", "command", "kotlin/String!!")
+        val reused = derive(keys + foreignReuse, symbols, references = D048_PUBLIC_SYMBOLS)
+        assertEquals(listOf(foreignReuse), reused.missingCapabilityKeys)
+        assertTrue(reused.projectionClaims.none { it.capabilityKey == foreignReuse })
+    }
+
+    @Test
     fun `conversation StateFlows share only the exact aggregate envelope and retain unique typed leaves`() {
         val aggregateKeys = conversationStateFlowKeys()
         val keys = aggregateKeys + conversationOrdinaryStateKeys()
@@ -4281,6 +4380,115 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         D047_AGENT_TURN_REQUEST,
         D047_SEND_REQUEST,
     ).sorted()
+
+    private fun d048HookKeys(): List<String> = listOf(
+        canonicalObject("AgentHookHandler.Agent"),
+        canonicalConstructor(
+            "AgentHookHandler.Command",
+            listOf("kotlin/String!!", "kotlin/Boolean!!"),
+        ),
+        canonicalProperty("AgentHookHandler.Command", "command", "kotlin/String!!"),
+        canonicalProperty("AgentHookHandler.Command", "isAsync", "kotlin/Boolean!!"),
+        canonicalConstructor(
+            "AgentHookHandler.McpTool",
+            listOf("kotlin/String!!", "kotlin/String!!"),
+        ),
+        canonicalProperty("AgentHookHandler.McpTool", "server", "kotlin/String!!"),
+        canonicalProperty("AgentHookHandler.McpTool", "tool", "kotlin/String!!"),
+        canonicalObject("AgentHookHandler.Prompt"),
+        canonicalConstructor(
+            "AgentHook",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/Boolean!!",
+                "kotlin/String!!",
+                "example/AgentHookHandler!!",
+                "kotlin/Boolean!!",
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/Long!!",
+                "example/AgentHookTrustStatus!!",
+                "kotlin/String?",
+                "kotlin/String?",
+                "kotlin/String?",
+                "example/AgentResourceOrigin!!",
+                "kotlin/Boolean!!",
+            ),
+            defaultParameterIndices = (10..14).toSet(),
+        ),
+        canonicalProperty("AgentHook", "key", "kotlin/String!!"),
+        canonicalProperty("AgentHook", "currentHash", "kotlin/String!!"),
+        canonicalProperty("AgentHook", "isEnabled", "kotlin/Boolean!!"),
+        canonicalProperty("AgentHook", "eventName", "kotlin/String!!"),
+        canonicalProperty("AgentHook", "handler", "example/AgentHookHandler!!"),
+        canonicalProperty("AgentHook", "isManaged", "kotlin/Boolean!!"),
+        canonicalProperty("AgentHook", "source", "kotlin/String!!"),
+        canonicalProperty("AgentHook", "sourcePath", "kotlin/String!!"),
+        canonicalProperty("AgentHook", "timeoutSeconds", "kotlin/Long!!"),
+        canonicalProperty("AgentHook", "trustStatus", "example/AgentHookTrustStatus!!"),
+        canonicalProperty("AgentHook", "matcher", "kotlin/String?"),
+        canonicalProperty("AgentHook", "pluginId", "kotlin/String?"),
+        canonicalProperty("AgentHook", "statusMessage", "kotlin/String?"),
+        canonicalProperty("AgentHook", "origin", "example/AgentResourceOrigin!!"),
+        canonicalProperty("AgentHook", "canUninstall", "kotlin/Boolean!!"),
+        canonicalProperty("AgentHook", "canTrust", "kotlin/Boolean!!"),
+        canonicalConstructor(
+            "AgentHookCatalog",
+            listOf(
+                "kotlin.collections/List<INVARIANT:example/AgentHook!!>!!",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+            ),
+            defaultParameterIndices = setOf(1, 2),
+        ),
+        canonicalProperty(
+            "AgentHookCatalog",
+            "hooks",
+            "kotlin.collections/List<INVARIANT:example/AgentHook!!>!!",
+        ),
+        canonicalProperty(
+            "AgentHookCatalog",
+            "warnings",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        ),
+        canonicalProperty(
+            "AgentHookCatalog",
+            "errors",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        ),
+        canonicalProperty("CodexHooks", "isAvailable", "kotlin/Boolean!!"),
+        canonicalFunction(
+            "CodexHooks",
+            "list",
+            returnType = "example/AgentHookCatalog!!",
+            suspendFunction = true,
+        ),
+        canonicalFunction(
+            "CodexHooks",
+            "install",
+            returnType = "example/AgentHook!!",
+            suspendFunction = true,
+            parameters = listOf("kotlin/String!!", "example/AgentInstallationScope!!"),
+        ),
+        canonicalFunction(
+            "CodexHooks",
+            "uninstall",
+            suspendFunction = true,
+            parameters = listOf("example/AgentHook!!"),
+        ),
+        canonicalFunction(
+            "CodexHooks",
+            "trust",
+            suspendFunction = true,
+            parameters = listOf("example/AgentHook!!"),
+        ),
+        canonicalProperty("CodexAgent", "hooks", "example/CodexHooks!!"),
+    ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }.sorted()
+
+    private fun d048HookSymbols(): List<String> = (
+        D048_PUBLIC_SYMBOLS + listOf("class:CodexAgent")
+    ).distinct().sorted()
 
     private fun conversationStateSymbols(): List<String> = listOf(
         "class:CodexConversation",
@@ -4833,6 +5041,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             .also { assertEquals(284, it.size) }
     }
 
+    private fun d048CurrentPublicSymbols(): List<String> =
+        (currentPublicSymbols() + D048_PUBLIC_SYMBOLS).distinct().sorted()
+            .also { assertEquals(315, it.size) }
+
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
@@ -4965,6 +5177,53 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "method:CodexConversation#sendRequest:" +
                 "(request: AgentTurnRequest, " +
                 "signal?: AbortSignal | null | undefined): Promise<void>"
+        private const val D048_AGENT_HOOK_HANDLER =
+            "type:AgentHookHandler:{ readonly type: \"agent\"; } | " +
+                "{ readonly type: \"command\"; readonly command: string; readonly isAsync: boolean; } | " +
+                "{ readonly type: \"mcp_tool\"; readonly server: string; readonly tool: string; } | " +
+                "{ readonly type: \"prompt\"; }"
+        private val D048_PUBLIC_SYMBOLS = listOf(
+            "class:AgentHook",
+            "class:AgentHookCatalog",
+            "class:CodexHooks",
+            "constructor:AgentHook#(key: string, currentHash: string, isEnabled: boolean, " +
+                "eventName: string, handler: AgentHookHandler, isManaged: boolean, source: string, " +
+                "sourcePath: string, timeoutSeconds: bigint, trustStatus: AgentHookTrustStatus, " +
+                "matcher?: string | null | undefined, pluginId?: string | null | undefined, " +
+                "statusMessage?: string | null | undefined, origin?: AgentResourceOrigin, " +
+                "canUninstall?: boolean)",
+            "constructor:AgentHookCatalog#(hooks: ReadonlyArray<AgentHook>, " +
+                "warnings?: ReadonlyArray<string>, errors?: ReadonlyArray<string>)",
+            "getter:AgentHook#canTrust:boolean",
+            "getter:AgentHook#canUninstall:boolean",
+            "getter:AgentHook#currentHash:string",
+            "getter:AgentHook#eventName:string",
+            "getter:AgentHook#handler:AgentHookHandler",
+            "getter:AgentHook#isEnabled:boolean",
+            "getter:AgentHook#isManaged:boolean",
+            "getter:AgentHook#key:string",
+            "getter:AgentHook#matcher:string | null | undefined",
+            "getter:AgentHook#origin:AgentResourceOrigin",
+            "getter:AgentHook#pluginId:string | null | undefined",
+            "getter:AgentHook#source:string",
+            "getter:AgentHook#sourcePath:string",
+            "getter:AgentHook#statusMessage:string | null | undefined",
+            "getter:AgentHook#timeoutSeconds:bigint",
+            "getter:AgentHook#trustStatus:AgentHookTrustStatus",
+            "getter:AgentHookCatalog#errors:ReadonlyArray<string>",
+            "getter:AgentHookCatalog#hooks:ReadonlyArray<AgentHook>",
+            "getter:AgentHookCatalog#warnings:ReadonlyArray<string>",
+            "getter:CodexAgent#hooks:CodexHooks",
+            "getter:CodexHooks#isAvailable:boolean",
+            "method:CodexHooks#install:(directory: string, scope: AgentInstallationScope, " +
+                "signal?: AbortSignal | null | undefined): Promise<AgentHook>",
+            "method:CodexHooks#list:(signal?: AbortSignal | null | undefined): Promise<AgentHookCatalog>",
+            "method:CodexHooks#trust:(hook: AgentHook, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+            "method:CodexHooks#uninstall:(hook: AgentHook, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+            D048_AGENT_HOOK_HANDLER,
+        ).sorted()
 
         private val AUTHENTICATION_OVERLOADS = listOf(
             "method:CodexAuthentication#authenticate:" +

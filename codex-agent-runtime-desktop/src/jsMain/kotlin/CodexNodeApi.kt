@@ -19,7 +19,11 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Number as Cor
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Text as CoreFormTextValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.TextList as CoreFormTextListValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentHookActivity as CoreHookActivity
+import io.github.codex_agent_labs.codexmobile.agent.AgentHook as CoreHook
+import io.github.codex_agent_labs.codexmobile.agent.AgentHookCatalog as CoreHookCatalog
+import io.github.codex_agent_labs.codexmobile.agent.AgentHookHandler as CoreHookHandler
 import io.github.codex_agent_labs.codexmobile.agent.AgentHookRunStatus as CoreHookRunStatus
+import io.github.codex_agent_labs.codexmobile.agent.AgentHookTrustStatus as CoreHookTrustStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentInstallationScope as CoreInstallationScope
 import io.github.codex_agent_labs.codexmobile.agent.AgentInvocation as CoreInvocation
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
@@ -51,6 +55,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexConversation as CoreCon
 import io.github.codex_agent_labs.codexmobile.agent.CodexFailure as CoreFailure
 import io.github.codex_agent_labs.codexmobile.agent.CodexHost as CoreHost
 import io.github.codex_agent_labs.codexmobile.agent.CodexHostState as CoreHostState
+import io.github.codex_agent_labs.codexmobile.agent.CodexHooks as CoreHooks
 import io.github.codex_agent_labs.codexmobile.agent.CodexModels as CoreModels
 import io.github.codex_agent_labs.codexmobile.agent.CodexOperationException
 import io.github.codex_agent_labs.codexmobile.agent.CodexPathWorkspaceSelection
@@ -97,6 +102,10 @@ public external interface AgentTurnRequest {
     public val invocations: Array<AgentInvocation>?
     public val collaborationMode: String?
 }
+
+/** Structural hook handler projected as a reviewed discriminated union. */
+@JsExport
+public external interface AgentHookHandler
 
 /** Immutable form option value. */
 @JsExport
@@ -358,6 +367,121 @@ public class AgentHookActivity public constructor(
         this.statusMessage = core.statusMessage
         this.details = core.details.toTypedArray()
         freezeSnapshot(this.details)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable hook metadata. Handler values use the reviewed AgentHookHandler structural union. */
+@JsExport
+public class AgentHook public constructor(
+    key: String,
+    currentHash: String,
+    isEnabled: Boolean,
+    eventName: String,
+    handler: AgentHookHandler,
+    isManaged: Boolean,
+    source: String,
+    sourcePath: String,
+    timeoutSeconds: Long,
+    trustStatus: String,
+    matcher: String? = null,
+    pluginId: String? = null,
+    statusMessage: String? = null,
+    origin: String = canonicalDefaultAgentHookOrigin(source, isManaged, pluginId),
+    canUninstall: Boolean = false,
+) {
+    public val key: String
+    public val currentHash: String
+    public val isEnabled: Boolean
+    public val eventName: String
+    public val handler: AgentHookHandler
+    public val isManaged: Boolean
+    public val source: String
+    public val sourcePath: String
+    public val timeoutSeconds: Long
+    public val trustStatus: String
+    public val matcher: String?
+    public val pluginId: String?
+    public val statusMessage: String?
+    public val origin: String
+    public val canUninstall: Boolean
+    public val canTrust: Boolean
+
+    init {
+        val core = canonicalHook(
+            key = key,
+            currentHash = currentHash,
+            isEnabled = isEnabled,
+            eventName = eventName,
+            handler = handler,
+            isManaged = isManaged,
+            source = source,
+            sourcePath = sourcePath,
+            timeoutSeconds = timeoutSeconds,
+            trustStatus = trustStatus,
+            matcher = matcher,
+            pluginId = pluginId,
+            statusMessage = statusMessage,
+            origin = origin,
+            canUninstall = canUninstall,
+        )
+        this.key = core.key
+        this.currentHash = core.currentHash
+        this.isEnabled = core.isEnabled
+        this.eventName = core.eventName
+        this.handler = core.handler.project()
+        this.isManaged = core.isManaged
+        this.source = core.source
+        this.sourcePath = core.sourcePath
+        this.timeoutSeconds = core.timeoutSeconds.toJavaScriptBigInt()
+        this.trustStatus = core.trustStatus.name.lowercase()
+        this.matcher = core.matcher
+        this.pluginId = core.pluginId
+        this.statusMessage = core.statusMessage
+        this.origin = core.origin.name.lowercase()
+        this.canUninstall = core.canUninstall
+        this.canTrust = core.canTrust
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable hook catalog. */
+@JsExport
+public class AgentHookCatalog public constructor(
+    hooks: Array<AgentHook>,
+    warnings: Array<String> = emptyArray(),
+    errors: Array<String> = emptyArray(),
+) {
+    public val hooks: Array<AgentHook>
+    public val warnings: Array<String>
+    public val errors: Array<String>
+
+    init {
+        requireJavaScriptArray(hooks, "hooks")
+        requireJavaScriptArray(warnings, "warnings")
+        requireJavaScriptArray(errors, "errors")
+        val core = CoreHookCatalog(
+            hooks = List(hooks.size) { index ->
+                requireOwnJavaScriptArrayIndex(hooks, index, "hooks")
+                val hook: Any? = hooks[index]
+                require(hook is AgentHook) { "hooks[$index] must be an AgentHook" }
+                hook.canonicalCopy()
+            },
+            warnings = List(warnings.size) { index ->
+                requireOwnJavaScriptArrayIndex(warnings, index, "warnings")
+                warnings[index].requireJavaScriptString("warnings[$index]")
+            },
+            errors = List(errors.size) { index ->
+                requireOwnJavaScriptArrayIndex(errors, index, "errors")
+                errors[index].requireJavaScriptString("errors[$index]")
+            },
+        )
+        this.hooks = core.hooks.map(CoreHook::project).toTypedArray()
+        this.warnings = core.warnings.toTypedArray()
+        this.errors = core.errors.toTypedArray()
+        freezeSnapshot(this.hooks)
+        freezeSnapshot(this.warnings)
+        freezeSnapshot(this.errors)
         freezeSnapshot(this)
     }
 }
@@ -1026,6 +1150,8 @@ public class CodexAgent internal constructor(
         CodexModels(host, core.models, jsApiToken)
     private val skillsProjection: CodexSkills =
         CodexSkills(host, core.skills, jsApiToken)
+    private val hooksProjection: CodexHooks =
+        CodexHooks(host, core.hooks, jsApiToken)
     private var cachedCoreConversation: CoreConversation? = null
     private var cachedConversation: CodexConversation? = null
 
@@ -1048,6 +1174,9 @@ public class CodexAgent internal constructor(
 
     public val skills: CodexSkills
         get() = skillsProjection
+
+    public val hooks: CodexHooks
+        get() = hooksProjection
 
     public val activeConversation: CodexConversation?
         get() = if (host.owns(core)) core.conversations.active.value?.let(::wrapConversation) else null
@@ -1250,6 +1379,57 @@ public class CodexSkills internal constructor(
     }
 }
 
+/** Agent-owned hook discovery, installation, and trust lifecycle. */
+@JsExport
+public class CodexHooks internal constructor(
+    private val host: CodexHost,
+    private val core: CoreHooks,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex hook catalogs are created by an Agent" }
+        hideBackingFields(this)
+    }
+
+    public val isAvailable: Boolean
+        get() = core.isAvailable
+
+    public fun list(
+        signal: AbortSignal? = null,
+    ): Promise<AgentHookCatalog> = host.operationScope().codexPromise(signal) {
+        core.list().project()
+    }
+
+    public fun install(
+        directory: String,
+        scope: String,
+        signal: AbortSignal? = null,
+    ): Promise<AgentHook> = host.operationScope().codexPromise(signal) {
+        core.install(
+            directory.requireJavaScriptString("directory"),
+            scope.toCoreInstallationScope(),
+        ).project()
+    }
+
+    public fun uninstall(
+        hook: AgentHook,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        val value: Any? = hook
+        require(value is AgentHook) { "hook must be an AgentHook" }
+        core.uninstall(value.canonicalCopy())
+    }
+
+    public fun trust(
+        hook: AgentHook,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        val value: Any? = hook
+        require(value is AgentHook) { "hook must be an AgentHook" }
+        core.trust(value.canonicalCopy())
+    }
+}
+
 /** Agent-owned authentication projection. */
 @JsExport
 public class CodexAuthentication internal constructor(
@@ -1423,6 +1603,24 @@ private fun canonicalDefaultAgentSkillOrigin(scope: String): String = CoreSkill(
     isEnabled = false,
 ).origin.name.lowercase()
 
+private fun canonicalDefaultAgentHookOrigin(
+    source: String,
+    isManaged: Boolean,
+    pluginId: String?,
+): String = CoreHook(
+    key = "",
+    currentHash = "",
+    isEnabled = false,
+    eventName = "",
+    handler = CoreHookHandler.Prompt,
+    isManaged = isManaged.requireJavaScriptBoolean("isManaged"),
+    source = source.requireJavaScriptString("source"),
+    sourcePath = "",
+    timeoutSeconds = 0,
+    trustStatus = CoreHookTrustStatus.TRUSTED,
+    pluginId = pluginId.requireJavaScriptNullableString("pluginId"),
+).origin.name.lowercase()
+
 private fun String.toCoreResolution(): CoreResolution {
     val value = requireJavaScriptString("resolution")
     return CoreResolution.entries.singleOrNull { it.name.lowercase() == value }
@@ -1457,6 +1655,12 @@ private fun String.toCorePlanStepStatus(): CorePlanStepStatus =
 private fun String.toCoreHookRunStatus(): CoreHookRunStatus =
     CoreHookRunStatus.entries.singleOrNull { it.name.lowercase() == this }
         ?: throw IllegalArgumentException("Unknown hook run status: $this")
+
+private fun String.toCoreHookTrustStatus(): CoreHookTrustStatus {
+    val value = requireJavaScriptString("trustStatus")
+    return CoreHookTrustStatus.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown hook trust status: $value")
+}
 
 private fun String.toCoreMcpEnvironmentSource(): CoreMcpEnvironmentSource = when (this) {
     "local" -> CoreMcpEnvironmentSource.LOCAL
@@ -1622,6 +1826,78 @@ private fun AgentSkill.canonicalCopy(): CoreSkill = canonicalSkill(
     origin = origin,
 )
 
+private fun AgentHookHandler.toCoreHookHandler(): CoreHookHandler {
+    val value: Any? = this
+    require(value != null && jsTypeOf(value) == "object") { "handler must be an object" }
+    val objectValue = value.asDynamic()
+    val type = objectValue.type.unsafeCast<String>().requireJavaScriptString("handler.type")
+    return when (type) {
+        "agent" -> CoreHookHandler.Agent
+        "command" -> CoreHookHandler.Command(
+            objectValue.command.unsafeCast<String>().requireJavaScriptString("handler.command"),
+            objectValue.isAsync.unsafeCast<Boolean>().requireJavaScriptBoolean("handler.isAsync"),
+        )
+        "mcp_tool" -> CoreHookHandler.McpTool(
+            objectValue.server.unsafeCast<String>().requireJavaScriptString("handler.server"),
+            objectValue.tool.unsafeCast<String>().requireJavaScriptString("handler.tool"),
+        )
+        "prompt" -> CoreHookHandler.Prompt
+        else -> throw IllegalArgumentException("Unknown hook handler type: $type")
+    }
+}
+
+private fun canonicalHook(
+    key: String,
+    currentHash: String,
+    isEnabled: Boolean,
+    eventName: String,
+    handler: AgentHookHandler,
+    isManaged: Boolean,
+    source: String,
+    sourcePath: String,
+    timeoutSeconds: Long,
+    trustStatus: String,
+    matcher: String?,
+    pluginId: String?,
+    statusMessage: String?,
+    origin: String,
+    canUninstall: Boolean,
+): CoreHook = CoreHook(
+    key = key.requireJavaScriptString("key"),
+    currentHash = currentHash.requireJavaScriptString("currentHash"),
+    isEnabled = isEnabled.requireJavaScriptBoolean("isEnabled"),
+    eventName = eventName.requireJavaScriptString("eventName"),
+    handler = handler.toCoreHookHandler(),
+    isManaged = isManaged.requireJavaScriptBoolean("isManaged"),
+    source = source.requireJavaScriptString("source"),
+    sourcePath = sourcePath.requireJavaScriptString("sourcePath"),
+    timeoutSeconds = timeoutSeconds.requireJavaScriptBigInt("timeoutSeconds").toString().toLong(),
+    trustStatus = trustStatus.toCoreHookTrustStatus(),
+    matcher = matcher.requireJavaScriptNullableString("matcher"),
+    pluginId = pluginId.requireJavaScriptNullableString("pluginId"),
+    statusMessage = statusMessage.requireJavaScriptNullableString("statusMessage"),
+    origin = origin.toCoreResourceOrigin(),
+    canUninstall = canUninstall.requireJavaScriptBoolean("canUninstall"),
+)
+
+private fun AgentHook.canonicalCopy(): CoreHook = canonicalHook(
+    key = key,
+    currentHash = currentHash,
+    isEnabled = isEnabled,
+    eventName = eventName,
+    handler = handler,
+    isManaged = isManaged,
+    source = source,
+    sourcePath = sourcePath,
+    timeoutSeconds = timeoutSeconds,
+    trustStatus = trustStatus,
+    matcher = matcher,
+    pluginId = pluginId,
+    statusMessage = statusMessage,
+    origin = origin,
+    canUninstall = canUninstall,
+)
+
 private fun modelResolutionScope(host: CodexHost, resolution: String): CoroutineScope =
     if (jsTypeOf(resolution) == "string" && (resolution == "default" || resolution == "first")) {
         CoroutineScope(Dispatchers.Default)
@@ -1676,6 +1952,51 @@ private fun CoreSkillChunk.project(): AgentSkillChunk = AgentSkillChunk(
     content = content,
     nextOffset = nextOffset?.toJavaScriptBigInt(),
     totalBytes = totalBytes.toJavaScriptBigInt(),
+)
+
+private fun CoreHookHandler.project(): AgentHookHandler {
+    val snapshot: dynamic = js("({})")
+    when (this) {
+        CoreHookHandler.Agent -> snapshot.type = "agent"
+        is CoreHookHandler.Command -> {
+            snapshot.type = "command"
+            snapshot.command = command
+            snapshot.isAsync = isAsync
+        }
+        is CoreHookHandler.McpTool -> {
+            snapshot.type = "mcp_tool"
+            snapshot.server = server
+            snapshot.tool = tool
+        }
+        CoreHookHandler.Prompt -> snapshot.type = "prompt"
+    }
+    val value = snapshot.unsafeCast<AgentHookHandler>()
+    js("Object.freeze(value)")
+    return value
+}
+
+private fun CoreHook.project(): AgentHook = AgentHook(
+    key = key,
+    currentHash = currentHash,
+    isEnabled = isEnabled,
+    eventName = eventName,
+    handler = handler.project(),
+    isManaged = isManaged,
+    source = source,
+    sourcePath = sourcePath,
+    timeoutSeconds = timeoutSeconds.toJavaScriptBigInt(),
+    trustStatus = trustStatus.name.lowercase(),
+    matcher = matcher,
+    pluginId = pluginId,
+    statusMessage = statusMessage,
+    origin = origin.name.lowercase(),
+    canUninstall = canUninstall,
+)
+
+private fun CoreHookCatalog.project(): AgentHookCatalog = AgentHookCatalog(
+    hooks = hooks.map(CoreHook::project).toTypedArray(),
+    warnings = warnings.toTypedArray(),
+    errors = errors.toTypedArray(),
 )
 
 private fun CoreConversationSummary.project(): AgentConversationSummary = AgentConversationSummary(

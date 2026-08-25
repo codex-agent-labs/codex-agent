@@ -161,6 +161,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
             !isAllowedConversationStateLeafReuse(symbol, projections) &&
             !isAllowedAgentInvocationMemberReuse(symbol, projections) &&
             !isAllowedAgentTurnRequestReuse(symbol, projections) &&
+            !isAllowedAgentHookHandlerReuse(symbol, projections) &&
             !isAllowedFlattenedValueReuse(symbol, projections)
         ) {
             errors += "Reused JavaScript/TypeScript public symbol $symbol for capabilities " +
@@ -170,6 +171,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
     errors += invalidConversationControllerFlatteningErrors(provisional)
     errors += invalidConversationStateSnapshotErrors(provisional)
     errors += invalidAgentTurnRequestErrors(canonical.memberKeys, provisional)
+    errors += invalidAgentHookHandlerErrors(canonical.memberKeys, provisional)
 
     val rejectedKeys = errors.flatMap { error ->
         provisional.mapNotNull { projection -> projection.member.key.takeIf(error::contains) }
@@ -825,6 +827,9 @@ private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.isD048AgentHookHandlerSurfaceMember()) {
+        return agentHookHandlerProjectionCandidates(member, symbols)
+    }
     if (member.isD047AgentTurnRequestSurfaceMember()) {
         return agentTurnRequestProjectionCandidates(member, symbols)
     }
@@ -876,6 +881,11 @@ private val javaScriptAgentTurnRequestSymbols = listOf(
     javaScriptAgentTurnRequestType,
     javaScriptSendRequest,
 ).sorted()
+private const val javaScriptAgentHookHandlerType =
+    "type:AgentHookHandler:{ readonly type: \"agent\"; } | " +
+        "{ readonly type: \"command\"; readonly command: string; readonly isAsync: boolean; } | " +
+        "{ readonly type: \"mcp_tool\"; readonly server: string; readonly tool: string; } | " +
+        "{ readonly type: \"prompt\"; }"
 private const val javaScriptAgentMessageCapabilities =
     "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"
 private const val javaScriptApiKeyAuthentication =
@@ -1028,6 +1038,76 @@ private fun agentTurnRequestProjectionCandidates(
         ),
     )
 }
+
+private fun agentHookHandlerProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    if (!member.isExactD048AgentHookHandlerMember() || !hasExactD048AgentHookHandlerInventory(symbols)) {
+        return emptyList()
+    }
+    return listOf(JavaScriptProjectionCandidate(
+        publicSymbols = listOf(javaScriptAgentHookHandlerType),
+        scenarios = listOf(
+            CrossLanguageBindingScenario.VALUE_CONVERSION,
+            CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING,
+        ),
+        requiresConsumerReference = true,
+        shareablePublicSymbols = setOf(javaScriptAgentHookHandlerType),
+    ))
+}
+
+private fun CanonicalJavaScriptMember.isD048AgentHookHandlerSurfaceMember(): Boolean =
+    simpleOwner.startsWith("AgentHookHandler.")
+
+private fun CanonicalJavaScriptMember.isExactD048AgentHookHandlerMember(): Boolean {
+    if (owner.substringBeforeLast('/') != canonicalAgentPackage) return false
+    return when (simpleOwner) {
+        "AgentHookHandler.Agent", "AgentHookHandler.Prompt" ->
+            kind == CanonicalJavaScriptMemberKind.OBJECT &&
+                name == simpleOwner.substringAfterLast('.') && parameters.isEmpty() &&
+                returnType == null && !isSuspend && propertyKind == null
+        "AgentHookHandler.Command" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                "AgentHookHandler.Command",
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", false, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "command" -> isExactProperty("AgentHookHandler.Command", name, "kotlin/String!!")
+                "isAsync" -> isExactProperty("AgentHookHandler.Command", name, "kotlin/Boolean!!")
+                else -> false
+            }
+            else -> false
+        }
+        "AgentHookHandler.McpTool" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                "AgentHookHandler.McpTool",
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "server", "tool" -> isExactProperty(
+                    "AgentHookHandler.McpTool",
+                    name,
+                    "kotlin/String!!",
+                )
+                else -> false
+            }
+            else -> false
+        }
+        else -> false
+    }
+}
+
+private fun hasExactD048AgentHookHandlerInventory(symbols: List<JavaScriptPublicSymbol>): Boolean =
+    hasExactJavaScriptSymbolInventory(symbols, listOf(javaScriptAgentHookHandlerType)) &&
+        symbols.filter { it.owner == null && it.name == "AgentHookHandler" }
+            .map(JavaScriptPublicSymbol::raw) == listOf(javaScriptAgentHookHandlerType)
 
 private fun CanonicalJavaScriptMember.isD047AgentTurnRequestSurfaceMember(): Boolean =
     simpleOwner == "AgentTurnRequest" ||
@@ -2517,6 +2597,42 @@ private fun invalidAgentTurnRequestErrors(
         } == 1
     return if (exact) emptyList() else listOf(
         "Incomplete JavaScript/TypeScript AgentTurnRequest family for capabilities " +
+            (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
+                .distinct()
+                .sorted(),
+    )
+}
+
+private fun isAllowedAgentHookHandlerReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean = symbol == javaScriptAgentHookHandlerType && projections.size == 8 &&
+    projections.map { it.member.key }.distinct().size == 8 &&
+    projections.all {
+        it.member.isExactD048AgentHookHandlerMember() &&
+            it.publicSymbols == listOf(javaScriptAgentHookHandlerType) &&
+            it.shareablePublicSymbols == setOf(javaScriptAgentHookHandlerType)
+    }
+
+private fun invalidAgentHookHandlerErrors(
+    canonicalKeys: List<String>,
+    projections: List<JavaScriptProjection>,
+): List<String> {
+    val canonicalMembers = canonicalKeys.map(::parseCanonicalJavaScriptMember)
+        .filter(CanonicalJavaScriptMember::isD048AgentHookHandlerSurfaceMember)
+    val related = projections.filter { javaScriptAgentHookHandlerType in it.publicSymbols }
+    if (canonicalMembers.isEmpty() && related.isEmpty()) return emptyList()
+    val exact = canonicalMembers.size == 8 &&
+        canonicalMembers.all(CanonicalJavaScriptMember::isExactD048AgentHookHandlerMember) &&
+        canonicalMembers.map(CanonicalJavaScriptMember::key).distinct().size == 8 &&
+        related.size == 8 && related.map { it.member.key }.distinct().size == 8 &&
+        related.all {
+            it.member.isExactD048AgentHookHandlerMember() &&
+                it.publicSymbols == listOf(javaScriptAgentHookHandlerType) &&
+                it.shareablePublicSymbols == setOf(javaScriptAgentHookHandlerType)
+        }
+    return if (exact) emptyList() else listOf(
+        "Incomplete JavaScript/TypeScript AgentHookHandler family for capabilities " +
             (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
                 .distinct()
                 .sorted(),

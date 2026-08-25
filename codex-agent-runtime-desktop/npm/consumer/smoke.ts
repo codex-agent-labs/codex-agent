@@ -10,6 +10,8 @@ import {
   AgentFormTextListValue,
   AgentFormTextValue,
   AgentHookActivity,
+  AgentHook,
+  AgentHookCatalog,
   AgentMcpEnvironmentVariable,
   AgentMcpOauthConfiguration,
   AgentMcpToolConfiguration,
@@ -31,6 +33,7 @@ import {
   CodexFailure,
   CodexHost,
   CodexHostState,
+  CodexHooks,
   CodexModels,
   CodexObservation,
   CodexSkills,
@@ -52,6 +55,7 @@ import type {
   AgentFormFieldType,
   AgentFormStringFormat,
   AgentHookRunStatus,
+  AgentHookHandler,
   AgentHookTrustStatus,
   AgentInstallationScope,
   AgentIntegrationAuthorizationStatus,
@@ -255,6 +259,46 @@ const skillChunk: AgentSkillChunk = new AgentSkillChunk("content", 7n, 20n);
 const skillChunkContent: string = skillChunk.content;
 const skillChunkNextOffset: bigint | null | undefined = skillChunk.nextOffset;
 const skillChunkTotalBytes: bigint = skillChunk.totalBytes;
+const hookHandler: AgentHookHandler = { type: "command", command: "./check", isAsync: false };
+const hook: AgentHook = new AgentHook(
+  "review-hook",
+  "sha256:review",
+  true,
+  "preToolUse",
+  hookHandler,
+  false,
+  "PROJECT",
+  "/workspace/.codex/hooks.json",
+  10n,
+  "untrusted",
+  "Shell",
+  null,
+  "Review shell commands",
+  "workspace",
+  true,
+);
+const hookClass: typeof AgentHook = AgentHook;
+const hookKey: string = hook.key;
+const hookCurrentHash: string = hook.currentHash;
+const hookIsEnabled: boolean = hook.isEnabled;
+const hookEventName: string = hook.eventName;
+const projectedHookHandler: AgentHookHandler = hook.handler;
+const hookIsManaged: boolean = hook.isManaged;
+const hookSource: string = hook.source;
+const hookSourcePath: string = hook.sourcePath;
+const hookTimeoutSeconds: bigint = hook.timeoutSeconds;
+const hookTrustStatus: AgentHookTrustStatus = hook.trustStatus;
+const hookMatcher: string | null | undefined = hook.matcher;
+const hookPluginId: string | null | undefined = hook.pluginId;
+const hookStatusMessage: string | null | undefined = hook.statusMessage;
+const hookOrigin: AgentResourceOrigin = hook.origin;
+const hookCanUninstall: boolean = hook.canUninstall;
+const hookCanTrust: boolean = hook.canTrust;
+const hookCatalog: AgentHookCatalog = new AgentHookCatalog([hook], ["warning"], ["error"]);
+const hookCatalogClass: typeof AgentHookCatalog = AgentHookCatalog;
+const catalogHooks: ReadonlyArray<AgentHook> = hookCatalog.hooks;
+const hookCatalogWarnings: ReadonlyArray<string> = hookCatalog.warnings;
+const hookCatalogErrors: ReadonlyArray<string> = hookCatalog.errors;
 const enumEvidence: {
   approvalDecision: AgentApprovalDecision;
   capability: AgentCapability;
@@ -349,6 +393,13 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   await skills.read("/skills/review/SKILL.md", 7n, signal);
   const installedSkill: AgentSkill = await skills.install("/skills/review", "workspace", signal);
   await skills.uninstall(installedSkill, signal);
+  const hooks: CodexHooks = agent.hooks;
+  const hooksClass: typeof CodexHooks = CodexHooks;
+  const hooksAvailable: boolean = hooks.isAvailable;
+  const listedHooks: AgentHookCatalog = await hooks.list(signal);
+  const installedHook: AgentHook = await hooks.install("/hooks/review", "workspace", signal);
+  await hooks.uninstall(installedHook, signal);
+  await hooks.trust(hook, signal);
   const activeConversation: CodexConversation | null | undefined = agent.activeConversation;
   agent.observeActiveConversation(
     (next: CodexConversation | null | undefined): void => void next,
@@ -445,6 +496,10 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     listedSkills,
     readSkill,
     installedSkill,
+    hooksClass,
+    hooksAvailable,
+    listedHooks,
+    installedHook,
     isAuthenticated,
     isAuthenticating,
     pendingSignInUrl,
@@ -571,6 +626,27 @@ void [
   skillChunkContent,
   skillChunkNextOffset,
   skillChunkTotalBytes,
+  hookClass,
+  hookKey,
+  hookCurrentHash,
+  hookIsEnabled,
+  hookEventName,
+  projectedHookHandler,
+  hookIsManaged,
+  hookSource,
+  hookSourcePath,
+  hookTimeoutSeconds,
+  hookTrustStatus,
+  hookMatcher,
+  hookPluginId,
+  hookStatusMessage,
+  hookOrigin,
+  hookCanUninstall,
+  hookCanTrust,
+  hookCatalogClass,
+  catalogHooks,
+  hookCatalogWarnings,
+  hookCatalogErrors,
 ];
 void enumEvidence;
 void useAgent;

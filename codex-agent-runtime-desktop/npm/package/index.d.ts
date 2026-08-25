@@ -42,6 +42,11 @@ export type AgentTurnRequest = {
     readonly invocations?: ReadonlyArray<AgentInvocation>;
     readonly collaborationMode?: AgentCollaborationMode;
 };
+export type AgentHookHandler =
+    | { readonly type: "agent" }
+    | { readonly type: "command"; readonly command: string; readonly isAsync: boolean }
+    | { readonly type: "mcp_tool"; readonly server: string; readonly tool: string }
+    | { readonly type: "prompt" };
 export declare class AgentFormOption {
     constructor(value: string, title?: string, description?: Nullable<string>);
     get value(): string;
@@ -106,6 +111,31 @@ export declare class AgentHookActivity {
     get status(): AgentHookRunStatus;
     get statusMessage(): Nullable<string>;
     get details(): ReadonlyArray<string>;
+}
+export declare class AgentHook {
+    constructor(key: string, currentHash: string, isEnabled: boolean, eventName: string, handler: AgentHookHandler, isManaged: boolean, source: string, sourcePath: string, timeoutSeconds: bigint, trustStatus: AgentHookTrustStatus, matcher?: Nullable<string>, pluginId?: Nullable<string>, statusMessage?: Nullable<string>, origin?: AgentResourceOrigin, canUninstall?: boolean);
+    get key(): string;
+    get currentHash(): string;
+    get isEnabled(): boolean;
+    get eventName(): string;
+    get handler(): AgentHookHandler;
+    get isManaged(): boolean;
+    get source(): string;
+    get sourcePath(): string;
+    get timeoutSeconds(): bigint;
+    get trustStatus(): AgentHookTrustStatus;
+    get matcher(): Nullable<string>;
+    get pluginId(): Nullable<string>;
+    get statusMessage(): Nullable<string>;
+    get origin(): AgentResourceOrigin;
+    get canUninstall(): boolean;
+    get canTrust(): boolean;
+}
+export declare class AgentHookCatalog {
+    constructor(hooks: ReadonlyArray<AgentHook>, warnings?: ReadonlyArray<string>, errors?: ReadonlyArray<string>);
+    get hooks(): ReadonlyArray<AgentHook>;
+    get warnings(): ReadonlyArray<string>;
+    get errors(): ReadonlyArray<string>;
 }
 export declare class AgentConnector {
     constructor(id: string, name: string, description?: string, installUrl?: Nullable<string>, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: ReadonlyArray<string>);
@@ -293,6 +323,7 @@ export declare class CodexAgent {
     get connectors(): CodexConnectors;
     get models(): CodexModels;
     get skills(): CodexSkills;
+    get hooks(): CodexHooks;
     get activeConversation(): Nullable<CodexConversation>;
     listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;
     readConversation(conversationId: string, signal?: Nullable<AbortSignal>): Promise<AgentConversation>;
@@ -320,6 +351,14 @@ export declare class CodexSkills {
     read(path: string, offset?: bigint, signal?: Nullable<AbortSignal>): Promise<AgentSkillChunk>;
     install(directory: string, scope: AgentInstallationScope, signal?: Nullable<AbortSignal>): Promise<AgentSkill>;
     uninstall(skill: AgentSkill, signal?: Nullable<AbortSignal>): Promise<void>;
+}
+export declare class CodexHooks {
+    private constructor();
+    get isAvailable(): boolean;
+    list(signal?: Nullable<AbortSignal>): Promise<AgentHookCatalog>;
+    install(directory: string, scope: AgentInstallationScope, signal?: Nullable<AbortSignal>): Promise<AgentHook>;
+    uninstall(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
+    trust(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
 }
 export declare class CodexAuthentication {
     private constructor();

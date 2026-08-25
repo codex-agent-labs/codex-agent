@@ -241,6 +241,100 @@ class CodexNodeApiTest {
         }.exceptionOrNull()
         assertEquals("dependencies must be an array", invalidSkillDependencies?.message)
 
+        val sourceHookHandler: dynamic = js("({ type: 'command', command: './review', isAsync: true })")
+        val localHook = AgentHook(
+            key = "hook-local",
+            currentHash = "sha256:local",
+            isEnabled = true,
+            eventName = "preToolUse",
+            handler = sourceHookHandler.unsafeCast<AgentHookHandler>(),
+            isManaged = false,
+            source = "PROJECT",
+            sourcePath = "/workspace/.codex/hooks.json",
+            timeoutSeconds = javaScriptBigInt("9007199254740993"),
+            trustStatus = "untrusted",
+            matcher = "Shell",
+            statusMessage = "Review commands",
+            canUninstall = true,
+        )
+        sourceHookHandler.command = "changed"
+        assertEquals("hook-local", localHook.key)
+        assertEquals("sha256:local", localHook.currentHash)
+        assertTrue(localHook.isEnabled)
+        assertEquals("preToolUse", localHook.eventName)
+        assertEquals("command", localHook.handler.asDynamic().type as String)
+        assertEquals("./review", localHook.handler.asDynamic().command as String)
+        assertTrue(localHook.handler.asDynamic().isAsync as Boolean)
+        assertFalse(localHook.isManaged)
+        assertEquals("PROJECT", localHook.source)
+        assertEquals("/workspace/.codex/hooks.json", localHook.sourcePath)
+        assertEquals("9007199254740993", localHook.timeoutSeconds.toString())
+        assertEquals("bigint", jsTypeOf(localHook.timeoutSeconds))
+        assertEquals("untrusted", localHook.trustStatus)
+        assertEquals("Shell", localHook.matcher)
+        assertNull(localHook.pluginId)
+        assertEquals("Review commands", localHook.statusMessage)
+        assertEquals("workspace", localHook.origin)
+        assertTrue(localHook.canUninstall)
+        assertTrue(localHook.canTrust)
+        assertTrue(isFrozen(localHook))
+        assertTrue(isFrozen(localHook.handler))
+        assertEquals(0, enumerablePropertyCount(localHook))
+        assertEquals(setOf("type", "command", "isAsync"), objectKeys(localHook.handler).toSet())
+
+        val sourceHooks = arrayOf(localHook)
+        val sourceHookWarnings = arrayOf("warning")
+        val sourceHookErrors = arrayOf("error")
+        val localHookCatalog = AgentHookCatalog(sourceHooks, sourceHookWarnings, sourceHookErrors)
+        sourceHooks[0] = AgentHook(
+            "changed", "hash", false, "stop",
+            js("({ type: 'prompt' })").unsafeCast<AgentHookHandler>(),
+            false, "USER", "/hooks.json", javaScriptBigInt("1"), "trusted",
+        )
+        sourceHookWarnings[0] = "changed"
+        sourceHookErrors[0] = "changed"
+        assertEquals(listOf("hook-local"), localHookCatalog.hooks.map(AgentHook::key))
+        assertEquals(listOf("warning"), localHookCatalog.warnings.toList())
+        assertEquals(listOf("error"), localHookCatalog.errors.toList())
+        assertTrue(isFrozen(localHookCatalog))
+        assertTrue(isFrozen(localHookCatalog.hooks))
+        assertTrue(isFrozen(localHookCatalog.warnings))
+        assertTrue(isFrozen(localHookCatalog.errors))
+        assertTrue(isFrozen(localHookCatalog.hooks.single()))
+        assertTrue(isFrozen(localHookCatalog.hooks.single().handler))
+
+        listOf(
+            runCatching {
+                AgentHook(
+                    "invalid", "hash", true, "stop",
+                    js("1").unsafeCast<AgentHookHandler>(), false, "USER", "/hooks.json",
+                    javaScriptBigInt("1"), "trusted",
+                )
+            }.exceptionOrNull() to "handler must be an object",
+            runCatching {
+                AgentHook(
+                    "invalid", "hash", true, "stop",
+                    js("({ type: 'command', command: 1, isAsync: false })")
+                        .unsafeCast<AgentHookHandler>(),
+                    false, "USER", "/hooks.json", javaScriptBigInt("1"), "trusted",
+                )
+            }.exceptionOrNull() to "handler.command must be a string",
+            runCatching {
+                AgentHook(
+                    "invalid", "hash", true, "stop",
+                    js("({ type: 'future' })").unsafeCast<AgentHookHandler>(),
+                    false, "USER", "/hooks.json", javaScriptBigInt("1"), "trusted",
+                )
+            }.exceptionOrNull() to "Unknown hook handler type: future",
+            runCatching {
+                AgentHook(
+                    "invalid", "hash", true, "stop",
+                    js("({ type: 'prompt' })").unsafeCast<AgentHookHandler>(),
+                    false, "USER", "/hooks.json", js("1").unsafeCast<Long>(), "trusted",
+                )
+            }.exceptionOrNull() to "timeoutSeconds must be a bigint",
+        ).forEach { (error, message) -> assertEquals(message, error?.message) }
+
         val defaultModel = AgentModel("model-defaults", "Defaults", "", emptyArray(), "medium", false)
         assertTrue(defaultModel.serviceTiers.isEmpty())
         assertNull(defaultModel.defaultServiceTier)
@@ -1036,12 +1130,14 @@ class CodexNodeApiTest {
         val shellRuntime = ApiTestRuntime().apply {
             skillWorkspacePath = skillFixture.workspacePath
             skillManifestPath = skillFixture.sourceManifestPath
+            hookInstalledSourcePath = skillFixture.installedHookConfigPath
         }
         val shellHost = wrapCodexHost(CoreHost(
             ApiTestPlatform(shellRuntime, features = setOf(
                 CodexRuntimeFeature.SHELL_COMMANDS,
                 CodexRuntimeFeature.CONNECTORS,
                 CodexRuntimeFeature.SKILLS,
+                CodexRuntimeFeature.HOOKS,
                 CodexRuntimeFeature.PLUGINS,
             ), workspacePath = skillFixture.workspacePath),
             CodexClientInfo("node_test", "Node Test", "test"),
@@ -1060,6 +1156,10 @@ class CodexNodeApiTest {
             assertSame(skills, shellAgent.skills)
             assertTrue(skills.isAvailable)
             assertEquals(0, enumerablePropertyCount(skills))
+            val hooks = shellAgent.hooks
+            assertSame(hooks, shellAgent.hooks)
+            assertTrue(hooks.isAvailable)
+            assertEquals(0, enumerablePropertyCount(hooks))
 
             val controller = js("new AbortController()")
             controller.abort()
@@ -1108,6 +1208,30 @@ class CodexNodeApiTest {
                 assertEquals("AbortError", aborted?.asDynamic()?.name as String)
             }
             assertTrue(shellRuntime.skillListRequests.isEmpty())
+
+            listOf(
+                runCatching {
+                    hooks.list(controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    hooks.install(
+                        skillFixture.hookSourceDirectory,
+                        "workspace",
+                        controller.signal.unsafeCast<AbortSignal>(),
+                    ).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    hooks.uninstall(localHook, controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    hooks.trust(localHook, controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+            ).forEach { aborted ->
+                assertEquals("AbortError", aborted?.asDynamic()?.name as String)
+            }
+            assertTrue(shellRuntime.hookListRequests.isEmpty())
+            assertTrue(shellRuntime.configBatchWriteRequests.isEmpty())
+            assertFalse(nodeFileExists(skillFixture.installedHookConfigPath))
 
             listOf(
                 runCatching {
@@ -1213,6 +1337,101 @@ class CodexNodeApiTest {
             assertEquals("skill list denied", skillListFailure.message)
             assertTrue(skillListFailure.recoverable)
             assertEquals(4, shellRuntime.skillListRequests.size)
+
+            val hookCatalog = hooks.list().await()
+            assertEquals(
+                listOf("a-mcp", "m-agent", "p-prompt", "z-command"),
+                hookCatalog.hooks.map(AgentHook::key),
+            )
+            assertEquals(listOf("review warning"), hookCatalog.warnings.toList())
+            assertEquals(
+                listOf("${skillFixture.workspacePath}/.codex/hooks.json: ignored hook"),
+                hookCatalog.errors.toList(),
+            )
+            val mcpHook = hookCatalog.hooks[0]
+            assertEquals("mcp_tool", mcpHook.handler.asDynamic().type as String)
+            assertEquals("review-server", mcpHook.handler.asDynamic().server as String)
+            assertEquals("review-tool", mcpHook.handler.asDynamic().tool as String)
+            assertEquals("plugin", mcpHook.origin)
+            assertTrue(mcpHook.canTrust)
+            assertEquals("agent", hookCatalog.hooks[1].handler.asDynamic().type as String)
+            assertEquals("managed", hookCatalog.hooks[1].origin)
+            assertFalse(hookCatalog.hooks[1].canTrust)
+            assertEquals("prompt", hookCatalog.hooks[2].handler.asDynamic().type as String)
+            assertEquals("user", hookCatalog.hooks[2].origin)
+            val commandHook = hookCatalog.hooks[3]
+            assertEquals("command", commandHook.handler.asDynamic().type as String)
+            assertEquals("./check", commandHook.handler.asDynamic().command as String)
+            assertFalse(commandHook.handler.asDynamic().isAsync as Boolean)
+            assertEquals("Shell", commandHook.matcher)
+            assertEquals("Review shell commands", commandHook.statusMessage)
+            assertEquals("workspace", commandHook.origin)
+            assertFalse(commandHook.canUninstall)
+            assertTrue(commandHook.canTrust)
+            assertEquals(1, shellRuntime.hookListRequests.size)
+            assertEquals(
+                listOf(skillFixture.workspacePath),
+                shellRuntime.hookListRequests.single()["cwds"]?.jsonArray?.map { it.jsonPrimitive.content },
+            )
+            assertTrue(isFrozen(hookCatalog))
+            assertTrue(isFrozen(hookCatalog.hooks))
+            assertTrue(isFrozen(hookCatalog.warnings))
+            assertTrue(isFrozen(hookCatalog.errors))
+            hookCatalog.hooks.forEach { hook ->
+                assertTrue(isFrozen(hook))
+                assertTrue(isFrozen(hook.handler))
+            }
+
+            val requestsBeforeInvalidHookInputs = shellRuntime.requestMethods.size
+            val invalidHookScope = runCatching {
+                hooks.install(skillFixture.hookSourceDirectory, "temporary").await()
+            }.exceptionOrNull()
+            assertEquals("Unknown installation scope: temporary", invalidHookScope?.message)
+            assertEquals(requestsBeforeInvalidHookInputs, shellRuntime.requestMethods.size)
+            val unownedHookFailure = assertIs<CodexError>(
+                runCatching { hooks.uninstall(commandHook).await() }.exceptionOrNull(),
+            )
+            assertEquals("hook_uninstall_failed", unownedHookFailure.code)
+            assertEquals("Could not uninstall hook", unownedHookFailure.message)
+            assertTrue(unownedHookFailure.recoverable)
+            assertEquals(requestsBeforeInvalidHookInputs, shellRuntime.requestMethods.size)
+
+            shellRuntime.revealHookAtRequest = shellRuntime.hookListRequests.size + 2
+            val installedHook = hooks.install(skillFixture.hookSourceDirectory, "workspace").await()
+            assertEquals("fixture-installed", installedHook.key)
+            assertEquals(skillFixture.installedHookConfigPath, installedHook.sourcePath)
+            assertEquals("workspace", installedHook.origin)
+            assertTrue(installedHook.canUninstall)
+            assertTrue(installedHook.canTrust)
+            assertTrue(isFrozen(installedHook))
+            assertTrue(isFrozen(installedHook.handler))
+            assertTrue(nodeFileExists(skillFixture.installedHookConfigPath))
+            assertTrue(nodeFileExists(skillFixture.installedHookAssetDirectory))
+
+            hooks.trust(installedHook).await()
+            val trustRequest = shellRuntime.configBatchWriteRequests.single()
+            assertEquals("true", trustRequest["reloadUserConfig"]?.jsonPrimitive?.content)
+            val trustEdit = checkNotNull(trustRequest["edits"]).jsonArray.single().jsonObject
+            assertEquals("hooks.state", trustEdit["keyPath"]?.jsonPrimitive?.content)
+            assertEquals("upsert", trustEdit["mergeStrategy"]?.jsonPrimitive?.content)
+            assertEquals(
+                installedHook.currentHash,
+                trustEdit["value"]?.jsonObject
+                    ?.get(installedHook.key)?.jsonObject
+                    ?.get("trusted_hash")?.jsonPrimitive?.content,
+            )
+
+            shellRuntime.hideHookAtRequest = shellRuntime.hookListRequests.size + 1
+            hooks.uninstall(installedHook).await()
+            assertFalse(nodeFileExists(skillFixture.installedHookAssetDirectory))
+
+            shellRuntime.failNextHookList = true
+            val hookListFailure = assertIs<CodexError>(
+                runCatching { hooks.list().await() }.exceptionOrNull(),
+            )
+            assertEquals("hook_list_failed", hookListFailure.code)
+            assertEquals("hook list denied", hookListFailure.message)
+            assertTrue(hookListFailure.recoverable)
 
             val listedModels = models.list().await()
             assertEquals(
@@ -1602,11 +1821,14 @@ class CodexNodeApiTest {
             assertSame(connectors, shellAgent.connectors)
             assertSame(models, shellAgent.models)
             assertSame(skills, shellAgent.skills)
+            assertSame(hooks, shellAgent.hooks)
             val requestsBeforeClosedList = shellRuntime.appListRequests.size
             val conversationRequestsBeforeClosedList = shellRuntime.threadListRequests.size
             val conversationRequestsBeforeClosedRead = shellRuntime.threadReadRequests.size
             val modelRequestsBeforeClosedList = shellRuntime.modelListRequests.size
             val skillRequestsBeforeClosedList = shellRuntime.skillListRequests.size
+            val hookRequestsBeforeClosedList = shellRuntime.hookListRequests.size
+            val hookWritesBeforeClosed = shellRuntime.configBatchWriteRequests.size
             val closedList = runCatching { connectors.list().await() }.exceptionOrNull()
             assertEquals("IllegalStateException", closedList?.asDynamic()?.name as String)
             assertEquals("Codex agent is closed", closedList.message)
@@ -1635,6 +1857,19 @@ class CodexNodeApiTest {
                 assertEquals("Codex agent is closed", closedSkillOperation.message)
             }
             assertEquals(skillRequestsBeforeClosedList, shellRuntime.skillListRequests.size)
+            listOf(
+                runCatching { hooks.list().await() }.exceptionOrNull(),
+                runCatching {
+                    hooks.install(skillFixture.hookSourceDirectory, "workspace").await()
+                }.exceptionOrNull(),
+                runCatching { hooks.uninstall(commandHook).await() }.exceptionOrNull(),
+                runCatching { hooks.trust(commandHook).await() }.exceptionOrNull(),
+            ).forEach { closedHookOperation ->
+                assertEquals("IllegalStateException", closedHookOperation?.asDynamic()?.name as String)
+                assertEquals("Codex agent is closed", closedHookOperation.message)
+            }
+            assertEquals(hookRequestsBeforeClosedList, shellRuntime.hookListRequests.size)
+            assertEquals(hookWritesBeforeClosed, shellRuntime.configBatchWriteRequests.size)
             val requestsBeforePureResolution = shellRuntime.requestMethods.size
             assertEquals("medium", models.resolveEffort(preferredModel, "default").await())
             assertEquals("low", models.resolveEffort(preferredModel, "first").await())
@@ -1987,10 +2222,15 @@ private fun isFrozen(value: Any): Boolean = js("Object.isFrozen(value)")
 
 private fun enumerablePropertyCount(value: Any): Int = js("Object.keys(value).length")
 
+private fun objectKeys(value: Any): Array<String> = js("Object.keys(value)")
+
 private fun javaScriptBigInt(value: String): Long = js("BigInt(value)").unsafeCast<Long>()
 
 private const val SKILL_FIXTURE_CONTENT =
     "---\nname: fixture-skill\ndescription: Fixture skill\n---\nBinding projection body.\n"
+private const val HOOK_FIXTURE_CONTENT =
+    "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Shell\",\"hooks\":[" +
+        "{\"type\":\"command\",\"command\":\"sh scripts/lint.sh\"}]}]}}\n"
 
 private data class SkillTestFixture(
     val root: String,
@@ -1998,6 +2238,10 @@ private data class SkillTestFixture(
     val sourceDirectory: String,
     val sourceManifestPath: String,
     val installedManifestPath: String,
+    val hookSourceDirectory: String,
+    val hookSourceConfigPath: String,
+    val installedHookConfigPath: String,
+    val installedHookAssetDirectory: String,
 )
 
 private fun createSkillTestFixture(): SkillTestFixture {
@@ -2008,9 +2252,14 @@ private fun createSkillTestFixture(): SkillTestFixture {
     val workspacePath = path.join(root, "workspace") as String
     val sourceDirectory = path.join(root, "fixture-skill") as String
     val sourceManifestPath = path.join(sourceDirectory, "SKILL.md") as String
+    val hookSourceDirectory = path.join(root, "fixture-hook") as String
+    val hookSourceConfigPath = path.join(hookSourceDirectory, "hooks.json") as String
     fs.mkdirSync(workspacePath, js("({ recursive: true })"))
     fs.mkdirSync(sourceDirectory, js("({ recursive: true })"))
+    fs.mkdirSync(path.join(hookSourceDirectory, "scripts"), js("({ recursive: true })"))
     fs.writeFileSync(sourceManifestPath, SKILL_FIXTURE_CONTENT, "utf8")
+    fs.writeFileSync(hookSourceConfigPath, HOOK_FIXTURE_CONTENT, "utf8")
+    fs.writeFileSync(path.join(hookSourceDirectory, "scripts", "lint.sh"), "echo lint\n", "utf8")
     return SkillTestFixture(
         root = root,
         workspacePath = workspacePath,
@@ -2022,6 +2271,15 @@ private fun createSkillTestFixture(): SkillTestFixture {
             "skills",
             "fixture-skill",
             "SKILL.md",
+        ) as String,
+        hookSourceDirectory = hookSourceDirectory,
+        hookSourceConfigPath = hookSourceConfigPath,
+        installedHookConfigPath = path.join(workspacePath, ".codex", "hooks.json") as String,
+        installedHookAssetDirectory = path.join(
+            workspacePath,
+            ".codex",
+            ".codex-agent-hooks",
+            "fixture-hook",
         ) as String,
     )
 }
@@ -2073,6 +2331,13 @@ private class ApiTestRuntime : CodexRuntime {
     var failNextSkillList: Boolean = false
     var skillWorkspacePath: String = "/workspace"
     var skillManifestPath: String? = null
+    val hookListRequests: MutableList<JsonObject> = mutableListOf()
+    val configBatchWriteRequests: MutableList<JsonObject> = mutableListOf()
+    var failNextHookList: Boolean = false
+    var hookInstalledSourcePath: String? = null
+    var hookVisible: Boolean = false
+    var revealHookAtRequest: Int? = null
+    var hideHookAtRequest: Int? = null
     var modelPreference: String = "model-preferred"
     var effortPreference: String = "low"
     var serviceTierPreference: String = "fast"
@@ -2220,6 +2485,24 @@ private class ApiTestRuntime : CodexRuntime {
                     respond(id, skillListResult(skillWorkspacePath, skillManifestPath))
                 }
             }
+            "hooks/list" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                hookListRequests += params
+                if (hookListRequests.size == revealHookAtRequest) hookVisible = true
+                if (hookListRequests.size == hideHookAtRequest) hookVisible = false
+                if (failNextHookList) {
+                    failNextHookList = false
+                    respondError(id, "hook list denied")
+                } else {
+                    respond(
+                        id,
+                        hookListResult(
+                            skillWorkspacePath,
+                            hookInstalledSourcePath.takeIf { hookVisible },
+                        ),
+                    )
+                }
+            }
             "config/read" -> {
                 val params = checkNotNull(request["params"]).jsonObject
                 configReadRequests += params
@@ -2236,6 +2519,15 @@ private class ApiTestRuntime : CodexRuntime {
                         putJsonObject("origins") {}
                     })
                 }
+            }
+            "config/batchWrite" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                configBatchWriteRequests += params
+                respond(id, buildJsonObject {
+                    put("filePath", "/tmp/codex/config.toml")
+                    put("status", "ok")
+                    put("version", "1")
+                })
             }
             "thread/name/set" -> {
                 val params = checkNotNull(request["params"]).jsonObject
@@ -2416,6 +2708,108 @@ private fun skillMetadata(manifestPath: String): JsonObject = buildJsonObject {
         put("displayName", "Fixture skill")
         put("shortDescription", "Projected description")
         put("brandColor", "#abcdef")
+    }
+}
+
+private fun hookListResult(workspacePath: String, installedSourcePath: String?): JsonObject = buildJsonObject {
+    putJsonArray("data") {
+        add(buildJsonObject {
+            put("cwd", workspacePath)
+            putJsonArray("warnings") {
+                add(JsonPrimitive("review warning"))
+                add(JsonPrimitive("review warning"))
+            }
+            putJsonArray("errors") {
+                add(buildJsonObject {
+                    put("path", "$workspacePath/.codex/hooks.json")
+                    put("message", "ignored hook")
+                })
+            }
+            putJsonArray("hooks") {
+                add(hookMetadata(
+                    key = "z-command",
+                    handlerType = "command",
+                    source = "project",
+                    sourcePath = "$workspacePath/.codex/hooks.json",
+                    trustStatus = "untrusted",
+                    matcher = "Shell",
+                    statusMessage = "Review shell commands",
+                ))
+                add(hookMetadata(
+                    key = "a-mcp",
+                    handlerType = "mcpTool",
+                    source = "plugin",
+                    sourcePath = "/plugins/review/hooks.json",
+                    trustStatus = "modified",
+                    pluginId = "review-plugin",
+                ))
+                add(hookMetadata(
+                    key = "m-agent",
+                    handlerType = "agent",
+                    source = "system",
+                    sourcePath = "/etc/codex/hooks.json",
+                    trustStatus = "managed",
+                    isManaged = true,
+                ))
+                add(hookMetadata(
+                    key = "p-prompt",
+                    handlerType = "prompt",
+                    source = "user",
+                    sourcePath = "/home/test/.codex/hooks.json",
+                    trustStatus = "trusted",
+                ))
+                add(hookMetadata(
+                    key = "z-command",
+                    handlerType = "command",
+                    source = "project",
+                    sourcePath = "$workspacePath/.codex/hooks.json",
+                    trustStatus = "untrusted",
+                ))
+                if (installedSourcePath != null) {
+                    add(hookMetadata(
+                        key = "fixture-installed",
+                        handlerType = "command",
+                        source = "project",
+                        sourcePath = installedSourcePath,
+                        trustStatus = "untrusted",
+                    ))
+                }
+            }
+        })
+    }
+}
+
+private fun hookMetadata(
+    key: String,
+    handlerType: String,
+    source: String,
+    sourcePath: String,
+    trustStatus: String,
+    matcher: String? = null,
+    pluginId: String? = null,
+    statusMessage: String? = null,
+    isManaged: Boolean = false,
+): JsonObject = buildJsonObject {
+    put("currentHash", "sha256:$key")
+    put("displayOrder", 0)
+    put("enabled", true)
+    put("eventName", "preToolUse")
+    put("handlerType", handlerType)
+    put("isManaged", isManaged)
+    put("key", key)
+    put("source", source)
+    put("sourcePath", sourcePath)
+    put("timeoutSec", 10)
+    put("trustStatus", trustStatus)
+    matcher?.let { put("matcher", it) }
+    pluginId?.let { put("pluginId", it) }
+    statusMessage?.let { put("statusMessage", it) }
+    when (handlerType) {
+        "command" -> put("command", "./check")
+        "mcpTool" -> {
+            put("server", "review-server")
+            put("tool", "review-tool")
+        }
     }
 }
 

@@ -199,6 +199,15 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
 };"""
         val expectedSendRequestDeclaration =
             "    sendRequest(request: AgentTurnRequest, signal?: Nullable<AbortSignal>): Promise<void>;"
+        val rawAgentHookHandlerDeclaration =
+            """export declare interface AgentHookHandler {
+}"""
+        val reviewedAgentHookHandlerDeclaration =
+            """export type AgentHookHandler =
+    | { readonly type: "agent" }
+    | { readonly type: "command"; readonly command: string; readonly isAsync: boolean }
+    | { readonly type: "mcp_tool"; readonly server: string; readonly tool: string }
+    | { readonly type: "prompt" };"""
         val rawAgentConnectorDeclaration =
             """export declare class AgentConnector {
     constructor(id: string, name: string, description?: string, installUrl?: Nullable<string>, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: Array<string>);
@@ -351,6 +360,60 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get skills(): ReadonlyArray<AgentSkill>;
     get errors(): ReadonlyArray<string>;
 }"""
+        val rawAgentHookDeclaration =
+            """export declare class AgentHook {
+    constructor(key: string, currentHash: string, isEnabled: boolean, eventName: string, handler: AgentHookHandler, isManaged: boolean, source: string, sourcePath: string, timeoutSeconds: bigint, trustStatus: string, matcher?: Nullable<string>, pluginId?: Nullable<string>, statusMessage?: Nullable<string>, origin?: string, canUninstall?: boolean);
+    get key(): string;
+    get currentHash(): string;
+    get isEnabled(): boolean;
+    get eventName(): string;
+    get handler(): AgentHookHandler;
+    get isManaged(): boolean;
+    get source(): string;
+    get sourcePath(): string;
+    get timeoutSeconds(): bigint;
+    get trustStatus(): string;
+    get matcher(): Nullable<string>;
+    get pluginId(): Nullable<string>;
+    get statusMessage(): Nullable<string>;
+    get origin(): string;
+    get canUninstall(): boolean;
+    get canTrust(): boolean;
+}"""
+        val reviewedAgentHookDeclaration =
+            """export declare class AgentHook {
+    constructor(key: string, currentHash: string, isEnabled: boolean, eventName: string, handler: AgentHookHandler, isManaged: boolean, source: string, sourcePath: string, timeoutSeconds: bigint, trustStatus: AgentHookTrustStatus, matcher?: Nullable<string>, pluginId?: Nullable<string>, statusMessage?: Nullable<string>, origin?: AgentResourceOrigin, canUninstall?: boolean);
+    get key(): string;
+    get currentHash(): string;
+    get isEnabled(): boolean;
+    get eventName(): string;
+    get handler(): AgentHookHandler;
+    get isManaged(): boolean;
+    get source(): string;
+    get sourcePath(): string;
+    get timeoutSeconds(): bigint;
+    get trustStatus(): AgentHookTrustStatus;
+    get matcher(): Nullable<string>;
+    get pluginId(): Nullable<string>;
+    get statusMessage(): Nullable<string>;
+    get origin(): AgentResourceOrigin;
+    get canUninstall(): boolean;
+    get canTrust(): boolean;
+}"""
+        val rawAgentHookCatalogDeclaration =
+            """export declare class AgentHookCatalog {
+    constructor(hooks: Array<AgentHook>, warnings?: Array<string>, errors?: Array<string>);
+    get hooks(): Array<AgentHook>;
+    get warnings(): Array<string>;
+    get errors(): Array<string>;
+}"""
+        val reviewedAgentHookCatalogDeclaration =
+            """export declare class AgentHookCatalog {
+    constructor(hooks: ReadonlyArray<AgentHook>, warnings?: ReadonlyArray<string>, errors?: ReadonlyArray<string>);
+    get hooks(): ReadonlyArray<AgentHook>;
+    get warnings(): ReadonlyArray<string>;
+    get errors(): ReadonlyArray<string>;
+}"""
         val expectedAgentSkillChunkDeclaration =
             """export declare class AgentSkillChunk {
     constructor(content: string, nextOffset: Nullable<bigint>, totalBytes: bigint);
@@ -442,6 +505,24 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     install(directory: string, scope: AgentInstallationScope, signal?: Nullable<AbortSignal>): Promise<AgentSkill>;
     uninstall(skill: AgentSkill, signal?: Nullable<AbortSignal>): Promise<void>;
 }"""
+        val rawCodexHooksDeclaration =
+            """export declare class CodexHooks {
+    private constructor();
+    get isAvailable(): boolean;
+    list(signal?: Nullable<AbortSignal>): Promise<AgentHookCatalog>;
+    install(directory: string, scope: string, signal?: Nullable<AbortSignal>): Promise<AgentHook>;
+    uninstall(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
+    trust(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
+}"""
+        val reviewedCodexHooksDeclaration =
+            """export declare class CodexHooks {
+    private constructor();
+    get isAvailable(): boolean;
+    list(signal?: Nullable<AbortSignal>): Promise<AgentHookCatalog>;
+    install(directory: string, scope: AgentInstallationScope, signal?: Nullable<AbortSignal>): Promise<AgentHook>;
+    uninstall(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
+    trust(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
+}"""
         check(actual.lineSequence().count { it == rawAgentSkillScopeDisplayNameDeclaration } == 1) {
             "Unexpected agentSkillScopeDisplayName TypeScript declaration"
         }
@@ -465,6 +546,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         }
         check(actual.lineSequence().count { it == expectedSendRequestDeclaration } == 1) {
             "Unexpected CodexConversation.sendRequest TypeScript declaration"
+        }
+        check(actual.split(rawAgentHookHandlerDeclaration).size == 2) {
+            "Unexpected AgentHookHandler TypeScript declaration"
         }
         check(actual.split(rawAgentConnectorDeclaration).size == 2) {
             "Unexpected AgentConnector TypeScript declaration"
@@ -496,6 +580,12 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawAgentSkillCatalogDeclaration).size == 2) {
             "Unexpected AgentSkillCatalog TypeScript declaration"
         }
+        check(actual.split(rawAgentHookDeclaration).size == 2) {
+            "Unexpected AgentHook TypeScript declaration"
+        }
+        check(actual.split(rawAgentHookCatalogDeclaration).size == 2) {
+            "Unexpected AgentHookCatalog TypeScript declaration"
+        }
         check(actual.split(expectedAgentSkillChunkDeclaration).size == 2) {
             "Unexpected AgentSkillChunk TypeScript declaration"
         }
@@ -526,6 +616,12 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawCodexSkillsDeclaration).size == 2) {
             "Unexpected CodexSkills TypeScript declaration"
         }
+        check(actual.lineSequence().count { it == "    get hooks(): CodexHooks;" } == 1) {
+            "Unexpected CodexAgent.hooks TypeScript declaration"
+        }
+        check(actual.split(rawCodexHooksDeclaration).size == 2) {
+            "Unexpected CodexHooks TypeScript declaration"
+        }
         actual = actual.replace(
             "type Nullable<T> = T | null | undefined\n",
             """type Nullable<T> = T | null | undefined;
@@ -555,6 +651,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
             rawAgentTurnRequestDeclaration,
             reviewedAgentTurnRequestDeclaration,
         ).replace(
+            rawAgentHookHandlerDeclaration,
+            reviewedAgentHookHandlerDeclaration,
+        ).replace(
             rawAgentConnectorDeclaration,
             reviewedAgentConnectorDeclaration,
         ).replace(
@@ -579,6 +678,12 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
             rawAgentSkillCatalogDeclaration,
             reviewedAgentSkillCatalogDeclaration,
         ).replace(
+            rawAgentHookDeclaration,
+            reviewedAgentHookDeclaration,
+        ).replace(
+            rawAgentHookCatalogDeclaration,
+            reviewedAgentHookCatalogDeclaration,
+        ).replace(
             rawCodexMessageDeclaration,
             reviewedCodexMessageDeclaration,
         ).replace(
@@ -593,6 +698,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawCodexSkillsDeclaration,
             reviewedCodexSkillsDeclaration,
+        ).replace(
+            rawCodexHooksDeclaration,
+            reviewedCodexHooksDeclaration,
         ).replace(
             """export declare class AgentFormTextListValue {
     constructor(value: Array<string>);

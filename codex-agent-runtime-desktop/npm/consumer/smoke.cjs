@@ -90,6 +90,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexConnectors());
   assert.throws(() => new sdk.CodexModels());
   assert.throws(() => new sdk.CodexSkills());
+  assert.throws(() => new sdk.CodexHooks());
   assert.throws(() => new sdk.CodexAuthenticationState());
   assert.throws(() => new sdk.CodexConversation());
   assert.throws(() => new sdk.CodexObservation());
@@ -103,6 +104,11 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.CodexSkills.prototype.read, 'function');
   assert.equal(typeof sdk.CodexSkills.prototype.install, 'function');
   assert.equal(typeof sdk.CodexSkills.prototype.uninstall, 'function');
+  assert.equal(typeof Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'hooks')?.get, 'function');
+  assert.equal(typeof sdk.CodexHooks.prototype.list, 'function');
+  assert.equal(typeof sdk.CodexHooks.prototype.install, 'function');
+  assert.equal(typeof sdk.CodexHooks.prototype.uninstall, 'function');
+  assert.equal(typeof sdk.CodexHooks.prototype.trust, 'function');
   for (const constructor of [
     sdk.AgentConnector,
     sdk.AgentConversation,
@@ -115,6 +121,8 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentFormTextListValue,
     sdk.AgentFormTextValue,
     sdk.AgentHookActivity,
+    sdk.AgentHook,
+    sdk.AgentHookCatalog,
     sdk.AgentMcpEnvironmentVariable,
     sdk.AgentMcpOauthConfiguration,
     sdk.AgentMcpToolConfiguration,
@@ -140,6 +148,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.CodexMessage,
     sdk.CodexModels,
     sdk.CodexSkills,
+    sdk.CodexHooks,
     sdk.CodexObservation,
     sdk.CodexTurnProgress,
     sdk.CodexWorkspace,
@@ -701,6 +710,156 @@ test('cjs exposes the exact Node-only SDK surface', () => {
       'hook', 'afterTurn', 'command', 'running', null, [invalid],
     ));
   }
+
+  const sourceHandler = { type: 'command', command: './check', isAsync: true };
+  const hook = new sdk.AgentHook(
+    'review-hook', 'sha256:review', true, 'preToolUse', sourceHandler, false,
+    'PROJECT', '/workspace/.codex/hooks.json', 9007199254740993n, 'untrusted',
+    'Shell', null, 'Review shell commands', undefined, true,
+  );
+  assert.deepEqual(
+    [
+      hook.key, hook.currentHash, hook.isEnabled, hook.eventName, hook.isManaged, hook.source,
+      hook.sourcePath, hook.timeoutSeconds, hook.trustStatus, hook.matcher, hook.pluginId,
+      hook.statusMessage, hook.origin, hook.canUninstall, hook.canTrust,
+    ],
+    [
+      'review-hook', 'sha256:review', true, 'preToolUse', false, 'PROJECT',
+      '/workspace/.codex/hooks.json', 9007199254740993n, 'untrusted', 'Shell', null,
+      'Review shell commands', 'workspace', true, true,
+    ],
+  );
+  assert.deepEqual(hook.handler, { type: 'command', command: './check', isAsync: true });
+  assert.notEqual(hook.handler, sourceHandler);
+  sourceHandler.command = 'changed';
+  assert.equal(hook.handler.command, './check');
+  assert.equal(Object.isFrozen(hook), true);
+  assert.equal(Object.isFrozen(hook.handler), true);
+  assert.deepEqual(Object.keys(hook), []);
+  assert.deepEqual(Object.keys(hook.handler), ['type', 'command', 'isAsync']);
+
+  for (const [handler, expected] of [
+    [{ type: 'agent' }, { type: 'agent' }],
+    [{ type: 'command', command: './check', isAsync: false },
+      { type: 'command', command: './check', isAsync: false }],
+    [{ type: 'mcp_tool', server: 'review', tool: 'lint' },
+      { type: 'mcp_tool', server: 'review', tool: 'lint' }],
+    [{ type: 'prompt' }, { type: 'prompt' }],
+  ]) {
+    const value = new sdk.AgentHook(
+      `hook-${handler.type}`, 'hash', false, 'stop', handler, false,
+      'USER', '/hooks.json', 10n, 'trusted',
+    );
+    assert.deepEqual(value.handler, expected);
+    assert.equal(Object.isFrozen(value.handler), true);
+  }
+
+  for (const [invalidHandler, message] of [
+    [null, 'handler must be an object'],
+    [undefined, 'handler must be an object'],
+    [0, 'handler must be an object'],
+    ['command', 'handler must be an object'],
+    [new String('command'), 'handler.type must be a string'],
+    [{}, 'handler.type must be a string'],
+    [{ type: 'future' }, 'Unknown hook handler type: future'],
+    [{ type: 'command', command: 1, isAsync: false }, 'handler.command must be a string'],
+    [{ type: 'command', command: './check', isAsync: 'false' }, 'handler.isAsync must be a boolean'],
+    [{ type: 'mcp_tool', server: 1, tool: 'lint' }, 'handler.server must be a string'],
+    [{ type: 'mcp_tool', server: 'review', tool: 1 }, 'handler.tool must be a string'],
+  ]) {
+    assert.throws(
+      () => new sdk.AgentHook(
+        'invalid', 'hash', false, 'stop', invalidHandler, false,
+        'USER', '/hooks.json', 10n, 'trusted',
+      ),
+      (error) => error?.message === message,
+    );
+  }
+  for (const invalid of invalidHookStrings) {
+    assert.throws(() => new sdk.AgentHook(
+      invalid, 'hash', false, 'stop', { type: 'prompt' }, false,
+      'USER', '/hooks.json', 10n, 'trusted',
+    ));
+    assert.throws(() => new sdk.AgentHook(
+      'hook', 'hash', false, 'stop', { type: 'prompt' }, false,
+      'USER', '/hooks.json', 10n, invalid,
+    ));
+  }
+  for (const invalid of [0, 1, '', 'true', {}, [], new Boolean(true)]) {
+    assert.throws(() => new sdk.AgentHook(
+      'hook', 'hash', invalid, 'stop', { type: 'prompt' }, false,
+      'USER', '/hooks.json', 10n, 'trusted',
+    ));
+  }
+  for (const invalid of [0, 1, '', false, {}, [], Object(1n)]) {
+    assert.throws(() => new sdk.AgentHook(
+      'hook', 'hash', false, 'stop', { type: 'prompt' }, false,
+      'USER', '/hooks.json', invalid, 'trusted',
+    ));
+  }
+  for (const boundary of [-9223372036854775808n, 9223372036854775807n]) {
+    assert.equal(new sdk.AgentHook(
+      'hook', 'hash', false, 'stop', { type: 'prompt' }, false,
+      'USER', '/hooks.json', boundary, 'trusted',
+    ).timeoutSeconds, boundary);
+  }
+  for (const overflow of [-9223372036854775809n, 9223372036854775808n]) {
+    assert.throws(
+      () => new sdk.AgentHook(
+        'hook', 'hash', false, 'stop', { type: 'prompt' }, false,
+        'USER', '/hooks.json', overflow, 'trusted',
+      ),
+      (error) => error?.message === 'timeoutSeconds must fit a signed 64-bit integer',
+    );
+  }
+  for (const invalid of ['', 'TRUSTED', 'unknown']) {
+    assert.throws(
+      () => new sdk.AgentHook(
+        'hook', 'hash', false, 'stop', { type: 'prompt' }, false,
+        'USER', '/hooks.json', 10n, invalid,
+      ),
+      (error) => error?.message === `Unknown hook trust status: ${invalid}`,
+    );
+  }
+  for (const invalid of [null, '', 'USER', 'repo', 0, false, {}, []]) {
+    assert.throws(() => new sdk.AgentHook(
+      'hook', 'hash', false, 'stop', { type: 'prompt' }, false,
+      'USER', '/hooks.json', 10n, 'trusted', null, null, null, invalid,
+    ));
+  }
+
+  const sourceHooks = [hook];
+  const sourceWarnings = ['warning'];
+  const sourceErrors = ['error'];
+  const hookCatalog = new sdk.AgentHookCatalog(sourceHooks, sourceWarnings, sourceErrors);
+  sourceHooks.length = 0;
+  sourceWarnings[0] = 'changed';
+  sourceErrors[0] = 'changed';
+  assert.deepEqual(hookCatalog.hooks.map(({ key }) => key), ['review-hook']);
+  assert.deepEqual(hookCatalog.warnings, ['warning']);
+  assert.deepEqual(hookCatalog.errors, ['error']);
+  assert.notEqual(hookCatalog.hooks[0], hook);
+  assert.equal(Object.isFrozen(hookCatalog), true);
+  assert.equal(Object.isFrozen(hookCatalog.hooks), true);
+  assert.equal(Object.isFrozen(hookCatalog.warnings), true);
+  assert.equal(Object.isFrozen(hookCatalog.errors), true);
+  assert.equal(Object.isFrozen(hookCatalog.hooks[0]), true);
+  assert.equal(Object.isFrozen(hookCatalog.hooks[0].handler), true);
+  assert.deepEqual(new sdk.AgentHookCatalog([]).warnings, []);
+  assert.deepEqual(new sdk.AgentHookCatalog([]).errors, []);
+  for (const invalid of [null, undefined, '', 0, false, {}, { length: 0 }, () => {}]) {
+    assert.throws(() => new sdk.AgentHookCatalog(invalid));
+    if (invalid !== undefined) {
+      assert.throws(() => new sdk.AgentHookCatalog([], invalid));
+      assert.throws(() => new sdk.AgentHookCatalog([], [], invalid));
+    }
+  }
+  assert.throws(() => new sdk.AgentHookCatalog(new Array(1)));
+  assert.throws(() => new sdk.AgentHookCatalog([], new Array(1)));
+  assert.throws(() => new sdk.AgentHookCatalog([], [], new Array(1)));
+  assert.throws(() => new sdk.AgentHookCatalog([{}]));
+  assert.throws(() => new sdk.AgentHookCatalog([], [0]));
+  assert.throws(() => new sdk.AgentHookCatalog([], [], [0]));
 
   const defaultConnector = new sdk.AgentConnector('drive', 'Google Drive');
   assert.equal(defaultConnector.id, 'drive');
@@ -1274,6 +1433,17 @@ test('cjs exposes the exact Node-only SDK surface', () => {
       ['id', 'eventName', 'handlerType', 'status', 'statusMessage', 'details'],
     );
   }
+  for (const candidate of [hook, ...hookCatalog.hooks]) {
+    assert.deepEqual(
+      Reflect.ownKeys(candidate),
+      [
+        'key', 'currentHash', 'isEnabled', 'eventName', 'handler', 'isManaged', 'source',
+        'sourcePath', 'timeoutSeconds', 'trustStatus', 'matcher', 'pluginId', 'statusMessage',
+        'origin', 'canUninstall', 'canTrust',
+      ],
+    );
+  }
+  assert.deepEqual(Reflect.ownKeys(hookCatalog), ['hooks', 'warnings', 'errors']);
   for (const connector of [defaultConnector, undefinedConnector, customConnector, proxyConnector]) {
     assert.deepEqual(
       Reflect.ownKeys(connector),

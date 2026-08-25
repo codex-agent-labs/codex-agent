@@ -386,6 +386,8 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.AgentFormBooleanValue, commonJsSdk.AgentFormBooleanValue);
   assert.equal(sdk.AgentFormTextListValue, commonJsSdk.AgentFormTextListValue);
   assert.equal(sdk.AgentHookActivity, commonJsSdk.AgentHookActivity);
+  assert.equal(sdk.AgentHook, commonJsSdk.AgentHook);
+  assert.equal(sdk.AgentHookCatalog, commonJsSdk.AgentHookCatalog);
   assert.equal(sdk.AgentMcpEnvironmentVariable, commonJsSdk.AgentMcpEnvironmentVariable);
   assert.equal(sdk.AgentMcpOauthConfiguration, commonJsSdk.AgentMcpOauthConfiguration);
   assert.equal(sdk.AgentMcpToolConfiguration, commonJsSdk.AgentMcpToolConfiguration);
@@ -404,6 +406,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.CodexConnectors, commonJsSdk.CodexConnectors);
   assert.equal(sdk.CodexModels, commonJsSdk.CodexModels);
   assert.equal(sdk.CodexSkills, commonJsSdk.CodexSkills);
+  assert.equal(sdk.CodexHooks, commonJsSdk.CodexHooks);
   assert.equal(
     Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'skills').get,
     Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'skills').get,
@@ -412,6 +415,14 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.CodexSkills.prototype.read, commonJsSdk.CodexSkills.prototype.read);
   assert.equal(sdk.CodexSkills.prototype.install, commonJsSdk.CodexSkills.prototype.install);
   assert.equal(sdk.CodexSkills.prototype.uninstall, commonJsSdk.CodexSkills.prototype.uninstall);
+  assert.equal(
+    Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'hooks').get,
+    Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'hooks').get,
+  );
+  assert.equal(sdk.CodexHooks.prototype.list, commonJsSdk.CodexHooks.prototype.list);
+  assert.equal(sdk.CodexHooks.prototype.install, commonJsSdk.CodexHooks.prototype.install);
+  assert.equal(sdk.CodexHooks.prototype.uninstall, commonJsSdk.CodexHooks.prototype.uninstall);
+  assert.equal(sdk.CodexHooks.prototype.trust, commonJsSdk.CodexHooks.prototype.trust);
   assert.equal(
     sdk.codexApprovalPresetDisplayName,
     commonJsSdk.codexApprovalPresetDisplayName,
@@ -428,6 +439,37 @@ test('esm exposes the same runtime values as CommonJS', () => {
   ]) {
     assert.equal(sdk[name], commonJsSdk[name]);
   }
+  const sourceHandler = { type: 'command', command: './check', isAsync: false };
+  const hook = new sdk.AgentHook(
+    'esm-hook', 'sha256:esm', true, 'preToolUse', sourceHandler, false,
+    'PROJECT', '/workspace/.codex/hooks.json', 10n, 'untrusted',
+  );
+  sourceHandler.command = 'changed';
+  assert.deepEqual(hook.handler, { type: 'command', command: './check', isAsync: false });
+  assert.equal(hook.origin, 'workspace');
+  assert.equal(hook.canTrust, true);
+  assert.equal(Object.isFrozen(hook), true);
+  assert.equal(Object.isFrozen(hook.handler), true);
+  const catalog = new sdk.AgentHookCatalog([hook], ['warning'], ['error']);
+  assert.deepEqual(catalog.hooks.map(({ key }) => key), ['esm-hook']);
+  assert.deepEqual(catalog.warnings, ['warning']);
+  assert.deepEqual(catalog.errors, ['error']);
+  assert.equal(Object.isFrozen(catalog), true);
+  assert.equal(Object.isFrozen(catalog.hooks), true);
+  assert.throws(
+    () => new sdk.AgentHook(
+      'bad', 'hash', false, 'stop', { type: 'future' }, false,
+      'USER', '/hooks.json', 10n, 'trusted',
+    ),
+    (error) => error?.message === 'Unknown hook handler type: future',
+  );
+  assert.throws(
+    () => new sdk.AgentHook(
+      'bad', 'hash', false, 'stop', { type: 'prompt' }, false,
+      'USER', '/hooks.json', 10, 'trusted',
+    ),
+    (error) => error?.message === 'timeoutSeconds must be a bigint',
+  );
   for (const [preset, displayName] of [
     ['never', 'Never'],
     ['auto_review', 'Auto review'],
@@ -640,6 +682,21 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexSkills#uninstall:(skill: AgentSkill, signal?: AbortSignal | null | undefined): Promise<void>',
   ), 'Skill uninstallation must preserve canonical skill identity and cancellation');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'type:AgentHookHandler:{ readonly type: "agent"; } | { readonly type: "command"; readonly command: string; readonly isAsync: boolean; } | { readonly type: "mcp_tool"; readonly server: string; readonly tool: string; } | { readonly type: "prompt"; }',
+  ), 'Hook handlers must preserve the exact readonly discriminated union');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentHook#(key: string, currentHash: string, isEnabled: boolean, eventName: string, handler: AgentHookHandler, isManaged: boolean, source: string, sourcePath: string, timeoutSeconds: bigint, trustStatus: AgentHookTrustStatus, matcher?: string | null | undefined, pluginId?: string | null | undefined, statusMessage?: string | null | undefined, origin?: AgentResourceOrigin, canUninstall?: boolean)',
+  ), 'Hooks must preserve canonical defaults, bigint timeout, and finite domains');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'constructor:AgentHookCatalog#(hooks: ReadonlyArray<AgentHook>, warnings?: ReadonlyArray<string>, errors?: ReadonlyArray<string>)',
+  ), 'Hook catalogs must preserve immutable nested values and diagnostics');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'getter:CodexAgent#hooks:CodexHooks',
+  ), 'Hook controller ownership must be discoverable from an Agent');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexHooks#trust:(hook: AgentHook, signal?: AbortSignal | null | undefined): Promise<void>',
+  ), 'Hook trust must preserve canonical hook identity and cancellation');
   assert.ok(compilerApi.publicSymbols.includes(
     'getter:CodexAgent#authentication:CodexAuthentication',
   ), 'Agent authentication ownership must be discoverable');
