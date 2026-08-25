@@ -31,6 +31,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentFormOption,
     sdk.AgentFormTextListValue,
     sdk.AgentFormTextValue,
+    sdk.AgentMcpToolConfiguration,
     sdk.AgentPlanProgress,
     sdk.AgentPlanStep,
     sdk.CodexAgent,
@@ -204,6 +205,45 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     assert.throws(() => new sdk.AgentFormTextListValue([invalid]));
   }
 
+  const defaultMcpToolConfiguration = new sdk.AgentMcpToolConfiguration();
+  const undefinedMcpToolConfiguration = new sdk.AgentMcpToolConfiguration(undefined);
+  const nullMcpToolConfiguration = new sdk.AgentMcpToolConfiguration(null);
+  assert.equal(defaultMcpToolConfiguration.approval, null);
+  assert.equal(undefinedMcpToolConfiguration.approval, null);
+  assert.equal(nullMcpToolConfiguration.approval, null);
+  const mcpToolApprovals = ['approve', 'auto', 'prompt', 'writes'];
+  const mcpToolConfigurations = mcpToolApprovals.map(
+    (approval) => new sdk.AgentMcpToolConfiguration(approval),
+  );
+  assert.deepEqual(mcpToolConfigurations.map(({ approval }) => approval), mcpToolApprovals);
+  for (const invalid of [
+    '',
+    ' ',
+    'APPROVE',
+    'Approve',
+    'unknown',
+    0,
+    -0,
+    NaN,
+    Infinity,
+    -Infinity,
+    true,
+    false,
+    1n,
+    Symbol('approval'),
+    {},
+    [],
+    ['approve'],
+    () => {},
+    new String('approve'),
+    new Number(0),
+    new Boolean(false),
+    new Proxy({}, {}),
+    new Proxy(new String('approve'), {}),
+  ]) {
+    assert.throws(() => new sdk.AgentMcpToolConfiguration(invalid));
+  }
+
   const firstIssue = new sdk.AgentElicitationValidationIssue('first', 'missing_required');
   const secondIssue = new sdk.AgentElicitationValidationIssue('second', 'invalid_format');
   assert.equal(firstIssue.fieldName, 'first');
@@ -365,6 +405,10 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     emptyTextListValue,
     textListValue,
     proxyTextListValue,
+    defaultMcpToolConfiguration,
+    undefinedMcpToolConfiguration,
+    nullMcpToolConfiguration,
+    ...mcpToolConfigurations,
     firstIssue,
     secondIssue,
     validation,
@@ -379,6 +423,14 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   }
   for (const value of [textValue, ...numberValues, falseValue, trueValue, textListValue]) {
     assert.deepEqual(Reflect.ownKeys(value), ['value']);
+  }
+  for (const configuration of [
+    defaultMcpToolConfiguration,
+    undefinedMcpToolConfiguration,
+    nullMcpToolConfiguration,
+    ...mcpToolConfigurations,
+  ]) {
+    assert.deepEqual(Reflect.ownKeys(configuration), ['approval']);
   }
   assert.deepEqual(Reflect.ownKeys(planSteps[0]).sort(), ['status', 'text']);
   assert.deepEqual(Reflect.ownKeys(plan).sort(), ['explanation', 'steps']);

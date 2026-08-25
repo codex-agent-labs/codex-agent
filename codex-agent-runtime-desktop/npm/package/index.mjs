@@ -7,6 +7,7 @@ export const AgentFormTextValue = api.AgentFormTextValue;
 export const AgentFormNumberValue = api.AgentFormNumberValue;
 export const AgentFormBooleanValue = api.AgentFormBooleanValue;
 export const AgentFormTextListValue = api.AgentFormTextListValue;
+export const AgentMcpToolConfiguration = api.AgentMcpToolConfiguration;
 export const AgentPlanProgress = api.AgentPlanProgress;
 export const AgentPlanStep = api.AgentPlanStep;
 export const CodexAgent = api.CodexAgent;

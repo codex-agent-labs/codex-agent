@@ -53,6 +53,10 @@ export declare class AgentFormTextListValue {
     constructor(value: ReadonlyArray<string>);
     get value(): ReadonlyArray<string>;
 }
+export declare class AgentMcpToolConfiguration {
+    constructor(approval?: Nullable<AgentMcpToolApproval>);
+    get approval(): Nullable<AgentMcpToolApproval>;
+}
 export declare class AgentElicitationValidationIssue {
     constructor(fieldName: string, reason: AgentElicitationValidationReason);
     get fieldName(): string;

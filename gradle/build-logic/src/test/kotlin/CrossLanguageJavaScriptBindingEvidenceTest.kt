@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 165-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 168-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(165, evidence.packedApi.publicSymbols.size)
+        assertEquals(168, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -608,6 +608,96 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
                 )
                 assertTrue(key in derive(listOf(key), unrelated.sorted()).missingCapabilityKeys)
             }
+    }
+
+    @Test
+    fun `MCP tool configuration preserves nullable approval alias and default`() {
+        val constructor = canonicalConstructor(
+            "AgentMcpToolConfiguration",
+            listOf("example/AgentMcpToolApproval?"),
+            defaultParameterIndices = setOf(0),
+        )
+        val approval = canonicalProperty(
+            "AgentMcpToolConfiguration",
+            "approval",
+            "example/AgentMcpToolApproval?",
+        )
+        val keys = listOf(constructor, approval).sorted()
+        val constructorSymbol =
+            "constructor:AgentMcpToolConfiguration#" +
+                "(approval?: AgentMcpToolApproval | null | undefined)"
+        val getterSymbol =
+            "getter:AgentMcpToolConfiguration#approval:AgentMcpToolApproval | null | undefined"
+        val symbols = listOf(
+            "class:AgentMcpToolConfiguration",
+            constructorSymbol,
+            getterSymbol,
+        ).sorted()
+        val references = listOf(constructorSymbol, getterSymbol).sorted()
+        val evidence = derive(keys, symbols, references = references)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertEquals(2, evidence.projectionClaims.size)
+        assertTrue(evidence.projectionClaims.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
+        assertEquals(symbols, evidence.packedApi.publicSymbols)
+        assertEquals(references, evidence.packedApi.referencedSymbols)
+
+        listOf(
+            Triple(
+                constructor,
+                constructorSymbol,
+                constructorSymbol.replace("AgentMcpToolApproval", "string"),
+            ),
+            Triple(
+                approval,
+                getterSymbol,
+                getterSymbol.replace("AgentMcpToolApproval", "string"),
+            ),
+            Triple(
+                constructor,
+                constructorSymbol,
+                constructorSymbol.replace(
+                    "AgentMcpToolApproval | null | undefined",
+                    "AgentMcpToolApproval",
+                ),
+            ),
+            Triple(
+                approval,
+                getterSymbol,
+                getterSymbol.replace(
+                    "AgentMcpToolApproval | null | undefined",
+                    "AgentMcpToolApproval",
+                ),
+            ),
+            Triple(
+                constructor,
+                constructorSymbol,
+                constructorSymbol.replace("approval?:", "approval:"),
+            ),
+            Triple(
+                constructor,
+                constructorSymbol,
+                constructorSymbol.replace(
+                    ")",
+                    ", unexpected?: string)",
+                ),
+            ),
+        ).forEach { (key, exact, drifted) ->
+            val driftedSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val driftedReferences = references.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(keys, driftedSymbols, references = driftedReferences)
+            assertTrue(key in drift.missingCapabilityKeys, "$key accepted drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        val unreferenced = derive(keys, symbols, references = listOf(getterSymbol))
+        assertTrue(unreferenced.errors.any {
+            "Unreferenced exceptional" in it && "AgentMcpToolConfiguration" in it
+        })
+        assertEquals(listOf(approval), unreferenced.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
     }
 
     @Test
@@ -1458,7 +1548,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(165, it.size) }
+        .also { assertEquals(168, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -1523,6 +1613,7 @@ class:AgentFormNumberValue
 class:AgentFormOption
 class:AgentFormTextListValue
 class:AgentFormTextValue
+class:AgentMcpToolConfiguration
 class:AgentPlanProgress
 class:AgentPlanStep
 class:CodexAgent
@@ -1545,6 +1636,7 @@ constructor:AgentFormNumberValue#(value: number)
 constructor:AgentFormOption#(value: string, title?: string, description?: string | null | undefined)
 constructor:AgentFormTextListValue#(value: ReadonlyArray<string>)
 constructor:AgentFormTextValue#(value: string)
+constructor:AgentMcpToolConfiguration#(approval?: AgentMcpToolApproval | null | undefined)
 constructor:AgentPlanProgress#(explanation?: string | null | undefined, steps?: ReadonlyArray<AgentPlanStep>)
 constructor:AgentPlanStep#(text: string, status: AgentPlanStepStatus)
 function:createCodexHost:(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost
@@ -1559,6 +1651,7 @@ getter:AgentFormOption#title:string
 getter:AgentFormOption#value:string
 getter:AgentFormTextListValue#value:ReadonlyArray<string>
 getter:AgentFormTextValue#value:string
+getter:AgentMcpToolConfiguration#approval:AgentMcpToolApproval | null | undefined
 getter:AgentPlanProgress#explanation:string | null | undefined
 getter:AgentPlanProgress#steps:ReadonlyArray<AgentPlanStep>
 getter:AgentPlanStep#status:AgentPlanStepStatus

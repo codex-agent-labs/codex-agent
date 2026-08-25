@@ -13,6 +13,8 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.BooleanValue 
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Number as CoreFormNumberValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Text as CoreFormTextValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.TextList as CoreFormTextListValue
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolApproval as CoreMcpToolApproval
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolConfiguration as CoreMcpToolConfiguration
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanProgress as CorePlanProgress
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanStep
@@ -132,6 +134,20 @@ public class AgentFormTextListValue public constructor(value: Array<String>) {
         )
         this.value = core.value.toTypedArray()
         freezeSnapshot(this.value)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable MCP tool configuration. */
+@JsExport
+public class AgentMcpToolConfiguration public constructor(approval: String? = null) {
+    public val approval: String?
+
+    init {
+        val core = CoreMcpToolConfiguration(
+            approval.requireJavaScriptNullableString("approval")?.toCoreMcpToolApproval(),
+        )
+        this.approval = core.approval?.name?.lowercase()
         freezeSnapshot(this)
     }
 }
@@ -716,6 +732,14 @@ private fun String.toCoreElicitationValidationReason(): CoreElicitationValidatio
 private fun String.toCorePlanStepStatus(): CorePlanStepStatus =
     CorePlanStepStatus.entries.singleOrNull { it.name.lowercase() == this }
         ?: throw IllegalArgumentException("Unknown plan step status: $this")
+
+private fun String.toCoreMcpToolApproval(): CoreMcpToolApproval = when (this) {
+    "approve" -> CoreMcpToolApproval.APPROVE
+    "auto" -> CoreMcpToolApproval.AUTO
+    "prompt" -> CoreMcpToolApproval.PROMPT
+    "writes" -> CoreMcpToolApproval.WRITES
+    else -> throw IllegalArgumentException("Unknown MCP tool approval: $this")
+}
 
 private fun String.requireJavaScriptString(name: String): String {
     require(jsTypeOf(this) == "string") { "$name must be a string" }

@@ -6,6 +6,7 @@ import {
   AgentFormOption,
   AgentFormTextListValue,
   AgentFormTextValue,
+  AgentMcpToolConfiguration,
   AgentPlanProgress,
   AgentPlanStep,
   CodexAgent,
@@ -71,6 +72,14 @@ const formBooleanValue = new AgentFormBooleanValue(true);
 const formBoolean: boolean = formBooleanValue.value;
 const formTextListValue = new AgentFormTextListValue(["first", "second"]);
 const formTextList: ReadonlyArray<string> = formTextListValue.value;
+const mcpToolApprovals: ReadonlyArray<AgentMcpToolApproval | null | undefined> = [
+  new AgentMcpToolConfiguration().approval,
+  new AgentMcpToolConfiguration(null).approval,
+  new AgentMcpToolConfiguration("approve").approval,
+  new AgentMcpToolConfiguration("auto").approval,
+  new AgentMcpToolConfiguration("prompt").approval,
+  new AgentMcpToolConfiguration("writes").approval,
+];
 const validationIssue = new AgentElicitationValidationIssue("field", "missing_required");
 const validationFieldName: string = validationIssue.fieldName;
 const validationReason: AgentElicitationValidationReason = validationIssue.reason;
@@ -254,6 +263,7 @@ void [
   formNumber,
   formBoolean,
   formTextList,
+  mcpToolApprovals,
   validationFieldName,
   validationReason,
   validationIssues,

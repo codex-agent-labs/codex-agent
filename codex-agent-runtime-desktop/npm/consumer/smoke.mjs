@@ -361,6 +361,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.AgentFormNumberValue, commonJsSdk.AgentFormNumberValue);
   assert.equal(sdk.AgentFormBooleanValue, commonJsSdk.AgentFormBooleanValue);
   assert.equal(sdk.AgentFormTextListValue, commonJsSdk.AgentFormTextListValue);
+  assert.equal(sdk.AgentMcpToolConfiguration, commonJsSdk.AgentMcpToolConfiguration);
   assert.equal(sdk.AgentPlanProgress, commonJsSdk.AgentPlanProgress);
   assert.equal(sdk.AgentPlanStep, commonJsSdk.AgentPlanStep);
   assert.equal(typeof sdk.CodexHost, 'function');

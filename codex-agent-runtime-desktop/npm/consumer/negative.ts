@@ -6,6 +6,7 @@ import {
   AgentFormOption,
   AgentFormTextListValue,
   AgentFormTextValue,
+  AgentMcpToolConfiguration,
   AgentPlanProgress,
   AgentPlanStep,
 } from "@codex-agent-labs/codex-agent";
@@ -52,6 +53,14 @@ new AgentFormTextListValue();
 textListValue.value = [];
 // @ts-expect-error Text-list form value elements are readonly.
 textListValue.value.push("third");
+
+const mcpToolConfiguration = new AgentMcpToolConfiguration("auto");
+// @ts-expect-error MCP tool approvals remain a closed typed domain.
+new AgentMcpToolConfiguration("not_an_approval");
+// @ts-expect-error MCP tool approvals are strings, not numbers.
+new AgentMcpToolConfiguration(1);
+// @ts-expect-error Immutable MCP tool configurations are readonly.
+mcpToolConfiguration.approval = "prompt";
 
 const issue = new AgentElicitationValidationIssue("field", "missing_required");
 // @ts-expect-error Validation reasons remain a closed typed domain.
