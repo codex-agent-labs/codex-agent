@@ -229,6 +229,8 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     null,
     signal,
   );
+  await agent.rename("conversation", "Renamed conversation", signal);
+  await agent.delete("conversation", signal);
   const conversationState: CodexConversationState = conversation.state;
   const messages = conversationState.messages;
   const turnProgress = conversationState.turnProgress;

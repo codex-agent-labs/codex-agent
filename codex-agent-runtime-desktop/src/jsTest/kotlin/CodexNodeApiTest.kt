@@ -191,6 +191,38 @@ class CodexNodeApiTest {
         assertEquals("unsupported_feature", codexError.code)
         assertFalse(codexError.recoverable)
 
+        val blankName = runCatching { agent.rename("thread-history", "  ").await() }.exceptionOrNull()
+        assertEquals("Conversation name must not be blank", blankName?.message)
+        val blankId = runCatching { agent.delete("  ").await() }.exceptionOrNull()
+        assertEquals("Conversation ID must not be blank", blankId?.message)
+        assertNull(runtime.renamedConversationId)
+        assertNull(runtime.deletedConversationId)
+
+        agent.rename("thread-history", "  Useful name  ").await()
+        assertEquals("thread-history", runtime.renamedConversationId)
+        assertEquals("Useful name", runtime.renamedConversationName)
+
+        runtime.failNextRename = true
+        val renameFailure = runCatching { agent.rename("thread-history", "Rejected").await() }.exceptionOrNull()
+        val renameError = assertIs<CodexError>(renameFailure)
+        assertEquals("conversation_rename_failed", renameError.code)
+        assertEquals("rename denied", renameError.message)
+        assertTrue(renameError.recoverable)
+
+        val deleteEntered = CompletableDeferred<Unit>()
+        val deleteRelease = CompletableDeferred<Unit>()
+        runtime.deleteEntered = deleteEntered
+        runtime.deleteRelease = deleteRelease
+        val deletion = agent.delete("thread-js")
+        try {
+            deleteEntered.await()
+            assertEquals("closed", conversation.state.status)
+            assertNull(agent.activeConversation)
+            assertEquals("thread-js", runtime.deletedConversationId)
+        } finally {
+            deleteRelease.complete(Unit)
+        }
+        deletion.await()
         conversation.dispose().await()
         awaitCondition { conversationObservation.isClosed }
         assertEquals("closed", conversationStates.last().status)
@@ -521,6 +553,12 @@ private class ApiTestRuntime : CodexRuntime {
     var apiKey: String? = null
     var cancelRequests: Int = 0
     var logoutRequests: Int = 0
+    var renamedConversationId: String? = null
+    var renamedConversationName: String? = null
+    var deletedConversationId: String? = null
+    var failNextRename: Boolean = false
+    var deleteEntered: CompletableDeferred<Unit>? = null
+    var deleteRelease: CompletableDeferred<Unit>? = null
     private var loginAttempts: Int = 0
 
     suspend fun completeTurn(): Unit = notify("turn/completed", buildJsonObject {
@@ -570,6 +608,24 @@ private class ApiTestRuntime : CodexRuntime {
             "initialize" -> respond(id, initializeResult())
             "thread/start" -> respond(id, threadStartResult())
             "thread/read" -> respond(id, threadReadResult())
+            "thread/name/set" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                renamedConversationId = params["threadId"]?.jsonPrimitive?.content
+                renamedConversationName = params["name"]?.jsonPrimitive?.content
+                if (failNextRename) {
+                    failNextRename = false
+                    respondError(id, "rename denied")
+                } else {
+                    respond(id, buildJsonObject {})
+                }
+            }
+            "thread/delete" -> {
+                deletedConversationId = checkNotNull(request["params"])
+                    .jsonObject["threadId"]?.jsonPrimitive?.content
+                deleteEntered?.complete(Unit)
+                deleteRelease?.await()
+                respond(id, buildJsonObject {})
+            }
             "turn/start" -> respond(id, turnStartResult())
             "account/read" -> {
                 accountReadEntered?.complete(Unit)

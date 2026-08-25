@@ -662,6 +662,21 @@ public class CodexAgent internal constructor(
         ).let(::wrapConversation)
     }
 
+    public fun rename(
+        conversationId: String,
+        name: String,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        core.conversations.rename(ConversationId(conversationId), name)
+    }
+
+    public fun delete(
+        conversationId: String,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        core.conversations.delete(ConversationId(conversationId))
+    }
+
     public fun observeActiveConversation(listener: (CodexConversation?) -> Unit): CodexObservation {
         val state = combine(host.lifecycleState(), core.conversations.active) { hostState, active ->
             val ownsAgent = (hostState as? CoreHostState.Ready)?.agent === core

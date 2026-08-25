@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 186-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 188-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(186, evidence.packedApi.publicSymbols.size)
+        assertEquals(188, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -1125,6 +1125,75 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `conversation rename and delete project as referenced asynchronous agent methods`() {
+        val rename = canonicalFunction(
+            "CodexConversations",
+            "rename",
+            suspendFunction = true,
+            parameters = listOf("example/ConversationId!!", "kotlin/String!!"),
+        )
+        val delete = canonicalFunction(
+            "CodexConversations",
+            "delete",
+            suspendFunction = true,
+            parameters = listOf("example/ConversationId!!"),
+        )
+        val keys = listOf(delete, rename).sorted()
+        val methods = listOf(DELETE_CONVERSATION, RENAME_CONVERSATION).sorted()
+        val symbols = (methods + "class:CodexAgent").sorted()
+        val evidence = derive(keys, symbols, references = methods)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertEquals(methods, evidence.packedApi.referencedSymbols)
+        assertEquals(
+            mapOf(delete to listOf(DELETE_CONVERSATION), rename to listOf(RENAME_CONVERSATION)),
+            evidence.projectionClaims.associate { it.capabilityKey to it.publicSymbols },
+        )
+        assertTrue(evidence.projectionClaims.all {
+            it.sharedScenarios.toSet() == setOf(
+                CrossLanguageBindingScenario.ASYNC_SUCCESS,
+                CrossLanguageBindingScenario.ASYNC_FAILURE,
+            )
+        })
+
+        listOf(
+            Triple(
+                rename,
+                RENAME_CONVERSATION,
+                RENAME_CONVERSATION.replace("conversationId: string", "conversationId: ConversationId"),
+            ),
+            Triple(
+                delete,
+                DELETE_CONVERSATION,
+                DELETE_CONVERSATION.replace(
+                    "signal?: AbortSignal | null | undefined",
+                    "signal: AbortSignal",
+                ),
+            ),
+            Triple(
+                delete,
+                DELETE_CONVERSATION,
+                DELETE_CONVERSATION.replace("Promise<void>", "Promise<string>"),
+            ),
+        ).forEach { (key, exact, drifted) ->
+            val driftedSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val driftedReferences = methods.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(keys, driftedSymbols, references = driftedReferences)
+            assertTrue(key in drift.missingCapabilityKeys, "$key accepted drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        methods.forEach { unreferencedMethod ->
+            val unreferenced = derive(keys, symbols, references = methods - unreferencedMethod)
+            assertTrue(unreferenced.errors.any {
+                "Unreferenced exceptional" in it && unreferencedMethod in it
+            })
+            assertEquals(1, unreferenced.projectionClaims.size)
+        }
+    }
+
+    @Test
     fun `open projection requires exact defaulted settings flattening and one public overload`() {
         val key = canonicalFunction(
             "CodexConversations",
@@ -1911,7 +1980,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(186, it.size) }
+        .also { assertEquals(188, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -1921,6 +1990,13 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
                 "approvalPreset?: CodexApprovalPreset | null | undefined, " +
                 "serviceTier?: string | null | undefined, " +
                 "signal?: AbortSignal | null | undefined): Promise<CodexConversation>"
+        private const val DELETE_CONVERSATION =
+            "method:CodexAgent#delete:" +
+                "(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>"
+        private const val RENAME_CONVERSATION =
+            "method:CodexAgent#rename:" +
+                "(conversationId: string, name: string, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>"
         private const val CONVERSATION_STATE_GETTER =
             "getter:CodexConversation#state:CodexConversationState"
         private const val CONVERSATION_STATE_OBSERVER =
@@ -2095,8 +2171,10 @@ getter:CodexTurnProgress#truncated:boolean
 getter:CodexTurnProgress#workActivity:CodexWorkActivity | null | undefined
 getter:CodexWorkspace#displayName:string
 getter:CodexWorkspace#path:string
+method:CodexAgent#delete:(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>
 method:CodexAgent#observeActiveConversation:(listener: (conversation: CodexConversation | null | undefined) => void): CodexObservation
 method:CodexAgent#openConversation:(conversationId?: string | null | undefined, approvalPreset?: CodexApprovalPreset | null | undefined, serviceTier?: string | null | undefined, signal?: AbortSignal | null | undefined): Promise<CodexConversation>
+method:CodexAgent#rename:(conversationId: string, name: string, signal?: AbortSignal | null | undefined): Promise<void>
 method:CodexAuthentication#authenticate:(method: "api_key", apiKey: string, signal?: AbortSignal | null | undefined): Promise<void>
 method:CodexAuthentication#authenticate:(method: "chatgpt_device_code", apiKey?: null, signal?: AbortSignal | null | undefined): Promise<void>
 method:CodexAuthentication#authenticate:(method?: "chatgpt_browser" | null | undefined, apiKey?: null, signal?: AbortSignal | null | undefined): Promise<void>

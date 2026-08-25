@@ -196,6 +196,8 @@ export declare class CodexAgent {
     get authentication(): CodexAuthentication;
     get activeConversation(): Nullable<CodexConversation>;
     openConversation(conversationId?: Nullable<string>, approvalPreset?: Nullable<CodexApprovalPreset>, serviceTier?: Nullable<string>, signal?: Nullable<AbortSignal>): Promise<CodexConversation>;
+    rename(conversationId: string, name: string, signal?: Nullable<AbortSignal>): Promise<void>;
+    delete(conversationId: string, signal?: Nullable<AbortSignal>): Promise<void>;
     observeActiveConversation(listener: (conversation: Nullable<CodexConversation>) => void): CodexObservation;
 }
 export declare class CodexAuthentication {

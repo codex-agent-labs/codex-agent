@@ -367,6 +367,8 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.AgentMcpToolConfiguration, commonJsSdk.AgentMcpToolConfiguration);
   assert.equal(sdk.AgentPlanProgress, commonJsSdk.AgentPlanProgress);
   assert.equal(sdk.AgentPlanStep, commonJsSdk.AgentPlanStep);
+  assert.equal(sdk.CodexAgent.prototype.rename, commonJsSdk.CodexAgent.prototype.rename);
+  assert.equal(sdk.CodexAgent.prototype.delete, commonJsSdk.CodexAgent.prototype.delete);
   assert.equal(typeof sdk.CodexHost, 'function');
   assert.equal(typeof sdk.CodexAuthentication, 'function');
   assert.equal(typeof sdk.CodexAuthenticationState, 'function');
@@ -432,6 +434,12 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexAgent#openConversation:(conversationId?: string | null | undefined, approvalPreset?: CodexApprovalPreset | null | undefined, serviceTier?: string | null | undefined, signal?: AbortSignal | null | undefined): Promise<CodexConversation>',
   ), 'Nested method parameter aliases must expand structurally');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexAgent#rename:(conversationId: string, name: string, signal?: AbortSignal | null | undefined): Promise<void>',
+  ), 'Conversation rename must preserve typed IDs, names, and AbortSignal cancellation');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'method:CodexAgent#delete:(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>',
+  ), 'Conversation deletion must preserve typed IDs and AbortSignal cancellation');
   assert.ok(compilerApi.publicSymbols.includes(
     'getter:CodexAgent#authentication:CodexAuthentication',
   ), 'Agent authentication ownership must be discoverable');

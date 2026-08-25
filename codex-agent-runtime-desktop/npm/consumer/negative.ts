@@ -144,6 +144,20 @@ turnProgress.hookActivities = [];
 turnProgress.hookActivities.push(hookActivity);
 
 async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
+  // @ts-expect-error Conversation IDs are strings.
+  await agent.rename(1, "Renamed conversation");
+  // @ts-expect-error Conversation names are strings.
+  await agent.rename("conversation", 1);
+  // @ts-expect-error Rename requires a conversation name.
+  await agent.rename("conversation");
+  // @ts-expect-error Rename signals must be AbortSignal values.
+  await agent.rename("conversation", "Renamed conversation", {});
+  // @ts-expect-error Delete requires a conversation ID.
+  await agent.delete();
+  // @ts-expect-error Conversation IDs are strings.
+  await agent.delete(1);
+  // @ts-expect-error Delete signals must be AbortSignal values.
+  await agent.delete("conversation", "signal");
   // @ts-expect-error API-key authentication requires a key.
   await agent.authentication.authenticate("api_key");
   // @ts-expect-error Browser authentication does not accept an API key.
