@@ -64,7 +64,8 @@ abstract class RecordFirebaseAndroidRuntimeEvidenceTask @Inject constructor(
         val test = testApk.get().asFile
         val aar = releaseAar.get().asFile
         val matrix = parseFirebaseTestMatrix(matrixFile.get().asFile)
-        val report = findPassingAndroidRuntimeReport(testResults.get().asFile).file
+        val expectedTestClass = TRUSTED_FIREBASE_ANDROID_TEST_CLASS
+        val report = findPassingAndroidRuntimeReport(testResults.get().asFile, expectedTestClass).file
         val appId = parseAndroidApplicationId(printManifest(app))
         val testId = parseAndroidManifestIdentity(printManifest(test))
         check(appId == FIREBASE_APPLICATION_ID) { "Unexpected Android host application ID" }
@@ -89,9 +90,10 @@ abstract class RecordFirebaseAndroidRuntimeEvidenceTask @Inject constructor(
             commit, matrix, copiedMatrix.releaseDigest(), copiedReport.releaseDigest(),
             copiedApp.releaseDigest(), copiedTest.releaseDigest(), copiedAar.releaseDigest(),
             appRuntime, aarRuntime,
-        )))
+        ), expectedTestClass))
         val verified = verifyFirebaseAndroidRuntimeEvidenceArtifacts(
             evidence, output, commit, pinnedRuntime, ::applicationId, ::testIdentity,
+            expectedTestClass,
         )
         writeFirebaseAndroidVerificationReceipt(
             output.resolve(FIREBASE_ANDROID_VERIFICATION_RECEIPT_FILE), verified,
