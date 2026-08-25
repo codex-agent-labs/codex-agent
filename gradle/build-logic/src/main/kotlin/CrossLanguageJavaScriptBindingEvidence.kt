@@ -284,7 +284,7 @@ internal val javaScriptBindingScenarioMappings = listOf(
     ),
     JavaScriptBindingScenarioMapping(
         CrossLanguageBindingScenario.VALUE_CONVERSION,
-        listOf(jsLifecycleTest, jsAuthenticationTest),
+        listOf(packedSurfaceTest, jsLifecycleTest, jsAuthenticationTest),
     ),
 )
 
@@ -1028,7 +1028,13 @@ private fun constructorProjectionCandidates(
     return candidates.map {
         JavaScriptProjectionCandidate(
             publicSymbols = listOf(it.raw),
-            scenarios = listOf(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP),
+            scenarios = listOf(
+                if (member.simpleOwner == "CodexHost") {
+                    CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP
+                } else {
+                    CrossLanguageBindingScenario.VALUE_CONVERSION
+                },
+            ),
             requiresConsumerReference = true,
         )
     }

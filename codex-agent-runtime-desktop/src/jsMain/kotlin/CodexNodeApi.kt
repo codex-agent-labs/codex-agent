@@ -5,6 +5,10 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as 
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSettings
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState as CoreConversationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationStatus
+import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidation as CoreElicitationValidation
+import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationIssue as CoreElicitationValidationIssue
+import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationReason as CoreElicitationValidationReason
+import io.github.codex_agent_labs.codexmobile.agent.AgentFormOption as CoreFormOption
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
 import io.github.codex_agent_labs.codexmobile.agent.AgentTurnProgress as CoreTurnProgress
 import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
@@ -23,6 +27,7 @@ import io.github.codex_agent_labs.codexmobile.agent.runtime.NodeCodexPlatform
 import kotlin.js.ExperimentalJsExport
 import kotlin.js.JsExport
 import kotlin.js.Promise
+import kotlin.js.jsTypeOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +48,73 @@ public external interface AbortSignal {
     public val aborted: Boolean
     public fun addEventListener(type: String, listener: () -> Unit)
     public fun removeEventListener(type: String, listener: () -> Unit)
+}
+
+/** Immutable form option value. */
+@JsExport
+public class AgentFormOption public constructor(
+    value: String,
+    title: String = value,
+    description: String? = null,
+) {
+    public val value: String
+    public val title: String
+    public val description: String?
+
+    init {
+        val core = CoreFormOption(
+            value.requireJavaScriptString("value"),
+            title.requireJavaScriptString("title"),
+            description.requireJavaScriptNullableString("description"),
+        )
+        this.value = core.value
+        this.title = core.title
+        this.description = core.description
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable elicitation validation issue. */
+@JsExport
+public class AgentElicitationValidationIssue public constructor(
+    fieldName: String,
+    reason: String,
+) {
+    public val fieldName: String
+    public val reason: String
+
+    init {
+        val core = CoreElicitationValidationIssue(
+            fieldName.requireJavaScriptString("fieldName"),
+            reason.requireJavaScriptString("reason").toCoreElicitationValidationReason(),
+        )
+        this.fieldName = core.fieldName
+        this.reason = core.reason.name.lowercase()
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable elicitation validation result. */
+@JsExport
+public class AgentElicitationValidation public constructor(
+    issues: Array<AgentElicitationValidationIssue>,
+) {
+    public val issues: Array<AgentElicitationValidationIssue>
+    public val isValid: Boolean
+
+    init {
+        requireJavaScriptArray(issues, "issues")
+        this.issues = issues.map {
+            AgentElicitationValidationIssue(it.fieldName, it.reason)
+        }.toTypedArray()
+        this.isValid = CoreElicitationValidation(
+            this.issues.map {
+                CoreElicitationValidationIssue(it.fieldName, it.reason.toCoreElicitationValidationReason())
+            },
+        ).isValid
+        freezeSnapshot(this.issues)
+        freezeSnapshot(this)
+    }
 }
 
 /** Structured failure data exposed by observable state snapshots. */
@@ -530,6 +602,24 @@ private fun String?.toAuthenticationMethod(apiKey: String?): CoreAuthenticationM
         "apiKey is required for api_key authentication"
     })
     else -> throw IllegalArgumentException("Unknown authentication method: $this")
+}
+
+private fun String.toCoreElicitationValidationReason(): CoreElicitationValidationReason =
+    CoreElicitationValidationReason.entries.singleOrNull { it.name.lowercase() == this }
+        ?: throw IllegalArgumentException("Unknown elicitation validation reason: $this")
+
+private fun String.requireJavaScriptString(name: String): String {
+    require(jsTypeOf(this) == "string") { "$name must be a string" }
+    return this
+}
+
+private fun String?.requireJavaScriptNullableString(name: String): String? {
+    require(this == null || jsTypeOf(this) == "string") { "$name must be a string or null" }
+    return this
+}
+
+private fun requireJavaScriptArray(value: Any?, name: String): Unit {
+    require(js("Array.isArray(value)") as Boolean) { "$name must be an array" }
 }
 
 private fun CoreWorkspace.project(): CodexWorkspace = CodexWorkspace(path, displayName)

@@ -31,6 +31,22 @@ export type CodexMessageRole = "assistant" | "user";
 export type CodexWorkActivity = "running_command" | "writing_files";
 export type CodexWorkspaceSelectionReason = "access_revoked" | "invalid_selection" | "not_found" | "not_selected";
 export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code" | "api_key";
+export declare class AgentFormOption {
+    constructor(value: string, title?: string, description?: Nullable<string>);
+    get value(): string;
+    get title(): string;
+    get description(): Nullable<string>;
+}
+export declare class AgentElicitationValidationIssue {
+    constructor(fieldName: string, reason: AgentElicitationValidationReason);
+    get fieldName(): string;
+    get reason(): AgentElicitationValidationReason;
+}
+export declare class AgentElicitationValidation {
+    constructor(issues: ReadonlyArray<AgentElicitationValidationIssue>);
+    get issues(): ReadonlyArray<AgentElicitationValidationIssue>;
+    get isValid(): boolean;
+}
 export declare class CodexFailure {
     private constructor();
     get code(): string;

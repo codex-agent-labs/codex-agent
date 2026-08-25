@@ -24,6 +24,9 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexConversation());
   assert.throws(() => new sdk.CodexObservation());
   for (const constructor of [
+    sdk.AgentElicitationValidation,
+    sdk.AgentElicitationValidationIssue,
+    sdk.AgentFormOption,
     sdk.CodexAgent,
     sdk.CodexAuthentication,
     sdk.CodexAuthenticationState,
@@ -40,6 +43,77 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   ]) {
     assert.deepEqual(Object.keys(constructor), []);
     assert.deepEqual(Object.keys(constructor.prototype), []);
+  }
+
+  const option = new sdk.AgentFormOption('value');
+  assert.equal(option.value, 'value');
+  assert.equal(option.title, 'value');
+  assert.equal(option.description, null);
+  assert.equal(Object.isFrozen(option), true);
+  const describedOption = new sdk.AgentFormOption('custom', 'Custom title', 'Custom description');
+  assert.equal(describedOption.value, 'custom');
+  assert.equal(describedOption.title, 'Custom title');
+  assert.equal(describedOption.description, 'Custom description');
+  assert.throws(() => new sdk.AgentFormOption({ mutable: true }));
+  assert.throws(() => new sdk.AgentFormOption('value', { mutable: true }));
+  assert.throws(() => new sdk.AgentFormOption('value', 'title', { mutable: true }));
+
+  const firstIssue = new sdk.AgentElicitationValidationIssue('first', 'missing_required');
+  const secondIssue = new sdk.AgentElicitationValidationIssue('second', 'invalid_format');
+  assert.equal(firstIssue.fieldName, 'first');
+  assert.equal(firstIssue.reason, 'missing_required');
+  assert.equal(secondIssue.fieldName, 'second');
+  assert.equal(secondIssue.reason, 'invalid_format');
+  assert.equal(Object.isFrozen(firstIssue), true);
+  assert.throws(() => new sdk.AgentElicitationValidationIssue('field', 'not_a_reason'));
+  assert.throws(() => new sdk.AgentElicitationValidationIssue({ mutable: true }, 'missing_required'));
+  assert.throws(() => new sdk.AgentElicitationValidationIssue('field', { mutable: true }));
+  const sourceIssues = [firstIssue, secondIssue];
+  const validation = new sdk.AgentElicitationValidation(sourceIssues);
+  assert.notEqual(validation.issues, sourceIssues);
+  assert.notEqual(validation.issues[0], firstIssue);
+  assert.notEqual(validation.issues[1], secondIssue);
+  assert.equal(validation.issues[0].fieldName, 'first');
+  assert.equal(validation.issues[0].reason, 'missing_required');
+  assert.equal(validation.issues[1].fieldName, 'second');
+  assert.equal(validation.issues[1].reason, 'invalid_format');
+  sourceIssues.reverse();
+  assert.equal(validation.issues[0].fieldName, 'first');
+  assert.equal(validation.issues[1].fieldName, 'second');
+  assert.equal(validation.isValid, false);
+  assert.equal(Object.isFrozen(validation.issues), true);
+  assert.equal(Object.isFrozen(validation), true);
+  assert.equal(new sdk.AgentElicitationValidation([]).isValid, true);
+  assert.throws(() => new sdk.AgentElicitationValidation(''));
+  assert.throws(() => new sdk.AgentElicitationValidation(() => {}));
+  assert.throws(() => new sdk.AgentElicitationValidation({ length: 0 }));
+  assert.throws(() => new sdk.AgentElicitationValidation(new Proxy({ length: 0 }, {})));
+
+  const mutableIssue = { fieldName: 'external', reason: 'unknown_field' };
+  const proxiedIssue = new Proxy(mutableIssue, {});
+  const proxyValidation = new sdk.AgentElicitationValidation([proxiedIssue]);
+  assert.notEqual(proxyValidation.issues[0], proxiedIssue);
+  mutableIssue.fieldName = 'mutated';
+  mutableIssue.reason = 'invalid_format';
+  assert.equal(proxyValidation.issues[0].fieldName, 'external');
+  assert.equal(proxyValidation.issues[0].reason, 'unknown_field');
+
+  const assertImmutableOwnGraph = (root) => {
+    const seen = new Set();
+    const visit = (value) => {
+      if (value === null || typeof value !== 'object' || seen.has(value)) return;
+      seen.add(value);
+      assert.equal(Object.isFrozen(value), true);
+      for (const key of Reflect.ownKeys(value)) {
+        const nested = value[key];
+        assert.equal(Reflect.set(value, key, nested), false);
+        visit(nested);
+      }
+    };
+    visit(root);
+  };
+  for (const snapshot of [option, describedOption, firstIssue, secondIssue, validation, proxyValidation]) {
+    assertImmutableOwnGraph(snapshot);
   }
 
   const browserImport = childProcess.spawnSync(

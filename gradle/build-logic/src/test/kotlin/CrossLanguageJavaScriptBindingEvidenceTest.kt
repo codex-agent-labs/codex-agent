@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 132-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 145-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(132, evidence.packedApi.publicSymbols.size)
+        assertEquals(145, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -337,6 +337,8 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             derive(listOf(host, select).sorted(), symbols)
                 .projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).toSet(),
         )
+        val hostClaim = derive(listOf(host), symbols).projectionClaims.single()
+        assertEquals(listOf(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP), hostClaim.sharedScenarios)
 
         val changedHost = canonicalConstructor(
             "CodexHost",
@@ -352,6 +354,63 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             setOf(changedHost, changedSelect),
             derive(listOf(changedHost, changedSelect).sorted(), symbols).missingCapabilityKeys.toSet(),
         )
+    }
+
+    @Test
+    fun `ordinary value constructors require exact signatures and claim value conversion`() {
+        val key = canonicalConstructor("Value", listOf("kotlin/String!!"))
+        val symbol = "constructor:Value#(value: string)"
+        val evidence = derive(listOf(key), listOf("class:Value", symbol).sorted())
+
+        assertEquals(listOf(key), evidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
+        assertEquals(listOf(CrossLanguageBindingScenario.VALUE_CONVERSION),
+            evidence.projectionClaims.single().sharedScenarios)
+        assertTrue(derive(listOf(key), listOf("class:Value", "constructor:Value#(value: number)").sorted())
+            .missingCapabilityKeys.contains(key))
+    }
+
+    @Test
+    fun `current immutable validation values project ten generic capabilities`() {
+        val keys = listOf(
+            canonicalConstructor(
+                "AgentFormOption",
+                listOf("kotlin/String!!", "kotlin/String!!", "kotlin/String?"),
+                defaultParameterIndices = setOf(1, 2),
+            ),
+            canonicalProperty("AgentFormOption", "value", "kotlin/String!!"),
+            canonicalProperty("AgentFormOption", "title", "kotlin/String!!"),
+            canonicalProperty("AgentFormOption", "description", "kotlin/String?"),
+            canonicalConstructor(
+                "AgentElicitationValidationIssue",
+                listOf("kotlin/String!!", "example/AgentElicitationValidationReason!!"),
+            ),
+            canonicalProperty("AgentElicitationValidationIssue", "fieldName", "kotlin/String!!"),
+            canonicalProperty(
+                "AgentElicitationValidationIssue",
+                "reason",
+                "example/AgentElicitationValidationReason!!",
+            ),
+            canonicalConstructor(
+                "AgentElicitationValidation",
+                listOf(
+                    "kotlin.collections/List<INVARIANT:example/AgentElicitationValidationIssue!!>!!",
+                ),
+            ),
+            canonicalProperty("AgentElicitationValidation", "isValid", "kotlin/Boolean!!"),
+            canonicalProperty(
+                "AgentElicitationValidation",
+                "issues",
+                "kotlin.collections/List<INVARIANT:example/AgentElicitationValidationIssue!!>!!",
+            ),
+        ).sorted()
+        val evidence = derive(keys, currentPublicSymbols())
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertEquals(10, evidence.projectionClaims.size)
+        assertTrue(evidence.projectionClaims.filter { "|kind=constructor|" in it.capabilityKey }.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
     }
 
     @Test
@@ -769,7 +828,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             deriveJavaScriptScenarioEvidence(receipt.bindingTests, javaScriptBindingScenarioMappings.dropLast(1))
         }
         val mappedTests = javaScriptBindingScenarioMappings.flatMap(JavaScriptBindingScenarioMapping::testIds).toSet()
-        assertTrue(PACKED_TEST_IDS.first() !in mappedTests)
+        assertTrue(PACKED_TEST_IDS.first() in mappedTests)
         assertTrue(PACKED_TEST_IDS[3] !in mappedTests)
         assertEquals(
             CrossLanguageBindingScenario.entries.size,
@@ -1035,9 +1094,14 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         "$name(){}[0]|return=$returnType|suspend=$suspendFunction|parameters=" +
         canonicalParameters(parameters, defaultParameterIndices)
 
-    private fun canonicalConstructor(owner: String, parameters: List<String>): String =
+    private fun canonicalConstructor(
+        owner: String,
+        parameters: List<String>,
+        defaultParameterIndices: Set<Int> = emptySet(),
+    ): String =
         "common|owner=example/$owner|kind=constructor|abi=example/$owner.<init>|<init>(){}[0]|" +
-            "return=example/$owner|suspend=false|parameters=${canonicalParameters(parameters)}"
+            "return=example/$owner|suspend=false|parameters=" +
+            canonicalParameters(parameters, defaultParameterIndices)
 
     private fun canonicalParameters(
         parameters: List<String>,
@@ -1197,7 +1261,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(132, it.size) }
+        .also { assertEquals(145, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -1255,6 +1319,9 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         private fun digest(character: Char): String = character.toString().repeat(64)
 
         private val CURRENT_PUBLIC_SYMBOLS = """
+class:AgentElicitationValidation
+class:AgentElicitationValidationIssue
+class:AgentFormOption
 class:CodexAgent
 class:CodexAuthentication
 class:CodexAuthenticationState
@@ -1268,7 +1335,17 @@ class:CodexMessage
 class:CodexObservation
 class:CodexTurnProgress
 class:CodexWorkspace
+constructor:AgentElicitationValidation#(issues: ReadonlyArray<AgentElicitationValidationIssue>)
+constructor:AgentElicitationValidationIssue#(fieldName: string, reason: AgentElicitationValidationReason)
+constructor:AgentFormOption#(value: string, title?: string, description?: string | null | undefined)
 function:createCodexHost:(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost
+getter:AgentElicitationValidation#isValid:boolean
+getter:AgentElicitationValidation#issues:ReadonlyArray<AgentElicitationValidationIssue>
+getter:AgentElicitationValidationIssue#fieldName:string
+getter:AgentElicitationValidationIssue#reason:AgentElicitationValidationReason
+getter:AgentFormOption#description:string | null | undefined
+getter:AgentFormOption#title:string
+getter:AgentFormOption#value:string
 getter:CodexAgent#activeConversation:CodexConversation | null | undefined
 getter:CodexAgent#authentication:CodexAuthentication
 getter:CodexAgent#workspace:CodexWorkspace

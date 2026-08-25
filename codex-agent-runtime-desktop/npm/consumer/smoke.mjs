@@ -350,9 +350,13 @@ function compilerPublicApi() {
 }
 
 test('esm exposes the same runtime values as CommonJS', () => {
-  const commonJsExports = Object.getOwnPropertyNames(require('@codex-agent-labs/codex-agent')).sort();
+  const commonJsSdk = require('@codex-agent-labs/codex-agent');
+  const commonJsExports = Object.getOwnPropertyNames(commonJsSdk).sort();
   const esmExports = Object.keys(sdk).sort();
   assert.deepEqual(esmExports, commonJsExports);
+  assert.equal(sdk.AgentElicitationValidation, commonJsSdk.AgentElicitationValidation);
+  assert.equal(sdk.AgentElicitationValidationIssue, commonJsSdk.AgentElicitationValidationIssue);
+  assert.equal(sdk.AgentFormOption, commonJsSdk.AgentFormOption);
   assert.equal(typeof sdk.CodexHost, 'function');
   assert.equal(typeof sdk.CodexAuthentication, 'function');
   assert.equal(typeof sdk.CodexAuthenticationState, 'function');

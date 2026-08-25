@@ -157,6 +157,28 @@ $canonicalEnumDeclarations
 export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code" | "api_key";
 """,
         ).replace(
+            """export declare class AgentElicitationValidationIssue {
+    constructor(fieldName: string, reason: string);
+    get fieldName(): string;
+    get reason(): string;
+}""",
+            """export declare class AgentElicitationValidationIssue {
+    constructor(fieldName: string, reason: AgentElicitationValidationReason);
+    get fieldName(): string;
+    get reason(): AgentElicitationValidationReason;
+}""",
+        ).replace(
+            """export declare class AgentElicitationValidation {
+    constructor(issues: Array<AgentElicitationValidationIssue>);
+    get issues(): Array<AgentElicitationValidationIssue>;
+    get isValid(): boolean;
+}""",
+            """export declare class AgentElicitationValidation {
+    constructor(issues: ReadonlyArray<AgentElicitationValidationIssue>);
+    get issues(): ReadonlyArray<AgentElicitationValidationIssue>;
+    get isValid(): boolean;
+}""",
+        ).replace(
             "    get recoverable(): boolean;\n}\nexport declare class CodexWorkspace",
             "    get recoverable(): boolean;\n    readonly cause?: unknown;\n}\nexport declare class CodexWorkspace",
         ).replace(

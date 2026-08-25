@@ -1,4 +1,7 @@
 import {
+  AgentElicitationValidation,
+  AgentElicitationValidationIssue,
+  AgentFormOption,
   CodexAgent,
   CodexAuthentication,
   CodexAuthenticationState,
@@ -50,6 +53,16 @@ const host: CodexHost = createCodexHost("/bundle", "/data", "typescript", "TypeS
 const state: CodexHostState = host.state;
 const hostStatus: CodexHostStatus = state.status;
 const approvalPreset: CodexApprovalPreset = "auto_review";
+const formOption = new AgentFormOption("value");
+const formOptionValue: string = formOption.value;
+const formOptionTitle: string = formOption.title;
+const formOptionDescription: string | null | undefined = formOption.description;
+const validationIssue = new AgentElicitationValidationIssue("field", "missing_required");
+const validationFieldName: string = validationIssue.fieldName;
+const validationReason: AgentElicitationValidationReason = validationIssue.reason;
+const validation = new AgentElicitationValidation([validationIssue]);
+const validationIssues: ReadonlyArray<AgentElicitationValidationIssue> = validation.issues;
+const validationIsValid: boolean = validation.isValid;
 const enumEvidence: {
   approvalDecision: AgentApprovalDecision;
   capability: AgentCapability;
@@ -212,6 +225,15 @@ async function handleFailure(operation: Promise<void>): Promise<void> {
 
 void state;
 void hostStatus;
+void [
+  formOptionValue,
+  formOptionTitle,
+  formOptionDescription,
+  validationFieldName,
+  validationReason,
+  validationIssues,
+  validationIsValid,
+];
 void enumEvidence;
 void useAgent;
 void handleFailure;
