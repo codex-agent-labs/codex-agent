@@ -248,6 +248,76 @@ The iOS runtime additionally limits built-in tools to sandboxed file reads,
 directory listing, text search, atomic writes, and workspace-confined patches.
 Model API network access remains available through the App Server.
 
+### Cross-language contribution flow
+
+`@CodexBindingApi` marks canonical owner types. Adding a normal public
+constructor, property, function, or object to a marked owner automatically adds
+it to the compiler-derived API; mark a new user-facing owner once rather than
+listing its members. Do not edit generated reports or create a manual
+capability manifest.
+
+After adding the member, run:
+
+```shell
+./gradlew :codex-agent-core:verifyCrossLanguageApiCoverage
+```
+
+For a new member, the expected initial failure prints a pair shaped like
+`api-v1:<owner>#<kind>:<member>#sha256:<digest> -> <full compiler key>`.
+Copy the exact `api-v1` token into `@CoversApi` on a meaningful executed
+canonical test, then rerun the task. Do not calculate or shorten the token. The
+full key binds source set, owner, member kind, ABI signature, types,
+nullability, suspend status, parameters, defaults, and varargs, so signature
+drift makes old coverage stale. `@CodexBindingApiKotlinOnly` is reserved for
+the narrow Kotlin coroutine-scope ownership boundary; it is not a general
+binding exclusion.
+
+The core tasks write exact-tree evidence under
+`codex-agent-core/build/reports/cross-language-api/`:
+
+- `canonical-api.json` is the compiler-derived owner and member inventory.
+- `canonical-coverage.json` binds every member to successful canonical tests.
+- `bindings/kotlin-parity.json` and `bindings/java-parity.json` are verified
+  language receipts.
+- `binding-obligations-m7_5.json` is the all-language obligation audit.
+
+For a binding, add the smallest idiomatic public artifact projection and a real
+consumer test. Extend that language's evidence derivation so each exact
+canonical key resolves to real public symbol(s), passed test ID(s), and the
+applicable shared scenario(s); never hand-write claims into the aggregate
+report. The current focused gates are:
+
+```shell
+./gradlew :codex-agent-core:verifyKotlinBindingParity \
+  :codex-agent-core:verifyJavaBindingParity \
+  :codex-agent-core:auditCrossLanguageBindingParity
+./gradlew :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity
+```
+
+The JavaScript/TypeScript receipt is
+`codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/javascript-typescript-parity.json`.
+An active pair without verified projection evidence is `missing`. A future
+phase pair remains applicable but `pending`: at M7.5 Kotlin, Java, Swift,
+Objective-C, and JavaScript/TypeScript are active; M8 activates C ABI; the
+`M9_PYTHON`, `M9_CSHARP`, `M9_RUST`, `M9_CPP`, and `M9_DART` phases activate
+their wrappers independently; M11 requires the all-eleven set to be satisfied.
+A C receipt cannot satisfy a wrapper.
+
+An applicability exclusion belongs in the language's evidence derivation and
+must name one exact canonical key, one exact language, and a fixed narrow
+architectural reason. Its matcher and tests must reject owner, kind, ABI,
+signature, stale-key, wildcard, broad-reason, duplicate, and projection-conflict
+drift. An unfinished binding or future-phase obligation is never an exclusion.
+
+To onboard an M8 or M9 gate, implement its exact
+`CrossLanguageBindingReceipt` producer and verifier task, write
+`<language-id>-parity.json`, wire that task and receipt into the phase audit and
+repository/CI ownership, and advance the audit phase. Reuse
+`CrossLanguageBinding`, `CrossLanguageBindingPhase`, and
+`writeCompleteCrossLanguageBindingAudit`, which derive the active languages and
+required receipt names. Do not add a separate manual manifest for canonical
+capabilities or language activation.
+
 ## Release evidence
 
 An unlabeled pull request runs only lightweight workflow and impact checks.
