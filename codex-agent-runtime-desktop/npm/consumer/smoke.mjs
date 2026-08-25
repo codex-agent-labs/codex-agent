@@ -383,6 +383,10 @@ test('esm exposes the same runtime values as CommonJS', () => {
     sdk.codexApprovalPresetDisplayName,
     commonJsSdk.codexApprovalPresetDisplayName,
   );
+  assert.equal(
+    sdk.agentSkillScopeDisplayName,
+    commonJsSdk.agentSkillScopeDisplayName,
+  );
   for (const [preset, displayName] of [
     ['never', 'Never'],
     ['auto_review', 'Auto review'],
@@ -391,6 +395,34 @@ test('esm exposes the same runtime values as CommonJS', () => {
   ]) {
     assert.equal(sdk.codexApprovalPresetDisplayName(preset), displayName);
     assert.equal(commonJsSdk.codexApprovalPresetDisplayName(preset), displayName);
+  }
+  for (const [scope, displayName] of [
+    ['admin', 'Managed'],
+    ['plugin', 'Plugin'],
+    ['repo', 'Workspace'],
+    ['system', 'Built in'],
+    ['user', 'User'],
+  ]) {
+    assert.equal(sdk.agentSkillScopeDisplayName(scope), displayName);
+    assert.equal(commonJsSdk.agentSkillScopeDisplayName(scope), displayName);
+  }
+  for (const [invalid, message] of [
+    ['unknown', 'Unknown skill scope: unknown'],
+    ['SYSTEM', 'Unknown skill scope: SYSTEM'],
+    [0, 'scope must be a string'],
+    [null, 'scope must be a string'],
+    [undefined, 'scope must be a string'],
+    [new String('system'), 'scope must be a string'],
+    [new Proxy({}, {}), 'scope must be a string'],
+  ]) {
+    assert.throws(
+      () => sdk.agentSkillScopeDisplayName(invalid),
+      (error) => error?.message === message,
+    );
+    assert.throws(
+      () => commonJsSdk.agentSkillScopeDisplayName(invalid),
+      (error) => error?.message === message,
+    );
   }
   assert.equal(typeof sdk.CodexHost, 'function');
   assert.equal(typeof sdk.CodexAuthentication, 'function');
@@ -472,6 +504,9 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string',
   ), 'Approval-preset display names must preserve the finite preset domain');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'function:agentSkillScopeDisplayName:(scope: AgentSkillScope): string',
+  ), 'Skill-scope display names must preserve the finite scope domain');
   assert.ok(compilerApi.publicSymbols.includes(
     'constructor:AgentConnector#(id: string, name: string, description?: string, installUrl?: string | null | undefined, isAccessible?: boolean, isEnabled?: boolean, pluginNames?: ReadonlyArray<string>)',
   ), 'Connector values must preserve canonical defaults and immutable plugin names');

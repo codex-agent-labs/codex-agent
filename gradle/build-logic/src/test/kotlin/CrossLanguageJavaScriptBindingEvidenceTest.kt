@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 229-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 230-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(229, evidence.packedApi.publicSymbols.size)
+        assertEquals(230, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -2127,7 +2127,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertEquals(556, 269 + 12 + 275)
         assertEquals(57, 58 - 1)
         assertEquals(
-            229,
+            230,
             currentPublicSymbols().size + (clientProjectionSymbols - currentPublicSymbols().toSet()).size,
         )
         assertEquals(references, evidence.packedApi.referencedSymbols)
@@ -2278,6 +2278,110 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         assertTrue(unreferenced.projectionClaims.isEmpty())
         val literalOnly = "type:CodexApprovalPreset:\"ask_me\" | \"auto_review\" | \"never\" | \"strict\""
         assertEquals(listOf(key), derive(listOf(key), listOf(literalOnly)).missingCapabilityKeys)
+    }
+
+    @Test
+    fun `skill scope display name requires one exact referenced public function`() {
+        fun agentProperty(
+            owner: String,
+            name: String,
+            type: String,
+            propertyKind: String = "VAL",
+        ): String = canonicalProperty(owner, name, type, propertyKind)
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+
+        val key = agentProperty("AgentSkillScope", "displayName", "kotlin/String!!")
+        val evidence = derive(
+            listOf(key),
+            listOf(SKILL_SCOPE_DISPLAY_NAME),
+            references = listOf(SKILL_SCOPE_DISPLAY_NAME),
+        )
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty())
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(listOf(key), evidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
+        assertEquals(listOf(SKILL_SCOPE_DISPLAY_NAME), evidence.projectionClaims.single().publicSymbols)
+        assertEquals(
+            listOf(CrossLanguageBindingScenario.VALUE_CONVERSION),
+            evidence.projectionClaims.single().sharedScenarios,
+        )
+        assertEquals(listOf(SKILL_SCOPE_DISPLAY_NAME), evidence.packedApi.referencedSymbols)
+
+        assertEquals(270, 269 + evidence.projectionClaims.size)
+        assertEquals(274, 275 - evidence.projectionClaims.size)
+        assertEquals(556, 270 + 12 + 274)
+        assertEquals(56, 57 - 1)
+        val currentSymbols = currentPublicSymbols()
+        assertEquals(
+            listOf(SKILL_SCOPE_DISPLAY_NAME),
+            currentSymbols.filter { it == SKILL_SCOPE_DISPLAY_NAME },
+        )
+        assertEquals(230, currentSymbols.size)
+
+        val canonicalDrift = listOf(
+            agentProperty("OtherSkillScope", "displayName", "kotlin/String!!"),
+            key.replace(CANONICAL_AGENT_PACKAGE, "foreign"),
+            agentProperty("AgentSkillScope", "futureDisplayName", "kotlin/String!!"),
+            canonicalFunction(
+                "AgentSkillScope",
+                "displayName",
+                returnType = "kotlin/String!!",
+            ).replace("example/", "$CANONICAL_AGENT_PACKAGE/"),
+            agentProperty("AgentSkillScope", "displayName", "kotlin/String!!", propertyKind = "VAR"),
+            agentProperty("AgentSkillScope", "displayName", "kotlin/Int!!"),
+            agentProperty("AgentSkillScope", "displayName", "kotlin/String?"),
+            "$key|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+            "$key|suspend=true",
+            key.replace(
+                "abi=$CANONICAL_AGENT_PACKAGE/AgentSkillScope.displayName",
+                "abi=$CANONICAL_AGENT_PACKAGE/AgentSkillScope.otherDisplayName",
+            ),
+        )
+        canonicalDrift.forEach { drifted ->
+            val drift = derive(
+                listOf(drifted),
+                listOf(SKILL_SCOPE_DISPLAY_NAME),
+                references = listOf(SKILL_SCOPE_DISPLAY_NAME),
+            )
+            assertEquals(listOf(drifted), drift.missingCapabilityKeys, "Accepted canonical drift: $drifted")
+            assertTrue(drift.projectionClaims.isEmpty())
+        }
+
+        listOf(
+            SKILL_SCOPE_DISPLAY_NAME.replace("agentSkillScopeDisplayName", "futureSkillScopeDisplayName"),
+            SKILL_SCOPE_DISPLAY_NAME.replace("scope:", "value:"),
+            SKILL_SCOPE_DISPLAY_NAME.replace("AgentSkillScope", "string"),
+            SKILL_SCOPE_DISPLAY_NAME.replace("scope:", "scope?:"),
+            SKILL_SCOPE_DISPLAY_NAME.replace("scope:", "...scope:"),
+            SKILL_SCOPE_DISPLAY_NAME.replace("): string", "): number"),
+            SKILL_SCOPE_DISPLAY_NAME.replace("(scope: AgentSkillScope)", "()"),
+        ).forEach { drifted ->
+            val drift = derive(listOf(key), listOf(drifted), references = listOf(drifted))
+            assertEquals(listOf(key), drift.missingCapabilityKeys, "Accepted public drift: $drifted")
+            assertTrue(drift.projectionClaims.isEmpty())
+        }
+
+        val future = agentProperty("AgentSkillScope", "future", "kotlin/String!!")
+        val futureEvidence = derive(
+            listOf(key, future),
+            listOf(SKILL_SCOPE_DISPLAY_NAME),
+            references = listOf(SKILL_SCOPE_DISPLAY_NAME),
+        )
+        assertEquals(listOf(future), futureEvidence.missingCapabilityKeys)
+        assertEquals(listOf(key), futureEvidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
+
+        val aliasOnly = derive(
+            listOf(key),
+            listOf(SKILL_SCOPE_ALIAS),
+            references = listOf(SKILL_SCOPE_ALIAS),
+        )
+        assertEquals(listOf(key), aliasOnly.missingCapabilityKeys)
+        assertTrue(aliasOnly.projectionClaims.isEmpty())
+
+        val unreferenced = derive(listOf(key), listOf(SKILL_SCOPE_DISPLAY_NAME), references = emptyList())
+        assertTrue(unreferenced.errors.single().contains("Unreferenced exceptional"))
+        assertTrue(unreferenced.projectionClaims.isEmpty())
     }
 
     @Test
@@ -3210,7 +3314,9 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             .filter(String::isNotBlank)
             .toList()
             .also { assertEquals(208, it.size) }
-        return (baseline + modelPublicSymbols()).sorted().also { assertEquals(229, it.size) }
+        return (baseline + modelPublicSymbols() + SKILL_SCOPE_DISPLAY_NAME)
+            .sorted()
+            .also { assertEquals(230, it.size) }
     }
 
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
@@ -3238,10 +3344,15 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
                 "signal?: AbortSignal | null | undefined): Promise<void>"
         private const val APPROVAL_PRESET_DISPLAY_NAME =
             "function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string"
+        private const val CANONICAL_AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent"
         private const val CREATE_CODEX_HOST =
             "function:createCodexHost:" +
                 "(bundleDirectory: string, dataDirectory: string, clientName: string, " +
                 "clientTitle: string, clientVersion: string): CodexHost"
+        private const val SKILL_SCOPE_DISPLAY_NAME =
+            "function:agentSkillScopeDisplayName:(scope: AgentSkillScope): string"
+        private const val SKILL_SCOPE_ALIAS =
+            "type:AgentSkillScope:\"admin\" | \"plugin\" | \"repo\" | \"system\" | \"user\""
         private const val CONVERSATION_ID_GETTER =
             "getter:CodexConversationState#conversationId:string | null | undefined"
         private const val SELECT_WORKSPACE =

@@ -29,6 +29,7 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanSte
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStepStatus as CorePlanStepStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentResolution as CoreResolution
 import io.github.codex_agent_labs.codexmobile.agent.AgentServiceTier as CoreServiceTier
+import io.github.codex_agent_labs.codexmobile.agent.AgentSkillScope as CoreAgentSkillScope
 import io.github.codex_agent_labs.codexmobile.agent.AgentTurnProgress as CoreTurnProgress
 import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication as CoreAuthentication
@@ -776,6 +777,9 @@ public fun createCodexHost(
 @JsExport
 public fun codexApprovalPresetDisplayName(preset: String): String = preset.toApprovalPreset().displayName
 
+@JsExport
+public fun agentSkillScopeDisplayName(scope: String): String = scope.toAgentSkillScope().displayName
+
 internal fun wrapCodexHost(core: CoreHost): CodexHost = CodexHost(core, jsApiToken)
 
 /** Host-owned Agent projection. */
@@ -1074,6 +1078,12 @@ private fun String?.toApprovalPreset(): AgentApprovalPreset {
     if (this == null) return AgentApprovalPreset.AUTO_REVIEW
     return AgentApprovalPreset.entries.singleOrNull { it.name.lowercase() == this }
         ?: throw IllegalArgumentException("Unknown approval preset: $this")
+}
+
+private fun String.toAgentSkillScope(): CoreAgentSkillScope {
+    val value = requireJavaScriptString("scope")
+    return CoreAgentSkillScope.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown skill scope: $value")
 }
 
 private fun String.toCoreResolution(): CoreResolution {

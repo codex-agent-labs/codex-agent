@@ -149,6 +149,10 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         val canonicalEnumDeclarations =
             generatedEnumDeclarations.readText().replace("\r\n", "\n").trimEnd()
         var actual = sanitized.joinToString("\n").trimEnd() + "\n"
+        val rawAgentSkillScopeDisplayNameDeclaration =
+            "export declare function agentSkillScopeDisplayName(scope: string): string;"
+        val reviewedAgentSkillScopeDisplayNameDeclaration =
+            "export declare function agentSkillScopeDisplayName(scope: AgentSkillScope): string;"
         val rawApprovalPresetDisplayNameDeclaration =
             "export declare function codexApprovalPresetDisplayName(preset: string): string;"
         val reviewedApprovalPresetDisplayNameDeclaration =
@@ -245,6 +249,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     resolveEffort(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<string>;
     resolveServiceTier(model: AgentModel, resolution?: AgentResolution, signal?: Nullable<AbortSignal>): Promise<Nullable<AgentServiceTier>>;
 }"""
+        check(actual.lineSequence().count { it == rawAgentSkillScopeDisplayNameDeclaration } == 1) {
+            "Unexpected agentSkillScopeDisplayName TypeScript declaration"
+        }
         check(actual.lineSequence().count { it == rawApprovalPresetDisplayNameDeclaration } == 1) {
             "Unexpected codexApprovalPresetDisplayName TypeScript declaration"
         }
@@ -279,6 +286,9 @@ export type CodexHostStatus = "new" | "restoring" | "workspace_required" | "prep
 $canonicalEnumDeclarations
 export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code" | "api_key";
 """,
+        ).replace(
+            rawAgentSkillScopeDisplayNameDeclaration,
+            reviewedAgentSkillScopeDisplayNameDeclaration,
         ).replace(
             rawApprovalPresetDisplayNameDeclaration,
             reviewedApprovalPresetDisplayNameDeclaration,

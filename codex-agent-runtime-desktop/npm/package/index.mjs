@@ -34,3 +34,4 @@ export const CodexTurnProgress = api.CodexTurnProgress;
 export const CodexWorkspace = api.CodexWorkspace;
 export const createCodexHost = api.createCodexHost;
 export const codexApprovalPresetDisplayName = api.codexApprovalPresetDisplayName;
+export const agentSkillScopeDisplayName = api.agentSkillScopeDisplayName;

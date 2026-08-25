@@ -838,6 +838,8 @@ private const val javaScriptCreateCodexHost =
     "function:createCodexHost:" +
         "(bundleDirectory: string, dataDirectory: string, clientName: string, " +
         "clientTitle: string, clientVersion: string): CodexHost"
+private const val javaScriptSkillScopeDisplayName =
+    "function:agentSkillScopeDisplayName:(scope: AgentSkillScope): string"
 private const val javaScriptDeleteConversation =
     "method:CodexAgent#delete:" +
         "(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>"
@@ -867,6 +869,7 @@ private fun flattenedValueProjectionCandidates(
         member.isExactConversationIdMember() -> javaScriptConversationIdSymbols
         member.isExactCodexClientInfoMember() -> listOf(javaScriptCreateCodexHost)
         member.isExactPathWorkspaceSelectionMember() -> listOf(javaScriptSelectWorkspace)
+        member.isExactAgentSkillScopeDisplayName() -> listOf(javaScriptSkillScopeDisplayName)
         else -> return emptyList()
     }
     val hasExactInventory = if (member.isExactApiKeyAuthenticationMethodMember()) {
@@ -924,6 +927,10 @@ private fun CanonicalJavaScriptMember.isExactPathWorkspaceSelectionMember(): Boo
         "CodexPathWorkspaceSelection",
         listOf(CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false)),
     ) || isExactProperty("CodexPathWorkspaceSelection", "path", "kotlin/String!!")
+
+private fun CanonicalJavaScriptMember.isExactAgentSkillScopeDisplayName(): Boolean =
+    owner == "io.github.codex_agent_labs.codexmobile.agent/AgentSkillScope" &&
+        isExactProperty("AgentSkillScope", "displayName", "kotlin/String!!")
 
 private fun CanonicalJavaScriptMember.isExactApiKeyAuthenticationMethodMember(): Boolean =
     isExactConstructor(

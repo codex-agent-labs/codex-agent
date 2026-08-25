@@ -18,6 +18,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   process.argv.push('--not-an-evidence-argument');
   assert.equal(typeof sdk.createCodexHost, 'function');
   assert.equal(typeof sdk.codexApprovalPresetDisplayName, 'function');
+  assert.equal(typeof sdk.agentSkillScopeDisplayName, 'function');
   for (const [clientInfo, message] of [
     [[Object.create(null), 'Client', '1.0'], 'clientName must be a string'],
     [['client', [], '1.0'], 'clientTitle must be a string'],
@@ -41,6 +42,25 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   );
   assert.throws(() => sdk.codexApprovalPresetDisplayName('AUTO_REVIEW'));
   assert.throws(() => sdk.codexApprovalPresetDisplayName(0));
+  assert.deepEqual(
+    ['admin', 'plugin', 'repo', 'system', 'user'].map((scope) =>
+      sdk.agentSkillScopeDisplayName(scope)),
+    ['Managed', 'Plugin', 'Workspace', 'Built in', 'User'],
+  );
+  for (const [invalid, message] of [
+    ['unknown', 'Unknown skill scope: unknown'],
+    ['SYSTEM', 'Unknown skill scope: SYSTEM'],
+    [0, 'scope must be a string'],
+    [null, 'scope must be a string'],
+    [undefined, 'scope must be a string'],
+    [new String('system'), 'scope must be a string'],
+    [new Proxy({}, {}), 'scope must be a string'],
+  ]) {
+    assert.throws(
+      () => sdk.agentSkillScopeDisplayName(invalid),
+      (error) => error?.message === message,
+    );
+  }
   assert.throws(() => new sdk.CodexHost());
   assert.throws(() => new sdk.CodexAgent());
   assert.throws(() => new sdk.CodexAuthentication());

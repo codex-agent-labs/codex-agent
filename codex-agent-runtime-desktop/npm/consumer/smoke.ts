@@ -27,6 +27,7 @@ import {
   CodexHostState,
   CodexModels,
   CodexObservation,
+  agentSkillScopeDisplayName,
   codexApprovalPresetDisplayName,
   createCodexHost,
 } from "@codex-agent-labs/codex-agent";
@@ -71,6 +72,8 @@ const state: CodexHostState = host.state;
 const hostStatus: CodexHostStatus = state.status;
 const approvalPreset: CodexApprovalPreset = "auto_review";
 const approvalPresetDisplayName: string = codexApprovalPresetDisplayName(approvalPreset);
+const skillScope: AgentSkillScope = "system";
+const skillScopeDisplayName: string = agentSkillScopeDisplayName(skillScope);
 const formOption = new AgentFormOption("value");
 const formOptionValue: string = formOption.value;
 const formOptionTitle: string = formOption.title;
@@ -382,6 +385,7 @@ void state;
 void hostStatus;
 void [
   approvalPresetDisplayName,
+  skillScopeDisplayName,
   formOptionValue,
   formOptionTitle,
   formOptionDescription,
