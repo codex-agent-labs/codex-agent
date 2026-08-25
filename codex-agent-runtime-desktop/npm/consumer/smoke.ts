@@ -6,6 +6,8 @@ import {
   AgentFormOption,
   AgentFormTextListValue,
   AgentFormTextValue,
+  AgentMcpEnvironmentVariable,
+  AgentMcpOauthConfiguration,
   AgentMcpToolConfiguration,
   AgentPlanProgress,
   AgentPlanStep,
@@ -72,6 +74,25 @@ const formBooleanValue = new AgentFormBooleanValue(true);
 const formBoolean: boolean = formBooleanValue.value;
 const formTextListValue = new AgentFormTextListValue(["first", "second"]);
 const formTextList: ReadonlyArray<string> = formTextListValue.value;
+const mcpEnvironmentVariables = [
+  new AgentMcpEnvironmentVariable("TOKEN"),
+  new AgentMcpEnvironmentVariable("OPTIONAL_TOKEN", null),
+  new AgentMcpEnvironmentVariable("LOCAL_TOKEN", "local"),
+  new AgentMcpEnvironmentVariable("REMOTE_TOKEN", "remote"),
+];
+const mcpEnvironmentNames: ReadonlyArray<string> = mcpEnvironmentVariables.map((variable) => variable.name);
+const mcpEnvironmentSources: ReadonlyArray<AgentMcpEnvironmentSource | null | undefined> =
+  mcpEnvironmentVariables.map((variable) => variable.source);
+const mcpOauthConfigurations = [
+  new AgentMcpOauthConfiguration(),
+  new AgentMcpOauthConfiguration(null, null),
+  new AgentMcpOauthConfiguration("minimum-port", 1),
+  new AgentMcpOauthConfiguration("maximum-port", 65535),
+];
+const mcpOauthClientIds: ReadonlyArray<string | null | undefined> =
+  mcpOauthConfigurations.map((configuration) => configuration.clientId);
+const mcpOauthCallbackPorts: ReadonlyArray<number | null | undefined> =
+  mcpOauthConfigurations.map((configuration) => configuration.callbackPort);
 const mcpToolApprovals: ReadonlyArray<AgentMcpToolApproval | null | undefined> = [
   new AgentMcpToolConfiguration().approval,
   new AgentMcpToolConfiguration(null).approval,
@@ -263,6 +284,10 @@ void [
   formNumber,
   formBoolean,
   formTextList,
+  mcpEnvironmentNames,
+  mcpEnvironmentSources,
+  mcpOauthClientIds,
+  mcpOauthCallbackPorts,
   mcpToolApprovals,
   validationFieldName,
   validationReason,

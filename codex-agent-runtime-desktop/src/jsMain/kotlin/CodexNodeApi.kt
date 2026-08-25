@@ -13,6 +13,9 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.BooleanValue 
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Number as CoreFormNumberValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Text as CoreFormTextValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.TextList as CoreFormTextListValue
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable as CoreMcpEnvironmentVariable
+import io.github.codex_agent_labs.codexmobile.agent.AgentMcpOauthConfiguration as CoreMcpOauthConfiguration
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolApproval as CoreMcpToolApproval
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolConfiguration as CoreMcpToolConfiguration
 import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
@@ -134,6 +137,46 @@ public class AgentFormTextListValue public constructor(value: Array<String>) {
         )
         this.value = core.value.toTypedArray()
         freezeSnapshot(this.value)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable MCP environment-variable reference. */
+@JsExport
+public class AgentMcpEnvironmentVariable public constructor(
+    name: String,
+    source: String? = null,
+) {
+    public val name: String
+    public val source: String?
+
+    init {
+        val core = CoreMcpEnvironmentVariable(
+            name.requireJavaScriptString("name"),
+            source.requireJavaScriptNullableString("source")?.toCoreMcpEnvironmentSource(),
+        )
+        this.name = core.name
+        this.source = core.source?.name?.lowercase()
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable MCP OAuth configuration. */
+@JsExport
+public class AgentMcpOauthConfiguration public constructor(
+    clientId: String? = null,
+    callbackPort: Int? = null,
+) {
+    public val clientId: String?
+    public val callbackPort: Int?
+
+    init {
+        val core = CoreMcpOauthConfiguration(
+            clientId.requireJavaScriptNullableString("clientId"),
+            requireJavaScriptNullableInteger(callbackPort, "callbackPort"),
+        )
+        this.clientId = core.clientId
+        this.callbackPort = core.callbackPort
         freezeSnapshot(this)
     }
 }
@@ -733,6 +776,12 @@ private fun String.toCorePlanStepStatus(): CorePlanStepStatus =
     CorePlanStepStatus.entries.singleOrNull { it.name.lowercase() == this }
         ?: throw IllegalArgumentException("Unknown plan step status: $this")
 
+private fun String.toCoreMcpEnvironmentSource(): CoreMcpEnvironmentSource = when (this) {
+    "local" -> CoreMcpEnvironmentSource.LOCAL
+    "remote" -> CoreMcpEnvironmentSource.REMOTE
+    else -> throw IllegalArgumentException("Unknown MCP environment source: $this")
+}
+
 private fun String.toCoreMcpToolApproval(): CoreMcpToolApproval = when (this) {
     "approve" -> CoreMcpToolApproval.APPROVE
     "auto" -> CoreMcpToolApproval.AUTO
@@ -749,6 +798,11 @@ private fun String.requireJavaScriptString(name: String): String {
 private fun String?.requireJavaScriptNullableString(name: String): String? {
     require(this == null || jsTypeOf(this) == "string") { "$name must be a string or null" }
     return this
+}
+
+private fun requireJavaScriptNullableInteger(value: Int?, name: String): Int? {
+    require(value == null || js("Number.isInteger(value)") as Boolean) { "$name must be an integer or null" }
+    return value
 }
 
 private fun Double.requireJavaScriptNumber(name: String): Double {

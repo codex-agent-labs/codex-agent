@@ -6,6 +6,8 @@ import {
   AgentFormOption,
   AgentFormTextListValue,
   AgentFormTextValue,
+  AgentMcpEnvironmentVariable,
+  AgentMcpOauthConfiguration,
   AgentMcpToolConfiguration,
   AgentPlanProgress,
   AgentPlanStep,
@@ -53,6 +55,26 @@ new AgentFormTextListValue();
 textListValue.value = [];
 // @ts-expect-error Text-list form value elements are readonly.
 textListValue.value.push("third");
+
+const mcpEnvironmentVariable = new AgentMcpEnvironmentVariable("TOKEN", "local");
+// @ts-expect-error MCP environment-variable names are strings.
+new AgentMcpEnvironmentVariable(1);
+// @ts-expect-error MCP environment sources remain a closed typed domain.
+new AgentMcpEnvironmentVariable("TOKEN", "workspace");
+// @ts-expect-error Immutable MCP environment-variable names are readonly.
+mcpEnvironmentVariable.name = "CHANGED";
+// @ts-expect-error Immutable MCP environment-variable sources are readonly.
+mcpEnvironmentVariable.source = "remote";
+
+const mcpOauthConfiguration = new AgentMcpOauthConfiguration("client", 8080);
+// @ts-expect-error MCP OAuth client IDs are nullable strings, not numbers.
+new AgentMcpOauthConfiguration(1);
+// @ts-expect-error MCP OAuth callback ports are nullable numbers, not strings.
+new AgentMcpOauthConfiguration("client", "8080");
+// @ts-expect-error Immutable MCP OAuth client IDs are readonly.
+mcpOauthConfiguration.clientId = "changed";
+// @ts-expect-error Immutable MCP OAuth callback ports are readonly.
+mcpOauthConfiguration.callbackPort = 9090;
 
 const mcpToolConfiguration = new AgentMcpToolConfiguration("auto");
 // @ts-expect-error MCP tool approvals remain a closed typed domain.

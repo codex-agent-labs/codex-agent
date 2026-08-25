@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 168-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 176-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -28,7 +28,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(168, evidence.packedApi.publicSymbols.size)
+        assertEquals(176, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -698,6 +698,179 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "Unreferenced exceptional" in it && "AgentMcpToolConfiguration" in it
         })
         assertEquals(listOf(approval), unreferenced.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
+    }
+
+    @Test
+    fun `MCP environment and OAuth configurations preserve nullable defaults and aliases`() {
+        val environmentConstructor = canonicalConstructor(
+            "AgentMcpEnvironmentVariable",
+            listOf("kotlin/String!!", "example/AgentMcpEnvironmentSource?"),
+            defaultParameterIndices = setOf(1),
+        )
+        val environmentName = canonicalProperty("AgentMcpEnvironmentVariable", "name", "kotlin/String!!")
+        val environmentSource = canonicalProperty(
+            "AgentMcpEnvironmentVariable",
+            "source",
+            "example/AgentMcpEnvironmentSource?",
+        )
+        val oauthConstructor = canonicalConstructor(
+            "AgentMcpOauthConfiguration",
+            listOf("kotlin/String?", "kotlin/Int?"),
+            defaultParameterIndices = setOf(0, 1),
+        )
+        val oauthClientId = canonicalProperty("AgentMcpOauthConfiguration", "clientId", "kotlin/String?")
+        val oauthCallbackPort = canonicalProperty("AgentMcpOauthConfiguration", "callbackPort", "kotlin/Int?")
+        val keys = listOf(
+            environmentConstructor,
+            environmentName,
+            environmentSource,
+            oauthConstructor,
+            oauthClientId,
+            oauthCallbackPort,
+        ).sorted()
+        val environmentConstructorSymbol =
+            "constructor:AgentMcpEnvironmentVariable#" +
+                "(name: string, source?: AgentMcpEnvironmentSource | null | undefined)"
+        val environmentNameSymbol = "getter:AgentMcpEnvironmentVariable#name:string"
+        val environmentSourceSymbol =
+            "getter:AgentMcpEnvironmentVariable#source:AgentMcpEnvironmentSource | null | undefined"
+        val oauthConstructorSymbol =
+            "constructor:AgentMcpOauthConfiguration#" +
+                "(clientId?: string | null | undefined, callbackPort?: number | null | undefined)"
+        val oauthClientIdSymbol =
+            "getter:AgentMcpOauthConfiguration#clientId:string | null | undefined"
+        val oauthCallbackPortSymbol =
+            "getter:AgentMcpOauthConfiguration#callbackPort:number | null | undefined"
+        val symbols = listOf(
+            "class:AgentMcpEnvironmentVariable",
+            "class:AgentMcpOauthConfiguration",
+            environmentConstructorSymbol,
+            environmentNameSymbol,
+            environmentSourceSymbol,
+            oauthConstructorSymbol,
+            oauthClientIdSymbol,
+            oauthCallbackPortSymbol,
+        ).sorted()
+        val references = symbols.filterNot { it.startsWith("class:") }
+        val evidence = derive(keys, symbols, references = references)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertEquals(6, evidence.projectionClaims.size)
+        assertTrue(evidence.projectionClaims.all {
+            it.sharedScenarios == listOf(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        })
+        assertEquals(symbols, evidence.packedApi.publicSymbols)
+        assertEquals(references, evidence.packedApi.referencedSymbols)
+
+        listOf(
+            Triple(
+                environmentConstructor,
+                environmentConstructorSymbol,
+                environmentConstructorSymbol.replace("AgentMcpEnvironmentSource", "string"),
+            ),
+            Triple(
+                environmentSource,
+                environmentSourceSymbol,
+                environmentSourceSymbol.replace("AgentMcpEnvironmentSource", "string"),
+            ),
+            Triple(
+                environmentConstructor,
+                environmentConstructorSymbol,
+                environmentConstructorSymbol.replace(
+                    "AgentMcpEnvironmentSource | null | undefined",
+                    "AgentMcpEnvironmentSource",
+                ),
+            ),
+            Triple(
+                environmentSource,
+                environmentSourceSymbol,
+                environmentSourceSymbol.replace(
+                    "AgentMcpEnvironmentSource | null | undefined",
+                    "AgentMcpEnvironmentSource",
+                ),
+            ),
+            Triple(
+                environmentConstructor,
+                environmentConstructorSymbol,
+                environmentConstructorSymbol.replace("name:", "name?:"),
+            ),
+            Triple(
+                environmentConstructor,
+                environmentConstructorSymbol,
+                environmentConstructorSymbol.replace("source?:", "source:"),
+            ),
+            Triple(
+                oauthConstructor,
+                oauthConstructorSymbol,
+                oauthConstructorSymbol.replace("clientId?:", "clientId:"),
+            ),
+            Triple(
+                oauthConstructor,
+                oauthConstructorSymbol,
+                oauthConstructorSymbol.replace(
+                    "clientId?: string | null | undefined",
+                    "clientId?: string",
+                ),
+            ),
+            Triple(
+                oauthClientId,
+                oauthClientIdSymbol,
+                oauthClientIdSymbol.replace("string | null | undefined", "string"),
+            ),
+            Triple(
+                oauthConstructor,
+                oauthConstructorSymbol,
+                oauthConstructorSymbol.replace("number | null | undefined", "bigint | null | undefined"),
+            ),
+            Triple(
+                oauthCallbackPort,
+                oauthCallbackPortSymbol,
+                oauthCallbackPortSymbol.replace("number | null | undefined", "bigint | null | undefined"),
+            ),
+            Triple(
+                oauthConstructor,
+                oauthConstructorSymbol,
+                oauthConstructorSymbol.replace("number | null | undefined", "number"),
+            ),
+            Triple(
+                oauthCallbackPort,
+                oauthCallbackPortSymbol,
+                oauthCallbackPortSymbol.replace("number | null | undefined", "number"),
+            ),
+            Triple(
+                oauthConstructor,
+                oauthConstructorSymbol,
+                oauthConstructorSymbol.replace("callbackPort?:", "callbackPort:"),
+            ),
+            Triple(
+                environmentConstructor,
+                environmentConstructorSymbol,
+                environmentConstructorSymbol.replace(")", ", unexpected?: string)"),
+            ),
+            Triple(
+                oauthConstructor,
+                oauthConstructorSymbol,
+                oauthConstructorSymbol.replace(")", ", unexpected?: string)"),
+            ),
+        ).forEach { (key, exact, drifted) ->
+            val driftedSymbols = symbols.map { if (it == exact) drifted else it }.sorted()
+            val driftedReferences = references.map { if (it == exact) drifted else it }.sorted()
+            val drift = derive(keys, driftedSymbols, references = driftedReferences)
+            assertTrue(key in drift.missingCapabilityKeys, "$key accepted drift: $drifted")
+            assertTrue(drift.projectionClaims.none { it.capabilityKey == key })
+        }
+
+        val unreferenced = derive(
+            keys,
+            symbols,
+            references = references.filterNot { it.startsWith("constructor:AgentMcp") },
+        )
+        assertEquals(2, unreferenced.errors.count { "Unreferenced exceptional" in it })
+        assertEquals(
+            setOf(environmentName, environmentSource, oauthClientId, oauthCallbackPort),
+            unreferenced.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).toSet(),
+        )
     }
 
     @Test
@@ -1548,7 +1721,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
-        .also { assertEquals(168, it.size) }
+        .also { assertEquals(176, it.size) }
 
     companion object {
         private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
@@ -1613,6 +1786,8 @@ class:AgentFormNumberValue
 class:AgentFormOption
 class:AgentFormTextListValue
 class:AgentFormTextValue
+class:AgentMcpEnvironmentVariable
+class:AgentMcpOauthConfiguration
 class:AgentMcpToolConfiguration
 class:AgentPlanProgress
 class:AgentPlanStep
@@ -1636,6 +1811,8 @@ constructor:AgentFormNumberValue#(value: number)
 constructor:AgentFormOption#(value: string, title?: string, description?: string | null | undefined)
 constructor:AgentFormTextListValue#(value: ReadonlyArray<string>)
 constructor:AgentFormTextValue#(value: string)
+constructor:AgentMcpEnvironmentVariable#(name: string, source?: AgentMcpEnvironmentSource | null | undefined)
+constructor:AgentMcpOauthConfiguration#(clientId?: string | null | undefined, callbackPort?: number | null | undefined)
 constructor:AgentMcpToolConfiguration#(approval?: AgentMcpToolApproval | null | undefined)
 constructor:AgentPlanProgress#(explanation?: string | null | undefined, steps?: ReadonlyArray<AgentPlanStep>)
 constructor:AgentPlanStep#(text: string, status: AgentPlanStepStatus)
@@ -1651,6 +1828,10 @@ getter:AgentFormOption#title:string
 getter:AgentFormOption#value:string
 getter:AgentFormTextListValue#value:ReadonlyArray<string>
 getter:AgentFormTextValue#value:string
+getter:AgentMcpEnvironmentVariable#name:string
+getter:AgentMcpEnvironmentVariable#source:AgentMcpEnvironmentSource | null | undefined
+getter:AgentMcpOauthConfiguration#callbackPort:number | null | undefined
+getter:AgentMcpOauthConfiguration#clientId:string | null | undefined
 getter:AgentMcpToolConfiguration#approval:AgentMcpToolApproval | null | undefined
 getter:AgentPlanProgress#explanation:string | null | undefined
 getter:AgentPlanProgress#steps:ReadonlyArray<AgentPlanStep>

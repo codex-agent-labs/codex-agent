@@ -166,6 +166,17 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
     get value(): ReadonlyArray<string>;
 }""",
         ).replace(
+            """export declare class AgentMcpEnvironmentVariable {
+    constructor(name: string, source?: Nullable<string>);
+    get name(): string;
+    get source(): Nullable<string>;
+}""",
+            """export declare class AgentMcpEnvironmentVariable {
+    constructor(name: string, source?: Nullable<AgentMcpEnvironmentSource>);
+    get name(): string;
+    get source(): Nullable<AgentMcpEnvironmentSource>;
+}""",
+        ).replace(
             """export declare class AgentMcpToolConfiguration {
     constructor(approval?: Nullable<string>);
     get approval(): Nullable<string>;

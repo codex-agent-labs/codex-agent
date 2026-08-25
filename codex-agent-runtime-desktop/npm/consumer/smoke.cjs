@@ -31,6 +31,8 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentFormOption,
     sdk.AgentFormTextListValue,
     sdk.AgentFormTextValue,
+    sdk.AgentMcpEnvironmentVariable,
+    sdk.AgentMcpOauthConfiguration,
     sdk.AgentMcpToolConfiguration,
     sdk.AgentPlanProgress,
     sdk.AgentPlanStep,
@@ -203,6 +205,140 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     new Proxy({}, {}),
   ]) {
     assert.throws(() => new sdk.AgentFormTextListValue([invalid]));
+  }
+
+  const defaultMcpEnvironmentVariable = new sdk.AgentMcpEnvironmentVariable('TOKEN');
+  const undefinedMcpEnvironmentVariable = new sdk.AgentMcpEnvironmentVariable('TOKEN', undefined);
+  const nullMcpEnvironmentVariable = new sdk.AgentMcpEnvironmentVariable('TOKEN', null);
+  assert.equal(defaultMcpEnvironmentVariable.source, null);
+  assert.equal(undefinedMcpEnvironmentVariable.source, null);
+  assert.equal(nullMcpEnvironmentVariable.source, null);
+  const mcpEnvironmentSources = ['local', 'remote'];
+  const mcpEnvironmentVariables = mcpEnvironmentSources.map(
+    (source) => new sdk.AgentMcpEnvironmentVariable('TOKEN', source),
+  );
+  assert.deepEqual(mcpEnvironmentVariables.map(({ source }) => source), mcpEnvironmentSources);
+  const permissiveMcpEnvironmentNames = [' TOKEN ', 'TOKEN\u0000SUFFIX'];
+  const permissiveMcpEnvironmentVariables = permissiveMcpEnvironmentNames.map(
+    (name) => new sdk.AgentMcpEnvironmentVariable(name),
+  );
+  assert.deepEqual(permissiveMcpEnvironmentVariables.map(({ name }) => name), permissiveMcpEnvironmentNames);
+  for (const invalidName of [
+    '',
+    ' ',
+    '\t\n',
+    null,
+    undefined,
+    0,
+    -0,
+    NaN,
+    Infinity,
+    -Infinity,
+    false,
+    true,
+    1n,
+    Symbol('name'),
+    {},
+    [],
+    () => {},
+    new String('TOKEN'),
+    new Number(0),
+    new Boolean(false),
+    new Proxy({}, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentMcpEnvironmentVariable(invalidName));
+  }
+  for (const invalidSource of [
+    '',
+    ' ',
+    'LOCAL',
+    'Local',
+    'unknown',
+    0,
+    -0,
+    NaN,
+    Infinity,
+    -Infinity,
+    false,
+    true,
+    1n,
+    Symbol('source'),
+    {},
+    [],
+    () => {},
+    new String('local'),
+    new Number(0),
+    new Boolean(false),
+    new Proxy({}, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentMcpEnvironmentVariable('TOKEN', invalidSource));
+  }
+
+  const defaultMcpOauthConfiguration = new sdk.AgentMcpOauthConfiguration();
+  const undefinedMcpOauthConfiguration = new sdk.AgentMcpOauthConfiguration(undefined, undefined);
+  const nullMcpOauthConfiguration = new sdk.AgentMcpOauthConfiguration(null, null);
+  for (const configuration of [
+    defaultMcpOauthConfiguration,
+    undefinedMcpOauthConfiguration,
+    nullMcpOauthConfiguration,
+  ]) {
+    assert.equal(configuration.clientId, null);
+    assert.equal(configuration.callbackPort, null);
+  }
+  const blankMcpOauthConfiguration = new sdk.AgentMcpOauthConfiguration('', null);
+  const whitespaceMcpOauthConfiguration = new sdk.AgentMcpOauthConfiguration(' \t\n', null);
+  assert.equal(blankMcpOauthConfiguration.clientId, '');
+  assert.equal(whitespaceMcpOauthConfiguration.clientId, ' \t\n');
+  const minimumMcpOauthPort = new sdk.AgentMcpOauthConfiguration('client', 1);
+  const maximumMcpOauthPort = new sdk.AgentMcpOauthConfiguration('client', 65535);
+  assert.equal(minimumMcpOauthPort.callbackPort, 1);
+  assert.equal(maximumMcpOauthPort.callbackPort, 65535);
+  for (const invalidClientId of [
+    0,
+    -0,
+    NaN,
+    Infinity,
+    -Infinity,
+    false,
+    true,
+    1n,
+    Symbol('clientId'),
+    {},
+    [],
+    () => {},
+    new String('client'),
+    new Number(0),
+    new Boolean(false),
+    new Proxy({}, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentMcpOauthConfiguration(invalidClientId));
+  }
+  for (const invalidPort of [
+    0,
+    -0,
+    -1,
+    65536,
+    1.5,
+    -1.5,
+    Number.MIN_VALUE,
+    NaN,
+    Infinity,
+    -Infinity,
+    '',
+    '1',
+    false,
+    true,
+    1n,
+    Symbol('callbackPort'),
+    {},
+    [],
+    () => {},
+    new Number(1),
+    new String('1'),
+    new Boolean(false),
+    new Proxy({}, {}),
+  ]) {
+    assert.throws(() => new sdk.AgentMcpOauthConfiguration(null, invalidPort));
   }
 
   const defaultMcpToolConfiguration = new sdk.AgentMcpToolConfiguration();
@@ -405,6 +541,18 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     emptyTextListValue,
     textListValue,
     proxyTextListValue,
+    defaultMcpEnvironmentVariable,
+    undefinedMcpEnvironmentVariable,
+    nullMcpEnvironmentVariable,
+    ...mcpEnvironmentVariables,
+    ...permissiveMcpEnvironmentVariables,
+    defaultMcpOauthConfiguration,
+    undefinedMcpOauthConfiguration,
+    nullMcpOauthConfiguration,
+    blankMcpOauthConfiguration,
+    whitespaceMcpOauthConfiguration,
+    minimumMcpOauthPort,
+    maximumMcpOauthPort,
     defaultMcpToolConfiguration,
     undefinedMcpToolConfiguration,
     nullMcpToolConfiguration,
@@ -423,6 +571,26 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   }
   for (const value of [textValue, ...numberValues, falseValue, trueValue, textListValue]) {
     assert.deepEqual(Reflect.ownKeys(value), ['value']);
+  }
+  for (const environment of [
+    defaultMcpEnvironmentVariable,
+    undefinedMcpEnvironmentVariable,
+    nullMcpEnvironmentVariable,
+    ...mcpEnvironmentVariables,
+    ...permissiveMcpEnvironmentVariables,
+  ]) {
+    assert.deepEqual(Reflect.ownKeys(environment), ['name', 'source']);
+  }
+  for (const oauth of [
+    defaultMcpOauthConfiguration,
+    undefinedMcpOauthConfiguration,
+    nullMcpOauthConfiguration,
+    blankMcpOauthConfiguration,
+    whitespaceMcpOauthConfiguration,
+    minimumMcpOauthPort,
+    maximumMcpOauthPort,
+  ]) {
+    assert.deepEqual(Reflect.ownKeys(oauth), ['clientId', 'callbackPort']);
   }
   for (const configuration of [
     defaultMcpToolConfiguration,

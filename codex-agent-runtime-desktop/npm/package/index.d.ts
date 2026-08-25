@@ -53,6 +53,16 @@ export declare class AgentFormTextListValue {
     constructor(value: ReadonlyArray<string>);
     get value(): ReadonlyArray<string>;
 }
+export declare class AgentMcpEnvironmentVariable {
+    constructor(name: string, source?: Nullable<AgentMcpEnvironmentSource>);
+    get name(): string;
+    get source(): Nullable<AgentMcpEnvironmentSource>;
+}
+export declare class AgentMcpOauthConfiguration {
+    constructor(clientId?: Nullable<string>, callbackPort?: Nullable<number>);
+    get clientId(): Nullable<string>;
+    get callbackPort(): Nullable<number>;
+}
 export declare class AgentMcpToolConfiguration {
     constructor(approval?: Nullable<AgentMcpToolApproval>);
     get approval(): Nullable<AgentMcpToolApproval>;
