@@ -22,6 +22,7 @@ import {
   CodexHost,
   CodexHostState,
   CodexObservation,
+  codexApprovalPresetDisplayName,
   createCodexHost,
 } from "@codex-agent-labs/codex-agent";
 import type {
@@ -63,6 +64,7 @@ const host: CodexHost = createCodexHost("/bundle", "/data", "typescript", "TypeS
 const state: CodexHostState = host.state;
 const hostStatus: CodexHostStatus = state.status;
 const approvalPreset: CodexApprovalPreset = "auto_review";
+const approvalPresetDisplayName: string = codexApprovalPresetDisplayName(approvalPreset);
 const formOption = new AgentFormOption("value");
 const formOptionValue: string = formOption.value;
 const formOptionTitle: string = formOption.title;
@@ -298,6 +300,7 @@ async function handleFailure(operation: Promise<void>): Promise<void> {
 void state;
 void hostStatus;
 void [
+  approvalPresetDisplayName,
   formOptionValue,
   formOptionTitle,
   formOptionDescription,

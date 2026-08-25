@@ -12,8 +12,12 @@ import {
   AgentMcpToolConfiguration,
   AgentPlanProgress,
   AgentPlanStep,
+  codexApprovalPresetDisplayName,
 } from "@codex-agent-labs/codex-agent";
 import type { CodexAgent, CodexTurnProgress } from "@codex-agent-labs/codex-agent";
+
+// @ts-expect-error Raw Kotlin enum names are outside the public TypeScript domain.
+codexApprovalPresetDisplayName("AUTO_REVIEW");
 
 const option = new AgentFormOption("value");
 // @ts-expect-error Immutable form-option values are readonly.

@@ -27,3 +27,4 @@ export const CodexObservation = api.CodexObservation;
 export const CodexTurnProgress = api.CodexTurnProgress;
 export const CodexWorkspace = api.CodexWorkspace;
 export const createCodexHost = api.createCodexHost;
+export const codexApprovalPresetDisplayName = api.codexApprovalPresetDisplayName;

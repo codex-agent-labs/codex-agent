@@ -1,7 +1,9 @@
+import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationBrowser
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationPresentation
 import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo
 import io.github.codex_agent_labs.codexmobile.agent.CodexHost as CoreHost
+import io.github.codex_agent_labs.codexmobile.agent.CodexPathWorkspaceSelection
 import io.github.codex_agent_labs.codexmobile.agent.CodexPlatform
 import io.github.codex_agent_labs.codexmobile.agent.CodexRuntimeFeature
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace
@@ -48,6 +50,12 @@ class CodexNodeApiTest {
         val hostStates = mutableListOf<String>()
         val hostObservation = host.observeState { hostStates += it.status }
 
+        AgentApprovalPreset.entries.forEach { preset ->
+            assertEquals(preset.displayName, codexApprovalPresetDisplayName(preset.name.lowercase()))
+        }
+        val invalidPreset = runCatching { codexApprovalPresetDisplayName("sometimes") }.exceptionOrNull()
+        assertEquals("Unknown approval preset: sometimes", invalidPreset?.message)
+
         yield()
         assertEquals(listOf("new"), hostStates)
         assertTrue(isFrozen(host.state))
@@ -66,6 +74,11 @@ class CodexNodeApiTest {
 
         val conversation = agent.openConversation().await()
         awaitCondition { active.lastOrNull() != null }
+        val defaultOpen = checkNotNull(runtime.threadStartParams)
+        assertEquals("on-request", defaultOpen["approvalPolicy"]?.jsonPrimitive?.content)
+        assertEquals("auto_review", defaultOpen["approvalsReviewer"]?.jsonPrimitive?.content)
+        assertEquals("/workspace", defaultOpen["cwd"]?.jsonPrimitive?.content)
+        assertNull(defaultOpen["serviceTier"])
         assertSame(conversation, agent.activeConversation)
         assertSame(conversation, active.last())
         assertEquals("ready", conversation.state.status)
@@ -244,7 +257,8 @@ class CodexNodeApiTest {
         ))
         try {
             shellHost.start().await()
-            val shellConversation = assertIs<CodexAgent>(shellHost.agent).openConversation().await()
+            val shellAgent = assertIs<CodexAgent>(shellHost.agent)
+            val shellConversation = shellAgent.openConversation().await()
             val shellAvailability = mutableListOf<Boolean>()
             shellConversation.observeState { shellAvailability += it.canRunShellCommand }
             awaitCondition { shellAvailability.lastOrNull() == true }
@@ -262,6 +276,25 @@ class CodexNodeApiTest {
             assertTrue(shellAvailability.first())
             assertTrue(false in shellAvailability)
             assertTrue(shellAvailability.last())
+
+            val blankId = runCatching { shellAgent.openConversation("  ").await() }.exceptionOrNull()
+            assertEquals("Conversation ID must not be blank", blankId?.message)
+            assertNull(shellRuntime.threadResumeParams)
+
+            val resumed = shellAgent.openConversation(
+                conversationId = "thread-resumed",
+                approvalPreset = "strict",
+                serviceTier = "fast",
+            ).await()
+            val resumedOpen = checkNotNull(shellRuntime.threadResumeParams)
+            assertEquals("thread-resumed", resumedOpen["threadId"]?.jsonPrimitive?.content)
+            assertEquals("untrusted", resumedOpen["approvalPolicy"]?.jsonPrimitive?.content)
+            assertEquals("user", resumedOpen["approvalsReviewer"]?.jsonPrimitive?.content)
+            assertEquals("fast", resumedOpen["serviceTier"]?.jsonPrimitive?.content)
+            assertEquals("/workspace", resumedOpen["cwd"]?.jsonPrimitive?.content)
+            assertEquals("thread-resumed", resumed.state.conversationId)
+            assertEquals("fast", resumed.state.serviceTier)
+            assertEquals("closed", shellConversation.state.status)
         } finally {
             shellHost.close().await()
         }
@@ -270,7 +303,8 @@ class CodexNodeApiTest {
     @Test
     fun abortsBeforeStartingAndStopsDisposedObservation() = runTest {
         val runtime = ApiTestRuntime()
-        val core = CoreHost(ApiTestPlatform(runtime), CodexClientInfo("node_test", "Node Test", "test"))
+        val platform = ApiTestPlatform(runtime)
+        val core = CoreHost(platform, CodexClientInfo("node_test", "Node Test", "test"))
         val host = wrapCodexHost(core)
         val values = mutableListOf<String>()
         val observation = host.observeState { values += it.status }
@@ -288,6 +322,14 @@ class CodexNodeApiTest {
         assertEquals(listOf("new"), values)
         assertTrue(observation.isClosed)
         assertFalse(runtime.started)
+
+        val blankPath = runCatching { host.selectWorkspace("  ").await() }.exceptionOrNull()
+        assertEquals("Workspace path must not be blank", blankPath?.message)
+        assertNull(platform.selectedWorkspacePath)
+        host.selectWorkspace("/selected workspace").await()
+        assertEquals("/selected workspace", platform.selectedWorkspacePath)
+        assertEquals("/selected workspace", host.state.workspace?.path)
+        assertEquals("ready", host.state.status)
         host.close().await()
         yield()
         assertEquals(listOf("new"), values)
@@ -496,11 +538,16 @@ private class ApiTestPlatform(
     private val restoreRelease: CompletableDeferred<Unit>? = null,
     private val features: Set<CodexRuntimeFeature> = emptySet(),
 ) : CodexPlatform {
+    var selectedWorkspacePath: String? = null
+
     override val authorizationBrowser: CodexAuthorizationBrowser =
         CodexAuthorizationBrowser { CodexAuthorizationPresentation.None }
     override val workspaceStore: CodexWorkspaceStore = object : CodexWorkspaceStore {
-        override suspend fun select(selection: CodexWorkspaceSelection): CodexWorkspaceResolution =
-            CodexWorkspaceResolution.Available(CodexWorkspace("/workspace"))
+        override suspend fun select(selection: CodexWorkspaceSelection): CodexWorkspaceResolution {
+            val path = (selection as CodexPathWorkspaceSelection).path
+            selectedWorkspacePath = path
+            return CodexWorkspaceResolution.Available(CodexWorkspace(path))
+        }
 
         override suspend fun restore(): CodexWorkspaceResolution {
             restoreEntered?.complete(Unit)
@@ -559,6 +606,8 @@ private class ApiTestRuntime : CodexRuntime {
     var failNextRename: Boolean = false
     var deleteEntered: CompletableDeferred<Unit>? = null
     var deleteRelease: CompletableDeferred<Unit>? = null
+    var threadStartParams: JsonObject? = null
+    var threadResumeParams: JsonObject? = null
     private var loginAttempts: Int = 0
 
     suspend fun completeTurn(): Unit = notify("turn/completed", buildJsonObject {
@@ -606,8 +655,19 @@ private class ApiTestRuntime : CodexRuntime {
         val id = request["id"]?.jsonPrimitive?.long ?: return
         when (request["method"]?.jsonPrimitive?.content) {
             "initialize" -> respond(id, initializeResult())
-            "thread/start" -> respond(id, threadStartResult())
-            "thread/read" -> respond(id, threadReadResult())
+            "thread/start" -> {
+                threadStartParams = checkNotNull(request["params"]).jsonObject
+                respond(id, threadStartResult())
+            }
+            "thread/resume" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                threadResumeParams = params
+                respond(id, threadResumeResult(checkNotNull(params["threadId"]).jsonPrimitive.content))
+            }
+            "thread/read" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                respond(id, threadReadResult(checkNotNull(params["threadId"]).jsonPrimitive.content))
+            }
             "thread/name/set" -> {
                 val params = checkNotNull(request["params"]).jsonObject
                 renamedConversationId = params["threadId"]?.jsonPrimitive?.content
@@ -753,20 +813,34 @@ private fun threadStartResult(): JsonObject = buildJsonObject {
     putJsonObject("sandbox") { put("type", "dangerFullAccess") }
 }
 
-private fun threadReadResult(): JsonObject = buildJsonObject {
-    put("thread", threadResult(buildJsonArray { add(completedTurn()) }))
+private fun threadResumeResult(threadId: String): JsonObject = buildJsonObject {
+    put("thread", threadResult(threadId = threadId))
+    put("approvalPolicy", "untrusted")
+    put("approvalsReviewer", "user")
+    put("cwd", "/workspace")
+    put("model", "test")
+    put("modelProvider", "openai")
+    put("serviceTier", "fast")
+    putJsonObject("sandbox") { put("type", "dangerFullAccess") }
 }
 
-private fun threadResult(turns: JsonArray = buildJsonArray {}): JsonObject = buildJsonObject {
-    put("id", "thread-js")
+private fun threadReadResult(threadId: String): JsonObject = buildJsonObject {
+    put("thread", threadResult(buildJsonArray { add(completedTurn()) }, threadId))
+}
+
+private fun threadResult(
+    turns: JsonArray = buildJsonArray {},
+    threadId: String = "thread-js",
+): JsonObject = buildJsonObject {
+    put("id", threadId)
     put("cliVersion", "0.149.0")
     put("createdAt", 0)
     put("cwd", "/workspace")
     put("ephemeral", false)
     put("modelProvider", "openai")
     put("preview", "")
-    put("conversationId", "thread-js")
-    put("sessionId", "thread-js")
+    put("conversationId", threadId)
+    put("sessionId", threadId)
     put("source", "cli")
     putJsonObject("status") { put("type", "idle") }
     put("turns", turns)

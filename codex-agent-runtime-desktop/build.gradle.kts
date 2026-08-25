@@ -149,6 +149,13 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         val canonicalEnumDeclarations =
             generatedEnumDeclarations.readText().replace("\r\n", "\n").trimEnd()
         var actual = sanitized.joinToString("\n").trimEnd() + "\n"
+        val rawApprovalPresetDisplayNameDeclaration =
+            "export declare function codexApprovalPresetDisplayName(preset: string): string;"
+        val reviewedApprovalPresetDisplayNameDeclaration =
+            "export declare function codexApprovalPresetDisplayName(preset: CodexApprovalPreset): string;"
+        check(actual.lineSequence().count { it == rawApprovalPresetDisplayNameDeclaration } == 1) {
+            "Unexpected codexApprovalPresetDisplayName TypeScript declaration"
+        }
         actual = actual.replace(
             "type Nullable<T> = T | null | undefined\n",
             """type Nullable<T> = T | null | undefined;
@@ -156,6 +163,9 @@ export type CodexHostStatus = "new" | "restoring" | "workspace_required" | "prep
 $canonicalEnumDeclarations
 export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code" | "api_key";
 """,
+        ).replace(
+            rawApprovalPresetDisplayNameDeclaration,
+            reviewedApprovalPresetDisplayNameDeclaration,
         ).replace(
             """export declare class AgentFormTextListValue {
     constructor(value: Array<string>);

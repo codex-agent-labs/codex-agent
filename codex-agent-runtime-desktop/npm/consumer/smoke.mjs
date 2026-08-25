@@ -369,6 +369,19 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.AgentPlanStep, commonJsSdk.AgentPlanStep);
   assert.equal(sdk.CodexAgent.prototype.rename, commonJsSdk.CodexAgent.prototype.rename);
   assert.equal(sdk.CodexAgent.prototype.delete, commonJsSdk.CodexAgent.prototype.delete);
+  assert.equal(
+    sdk.codexApprovalPresetDisplayName,
+    commonJsSdk.codexApprovalPresetDisplayName,
+  );
+  for (const [preset, displayName] of [
+    ['never', 'Never'],
+    ['auto_review', 'Auto review'],
+    ['ask_me', 'Ask me'],
+    ['strict', 'Strict'],
+  ]) {
+    assert.equal(sdk.codexApprovalPresetDisplayName(preset), displayName);
+    assert.equal(commonJsSdk.codexApprovalPresetDisplayName(preset), displayName);
+  }
   assert.equal(typeof sdk.CodexHost, 'function');
   assert.equal(typeof sdk.CodexAuthentication, 'function');
   assert.equal(typeof sdk.CodexAuthenticationState, 'function');
@@ -440,6 +453,9 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(compilerApi.publicSymbols.includes(
     'method:CodexAgent#delete:(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>',
   ), 'Conversation deletion must preserve typed IDs and AbortSignal cancellation');
+  assert.ok(compilerApi.publicSymbols.includes(
+    'function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string',
+  ), 'Approval-preset display names must preserve the finite preset domain');
   assert.ok(compilerApi.publicSymbols.includes(
     'getter:CodexAgent#authentication:CodexAuthentication',
   ), 'Agent authentication ownership must be discoverable');

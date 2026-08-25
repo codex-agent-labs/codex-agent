@@ -190,6 +190,7 @@ export declare class CodexHost {
     [Symbol.asyncDispose](): Promise<void>;
 }
 export declare function createCodexHost(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost;
+export declare function codexApprovalPresetDisplayName(preset: CodexApprovalPreset): string;
 export declare class CodexAgent {
     private constructor();
     get workspace(): CodexWorkspace;

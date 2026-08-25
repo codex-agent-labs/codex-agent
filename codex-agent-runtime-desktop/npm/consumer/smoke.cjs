@@ -17,6 +17,14 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(process.version, 'v24.18.0');
   process.argv.push('--not-an-evidence-argument');
   assert.equal(typeof sdk.createCodexHost, 'function');
+  assert.equal(typeof sdk.codexApprovalPresetDisplayName, 'function');
+  assert.deepEqual(
+    ['never', 'auto_review', 'ask_me', 'strict'].map((preset) =>
+      sdk.codexApprovalPresetDisplayName(preset)),
+    ['Never', 'Auto review', 'Ask me', 'Strict'],
+  );
+  assert.throws(() => sdk.codexApprovalPresetDisplayName('AUTO_REVIEW'));
+  assert.throws(() => sdk.codexApprovalPresetDisplayName(0));
   assert.throws(() => new sdk.CodexHost());
   assert.throws(() => new sdk.CodexAgent());
   assert.throws(() => new sdk.CodexAuthentication());

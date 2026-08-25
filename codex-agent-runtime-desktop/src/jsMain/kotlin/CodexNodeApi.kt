@@ -619,6 +619,9 @@ public fun createCodexHost(
     jsApiToken,
 )
 
+@JsExport
+public fun codexApprovalPresetDisplayName(preset: String): String = preset.toApprovalPreset().displayName
+
 internal fun wrapCodexHost(core: CoreHost): CodexHost = CodexHost(core, jsApiToken)
 
 /** Host-owned Agent projection. */
@@ -822,12 +825,10 @@ private class CodexAbortError(message: String) : CancellationException(message) 
     }
 }
 
-private fun String?.toApprovalPreset(): AgentApprovalPreset = when (this) {
-    null, "auto_review" -> AgentApprovalPreset.AUTO_REVIEW
-    "never" -> AgentApprovalPreset.NEVER
-    "ask_me" -> AgentApprovalPreset.ASK_ME
-    "strict" -> AgentApprovalPreset.STRICT
-    else -> throw IllegalArgumentException("Unknown approval preset: $this")
+private fun String?.toApprovalPreset(): AgentApprovalPreset {
+    if (this == null) return AgentApprovalPreset.AUTO_REVIEW
+    return AgentApprovalPreset.entries.singleOrNull { it.name.lowercase() == this }
+        ?: throw IllegalArgumentException("Unknown approval preset: $this")
 }
 
 private fun String?.toAuthenticationMethod(apiKey: String?): CoreAuthenticationMethod = when (this) {

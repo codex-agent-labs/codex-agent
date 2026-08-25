@@ -87,6 +87,7 @@ internal data class CrossLanguageJavaScriptBindingEvidence(
     val canonical: CrossLanguageCanonicalApiEvidence,
     val packedApi: JavaScriptPackedPublicApiEvidence,
     val projectionClaims: List<CrossLanguageProjectionClaim>,
+    val applicabilityExclusions: List<CrossLanguageApplicabilityExclusion>,
     val missingCapabilityKeys: List<String>,
     val errors: List<String>,
 )
@@ -112,11 +113,19 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
     val missing = mutableListOf<String>()
     val errors = mutableListOf<String>()
     val provisional = mutableListOf<JavaScriptProjection>()
+    val exclusions = mutableListOf<CrossLanguageApplicabilityExclusion>()
 
     canonical.memberKeys.forEach { key ->
         val member = parseCanonicalJavaScriptMember(key)
         val candidates = javaScriptProjectionCandidates(member, symbols).distinctBy { it.publicSymbols }
+        val exclusion = javaScriptApplicabilityExclusion(member)
+        val excludedOwnerHasPublicConstructor = exclusion != null && symbols.any {
+            it.kind == JavaScriptPublicSymbolKind.CONSTRUCTOR && it.owner == member.simpleOwner
+        }
         when {
+            exclusion != null && (candidates.isNotEmpty() || excludedOwnerHasPublicConstructor) -> errors +=
+                "JavaScript/TypeScript projection conflicts with applicability exclusion for $key"
+            exclusion != null -> exclusions += exclusion
             candidates.isEmpty() -> missing += key
             candidates.size > 1 -> errors +=
                 "Ambiguous JavaScript/TypeScript projection for $key: " +
@@ -147,7 +156,8 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
         if (projections.size > 1 &&
             !isAllowedLiteralTypeReuse(symbol, projections) &&
             !isAllowedConversationStateEnvelopeReuse(symbol, projections) &&
-            !isAllowedConversationStateLeafReuse(symbol, projections)
+            !isAllowedConversationStateLeafReuse(symbol, projections) &&
+            !isAllowedFlattenedValueReuse(symbol, projections)
         ) {
             errors += "Reused JavaScript/TypeScript public symbol $symbol for capabilities " +
                 projections.map { it.member.key }.sorted()
@@ -171,6 +181,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
         canonical = canonical,
         packedApi = packedApi,
         projectionClaims = claims,
+        applicabilityExclusions = exclusions.sortedBy(CrossLanguageApplicabilityExclusion::capabilityKey),
         missingCapabilityKeys = missing.sorted(),
         errors = errors.sorted(),
     )
@@ -204,8 +215,13 @@ internal fun buildJavaScriptTypeScriptBindingReceipt(
     }
     val canonicalKeys = canonical.memberKeys.toSet()
     val claimKeys = evidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey)
-    check(claimKeys.size == claimKeys.distinct().size && claimKeys.toSet() == canonicalKeys) {
-        "JavaScript/TypeScript claims do not exactly cover the canonical API"
+    val exclusionKeys = evidence.applicabilityExclusions.map(CrossLanguageApplicabilityExclusion::capabilityKey)
+    check(claimKeys.size == claimKeys.distinct().size &&
+        exclusionKeys.size == exclusionKeys.distinct().size &&
+        claimKeys.toSet().intersect(exclusionKeys.toSet()).isEmpty() &&
+        claimKeys.toSet() + exclusionKeys == canonicalKeys
+    ) {
+        "JavaScript/TypeScript claims and exclusions do not exactly cover the canonical API"
     }
     val receipt = CrossLanguageBindingReceipt(
         phase = CrossLanguageBindingPhase.M7_5,
@@ -218,7 +234,7 @@ internal fun buildJavaScriptTypeScriptBindingReceipt(
         bindingTests = tests,
         scenarioEvidence = scenarioEvidence,
         projectionClaims = evidence.projectionClaims,
-        applicabilityExclusions = emptyList(),
+        applicabilityExclusions = evidence.applicabilityExclusions,
     )
     receipt.toJson() // Apply the shared schema-3 normalization and fail-closed validation.
     return receipt
@@ -801,12 +817,224 @@ private fun parseJavaScriptPublicSymbol(raw: String): JavaScriptPublicSymbol {
 private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
-): List<JavaScriptProjectionCandidate> = when (member.kind) {
-    CanonicalJavaScriptMemberKind.OBJECT -> objectProjectionCandidates(member, symbols)
-    CanonicalJavaScriptMemberKind.ENUM_ENTRY -> enumProjectionCandidates(member, symbols)
-    CanonicalJavaScriptMemberKind.PROPERTY -> propertyProjectionCandidates(member, symbols)
-    CanonicalJavaScriptMemberKind.CONSTRUCTOR -> constructorProjectionCandidates(member, symbols)
-    CanonicalJavaScriptMemberKind.FUNCTION -> functionProjectionCandidates(member, symbols)
+): List<JavaScriptProjectionCandidate> {
+    val flattened = flattenedValueProjectionCandidates(member, symbols)
+    if (flattened.isNotEmpty()) return flattened
+    return when (member.kind) {
+        CanonicalJavaScriptMemberKind.OBJECT -> objectProjectionCandidates(member, symbols)
+        CanonicalJavaScriptMemberKind.ENUM_ENTRY -> enumProjectionCandidates(member, symbols)
+        CanonicalJavaScriptMemberKind.PROPERTY -> propertyProjectionCandidates(member, symbols)
+        CanonicalJavaScriptMemberKind.CONSTRUCTOR -> constructorProjectionCandidates(member, symbols)
+        CanonicalJavaScriptMemberKind.FUNCTION -> functionProjectionCandidates(member, symbols)
+    }
+}
+
+private const val javaScriptApprovalPresetDisplayName =
+    "function:codexApprovalPresetDisplayName:(preset: CodexApprovalPreset): string"
+private const val javaScriptDeleteConversation =
+    "method:CodexAgent#delete:" +
+        "(conversationId: string, signal?: AbortSignal | null | undefined): Promise<void>"
+private const val javaScriptRenameConversation =
+    "method:CodexAgent#rename:" +
+        "(conversationId: string, name: string, " +
+        "signal?: AbortSignal | null | undefined): Promise<void>"
+private const val javaScriptSelectWorkspace =
+    "method:CodexHost#selectWorkspace:" +
+        "(path: string, signal?: AbortSignal | null | undefined): Promise<void>"
+
+private val javaScriptConversationIdSymbols = listOf(
+    javaScriptDeleteConversation,
+    javaScriptOpenConversation,
+    javaScriptRenameConversation,
+).sorted()
+
+private fun flattenedValueProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    val projectedSymbols = when {
+        member.isExactProperty("AgentApprovalPreset", "displayName", "kotlin/String!!") ->
+            listOf(javaScriptApprovalPresetDisplayName)
+        member.isExactConversationSettingsMember() -> listOf(javaScriptOpenConversation)
+        member.isExactConversationIdMember() -> javaScriptConversationIdSymbols
+        member.isExactPathWorkspaceSelectionMember() -> listOf(javaScriptSelectWorkspace)
+        else -> return emptyList()
+    }
+    if (!hasExactJavaScriptSymbolInventory(symbols, projectedSymbols)) return emptyList()
+    return listOf(
+        JavaScriptProjectionCandidate(
+            publicSymbols = projectedSymbols,
+            scenarios = listOf(CrossLanguageBindingScenario.VALUE_CONVERSION),
+            requiresConsumerReference = true,
+        )
+    )
+}
+
+private fun CanonicalJavaScriptMember.isExactConversationSettingsMember(): Boolean {
+    val canonicalPackage = owner.substringBeforeLast('/')
+    return isExactConstructor(
+        "AgentConversationSettings",
+        listOf(
+            CanonicalJavaScriptParameter(
+                "$canonicalPackage/AgentApprovalPreset!!",
+                hasDefault = true,
+                isVararg = false,
+            ),
+            CanonicalJavaScriptParameter("kotlin/String?", hasDefault = true, isVararg = false),
+        ),
+    ) || isExactProperty(
+        "AgentConversationSettings",
+        "approvalPreset",
+        "$canonicalPackage/AgentApprovalPreset!!",
+    ) || isExactProperty("AgentConversationSettings", "serviceTier", "kotlin/String?")
+}
+
+private fun CanonicalJavaScriptMember.isExactConversationIdMember(): Boolean =
+    isExactConstructor(
+        "ConversationId",
+        listOf(CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false)),
+    ) || isExactProperty("ConversationId", "value", "kotlin/String!!")
+
+private fun CanonicalJavaScriptMember.isExactPathWorkspaceSelectionMember(): Boolean =
+    isExactConstructor(
+        "CodexPathWorkspaceSelection",
+        listOf(CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false)),
+    ) || isExactProperty("CodexPathWorkspaceSelection", "path", "kotlin/String!!")
+
+private fun CanonicalJavaScriptMember.isExactConstructor(
+    expectedOwner: String,
+    expectedParameters: List<CanonicalJavaScriptParameter>,
+): Boolean = simpleOwner == expectedOwner && kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR &&
+    name == "<init>" && parameters == expectedParameters &&
+    returnType == "${owner.substringBeforeLast('/')}/$expectedOwner" && !isSuspend && propertyKind == null
+
+private fun CanonicalJavaScriptMember.isExactProperty(
+    expectedOwner: String,
+    expectedName: String,
+    expectedType: String,
+): Boolean = simpleOwner == expectedOwner && kind == CanonicalJavaScriptMemberKind.PROPERTY &&
+    name == expectedName && parameters.isEmpty() && returnType == expectedType && !isSuspend &&
+    propertyKind == CanonicalJavaScriptPropertyKind.VAL
+
+private fun hasExactJavaScriptSymbolInventory(
+    symbols: List<JavaScriptPublicSymbol>,
+    expectedSymbols: List<String>,
+): Boolean = expectedSymbols.distinct().size == expectedSymbols.size && expectedSymbols.all { raw ->
+    val expected = parseJavaScriptPublicSymbol(raw)
+    symbols.filter {
+        it.kind == expected.kind && it.owner == expected.owner && it.name == expected.name
+    }.map(JavaScriptPublicSymbol::raw) == listOf(raw)
+}
+
+private fun javaScriptApplicabilityExclusion(
+    member: CanonicalJavaScriptMember,
+): CrossLanguageApplicabilityExclusion? {
+    val canonicalPackage = member.owner.substringBeforeLast('/')
+    fun canonical(name: String, nullable: Boolean = false, nonNull: Boolean = false): String =
+        "$canonicalPackage/$name" + when {
+            nullable -> "?"
+            nonNull -> "!!"
+            else -> ""
+        }
+    fun parameter(type: String, hasDefault: Boolean) =
+        CanonicalJavaScriptParameter(type, hasDefault = hasDefault, isVararg = false)
+    val expectedParameters = when (member.simpleOwner) {
+        "AgentAuthenticationState" -> listOf(
+            parameter(canonical("AgentAuthenticationStatus", nonNull = true), true),
+            parameter(canonical("CodexAuthorizationUrl", nullable = true), true),
+            parameter(canonical("CodexAuthorizationUrl", nullable = true), true),
+            parameter("kotlin/String?", true),
+            parameter(canonical("CodexFailure", nullable = true), true),
+        )
+        "AgentConversationState" -> listOf(
+            parameter(canonical("AgentConversationStatus", nonNull = true), true),
+            parameter(canonical("ConversationId", nullable = true), true),
+            parameter(canonical("AgentConversation", nullable = true), true),
+            parameter(canonical("AgentTurnProgress", nonNull = true), true),
+            parameter("kotlin/String?", true),
+            parameter("kotlin/String?", true),
+            parameter("kotlin/String?", true),
+            parameter(canonical("CodexFailure", nullable = true), true),
+        )
+        "AgentMessage" -> listOf(
+            parameter("kotlin/String!!", false),
+            parameter("kotlin/String?", false),
+            parameter(canonical("AgentMessageRole", nonNull = true), false),
+            parameter("kotlin/String!!", false),
+            parameter(canonical("AgentCollaborationMode", nonNull = true), true),
+            parameter("kotlin/String?", true),
+            parameter("kotlin/String?", true),
+            parameter("kotlin/String?", true),
+            parameter("kotlin/Int?", true),
+            parameter(
+                "kotlin.collections/Set<INVARIANT:${canonical("AgentCapability", nonNull = true)}>!!",
+                true,
+            ),
+            parameter(
+                "kotlin.collections/List<INVARIANT:${canonical("AgentInvocation", nonNull = true)}>!!",
+                true,
+            ),
+        )
+        "AgentTurnProgress" -> listOf(
+            parameter("kotlin/String!!", true),
+            parameter("kotlin/String!!", true),
+            parameter("kotlin/String!!", true),
+            parameter("kotlin/String!!", true),
+            parameter(canonical("AgentPlanProgress", nullable = true), true),
+            parameter("kotlin/String!!", true),
+            parameter("kotlin/Int?", true),
+            parameter(canonical("AgentWorkActivity", nullable = true), true),
+            parameter(
+                "kotlin.collections/List<INVARIANT:${canonical("AgentHookActivity", nonNull = true)}>!!",
+                true,
+            ),
+            parameter("kotlin/Boolean!!", true),
+        )
+        "CodexFailure" -> listOf(
+            parameter("kotlin/String!!", false),
+            parameter("kotlin/String!!", false),
+            parameter("kotlin/Boolean!!", false),
+        )
+        "CodexHostState.Failed" -> listOf(
+            parameter(canonical("CodexWorkspace", nullable = true), false),
+            parameter(canonical("CodexFailure", nonNull = true), false),
+        )
+        "CodexHostState.Preparing" ->
+            listOf(parameter(canonical("CodexWorkspace", nonNull = true), false))
+        "CodexHostState.Ready" ->
+            listOf(parameter(canonical("CodexAgent", nonNull = true), false))
+        "CodexHostState.WorkspaceRequired" -> listOf(
+            parameter(canonical("CodexWorkspaceResolution.SelectionRequired", nonNull = true), false),
+        )
+        "CodexWorkspace" -> listOf(
+            parameter("kotlin/String!!", false),
+            parameter("kotlin/String!!", true),
+        )
+        "CodexWorkspaceResolution.Available" ->
+            listOf(parameter(canonical("CodexWorkspace", nonNull = true), false))
+        "CodexWorkspaceResolution.SelectionRequired" -> listOf(
+            parameter(canonical("CodexWorkspaceSelectionReason", nonNull = true), false),
+            parameter("kotlin/String!!", false),
+        )
+        else -> return null
+    }
+    if (!member.isExactConstructor(member.simpleOwner, expectedParameters)) return null
+    val reason = when (member.simpleOwner) {
+        "CodexHostState.Failed",
+        "CodexHostState.Preparing",
+        "CodexHostState.Ready",
+        "CodexHostState.WorkspaceRequired",
+        "CodexWorkspaceResolution.Available",
+        "CodexWorkspaceResolution.SelectionRequired",
+        -> "JavaScript receives this canonical state variant from the SDK; its constructor is intentionally private."
+        else ->
+            "JavaScript receives this canonical immutable snapshot from the SDK; its constructor is intentionally private."
+    }
+    return CrossLanguageApplicabilityExclusion(
+        member.key,
+        CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT,
+        reason,
+    )
 }
 
 private data class JavaScriptObjectLiteralProjection(
@@ -1125,23 +1353,13 @@ private fun openConversationProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
-    val canonicalPackage = member.owner.substringBeforeLast('/')
-    val canonicalShape = member.isSuspend &&
-        member.returnType == "$canonicalPackage/CodexConversation!!" && member.parameters.size == 2 &&
-        member.parameters[0] == CanonicalJavaScriptParameter(
-            "$canonicalPackage/ConversationId?",
-            hasDefault = true,
-            isVararg = false,
-        ) && member.parameters[1] == CanonicalJavaScriptParameter(
-            "$canonicalPackage/AgentConversationSettings!!",
-            hasDefault = true,
-            isVararg = false,
-        )
     val overloads = symbols.filter {
         it.owner == "CodexAgent" && it.name == "openConversation" &&
             it.kind == JavaScriptPublicSymbolKind.METHOD
     }.map(JavaScriptPublicSymbol::raw)
-    if (!canonicalShape || overloads != listOf(javaScriptOpenConversation)) return emptyList()
+    if (!member.isExactOpenConversationFunction() || overloads != listOf(javaScriptOpenConversation)) {
+        return emptyList()
+    }
     return listOf(
         JavaScriptProjectionCandidate(
             publicSymbols = overloads,
@@ -1155,6 +1373,38 @@ private fun openConversationProjectionCandidates(
         )
     )
 }
+
+private fun CanonicalJavaScriptMember.isExactOpenConversationFunction(): Boolean {
+    val canonicalPackage = owner.substringBeforeLast('/')
+    return isExactFunction(
+        expectedOwner = "CodexConversations",
+        expectedName = "open",
+        expectedReturnType = "$canonicalPackage/CodexConversation!!",
+        expectedSuspend = true,
+        expectedParameters = listOf(
+            CanonicalJavaScriptParameter(
+                "$canonicalPackage/ConversationId?",
+                hasDefault = true,
+                isVararg = false,
+            ),
+            CanonicalJavaScriptParameter(
+                "$canonicalPackage/AgentConversationSettings!!",
+                hasDefault = true,
+                isVararg = false,
+            ),
+        ),
+    )
+}
+
+private fun CanonicalJavaScriptMember.isExactFunction(
+    expectedOwner: String,
+    expectedName: String,
+    expectedReturnType: String,
+    expectedSuspend: Boolean,
+    expectedParameters: List<CanonicalJavaScriptParameter>,
+): Boolean = simpleOwner == expectedOwner && kind == CanonicalJavaScriptMemberKind.FUNCTION &&
+    name == expectedName && parameters == expectedParameters && returnType == expectedReturnType &&
+    isSuspend == expectedSuspend && propertyKind == null
 
 private fun javascriptSignatureCompatible(
     signature: String,
@@ -1436,6 +1686,86 @@ private fun isAllowedConversationStateLeafReuse(
         "static" !in leaf.qualifiers && "optional" !in leaf.qualifiers &&
         (leaf.kind == JavaScriptPublicSymbolKind.GETTER || "readonly" in leaf.qualifiers) &&
         javascriptTypeCompatible(leaf.signature.orEmpty(), ordinaryType)
+}
+
+private fun isAllowedFlattenedValueReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean {
+    val members = projections.map(JavaScriptProjection::member)
+    if (members.map { it.owner.substringBeforeLast('/') }.distinct().size != 1) return false
+    val accepts: (CanonicalJavaScriptMember) -> Boolean = when (symbol) {
+        javaScriptOpenConversation -> { member ->
+            member.isExactOpenConversationFunction() || member.isExactConversationSettingsMember() ||
+                member.isExactConversationIdMember()
+        }
+        javaScriptRenameConversation -> { member ->
+            member.isExactRenameConversationFunction() || member.isExactConversationIdMember()
+        }
+        javaScriptDeleteConversation -> { member ->
+            member.isExactDeleteConversationFunction() || member.isExactConversationIdMember()
+        }
+        javaScriptSelectWorkspace -> { member ->
+            member.isExactSelectWorkspaceFunction() || member.isExactPathWorkspaceSelectionMember()
+        }
+        else -> return false
+    }
+    return members.any {
+        it.isExactConversationSettingsMember() || it.isExactConversationIdMember() ||
+            it.isExactPathWorkspaceSelectionMember()
+    } && members.all(accepts)
+}
+
+private fun CanonicalJavaScriptMember.isExactRenameConversationFunction(): Boolean {
+    val canonicalPackage = owner.substringBeforeLast('/')
+    return isExactFunction(
+        "CodexConversations",
+        "rename",
+        "kotlin/Unit",
+        expectedSuspend = true,
+        expectedParameters = listOf(
+            CanonicalJavaScriptParameter(
+                "$canonicalPackage/ConversationId!!",
+                hasDefault = false,
+                isVararg = false,
+            ),
+            CanonicalJavaScriptParameter("kotlin/String!!", hasDefault = false, isVararg = false),
+        ),
+    )
+}
+
+private fun CanonicalJavaScriptMember.isExactDeleteConversationFunction(): Boolean {
+    val canonicalPackage = owner.substringBeforeLast('/')
+    return isExactFunction(
+        "CodexConversations",
+        "delete",
+        "kotlin/Unit",
+        expectedSuspend = true,
+        expectedParameters = listOf(
+            CanonicalJavaScriptParameter(
+                "$canonicalPackage/ConversationId!!",
+                hasDefault = false,
+                isVararg = false,
+            ),
+        ),
+    )
+}
+
+private fun CanonicalJavaScriptMember.isExactSelectWorkspaceFunction(): Boolean {
+    val canonicalPackage = owner.substringBeforeLast('/')
+    return isExactFunction(
+        "CodexHost",
+        "selectWorkspace",
+        "kotlin/Unit",
+        expectedSuspend = true,
+        expectedParameters = listOf(
+            CanonicalJavaScriptParameter(
+                "$canonicalPackage/CodexWorkspaceSelection!!",
+                hasDefault = false,
+                isVararg = false,
+            ),
+        ),
+    )
 }
 
 private fun splitJavaScriptTopLevel(value: String, separator: Char = ','): List<String> {
