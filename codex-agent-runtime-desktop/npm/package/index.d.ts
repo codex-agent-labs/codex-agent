@@ -194,6 +194,59 @@ export declare class AgentConnector {
     get isEnabled(): boolean;
     get pluginNames(): ReadonlyArray<string>;
 }
+export declare class AgentPluginReference {
+    constructor(id: string, name: string, marketplaceName: string, marketplacePath?: Nullable<string>, remotePluginId?: Nullable<string>);
+    get id(): string;
+    get name(): string;
+    get marketplaceName(): string;
+    get marketplacePath(): Nullable<string>;
+    get remotePluginId(): Nullable<string>;
+    get uri(): string;
+}
+export declare class AgentPluginSummary {
+    constructor(reference: AgentPluginReference, displayName: string, description: string, isInstalled: boolean, isEnabled: boolean, installPolicy: AgentPluginInstallPolicy, authPolicy: AgentPluginAuthPolicy, isAvailable: boolean, capabilities?: ReadonlyArray<string>, brandColor?: Nullable<string>, privacyPolicyUrl?: Nullable<string>, termsOfServiceUrl?: Nullable<string>, websiteUrl?: Nullable<string>);
+    get reference(): AgentPluginReference;
+    get displayName(): string;
+    get description(): string;
+    get isInstalled(): boolean;
+    get isEnabled(): boolean;
+    get installPolicy(): AgentPluginInstallPolicy;
+    get authPolicy(): AgentPluginAuthPolicy;
+    get isAvailable(): boolean;
+    get capabilities(): ReadonlyArray<string>;
+    get brandColor(): Nullable<string>;
+    get privacyPolicyUrl(): Nullable<string>;
+    get termsOfServiceUrl(): Nullable<string>;
+    get websiteUrl(): Nullable<string>;
+}
+export declare class AgentPluginCatalog {
+    constructor(plugins: ReadonlyArray<AgentPluginSummary>, errors?: ReadonlyArray<string>, freshness?: AgentCatalogFreshness);
+    get plugins(): ReadonlyArray<AgentPluginSummary>;
+    get errors(): ReadonlyArray<string>;
+    get freshness(): AgentCatalogFreshness;
+}
+export declare class AgentPluginSkill {
+    constructor(name: string, description: string, isEnabled: boolean, path?: Nullable<string>);
+    get name(): string;
+    get description(): string;
+    get isEnabled(): boolean;
+    get path(): Nullable<string>;
+}
+export declare class AgentPluginDetail {
+    constructor(summary: AgentPluginSummary, description: string, skills: ReadonlyArray<AgentPluginSkill>, connectors: ReadonlyArray<AgentConnector>, mcpServers: ReadonlyArray<string>, hookCount: number);
+    get summary(): AgentPluginSummary;
+    get description(): string;
+    get skills(): ReadonlyArray<AgentPluginSkill>;
+    get connectors(): ReadonlyArray<AgentConnector>;
+    get mcpServers(): ReadonlyArray<string>;
+    get hookCount(): number;
+}
+export declare class AgentPluginInstallResult {
+    constructor(authPolicy: AgentPluginAuthPolicy, connectorsNeedingAuthentication: ReadonlyArray<AgentConnector>, message?: Nullable<string>);
+    get authPolicy(): AgentPluginAuthPolicy;
+    get connectorsNeedingAuthentication(): ReadonlyArray<AgentConnector>;
+    get message(): Nullable<string>;
+}
 export type AgentIntegration = AgentConnectorIntegration | AgentMcpServerIntegration;
 export declare class AgentConnectorIntegration {
     constructor(connector: AgentConnector);
@@ -397,6 +450,7 @@ export declare class CodexAgent {
     get models(): CodexModels;
     get skills(): CodexSkills;
     get hooks(): CodexHooks;
+    get plugins(): CodexPlugins;
     get mcpServers(): CodexMcpServers;
     get integrationAuthorization(): CodexIntegrationAuthorization;
     get activeConversation(): Nullable<CodexConversation>;
@@ -434,6 +488,14 @@ export declare class CodexHooks {
     install(directory: string, scope: AgentInstallationScope, signal?: Nullable<AbortSignal>): Promise<AgentHook>;
     uninstall(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
     trust(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
+}
+export declare class CodexPlugins {
+    private constructor();
+    get isAvailable(): boolean;
+    list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<AgentPluginCatalog>;
+    read(plugin: AgentPluginReference, signal?: Nullable<AbortSignal>): Promise<AgentPluginDetail>;
+    install(plugin: AgentPluginReference, signal?: Nullable<AbortSignal>): Promise<AgentPluginInstallResult>;
+    uninstall(plugin: AgentPluginReference, signal?: Nullable<AbortSignal>): Promise<void>;
 }
 export declare class CodexMcpServers {
     private constructor();

@@ -369,6 +369,12 @@ test('esm exposes the same runtime values as CommonJS', () => {
   const esmExports = Object.keys(sdk).sort();
   assert.deepEqual(esmExports, commonJsExports);
   assert.equal(sdk.AgentConnector, commonJsSdk.AgentConnector);
+  assert.equal(sdk.AgentPluginReference, commonJsSdk.AgentPluginReference);
+  assert.equal(sdk.AgentPluginSummary, commonJsSdk.AgentPluginSummary);
+  assert.equal(sdk.AgentPluginCatalog, commonJsSdk.AgentPluginCatalog);
+  assert.equal(sdk.AgentPluginSkill, commonJsSdk.AgentPluginSkill);
+  assert.equal(sdk.AgentPluginDetail, commonJsSdk.AgentPluginDetail);
+  assert.equal(sdk.AgentPluginInstallResult, commonJsSdk.AgentPluginInstallResult);
   assert.equal(sdk.AgentConnectorIntegration, commonJsSdk.AgentConnectorIntegration);
   assert.equal(sdk.AgentMcpServerIntegration, commonJsSdk.AgentMcpServerIntegration);
   assert.equal(
@@ -426,6 +432,7 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.CodexModels, commonJsSdk.CodexModels);
   assert.equal(sdk.CodexSkills, commonJsSdk.CodexSkills);
   assert.equal(sdk.CodexHooks, commonJsSdk.CodexHooks);
+  assert.equal(sdk.CodexPlugins, commonJsSdk.CodexPlugins);
   assert.equal(sdk.CodexMcpServers, commonJsSdk.CodexMcpServers);
   assert.equal(sdk.CodexIntegrationAuthorization, commonJsSdk.CodexIntegrationAuthorization);
   assert.equal(
@@ -456,6 +463,10 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.CodexHooks.prototype.install, commonJsSdk.CodexHooks.prototype.install);
   assert.equal(sdk.CodexHooks.prototype.uninstall, commonJsSdk.CodexHooks.prototype.uninstall);
   assert.equal(sdk.CodexHooks.prototype.trust, commonJsSdk.CodexHooks.prototype.trust);
+  assert.equal(sdk.CodexPlugins.prototype.list, commonJsSdk.CodexPlugins.prototype.list);
+  assert.equal(sdk.CodexPlugins.prototype.read, commonJsSdk.CodexPlugins.prototype.read);
+  assert.equal(sdk.CodexPlugins.prototype.install, commonJsSdk.CodexPlugins.prototype.install);
+  assert.equal(sdk.CodexPlugins.prototype.uninstall, commonJsSdk.CodexPlugins.prototype.uninstall);
   assert.equal(
     Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'mcpServers').get,
     Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'mcpServers').get,

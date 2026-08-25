@@ -613,6 +613,158 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `plugins close exact reference catalog detail result and controller family`() {
+        val keys = d054PluginsKeys()
+        val symbols = d054PluginsSymbols()
+        val evidence = derive(keys, symbols, references = D054_PUBLIC_SYMBOLS)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(47, keys.size)
+        assertEquals(47, claims.size)
+        assertEquals(54, D054_PUBLIC_SYMBOLS.size)
+        assertEquals(D054_PUBLIC_SYMBOLS, evidence.packedApi.referencedSymbols)
+        assertEquals(D054_PUBLIC_SYMBOLS.toSet(), claims.values.flatMap { it.publicSymbols }.toSet())
+        assertEquals(486, 439 + claims.size)
+        assertEquals(58, 105 - claims.size)
+        assertEquals(556, 486 + 12 + 58)
+        assertEquals(10, 17 - 7)
+
+        val controllerClaims = claims.values.filter {
+            "owner=$CANONICAL_AGENT_PACKAGE/CodexPlugins" in it.capabilityKey
+        }
+        assertEquals(5, controllerClaims.size)
+        controllerClaims.forEach { claim ->
+            assertTrue(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP in claim.sharedScenarios)
+            if ("kind=function" in claim.capabilityKey) {
+                assertTrue(CrossLanguageBindingScenario.ASYNC_SUCCESS in claim.sharedScenarios)
+                assertTrue(CrossLanguageBindingScenario.ASYNC_FAILURE in claim.sharedScenarios)
+                assertTrue(CrossLanguageBindingScenario.CANCELLATION in claim.sharedScenarios)
+            }
+        }
+        claims.values.filter { claim ->
+            claim.publicSymbols.any { "ReadonlyArray<" in it }
+        }.forEach { claim ->
+            assertTrue(CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING in claim.sharedScenarios)
+        }
+        val currentSymbols = d054CurrentPublicSymbols()
+        assertEquals(449, currentSymbols.size)
+        assertEquals(96, symbolExports(currentSymbols).first.size)
+        assertEquals(66, symbolExports(currentSymbols).second.size)
+        assertEquals(410, 356 + D054_PUBLIC_SYMBOLS.size)
+    }
+
+    @Test
+    fun `plugins reject partial future kind signature default nullability array duplicate reference and reuse drift`() {
+        val keys = d054PluginsKeys()
+        val symbols = d054PluginsSymbols()
+
+        keys.forEach { exact ->
+            val drifted = when {
+                "|kind=constructor|" in exact -> exact.replace("suspend=false", "suspend=true")
+                "|kind=property|" in exact -> exact.replace("propertyKind=VAL", "propertyKind=VAR")
+                else -> exact.replace("suspend=true", "suspend=false")
+            }
+            val drift = derive(keys - exact + drifted, symbols, references = D054_PUBLIC_SYMBOLS)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted canonical drift: $drifted")
+        }
+
+        val referenceConstructor = keys.single {
+            "owner=$CANONICAL_AGENT_PACKAGE/AgentPluginReference|kind=constructor" in it
+        }
+        val catalogConstructor = keys.single {
+            "owner=$CANONICAL_AGENT_PACKAGE/AgentPluginCatalog|kind=constructor" in it
+        }
+        val detailSkills = keys.single {
+            "/AgentPluginDetail|kind=property" in it && ".skills|" in it
+        }
+        val list = keys.single { "/CodexPlugins|kind=function" in it && ".list|" in it }
+        listOf(
+            referenceConstructor to referenceConstructor.replaceFirst("kotlin/String?", "kotlin/String!!"),
+            catalogConstructor to catalogConstructor.replaceFirst("default=true", "default=false"),
+            detailSkills to detailSkills.replace("kotlin.collections/List", "kotlin.collections.Set"),
+            list to list.replaceFirst("default=true", "default=false"),
+        ).forEach { (exact, drifted) ->
+            val drift = derive(keys - exact + drifted, symbols, references = D054_PUBLIC_SYMBOLS)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted signature drift: $drifted")
+        }
+
+        D054_PUBLIC_SYMBOLS.forEach { exact ->
+            val drifted = when {
+                exact.startsWith("class:") -> "${exact}Drift"
+                exact.startsWith("constructor:") -> exact.dropLast(1) + ", drift?: boolean)"
+                exact.startsWith("getter:") -> "$exact | false"
+                else -> exact.replaceFirst("#", "#drift")
+            }
+            val renamedClass = exact.removePrefix("class:").takeIf { exact.startsWith("class:") }
+            val driftSymbols = if (renamedClass == null) {
+                symbols.map { if (it == exact) drifted else it }.sorted()
+            } else {
+                val pattern = Regex("\\b${Regex.escape(renamedClass)}\\b")
+                symbols.map { it.replace(pattern, "${renamedClass}Drift") }.sorted()
+            }
+            val references = if (renamedClass == null) {
+                D054_PUBLIC_SYMBOLS.map { if (it == exact) drifted else it }.sorted()
+            } else {
+                val pattern = Regex("\\b${Regex.escape(renamedClass)}\\b")
+                D054_PUBLIC_SYMBOLS.map { it.replace(pattern, "${renamedClass}Drift") }.sorted()
+            }
+            val drift = derive(keys, driftSymbols, references = references)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted public drift: $drifted")
+        }
+
+        keys.forEach { omitted ->
+            val partial = derive(keys - omitted, symbols, references = D054_PUBLIC_SYMBOLS)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys }, "Accepted without $omitted")
+        }
+        D054_PUBLIC_SYMBOLS.forEach { omitted ->
+            val unreferenced = derive(keys, symbols, references = D054_PUBLIC_SYMBOLS - omitted)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && omitted in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        val futureKey = canonicalProperty("CodexPlugins", "future", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureCanonical = derive(keys + futureKey, symbols, references = D054_PUBLIC_SYMBOLS)
+        assertTrue(futureKey in futureCanonical.missingCapabilityKeys)
+        assertTrue(futureCanonical.projectionClaims.none { it.capabilityKey in keys })
+
+        val futureSymbol = "getter:CodexPlugins#future:string"
+        val futurePublic = derive(
+            keys,
+            (symbols + futureSymbol).sorted(),
+            references = (D054_PUBLIC_SYMBOLS + futureSymbol).sorted(),
+        )
+        assertTrue(futurePublic.projectionClaims.none { it.capabilityKey in keys })
+
+        val foreign = keys.first().replace(CANONICAL_AGENT_PACKAGE, "foreign")
+        val crossPackage = derive(keys + foreign, symbols, references = D054_PUBLIC_SYMBOLS)
+        assertTrue(foreign in crossPackage.missingCapabilityKeys)
+        assertTrue(crossPackage.projectionClaims.none { it.capabilityKey in keys })
+
+        val duplicateCapability = derive(keys + keys.first(), symbols, references = D054_PUBLIC_SYMBOLS)
+        assertTrue(duplicateCapability.errors.any {
+            "Incomplete JavaScript/TypeScript Plugins family" in it ||
+                "Reused JavaScript/TypeScript public symbol" in it
+        })
+        assertTrue(duplicateCapability.projectionClaims.none { it.capabilityKey in keys })
+        assertFailsWith<IllegalStateException> {
+            derive(keys, (symbols + symbols.first()).sorted(), references = D054_PUBLIC_SYMBOLS)
+        }
+
+        val exactGetter = D054_PUBLIC_SYMBOLS.single { it == "getter:AgentPluginReference#id:string" }
+        val ambiguousGetter = "$exactGetter | number"
+        val ambiguous = derive(
+            keys,
+            (symbols + ambiguousGetter).sorted(),
+            references = (D054_PUBLIC_SYMBOLS + ambiguousGetter).sorted(),
+        )
+        assertTrue(ambiguous.projectionClaims.none { it.capabilityKey in keys })
+    }
+
+    @Test
     fun `state projection requires exact current callback and observation return types`() {
         val key = canonicalProperty(
             "Stream",
@@ -5099,6 +5251,174 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun d051IntegrationAuthorizationSymbols(): List<String> =
         (D051_PUBLIC_SYMBOLS + "class:CodexAgent").distinct().sorted()
 
+    private fun d054PluginsKeys(): List<String> = listOf(
+        canonicalConstructor(
+            "AgentPluginReference",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/String?",
+                "kotlin/String?",
+            ),
+            defaultParameterIndices = setOf(3, 4),
+        ),
+        canonicalProperty("AgentPluginReference", "id", "kotlin/String!!"),
+        canonicalProperty("AgentPluginReference", "name", "kotlin/String!!"),
+        canonicalProperty("AgentPluginReference", "marketplaceName", "kotlin/String!!"),
+        canonicalProperty("AgentPluginReference", "marketplacePath", "kotlin/String?"),
+        canonicalProperty("AgentPluginReference", "remotePluginId", "kotlin/String?"),
+        canonicalProperty("AgentPluginReference", "uri", "kotlin/String!!"),
+        canonicalConstructor(
+            "AgentPluginCatalog",
+            listOf(
+                "kotlin.collections/List<INVARIANT:example/AgentPluginSummary!!>!!",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+                "example/AgentCatalogFreshness!!",
+            ),
+            defaultParameterIndices = setOf(1, 2),
+        ),
+        canonicalProperty(
+            "AgentPluginCatalog",
+            "plugins",
+            "kotlin.collections/List<INVARIANT:example/AgentPluginSummary!!>!!",
+        ),
+        canonicalProperty(
+            "AgentPluginCatalog",
+            "errors",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        ),
+        canonicalProperty("AgentPluginCatalog", "freshness", "example/AgentCatalogFreshness!!"),
+        canonicalConstructor(
+            "AgentPluginSummary",
+            listOf(
+                "example/AgentPluginReference!!",
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/Boolean!!",
+                "kotlin/Boolean!!",
+                "example/AgentPluginInstallPolicy!!",
+                "example/AgentPluginAuthPolicy!!",
+                "kotlin/Boolean!!",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+                "kotlin/String?",
+                "kotlin/String?",
+                "kotlin/String?",
+                "kotlin/String?",
+            ),
+            defaultParameterIndices = (8..12).toSet(),
+        ),
+        canonicalProperty("AgentPluginSummary", "reference", "example/AgentPluginReference!!"),
+        canonicalProperty("AgentPluginSummary", "displayName", "kotlin/String!!"),
+        canonicalProperty("AgentPluginSummary", "description", "kotlin/String!!"),
+        canonicalProperty("AgentPluginSummary", "isInstalled", "kotlin/Boolean!!"),
+        canonicalProperty("AgentPluginSummary", "isEnabled", "kotlin/Boolean!!"),
+        canonicalProperty("AgentPluginSummary", "installPolicy", "example/AgentPluginInstallPolicy!!"),
+        canonicalProperty("AgentPluginSummary", "authPolicy", "example/AgentPluginAuthPolicy!!"),
+        canonicalProperty("AgentPluginSummary", "isAvailable", "kotlin/Boolean!!"),
+        canonicalProperty(
+            "AgentPluginSummary",
+            "capabilities",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        ),
+        canonicalProperty("AgentPluginSummary", "brandColor", "kotlin/String?"),
+        canonicalProperty("AgentPluginSummary", "privacyPolicyUrl", "kotlin/String?"),
+        canonicalProperty("AgentPluginSummary", "termsOfServiceUrl", "kotlin/String?"),
+        canonicalProperty("AgentPluginSummary", "websiteUrl", "kotlin/String?"),
+        canonicalConstructor(
+            "AgentPluginDetail",
+            listOf(
+                "example/AgentPluginSummary!!",
+                "kotlin/String!!",
+                "kotlin.collections/List<INVARIANT:example/AgentPluginSkill!!>!!",
+                "kotlin.collections/List<INVARIANT:example/AgentConnector!!>!!",
+                "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+                "kotlin/Int!!",
+            ),
+        ),
+        canonicalProperty("AgentPluginDetail", "summary", "example/AgentPluginSummary!!"),
+        canonicalProperty("AgentPluginDetail", "description", "kotlin/String!!"),
+        canonicalProperty(
+            "AgentPluginDetail",
+            "skills",
+            "kotlin.collections/List<INVARIANT:example/AgentPluginSkill!!>!!",
+        ),
+        canonicalProperty(
+            "AgentPluginDetail",
+            "connectors",
+            "kotlin.collections/List<INVARIANT:example/AgentConnector!!>!!",
+        ),
+        canonicalProperty(
+            "AgentPluginDetail",
+            "mcpServers",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        ),
+        canonicalProperty("AgentPluginDetail", "hookCount", "kotlin/Int!!"),
+        canonicalConstructor(
+            "AgentPluginSkill",
+            listOf("kotlin/String!!", "kotlin/String!!", "kotlin/Boolean!!", "kotlin/String?"),
+            defaultParameterIndices = setOf(3),
+        ),
+        canonicalProperty("AgentPluginSkill", "name", "kotlin/String!!"),
+        canonicalProperty("AgentPluginSkill", "description", "kotlin/String!!"),
+        canonicalProperty("AgentPluginSkill", "isEnabled", "kotlin/Boolean!!"),
+        canonicalProperty("AgentPluginSkill", "path", "kotlin/String?"),
+        canonicalConstructor(
+            "AgentPluginInstallResult",
+            listOf(
+                "example/AgentPluginAuthPolicy!!",
+                "kotlin.collections/List<INVARIANT:example/AgentConnector!!>!!",
+                "kotlin/String?",
+            ),
+            defaultParameterIndices = setOf(2),
+        ),
+        canonicalProperty(
+            "AgentPluginInstallResult",
+            "authPolicy",
+            "example/AgentPluginAuthPolicy!!",
+        ),
+        canonicalProperty(
+            "AgentPluginInstallResult",
+            "connectorsNeedingAuthentication",
+            "kotlin.collections/List<INVARIANT:example/AgentConnector!!>!!",
+        ),
+        canonicalProperty("AgentPluginInstallResult", "message", "kotlin/String?"),
+        canonicalProperty("CodexPlugins", "isAvailable", "kotlin/Boolean!!"),
+        canonicalFunction(
+            "CodexPlugins",
+            "list",
+            returnType = "example/AgentPluginCatalog!!",
+            suspendFunction = true,
+            parameters = listOf("kotlin/Boolean!!"),
+            defaultParameterIndices = setOf(0),
+        ),
+        canonicalFunction(
+            "CodexPlugins",
+            "read",
+            returnType = "example/AgentPluginDetail!!",
+            suspendFunction = true,
+            parameters = listOf("example/AgentPluginReference!!"),
+        ),
+        canonicalFunction(
+            "CodexPlugins",
+            "install",
+            returnType = "example/AgentPluginInstallResult!!",
+            suspendFunction = true,
+            parameters = listOf("example/AgentPluginReference!!"),
+        ),
+        canonicalFunction(
+            "CodexPlugins",
+            "uninstall",
+            suspendFunction = true,
+            parameters = listOf("example/AgentPluginReference!!"),
+        ),
+        canonicalProperty("CodexAgent", "plugins", "example/CodexPlugins!!"),
+    ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }.sorted()
+        .also { assertEquals(47, it.size) }
+
+    private fun d054PluginsSymbols(): List<String> =
+        (D054_PUBLIC_SYMBOLS + "class:CodexAgent").distinct().sorted()
+
     private fun conversationStateSymbols(): List<String> = listOf(
         "class:CodexConversation",
         "class:CodexConversationState",
@@ -5676,6 +5996,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         (d050CurrentPublicSymbols() + D051_PUBLIC_SYMBOLS).distinct().sorted()
             .also { assertEquals(395, it.size) }
 
+    private fun d054CurrentPublicSymbols(): List<String> =
+        (d051CurrentPublicSymbols() + D054_PUBLIC_SYMBOLS).distinct().sorted()
+            .also { assertEquals(449, it.size) }
+
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
@@ -5989,6 +6313,80 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
                 "(state: AgentIntegrationAuthorizationState) => void): CodexObservation",
             "type:AgentIntegration:AgentConnectorIntegration | AgentMcpServerIntegration",
         ).sorted().also { assertEquals(26, it.size) }
+
+        private val D054_PUBLIC_SYMBOLS = listOf(
+            "class:AgentPluginCatalog",
+            "class:AgentPluginDetail",
+            "class:AgentPluginInstallResult",
+            "class:AgentPluginReference",
+            "class:AgentPluginSkill",
+            "class:AgentPluginSummary",
+            "class:CodexPlugins",
+            "constructor:AgentPluginCatalog#(plugins: ReadonlyArray<AgentPluginSummary>, " +
+                "errors?: ReadonlyArray<string>, freshness?: AgentCatalogFreshness)",
+            "constructor:AgentPluginDetail#(summary: AgentPluginSummary, description: string, " +
+                "skills: ReadonlyArray<AgentPluginSkill>, connectors: ReadonlyArray<AgentConnector>, " +
+                "mcpServers: ReadonlyArray<string>, hookCount: number)",
+            "constructor:AgentPluginInstallResult#(authPolicy: AgentPluginAuthPolicy, " +
+                "connectorsNeedingAuthentication: ReadonlyArray<AgentConnector>, " +
+                "message?: string | null | undefined)",
+            "constructor:AgentPluginReference#(id: string, name: string, marketplaceName: string, " +
+                "marketplacePath?: string | null | undefined, " +
+                "remotePluginId?: string | null | undefined)",
+            "constructor:AgentPluginSkill#(name: string, description: string, isEnabled: boolean, " +
+                "path?: string | null | undefined)",
+            "constructor:AgentPluginSummary#(reference: AgentPluginReference, displayName: string, " +
+                "description: string, isInstalled: boolean, isEnabled: boolean, " +
+                "installPolicy: AgentPluginInstallPolicy, authPolicy: AgentPluginAuthPolicy, " +
+                "isAvailable: boolean, capabilities?: ReadonlyArray<string>, " +
+                "brandColor?: string | null | undefined, privacyPolicyUrl?: string | null | undefined, " +
+                "termsOfServiceUrl?: string | null | undefined, websiteUrl?: string | null | undefined)",
+            "getter:AgentPluginCatalog#errors:ReadonlyArray<string>",
+            "getter:AgentPluginCatalog#freshness:AgentCatalogFreshness",
+            "getter:AgentPluginCatalog#plugins:ReadonlyArray<AgentPluginSummary>",
+            "getter:AgentPluginDetail#connectors:ReadonlyArray<AgentConnector>",
+            "getter:AgentPluginDetail#description:string",
+            "getter:AgentPluginDetail#hookCount:number",
+            "getter:AgentPluginDetail#mcpServers:ReadonlyArray<string>",
+            "getter:AgentPluginDetail#skills:ReadonlyArray<AgentPluginSkill>",
+            "getter:AgentPluginDetail#summary:AgentPluginSummary",
+            "getter:AgentPluginInstallResult#authPolicy:AgentPluginAuthPolicy",
+            "getter:AgentPluginInstallResult#connectorsNeedingAuthentication:ReadonlyArray<AgentConnector>",
+            "getter:AgentPluginInstallResult#message:string | null | undefined",
+            "getter:AgentPluginReference#id:string",
+            "getter:AgentPluginReference#marketplaceName:string",
+            "getter:AgentPluginReference#marketplacePath:string | null | undefined",
+            "getter:AgentPluginReference#name:string",
+            "getter:AgentPluginReference#remotePluginId:string | null | undefined",
+            "getter:AgentPluginReference#uri:string",
+            "getter:AgentPluginSkill#description:string",
+            "getter:AgentPluginSkill#isEnabled:boolean",
+            "getter:AgentPluginSkill#name:string",
+            "getter:AgentPluginSkill#path:string | null | undefined",
+            "getter:AgentPluginSummary#authPolicy:AgentPluginAuthPolicy",
+            "getter:AgentPluginSummary#brandColor:string | null | undefined",
+            "getter:AgentPluginSummary#capabilities:ReadonlyArray<string>",
+            "getter:AgentPluginSummary#description:string",
+            "getter:AgentPluginSummary#displayName:string",
+            "getter:AgentPluginSummary#installPolicy:AgentPluginInstallPolicy",
+            "getter:AgentPluginSummary#isAvailable:boolean",
+            "getter:AgentPluginSummary#isEnabled:boolean",
+            "getter:AgentPluginSummary#isInstalled:boolean",
+            "getter:AgentPluginSummary#privacyPolicyUrl:string | null | undefined",
+            "getter:AgentPluginSummary#reference:AgentPluginReference",
+            "getter:AgentPluginSummary#termsOfServiceUrl:string | null | undefined",
+            "getter:AgentPluginSummary#websiteUrl:string | null | undefined",
+            "getter:CodexAgent#plugins:CodexPlugins",
+            "getter:CodexPlugins#isAvailable:boolean",
+            "method:CodexPlugins#install:(plugin: AgentPluginReference, " +
+                "signal?: AbortSignal | null | undefined): Promise<AgentPluginInstallResult>",
+            "method:CodexPlugins#list:(forceReload?: boolean, " +
+                "signal?: AbortSignal | null | undefined): Promise<AgentPluginCatalog>",
+            "method:CodexPlugins#read:(plugin: AgentPluginReference, " +
+                "signal?: AbortSignal | null | undefined): Promise<AgentPluginDetail>",
+            "method:CodexPlugins#uninstall:(plugin: AgentPluginReference, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+        ).sorted().also { assertEquals(54, it.size) }
 
         private val AUTHENTICATION_OVERLOADS = listOf(
             "method:CodexAuthentication#authenticate:" +

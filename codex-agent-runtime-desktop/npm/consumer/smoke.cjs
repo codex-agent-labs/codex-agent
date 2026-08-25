@@ -130,6 +130,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexModels());
   assert.throws(() => new sdk.CodexSkills());
   assert.throws(() => new sdk.CodexHooks());
+  assert.throws(() => new sdk.CodexPlugins());
   assert.throws(() => new sdk.CodexMcpServers());
   assert.throws(() => new sdk.CodexIntegrationAuthorization());
   assert.throws(() => new sdk.CodexAuthenticationState());
@@ -150,6 +151,11 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.CodexHooks.prototype.install, 'function');
   assert.equal(typeof sdk.CodexHooks.prototype.uninstall, 'function');
   assert.equal(typeof sdk.CodexHooks.prototype.trust, 'function');
+  assert.equal(typeof Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'plugins')?.get, 'function');
+  assert.equal(typeof sdk.CodexPlugins.prototype.list, 'function');
+  assert.equal(typeof sdk.CodexPlugins.prototype.read, 'function');
+  assert.equal(typeof sdk.CodexPlugins.prototype.install, 'function');
+  assert.equal(typeof sdk.CodexPlugins.prototype.uninstall, 'function');
   assert.equal(typeof Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'mcpServers')?.get, 'function');
   assert.equal(typeof sdk.CodexMcpServers.prototype.list, 'function');
   assert.equal(typeof sdk.CodexMcpServers.prototype.add, 'function');
@@ -165,6 +171,12 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.CodexIntegrationAuthorization.prototype.observeAuthorizing, 'function');
   for (const constructor of [
     sdk.AgentConnector,
+    sdk.AgentPluginReference,
+    sdk.AgentPluginSummary,
+    sdk.AgentPluginCatalog,
+    sdk.AgentPluginSkill,
+    sdk.AgentPluginDetail,
+    sdk.AgentPluginInstallResult,
     sdk.AgentConnectorIntegration,
     sdk.AgentConversation,
     sdk.AgentConversationSummary,
@@ -210,6 +222,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.CodexModels,
     sdk.CodexSkills,
     sdk.CodexHooks,
+    sdk.CodexPlugins,
     sdk.CodexMcpServers,
     sdk.CodexIntegrationAuthorization,
     sdk.CodexObservation,
@@ -1213,6 +1226,65 @@ test('cjs exposes the exact Node-only SDK surface', () => {
       'drive', 'Google Drive', '', null, false, true, [invalid],
     ));
   }
+
+  const pluginReference = new sdk.AgentPluginReference(
+    'drive@openai-curated', 'drive', 'openai-curated', null, 'plugin_remote_drive',
+  );
+  assert.deepEqual(
+    [pluginReference.id, pluginReference.name, pluginReference.marketplaceName,
+      pluginReference.marketplacePath, pluginReference.remotePluginId, pluginReference.uri],
+    ['drive@openai-curated', 'drive', 'openai-curated', null, 'plugin_remote_drive',
+      'plugin://drive@openai-curated'],
+  );
+  const sourcePluginCapabilities = ['Search files'];
+  const pluginSummary = new sdk.AgentPluginSummary(
+    pluginReference, 'Drive', 'Files', true, true, 'available', 'on_install', true,
+    sourcePluginCapabilities, '#4285f4', null, null, 'https://example.com',
+  );
+  sourcePluginCapabilities[0] = 'changed';
+  assert.deepEqual(pluginSummary.capabilities, ['Search files']);
+  assert.equal(pluginSummary.reference === pluginReference, false);
+  const pluginCatalog = new sdk.AgentPluginCatalog([pluginSummary], ['warning'], 'stale_cache');
+  const pluginSkill = new sdk.AgentPluginSkill('search', 'Search Drive', true, '/plugin/SKILL.md');
+  const pluginDetail = new sdk.AgentPluginDetail(
+    pluginSummary, 'Complete Drive plugin', [pluginSkill], [customConnector], ['drive-mcp'], 1,
+  );
+  const pluginInstallResult = new sdk.AgentPluginInstallResult('on_install', [customConnector], null);
+  assert.deepEqual(
+    [pluginCatalog.plugins[0].displayName, pluginCatalog.errors, pluginCatalog.freshness],
+    ['Drive', ['warning'], 'stale_cache'],
+  );
+  assert.deepEqual(
+    [pluginDetail.skills[0].name, pluginDetail.connectors[0].id, pluginDetail.mcpServers,
+      pluginDetail.hookCount],
+    ['search', 'slack', ['drive-mcp'], 1],
+  );
+  assert.deepEqual(
+    [pluginInstallResult.authPolicy, pluginInstallResult.connectorsNeedingAuthentication[0].id,
+      pluginInstallResult.message],
+    ['on_install', 'slack', null],
+  );
+  for (const value of [pluginReference, pluginSummary, pluginCatalog, pluginSkill, pluginDetail,
+    pluginInstallResult, pluginSummary.capabilities, pluginCatalog.plugins, pluginCatalog.errors,
+    pluginDetail.skills, pluginDetail.connectors, pluginDetail.mcpServers,
+    pluginInstallResult.connectorsNeedingAuthentication]) {
+    assert.equal(Object.isFrozen(value), true);
+  }
+  assert.throws(
+    () => new sdk.AgentPluginSummary(
+      pluginReference, 'Drive', 'Files', true, true, 'AVAILABLE', 'on_install', true,
+    ),
+    (error) => error?.message === 'Unknown plugin install policy: AVAILABLE',
+  );
+  assert.throws(
+    () => new sdk.AgentPluginCatalog(new Array(1)),
+    (error) => error?.message === 'plugins must not contain sparse elements',
+  );
+  assert.throws(
+    () => new sdk.AgentPluginInstallResult('on_install', [{}]),
+    (error) => error?.message ===
+      'connectorsNeedingAuthentication[0] must be an AgentConnector',
+  );
 
   const connectorIntegration = new sdk.AgentConnectorIntegration(customConnector);
   assert.deepEqual(

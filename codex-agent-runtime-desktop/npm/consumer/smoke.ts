@@ -24,7 +24,13 @@ import {
   AgentModel,
   AgentPlanProgress,
   AgentPlanStep,
+  AgentPluginCatalog,
+  AgentPluginDetail,
+  AgentPluginInstallResult,
   AgentPluginInvocation,
+  AgentPluginReference,
+  AgentPluginSkill,
+  AgentPluginSummary,
   AgentServiceTier,
   AgentSkill,
   AgentSkillCatalog,
@@ -44,6 +50,7 @@ import {
   CodexHooks,
   CodexModels,
   CodexMcpServers,
+  CodexPlugins,
   AgentIntegrationAuthorizationState,
   CodexObservation,
   CodexSkills,
@@ -297,6 +304,81 @@ const connectorInstallUrl: string | null | undefined = customConnector.installUr
 const connectorIsAccessible: boolean = customConnector.isAccessible;
 const connectorIsEnabled: boolean = customConnector.isEnabled;
 const connectorPluginNames: ReadonlyArray<string> = customConnector.pluginNames;
+const pluginReferenceClass: typeof AgentPluginReference = AgentPluginReference;
+const pluginReference = new AgentPluginReference(
+  "drive@openai-curated",
+  "drive",
+  "openai-curated",
+  null,
+  "plugin_remote_drive",
+);
+const pluginReferenceId: string = pluginReference.id;
+const pluginReferenceName: string = pluginReference.name;
+const pluginReferenceMarketplaceName: string = pluginReference.marketplaceName;
+const pluginReferenceMarketplacePath: string | null | undefined = pluginReference.marketplacePath;
+const pluginReferenceRemoteId: string | null | undefined = pluginReference.remotePluginId;
+const pluginReferenceUri: string = pluginReference.uri;
+const pluginSummaryClass: typeof AgentPluginSummary = AgentPluginSummary;
+const pluginSummary = new AgentPluginSummary(
+  pluginReference,
+  "Drive",
+  "Files in Drive",
+  true,
+  true,
+  "available",
+  "on_install",
+  true,
+  ["Search files"],
+  "#4285f4",
+  "https://example.com/privacy",
+  "https://example.com/terms",
+  "https://example.com",
+);
+const pluginSummaryReference: AgentPluginReference = pluginSummary.reference;
+const pluginSummaryDisplayName: string = pluginSummary.displayName;
+const pluginSummaryDescription: string = pluginSummary.description;
+const pluginSummaryInstalled: boolean = pluginSummary.isInstalled;
+const pluginSummaryEnabled: boolean = pluginSummary.isEnabled;
+const pluginSummaryInstallPolicy: AgentPluginInstallPolicy = pluginSummary.installPolicy;
+const pluginSummaryAuthPolicy: AgentPluginAuthPolicy = pluginSummary.authPolicy;
+const pluginSummaryAvailable: boolean = pluginSummary.isAvailable;
+const pluginSummaryCapabilities: ReadonlyArray<string> = pluginSummary.capabilities;
+const pluginSummaryBrandColor: string | null | undefined = pluginSummary.brandColor;
+const pluginSummaryPrivacyPolicy: string | null | undefined = pluginSummary.privacyPolicyUrl;
+const pluginSummaryTerms: string | null | undefined = pluginSummary.termsOfServiceUrl;
+const pluginSummaryWebsite: string | null | undefined = pluginSummary.websiteUrl;
+const pluginCatalogClass: typeof AgentPluginCatalog = AgentPluginCatalog;
+const pluginCatalog = new AgentPluginCatalog([pluginSummary], [], "live");
+const pluginCatalogPlugins: ReadonlyArray<AgentPluginSummary> = pluginCatalog.plugins;
+const pluginCatalogErrors: ReadonlyArray<string> = pluginCatalog.errors;
+const pluginCatalogFreshness: AgentCatalogFreshness = pluginCatalog.freshness;
+const pluginSkillClass: typeof AgentPluginSkill = AgentPluginSkill;
+const pluginSkill = new AgentPluginSkill("search-drive", "Search Drive", true, "/plugin/SKILL.md");
+const pluginSkillName: string = pluginSkill.name;
+const pluginSkillDescription: string = pluginSkill.description;
+const pluginSkillEnabled: boolean = pluginSkill.isEnabled;
+const pluginSkillPath: string | null | undefined = pluginSkill.path;
+const pluginDetailClass: typeof AgentPluginDetail = AgentPluginDetail;
+const pluginDetail = new AgentPluginDetail(
+  pluginSummary,
+  "Complete Drive plugin",
+  [pluginSkill],
+  [customConnector],
+  ["drive-mcp"],
+  1,
+);
+const pluginDetailSummary: AgentPluginSummary = pluginDetail.summary;
+const pluginDetailDescription: string = pluginDetail.description;
+const pluginDetailSkills: ReadonlyArray<AgentPluginSkill> = pluginDetail.skills;
+const pluginDetailConnectors: ReadonlyArray<AgentConnector> = pluginDetail.connectors;
+const pluginDetailMcpServers: ReadonlyArray<string> = pluginDetail.mcpServers;
+const pluginDetailHookCount: number = pluginDetail.hookCount;
+const pluginInstallResultClass: typeof AgentPluginInstallResult = AgentPluginInstallResult;
+const pluginInstallResult = new AgentPluginInstallResult("on_install", [customConnector], null);
+const pluginInstallAuthPolicy: AgentPluginAuthPolicy = pluginInstallResult.authPolicy;
+const pluginInstallConnectors: ReadonlyArray<AgentConnector> =
+  pluginInstallResult.connectorsNeedingAuthentication;
+const pluginInstallMessage: string | null | undefined = pluginInstallResult.message;
 const connectorIntegrationClass: typeof AgentConnectorIntegration = AgentConnectorIntegration;
 const connectorIntegration = new AgentConnectorIntegration(customConnector);
 const connectorIntegrationConnector: AgentConnector = connectorIntegration.connector;
@@ -536,6 +618,13 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   const installedHook: AgentHook = await hooks.install("/hooks/review", "workspace", signal);
   await hooks.uninstall(installedHook, signal);
   await hooks.trust(hook, signal);
+  const plugins: CodexPlugins = agent.plugins;
+  const pluginsClass: typeof CodexPlugins = CodexPlugins;
+  const pluginsAvailable: boolean = plugins.isAvailable;
+  const listedPluginCatalog: AgentPluginCatalog = await plugins.list(true, signal);
+  const readPluginDetail: AgentPluginDetail = await plugins.read(pluginReference, signal);
+  const installedPlugin: AgentPluginInstallResult = await plugins.install(pluginReference, signal);
+  await plugins.uninstall(pluginReference, signal);
   const mcpServers: CodexMcpServers = agent.mcpServers;
   const mcpServersClass: typeof CodexMcpServers = CodexMcpServers;
   const mcpServersAvailable: boolean = mcpServers.isAvailable;

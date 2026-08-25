@@ -24,7 +24,13 @@ import {
   AgentModel,
   AgentPlanProgress,
   AgentPlanStep,
+  AgentPluginCatalog,
+  AgentPluginDetail,
+  AgentPluginInstallResult,
   AgentPluginInvocation,
+  AgentPluginReference,
+  AgentPluginSkill,
+  AgentPluginSummary,
   AgentServiceTier,
   AgentSkill,
   AgentSkillCatalog,
@@ -34,6 +40,7 @@ import {
   CodexConnectors,
   CodexModels,
   CodexMcpServers,
+  CodexPlugins,
   CodexIntegrationAuthorization,
   AgentIntegrationAuthorizationState,
   CodexSkills,
@@ -480,6 +487,77 @@ connector.pluginNames = [];
 // @ts-expect-error Connector plugin-name collections are readonly.
 connector.pluginNames.push("Changed");
 
+const pluginReference = new AgentPluginReference("drive@catalog", "drive", "catalog", null, "remote");
+// @ts-expect-error Plugin references require an ID, name, and marketplace.
+new AgentPluginReference("drive", "drive");
+// @ts-expect-error Plugin reference IDs are strings.
+new AgentPluginReference(1, "drive", "catalog");
+// @ts-expect-error Plugin marketplace paths are nullable strings.
+new AgentPluginReference("drive", "drive", "catalog", 1);
+// @ts-expect-error Plugin reference IDs are readonly.
+pluginReference.id = "changed";
+// @ts-expect-error Derived plugin URIs are readonly.
+pluginReference.uri = "plugin://changed@catalog";
+const pluginSummary = new AgentPluginSummary(
+  pluginReference, "Drive", "Files", true, true, "available", "on_install", true, ["Search"],
+);
+// @ts-expect-error Plugin summaries require all canonical policy fields.
+new AgentPluginSummary(pluginReference, "Drive", "Files", true);
+// @ts-expect-error Plugin summaries require canonical references.
+new AgentPluginSummary({}, "Drive", "Files", true, true, "available", "on_install", true);
+// @ts-expect-error Plugin install policies remain a closed domain.
+new AgentPluginSummary(pluginReference, "Drive", "Files", true, true, "AVAILABLE", "on_install", true);
+// @ts-expect-error Plugin auth policies remain a closed domain.
+new AgentPluginSummary(pluginReference, "Drive", "Files", true, true, "available", "always", true);
+// @ts-expect-error Plugin capabilities contain strings.
+new AgentPluginSummary(pluginReference, "Drive", "Files", true, true, "available", "on_install", true, [1]);
+// @ts-expect-error Plugin summary references are readonly.
+pluginSummary.reference = pluginReference;
+// @ts-expect-error Plugin capability collections are readonly.
+pluginSummary.capabilities.push("Changed");
+const pluginCatalog = new AgentPluginCatalog([pluginSummary]);
+// @ts-expect-error Plugin catalogs contain canonical summaries.
+new AgentPluginCatalog([{}]);
+// @ts-expect-error Plugin catalog errors contain strings.
+new AgentPluginCatalog([pluginSummary], [1]);
+// @ts-expect-error Plugin freshness remains a closed domain.
+new AgentPluginCatalog([pluginSummary], [], "cached");
+// @ts-expect-error Plugin collections are readonly.
+pluginCatalog.plugins.push(pluginSummary);
+const pluginSkill = new AgentPluginSkill("search", "Search Drive", true);
+// @ts-expect-error Plugin skills require enablement.
+new AgentPluginSkill("search", "Search Drive");
+// @ts-expect-error Plugin skill enablement is boolean.
+new AgentPluginSkill("search", "Search Drive", "yes");
+// @ts-expect-error Plugin skill paths are nullable strings.
+new AgentPluginSkill("search", "Search Drive", true, 1);
+// @ts-expect-error Plugin skill names are readonly.
+pluginSkill.name = "changed";
+const pluginDetail = new AgentPluginDetail(pluginSummary, "Detail", [pluginSkill], [connector], ["mcp"], 1);
+// @ts-expect-error Plugin details require all nested collections and hook count.
+new AgentPluginDetail(pluginSummary, "Detail", [], []);
+// @ts-expect-error Plugin details contain canonical skills.
+new AgentPluginDetail(pluginSummary, "Detail", [{}], [connector], [], 0);
+// @ts-expect-error Plugin details contain canonical connectors.
+new AgentPluginDetail(pluginSummary, "Detail", [], [{}], [], 0);
+// @ts-expect-error Plugin detail MCP server names are strings.
+new AgentPluginDetail(pluginSummary, "Detail", [], [], [1], 0);
+// @ts-expect-error Plugin hook counts are numbers.
+new AgentPluginDetail(pluginSummary, "Detail", [], [], [], "1");
+// @ts-expect-error Plugin detail skill collections are readonly.
+pluginDetail.skills.push(pluginSkill);
+const pluginInstallResult = new AgentPluginInstallResult("on_install", [connector]);
+// @ts-expect-error Plugin install results require connector collections.
+new AgentPluginInstallResult("on_install");
+// @ts-expect-error Plugin install-result policies remain closed.
+new AgentPluginInstallResult("always", []);
+// @ts-expect-error Plugin install results contain canonical connectors.
+new AgentPluginInstallResult("on_install", [{}]);
+// @ts-expect-error Plugin install messages are nullable strings.
+new AgentPluginInstallResult("on_install", [], 1);
+// @ts-expect-error Plugin install connector collections are readonly.
+pluginInstallResult.connectorsNeedingAuthentication.push(connector);
+
 const conversationSummary = new AgentConversationSummary("conversation", "Title", 1n);
 // @ts-expect-error Conversation-summary timestamps are bigint values, not numbers.
 new AgentConversationSummary("conversation", "Title", 1);
@@ -606,6 +684,12 @@ new CodexSkills();
 declare const hooks: CodexHooks;
 // @ts-expect-error Hook controllers are created by an Agent.
 new CodexHooks();
+
+declare const plugins: CodexPlugins;
+// @ts-expect-error Plugin controllers are created by an Agent.
+new CodexPlugins();
+// @ts-expect-error Plugin feature availability is readonly.
+plugins.isAvailable = false;
 
 declare const models: CodexModels;
 // @ts-expect-error Model controllers are created by an Agent.
@@ -782,6 +866,24 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   await hooks.trust({});
   // @ts-expect-error Hook-trust signals must be AbortSignal values.
   await hooks.trust(hook, {});
+  // @ts-expect-error Plugin controllers are owned by the Agent.
+  agent.plugins = plugins;
+  // @ts-expect-error Plugin reload flags are boolean.
+  await plugins.list("true");
+  // @ts-expect-error Plugin-list signals must be AbortSignal values.
+  await plugins.list(false, {});
+  // @ts-expect-error Plugin reads require canonical references.
+  await plugins.read({});
+  // @ts-expect-error Plugin-read signals must be AbortSignal values.
+  await plugins.read(pluginReference, {});
+  // @ts-expect-error Plugin installs require canonical references.
+  await plugins.install({});
+  // @ts-expect-error Plugin-install signals must be AbortSignal values.
+  await plugins.install(pluginReference, {});
+  // @ts-expect-error Plugin uninstalls require canonical references.
+  await plugins.uninstall({});
+  // @ts-expect-error Plugin-uninstall signals must be AbortSignal values.
+  await plugins.uninstall(pluginReference, {});
   // @ts-expect-error MCP server controllers are owned by the Agent.
   agent.mcpServers = mcpServers;
   // @ts-expect-error MCP server-list signals must be AbortSignal values.

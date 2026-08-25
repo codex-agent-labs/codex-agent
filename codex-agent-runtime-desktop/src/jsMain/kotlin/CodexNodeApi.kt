@@ -3,6 +3,7 @@
 import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
 import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as CoreAuthenticationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentCapability as CoreCapability
+import io.github.codex_agent_labs.codexmobile.agent.AgentCatalogFreshness as CoreCatalogFreshness
 import io.github.codex_agent_labs.codexmobile.agent.AgentCollaborationMode as CoreCollaborationMode
 import io.github.codex_agent_labs.codexmobile.agent.AgentConnector as CoreConnector
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversation as CoreAgentConversation
@@ -46,6 +47,14 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentModel as CoreModel
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanProgress as CorePlanProgress
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanStep
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStepStatus as CorePlanStepStatus
+import io.github.codex_agent_labs.codexmobile.agent.AgentPluginAuthPolicy as CorePluginAuthPolicy
+import io.github.codex_agent_labs.codexmobile.agent.AgentPluginCatalog as CorePluginCatalog
+import io.github.codex_agent_labs.codexmobile.agent.AgentPluginDetail as CorePluginDetail
+import io.github.codex_agent_labs.codexmobile.agent.AgentPluginInstallPolicy as CorePluginInstallPolicy
+import io.github.codex_agent_labs.codexmobile.agent.AgentPluginInstallResult as CorePluginInstallResult
+import io.github.codex_agent_labs.codexmobile.agent.AgentPluginReference as CorePluginReference
+import io.github.codex_agent_labs.codexmobile.agent.AgentPluginSkill as CorePluginSkill
+import io.github.codex_agent_labs.codexmobile.agent.AgentPluginSummary as CorePluginSummary
 import io.github.codex_agent_labs.codexmobile.agent.AgentResolution as CoreResolution
 import io.github.codex_agent_labs.codexmobile.agent.AgentResourceOrigin as CoreResourceOrigin
 import io.github.codex_agent_labs.codexmobile.agent.AgentServiceTier as CoreServiceTier
@@ -71,6 +80,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexModels as CoreModels
 import io.github.codex_agent_labs.codexmobile.agent.CodexMcpServers as CoreMcpServers
 import io.github.codex_agent_labs.codexmobile.agent.CodexOperationException
 import io.github.codex_agent_labs.codexmobile.agent.CodexPathWorkspaceSelection
+import io.github.codex_agent_labs.codexmobile.agent.CodexPlugins as CorePlugins
 import io.github.codex_agent_labs.codexmobile.agent.CodexSkills as CoreSkills
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace as CoreWorkspace
 import io.github.codex_agent_labs.codexmobile.agent.ConversationId
@@ -723,6 +733,199 @@ public class AgentConnector public constructor(
         this.isEnabled = core.isEnabled
         this.pluginNames = core.pluginNames.toTypedArray()
         freezeSnapshot(this.pluginNames)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable canonical plugin identity. */
+@JsExport
+public class AgentPluginReference public constructor(
+    id: String,
+    name: String,
+    marketplaceName: String,
+    marketplacePath: String? = null,
+    remotePluginId: String? = null,
+) {
+    public val id: String
+    public val name: String
+    public val marketplaceName: String
+    public val marketplacePath: String?
+    public val remotePluginId: String?
+    public val uri: String
+
+    init {
+        val core = canonicalPluginReference(id, name, marketplaceName, marketplacePath, remotePluginId)
+        this.id = core.id
+        this.name = core.name
+        this.marketplaceName = core.marketplaceName
+        this.marketplacePath = core.marketplacePath
+        this.remotePluginId = core.remotePluginId
+        this.uri = core.uri
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable plugin summary. */
+@JsExport
+@Suppress("LongParameterList")
+public class AgentPluginSummary public constructor(
+    reference: AgentPluginReference,
+    displayName: String,
+    description: String,
+    isInstalled: Boolean,
+    isEnabled: Boolean,
+    installPolicy: String,
+    authPolicy: String,
+    isAvailable: Boolean,
+    capabilities: Array<String> = emptyArray(),
+    brandColor: String? = null,
+    privacyPolicyUrl: String? = null,
+    termsOfServiceUrl: String? = null,
+    websiteUrl: String? = null,
+) {
+    public val reference: AgentPluginReference
+    public val displayName: String
+    public val description: String
+    public val isInstalled: Boolean
+    public val isEnabled: Boolean
+    public val installPolicy: String
+    public val authPolicy: String
+    public val isAvailable: Boolean
+    public val capabilities: Array<String>
+    public val brandColor: String?
+    public val privacyPolicyUrl: String?
+    public val termsOfServiceUrl: String?
+    public val websiteUrl: String?
+
+    init {
+        val core = canonicalPluginSummary(
+            reference,
+            displayName,
+            description,
+            isInstalled,
+            isEnabled,
+            installPolicy,
+            authPolicy,
+            isAvailable,
+            capabilities,
+            brandColor,
+            privacyPolicyUrl,
+            termsOfServiceUrl,
+            websiteUrl,
+        )
+        this.reference = core.reference.project()
+        this.displayName = core.displayName
+        this.description = core.description
+        this.isInstalled = core.isInstalled
+        this.isEnabled = core.isEnabled
+        this.installPolicy = core.installPolicy.name.lowercase()
+        this.authPolicy = core.authPolicy.name.lowercase()
+        this.isAvailable = core.isAvailable
+        this.capabilities = core.capabilities.toTypedArray()
+        this.brandColor = core.brandColor
+        this.privacyPolicyUrl = core.privacyPolicyUrl
+        this.termsOfServiceUrl = core.termsOfServiceUrl
+        this.websiteUrl = core.websiteUrl
+        freezeSnapshot(this.capabilities)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable plugin catalog. */
+@JsExport
+public class AgentPluginCatalog public constructor(
+    plugins: Array<AgentPluginSummary>,
+    errors: Array<String> = emptyArray(),
+    freshness: String = "live",
+) {
+    public val plugins: Array<AgentPluginSummary>
+    public val errors: Array<String>
+    public val freshness: String
+
+    init {
+        val core = canonicalPluginCatalog(plugins, errors, freshness)
+        this.plugins = core.plugins.map(CorePluginSummary::project).toTypedArray()
+        this.errors = core.errors.toTypedArray()
+        this.freshness = core.freshness.name.lowercase()
+        freezeSnapshot(this.plugins)
+        freezeSnapshot(this.errors)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable skill exposed by one plugin. */
+@JsExport
+public class AgentPluginSkill public constructor(
+    name: String,
+    description: String,
+    isEnabled: Boolean,
+    path: String? = null,
+) {
+    public val name: String
+    public val description: String
+    public val isEnabled: Boolean
+    public val path: String?
+
+    init {
+        val core = canonicalPluginSkill(name, description, isEnabled, path)
+        this.name = core.name
+        this.description = core.description
+        this.isEnabled = core.isEnabled
+        this.path = core.path
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable complete plugin detail. */
+@JsExport
+public class AgentPluginDetail public constructor(
+    summary: AgentPluginSummary,
+    description: String,
+    skills: Array<AgentPluginSkill>,
+    connectors: Array<AgentConnector>,
+    mcpServers: Array<String>,
+    hookCount: Int,
+) {
+    public val summary: AgentPluginSummary
+    public val description: String
+    public val skills: Array<AgentPluginSkill>
+    public val connectors: Array<AgentConnector>
+    public val mcpServers: Array<String>
+    public val hookCount: Int
+
+    init {
+        val core = canonicalPluginDetail(summary, description, skills, connectors, mcpServers, hookCount)
+        this.summary = core.summary.project()
+        this.description = core.description
+        this.skills = core.skills.map(CorePluginSkill::project).toTypedArray()
+        this.connectors = core.connectors.map(CoreConnector::project).toTypedArray()
+        this.mcpServers = core.mcpServers.toTypedArray()
+        this.hookCount = core.hookCount
+        freezeSnapshot(this.skills)
+        freezeSnapshot(this.connectors)
+        freezeSnapshot(this.mcpServers)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable result of installing a plugin. */
+@JsExport
+public class AgentPluginInstallResult public constructor(
+    authPolicy: String,
+    connectorsNeedingAuthentication: Array<AgentConnector>,
+    message: String? = null,
+) {
+    public val authPolicy: String
+    public val connectorsNeedingAuthentication: Array<AgentConnector>
+    public val message: String?
+
+    init {
+        val core = canonicalPluginInstallResult(authPolicy, connectorsNeedingAuthentication, message)
+        this.authPolicy = core.authPolicy.name.lowercase()
+        this.connectorsNeedingAuthentication =
+            core.connectorsNeedingAuthentication.map(CoreConnector::project).toTypedArray()
+        this.message = core.message
+        freezeSnapshot(this.connectorsNeedingAuthentication)
         freezeSnapshot(this)
     }
 }
@@ -1438,6 +1641,8 @@ public class CodexAgent internal constructor(
         CodexSkills(host, core.skills, jsApiToken)
     private val hooksProjection: CodexHooks =
         CodexHooks(host, core.hooks, jsApiToken)
+    private val pluginsProjection: CodexPlugins =
+        CodexPlugins(host, core.plugins, jsApiToken)
     private val mcpServersProjection: CodexMcpServers =
         CodexMcpServers(host, core.mcpServers, jsApiToken)
     private val integrationAuthorizationProjection: CodexIntegrationAuthorization =
@@ -1467,6 +1672,9 @@ public class CodexAgent internal constructor(
 
     public val hooks: CodexHooks
         get() = hooksProjection
+
+    public val plugins: CodexPlugins
+        get() = pluginsProjection
 
     public val mcpServers: CodexMcpServers
         get() = mcpServersProjection
@@ -1723,6 +1931,56 @@ public class CodexHooks internal constructor(
         val value: Any? = hook
         require(value is AgentHook) { "hook must be an AgentHook" }
         core.trust(value.canonicalCopy())
+    }
+}
+
+/** Agent-owned plugin discovery and installation lifecycle. */
+@JsExport
+public class CodexPlugins internal constructor(
+    private val host: CodexHost,
+    private val core: CorePlugins,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex plugin catalogs are created by an Agent" }
+        hideBackingFields(this)
+    }
+
+    public val isAvailable: Boolean
+        get() = core.isAvailable
+
+    public fun list(
+        forceReload: Boolean = false,
+        signal: AbortSignal? = null,
+    ): Promise<AgentPluginCatalog> = host.operationScope().codexPromise(signal) {
+        core.list(forceReload.requireJavaScriptBoolean("forceReload")).project()
+    }
+
+    public fun read(
+        plugin: AgentPluginReference,
+        signal: AbortSignal? = null,
+    ): Promise<AgentPluginDetail> = host.operationScope().codexPromise(signal) {
+        val value: Any? = plugin
+        require(value is AgentPluginReference) { "plugin must be an AgentPluginReference" }
+        core.read(value.canonicalCopy()).project()
+    }
+
+    public fun install(
+        plugin: AgentPluginReference,
+        signal: AbortSignal? = null,
+    ): Promise<AgentPluginInstallResult> = host.operationScope().codexPromise(signal) {
+        val value: Any? = plugin
+        require(value is AgentPluginReference) { "plugin must be an AgentPluginReference" }
+        core.install(value.canonicalCopy()).project()
+    }
+
+    public fun uninstall(
+        plugin: AgentPluginReference,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        val value: Any? = plugin
+        require(value is AgentPluginReference) { "plugin must be an AgentPluginReference" }
+        core.uninstall(value.canonicalCopy())
     }
 }
 
@@ -2061,6 +2319,24 @@ private fun String.toCoreHookTrustStatus(): CoreHookTrustStatus {
     val value = requireJavaScriptString("trustStatus")
     return CoreHookTrustStatus.entries.singleOrNull { it.name.lowercase() == value }
         ?: throw IllegalArgumentException("Unknown hook trust status: $value")
+}
+
+private fun String.toCoreCatalogFreshness(): CoreCatalogFreshness {
+    val value = requireJavaScriptString("freshness")
+    return CoreCatalogFreshness.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown plugin catalog freshness: $value")
+}
+
+private fun String.toCorePluginInstallPolicy(): CorePluginInstallPolicy {
+    val value = requireJavaScriptString("installPolicy")
+    return CorePluginInstallPolicy.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown plugin install policy: $value")
+}
+
+private fun String.toCorePluginAuthPolicy(): CorePluginAuthPolicy {
+    val value = requireJavaScriptString("authPolicy")
+    return CorePluginAuthPolicy.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown plugin auth policy: $value")
 }
 
 private fun String.toCoreMcpEnvironmentSource(): CoreMcpEnvironmentSource = when (this) {
@@ -2434,6 +2710,185 @@ private fun AgentConnector.canonicalCopy(): CoreConnector = canonicalConnector(
     pluginNames,
 )
 
+private fun canonicalPluginReference(
+    id: String,
+    name: String,
+    marketplaceName: String,
+    marketplacePath: String?,
+    remotePluginId: String?,
+): CorePluginReference = CorePluginReference(
+    id = id.requireJavaScriptString("id"),
+    name = name.requireJavaScriptString("name"),
+    marketplaceName = marketplaceName.requireJavaScriptString("marketplaceName"),
+    marketplacePath = marketplacePath.requireJavaScriptNullableString("marketplacePath"),
+    remotePluginId = remotePluginId.requireJavaScriptNullableString("remotePluginId"),
+)
+
+private fun AgentPluginReference.canonicalCopy(): CorePluginReference = canonicalPluginReference(
+    id,
+    name,
+    marketplaceName,
+    marketplacePath,
+    remotePluginId,
+)
+
+@Suppress("LongParameterList")
+private fun canonicalPluginSummary(
+    reference: AgentPluginReference,
+    displayName: String,
+    description: String,
+    isInstalled: Boolean,
+    isEnabled: Boolean,
+    installPolicy: String,
+    authPolicy: String,
+    isAvailable: Boolean,
+    capabilities: Array<String>,
+    brandColor: String?,
+    privacyPolicyUrl: String?,
+    termsOfServiceUrl: String?,
+    websiteUrl: String?,
+): CorePluginSummary {
+    val referenceValue: Any? = reference
+    require(referenceValue is AgentPluginReference) { "reference must be an AgentPluginReference" }
+    requireJavaScriptArray(capabilities, "capabilities")
+    return CorePluginSummary(
+        reference = referenceValue.canonicalCopy(),
+        displayName = displayName.requireJavaScriptString("displayName"),
+        description = description.requireJavaScriptString("description"),
+        isInstalled = isInstalled.requireJavaScriptBoolean("isInstalled"),
+        isEnabled = isEnabled.requireJavaScriptBoolean("isEnabled"),
+        installPolicy = installPolicy.toCorePluginInstallPolicy(),
+        authPolicy = authPolicy.toCorePluginAuthPolicy(),
+        isAvailable = isAvailable.requireJavaScriptBoolean("isAvailable"),
+        capabilities = List(capabilities.size) { index ->
+            requireOwnJavaScriptArrayIndex(capabilities, index, "capabilities")
+            capabilities[index].requireJavaScriptString("capabilities[$index]")
+        },
+        brandColor = brandColor.requireJavaScriptNullableString("brandColor"),
+        privacyPolicyUrl = privacyPolicyUrl.requireJavaScriptNullableString("privacyPolicyUrl"),
+        termsOfServiceUrl = termsOfServiceUrl.requireJavaScriptNullableString("termsOfServiceUrl"),
+        websiteUrl = websiteUrl.requireJavaScriptNullableString("websiteUrl"),
+    )
+}
+
+private fun AgentPluginSummary.canonicalCopy(): CorePluginSummary = canonicalPluginSummary(
+    reference,
+    displayName,
+    description,
+    isInstalled,
+    isEnabled,
+    installPolicy,
+    authPolicy,
+    isAvailable,
+    capabilities,
+    brandColor,
+    privacyPolicyUrl,
+    termsOfServiceUrl,
+    websiteUrl,
+)
+
+private fun canonicalPluginCatalog(
+    plugins: Array<AgentPluginSummary>,
+    errors: Array<String>,
+    freshness: String,
+): CorePluginCatalog {
+    requireJavaScriptArray(plugins, "plugins")
+    requireJavaScriptArray(errors, "errors")
+    return CorePluginCatalog(
+        plugins = List(plugins.size) { index ->
+            requireOwnJavaScriptArrayIndex(plugins, index, "plugins")
+            val plugin: Any? = plugins[index]
+            require(plugin is AgentPluginSummary) { "plugins[$index] must be an AgentPluginSummary" }
+            plugin.canonicalCopy()
+        },
+        errors = List(errors.size) { index ->
+            requireOwnJavaScriptArrayIndex(errors, index, "errors")
+            errors[index].requireJavaScriptString("errors[$index]")
+        },
+        freshness = freshness.toCoreCatalogFreshness(),
+    )
+}
+
+private fun canonicalPluginSkill(
+    name: String,
+    description: String,
+    isEnabled: Boolean,
+    path: String?,
+): CorePluginSkill = CorePluginSkill(
+    name = name.requireJavaScriptString("name"),
+    description = description.requireJavaScriptString("description"),
+    isEnabled = isEnabled.requireJavaScriptBoolean("isEnabled"),
+    path = path.requireJavaScriptNullableString("path"),
+)
+
+private fun AgentPluginSkill.canonicalCopy(): CorePluginSkill = canonicalPluginSkill(
+    name,
+    description,
+    isEnabled,
+    path,
+)
+
+private fun canonicalPluginDetail(
+    summary: AgentPluginSummary,
+    description: String,
+    skills: Array<AgentPluginSkill>,
+    connectors: Array<AgentConnector>,
+    mcpServers: Array<String>,
+    hookCount: Int,
+): CorePluginDetail {
+    val summaryValue: Any? = summary
+    require(summaryValue is AgentPluginSummary) { "summary must be an AgentPluginSummary" }
+    requireJavaScriptArray(skills, "skills")
+    requireJavaScriptArray(connectors, "connectors")
+    requireJavaScriptArray(mcpServers, "mcpServers")
+    return CorePluginDetail(
+        summary = summaryValue.canonicalCopy(),
+        description = description.requireJavaScriptString("description"),
+        skills = List(skills.size) { index ->
+            requireOwnJavaScriptArrayIndex(skills, index, "skills")
+            val skill: Any? = skills[index]
+            require(skill is AgentPluginSkill) { "skills[$index] must be an AgentPluginSkill" }
+            skill.canonicalCopy()
+        },
+        connectors = List(connectors.size) { index ->
+            requireOwnJavaScriptArrayIndex(connectors, index, "connectors")
+            val connector: Any? = connectors[index]
+            require(connector is AgentConnector) { "connectors[$index] must be an AgentConnector" }
+            connector.canonicalCopy()
+        },
+        mcpServers = List(mcpServers.size) { index ->
+            requireOwnJavaScriptArrayIndex(mcpServers, index, "mcpServers")
+            mcpServers[index].requireJavaScriptString("mcpServers[$index]")
+        },
+        hookCount = requireJavaScriptNullableInteger(hookCount, "hookCount")
+            ?: error("hookCount must be an integer"),
+    )
+}
+
+private fun canonicalPluginInstallResult(
+    authPolicy: String,
+    connectorsNeedingAuthentication: Array<AgentConnector>,
+    message: String?,
+): CorePluginInstallResult {
+    requireJavaScriptArray(connectorsNeedingAuthentication, "connectorsNeedingAuthentication")
+    return CorePluginInstallResult(
+        authPolicy = authPolicy.toCorePluginAuthPolicy(),
+        connectorsNeedingAuthentication = List(connectorsNeedingAuthentication.size) { index ->
+            requireOwnJavaScriptArrayIndex(
+                connectorsNeedingAuthentication,
+                index,
+                "connectorsNeedingAuthentication",
+            )
+            val connector: Any? = connectorsNeedingAuthentication[index]
+            require(connector is AgentConnector) {
+                "connectorsNeedingAuthentication[$index] must be an AgentConnector"
+            }
+            connector.canonicalCopy()
+        },
+        message = message.requireJavaScriptNullableString("message"),
+    )
+}
+
 private fun AgentIntegration.canonicalCopy(): CoreIntegration {
     val value: Any? = this
     return when (value) {
@@ -2656,6 +3111,58 @@ private fun CoreConnector.project(): AgentConnector = AgentConnector(
     isAccessible = isAccessible,
     isEnabled = isEnabled,
     pluginNames = pluginNames.toTypedArray(),
+)
+
+private fun CorePluginReference.project(): AgentPluginReference = AgentPluginReference(
+    id,
+    name,
+    marketplaceName,
+    marketplacePath,
+    remotePluginId,
+)
+
+private fun CorePluginSummary.project(): AgentPluginSummary = AgentPluginSummary(
+    reference = reference.project(),
+    displayName = displayName,
+    description = description,
+    isInstalled = isInstalled,
+    isEnabled = isEnabled,
+    installPolicy = installPolicy.name.lowercase(),
+    authPolicy = authPolicy.name.lowercase(),
+    isAvailable = isAvailable,
+    capabilities = capabilities.toTypedArray(),
+    brandColor = brandColor,
+    privacyPolicyUrl = privacyPolicyUrl,
+    termsOfServiceUrl = termsOfServiceUrl,
+    websiteUrl = websiteUrl,
+)
+
+private fun CorePluginCatalog.project(): AgentPluginCatalog = AgentPluginCatalog(
+    plugins = plugins.map(CorePluginSummary::project).toTypedArray(),
+    errors = errors.toTypedArray(),
+    freshness = freshness.name.lowercase(),
+)
+
+private fun CorePluginSkill.project(): AgentPluginSkill = AgentPluginSkill(
+    name,
+    description,
+    isEnabled,
+    path,
+)
+
+private fun CorePluginDetail.project(): AgentPluginDetail = AgentPluginDetail(
+    summary = summary.project(),
+    description = description,
+    skills = skills.map(CorePluginSkill::project).toTypedArray(),
+    connectors = connectors.map(CoreConnector::project).toTypedArray(),
+    mcpServers = mcpServers.toTypedArray(),
+    hookCount = hookCount,
+)
+
+private fun CorePluginInstallResult.project(): AgentPluginInstallResult = AgentPluginInstallResult(
+    authPolicy = authPolicy.name.lowercase(),
+    connectorsNeedingAuthentication = connectorsNeedingAuthentication.map(CoreConnector::project).toTypedArray(),
+    message = message,
 )
 
 private fun CoreMcpEnvironmentVariable.project(): AgentMcpEnvironmentVariable =

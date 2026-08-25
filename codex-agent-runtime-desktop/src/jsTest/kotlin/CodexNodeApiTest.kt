@@ -156,6 +156,129 @@ class CodexNodeApiTest {
         }.exceptionOrNull()
         assertEquals("id must be a string", invalidConnector?.message)
 
+        val localPluginReference = AgentPluginReference(
+            "drive@openai-curated",
+            "drive",
+            "openai-curated",
+            remotePluginId = REMOTE_PLUGIN_ID,
+        )
+        assertEquals("plugin://drive@openai-curated", localPluginReference.uri)
+        assertNull(localPluginReference.marketplacePath)
+        assertEquals(REMOTE_PLUGIN_ID, localPluginReference.remotePluginId)
+        assertTrue(isFrozen(localPluginReference))
+        val sourcePluginCapabilities = arrayOf("Search files", "Share files")
+        val localPluginSummary = AgentPluginSummary(
+            localPluginReference,
+            "Drive",
+            "Files in Drive",
+            true,
+            true,
+            "available",
+            "on_install",
+            true,
+            sourcePluginCapabilities,
+            "#4285f4",
+            "https://example.com/privacy",
+            "https://example.com/terms",
+            "https://example.com",
+        )
+        sourcePluginCapabilities[0] = "changed"
+        assertEquals(listOf("Search files", "Share files"), localPluginSummary.capabilities.toList())
+        assertEquals("available", localPluginSummary.installPolicy)
+        assertEquals("on_install", localPluginSummary.authPolicy)
+        assertEquals("#4285f4", localPluginSummary.brandColor)
+        assertTrue(isFrozen(localPluginSummary))
+        assertTrue(isFrozen(localPluginSummary.reference))
+        assertTrue(isFrozen(localPluginSummary.capabilities))
+        val sourcePluginSummaries = arrayOf(localPluginSummary)
+        val sourcePluginErrors = arrayOf("catalog warning")
+        val localPluginCatalog = AgentPluginCatalog(sourcePluginSummaries, sourcePluginErrors, "stale_cache")
+        sourcePluginSummaries[0] = AgentPluginSummary(
+            localPluginReference,
+            "Changed",
+            "Changed",
+            false,
+            false,
+            "not_available",
+            "on_use",
+            false,
+        )
+        sourcePluginErrors[0] = "changed"
+        assertEquals(listOf("Drive"), localPluginCatalog.plugins.map(AgentPluginSummary::displayName))
+        assertEquals(listOf("catalog warning"), localPluginCatalog.errors.toList())
+        assertEquals("stale_cache", localPluginCatalog.freshness)
+        assertTrue(isFrozen(localPluginCatalog))
+        assertTrue(isFrozen(localPluginCatalog.plugins))
+        assertTrue(isFrozen(localPluginCatalog.errors))
+        assertTrue(isFrozen(localPluginCatalog.plugins.single()))
+        val localPluginSkill = AgentPluginSkill("search-drive", "Search Drive", true, "/plugin/SKILL.md")
+        val localPluginDetail = AgentPluginDetail(
+            localPluginSummary,
+            "Complete Drive plugin",
+            arrayOf(localPluginSkill),
+            arrayOf(localConnector),
+            arrayOf("drive-mcp"),
+            1,
+        )
+        assertEquals("search-drive", localPluginDetail.skills.single().name)
+        assertEquals("connector-local", localPluginDetail.connectors.single().id)
+        assertEquals(listOf("drive-mcp"), localPluginDetail.mcpServers.toList())
+        assertEquals(1, localPluginDetail.hookCount)
+        assertTrue(isFrozen(localPluginDetail))
+        assertTrue(isFrozen(localPluginDetail.summary))
+        assertTrue(isFrozen(localPluginDetail.skills))
+        assertTrue(isFrozen(localPluginDetail.connectors))
+        assertTrue(isFrozen(localPluginDetail.mcpServers))
+        val localPluginInstallResult = AgentPluginInstallResult(
+            "on_install",
+            arrayOf(localConnector),
+            "Authorize Drive",
+        )
+        assertEquals("on_install", localPluginInstallResult.authPolicy)
+        assertEquals("connector-local", localPluginInstallResult.connectorsNeedingAuthentication.single().id)
+        assertEquals("Authorize Drive", localPluginInstallResult.message)
+        assertTrue(isFrozen(localPluginInstallResult))
+        assertTrue(isFrozen(localPluginInstallResult.connectorsNeedingAuthentication))
+        listOf(
+            runCatching {
+                AgentPluginReference(js("({})").unsafeCast<String>(), "drive", "catalog")
+            }.exceptionOrNull() to "id must be a string",
+            runCatching {
+                AgentPluginSummary(
+                    localPluginReference,
+                    "Drive",
+                    "Drive",
+                    true,
+                    true,
+                    "AVAILABLE",
+                    "on_install",
+                    true,
+                )
+            }.exceptionOrNull() to "Unknown plugin install policy: AVAILABLE",
+            runCatching {
+                AgentPluginCatalog(
+                    js("new Array(1)").unsafeCast<Array<AgentPluginSummary>>(),
+                )
+            }.exceptionOrNull() to "plugins must not contain sparse elements",
+            runCatching {
+                AgentPluginDetail(
+                    localPluginSummary,
+                    "Drive",
+                    emptyArray(),
+                    emptyArray(),
+                    emptyArray(),
+                    js("2147483648").unsafeCast<Int>(),
+                )
+            }.exceptionOrNull() to "hookCount must be an integer or null",
+            runCatching {
+                AgentPluginInstallResult(
+                    "on_install",
+                    js("[{}]").unsafeCast<Array<AgentConnector>>(),
+                )
+            }.exceptionOrNull() to
+                "connectorsNeedingAuthentication[0] must be an AgentConnector",
+        ).forEach { (error, message) -> assertEquals(message, error?.message) }
+
         val sourceMcpArguments = arrayOf("server.js")
         val sourceMcpEnvironment: dynamic = js("({ TOKEN: 'value' })")
         val sourceForwardedEnvironment = arrayOf(AgentMcpEnvironmentVariable("HOME", "local"))
@@ -1308,6 +1431,10 @@ class CodexNodeApiTest {
             assertSame(hooks, shellAgent.hooks)
             assertTrue(hooks.isAvailable)
             assertEquals(0, enumerablePropertyCount(hooks))
+            val plugins = shellAgent.plugins
+            assertSame(plugins, shellAgent.plugins)
+            assertTrue(plugins.isAvailable)
+            assertEquals(0, enumerablePropertyCount(plugins))
             val mcpServers = shellAgent.mcpServers
             assertSame(mcpServers, shellAgent.mcpServers)
             assertTrue(mcpServers.isAvailable)
@@ -1437,6 +1564,148 @@ class CodexNodeApiTest {
             assertTrue(shellRuntime.mcpStatusRequests.isEmpty())
             assertTrue(shellRuntime.mcpReloadRequests.isEmpty())
             assertTrue(shellRuntime.mcpBatchWriteRequests.isEmpty())
+
+            listOf(
+                runCatching {
+                    plugins.list(signal = controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    plugins.read(localPluginReference, controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    plugins.install(localPluginReference, controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+                runCatching {
+                    plugins.uninstall(localPluginReference, controller.signal.unsafeCast<AbortSignal>()).await()
+                }.exceptionOrNull(),
+            ).forEach { aborted ->
+                assertEquals("AbortError", aborted?.asDynamic()?.name as String)
+            }
+            assertTrue(shellRuntime.pluginListRequests.isEmpty())
+            assertTrue(shellRuntime.pluginInstalledRequests.isEmpty())
+            assertTrue(shellRuntime.pluginReadRequests.isEmpty())
+            assertTrue(shellRuntime.pluginInstallRequests.isEmpty())
+            assertTrue(shellRuntime.pluginUninstallRequests.isEmpty())
+
+            val invalidPluginValue = runCatching {
+                plugins.read(js("({})").unsafeCast<AgentPluginReference>()).await()
+            }.exceptionOrNull()
+            assertEquals("plugin must be an AgentPluginReference", invalidPluginValue?.message)
+            val incompletePluginReference = AgentPluginReference("missing", "missing", "catalog")
+            val invalidPluginReference = runCatching { plugins.read(incompletePluginReference).await() }
+                .exceptionOrNull()
+            assertEquals("Remote plugin is missing its catalog identifier", invalidPluginReference?.message)
+            assertTrue(shellRuntime.pluginReadRequests.isEmpty())
+
+            shellRuntime.failNextPluginList = true
+            val pluginListFailure = assertIs<CodexError>(
+                runCatching { plugins.list(forceReload = true).await() }.exceptionOrNull(),
+            )
+            assertEquals("plugin_list_failed", pluginListFailure.code)
+            assertEquals("plugin list denied", pluginListFailure.message)
+            assertTrue(pluginListFailure.recoverable)
+
+            val pluginCatalog = plugins.list(forceReload = true).await()
+            assertEquals("live", pluginCatalog.freshness)
+            assertTrue(pluginCatalog.errors.isEmpty())
+            val listedPlugin = pluginCatalog.plugins.single()
+            assertEquals("drive@openai-curated", listedPlugin.reference.id)
+            assertEquals("drive", listedPlugin.reference.name)
+            assertEquals("openai-curated", listedPlugin.reference.marketplaceName)
+            assertNull(listedPlugin.reference.marketplacePath)
+            assertEquals(REMOTE_PLUGIN_ID, listedPlugin.reference.remotePluginId)
+            assertEquals("plugin://drive@openai-curated", listedPlugin.reference.uri)
+            assertEquals("Drive", listedPlugin.displayName)
+            assertEquals("Files in Drive", listedPlugin.description)
+            assertTrue(listedPlugin.isInstalled)
+            assertTrue(listedPlugin.isEnabled)
+            assertEquals("available", listedPlugin.installPolicy)
+            assertEquals("on_install", listedPlugin.authPolicy)
+            assertTrue(listedPlugin.isAvailable)
+            assertEquals(listOf("Search files", "Share files"), listedPlugin.capabilities.toList())
+            assertEquals("#4285f4", listedPlugin.brandColor)
+            assertEquals("https://example.com/privacy", listedPlugin.privacyPolicyUrl)
+            assertEquals("https://example.com/terms", listedPlugin.termsOfServiceUrl)
+            assertEquals("https://example.com", listedPlugin.websiteUrl)
+            assertTrue(isFrozen(pluginCatalog))
+            assertTrue(isFrozen(pluginCatalog.plugins))
+            assertTrue(isFrozen(pluginCatalog.errors))
+            assertTrue(isFrozen(listedPlugin))
+            assertTrue(isFrozen(listedPlugin.reference))
+            assertTrue(isFrozen(listedPlugin.capabilities))
+            assertEquals(2, shellRuntime.pluginListRequests.size)
+            assertEquals(1, shellRuntime.pluginInstalledRequests.size)
+            val availablePluginRequest = shellRuntime.pluginListRequests.last()
+            assertEquals(setOf("cwds"), availablePluginRequest.keys)
+            assertEquals(
+                listOf(skillFixture.workspacePath),
+                availablePluginRequest["cwds"]?.jsonArray?.map { it.jsonPrimitive.content },
+            )
+            val installedPluginRequest = shellRuntime.pluginInstalledRequests.single()
+            assertEquals(setOf("cwds"), installedPluginRequest.keys)
+            assertEquals(
+                listOf(skillFixture.workspacePath),
+                installedPluginRequest["cwds"]?.jsonArray?.map { it.jsonPrimitive.content },
+            )
+
+            val pluginDetail = plugins.read(listedPlugin.reference).await()
+            assertEquals("Complete Drive plugin", pluginDetail.description)
+            assertEquals("drive@openai-curated", pluginDetail.summary.reference.id)
+            assertEquals("search-drive", pluginDetail.skills.single().name)
+            assertEquals("Search Drive", pluginDetail.skills.single().description)
+            assertTrue(pluginDetail.skills.single().isEnabled)
+            assertEquals("/plugins/drive/search/SKILL.md", pluginDetail.skills.single().path)
+            assertEquals("drive", pluginDetail.connectors.single().id)
+            assertEquals(listOf("drive-mcp"), pluginDetail.mcpServers.toList())
+            assertEquals(1, pluginDetail.hookCount)
+            assertTrue(isFrozen(pluginDetail))
+            assertTrue(isFrozen(pluginDetail.summary))
+            assertTrue(isFrozen(pluginDetail.skills))
+            assertTrue(isFrozen(pluginDetail.connectors))
+            assertTrue(isFrozen(pluginDetail.mcpServers))
+            val pluginReadRequest = shellRuntime.pluginReadRequests.single()
+            assertEquals(setOf("pluginName", "remoteMarketplaceName"), pluginReadRequest.keys)
+            assertEquals(REMOTE_PLUGIN_ID, pluginReadRequest["pluginName"]?.jsonPrimitive?.content)
+            assertEquals("openai-curated", pluginReadRequest["remoteMarketplaceName"]?.jsonPrimitive?.content)
+
+            val pluginInstallResult = plugins.install(listedPlugin.reference).await()
+            assertEquals("on_install", pluginInstallResult.authPolicy)
+            assertEquals("drive", pluginInstallResult.connectorsNeedingAuthentication.single().id)
+            assertNull(pluginInstallResult.message)
+            assertTrue(isFrozen(pluginInstallResult))
+            assertTrue(isFrozen(pluginInstallResult.connectorsNeedingAuthentication))
+            val pluginInstallRequest = shellRuntime.pluginInstallRequests.single()
+            assertEquals(setOf("pluginName", "remoteMarketplaceName"), pluginInstallRequest.keys)
+            assertEquals(REMOTE_PLUGIN_ID, pluginInstallRequest["pluginName"]?.jsonPrimitive?.content)
+
+            plugins.uninstall(listedPlugin.reference).await()
+            assertEquals(
+                setOf("pluginId"),
+                shellRuntime.pluginUninstallRequests.single().keys,
+            )
+            assertEquals(
+                REMOTE_PLUGIN_ID,
+                shellRuntime.pluginUninstallRequests.single()["pluginId"]?.jsonPrimitive?.content,
+            )
+
+            shellRuntime.failNextPluginRead = true
+            val pluginReadFailure = assertIs<CodexError>(
+                runCatching { plugins.read(listedPlugin.reference).await() }.exceptionOrNull(),
+            )
+            assertEquals("plugin_read_failed", pluginReadFailure.code)
+            assertEquals("plugin read denied", pluginReadFailure.message)
+            shellRuntime.failNextPluginInstall = true
+            val pluginInstallFailure = assertIs<CodexError>(
+                runCatching { plugins.install(listedPlugin.reference).await() }.exceptionOrNull(),
+            )
+            assertEquals("plugin_install_failed", pluginInstallFailure.code)
+            assertEquals("plugin install denied", pluginInstallFailure.message)
+            shellRuntime.failNextPluginUninstall = true
+            val pluginUninstallFailure = assertIs<CodexError>(
+                runCatching { plugins.uninstall(listedPlugin.reference).await() }.exceptionOrNull(),
+            )
+            assertEquals("plugin_uninstall_failed", pluginUninstallFailure.code)
+            assertEquals("plugin uninstall denied", pluginUninstallFailure.message)
 
             listOf(
                 runCatching {
@@ -2182,6 +2451,7 @@ class CodexNodeApiTest {
             assertSame(models, shellAgent.models)
             assertSame(skills, shellAgent.skills)
             assertSame(hooks, shellAgent.hooks)
+            assertSame(plugins, shellAgent.plugins)
             assertSame(mcpServers, shellAgent.mcpServers)
             assertSame(integrationAuthorization, shellAgent.integrationAuthorization)
             val requestsBeforeClosedList = shellRuntime.appListRequests.size
@@ -2191,6 +2461,13 @@ class CodexNodeApiTest {
             val skillRequestsBeforeClosedList = shellRuntime.skillListRequests.size
             val hookRequestsBeforeClosedList = shellRuntime.hookListRequests.size
             val hookWritesBeforeClosed = shellRuntime.configBatchWriteRequests.size
+            val pluginRequestsBeforeClosed = listOf(
+                shellRuntime.pluginListRequests.size,
+                shellRuntime.pluginInstalledRequests.size,
+                shellRuntime.pluginReadRequests.size,
+                shellRuntime.pluginInstallRequests.size,
+                shellRuntime.pluginUninstallRequests.size,
+            )
             val mcpStatusBeforeClosed = shellRuntime.mcpStatusRequests.size
             val mcpReloadsBeforeClosed = shellRuntime.mcpReloadRequests.size
             val mcpWritesBeforeClosed = shellRuntime.mcpBatchWriteRequests.size
@@ -2236,6 +2513,25 @@ class CodexNodeApiTest {
             }
             assertEquals(hookRequestsBeforeClosedList, shellRuntime.hookListRequests.size)
             assertEquals(hookWritesBeforeClosed, shellRuntime.configBatchWriteRequests.size)
+            listOf(
+                runCatching { plugins.list().await() }.exceptionOrNull(),
+                runCatching { plugins.read(listedPlugin.reference).await() }.exceptionOrNull(),
+                runCatching { plugins.install(listedPlugin.reference).await() }.exceptionOrNull(),
+                runCatching { plugins.uninstall(listedPlugin.reference).await() }.exceptionOrNull(),
+            ).forEach { closedPluginOperation ->
+                assertEquals("IllegalStateException", closedPluginOperation?.asDynamic()?.name as String)
+                assertEquals("Codex agent is closed", closedPluginOperation.message)
+            }
+            assertEquals(
+                pluginRequestsBeforeClosed,
+                listOf(
+                    shellRuntime.pluginListRequests.size,
+                    shellRuntime.pluginInstalledRequests.size,
+                    shellRuntime.pluginReadRequests.size,
+                    shellRuntime.pluginInstallRequests.size,
+                    shellRuntime.pluginUninstallRequests.size,
+                ),
+            )
             listOf(
                 runCatching { mcpServers.list().await() }.exceptionOrNull(),
                 runCatching { mcpServers.add(localMcpConfiguration).await() }.exceptionOrNull(),
@@ -2773,6 +3069,15 @@ private class ApiTestRuntime : CodexRuntime {
     val appListRequests: MutableList<JsonObject> = mutableListOf()
     var failNextAppList: Boolean = false
     var connectorAccessible: Boolean = true
+    val pluginListRequests: MutableList<JsonObject> = mutableListOf()
+    val pluginInstalledRequests: MutableList<JsonObject> = mutableListOf()
+    val pluginReadRequests: MutableList<JsonObject> = mutableListOf()
+    val pluginInstallRequests: MutableList<JsonObject> = mutableListOf()
+    val pluginUninstallRequests: MutableList<JsonObject> = mutableListOf()
+    var failNextPluginList: Boolean = false
+    var failNextPluginRead: Boolean = false
+    var failNextPluginInstall: Boolean = false
+    var failNextPluginUninstall: Boolean = false
     val modelListRequests: MutableList<JsonObject> = mutableListOf()
     val configReadRequests: MutableList<JsonObject> = mutableListOf()
     var failNextModelList: Boolean = false
@@ -2924,6 +3229,54 @@ private class ApiTestRuntime : CodexRuntime {
                         if (it == JsonNull) null else it.jsonPrimitive.content
                     }
                     respond(id, appListResult(cursor, connectorAccessible))
+                }
+            }
+            "plugin/list" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                pluginListRequests += params
+                if (failNextPluginList) {
+                    failNextPluginList = false
+                    respondError(id, "plugin list denied")
+                } else {
+                    respond(id, pluginListResult(installed = false))
+                }
+            }
+            "plugin/installed" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                pluginInstalledRequests += params
+                respond(id, pluginListResult(installed = true))
+            }
+            "plugin/read" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                pluginReadRequests += params
+                if (failNextPluginRead) {
+                    failNextPluginRead = false
+                    respondError(id, "plugin read denied")
+                } else {
+                    respond(id, pluginDetailResult())
+                }
+            }
+            "plugin/install" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                pluginInstallRequests += params
+                if (failNextPluginInstall) {
+                    failNextPluginInstall = false
+                    respondError(id, "plugin install denied")
+                } else {
+                    respond(id, buildJsonObject {
+                        put("authPolicy", "ON_INSTALL")
+                        putJsonArray("appsNeedingAuth") { add(pluginConnectorResult()) }
+                    })
+                }
+            }
+            "plugin/uninstall" -> {
+                val params = checkNotNull(request["params"]).jsonObject
+                pluginUninstallRequests += params
+                if (failNextPluginUninstall) {
+                    failNextPluginUninstall = false
+                    respondError(id, "plugin uninstall denied")
+                } else {
+                    respond(id, buildJsonObject {})
                 }
             }
             "model/list" -> {
@@ -3428,6 +3781,78 @@ private fun threadReadResult(threadId: String): JsonObject = buildJsonObject {
             updatedAt = -9_007_199_254_740_993L,
         ),
     )
+}
+
+private const val REMOTE_PLUGIN_ID = "plugin_remote_drive"
+
+private fun pluginListResult(installed: Boolean): JsonObject = buildJsonObject {
+    putJsonArray("marketplaces") {
+        add(buildJsonObject {
+            put("name", "openai-curated")
+            putJsonArray("plugins") { add(pluginSummaryResult(installed)) }
+        })
+    }
+    putJsonArray("marketplaceLoadErrors") {}
+}
+
+private fun pluginSummaryResult(installed: Boolean): JsonObject = buildJsonObject {
+    put("id", "drive@openai-curated")
+    put("remotePluginId", REMOTE_PLUGIN_ID)
+    put("name", "drive")
+    put("installed", installed)
+    put("enabled", true)
+    put("installPolicy", "AVAILABLE")
+    put("authPolicy", "ON_INSTALL")
+    put("availability", "AVAILABLE")
+    putJsonObject("source") { put("type", "remote") }
+    putJsonObject("interface") {
+        put("displayName", "Drive")
+        put("shortDescription", "Files in Drive")
+        put("brandColor", "#4285f4")
+        put("privacyPolicyUrl", "https://example.com/privacy")
+        put("termsOfServiceUrl", "https://example.com/terms")
+        put("websiteUrl", "https://example.com")
+        putJsonArray("capabilities") {
+            add(JsonPrimitive("Search files"))
+            add(JsonPrimitive("Share files"))
+        }
+        putJsonArray("screenshotUrls") {}
+        putJsonArray("screenshots") {}
+    }
+}
+
+private fun pluginConnectorResult(): JsonObject = buildJsonObject {
+    put("id", "drive")
+    put("name", "Drive")
+    put("description", "Files")
+    put("installUrl", "https://accounts.example.com/oauth")
+    put("isAccessible", true)
+    put("isEnabled", true)
+}
+
+private fun pluginDetailResult(): JsonObject = buildJsonObject {
+    putJsonObject("plugin") {
+        put("marketplaceName", "openai-curated")
+        put("summary", pluginSummaryResult(installed = true))
+        put("description", "Complete Drive plugin")
+        putJsonArray("skills") {
+            add(buildJsonObject {
+                put("name", "search-drive")
+                put("description", "Search Drive")
+                put("enabled", true)
+                put("path", "/plugins/drive/search/SKILL.md")
+            })
+        }
+        putJsonArray("apps") { add(pluginConnectorResult()) }
+        putJsonArray("appTemplates") {}
+        putJsonArray("mcpServers") { add(JsonPrimitive("drive-mcp")) }
+        putJsonArray("hooks") {
+            add(buildJsonObject {
+                put("eventName", "preToolUse")
+                put("key", "drive-check")
+            })
+        }
+    }
 }
 
 private fun appListResult(cursor: String?, isAccessible: Boolean = true): JsonObject = buildJsonObject {

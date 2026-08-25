@@ -175,6 +175,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
     errors += invalidAgentHookHandlerErrors(canonical.memberKeys, provisional)
     errors += invalidMcpServersErrors(canonical.memberKeys, provisional)
     errors += invalidIntegrationAuthorizationErrors(canonical.memberKeys, provisional)
+    errors += invalidPluginsErrors(canonical.memberKeys, provisional)
 
     val rejectedKeys = errors.flatMap { error ->
         provisional.mapNotNull { projection -> projection.member.key.takeIf(error::contains) }
@@ -830,6 +831,9 @@ private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.isD054PluginsSurfaceMember()) {
+        return pluginsProjectionCandidates(member, symbols)
+    }
     if (member.isD051IntegrationAuthorizationSurfaceMember()) {
         return integrationAuthorizationProjectionCandidates(member, symbols)
     }
@@ -1011,6 +1015,79 @@ private val javaScriptIntegrationAuthorizationSymbols = listOf(
     "method:CodexIntegrationAuthorization#observeState:(listener: " +
         "(state: AgentIntegrationAuthorizationState) => void): CodexObservation",
     javaScriptAgentIntegrationType,
+).sorted()
+private val javaScriptPluginsSymbols = listOf(
+    "class:AgentPluginCatalog",
+    "class:AgentPluginDetail",
+    "class:AgentPluginInstallResult",
+    "class:AgentPluginReference",
+    "class:AgentPluginSkill",
+    "class:AgentPluginSummary",
+    "class:CodexPlugins",
+    "constructor:AgentPluginCatalog#(plugins: ReadonlyArray<AgentPluginSummary>, " +
+        "errors?: ReadonlyArray<string>, freshness?: AgentCatalogFreshness)",
+    "constructor:AgentPluginDetail#(summary: AgentPluginSummary, description: string, " +
+        "skills: ReadonlyArray<AgentPluginSkill>, connectors: ReadonlyArray<AgentConnector>, " +
+        "mcpServers: ReadonlyArray<string>, hookCount: number)",
+    "constructor:AgentPluginInstallResult#(authPolicy: AgentPluginAuthPolicy, " +
+        "connectorsNeedingAuthentication: ReadonlyArray<AgentConnector>, " +
+        "message?: string | null | undefined)",
+    "constructor:AgentPluginReference#(id: string, name: string, marketplaceName: string, " +
+        "marketplacePath?: string | null | undefined, " +
+        "remotePluginId?: string | null | undefined)",
+    "constructor:AgentPluginSkill#(name: string, description: string, isEnabled: boolean, " +
+        "path?: string | null | undefined)",
+    "constructor:AgentPluginSummary#(reference: AgentPluginReference, displayName: string, " +
+        "description: string, isInstalled: boolean, isEnabled: boolean, " +
+        "installPolicy: AgentPluginInstallPolicy, authPolicy: AgentPluginAuthPolicy, " +
+        "isAvailable: boolean, capabilities?: ReadonlyArray<string>, " +
+        "brandColor?: string | null | undefined, privacyPolicyUrl?: string | null | undefined, " +
+        "termsOfServiceUrl?: string | null | undefined, websiteUrl?: string | null | undefined)",
+    "getter:AgentPluginCatalog#errors:ReadonlyArray<string>",
+    "getter:AgentPluginCatalog#freshness:AgentCatalogFreshness",
+    "getter:AgentPluginCatalog#plugins:ReadonlyArray<AgentPluginSummary>",
+    "getter:AgentPluginDetail#connectors:ReadonlyArray<AgentConnector>",
+    "getter:AgentPluginDetail#description:string",
+    "getter:AgentPluginDetail#hookCount:number",
+    "getter:AgentPluginDetail#mcpServers:ReadonlyArray<string>",
+    "getter:AgentPluginDetail#skills:ReadonlyArray<AgentPluginSkill>",
+    "getter:AgentPluginDetail#summary:AgentPluginSummary",
+    "getter:AgentPluginInstallResult#authPolicy:AgentPluginAuthPolicy",
+    "getter:AgentPluginInstallResult#connectorsNeedingAuthentication:ReadonlyArray<AgentConnector>",
+    "getter:AgentPluginInstallResult#message:string | null | undefined",
+    "getter:AgentPluginReference#id:string",
+    "getter:AgentPluginReference#marketplaceName:string",
+    "getter:AgentPluginReference#marketplacePath:string | null | undefined",
+    "getter:AgentPluginReference#name:string",
+    "getter:AgentPluginReference#remotePluginId:string | null | undefined",
+    "getter:AgentPluginReference#uri:string",
+    "getter:AgentPluginSkill#description:string",
+    "getter:AgentPluginSkill#isEnabled:boolean",
+    "getter:AgentPluginSkill#name:string",
+    "getter:AgentPluginSkill#path:string | null | undefined",
+    "getter:AgentPluginSummary#authPolicy:AgentPluginAuthPolicy",
+    "getter:AgentPluginSummary#brandColor:string | null | undefined",
+    "getter:AgentPluginSummary#capabilities:ReadonlyArray<string>",
+    "getter:AgentPluginSummary#description:string",
+    "getter:AgentPluginSummary#displayName:string",
+    "getter:AgentPluginSummary#installPolicy:AgentPluginInstallPolicy",
+    "getter:AgentPluginSummary#isAvailable:boolean",
+    "getter:AgentPluginSummary#isEnabled:boolean",
+    "getter:AgentPluginSummary#isInstalled:boolean",
+    "getter:AgentPluginSummary#privacyPolicyUrl:string | null | undefined",
+    "getter:AgentPluginSummary#reference:AgentPluginReference",
+    "getter:AgentPluginSummary#termsOfServiceUrl:string | null | undefined",
+    "getter:AgentPluginSummary#websiteUrl:string | null | undefined",
+    "getter:CodexAgent#plugins:CodexPlugins",
+    "getter:CodexPlugins#isAvailable:boolean",
+    "method:CodexPlugins#install:(plugin: AgentPluginReference, " +
+        "signal?: AbortSignal | null | undefined): Promise<AgentPluginInstallResult>",
+    "method:CodexPlugins#list:(forceReload?: boolean, " +
+        "signal?: AbortSignal | null | undefined): Promise<AgentPluginCatalog>",
+    "method:CodexPlugins#read:(plugin: AgentPluginReference, " +
+        "signal?: AbortSignal | null | undefined): Promise<AgentPluginDetail>",
+    "method:CodexPlugins#uninstall:(plugin: AgentPluginReference, " +
+        "signal?: AbortSignal | null | undefined): Promise<void>",
 ).sorted()
 private const val javaScriptAgentMessageCapabilities =
     "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"
@@ -1245,7 +1322,7 @@ private fun mcpServersProjectionCandidates(
     val projected = member.d050McpServersPublicSymbols()
     val scenarios = buildList {
         add(CrossLanguageBindingScenario.VALUE_CONVERSION)
-        if (member.kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR || member.name in setOf(
+        if (member.parameters.any { it.type.startsWith("kotlin.collections/") } || member.name in setOf(
                 "arguments",
                 "environment",
                 "forwardedEnvironment",
@@ -1480,6 +1557,274 @@ private fun CanonicalJavaScriptMember.d050McpServersPublicSymbols(): List<String
         if (simpleOwner == "AgentMcpServerConfiguration" && name == "transport") {
             add(javaScriptAgentMcpTransportType)
         }
+        add(memberSymbol)
+    }.sorted()
+}
+
+private fun pluginsProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    if (!member.isExactD054PluginsMember() || !hasExactD054PluginsInventory(symbols)) return emptyList()
+    val scenarios = buildList {
+        add(CrossLanguageBindingScenario.VALUE_CONVERSION)
+        if (member.kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR || member.name in setOf(
+                "plugins",
+                "errors",
+                "capabilities",
+                "skills",
+                "connectors",
+                "mcpServers",
+                "connectorsNeedingAuthentication",
+            )
+        ) add(CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING)
+        if (member.returnType?.endsWith("?") == true ||
+            member.parameters.any { it.type.endsWith("?") }
+        ) {
+            add(CrossLanguageBindingScenario.NULLABILITY)
+        }
+        if (member.kind == CanonicalJavaScriptMemberKind.FUNCTION) {
+            add(CrossLanguageBindingScenario.ASYNC_SUCCESS)
+            add(CrossLanguageBindingScenario.ASYNC_FAILURE)
+            add(CrossLanguageBindingScenario.CANCELLATION)
+            add(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP)
+        } else if (member.simpleOwner == "CodexPlugins" || member.simpleOwner == "CodexAgent") {
+            add(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP)
+        }
+    }
+    return listOf(JavaScriptProjectionCandidate(
+        publicSymbols = member.d054PluginsPublicSymbols(),
+        scenarios = scenarios.distinct(),
+        requiresConsumerReference = true,
+    ))
+}
+
+private fun CanonicalJavaScriptMember.isD054PluginsSurfaceMember(): Boolean =
+    simpleOwner in setOf(
+        "AgentPluginReference",
+        "AgentPluginCatalog",
+        "AgentPluginSummary",
+        "AgentPluginDetail",
+        "AgentPluginSkill",
+        "AgentPluginInstallResult",
+        "CodexPlugins",
+    ) || simpleOwner == "CodexAgent" && name == "plugins"
+
+private fun CanonicalJavaScriptMember.isExactD054PluginsMember(): Boolean {
+    if (owner.substringBeforeLast('/') != canonicalAgentPackage) return false
+    fun canonical(name: String, nullable: Boolean = false): String =
+        "$canonicalAgentPackage/$name${if (nullable) "?" else "!!"}"
+    fun list(type: String): String = "kotlin.collections/List<INVARIANT:$type>!!"
+    return when (simpleOwner) {
+        "AgentPluginReference" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "id", "name", "marketplaceName", "uri" ->
+                    isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "marketplacePath", "remotePluginId" ->
+                    isExactProperty(simpleOwner, name, "kotlin/String?")
+                else -> false
+            }
+            else -> false
+        }
+        "AgentPluginCatalog" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter(list(canonical("AgentPluginSummary")), false, false),
+                    CanonicalJavaScriptParameter(list("kotlin/String!!"), true, false),
+                    CanonicalJavaScriptParameter(canonical("AgentCatalogFreshness"), true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "plugins" -> isExactProperty(simpleOwner, name, list(canonical("AgentPluginSummary")))
+                "errors" -> isExactProperty(simpleOwner, name, list("kotlin/String!!"))
+                "freshness" -> isExactProperty(simpleOwner, name, canonical("AgentCatalogFreshness"))
+                else -> false
+            }
+            else -> false
+        }
+        "AgentPluginSummary" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentPluginReference"), false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", false, false),
+                    CanonicalJavaScriptParameter(canonical("AgentPluginInstallPolicy"), false, false),
+                    CanonicalJavaScriptParameter(canonical("AgentPluginAuthPolicy"), false, false),
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", false, false),
+                    CanonicalJavaScriptParameter(list("kotlin/String!!"), true, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "reference" -> isExactProperty(simpleOwner, name, canonical("AgentPluginReference"))
+                "displayName", "description" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "isInstalled", "isEnabled", "isAvailable" ->
+                    isExactProperty(simpleOwner, name, "kotlin/Boolean!!")
+                "installPolicy" ->
+                    isExactProperty(simpleOwner, name, canonical("AgentPluginInstallPolicy"))
+                "authPolicy" -> isExactProperty(simpleOwner, name, canonical("AgentPluginAuthPolicy"))
+                "capabilities" -> isExactProperty(simpleOwner, name, list("kotlin/String!!"))
+                "brandColor", "privacyPolicyUrl", "termsOfServiceUrl", "websiteUrl" ->
+                    isExactProperty(simpleOwner, name, "kotlin/String?")
+                else -> false
+            }
+            else -> false
+        }
+        "AgentPluginDetail" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentPluginSummary"), false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter(list(canonical("AgentPluginSkill")), false, false),
+                    CanonicalJavaScriptParameter(list(canonical("AgentConnector")), false, false),
+                    CanonicalJavaScriptParameter(list("kotlin/String!!"), false, false),
+                    CanonicalJavaScriptParameter("kotlin/Int!!", false, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "summary" -> isExactProperty(simpleOwner, name, canonical("AgentPluginSummary"))
+                "description" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "skills" -> isExactProperty(simpleOwner, name, list(canonical("AgentPluginSkill")))
+                "connectors" -> isExactProperty(simpleOwner, name, list(canonical("AgentConnector")))
+                "mcpServers" -> isExactProperty(simpleOwner, name, list("kotlin/String!!"))
+                "hookCount" -> isExactProperty(simpleOwner, name, "kotlin/Int!!")
+                else -> false
+            }
+            else -> false
+        }
+        "AgentPluginSkill" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "name", "description" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "isEnabled" -> isExactProperty(simpleOwner, name, "kotlin/Boolean!!")
+                "path" -> isExactProperty(simpleOwner, name, "kotlin/String?")
+                else -> false
+            }
+            else -> false
+        }
+        "AgentPluginInstallResult" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentPluginAuthPolicy"), false, false),
+                    CanonicalJavaScriptParameter(list(canonical("AgentConnector")), false, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "authPolicy" -> isExactProperty(simpleOwner, name, canonical("AgentPluginAuthPolicy"))
+                "connectorsNeedingAuthentication" ->
+                    isExactProperty(simpleOwner, name, list(canonical("AgentConnector")))
+                "message" -> isExactProperty(simpleOwner, name, "kotlin/String?")
+                else -> false
+            }
+            else -> false
+        }
+        "CodexPlugins" -> when (name) {
+            "isAvailable" -> isExactProperty(simpleOwner, name, "kotlin/Boolean!!")
+            "list" -> isExactFunction(
+                simpleOwner,
+                name,
+                canonical("AgentPluginCatalog"),
+                expectedSuspend = true,
+                expectedParameters = listOf(
+                    CanonicalJavaScriptParameter("kotlin/Boolean!!", true, false),
+                ),
+            )
+            "read" -> isExactFunction(
+                simpleOwner,
+                name,
+                canonical("AgentPluginDetail"),
+                expectedSuspend = true,
+                expectedParameters = listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentPluginReference"), false, false),
+                ),
+            )
+            "install" -> isExactFunction(
+                simpleOwner,
+                name,
+                canonical("AgentPluginInstallResult"),
+                expectedSuspend = true,
+                expectedParameters = listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentPluginReference"), false, false),
+                ),
+            )
+            "uninstall" -> isExactFunction(
+                simpleOwner,
+                name,
+                "kotlin/Unit",
+                expectedSuspend = true,
+                expectedParameters = listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentPluginReference"), false, false),
+                ),
+            )
+            else -> false
+        }
+        "CodexAgent" -> name == "plugins" && isExactProperty(simpleOwner, name, canonical("CodexPlugins"))
+        else -> false
+    }
+}
+
+private fun hasExactD054PluginsInventory(symbols: List<JavaScriptPublicSymbol>): Boolean {
+    if (!hasExactJavaScriptSymbolInventory(symbols, javaScriptPluginsSymbols)) return false
+    val publicOwners = setOf(
+        "AgentPluginReference",
+        "AgentPluginCatalog",
+        "AgentPluginSummary",
+        "AgentPluginDetail",
+        "AgentPluginSkill",
+        "AgentPluginInstallResult",
+        "CodexPlugins",
+    )
+    return symbols.filter { symbol ->
+        symbol.owner in publicOwners ||
+            symbol.kind == JavaScriptPublicSymbolKind.CLASS && symbol.name in publicOwners ||
+            symbol.owner == "CodexAgent" && symbol.name == "plugins"
+    }.map(JavaScriptPublicSymbol::raw) == javaScriptPluginsSymbols
+}
+
+private fun CanonicalJavaScriptMember.d054PluginsPublicSymbols(): List<String> {
+    val expectedKind = when (kind) {
+        CanonicalJavaScriptMemberKind.CONSTRUCTOR -> JavaScriptPublicSymbolKind.CONSTRUCTOR
+        CanonicalJavaScriptMemberKind.FUNCTION -> JavaScriptPublicSymbolKind.METHOD
+        CanonicalJavaScriptMemberKind.PROPERTY -> JavaScriptPublicSymbolKind.GETTER
+        else -> error("Unsupported D054 Plugins capability kind: $key")
+    }
+    val memberSymbol = javaScriptPluginsSymbols.single { raw ->
+        val symbol = parseJavaScriptPublicSymbol(raw)
+        symbol.kind == expectedKind && symbol.owner == simpleOwner &&
+            symbol.name == if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR) "constructor" else name
+    }
+    return buildList {
+        if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR ||
+            simpleOwner == "CodexPlugins" && name == "isAvailable"
+        ) add("class:$simpleOwner")
         add(memberSymbol)
     }.sorted()
 }
@@ -3306,6 +3651,34 @@ private fun invalidIntegrationAuthorizationErrors(
         javaScriptIntegrationAuthorizationSymbols.toSet()
     return if (exact) emptyList() else listOf(
         "Incomplete JavaScript/TypeScript integration authorization family for capabilities " +
+            (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
+                .distinct()
+                .sorted(),
+    )
+}
+
+private fun invalidPluginsErrors(
+    canonicalKeys: List<String>,
+    projections: List<JavaScriptProjection>,
+): List<String> {
+    val canonicalMembers = canonicalKeys.map(::parseCanonicalJavaScriptMember)
+        .filter(CanonicalJavaScriptMember::isD054PluginsSurfaceMember)
+    val related = projections.filter { projection ->
+        projection.publicSymbols.any(javaScriptPluginsSymbols::contains)
+    }
+    if (canonicalMembers.isEmpty() && related.isEmpty()) return emptyList()
+    val exact = canonicalMembers.size == 47 &&
+        canonicalMembers.all(CanonicalJavaScriptMember::isExactD054PluginsMember) &&
+        canonicalMembers.map(CanonicalJavaScriptMember::key).distinct().size == 47 &&
+        related.size == 47 && related.map { it.member.key }.distinct().size == 47 &&
+        related.all { projection ->
+            projection.member.isExactD054PluginsMember() &&
+                projection.publicSymbols == projection.member.d054PluginsPublicSymbols() &&
+                projection.shareablePublicSymbols.isEmpty()
+        } && related.flatMap(JavaScriptProjection::publicSymbols).toSet() ==
+        javaScriptPluginsSymbols.toSet()
+    return if (exact) emptyList() else listOf(
+        "Incomplete JavaScript/TypeScript Plugins family for capabilities " +
             (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
                 .distinct()
                 .sorted(),

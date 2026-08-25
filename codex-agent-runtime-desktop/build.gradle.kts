@@ -238,6 +238,114 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get isEnabled(): boolean;
     get pluginNames(): ReadonlyArray<string>;
 }"""
+        val rawAgentPluginDeclarations =
+            """export declare class AgentPluginReference {
+    constructor(id: string, name: string, marketplaceName: string, marketplacePath?: Nullable<string>, remotePluginId?: Nullable<string>);
+    get id(): string;
+    get name(): string;
+    get marketplaceName(): string;
+    get marketplacePath(): Nullable<string>;
+    get remotePluginId(): Nullable<string>;
+    get uri(): string;
+}
+export declare class AgentPluginSummary {
+    constructor(reference: AgentPluginReference, displayName: string, description: string, isInstalled: boolean, isEnabled: boolean, installPolicy: string, authPolicy: string, isAvailable: boolean, capabilities?: Array<string>, brandColor?: Nullable<string>, privacyPolicyUrl?: Nullable<string>, termsOfServiceUrl?: Nullable<string>, websiteUrl?: Nullable<string>);
+    get reference(): AgentPluginReference;
+    get displayName(): string;
+    get description(): string;
+    get isInstalled(): boolean;
+    get isEnabled(): boolean;
+    get installPolicy(): string;
+    get authPolicy(): string;
+    get isAvailable(): boolean;
+    get capabilities(): Array<string>;
+    get brandColor(): Nullable<string>;
+    get privacyPolicyUrl(): Nullable<string>;
+    get termsOfServiceUrl(): Nullable<string>;
+    get websiteUrl(): Nullable<string>;
+}
+export declare class AgentPluginCatalog {
+    constructor(plugins: Array<AgentPluginSummary>, errors?: Array<string>, freshness?: string);
+    get plugins(): Array<AgentPluginSummary>;
+    get errors(): Array<string>;
+    get freshness(): string;
+}
+export declare class AgentPluginSkill {
+    constructor(name: string, description: string, isEnabled: boolean, path?: Nullable<string>);
+    get name(): string;
+    get description(): string;
+    get isEnabled(): boolean;
+    get path(): Nullable<string>;
+}
+export declare class AgentPluginDetail {
+    constructor(summary: AgentPluginSummary, description: string, skills: Array<AgentPluginSkill>, connectors: Array<AgentConnector>, mcpServers: Array<string>, hookCount: number);
+    get summary(): AgentPluginSummary;
+    get description(): string;
+    get skills(): Array<AgentPluginSkill>;
+    get connectors(): Array<AgentConnector>;
+    get mcpServers(): Array<string>;
+    get hookCount(): number;
+}
+export declare class AgentPluginInstallResult {
+    constructor(authPolicy: string, connectorsNeedingAuthentication: Array<AgentConnector>, message?: Nullable<string>);
+    get authPolicy(): string;
+    get connectorsNeedingAuthentication(): Array<AgentConnector>;
+    get message(): Nullable<string>;
+}"""
+        val reviewedAgentPluginDeclarations =
+            """export declare class AgentPluginReference {
+    constructor(id: string, name: string, marketplaceName: string, marketplacePath?: Nullable<string>, remotePluginId?: Nullable<string>);
+    get id(): string;
+    get name(): string;
+    get marketplaceName(): string;
+    get marketplacePath(): Nullable<string>;
+    get remotePluginId(): Nullable<string>;
+    get uri(): string;
+}
+export declare class AgentPluginSummary {
+    constructor(reference: AgentPluginReference, displayName: string, description: string, isInstalled: boolean, isEnabled: boolean, installPolicy: AgentPluginInstallPolicy, authPolicy: AgentPluginAuthPolicy, isAvailable: boolean, capabilities?: ReadonlyArray<string>, brandColor?: Nullable<string>, privacyPolicyUrl?: Nullable<string>, termsOfServiceUrl?: Nullable<string>, websiteUrl?: Nullable<string>);
+    get reference(): AgentPluginReference;
+    get displayName(): string;
+    get description(): string;
+    get isInstalled(): boolean;
+    get isEnabled(): boolean;
+    get installPolicy(): AgentPluginInstallPolicy;
+    get authPolicy(): AgentPluginAuthPolicy;
+    get isAvailable(): boolean;
+    get capabilities(): ReadonlyArray<string>;
+    get brandColor(): Nullable<string>;
+    get privacyPolicyUrl(): Nullable<string>;
+    get termsOfServiceUrl(): Nullable<string>;
+    get websiteUrl(): Nullable<string>;
+}
+export declare class AgentPluginCatalog {
+    constructor(plugins: ReadonlyArray<AgentPluginSummary>, errors?: ReadonlyArray<string>, freshness?: AgentCatalogFreshness);
+    get plugins(): ReadonlyArray<AgentPluginSummary>;
+    get errors(): ReadonlyArray<string>;
+    get freshness(): AgentCatalogFreshness;
+}
+export declare class AgentPluginSkill {
+    constructor(name: string, description: string, isEnabled: boolean, path?: Nullable<string>);
+    get name(): string;
+    get description(): string;
+    get isEnabled(): boolean;
+    get path(): Nullable<string>;
+}
+export declare class AgentPluginDetail {
+    constructor(summary: AgentPluginSummary, description: string, skills: ReadonlyArray<AgentPluginSkill>, connectors: ReadonlyArray<AgentConnector>, mcpServers: ReadonlyArray<string>, hookCount: number);
+    get summary(): AgentPluginSummary;
+    get description(): string;
+    get skills(): ReadonlyArray<AgentPluginSkill>;
+    get connectors(): ReadonlyArray<AgentConnector>;
+    get mcpServers(): ReadonlyArray<string>;
+    get hookCount(): number;
+}
+export declare class AgentPluginInstallResult {
+    constructor(authPolicy: AgentPluginAuthPolicy, connectorsNeedingAuthentication: ReadonlyArray<AgentConnector>, message?: Nullable<string>);
+    get authPolicy(): AgentPluginAuthPolicy;
+    get connectorsNeedingAuthentication(): ReadonlyArray<AgentConnector>;
+    get message(): Nullable<string>;
+}"""
         val rawAgentIntegrationDeclaration =
             """export declare interface AgentIntegration {
     readonly id: string;
@@ -601,6 +709,15 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     uninstall(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
     trust(hook: AgentHook, signal?: Nullable<AbortSignal>): Promise<void>;
 }"""
+        val expectedCodexPluginsDeclaration =
+            """export declare class CodexPlugins {
+    private constructor();
+    get isAvailable(): boolean;
+    list(forceReload?: boolean, signal?: Nullable<AbortSignal>): Promise<AgentPluginCatalog>;
+    read(plugin: AgentPluginReference, signal?: Nullable<AbortSignal>): Promise<AgentPluginDetail>;
+    install(plugin: AgentPluginReference, signal?: Nullable<AbortSignal>): Promise<AgentPluginInstallResult>;
+    uninstall(plugin: AgentPluginReference, signal?: Nullable<AbortSignal>): Promise<void>;
+}"""
         val rawAgentMcpStdioTransportDeclaration =
             """export declare class AgentMcpStdioTransport implements AgentMcpTransport {
     constructor(command: string, arguments?: Array<string>, workingDirectory?: Nullable<string>, environment?: Nullable<any>, forwardedEnvironment?: Array<AgentMcpEnvironmentVariable>);
@@ -776,6 +893,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawAgentConnectorDeclaration).size == 2) {
             "Unexpected AgentConnector TypeScript declaration"
         }
+        check(actual.split(rawAgentPluginDeclarations).size == 2) {
+            "Unexpected plugin value TypeScript declarations"
+        }
         check(actual.split(rawAgentIntegrationDeclaration).size == 2) {
             "Unexpected AgentIntegration TypeScript declaration"
         }
@@ -860,6 +980,12 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawCodexHooksDeclaration).size == 2) {
             "Unexpected CodexHooks TypeScript declaration"
         }
+        check(actual.lineSequence().count { it == "    get plugins(): CodexPlugins;" } == 1) {
+            "Unexpected CodexAgent.plugins TypeScript declaration"
+        }
+        check(actual.split(expectedCodexPluginsDeclaration).size == 2) {
+            "Unexpected CodexPlugins TypeScript declaration"
+        }
         check(actual.split(rawAgentMcpStdioTransportDeclaration).size == 2) {
             "Unexpected AgentMcpStdioTransport TypeScript declaration"
         }
@@ -923,6 +1049,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawAgentConnectorDeclaration,
             reviewedAgentConnectorDeclaration,
+        ).replace(
+            rawAgentPluginDeclarations,
+            reviewedAgentPluginDeclarations,
         ).replace(
             rawAgentIntegrationDeclaration,
             reviewedAgentIntegrationDeclaration,
