@@ -27,6 +27,7 @@ import {
   CodexAgent,
   CodexAuthentication,
   CodexAuthenticationState,
+  CodexAuthorizationUrl,
   CodexConversation,
   CodexConversationState,
   CodexError,
@@ -101,6 +102,12 @@ const capabilityId: string = agentCapabilityId(capability);
 const capabilityDisplayLabel: string = agentCapabilityDisplayLabel(capability);
 const capabilityIcon: string | null | undefined = agentCapabilityIcon(capability);
 const capabilityPromptLabel: string = agentCapabilityPromptLabel(capability);
+const chatGptAuthorizationUrl: CodexAuthorizationUrl =
+  CodexAuthorizationUrl.chatGpt("https://auth.openai.com/authorize");
+const externalAuthorizationUrl: CodexAuthorizationUrl =
+  CodexAuthorizationUrl.external("http://localhost:8787/callback");
+const authorizationUrlValue: string = chatGptAuthorizationUrl.value;
+const authorizationUrlPurpose: CodexAuthorizationPurpose = externalAuthorizationUrl.purpose;
 const formOption = new AgentFormOption("value");
 const formOptionValue: string = formOption.value;
 const formOptionTitle: string = formOption.title;
@@ -410,8 +417,10 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   const authenticationMethod: CodexAuthenticationMethod = "api_key";
   const isAuthenticated: boolean = authentication.isAuthenticated;
   const isAuthenticating: boolean = authentication.isAuthenticating;
-  const pendingSignInUrl: string | null | undefined = authenticationState.pendingSignInUrl;
-  const deviceVerificationUrl: string | null | undefined = authenticationState.deviceVerificationUrl;
+  const pendingSignInUrl: CodexAuthorizationUrl | null | undefined =
+    authenticationState.pendingSignInUrl;
+  const deviceVerificationUrl: CodexAuthorizationUrl | null | undefined =
+    authenticationState.deviceVerificationUrl;
   const deviceUserCode: string | null | undefined = authenticationState.deviceUserCode;
   const authenticationFailure: CodexFailure | null | undefined = authenticationState.failure;
   authentication.observeState((next: CodexAuthenticationState): void => void next.status).dispose();
@@ -556,6 +565,10 @@ void [
   capabilityDisplayLabel,
   capabilityIcon,
   capabilityPromptLabel,
+  chatGptAuthorizationUrl,
+  externalAuthorizationUrl,
+  authorizationUrlValue,
+  authorizationUrlPurpose,
   formOptionValue,
   formOptionTitle,
   formOptionDescription,

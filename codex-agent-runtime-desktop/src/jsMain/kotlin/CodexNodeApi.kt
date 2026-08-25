@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalJsExport::class)
+@file:OptIn(ExperimentalJsExport::class, ExperimentalJsStatic::class)
 
 import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
 import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as CoreAuthenticationState
@@ -49,6 +49,7 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentTurnRequest as CoreTurn
 import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication as CoreAuthentication
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthenticationMethod as CoreAuthenticationMethod
+import io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl as CoreAuthorizationUrl
 import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo
 import io.github.codex_agent_labs.codexmobile.agent.CodexConnectors as CoreConnectors
 import io.github.codex_agent_labs.codexmobile.agent.CodexConversation as CoreConversation
@@ -64,7 +65,9 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace as CoreWorksp
 import io.github.codex_agent_labs.codexmobile.agent.ConversationId
 import io.github.codex_agent_labs.codexmobile.agent.runtime.NodeCodexPlatform
 import kotlin.js.ExperimentalJsExport
+import kotlin.js.ExperimentalJsStatic
 import kotlin.js.JsExport
+import kotlin.js.JsStatic
 import kotlin.js.Promise
 import kotlin.js.jsTypeOf
 import kotlinx.coroutines.CancellationException
@@ -813,6 +816,29 @@ public class AgentConversation public constructor(
     }
 }
 
+/** Immutable validated authorization URL. */
+@JsExport
+public class CodexAuthorizationUrl internal constructor(
+    public val value: String,
+    public val purpose: String,
+    token: Any,
+) {
+    init {
+        require(token === jsApiToken) { "Codex authorization URLs are created by the SDK" }
+        freezeSnapshot(this)
+    }
+
+    public companion object {
+        @JsStatic
+        public fun chatGpt(value: String): CodexAuthorizationUrl =
+            CoreAuthorizationUrl.chatGpt(value.requireJavaScriptString("value")).project()
+
+        @JsStatic
+        public fun external(value: String): CodexAuthorizationUrl =
+            CoreAuthorizationUrl.external(value.requireJavaScriptString("value")).project()
+    }
+}
+
 /** Structured failure data exposed by observable state snapshots. */
 @JsExport
 public class CodexFailure internal constructor(
@@ -829,8 +855,8 @@ public class CodexFailure internal constructor(
 @JsExport
 public class CodexAuthenticationState internal constructor(
     public val status: String,
-    public val pendingSignInUrl: String?,
-    public val deviceVerificationUrl: String?,
+    public val pendingSignInUrl: CodexAuthorizationUrl?,
+    public val deviceVerificationUrl: CodexAuthorizationUrl?,
     public val deviceUserCode: String?,
     public val failure: CodexFailure?,
     token: Any,
@@ -2110,10 +2136,16 @@ private fun AgentInvocation.toCoreInvocation(index: Int): CoreInvocation {
 
 private fun CoreFailure.project(): CodexFailure = CodexFailure(code, message, isRecoverable)
 
+private fun CoreAuthorizationUrl.project(): CodexAuthorizationUrl = CodexAuthorizationUrl(
+    value = value,
+    purpose = purpose.name.lowercase(),
+    token = jsApiToken,
+)
+
 private fun CoreAuthenticationState.project(): CodexAuthenticationState = CodexAuthenticationState(
     status = status.name.lowercase(),
-    pendingSignInUrl = pendingSignInUrl?.value,
-    deviceVerificationUrl = deviceVerificationUrl?.value,
+    pendingSignInUrl = pendingSignInUrl?.project(),
+    deviceVerificationUrl = deviceVerificationUrl?.project(),
     deviceUserCode = deviceUserCode,
     failure = failure?.project(),
     token = jsApiToken,

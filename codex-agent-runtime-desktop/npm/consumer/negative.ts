@@ -24,6 +24,7 @@ import {
   AgentSkillCatalog,
   AgentSkillChunk,
   AgentSkillInvocation,
+  CodexAuthorizationUrl,
   CodexConnectors,
   CodexModels,
   CodexSkills,
@@ -42,6 +43,7 @@ import type {
   AgentInvocation,
   AgentTurnRequest,
   CodexAgent,
+  CodexAuthenticationState,
   CodexConversation,
   CodexConversationState,
   CodexHostState,
@@ -61,6 +63,23 @@ agentCapabilityDisplayLabel("WEB_SEARCH");
 agentCapabilityIcon("WEB_SEARCH");
 // @ts-expect-error Raw Kotlin enum names are outside the public TypeScript domain.
 agentCapabilityPromptLabel("WEB_SEARCH");
+
+// @ts-expect-error Authorization URLs are created by their validated static factories.
+new CodexAuthorizationUrl();
+const authorizationUrl = CodexAuthorizationUrl.chatGpt("https://auth.openai.com/authorize");
+// @ts-expect-error Authorization URL values are readonly.
+authorizationUrl.value = "https://chatgpt.com/authorize";
+// @ts-expect-error Authorization URL purposes are readonly.
+authorizationUrl.purpose = "external";
+// @ts-expect-error ChatGPT authorization URL values are strings.
+CodexAuthorizationUrl.chatGpt(1);
+// @ts-expect-error External authorization URL values are strings.
+CodexAuthorizationUrl.external(1);
+declare const authenticationState: CodexAuthenticationState;
+// @ts-expect-error Pending sign-in URLs retain their validated value object.
+const legacyPendingSignInUrl: string | null | undefined = authenticationState.pendingSignInUrl;
+// @ts-expect-error Device-verification URLs retain their validated value object.
+const legacyDeviceVerificationUrl: string | null | undefined = authenticationState.deviceVerificationUrl;
 
 declare const hostState: CodexHostState;
 // @ts-expect-error Host-state workspaces are readonly.

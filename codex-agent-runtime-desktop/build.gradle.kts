@@ -289,6 +289,22 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     get summary(): AgentConversationSummary;
     get messages(): ReadonlyArray<CodexMessage>;
 }"""
+        val rawCodexAuthorizationUrlDeclaration =
+            """export declare class CodexAuthorizationUrl {
+    private constructor();
+    get value(): string;
+    get purpose(): string;
+    static chatGpt(value: string): CodexAuthorizationUrl;
+    static external(value: string): CodexAuthorizationUrl;
+}"""
+        val reviewedCodexAuthorizationUrlDeclaration =
+            """export declare class CodexAuthorizationUrl {
+    private constructor();
+    get value(): string;
+    get purpose(): CodexAuthorizationPurpose;
+    static chatGpt(value: string): CodexAuthorizationUrl;
+    static external(value: string): CodexAuthorizationUrl;
+}"""
         val expectedAgentServiceTierDeclaration =
             """export declare class AgentServiceTier {
     constructor(id: string, name: string, description: string);
@@ -568,6 +584,9 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
         check(actual.split(rawAgentConversationDeclaration).size == 2) {
             "Unexpected AgentConversation TypeScript declaration"
         }
+        check(actual.split(rawCodexAuthorizationUrlDeclaration).size == 2) {
+            "Unexpected CodexAuthorizationUrl TypeScript declaration"
+        }
         check(actual.split(expectedAgentServiceTierDeclaration).size == 2) {
             "Unexpected AgentServiceTier TypeScript declaration"
         }
@@ -668,6 +687,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawAgentConversationDeclaration,
             reviewedAgentConversationDeclaration,
+        ).replace(
+            rawCodexAuthorizationUrlDeclaration,
+            reviewedCodexAuthorizationUrlDeclaration,
         ).replace(
             rawAgentModelDeclaration,
             reviewedAgentModelDeclaration,
@@ -824,8 +846,8 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
             "    get recoverable(): boolean;\n}\nexport declare class CodexWorkspace",
             "    get recoverable(): boolean;\n    readonly cause?: unknown;\n}\nexport declare class CodexWorkspace",
         ).replace(
-            "    get status(): string;\n    get pendingSignInUrl(): Nullable<string>;",
-            "    get status(): CodexAuthenticationStatus;\n    get pendingSignInUrl(): Nullable<string>;",
+            "    get status(): string;\n    get pendingSignInUrl(): Nullable<CodexAuthorizationUrl>;",
+            "    get status(): CodexAuthenticationStatus;\n    get pendingSignInUrl(): Nullable<CodexAuthorizationUrl>;",
         ).replace(
             "export declare class CodexHostState {\n    private constructor();\n    get status(): string;",
             "export declare class CodexHostState {\n    private constructor();\n    get status(): CodexHostStatus;",

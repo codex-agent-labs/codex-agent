@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 
 class CrossLanguageJavaScriptBindingEvidenceTest {
     @Test
-    fun `current 315-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+    fun `current 320-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
         val keys = listOf(
             canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
             canonicalFunction("CodexHost", "start", suspendFunction = true),
@@ -24,11 +24,11 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         ).sorted()
         val evidence = deriveCrossLanguageJavaScriptBindingEvidence(
             canonical = canonicalEvidence(keys),
-            packedApi = packedEvidence(d048CurrentPublicSymbols(), schema = 1),
+            packedApi = packedEvidence(d049CurrentPublicSymbols(), schema = 1),
         )
 
         assertEquals(4, evidence.canonical.memberKeys.size)
-        assertEquals(315, evidence.packedApi.publicSymbols.size)
+        assertEquals(320, evidence.packedApi.publicSymbols.size)
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
         assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
     }
@@ -262,6 +262,84 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
 
         assertTrue(derive(listOf(key), instanceSymbols).missingCapabilityKeys.contains(key))
         assertEquals(listOf(key), derive(listOf(key), staticSymbols).projectionClaims.map { it.capabilityKey })
+    }
+
+    @Test
+    fun `authorization URLs preserve validated values purposes and static factories`() {
+        val keys = d049AuthorizationUrlKeys()
+        val symbols = d049AuthorizationUrlSymbols()
+        val evidence = derive(keys, symbols, references = D049_PUBLIC_SYMBOLS)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(4, claims.size)
+        claims.values.forEach { claim ->
+            assertEquals(listOf(CrossLanguageBindingScenario.VALUE_CONVERSION), claim.sharedScenarios)
+            assertEquals(1, claim.publicSymbols.size)
+        }
+        assertEquals(D049_PUBLIC_SYMBOLS, evidence.packedApi.referencedSymbols)
+        assertEquals(376, 372 + claims.size)
+        assertEquals(168, 172 - claims.size)
+        assertEquals(556, 376 + 12 + 168)
+        assertEquals(27, 29 - 2)
+        val currentSymbols = d049CurrentPublicSymbols()
+        assertEquals(320, currentSymbols.size)
+        assertEquals(78, symbolExports(currentSymbols).first.size)
+        assertEquals(50, symbolExports(currentSymbols).second.size)
+        assertEquals(278, 273 + D049_PUBLIC_SYMBOLS.size)
+
+        listOf(
+            D049_PURPOSE to D049_PURPOSE.replace("CodexAuthorizationPurpose", "string"),
+            D049_VALUE to D049_VALUE.replace("string", "number"),
+            D049_CHAT_GPT to D049_CHAT_GPT.replace("[static]", ""),
+            D049_CHAT_GPT to D049_CHAT_GPT.replace("value: string", "value?: string"),
+            D049_EXTERNAL to D049_EXTERNAL.replace("value: string", "value: number"),
+            D049_EXTERNAL to D049_EXTERNAL.replace(": CodexAuthorizationUrl", ": string"),
+        ).forEach { (exact, drifted) ->
+            val drift = derive(
+                keys,
+                symbols.map { if (it == exact) drifted else it }.sorted(),
+                references = D049_PUBLIC_SYMBOLS.map { if (it == exact) drifted else it }.sorted(),
+            )
+            assertTrue(drift.missingCapabilityKeys.isNotEmpty(), "Accepted authorization URL drift: $drifted")
+        }
+
+        listOf(D049_CHAT_GPT, D049_EXTERNAL).forEach { symbol ->
+            val unreferenced = derive(keys, symbols, references = D049_PUBLIC_SYMBOLS - symbol)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && symbol in it })
+        }
+
+        val stateKey = canonicalProperty(
+            "AgentAuthenticationState",
+            "pendingSignInUrl",
+            "example/CodexAuthorizationUrl?",
+        )
+        val typedStateSymbols = listOf(
+            "class:CodexAuthenticationState",
+            "class:CodexAuthorizationUrl",
+            "getter:CodexAuthenticationState#pendingSignInUrl:CodexAuthorizationUrl | null | undefined",
+        ).sorted()
+        assertEquals(1, derive(listOf(stateKey), typedStateSymbols).projectionClaims.size)
+        assertTrue(
+            stateKey in derive(
+                listOf(stateKey),
+                typedStateSymbols.map {
+                    if (it.startsWith("getter:")) {
+                        "getter:CodexAuthenticationState#pendingSignInUrl:string | null | undefined"
+                    } else it
+                }.sorted(),
+            ).missingCapabilityKeys,
+        )
+
+        val future = canonicalFunction(
+            "CodexAuthorizationUrl.Companion",
+            "future",
+            returnType = "example/CodexAuthorizationUrl!!",
+            parameters = listOf("kotlin/String!!"),
+        )
+        assertTrue(future in derive(listOf(future), symbols, references = D049_PUBLIC_SYMBOLS).missingCapabilityKeys)
     }
 
     @Test
@@ -4490,6 +4568,32 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         D048_PUBLIC_SYMBOLS + listOf("class:CodexAgent")
     ).distinct().sorted()
 
+    private fun d049AuthorizationUrlKeys(): List<String> = listOf(
+        canonicalProperty(
+            "CodexAuthorizationUrl",
+            "purpose",
+            "example/CodexAuthorizationPurpose!!",
+        ),
+        canonicalProperty("CodexAuthorizationUrl", "value", "kotlin/String!!"),
+        canonicalFunction(
+            "CodexAuthorizationUrl.Companion",
+            "chatGpt",
+            returnType = "example/CodexAuthorizationUrl!!",
+            parameters = listOf("kotlin/String!!"),
+        ),
+        canonicalFunction(
+            "CodexAuthorizationUrl.Companion",
+            "external",
+            returnType = "example/CodexAuthorizationUrl!!",
+            parameters = listOf("kotlin/String!!"),
+        ),
+    ).sorted()
+
+    private fun d049AuthorizationUrlSymbols(): List<String> = (
+        D049_PUBLIC_SYMBOLS +
+            "type:CodexAuthorizationPurpose:\"chat_gpt\" | \"external\""
+    ).sorted()
+
     private fun conversationStateSymbols(): List<String> = listOf(
         "class:CodexConversation",
         "class:CodexConversationState",
@@ -5045,6 +5149,20 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         (currentPublicSymbols() + D048_PUBLIC_SYMBOLS).distinct().sorted()
             .also { assertEquals(315, it.size) }
 
+    private fun d049CurrentPublicSymbols(): List<String> = (
+        d048CurrentPublicSymbols().map { symbol ->
+            when (symbol) {
+                "getter:CodexAuthenticationState#deviceVerificationUrl:string | null | undefined" ->
+                    "getter:CodexAuthenticationState#deviceVerificationUrl:" +
+                        "CodexAuthorizationUrl | null | undefined"
+                "getter:CodexAuthenticationState#pendingSignInUrl:string | null | undefined" ->
+                    "getter:CodexAuthenticationState#pendingSignInUrl:" +
+                        "CodexAuthorizationUrl | null | undefined"
+                else -> symbol
+            }
+        } + D049_PUBLIC_SYMBOLS
+    ).distinct().sorted().also { assertEquals(320, it.size) }
+
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
@@ -5223,6 +5341,20 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "method:CodexHooks#uninstall:(hook: AgentHook, " +
                 "signal?: AbortSignal | null | undefined): Promise<void>",
             D048_AGENT_HOOK_HANDLER,
+        ).sorted()
+        private const val D049_PURPOSE =
+            "getter:CodexAuthorizationUrl#purpose:CodexAuthorizationPurpose"
+        private const val D049_VALUE = "getter:CodexAuthorizationUrl#value:string"
+        private const val D049_CHAT_GPT =
+            "method:CodexAuthorizationUrl#chatGpt[static]:(value: string): CodexAuthorizationUrl"
+        private const val D049_EXTERNAL =
+            "method:CodexAuthorizationUrl#external[static]:(value: string): CodexAuthorizationUrl"
+        private val D049_PUBLIC_SYMBOLS = listOf(
+            "class:CodexAuthorizationUrl",
+            D049_PURPOSE,
+            D049_VALUE,
+            D049_CHAT_GPT,
+            D049_EXTERNAL,
         ).sorted()
 
         private val AUTHENTICATION_OVERLOADS = listOf(

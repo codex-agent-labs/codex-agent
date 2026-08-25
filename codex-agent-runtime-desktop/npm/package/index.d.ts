@@ -212,6 +212,13 @@ export declare class AgentConversation {
     get summary(): AgentConversationSummary;
     get messages(): ReadonlyArray<CodexMessage>;
 }
+export declare class CodexAuthorizationUrl {
+    private constructor();
+    get value(): string;
+    get purpose(): CodexAuthorizationPurpose;
+    static chatGpt(value: string): CodexAuthorizationUrl;
+    static external(value: string): CodexAuthorizationUrl;
+}
 export declare class CodexFailure {
     private constructor();
     get code(): string;
@@ -221,8 +228,8 @@ export declare class CodexFailure {
 export declare class CodexAuthenticationState {
     private constructor();
     get status(): CodexAuthenticationStatus;
-    get pendingSignInUrl(): Nullable<string>;
-    get deviceVerificationUrl(): Nullable<string>;
+    get pendingSignInUrl(): Nullable<CodexAuthorizationUrl>;
+    get deviceVerificationUrl(): Nullable<CodexAuthorizationUrl>;
     get deviceUserCode(): Nullable<string>;
     get failure(): Nullable<CodexFailure>;
 }

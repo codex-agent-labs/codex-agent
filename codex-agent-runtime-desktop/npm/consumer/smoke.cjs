@@ -23,6 +23,45 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.agentCapabilityDisplayLabel, 'function');
   assert.equal(typeof sdk.agentCapabilityIcon, 'function');
   assert.equal(typeof sdk.agentCapabilityPromptLabel, 'function');
+  assert.equal(typeof sdk.CodexAuthorizationUrl, 'function');
+  assert.throws(
+    () => new sdk.CodexAuthorizationUrl(),
+    (error) => error?.message === 'Codex authorization URLs are created by the SDK',
+  );
+  const chatGptAuthorizationUrl = sdk.CodexAuthorizationUrl.chatGpt(
+    'https://AUTH.OPENAI.COM/authorize?client=cjs',
+  );
+  const externalAuthorizationUrl = sdk.CodexAuthorizationUrl.external(
+    'http://localhost:8787/callback',
+  );
+  assert.deepEqual(
+    [chatGptAuthorizationUrl.value, chatGptAuthorizationUrl.purpose],
+    ['https://AUTH.OPENAI.COM/authorize?client=cjs', 'chat_gpt'],
+  );
+  assert.deepEqual(
+    [externalAuthorizationUrl.value, externalAuthorizationUrl.purpose],
+    ['http://localhost:8787/callback', 'external'],
+  );
+  assert.equal(Object.isFrozen(chatGptAuthorizationUrl), true);
+  assert.equal(Object.isFrozen(externalAuthorizationUrl), true);
+  assert.throws(
+    () => sdk.CodexAuthorizationUrl.chatGpt('https://example.com/login'),
+    (error) => error?.message === 'ChatGPT authorization URL uses an untrusted host',
+  );
+  assert.throws(
+    () => sdk.CodexAuthorizationUrl.external('http://example.com/login'),
+    (error) => error?.message === 'Authorization URL is not HTTPS or loopback HTTP',
+  );
+  for (const invalid of [0, null, undefined, new String('https://auth.openai.com/'), new Proxy({}, {})]) {
+    assert.throws(
+      () => sdk.CodexAuthorizationUrl.chatGpt(invalid),
+      (error) => error?.message === 'value must be a string',
+    );
+    assert.throws(
+      () => sdk.CodexAuthorizationUrl.external(invalid),
+      (error) => error?.message === 'value must be a string',
+    );
+  }
   for (const [clientInfo, message] of [
     [[Object.create(null), 'Client', '1.0'], 'clientName must be a string'],
     [['client', [], '1.0'], 'clientTitle must be a string'],

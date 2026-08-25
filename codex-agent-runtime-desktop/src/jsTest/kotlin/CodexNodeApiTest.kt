@@ -1976,6 +1976,41 @@ class CodexNodeApiTest {
 
     @Test
     fun projectsAuthenticationStateMethodsIdentityAndDisposal() = runTest {
+        val chatGptUrl = CodexAuthorizationUrl.chatGpt("https://auth.openai.com/authorize?client=node")
+        val externalUrl = CodexAuthorizationUrl.external("http://localhost:8787/callback")
+        assertEquals("https://auth.openai.com/authorize?client=node", chatGptUrl.value)
+        assertEquals("chat_gpt", chatGptUrl.purpose)
+        assertEquals("http://localhost:8787/callback", externalUrl.value)
+        assertEquals("external", externalUrl.purpose)
+        listOf(chatGptUrl, externalUrl).forEach {
+            assertTrue(isFrozen(it))
+            assertEquals(0, enumerablePropertyCount(it))
+        }
+        assertEquals(
+            "ChatGPT authorization URL uses an untrusted host",
+            runCatching { CodexAuthorizationUrl.chatGpt("https://example.com/login") }
+                .exceptionOrNull()?.message,
+        )
+        assertEquals(
+            "Authorization URL is not HTTPS or loopback HTTP",
+            runCatching { CodexAuthorizationUrl.external("http://example.com/login") }
+                .exceptionOrNull()?.message,
+        )
+        listOf(
+            js("({})").unsafeCast<String>(),
+            js("new String('https://auth.openai.com/')").unsafeCast<String>(),
+            js("null").unsafeCast<String>(),
+        ).forEach { hostile ->
+            assertEquals(
+                "value must be a string",
+                runCatching { CodexAuthorizationUrl.chatGpt(hostile) }.exceptionOrNull()?.message,
+            )
+            assertEquals(
+                "value must be a string",
+                runCatching { CodexAuthorizationUrl.external(hostile) }.exceptionOrNull()?.message,
+            )
+        }
+
         val runtime = ApiTestRuntime()
         val core = CoreHost(ApiTestPlatform(runtime), CodexClientInfo("node_test", "Node Test", "test"))
         val host = wrapCodexHost(core)
@@ -1986,6 +2021,8 @@ class CodexNodeApiTest {
         assertSame(authentication, agent.authentication)
         assertEquals(0, enumerablePropertyCount(authentication))
         assertEquals("signed_out", authentication.state.status)
+        assertNull(authentication.state.pendingSignInUrl)
+        assertNull(authentication.state.deviceVerificationUrl)
         assertFalse(authentication.isAuthenticated)
         assertFalse(authentication.isAuthenticating)
         assertTrue(isFrozen(authentication.state))
@@ -2006,11 +2043,14 @@ class CodexNodeApiTest {
 
         authentication.authenticate("chatgpt_browser").await()
         awaitCondition {
-            states.lastOrNull()?.pendingSignInUrl == "https://auth.openai.com/oauth?state=login-1" &&
+            states.lastOrNull()?.pendingSignInUrl?.value == "https://auth.openai.com/oauth?state=login-1" &&
                 authenticated.lastOrNull() == false && authenticating.lastOrNull() == true
         }
         assertEquals("authenticating", authentication.state.status)
-        assertEquals("https://auth.openai.com/oauth?state=login-1", authentication.state.pendingSignInUrl)
+        val pendingSignInUrl = checkNotNull(authentication.state.pendingSignInUrl)
+        assertEquals("https://auth.openai.com/oauth?state=login-1", pendingSignInUrl.value)
+        assertEquals("chat_gpt", pendingSignInUrl.purpose)
+        assertTrue(isFrozen(pendingSignInUrl))
         assertEquals("authenticating", states.last().status)
         assertTrue(authentication.isAuthenticating)
 
@@ -2021,6 +2061,7 @@ class CodexNodeApiTest {
         }
         assertEquals("signed_out", authentication.state.status)
         assertEquals("authentication_failed", authentication.state.failure?.code)
+        assertNull(authentication.state.pendingSignInUrl)
         assertEquals("signed_out", states.last().status)
         assertTrue(isFrozen(checkNotNull(authentication.state.failure)))
         assertEquals(1, runtime.cancelRequests)
@@ -2031,9 +2072,12 @@ class CodexNodeApiTest {
                 authenticated.lastOrNull() == false && authenticating.lastOrNull() == true
         }
         assertEquals("authenticating", authentication.state.status)
-        assertEquals("https://auth.openai.com/device", authentication.state.deviceVerificationUrl)
+        val deviceVerificationUrl = checkNotNull(authentication.state.deviceVerificationUrl)
+        assertEquals("https://auth.openai.com/device", deviceVerificationUrl.value)
+        assertEquals("external", deviceVerificationUrl.purpose)
+        assertTrue(isFrozen(deviceVerificationUrl))
         assertEquals("ABCD-EFGH", authentication.state.deviceUserCode)
-        assertEquals("https://auth.openai.com/device", states.last().deviceVerificationUrl)
+        assertEquals("https://auth.openai.com/device", states.last().deviceVerificationUrl?.value)
         authentication.cancel().await()
         awaitCondition {
             states.lastOrNull()?.status == "signed_out" &&

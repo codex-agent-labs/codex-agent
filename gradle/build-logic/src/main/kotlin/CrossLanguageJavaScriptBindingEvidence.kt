@@ -2227,7 +2227,7 @@ private fun canonicalJavaScriptType(type: String): String? {
         base == "kotlin/Long" -> "bigint"
         base == "kotlin/Unit" -> "void"
         base.endsWith("/ConversationId") -> "string"
-        base.endsWith("/CodexAuthorizationUrl") -> "string"
+        base.endsWith("/CodexAuthorizationUrl") -> "CodexAuthorizationUrl"
         base.startsWith("kotlin.collections/List<") -> canonicalCollectionType(base, "ReadonlyArray", 1)
         base.startsWith("kotlin.collections/Set<") -> canonicalCollectionType(base, "ReadonlySet", 1)
         base.startsWith("kotlin.collections/Map<") -> canonicalCollectionType(base, "ReadonlyMap", 2)
