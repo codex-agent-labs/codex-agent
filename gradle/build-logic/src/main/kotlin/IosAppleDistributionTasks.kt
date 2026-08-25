@@ -19,7 +19,7 @@ data class IosAppleDistributionTasks(
 )
 
 fun Project.registerIosAppleDistributionTasks(
-    expectedSwiftTestCount: Int,
+    expectedSwiftTestIdentifiers: List<String>,
     pinnedRustToolchain: String,
     appleFrameworkToolchainIdentity: Provider<String>,
     importedDeviceFramework: TaskProvider<ImportCodexAgentFrameworkTask>?,
@@ -102,7 +102,7 @@ fun Project.registerIosAppleDistributionTasks(
             }
             runtimeName.set("iOS 26.5")
             deviceTypeIdentifier.set("com.apple.CoreSimulator.SimDeviceType.iPhone-17")
-            this.expectedTestCount.set(expectedSwiftTestCount)
+            this.expectedTestIdentifiers.set(expectedSwiftTestIdentifiers)
             derivedDataDirectory.set(layout.buildDirectory.dir("swift-simulator-compilation-derived-data"))
             simulatorDevicesFile.set(layout.buildDirectory.file("simulator-devices.json"))
             resultBundleDirectory.set(layout.buildDirectory.dir("swift-authentication-tests.xcresult"))

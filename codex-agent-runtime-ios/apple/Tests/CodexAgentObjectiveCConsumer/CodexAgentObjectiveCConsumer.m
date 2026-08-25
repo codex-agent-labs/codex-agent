@@ -233,11 +233,13 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
             if (run == nil || run.finishing) return;
             if (![run requireMainQueue:@"post-close failure completion"]) return;
             CDXFailure *failure = result.failure;
-            if (result.success || failure == nil || failure.code.length == 0 || failure.message.length == 0) {
-                [run finishWithFailure:@"Objective-C post-close operation lacked structured failure"];
+            if (result.success || failure == nil ||
+                ![failure.code isEqualToString:@"operation_failed"] ||
+                ![failure.message isEqualToString:@"Codex operation failed"] ||
+                failure.isRecoverable) {
+                [run finishWithFailure:@"Objective-C post-close operation exposed the wrong structured failure"];
                 return;
             }
-            (void)failure.isRecoverable;
             [run verifyCancelAfterClose];
         }];
     }];
@@ -250,8 +252,12 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
             completed();
             CDXObjectiveCConsumerRun *run = weakSelf;
             if (run == nil || run.finishing) return;
-            if (result.success || result.failure.code.length == 0 || result.failure.message.length == 0) {
-                [run finishWithFailure:@"Objective-C post-close cancellation lacked structured failure"];
+            CDXFailure *failure = result.failure;
+            if (result.success || failure == nil ||
+                ![failure.code isEqualToString:@"operation_failed"] ||
+                ![failure.message isEqualToString:@"Codex operation failed"] ||
+                failure.isRecoverable) {
+                [run finishWithFailure:@"Objective-C post-close cancellation exposed the wrong structured failure"];
                 return;
             }
             [run verifyRepeatedClose];

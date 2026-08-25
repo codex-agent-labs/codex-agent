@@ -46,7 +46,7 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertNil(weakToken)
     }
 
-    func testCodexOperationErrorsExposeStructuredFailure() async {
+    func testCodexOperationErrorsExposeStructuredFailure() {
         let failure = CodexFailure(
             code: "workspace_unavailable",
             message: "Workspace is unavailable",
@@ -57,7 +57,9 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertEqual(error.codexFailure?.code, failure.code)
         XCTAssertEqual(error.codexFailure?.message, failure.message)
         XCTAssertEqual(error.codexFailure?.isRecoverable, failure.isRecoverable)
+    }
 
+    func testObjectiveCConsumerExposesStructuredFailure() async {
         let objectiveCConsumer = expectation(description: "Objective-C lifecycle consumer")
         CDXRunObjectiveCConsumer { failureMessage in
             XCTAssertNil(failureMessage, failureMessage ?? "Objective-C consumer failed")
