@@ -61,6 +61,9 @@ class CodexRuntimeEventTest {
 
     @Test
     fun slowEventConsumersFailExplicitlyInsteadOfBlockingTheRuntimeReader(): Unit = runBlocking {
+        val slowEntered = CompletableDeferred<Unit>()
+        val releaseSlow = CompletableDeferred<Unit>()
+        val burstSent = CompletableDeferred<Unit>()
         val process = FakeCodexRuntime { message, server ->
             when (message.method) {
                 "initialize" -> server.respond(message.id, buildJsonObject {})
@@ -69,7 +72,7 @@ class CodexRuntimeEventTest {
                         message.id,
                         buildJsonObject { putJsonObject("turn") { put("id", "turn-1") } },
                     )
-                    repeat(2_000) {
+                    repeat(256) {
                         server.notify(
                             "item/agentMessage/delta",
                             buildJsonObject {
@@ -80,6 +83,7 @@ class CodexRuntimeEventTest {
                             },
                         )
                     }
+                    burstSent.complete(Unit)
                 }
             }
         }
@@ -88,12 +92,19 @@ class CodexRuntimeEventTest {
             val overflow = async(start = CoroutineStart.UNDISPATCHED) {
                 withTimeout(5_000) {
                     client.events
-                        .onEach { delay(5) }
+                        .onEach {
+                            if (slowEntered.complete(Unit)) releaseSlow.await()
+                        }
                         .filterIsInstance<AgentEvent.Failure>()
                         .first()
                 }
             }
             client.sendTurn(ConversationId("thread-1"), AgentTurnRequest("hello"))
+            withTimeout(5_000) {
+                slowEntered.await()
+                burstSent.await()
+            }
+            releaseSlow.complete(Unit)
             assertEquals("event_observer_overflow", overflow.await().code)
             assertTrue(process.isAlive)
         } finally {
