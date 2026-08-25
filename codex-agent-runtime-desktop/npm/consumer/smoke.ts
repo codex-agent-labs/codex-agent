@@ -31,6 +31,10 @@ observation.dispose();
 observation[Symbol.dispose]();
 
 async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
+  const activeConversation: CodexConversation | null | undefined = agent.activeConversation;
+  agent.observeActiveConversation(
+    (next: CodexConversation | null | undefined): void => void next,
+  ).dispose();
   const authentication: CodexAuthentication = agent.authentication;
   const authenticationState: CodexAuthenticationState = authentication.state;
   const authenticationStatus: CodexAuthenticationStatus = authenticationState.status;
@@ -47,12 +51,6 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   await authentication.authenticate("chatgpt_browser", null, signal);
   await authentication.authenticate("chatgpt_device_code", null, signal);
   await authentication.authenticate(authenticationMethod, "sk-test", signal);
-  // @ts-expect-error API-key authentication requires a key.
-  await authentication.authenticate("api_key");
-  // @ts-expect-error Browser authentication does not accept an API key.
-  await authentication.authenticate("chatgpt_browser", "sk-test", signal);
-  // @ts-expect-error Device-code authentication does not accept an API key.
-  await authentication.authenticate("chatgpt_device_code", "sk-test", signal);
   await authentication.cancel(signal);
   await authentication.signOut(signal);
   const conversation: CodexConversation = await agent.openConversation(
@@ -79,6 +77,7 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     deviceVerificationUrl,
     deviceUserCode,
     authenticationFailure,
+    activeConversation,
     conversationState,
     isTurnActive,
   ];

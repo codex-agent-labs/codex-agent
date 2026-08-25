@@ -84,6 +84,15 @@ val npmConsumerDirectory = layout.buildDirectory.dir("npm/consumer")
 val npmConsumerCacheDirectory = layout.buildDirectory.dir("npm/cache")
 val npmPublicApiReport = layout.buildDirectory.file("npm/consumer/public-api.json")
 val npmPackedTestReport = layout.buildDirectory.file("npm/consumer/packed-tests.xml")
+val javaScriptBindingParityReceipt =
+    layout.buildDirectory.file("reports/cross-language-api/bindings/javascript-typescript-parity.json")
+val invalidateJavaScriptTypeScriptBindingParityOutput = tasks.register<Delete>(
+    "invalidateJavaScriptTypeScriptBindingParityOutput",
+) {
+    group = "verification"
+    description = "Deletes stale JavaScript/TypeScript parity output before its prerequisites execute."
+    delete(javaScriptBindingParityReceipt)
+}
 
 val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     group = "verification"
@@ -305,7 +314,7 @@ val installPackedNpmSdk = tasks.register<Exec>("installPackedNpmSdk") {
     )
 }
 
-tasks.register<Exec>("verifyPackedNpmConsumers") {
+val verifyPackedNpmConsumers = tasks.register<Exec>("verifyPackedNpmConsumers") {
     group = "verification"
     description = "Type-checks and executes CJS/ESM consumers against the exact SDK tarball."
     dependsOn(installPackedNpmSdk)
@@ -321,8 +330,10 @@ tasks.register<Exec>("verifyPackedNpmConsumers") {
     doLast {
         val publicApi = outputs.files.single { it.name == "public-api.json" }
         val junit = outputs.files.single { it.name == "packed-tests.xml" }
+        val publicApiText = publicApi.takeIf(File::isFile)?.readText().orEmpty()
         check(publicApi.isFile && publicApi.length() > 0 &&
-            publicApi.readText().contains("\"schema\": 1")) {
+            publicApiText.startsWith("{\n    \"schema\": 2,") && publicApiText.endsWith("}\n") &&
+            "\"referencedSymbols\": [" in publicApiText) {
             "Packed npm compiler API report is missing or malformed"
         }
         val testReport = junit.takeIf(File::isFile)?.readText().orEmpty()
@@ -340,6 +351,51 @@ tasks.register<Exec>("verifyPackedNpmConsumers") {
             check(testId in testReport) { "Packed npm JUnit evidence did not execute: $testId" }
         }
     }
+}
+
+val jsNodeTest = tasks.named("jsNodeTest")
+verifyPackedNpmConsumers.configure { dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput) }
+jsNodeTest.configure { dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput) }
+tasks.configureEach {
+    if (name != invalidateJavaScriptTypeScriptBindingParityOutput.name) {
+        mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)
+    }
+}
+project(":codex-agent-core").tasks.matching {
+    it.name == "invalidateCrossLanguageBindingParityOutputs"
+}.configureEach {
+    dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput)
+}
+
+tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>("verifyJavaScriptTypeScriptBindingParity") {
+    group = "verification"
+    description = "Verifies the exact packed JavaScript/TypeScript API and shared projection behavior parity."
+    dependsOn(
+        invalidateJavaScriptTypeScriptBindingParityOutput,
+        ":codex-agent-core:verifyCrossLanguageApiCoverage",
+        verifyPackedNpmConsumers,
+        jsNodeTest,
+    )
+    apiReport.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
+    ))
+    coverage.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json",
+    ))
+    packedApiReport.set(npmPublicApiReport)
+    npmTarball.set(npmArchiveFile)
+    installedPackage.set(npmConsumerDirectory.map {
+        it.dir("node_modules/@codex-agent-labs/codex-agent")
+    })
+    packedConsumerProgram.set(npmConsumerSourceDirectory)
+    compiledJsNodeTestProgram.set(
+        layout.buildDirectory.dir("compileSync/js/test/testDevelopmentExecutable/kotlin"),
+    )
+    packedJUnit.set(npmPackedTestReport)
+    jsNodeJUnit.set(layout.buildDirectory.file(
+        "test-results/jsNodeTest/TEST-jsNodeTest.CodexNodeApiTest.xml",
+    ))
+    receiptFile.set(javaScriptBindingParityReceipt)
 }
 
 val nodeWasmRunnerBaseName = "codex-agent-codex-agent-runtime-desktop"

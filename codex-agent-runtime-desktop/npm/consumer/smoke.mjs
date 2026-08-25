@@ -149,8 +149,15 @@ function discoverPublicApi(source) {
       .map((declaration) => [declaration.name.text, declaration]),
   );
   const publicSymbols = [];
+  const symbolsByDeclaration = new Map();
   const typeExports = [];
   const valueExports = [];
+
+  function recordPublicSymbol(declaration, symbol) {
+    publicSymbols.push(symbol);
+    assert.ok(!symbolsByDeclaration.has(declaration), `Public declaration was recorded twice: ${symbol}`);
+    symbolsByDeclaration.set(declaration, symbol);
+  }
 
   for (const declaration of source.statements) {
     if (!exported(declaration)) continue;
@@ -172,13 +179,16 @@ function discoverPublicApi(source) {
         assert.ok(clause.types.length > 0, `Empty heritage clause on class ${name}`);
         return `${label}=${clause.types.map((type) => type.getText(source).replace(/\s+/g, ' ')).join(',')}`;
       });
-      publicSymbols.push(`class:${name}${heritage.length === 0 ? '' : `:${heritage.join(':')}`}`);
+      recordPublicSymbol(
+        declaration,
+        `class:${name}${heritage.length === 0 ? '' : `:${heritage.join(':')}`}`,
+      );
       for (const member of declaration.members) {
         if (nonPublicMember(member)) continue;
         if (ts.isConstructorDeclaration(member)) {
           memberQualifiers(member, [], `Constructor ${name}`);
           assert.equal(member.typeParameters?.length ?? 0, 0, `Generic constructor ${name} is unsupported`);
-          publicSymbols.push(`constructor:${name}#(${renderParameters(member.parameters, source, aliases)})`);
+          recordPublicSymbol(member, `constructor:${name}#(${renderParameters(member.parameters, source, aliases)})`);
           continue;
         }
         const memberName = declarationName(member, source);
@@ -189,7 +199,8 @@ function discoverPublicApi(source) {
             [ts.SyntaxKind.StaticKeyword],
             `Method ${name}.${memberName}`,
           );
-          publicSymbols.push(
+          recordPublicSymbol(
+            member,
             `method:${name}#${memberName}${qualifiers}:${renderSignature(member, source, aliases, `method ${name}.${memberName}`)}`,
           );
         } else if (ts.isGetAccessorDeclaration(member)) {
@@ -199,7 +210,8 @@ function discoverPublicApi(source) {
             `Getter ${name}.${memberName}`,
           );
           assert.ok(member.type, `Getter ${name}.${memberName} must have an explicit type`);
-          publicSymbols.push(
+          recordPublicSymbol(
+            member,
             `getter:${name}#${memberName}${qualifiers}:${renderType(member.type, source, aliases)}`,
           );
         } else if (ts.isPropertyDeclaration(member)) {
@@ -209,7 +221,8 @@ function discoverPublicApi(source) {
             `Property ${name}.${memberName}`,
           );
           assert.ok(member.type, `Property ${name}.${memberName} must have an explicit type`);
-          publicSymbols.push(
+          recordPublicSymbol(
+            member,
             `property:${name}#${memberName}${qualifiers}:${renderType(member.type, source, aliases)}`,
           );
         } else {
@@ -223,12 +236,15 @@ function discoverPublicApi(source) {
         `Exported TypeScript function ${name}`,
       );
       valueExports.push(name);
-      publicSymbols.push(`function:${name}:${renderSignature(declaration, source, aliases, `function ${name}`)}`);
+      recordPublicSymbol(
+        declaration,
+        `function:${name}:${renderSignature(declaration, source, aliases, `function ${name}`)}`,
+      );
     } else if (ts.isTypeAliasDeclaration(declaration)) {
       assertModifiers(declaration, [ts.SyntaxKind.ExportKeyword], `Exported TypeScript type ${name}`);
       assert.equal(declaration.typeParameters?.length ?? 0, 0, `Unsupported type parameters on type ${name}`);
       typeExports.push(name);
-      publicSymbols.push(`type:${name}:${renderType(declaration.type, source, aliases)}`);
+      recordPublicSymbol(declaration, `type:${name}:${renderType(declaration.type, source, aliases)}`);
     } else {
       assert.fail(`Unsupported exported TypeScript declaration: ${ts.SyntaxKind[declaration.kind]} ${name}`);
     }
@@ -241,7 +257,63 @@ function discoverPublicApi(source) {
     typeExports: typeExports.sort(),
     valueExports: valueExports.sort(),
     publicSymbols: sortedSymbols,
+    symbolsByDeclaration,
   };
+}
+
+function compilerConsumerReferences(program, declarationSource, symbolsByDeclaration) {
+  const checker = program.getTypeChecker();
+  const consumerPath = path.resolve(process.cwd(), 'smoke.ts');
+  const consumer = program.getSourceFiles().filter((source) => path.resolve(source.fileName) === consumerPath);
+  assert.equal(consumer.length, 1, 'The compiled TypeScript consumer must contain exactly smoke.ts');
+  const references = new Set();
+
+  function recordDeclaration(declaration) {
+    if (!declaration || declaration.getSourceFile() !== declarationSource) return;
+    const publicSymbol = symbolsByDeclaration.get(declaration);
+    assert.ok(publicSymbol, `Compiled consumer reached an unreported public declaration: ${declaration.getText(declarationSource)}`);
+    references.add(publicSymbol);
+  }
+
+  function invocationTarget(identifier) {
+    const parent = identifier.parent;
+    if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === identifier) return true;
+    if (ts.isPropertyAccessExpression(parent) && parent.name === identifier) {
+      const invocation = parent.parent;
+      return (ts.isCallExpression(invocation) || ts.isNewExpression(invocation)) && invocation.expression === parent;
+    }
+    return false;
+  }
+
+  function importBinding(identifier) {
+    const parent = identifier.parent;
+    return ts.isImportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent);
+  }
+
+  function resolvedSymbol(identifier) {
+    let symbol = checker.getSymbolAtLocation(identifier);
+    if (!symbol) return null;
+    if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) symbol = checker.getAliasedSymbol(symbol);
+    return symbol;
+  }
+
+  function visit(node) {
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      recordDeclaration(checker.getResolvedSignature(node)?.declaration);
+    } else if (ts.isIdentifier(node) && !invocationTarget(node) && !importBinding(node)) {
+      const declarations = resolvedSymbol(node)?.declarations?.filter(
+        (declaration) => declaration.getSourceFile() === declarationSource,
+      ) ?? [];
+      assert.ok(declarations.length <= 1, `Compiled consumer reference is ambiguous: ${node.text}`);
+      declarations.forEach(recordDeclaration);
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(consumer[0]);
+  const result = [...references].sort();
+  assert.ok(result.length > 0, 'The compiled TypeScript consumer did not reference the installed public API');
+  return result;
 }
 
 function compilerPublicApi() {
@@ -260,9 +332,21 @@ function compilerPublicApi() {
     [],
     'The installed SDK and TypeScript consumer must compile without diagnostics',
   );
+  const negativeConsumer = path.resolve(process.cwd(), 'negative.ts');
+  assert.equal(
+    program.getSourceFiles().filter((candidate) => path.resolve(candidate.fileName) === negativeConsumer).length,
+    1,
+    'The negative TypeScript consumer must be compiled but excluded from positive references',
+  );
   const source = program.getSourceFile(declarationFile);
   assert.ok(source, 'The installed declaration must belong to the compiler program');
-  return discoverPublicApi(source);
+  const discovered = discoverPublicApi(source);
+  return {
+    typeExports: discovered.typeExports,
+    valueExports: discovered.valueExports,
+    publicSymbols: discovered.publicSymbols,
+    referencedSymbols: compilerConsumerReferences(program, source, discovered.symbolsByDeclaration),
+  };
 }
 
 test('esm exposes the same runtime values as CommonJS', () => {
@@ -282,6 +366,23 @@ test('typescript compiler discovers the exact installed public API', () => {
   const esmExports = Object.keys(sdk).sort();
   assert.deepEqual(commonJsExports, compilerApi.valueExports);
   assert.deepEqual(esmExports, compilerApi.valueExports);
+  assert.deepEqual(
+    [...new Set(compilerApi.referencedSymbols)].sort(),
+    compilerApi.referencedSymbols,
+    'Compiled consumer references must be exact, sorted, and unique',
+  );
+  assert.ok(
+    compilerApi.referencedSymbols.every((symbol) => compilerApi.publicSymbols.includes(symbol)),
+    'Compiled consumer references must belong to the installed public API',
+  );
+  assert.ok(
+    compilerApi.referencedSymbols.length < compilerApi.publicSymbols.length,
+    'Unreferenced and future public symbols must not be absorbed into consumer evidence',
+  );
+  assert.ok(
+    !compilerApi.referencedSymbols.includes('getter:CodexAgent#workspace:CodexWorkspace'),
+    'Expected-error-only TypeScript usage must not become positive projection evidence',
+  );
   assert.ok(!compilerApi.typeExports.includes('Nullable'), 'Unexported aliases must stay outside the public API');
   assert.ok(compilerApi.publicSymbols.includes('class:CodexError:extends=Error'));
   assert.ok(compilerApi.publicSymbols.includes('property:CodexError#cause[optional,readonly]:unknown'));
@@ -382,7 +483,7 @@ test('typescript compiler discovers the exact installed public API', () => {
   assert.doesNotMatch(declaration, /\$metadata\$|\bkotlin\b|\bany\b/i);
 
   const report = {
-    schema: 1,
+    schema: 2,
     result: 'passed',
     language: 'javascript-typescript',
     toolchain: {
@@ -410,7 +511,8 @@ test('typescript compiler discovers the exact installed public API', () => {
     compilerEvidence: {
       testId: 'typescript compiler discovers the exact installed public API',
       status: 'passed',
+      referencedSymbols: compilerApi.referencedSymbols,
     },
   };
-  fs.writeFileSync(path.join(process.cwd(), 'public-api.json'), `${JSON.stringify(report, null, 2)}\n`);
+  fs.writeFileSync(path.join(process.cwd(), 'public-api.json'), `${JSON.stringify(report, null, 4)}\n`);
 });

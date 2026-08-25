@@ -1,0 +1,1042 @@
+import java.io.File
+import java.nio.file.Files
+import kotlin.io.path.createTempDirectory
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+
+class CrossLanguageJavaScriptBindingEvidenceTest {
+    @Test
+    fun `current 108-symbol compiler snapshot inventories gaps without claiming canonical parity`() {
+        val keys = listOf(
+            canonicalProperty("CodexFailure", "message", "kotlin/String!!"),
+            canonicalFunction("CodexHost", "start", suspendFunction = true),
+            canonicalProperty(
+                "CodexHost",
+                "lifecycleState",
+                "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/CodexHostState!!>!!",
+            ),
+            canonicalEnumEntry("AgentApprovalPreset", "AUTO_REVIEW"),
+        ).sorted()
+        val evidence = deriveCrossLanguageJavaScriptBindingEvidence(
+            canonical = canonicalEvidence(keys),
+            packedApi = packedEvidence(currentPublicSymbols(), schema = 1),
+        )
+
+        assertEquals(4, evidence.canonical.memberKeys.size)
+        assertEquals(108, evidence.packedApi.publicSymbols.size)
+        assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "CodexHost.start" in it })
+        assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && "lifecycleState" in it })
+    }
+
+    @Test
+    fun `556 convention-derived claims and all fourteen scenarios can produce schema-3 receipt`() {
+        val keys = List(556) { index ->
+            canonicalProperty("ProjectedType${index.toString().padStart(3, '0')}", "value", "kotlin/String!!")
+        }.sorted()
+        val symbols = List(556) { index ->
+            "getter:ProjectedType${index.toString().padStart(3, '0')}#value:string"
+        } + List(556) { index -> "class:ProjectedType${index.toString().padStart(3, '0')}" }
+        val files = receiptFiles(keys, symbols.sorted(), schema = 2, references = emptyList())
+
+        val receipt = buildJavaScriptTypeScriptBindingReceipt(files)
+
+        assertEquals(CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA, receipt.toJson()["schema"]?.toString()?.toInt())
+        assertEquals(556, receipt.projectionClaims.size)
+        assertEquals(14, receipt.scenarioEvidence.size)
+        assertEquals(keys, receipt.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).sorted())
+        assertEquals(
+            mapOf(
+                "commonJs" to files.installedPackageDirectory.resolve("index.cjs").releaseDigest(),
+                "declaration" to files.installedPackageDirectory.resolve("index.d.ts").releaseDigest(),
+                "esm" to files.installedPackageDirectory.resolve("index.mjs").releaseDigest(),
+                "packageJson" to files.installedPackageDirectory.resolve("package.json").releaseDigest(),
+                "tarball" to files.npmTarball.releaseDigest(),
+            ),
+            receipt.artifacts.associate { it.id to it.sha256 },
+        )
+        assertEquals(
+            labeledJavaScriptDigest(
+                "compiled-js-node-test-program" to files.compiledJsNodeTestProgramDirectory.crossLanguageTreeDigest(),
+                "packed-consumer-source" to files.consumerSourceDirectory.crossLanguageTreeDigest(),
+            ),
+            receipt.testProgramSha256,
+        )
+        assertEquals(
+            canonicalJavaScriptBindingTestsDigest(receipt.bindingTests),
+            receipt.testResultsSha256,
+        )
+        val rawPackedDigest = files.packedJUnitReport.releaseDigest()
+        files.packedJUnitReport.writeText(files.packedJUnitReport.readText().replace("/>", " time=\"999\"/>"))
+        assertTrue(rawPackedDigest != files.packedJUnitReport.releaseDigest())
+        assertEquals(receipt.testResultsSha256, buildJavaScriptTypeScriptBindingReceipt(files).testResultsSha256)
+    }
+
+    @Test
+    fun `missing capability diagnostic is bounded and grouped by canonical owner`() {
+        val keys = listOf(
+            canonicalProperty("Small", "first", "kotlin/String!!"),
+            canonicalProperty("Large", "first", "kotlin/String!!"),
+            canonicalProperty("Large", "second", "kotlin/String!!"),
+        )
+
+        assertEquals(
+            "Missing 3 JavaScript/TypeScript capabilities across 2 canonical owners; " +
+                "largest owners: Large=2, Small=1",
+            summarizeMissingJavaScriptCapabilities(keys),
+        )
+    }
+
+    @Test
+    fun `matcher rejects ambiguous reused and unreferenced projections`() {
+        val ambiguous = canonicalProperty("Ambiguous", "value", "kotlin/String!!")
+        val aliasOne = canonicalProperty("CodexFailure", "isRecoverable", "kotlin/Boolean!!")
+        val aliasTwo = canonicalProperty("CodexFailure", "recoverable", "kotlin/Boolean!!")
+        val unreferenced = canonicalFunction("CodexHost", "start", suspendFunction = true)
+        val symbols = listOf(
+            "class:Ambiguous",
+            "class:CodexFailure",
+            "class:CodexHost",
+            "getter:Ambiguous#value:string",
+            "getter:CodexFailure#recoverable:boolean",
+            "method:CodexHost#start:(signal?: AbortSignal | null | undefined): Promise<void>",
+            "property:Ambiguous#value[readonly]:string",
+        ).sorted()
+
+        val evidence = deriveCrossLanguageJavaScriptBindingEvidence(
+            canonical = canonicalEvidence(listOf(ambiguous, aliasOne, aliasTwo, unreferenced).sorted()),
+            packedApi = packedEvidence(symbols, schema = 2),
+        )
+
+        assertTrue(evidence.errors.any { "Ambiguous" in it && ambiguous in it })
+        assertTrue(evidence.errors.any { "Reused" in it && aliasOne in it && aliasTwo in it })
+        assertTrue(evidence.errors.any { "Unreferenced exceptional" in it && unreferenced in it })
+        assertTrue(evidence.projectionClaims.none { it.capabilityKey in setOf(ambiguous, aliasOne, aliasTwo, unreferenced) })
+    }
+
+    @Test
+    fun `finite aliases and same-owner enum literals project without per-member manifest`() {
+        val lifecycle = canonicalProperty(
+            "CodexHost",
+            "lifecycleState",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/CodexHostState!!>!!",
+        )
+        val constructor = canonicalConstructor("CodexHost", listOf("example/CodexPlatform!!", "example/CodexClientInfo!!"))
+        val autoReview = canonicalEnumEntry("AgentApprovalPreset", "AUTO_REVIEW")
+        val askMe = canonicalEnumEntry("AgentApprovalPreset", "ASK_ME")
+        val symbols = listOf(
+            "class:CodexHost",
+            "function:createCodexHost:(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost",
+            "getter:CodexHost#state:CodexHostState",
+            "method:CodexHost#observeState:(listener: (state: CodexHostState) => void): CodexObservation",
+            "type:CodexApprovalPreset:\"auto_review\" | \"never\" | \"ask_me\" | \"strict\"",
+        ).sorted()
+        val evidence = deriveCrossLanguageJavaScriptBindingEvidence(
+            canonical = canonicalEvidence(listOf(lifecycle, constructor, autoReview, askMe).sorted()),
+            packedApi = packedEvidence(symbols, schema = 2, referencedSymbols = symbols),
+        )
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertEquals(4, evidence.projectionClaims.size)
+        assertEquals(2, evidence.projectionClaims.count {
+            it.publicSymbols.singleOrNull()?.startsWith("type:CodexApprovalPreset:") == true
+        })
+    }
+
+    @Test
+    fun `finite singleton objects project only explicit authentication and host status literals`() {
+        val browser = canonicalObject("CodexAuthenticationMethod.ChatGptBrowser")
+        val device = canonicalObject("CodexAuthenticationMethod.ChatGptDeviceCode")
+        val new = canonicalObject("CodexHostState.New")
+        val restoring = canonicalObject("CodexHostState.Restoring")
+        val closed = canonicalObject("CodexHostState.Closed")
+        val hookAgent = canonicalObject("AgentHookHandler.Agent")
+        val hookPrompt = canonicalObject("AgentHookHandler.Prompt")
+        val authenticationType =
+            "type:CodexAuthenticationMethod:\"chatgpt_browser\" | \"chatgpt_device_code\" | \"api_key\""
+        val hostType =
+            "type:CodexHostStatus:\"new\" | \"restoring\" | \"workspace_required\" | \"preparing\" | \"ready\" | \"failed\" | \"closed\""
+        val symbols = listOf(
+            authenticationType,
+            hostType,
+            "type:AgentHookHandler:\"agent\" | \"prompt\"",
+        ).sorted()
+        val evidence = derive(
+            listOf(browser, device, new, restoring, closed, hookAgent, hookPrompt).sorted(),
+            symbols,
+            references = listOf(authenticationType, hostType),
+        )
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertEquals(setOf(hookAgent, hookPrompt), evidence.missingCapabilityKeys.toSet())
+        assertEquals(
+            setOf(browser, device, new, restoring, closed),
+            evidence.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).toSet(),
+        )
+    }
+
+    @Test
+    fun `object aliases reject wrong owner literal unreferenced evidence and arbitrary reuse`() {
+        val browser = canonicalObject("CodexAuthenticationMethod.ChatGptBrowser")
+        val wrongOwner = canonicalObject("OtherAuthenticationMethod.ChatGptBrowser")
+        val authenticationType =
+            "type:CodexAuthenticationMethod:\"chatgpt_browser\" | \"chatgpt_device_code\" | \"api_key\""
+        val wrongLiteral = "type:CodexAuthenticationMethod:\"chatgpt_device_code\" | \"api_key\""
+
+        assertTrue(derive(listOf(wrongOwner), listOf(authenticationType), references = listOf(authenticationType))
+            .missingCapabilityKeys.contains(wrongOwner))
+        assertTrue(derive(listOf(browser), listOf(wrongLiteral), references = listOf(wrongLiteral))
+            .missingCapabilityKeys.contains(browser))
+        assertTrue(derive(listOf(browser), listOf(authenticationType), references = emptyList())
+            .errors.any { "Unreferenced exceptional" in it && browser in it })
+
+        val arbitrary = canonicalEnumEntry("CodexAuthenticationMethod", "CHATGPT_BROWSER")
+        val reused = derive(
+            listOf(browser, arbitrary).sorted(),
+            listOf(authenticationType),
+            references = listOf(authenticationType),
+        )
+        assertTrue(reused.errors.any { "Reused" in it && browser in it && arbitrary in it })
+        assertTrue(reused.projectionClaims.isEmpty())
+
+        val classCapability = canonicalClass("CodexAuthenticationMethod.ChatGptBrowser")
+        assertFailsWith<IllegalStateException> {
+            derive(listOf(classCapability), listOf(authenticationType), references = listOf(authenticationType))
+        }
+        val malformedAbi = browser.replace("abi=example/CodexAuthenticationMethod.ChatGptBrowser", "abi=example/Wrong")
+        assertFailsWith<IllegalStateException> {
+            derive(listOf(malformedAbi), listOf(authenticationType), references = listOf(authenticationType))
+        }
+    }
+
+    @Test
+    fun `companion factories require a compiler-derived static method`() {
+        val key = canonicalFunction(
+            "Factory.Companion",
+            "create",
+            returnType = "kotlin/String!!",
+            parameters = listOf("kotlin/String!!"),
+        )
+        val instanceSymbols = listOf(
+            "class:Factory",
+            "method:Factory#create:(value: string): string",
+        ).sorted()
+        val staticSymbols = listOf(
+            "class:Factory",
+            "method:Factory#create[static]:(value: string): string",
+        ).sorted()
+
+        assertTrue(derive(listOf(key), instanceSymbols).missingCapabilityKeys.contains(key))
+        assertEquals(listOf(key), derive(listOf(key), staticSymbols).projectionClaims.map { it.capabilityKey })
+    }
+
+    @Test
+    fun `state projection requires exact current callback and observation return types`() {
+        val key = canonicalProperty(
+            "Stream",
+            "value",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/String!!>!!",
+        )
+        val classSymbol = "class:Stream"
+        val getter = "getter:Stream#value:string"
+        val observer = "method:Stream#observeValue:(listener: (value: string) => void): CodexObservation"
+        listOf(
+            listOf(classSymbol, "getter:Stream#value:number", observer),
+            listOf(classSymbol, getter, "method:Stream#observeValue:(listener: (value: number) => void): CodexObservation"),
+            listOf(classSymbol, getter, "method:Stream#observeValue:(listener: (value: string) => void): string"),
+        ).forEach { symbols ->
+            assertTrue(derive(listOf(key), symbols.sorted()).missingCapabilityKeys.contains(key))
+        }
+
+        assertEquals(listOf(key), derive(listOf(key), listOf(classSymbol, getter, observer).sorted())
+            .projectionClaims.map { it.capabilityKey })
+    }
+
+    @Test
+    fun `type matching rejects widened nullability wrong generics and Promise substitution`() {
+        val nonNull = canonicalProperty("NonNull", "value", "kotlin/String!!")
+        val strings = canonicalProperty(
+            "Strings",
+            "values",
+            "kotlin.collections/List<INVARIANT:kotlin/String!!>!!",
+        )
+        val synchronous = canonicalFunction("Synchronous", "read", returnType = "kotlin/String!!")
+        val evidence = derive(
+            listOf(nonNull, strings, synchronous).sorted(),
+            listOf(
+                "class:NonNull",
+                "class:Strings",
+                "class:Synchronous",
+                "getter:NonNull#value:string | null | undefined",
+                "getter:Strings#values:ReadonlyArray<number>",
+                "method:Synchronous#read:(): Promise<string>",
+            ).sorted(),
+        )
+
+        assertEquals(setOf(nonNull, strings, synchronous), evidence.missingCapabilityKeys.toSet())
+        assertTrue(evidence.projectionClaims.isEmpty())
+    }
+
+    @Test
+    fun `signatures reject arbitrary parameters and finite aliases validate exact shapes`() {
+        val run = canonicalFunction(
+            "Runner",
+            "run",
+            suspendFunction = true,
+            parameters = listOf("kotlin/String!!"),
+        )
+        val optionalMismatch = canonicalFunction(
+            "OptionalRunner",
+            "run",
+            parameters = listOf("kotlin/String!!"),
+        )
+        val host = canonicalConstructor("CodexHost", listOf("example/CodexPlatform!!", "example/CodexClientInfo!!"))
+        val select = canonicalFunction(
+            "CodexHost",
+            "selectWorkspace",
+            suspendFunction = true,
+            parameters = listOf("example/CodexWorkspaceSelection!!"),
+        )
+        val evidence = derive(
+            listOf(run, optionalMismatch, host, select).sorted(),
+            listOf(
+                "class:CodexHost",
+                "class:OptionalRunner",
+                "class:Runner",
+                "function:createCodexHost:(): CodexHost",
+                "method:CodexHost#selectWorkspace:(path: number, signal?: AbortSignal | null | undefined): Promise<void>",
+                "method:OptionalRunner#run:(value?: string): void",
+                "method:Runner#run:(value: string, required: number): Promise<void>",
+            ).sorted(),
+        )
+
+        assertEquals(setOf(run, optionalMismatch, host, select), evidence.missingCapabilityKeys.toSet())
+    }
+
+    @Test
+    fun `host factory and workspace alias reject canonical shape mutations`() {
+        val host = canonicalConstructor("CodexHost", listOf("example/CodexPlatform!!", "example/CodexClientInfo!!"))
+        val select = canonicalFunction(
+            "CodexHost",
+            "selectWorkspace",
+            suspendFunction = true,
+            parameters = listOf("example/CodexWorkspaceSelection!!"),
+        )
+        val symbols = listOf(
+            "class:CodexHost",
+            "function:createCodexHost:(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost",
+            "method:CodexHost#selectWorkspace:(path: string, signal?: AbortSignal | null | undefined): Promise<void>",
+        ).sorted()
+        assertEquals(
+            setOf(host, select),
+            derive(listOf(host, select).sorted(), symbols)
+                .projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).toSet(),
+        )
+
+        val changedHost = canonicalConstructor(
+            "CodexHost",
+            listOf("example/CodexPlatform!!", "example/CodexClientInfo!!", "kotlin/String!!"),
+        )
+        val changedSelect = canonicalFunction(
+            "CodexHost",
+            "selectWorkspace",
+            suspendFunction = true,
+            parameters = listOf("example/CodexWorkspaceSelection!!", "kotlin/String!!"),
+        )
+        assertEquals(
+            setOf(changedHost, changedSelect),
+            derive(listOf(changedHost, changedSelect).sorted(), symbols).missingCapabilityKeys.toSet(),
+        )
+    }
+
+    @Test
+    fun `mutable canonical property requires a writable TypeScript property`() {
+        val key = canonicalProperty("Mutable", "value", "kotlin/String!!", propertyKind = "VAR")
+        val classSymbol = "class:Mutable"
+        listOf(
+            "getter:Mutable#value:string",
+            "property:Mutable#value[readonly]:string",
+        ).forEach { readOnly ->
+            assertTrue(derive(listOf(key), listOf(classSymbol, readOnly).sorted()).missingCapabilityKeys.contains(key))
+        }
+        assertEquals(listOf(key), derive(
+            listOf(key),
+            listOf(classSymbol, "property:Mutable#value:string").sorted(),
+        ).projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey))
+    }
+
+    @Test
+    fun `receipt requires exact canonical count and schema two file evidence`() {
+        val shortKeys = List(555) { index ->
+            canonicalProperty("Short$index", "value", "kotlin/String!!")
+        }.sorted()
+        val shortSymbols = shortKeys.flatMap { key ->
+            val owner = key.substringAfter("owner=example/").substringBefore('|')
+            listOf("class:$owner", "getter:$owner#value:string")
+        }.sorted()
+        assertFailsWith<IllegalStateException> {
+            buildJavaScriptTypeScriptBindingReceipt(receiptFiles(shortKeys, shortSymbols))
+        }
+
+        val fullKeys = List(556) { index ->
+            canonicalProperty("SchemaOne$index", "value", "kotlin/String!!")
+        }.sorted()
+        val fullSymbols = fullKeys.flatMap { key ->
+            val owner = key.substringAfter("owner=example/").substringBefore('|')
+            listOf("class:$owner", "getter:$owner#value:string")
+        }.sorted()
+        assertFailsWith<IllegalStateException> {
+            buildJavaScriptTypeScriptBindingReceipt(receiptFiles(fullKeys, fullSymbols, schema = 1))
+        }
+
+        val receipt = buildJavaScriptTypeScriptBindingReceipt(receiptFiles(fullKeys, fullSymbols))
+        assertEquals(556, receipt.projectionClaims.size)
+        assertEquals(11, receipt.bindingTests.size)
+        assertEquals(14, receipt.scenarioEvidence.size)
+        assertEquals(
+            (PACKED_TEST_IDS + JS_NODE_TEST_IDS).toSet(),
+            receipt.bindingTests.map(CrossLanguageBindingTestEvidence::testId).toSet(),
+        )
+    }
+
+    @Test
+    fun `receipt rehashes every artifact and verifies installed package identity`() {
+        val keys = fullReceiptKeys()
+        val symbols = fullReceiptSymbols(keys)
+        val forged = receiptFiles(keys, symbols)
+        forged.npmTarball.appendText("forged")
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(forged) }
+
+        listOf("index.cjs", "index.d.ts", "index.mjs", "package.json").forEach { name ->
+            val altered = receiptFiles(keys, symbols)
+            altered.installedPackageDirectory.resolve(name).appendText("forged")
+            assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(altered) }
+        }
+
+        val wrongCoordinate = receiptFiles(keys, symbols, installedPackageName = "@wrong/package")
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(wrongCoordinate) }
+
+        val wrongVersion = receiptFiles(keys, symbols, installedPackageVersion = "0.2.0")
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(wrongVersion) }
+    }
+
+    @Test
+    fun `receipt validates exact files before reporting semantic gaps`() {
+        val keys = fullReceiptKeys()
+        val symbols = fullReceiptSymbols(keys).filterNot { it == "getter:Receipt555#value:string" }
+        val forged = receiptFiles(keys, symbols)
+        forged.npmTarball.appendText("forged")
+
+        val failure = assertFailsWith<IllegalStateException> {
+            buildJavaScriptTypeScriptBindingReceipt(forged)
+        }
+
+        assertTrue("artifact identities" in failure.message.orEmpty())
+    }
+
+    @Test
+    fun `receipt rejects missing extra and symlinked consumer program files`() {
+        val keys = fullReceiptKeys()
+        val symbols = fullReceiptSymbols(keys)
+
+        val missing = receiptFiles(keys, symbols)
+        missing.consumerSourceDirectory.resolve("smoke.ts").delete()
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(missing) }
+
+        val extra = receiptFiles(keys, symbols)
+        extra.consumerSourceDirectory.resolve("unexpected.js").writeText("unexpected")
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(extra) }
+
+        val symlinked = receiptFiles(keys, symbols)
+        val source = symlinked.consumerSourceDirectory.resolve("smoke.ts")
+        val target = symlinked.consumerSourceDirectory.parentFile.resolve("external-smoke.ts").apply {
+            writeText("external")
+        }
+        source.delete()
+        Files.createSymbolicLink(source.toPath(), target.toPath())
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(symlinked) }
+    }
+
+    @Test
+    fun `receipt requires the exact passed packed and jsNode test inventory`() {
+        val keys = fullReceiptKeys()
+        val symbols = fullReceiptSymbols(keys)
+
+        val missing = receiptFiles(keys, symbols)
+        writePackedJUnit(missing.packedJUnitReport, PACKED_TEST_IDS.dropLast(1))
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(missing) }
+
+        val extra = receiptFiles(keys, symbols)
+        writePackedJUnit(extra.packedJUnitReport, PACKED_TEST_IDS + "stale packed test")
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(extra) }
+
+        val missingJsNode = receiptFiles(keys, symbols)
+        writeJsNodeResults(missingJsNode.jsNodeJUnitReport, JS_NODE_TEST_IDS.dropLast(1))
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(missingJsNode) }
+
+        val extraJsNode = receiptFiles(keys, symbols)
+        writeJsNodeResults(
+            extraJsNode.jsNodeJUnitReport,
+            JS_NODE_TEST_IDS + "jsNodeTest.CodexNodeApiTest#staleTest[js, node]",
+        )
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(extraJsNode) }
+
+        val failed = receiptFiles(keys, symbols)
+        writePackedJUnit(
+            failed.packedJUnitReport,
+            PACKED_TEST_IDS,
+            mapOf(PACKED_TEST_IDS.first() to CanonicalTestStatus.FAILED),
+        )
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(failed) }
+
+        val skipped = receiptFiles(keys, symbols)
+        writeJsNodeResults(
+            skipped.jsNodeJUnitReport,
+            JS_NODE_TEST_IDS,
+            mapOf(JS_NODE_TEST_IDS.first() to CanonicalTestStatus.SKIPPED),
+        )
+        assertFailsWith<IllegalStateException> { buildJavaScriptTypeScriptBindingReceipt(skipped) }
+    }
+
+    @Test
+    fun `scenario derivation rejects stale and incomplete mappings but permits supplemental receipt tests`() {
+        val receipt = buildJavaScriptTypeScriptBindingReceipt(receiptFiles(fullReceiptKeys(), fullReceiptSymbols()))
+        val stale = javaScriptBindingScenarioMappings.mapIndexed { index, mapping ->
+            if (index == 0) mapping.copy(testIds = mapping.testIds + "removed test") else mapping
+        }
+        assertFailsWith<IllegalStateException> {
+            deriveJavaScriptScenarioEvidence(receipt.bindingTests, stale)
+        }
+        assertFailsWith<IllegalStateException> {
+            deriveJavaScriptScenarioEvidence(receipt.bindingTests, javaScriptBindingScenarioMappings.dropLast(1))
+        }
+        val mappedTests = javaScriptBindingScenarioMappings.flatMap(JavaScriptBindingScenarioMapping::testIds).toSet()
+        assertTrue(PACKED_TEST_IDS.first() !in mappedTests)
+        assertTrue(PACKED_TEST_IDS[3] !in mappedTests)
+        assertEquals(
+            CrossLanguageBindingScenario.entries.size,
+            deriveJavaScriptScenarioEvidence(receipt.bindingTests, javaScriptBindingScenarioMappings).size,
+        )
+    }
+
+    @Test
+    fun `direct packed evidence enforces coordinate artifacts filenames and exports`() {
+        val key = canonicalProperty("Projection", "value", "kotlin/String!!")
+        val symbols = listOf("class:Projection", "getter:Projection#value:string")
+        val packed = packedEvidence(symbols.sorted(), schema = 2)
+        listOf(
+            packed.copy(packageName = "@wrong/package"),
+            packed.copy(artifacts = packed.artifacts.dropLast(1)),
+            packed.copy(artifacts = packed.artifacts.mapIndexed { index, artifact ->
+                artifact.copy(fileName = if (index < 2) "duplicate.bin" else artifact.fileName)
+            }),
+            packed.copy(artifacts = packed.artifacts.map { artifact ->
+                if (artifact.id == "commonJs") artifact.copy(fileName = "runtime.cjs") else artifact
+            }),
+            packed.copy(packageVersion = "0.2.0"),
+            packed.copy(typeExports = emptyList()),
+        ).forEach { invalid ->
+            assertFailsWith<IllegalStateException> {
+                deriveCrossLanguageJavaScriptBindingEvidence(
+                    canonicalEvidence(listOf(key)), invalid,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `strict packed report rejects stale references unsorted inventories and noncanonical bytes`() {
+        val directory = createTempDirectory("js-api-evidence").toFile()
+        val valid = File(directory, "valid.json")
+        writePackedReport(
+            valid,
+            schema = 2,
+            symbols = listOf("class:A", "getter:A#value:string"),
+            references = listOf("getter:A#value:string"),
+        )
+        val stale = File(directory, "stale.json")
+        writePackedReport(
+            stale,
+            schema = 2,
+            symbols = listOf("getter:CodexFailure#message:string"),
+            references = listOf("getter:CodexFailure#removed:string"),
+        )
+        val unsorted = File(directory, "unsorted.json")
+        writePackedReport(
+            unsorted,
+            schema = 1,
+            symbols = listOf("getter:Z#value:string", "getter:A#value:string"),
+        )
+        val noncanonical = File(directory, "noncanonical.json")
+        writePackedReport(
+            noncanonical,
+            schema = 2,
+            symbols = listOf("class:A", "getter:A#value:string"),
+        )
+        noncanonical.writeText(noncanonical.readText().replace("    ", "  "))
+
+        assertEquals(JAVASCRIPT_NPM_PACKAGE, readJavaScriptPackedPublicApiEvidence(valid).packageName)
+        assertFailsWith<IllegalStateException> { readJavaScriptPackedPublicApiEvidence(stale) }
+        assertFailsWith<IllegalStateException> { readJavaScriptPackedPublicApiEvidence(unsorted) }
+        assertFailsWith<IllegalStateException> { readJavaScriptPackedPublicApiEvidence(noncanonical) }
+    }
+
+    private fun canonicalEvidence(keys: List<String>) = CrossLanguageCanonicalApiEvidence(
+        memberKeys = keys,
+        canonical = CrossLanguageBindingCanonicalIdentity(digest('1'), digest('2')),
+        targetSha256 = mapOf("native" to digest('6'), "wasm" to digest('7'), "jvm-classes" to digest('8')),
+        compiledTestsSha256 = digest('9'),
+        testResultsSha256 = digest('a'),
+        coveredTestIds = setOf(COMPILER_TEST),
+    )
+
+    private fun packedEvidence(
+        symbols: List<String>,
+        schema: Int,
+        referencedSymbols: List<String> = emptyList(),
+    ): JavaScriptPackedPublicApiEvidence {
+        val exports = symbolExports(symbols)
+        return JavaScriptPackedPublicApiEvidence(
+            schema = schema,
+            packageName = JAVASCRIPT_NPM_PACKAGE,
+            packageVersion = "0.1.0",
+            artifacts = listOf(
+                JavaScriptPackedArtifact("commonJs", "index.cjs", 1, digest('3')),
+                JavaScriptPackedArtifact("declaration", "index.d.ts", 1, digest('4')),
+                JavaScriptPackedArtifact("esm", "index.mjs", 1, digest('5')),
+                JavaScriptPackedArtifact("packageJson", "package.json", 1, digest('6')),
+                JavaScriptPackedArtifact("tarball", "codex-agent-0.1.0.tgz", 1, digest('7')),
+            ),
+            typeExports = exports.first,
+            valueExports = exports.second,
+            commonJsExports = exports.second,
+            esmExports = exports.second,
+            publicSymbols = symbols,
+            referencedSymbols = referencedSymbols,
+            compilerTestId = COMPILER_TEST,
+        )
+    }
+
+    private fun derive(
+        keys: List<String>,
+        symbols: List<String>,
+        schema: Int = 2,
+        references: List<String> = if (schema == 2) symbols else emptyList(),
+    ): CrossLanguageJavaScriptBindingEvidence = deriveCrossLanguageJavaScriptBindingEvidence(
+        canonical = canonicalEvidence(keys.sorted()),
+        packedApi = packedEvidence(symbols.sorted(), schema, references.sorted()),
+    )
+
+    private fun receiptFiles(
+        keys: List<String>,
+        symbols: List<String>,
+        schema: Int = 2,
+        references: List<String> = if (schema == 2) symbols else emptyList(),
+        installedPackageName: String = JAVASCRIPT_NPM_PACKAGE,
+        installedPackageVersion: String = "0.1.0",
+    ): CrossLanguageJavaScriptBindingFiles {
+        val directory = createTempDirectory("js-receipt-files").toFile()
+        val apiReport = directory.resolve("canonical-api.json")
+        val coverageReceipt = directory.resolve("canonical-coverage.json")
+        val packedReport = directory.resolve("public-api.json")
+        val installedPackage = directory.resolve("installed-package").apply { mkdirs() }
+        val tarball = directory.resolve("codex-agent-0.1.0.tgz").apply { writeText("tarball") }
+        val installedArtifacts = mapOf(
+            "commonJs" to installedPackage.resolve("index.cjs").apply { writeText("module.exports = {}") },
+            "declaration" to installedPackage.resolve("index.d.ts").apply { writeText("export {}") },
+            "esm" to installedPackage.resolve("index.mjs").apply { writeText("export {}") },
+            "packageJson" to installedPackage.resolve("package.json").apply {
+                atomicWriteJson(buildJsonObject {
+                    put("name", JsonPrimitive(installedPackageName))
+                    put("version", JsonPrimitive(installedPackageVersion))
+                })
+            },
+            "tarball" to tarball,
+        )
+        val consumerSource = directory.resolve("consumer-source").apply { mkdirs() }
+        REQUIRED_CONSUMER_SOURCE_FILES.forEach { name ->
+            consumerSource.resolve(name).writeText("fixture:$name")
+        }
+        val compiledProgram = directory.resolve("compiled-js-node-test-program").apply { mkdirs() }
+        compiledProgram.resolve("test-program.mjs").writeText("fixture compiled program")
+        val packedJUnit = directory.resolve("packed-junit.xml")
+        writePackedJUnit(packedJUnit, PACKED_TEST_IDS)
+        val jsNodeResults = directory.resolve("js-node-results").apply { mkdirs() }
+        val jsNodeJUnit = jsNodeResults.resolve("TEST-jsNodeTest.CodexNodeApiTest.xml")
+        writeJsNodeResults(jsNodeJUnit, JS_NODE_TEST_IDS)
+        writeCanonicalApiReport(apiReport, keys.sorted())
+        writeCanonicalCoverageReceipt(coverageReceipt, apiReport, keys.sorted())
+        writePackedReport(
+            packedReport,
+            schema,
+            symbols.sorted(),
+            references.sorted(),
+            artifactFiles = installedArtifacts,
+        )
+        return CrossLanguageJavaScriptBindingFiles(
+            apiReport = apiReport,
+            canonicalCoverageReceipt = coverageReceipt,
+            packedPublicApiReport = packedReport,
+            npmTarball = tarball,
+            installedPackageDirectory = installedPackage,
+            consumerSourceDirectory = consumerSource,
+            compiledJsNodeTestProgramDirectory = compiledProgram,
+            packedJUnitReport = packedJUnit,
+            jsNodeJUnitReport = jsNodeJUnit,
+        )
+    }
+
+    private fun fullReceiptKeys(): List<String> = List(556) { index ->
+        canonicalProperty("Receipt${index.toString().padStart(3, '0')}", "value", "kotlin/String!!")
+    }.sorted()
+
+    private fun fullReceiptSymbols(keys: List<String> = fullReceiptKeys()): List<String> = keys.flatMap { key ->
+        val owner = key.substringAfter("owner=example/").substringBefore('|')
+        listOf("class:$owner", "getter:$owner#value:string")
+    }.sorted()
+
+    private fun symbolExports(symbols: List<String>): Pair<List<String>, List<String>> {
+        val classes = symbols.filter { it.startsWith("class:") }
+            .map { it.substringAfter(':').substringBefore(':') }
+        val types = symbols.filter { it.startsWith("type:") }
+            .map { it.substringAfter(':').substringBefore(':') }
+        val functions = symbols.filter { it.startsWith("function:") }
+            .map { it.substringAfter(':').substringBefore(':') }
+        return (classes + types).sorted() to (classes + functions).sorted()
+    }
+
+    private fun canonicalProperty(
+        owner: String,
+        name: String,
+        type: String,
+        propertyKind: String = "VAL",
+    ): String =
+        "common|owner=example/$owner|kind=property|abi=example/$owner.$name|{}$name[0]|" +
+            "propertyKind=$propertyKind|type=$type"
+
+    private fun canonicalEnumEntry(owner: String, name: String): String =
+        "common|owner=example/$owner|kind=enum-entry|abi=example/$owner.$name|null[0]"
+
+    private fun canonicalObject(owner: String): String =
+        "common|owner=example/$owner|kind=object|abi=example/$owner|null[0]"
+
+    private fun canonicalClass(owner: String): String =
+        "common|owner=example/$owner|kind=class|abi=example/$owner|null[0]"
+
+    private fun canonicalFunction(
+        owner: String,
+        name: String,
+        returnType: String = "kotlin/Unit",
+        suspendFunction: Boolean = false,
+        parameters: List<String> = emptyList(),
+    ): String = "common|owner=example/$owner|kind=function|abi=example/$owner.$name|" +
+        "$name(){}[0]|return=$returnType|suspend=$suspendFunction|parameters=" + canonicalParameters(parameters)
+
+    private fun canonicalConstructor(owner: String, parameters: List<String>): String =
+        "common|owner=example/$owner|kind=constructor|abi=example/$owner.<init>|<init>(){}[0]|" +
+            "return=example/$owner|suspend=false|parameters=${canonicalParameters(parameters)}"
+
+    private fun canonicalParameters(parameters: List<String>): String = parameters.joinToString(
+        prefix = "[",
+        postfix = "]",
+    ) { "REGULAR:$it:default=false:vararg=false" }
+
+    private fun writePackedReport(
+        file: File,
+        schema: Int,
+        symbols: List<String>,
+        references: List<String> = emptyList(),
+        artifactFiles: Map<String, File>? = null,
+    ) {
+        val exports = symbolExports(symbols)
+        file.atomicWriteJson(buildJsonObject {
+            put("schema", JsonPrimitive(schema))
+            put("result", JsonPrimitive("passed"))
+            put("language", JsonPrimitive("javascript-typescript"))
+            put("toolchain", buildJsonObject {
+                put("node", JsonPrimitive("v24.0.0"))
+                put("typescript", JsonPrimitive("6.0.0"))
+            })
+            put("package", buildJsonObject {
+                put("name", JsonPrimitive(JAVASCRIPT_NPM_PACKAGE))
+                put("version", JsonPrimitive("0.1.0"))
+            })
+            put("artifacts", buildJsonObject {
+                mapOf(
+                    "tarball" to "codex-agent-0.1.0.tgz",
+                    "packageJson" to "package.json",
+                    "declaration" to "index.d.ts",
+                    "commonJs" to "index.cjs",
+                    "esm" to "index.mjs",
+                ).forEach { (id, fileName) ->
+                    val artifactFile = artifactFiles?.get(id)
+                    put(id, buildJsonObject {
+                        put("fileName", JsonPrimitive(artifactFile?.name ?: fileName))
+                        put("bytes", JsonPrimitive(artifactFile?.length() ?: 1L))
+                        put("sha256", JsonPrimitive(artifactFile?.releaseDigest() ?: digest('3')))
+                    })
+                }
+            })
+            put("exports", buildJsonObject {
+                put("types", buildJsonArray { exports.first.forEach { add(JsonPrimitive(it)) } })
+                put("values", buildJsonArray { exports.second.forEach { add(JsonPrimitive(it)) } })
+                put("commonJs", buildJsonArray { exports.second.forEach { add(JsonPrimitive(it)) } })
+                put("esm", buildJsonArray { exports.second.forEach { add(JsonPrimitive(it)) } })
+            })
+            put("publicSymbols", buildJsonArray { symbols.forEach { add(JsonPrimitive(it)) } })
+            put("compilerEvidence", buildJsonObject {
+                put("testId", JsonPrimitive(COMPILER_TEST))
+                put("status", JsonPrimitive("passed"))
+                if (schema == 2) {
+                    put("referencedSymbols", buildJsonArray { references.forEach { add(JsonPrimitive(it)) } })
+                }
+            })
+        })
+    }
+
+    private fun writePackedJUnit(
+        file: File,
+        testIds: List<String>,
+        statuses: Map<String, CanonicalTestStatus> = emptyMap(),
+    ) {
+        file.writeText(buildString {
+            append("<testsuites><testsuite name=\"packed-npm\">")
+            testIds.forEach { testId ->
+                append("<testcase name=\"").append(testId).append("\"")
+                appendTestTerminal(statuses[testId] ?: CanonicalTestStatus.PASSED)
+            }
+            append("</testsuite></testsuites>")
+        })
+    }
+
+    private fun writeJsNodeResults(
+        file: File,
+        testIds: List<String>,
+        statuses: Map<String, CanonicalTestStatus> = emptyMap(),
+    ) {
+        file.parentFile.mkdirs()
+        file.writeText(buildString {
+            append("<testsuite name=\"compiled-js-node\">")
+            testIds.forEach { testId ->
+                val (className, methodName) = testId.split('#', limit = 2)
+                append("<testcase classname=\"").append(className)
+                    .append("\" name=\"").append(methodName).append("\"")
+                appendTestTerminal(statuses[testId] ?: CanonicalTestStatus.PASSED)
+            }
+            append("</testsuite>")
+        })
+    }
+
+    private fun StringBuilder.appendTestTerminal(status: CanonicalTestStatus) {
+        when (status) {
+            CanonicalTestStatus.PASSED -> append("/>")
+            CanonicalTestStatus.SKIPPED -> append("><skipped/></testcase>")
+            CanonicalTestStatus.FAILED -> append("><failure/></testcase>")
+        }
+    }
+
+    private fun writeCanonicalApiReport(file: File, keys: List<String>) {
+        val owners = keys.groupBy { key -> key.substringAfter("owner=").substringBefore('|') }.toSortedMap()
+        file.atomicWriteJson(buildJsonObject {
+            put("schema", JsonPrimitive(2))
+            put("libraryUniqueName", JsonPrimitive("javascript-test"))
+            put("markerAnnotation", JsonPrimitive("example/CodexBindingApi"))
+            put("signatureVersion", JsonPrimitive(2))
+            put("boundaryTypes", buildJsonArray { owners.keys.forEach { add(JsonPrimitive(it)) } })
+            put("memberExclusionAnnotation", JsonPrimitive("example/CodexBindingExclude"))
+            put("excludedReachableTypes", buildJsonArray {})
+            put("excludedMemberKeys", buildJsonArray {})
+            put("dataClassMetadataAvailable", JsonPrimitive(true))
+            put("dataClassNames", buildJsonArray {})
+            put("owners", buildJsonArray {
+                owners.forEach { (owner, members) ->
+                    add(buildJsonObject {
+                        put("name", JsonPrimitive(owner))
+                        put("capabilities", buildJsonArray { members.sorted().forEach { add(JsonPrimitive(it)) } })
+                    })
+                }
+            })
+            put("targets", buildJsonArray {
+                listOf("jvm-classes", "native", "wasm").forEachIndexed { index, kind ->
+                    add(buildJsonObject {
+                        put("kind", JsonPrimitive(kind))
+                        put("sha256", JsonPrimitive(digest(('6'.code + index).toChar())))
+                    })
+                }
+            })
+        })
+    }
+
+    private fun writeCanonicalCoverageReceipt(file: File, apiReport: File, keys: List<String>) {
+        file.atomicWriteJson(buildJsonObject {
+            put("schema", JsonPrimitive(2))
+            put("result", JsonPrimitive("passed"))
+            put("kotlinCompilerVersion", JsonPrimitive("test"))
+            put("canonicalTestTask", JsonPrimitive("canonical-test"))
+            put("apiReportSha256", JsonPrimitive(apiReport.releaseDigest()))
+            put("compiledTestsSha256", JsonPrimitive(digest('9')))
+            put("testResultsSha256", JsonPrimitive(digest('a')))
+            put("capabilities", buildJsonArray { keys.forEach { add(JsonPrimitive(it)) } })
+            put("claims", buildJsonArray {
+                add(buildJsonObject {
+                    put("testId", JsonPrimitive(COMPILER_TEST))
+                    put("capabilities", buildJsonArray { keys.forEach { add(JsonPrimitive(it)) } })
+                })
+            })
+        })
+    }
+
+    private fun currentPublicSymbols(): List<String> = CURRENT_PUBLIC_SYMBOLS.lineSequence()
+        .filter(String::isNotBlank)
+        .toList()
+        .also { assertEquals(108, it.size) }
+
+    companion object {
+        private const val COMPILER_TEST = "typescript compiler discovers the exact installed public API"
+
+        private val PACKED_TEST_IDS = listOf(
+            "cjs exposes the exact Node-only SDK surface",
+            "cjs projects lifecycle state failure cleanup and terminal delivery",
+            "cjs maps AbortSignal cancellation without starting",
+            "esm exposes the same runtime values as CommonJS",
+            COMPILER_TEST,
+        )
+
+        private val JS_NODE_TEST_IDS = listOf(
+            "jsNodeTest.CodexNodeApiTest#projectsCanonicalLifecycleIdentityFailureAndOwnership[js, node]",
+            "jsNodeTest.CodexNodeApiTest#abortsBeforeStartingAndStopsDisposedObservation[js, node]",
+            "jsNodeTest.CodexNodeApiTest#mapsCanonicalCancellationAndRemovesAbortListener[js, node]",
+            "jsNodeTest.CodexNodeApiTest#isolatesListenerFailureWhileOtherObserversAndCleanupContinue[js, node]",
+            "jsNodeTest.CodexNodeApiTest#projectsAuthenticationStateMethodsIdentityAndDisposal[js, node]",
+            "jsNodeTest.CodexNodeApiTest#mapsAuthenticationFailureAndAbortSignalCancellation[js, node]",
+        )
+
+        private val REQUIRED_CONSUMER_SOURCE_FILES = listOf(
+            "package-lock.json",
+            "package.json",
+            "negative.ts",
+            "smoke.cjs",
+            "smoke.mjs",
+            "smoke.ts",
+            "tsconfig.json",
+        )
+
+        private fun digest(character: Char): String = character.toString().repeat(64)
+
+        private val CURRENT_PUBLIC_SYMBOLS = """
+class:CodexAgent
+class:CodexAuthentication
+class:CodexAuthenticationState
+class:CodexConversation
+class:CodexConversationState
+class:CodexError:extends=Error
+class:CodexFailure
+class:CodexHost
+class:CodexHostState
+class:CodexMessage
+class:CodexObservation
+class:CodexTurnProgress
+class:CodexWorkspace
+function:createCodexHost:(bundleDirectory: string, dataDirectory: string, clientName: string, clientTitle: string, clientVersion: string): CodexHost
+getter:CodexAgent#activeConversation:CodexConversation | null | undefined
+getter:CodexAgent#authentication:CodexAuthentication
+getter:CodexAgent#workspace:CodexWorkspace
+getter:CodexAuthentication#isAuthenticated:boolean
+getter:CodexAuthentication#isAuthenticating:boolean
+getter:CodexAuthentication#state:CodexAuthenticationState
+getter:CodexAuthenticationState#deviceUserCode:string | null | undefined
+getter:CodexAuthenticationState#deviceVerificationUrl:string | null | undefined
+getter:CodexAuthenticationState#failure:CodexFailure | null | undefined
+getter:CodexAuthenticationState#pendingSignInUrl:string | null | undefined
+getter:CodexAuthenticationState#status:CodexAuthenticationStatus
+getter:CodexConversation#state:CodexConversationState
+getter:CodexConversationState#canCancelTurn:boolean
+getter:CodexConversationState#canReload:boolean
+getter:CodexConversationState#canRunShellCommand:boolean
+getter:CodexConversationState#canStartTurn:boolean
+getter:CodexConversationState#conversationId:string | null | undefined
+getter:CodexConversationState#effort:string | null | undefined
+getter:CodexConversationState#failure:CodexFailure | null | undefined
+getter:CodexConversationState#isTurnActive:boolean
+getter:CodexConversationState#messages:ReadonlyArray<CodexMessage>
+getter:CodexConversationState#model:string | null | undefined
+getter:CodexConversationState#serviceTier:string | null | undefined
+getter:CodexConversationState#status:CodexConversationStatus
+getter:CodexConversationState#title:string | null | undefined
+getter:CodexConversationState#turnProgress:CodexTurnProgress | null | undefined
+getter:CodexError#code:string
+getter:CodexError#recoverable:boolean
+getter:CodexFailure#code:string
+getter:CodexFailure#message:string
+getter:CodexFailure#recoverable:boolean
+getter:CodexHost#agent:CodexAgent | null | undefined
+getter:CodexHost#state:CodexHostState
+getter:CodexHostState#agent:CodexAgent | null | undefined
+getter:CodexHostState#failure:CodexFailure | null | undefined
+getter:CodexHostState#selectionMessage:string | null | undefined
+getter:CodexHostState#selectionReason:CodexWorkspaceSelectionReason | null | undefined
+getter:CodexHostState#status:CodexHostStatus
+getter:CodexHostState#workspace:CodexWorkspace | null | undefined
+getter:CodexMessage#clientMessageId:string | null | undefined
+getter:CodexMessage#exitCode:number | null | undefined
+getter:CodexMessage#id:string
+getter:CodexMessage#plan:string | null | undefined
+getter:CodexMessage#reasoning:string | null | undefined
+getter:CodexMessage#role:CodexMessageRole
+getter:CodexMessage#shellCommand:string | null | undefined
+getter:CodexMessage#text:string
+getter:CodexObservation#isClosed:boolean
+getter:CodexTurnProgress#commentary:string
+getter:CodexTurnProgress#plan:string
+getter:CodexTurnProgress#reasoning:string
+getter:CodexTurnProgress#shellExitCode:number | null | undefined
+getter:CodexTurnProgress#shellOutput:string
+getter:CodexTurnProgress#text:string
+getter:CodexTurnProgress#truncated:boolean
+getter:CodexTurnProgress#workActivity:CodexWorkActivity | null | undefined
+getter:CodexWorkspace#displayName:string
+getter:CodexWorkspace#path:string
+method:CodexAgent#observeActiveConversation:(listener: (conversation: CodexConversation | null | undefined) => void): CodexObservation
+method:CodexAgent#openConversation:(conversationId?: string | null | undefined, approvalPreset?: CodexApprovalPreset | null | undefined, serviceTier?: string | null | undefined, signal?: AbortSignal | null | undefined): Promise<CodexConversation>
+method:CodexAuthentication#authenticate:(method: "api_key", apiKey: string, signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexAuthentication#authenticate:(method: "chatgpt_device_code", apiKey?: null, signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexAuthentication#authenticate:(method?: "chatgpt_browser" | null | undefined, apiKey?: null, signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexAuthentication#cancel:(signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexAuthentication#observeAuthenticated:(listener: (isAuthenticated: boolean) => void): CodexObservation
+method:CodexAuthentication#observeAuthenticating:(listener: (isAuthenticating: boolean) => void): CodexObservation
+method:CodexAuthentication#observeState:(listener: (state: CodexAuthenticationState) => void): CodexObservation
+method:CodexAuthentication#signOut:(signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexConversation#[Symbol.asyncDispose]:(): Promise<void>
+method:CodexConversation#cancelTurn:(): Promise<void>
+method:CodexConversation#close:(): Promise<void>
+method:CodexConversation#dispose:(): Promise<void>
+method:CodexConversation#observeState:(listener: (state: CodexConversationState) => void): CodexObservation
+method:CodexConversation#reload:(signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexConversation#runShellCommand:(command: string, signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexConversation#send:(prompt: string, signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexHost#[Symbol.asyncDispose]:(): Promise<void>
+method:CodexHost#close:(): Promise<void>
+method:CodexHost#dispose:(): Promise<void>
+method:CodexHost#observeState:(listener: (state: CodexHostState) => void): CodexObservation
+method:CodexHost#selectWorkspace:(path: string, signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexHost#start:(signal?: AbortSignal | null | undefined): Promise<void>
+method:CodexObservation#[Symbol.dispose]:(): void
+method:CodexObservation#close:(): void
+method:CodexObservation#dispose:(): void
+property:CodexError#cause[optional,readonly]:unknown
+type:CodexApprovalPreset:"auto_review" | "never" | "ask_me" | "strict"
+type:CodexAuthenticationMethod:"chatgpt_browser" | "chatgpt_device_code" | "api_key"
+type:CodexAuthenticationStatus:"signed_out" | "authenticating" | "authenticated"
+type:CodexConversationStatus:"new" | "opening" | "ready" | "starting_turn" | "running_turn" | "cancelling_turn" | "reloading" | "failed" | "closed"
+type:CodexHostStatus:"new" | "restoring" | "workspace_required" | "preparing" | "ready" | "failed" | "closed"
+type:CodexMessageRole:"user" | "assistant"
+type:CodexWorkActivity:"running_command" | "writing_files"
+type:CodexWorkspaceSelectionReason:"not_selected" | "not_found" | "access_revoked" | "invalid_selection"
+""".trimIndent()
+    }
+}

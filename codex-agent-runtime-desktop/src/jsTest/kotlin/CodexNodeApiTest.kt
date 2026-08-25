@@ -27,8 +27,10 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.await
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -77,6 +79,18 @@ class CodexNodeApiTest {
         val conversationObservation = conversation.observeState { conversationStates += it.status }
         awaitCondition { conversationStates.isNotEmpty() }
         assertEquals(listOf("ready"), conversationStates)
+
+        conversation.send("hello").await()
+        runtime.completeTurn()
+        awaitCondition { conversation.state.status == "ready" && conversation.state.messages.size == 2 }
+        val messageState = conversation.state
+        val messages = messageState.messages
+        assertEquals(listOf("user-1", "assistant-1"), messages.map(CodexMessage::id))
+        assertEquals(listOf("hello", "world"), messages.map(CodexMessage::text))
+        assertEquals(listOf("user", "assistant"), messages.map(CodexMessage::role))
+        assertTrue(isFrozen(messageState))
+        assertTrue(isFrozen(messages))
+        messages.forEach { assertTrue(isFrozen(it)) }
 
         val failure = runCatching { conversation.runShellCommand("pwd").await() }.exceptionOrNull()
         val codexError = assertIs<CodexError>(failure)
@@ -386,6 +400,11 @@ private class ApiTestRuntime : CodexRuntime {
     var logoutRequests: Int = 0
     private var loginAttempts: Int = 0
 
+    suspend fun completeTurn(): Unit = notify("turn/completed", buildJsonObject {
+        put("threadId", "thread-js")
+        put("turn", completedTurn())
+    })
+
     override suspend fun start(): Unit {
         started = true
     }
@@ -396,6 +415,8 @@ private class ApiTestRuntime : CodexRuntime {
         when (request["method"]?.jsonPrimitive?.content) {
             "initialize" -> respond(id, initializeResult())
             "thread/start" -> respond(id, threadStartResult())
+            "thread/read" -> respond(id, threadReadResult())
+            "turn/start" -> respond(id, turnStartResult())
             "account/read" -> {
                 accountReadEntered?.complete(Unit)
                 accountReadRelease?.await()
@@ -492,25 +513,61 @@ private fun initializeResult(): JsonObject = buildJsonObject {
 }
 
 private fun threadStartResult(): JsonObject = buildJsonObject {
-    putJsonObject("thread") {
-        put("id", "thread-js")
-        put("cliVersion", "0.149.0")
-        put("createdAt", 0)
-        put("cwd", "/workspace")
-        put("ephemeral", false)
-        put("modelProvider", "openai")
-        put("preview", "")
-        put("conversationId", "thread-js")
-        put("sessionId", "thread-js")
-        put("source", "cli")
-        putJsonObject("status") { put("type", "idle") }
-        putJsonArray("turns") {}
-        put("updatedAt", 0)
-    }
+    put("thread", threadResult())
     put("approvalPolicy", "on-request")
     put("approvalsReviewer", "user")
     put("cwd", "/workspace")
     put("model", "test")
     put("modelProvider", "openai")
     putJsonObject("sandbox") { put("type", "dangerFullAccess") }
+}
+
+private fun threadReadResult(): JsonObject = buildJsonObject {
+    put("thread", threadResult(buildJsonArray { add(completedTurn()) }))
+}
+
+private fun threadResult(turns: JsonArray = buildJsonArray {}): JsonObject = buildJsonObject {
+    put("id", "thread-js")
+    put("cliVersion", "0.149.0")
+    put("createdAt", 0)
+    put("cwd", "/workspace")
+    put("ephemeral", false)
+    put("modelProvider", "openai")
+    put("preview", "")
+    put("conversationId", "thread-js")
+    put("sessionId", "thread-js")
+    put("source", "cli")
+    putJsonObject("status") { put("type", "idle") }
+    put("turns", turns)
+    put("updatedAt", 0)
+}
+
+private fun turnStartResult(): JsonObject = buildJsonObject {
+    putJsonObject("turn") {
+        put("id", "turn-js")
+        putJsonArray("items") {}
+        put("status", "inProgress")
+    }
+}
+
+private fun completedTurn(): JsonObject = buildJsonObject {
+    put("id", "turn-js")
+    putJsonArray("items") {
+        add(buildJsonObject {
+            put("id", "user-1")
+            put("type", "userMessage")
+            putJsonArray("content") {
+                add(buildJsonObject {
+                    put("type", "text")
+                    put("text", "hello")
+                })
+            }
+        })
+        add(buildJsonObject {
+            put("id", "assistant-1")
+            put("type", "agentMessage")
+            put("text", "world")
+        })
+    }
+    put("status", "completed")
 }

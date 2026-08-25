@@ -120,36 +120,41 @@ internal fun readCanonicalTestResults(resultsDirectory: File): List<CanonicalTes
         .toList()
     check(reports.isNotEmpty()) { "Canonical JUnit reports are missing" }
 
-    val results = reports.flatMap { report ->
-        val suite = secureDocumentBuilderFactory(namespaceAware = true)
-            .newDocumentBuilder().parse(report).documentElement
-        check(suite.tagName == "testsuite") { "Canonical JUnit report has no testsuite root: ${report.name}" }
-        val cases = suite.getElementsByTagName("testcase")
-        (0 until cases.length).map { index ->
-            val case = cases.item(index) as Element
-            val className = case.getAttribute("classname")
-            val methodName = case.getAttribute("name").substringBefore('(')
-            check(className.isNotBlank() && methodName.isNotBlank()) {
-                "Canonical JUnit testcase identity is invalid: ${report.name}"
-            }
-            val terminalElements = (0 until case.childNodes.length).mapNotNull { childIndex ->
-                case.childNodes.item(childIndex) as? Element
-            }.map(Element::getTagName)
-            check(terminalElements.count { it in setOf("skipped", "failure", "error") } <= 1) {
-                "Canonical JUnit testcase has conflicting results: $className#$methodName"
-            }
-            val status = when {
-                terminalElements.any { it == "failure" || it == "error" } -> CanonicalTestStatus.FAILED
-                "skipped" in terminalElements -> CanonicalTestStatus.SKIPPED
-                else -> CanonicalTestStatus.PASSED
-            }
-            CanonicalTestResult("$className#$methodName", status)
-        }
-    }
+    val results = reports.flatMap(::readCanonicalTestReport)
     val duplicateTests = results.groupingBy(CanonicalTestResult::testId).eachCount()
         .filterValues { it != 1 }.keys.sorted()
     check(duplicateTests.isEmpty()) { "Canonical JUnit test identities are ambiguous: $duplicateTests" }
     return results.sortedBy(CanonicalTestResult::testId)
+}
+
+internal fun readCanonicalTestReport(report: File): List<CanonicalTestResult> {
+    check(report.isFile && !Files.isSymbolicLink(report.toPath()) && report.extension == "xml") {
+        "Canonical JUnit report is missing, non-regular, or a symlink: $report"
+    }
+    val suite = secureDocumentBuilderFactory(namespaceAware = true)
+        .newDocumentBuilder().parse(report).documentElement
+    check(suite.tagName == "testsuite") { "Canonical JUnit report has no testsuite root: ${report.name}" }
+    val cases = suite.getElementsByTagName("testcase")
+    return (0 until cases.length).map { index ->
+        val case = cases.item(index) as Element
+        val className = case.getAttribute("classname")
+        val methodName = case.getAttribute("name").substringBefore('(')
+        check(className.isNotBlank() && methodName.isNotBlank()) {
+            "Canonical JUnit testcase identity is invalid: ${report.name}"
+        }
+        val terminalElements = (0 until case.childNodes.length).mapNotNull { childIndex ->
+            case.childNodes.item(childIndex) as? Element
+        }.map(Element::getTagName)
+        check(terminalElements.count { it in setOf("skipped", "failure", "error") } <= 1) {
+            "Canonical JUnit testcase has conflicting results: $className#$methodName"
+        }
+        val status = when {
+            terminalElements.any { it == "failure" || it == "error" } -> CanonicalTestStatus.FAILED
+            "skipped" in terminalElements -> CanonicalTestStatus.SKIPPED
+            else -> CanonicalTestStatus.PASSED
+        }
+        CanonicalTestResult("$className#$methodName", status)
+    }
 }
 
 internal fun verifyCrossLanguageApiCoverage(
