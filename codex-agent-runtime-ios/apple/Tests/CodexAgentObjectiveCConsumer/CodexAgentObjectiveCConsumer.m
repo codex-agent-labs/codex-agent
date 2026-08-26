@@ -58,6 +58,15 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
         [self finishWithFailure:@"Objective-C approval decisions changed"];
         return;
     }
+    CodexAgentAgentCollaborationMode *defaultMode = [CodexAgentAgentCollaborationMode default_];
+    CodexAgentAgentCollaborationMode *plan = [CodexAgentAgentCollaborationMode plan];
+    if (![defaultMode.name isEqualToString:@"DEFAULT"] || defaultMode.ordinal != 0 ||
+        ![plan.name isEqualToString:@"PLAN"] || plan.ordinal != 1 ||
+        defaultMode == plan || defaultMode != [CodexAgentAgentCollaborationMode default_] ||
+        plan != [CodexAgentAgentCollaborationMode plan]) {
+        [self finishWithFailure:@"Objective-C collaboration modes changed"];
+        return;
+    }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CDXConsumerTimeoutSeconds * NSEC_PER_SEC)),

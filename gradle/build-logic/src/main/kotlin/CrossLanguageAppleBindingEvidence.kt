@@ -31,6 +31,8 @@ private const val appleFailureRecoverableUsr = "$APPLE_CODEX_FAILURE_OWNER_USR(p
 private const val appleFailureMessageUsr = "$APPLE_CODEX_FAILURE_OWNER_USR(py)message"
 private const val appleApprovalAcceptUsr = "$APPLE_APPROVAL_DECISION_OWNER_USR(cpy)accept"
 private const val appleApprovalDeclineUsr = "$APPLE_APPROVAL_DECISION_OWNER_USR(cpy)decline"
+private const val appleCollaborationDefaultUsr = "$APPLE_COLLABORATION_MODE_OWNER_USR(cpy)default_"
+private const val appleCollaborationPlanUsr = "$APPLE_COLLABORATION_MODE_OWNER_USR(cpy)plan"
 private const val swiftFailureTest =
     "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()"
 private const val objectiveCFailureTest =
@@ -98,7 +100,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
     canonical.canonical.coverageReceiptSha256.appleSha256("canonical coverage receipt")
     canonical.targetSha256.getValue("native").appleSha256("canonical native target")
     val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-    check(capabilities.size == 6) { "Apple binding capability count changed" }
+    check(capabilities.size == 8) { "Apple binding capability count changed" }
     val usrByCapability = capabilities.associateWith(::appleBindingUsr)
 
     compilerEvidence.appleKeys(
@@ -193,7 +195,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
 
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
-    check(missing.size == 550) { "Apple partial binding gap count changed: ${missing.size}" }
+    check(missing.size == 548) { "Apple partial binding gap count changed: ${missing.size}" }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()
@@ -300,9 +302,13 @@ private fun appleLanguageEvidence(
     behaviorTest: String,
     missing: List<String>,
 ) = buildJsonObject {
-    check(publicSymbols.size == 8 && referencedSymbols.size == 6 &&
+    check(publicSymbols.size == 11 && referencedSymbols.size == 8 &&
         referencedSymbols.toSet() == publicSymbols.toSet() -
-            setOf(APPLE_CODEX_FAILURE_OWNER_USR, APPLE_APPROVAL_DECISION_OWNER_USR)
+            setOf(
+                APPLE_CODEX_FAILURE_OWNER_USR,
+                APPLE_APPROVAL_DECISION_OWNER_USR,
+                APPLE_COLLABORATION_MODE_OWNER_USR,
+            )
     ) { "$language Apple binding symbol/reference inventory changed" }
     put("language", JsonPrimitive(language))
     put("publicSymbols", publicSymbols.appleJsonStrings())
@@ -329,6 +335,8 @@ private fun appleBindingUsr(capability: String): String = when {
     "|{}message[0]|" in capability -> appleFailureMessageUsr
     ".ACCEPT|null[0]" in capability -> appleApprovalAcceptUsr
     ".DECLINE|null[0]" in capability -> appleApprovalDeclineUsr
+    ".DEFAULT|null[0]" in capability -> appleCollaborationDefaultUsr
+    ".PLAN|null[0]" in capability -> appleCollaborationPlanUsr
     else -> error("Unexpected canonical Apple binding capability: $capability")
 }
 
@@ -370,6 +378,21 @@ private fun expectedSwiftAppleBindingSurface(): List<AppleCompilerSymbol> = list
         appleApprovalDeclineUsr, "swift", "swift.type.property", listOf("AgentApprovalDecision", "decline"),
         "decline", "open", "class var decline: AgentApprovalDecision { get }",
         listOf(APPLE_APPROVAL_DECISION_OWNER_USR), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        APPLE_COLLABORATION_MODE_OWNER_USR, "swift", "swift.class", listOf("AgentCollaborationMode"),
+        "AgentCollaborationMode", "public", "class AgentCollaborationMode", emptyList(), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleCollaborationDefaultUsr, "swift", "swift.type.property",
+        listOf("AgentCollaborationMode", "default_"), "default_", "open",
+        "class var default_: AgentCollaborationMode { get }",
+        listOf(APPLE_COLLABORATION_MODE_OWNER_USR), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleCollaborationPlanUsr, "swift", "swift.type.property", listOf("AgentCollaborationMode", "plan"),
+        "plan", "open", "class var plan: AgentCollaborationMode { get }",
+        listOf(APPLE_COLLABORATION_MODE_OWNER_USR), emptyList(), null,
     ),
 ).sortedBy(AppleCompilerSymbol::precise)
 
@@ -425,6 +448,24 @@ private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> =
         "@property (class, readonly) CodexAgentAgentApprovalDecision * decline;",
         listOf(APPLE_APPROVAL_DECISION_OWNER_USR), emptyList(), null,
     ),
+    AppleCompilerSymbol(
+        APPLE_COLLABORATION_MODE_OWNER_USR, "objective-c", "objective-c.class",
+        listOf("CodexAgentAgentCollaborationMode"), "CodexAgentAgentCollaborationMode", "public",
+        "@interface CodexAgentAgentCollaborationMode : CodexAgentKotlinEnum",
+        listOf("c:objc(cs)CodexAgentKotlinEnum"), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleCollaborationDefaultUsr, "objective-c", "objective-c.type.property",
+        listOf("CodexAgentAgentCollaborationMode", "default_"), "default_", "public",
+        "@property (class, readonly) CodexAgentAgentCollaborationMode * default_;",
+        listOf(APPLE_COLLABORATION_MODE_OWNER_USR), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleCollaborationPlanUsr, "objective-c", "objective-c.type.property",
+        listOf("CodexAgentAgentCollaborationMode", "plan"), "plan", "public",
+        "@property (class, readonly) CodexAgentAgentCollaborationMode * plan;",
+        listOf(APPLE_COLLABORATION_MODE_OWNER_USR), emptyList(), null,
+    ),
 ).sortedBy(AppleCompilerSymbol::precise)
 
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
@@ -444,6 +485,14 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     AppleCompilerReference(
         appleApprovalDeclineUsr, "member_ref_expr", "decline", null,
         "\$sSo010CodexAgentB16ApprovalDecisionCD", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleCollaborationDefaultUsr, "member_ref_expr", "default_", null,
+        "\$sSo010CodexAgentB17CollaborationModeCD", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleCollaborationPlanUsr, "member_ref_expr", "plan", null,
+        "\$sSo010CodexAgentB17CollaborationModeCD", emptyList(),
     ),
 ).sortedBy(AppleCompilerReference::precise)
 
@@ -471,6 +520,14 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     AppleCompilerReference(
         appleApprovalDeclineUsr, "ObjCMessageExpr", "decline", "CodexAgentAgentApprovalDecision",
         "CodexAgentAgentApprovalDecision * _Nonnull", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleCollaborationDefaultUsr, "ObjCMessageExpr", "default_", "CodexAgentAgentCollaborationMode",
+        "CodexAgentAgentCollaborationMode * _Nonnull", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleCollaborationPlanUsr, "ObjCMessageExpr", "plan", "CodexAgentAgentCollaborationMode",
+        "CodexAgentAgentCollaborationMode * _Nonnull", emptyList(),
     ),
 ).sortedBy(AppleCompilerReference::precise)
 

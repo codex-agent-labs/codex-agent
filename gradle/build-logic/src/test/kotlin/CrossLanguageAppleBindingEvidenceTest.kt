@@ -17,7 +17,7 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageAppleBindingEvidenceTest {
     @Test
-    fun `observes six independent claims and 550 explicit gaps per Apple language`() {
+    fun `observes eight independent claims and 548 explicit gaps per Apple language`() {
         val fixture = fixture()
         val report = fixture.derive()
 
@@ -29,11 +29,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         val languages = report.releaseArray("languages").map { it as JsonObject }
         assertEquals(listOf("objective-c", "swift"), languages.map { it.releaseString("language") })
         languages.forEach { language ->
-            assertEquals(8, language.releaseArray("publicSymbols").size)
-            assertEquals(6, language.releaseArray("referencedSymbols").size)
-            assertEquals(6, language.releaseArray("claims").size)
+            assertEquals(11, language.releaseArray("publicSymbols").size)
+            assertEquals(8, language.releaseArray("referencedSymbols").size)
+            assertEquals(8, language.releaseArray("claims").size)
             assertTrue(language.releaseArray("exclusions").isEmpty())
-            assertEquals(550, language.releaseArray("missingCapabilityKeys").size)
+            assertEquals(548, language.releaseArray("missingCapabilityKeys").size)
             assertEquals(
                 fixture.capabilities,
                 language.releaseArray("claims").map { (it as JsonObject).releaseString("canonicalKey") },
@@ -110,6 +110,20 @@ class CrossLanguageAppleBindingEvidenceTest {
                 "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
             ))
         })
+        val collaborationReferenceTypeDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("swift").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == PLAN_USR) {
+                    JsonObject(reference + ("valueType" to JsonPrimitive("\$sSo010CodexAgentB16ApprovalDecisionCD")))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "swift" to changed,
+                "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
         val qualifierDrift = compiler.withObject("references", run {
             val changed = JsonArray(references.releaseArray("objectiveC").map { value ->
                 val reference = value as JsonObject
@@ -177,11 +191,14 @@ class CrossLanguageAppleBindingEvidenceTest {
         val futureDecision = fixture.canonical.copy(
             memberKeys = (fixture.canonical.memberKeys.dropLast(1) + canonicalApprovalDecision("FUTURE")).sorted(),
         )
+        val futureCollaboration = fixture.canonical.copy(
+            memberKeys = (fixture.canonical.memberKeys.dropLast(1) + canonicalCollaborationMode("FUTURE")).sorted(),
+        )
 
         listOf(
             surfaceDrift, signatureDrift, typeDrift, readonlyDrift, selectorDrift, missingSurface,
-            duplicateSurface, referenceDrift, swiftReferenceTypeDrift, qualifierDrift, swappedClaim,
-            missingClaim, duplicateClaim, wrongOwnerClaim,
+            duplicateSurface, referenceDrift, swiftReferenceTypeDrift, collaborationReferenceTypeDrift,
+            qualifierDrift, swappedClaim, missingClaim, duplicateClaim, wrongOwnerClaim,
             cdx, wrongArtifact, duplicateTarget,
         ).forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(compiler = drift) }
@@ -189,7 +206,7 @@ class CrossLanguageAppleBindingEvidenceTest {
         listOf(failedTests, renamedTests).forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(xctest = drift) }
         }
-        listOf(futureCanonical, overloadedCanonical, futureDecision).forEach { drift ->
+        listOf(futureCanonical, overloadedCanonical, futureDecision, futureCollaboration).forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(canonical = drift) }
         }
         assertFailsWith<IllegalStateException> {
@@ -265,7 +282,9 @@ class CrossLanguageAppleBindingEvidenceTest {
             canonicalProperty("message", "kotlin/String!!"),
             canonicalApprovalDecision("ACCEPT"),
             canonicalApprovalDecision("DECLINE"),
-        ) + (0 until 550).map { index ->
+            canonicalCollaborationMode("DEFAULT"),
+            canonicalCollaborationMode("PLAN"),
+        ) + (0 until 548).map { index ->
             "common|owner=sample/Owner${index.toString().padStart(3, '0')}|kind=property|" +
                 "abi=sample/Owner$index.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!"
         }).sorted()
@@ -384,6 +403,12 @@ class CrossLanguageAppleBindingEvidenceTest {
             "accept", "open", "class var accept: AgentApprovalDecision { get }", listOf(APPROVAL_OWNER)),
         symbol(DECLINE_USR, "swift", "swift.type.property", listOf("AgentApprovalDecision", "decline"),
             "decline", "open", "class var decline: AgentApprovalDecision { get }", listOf(APPROVAL_OWNER)),
+        symbol(COLLABORATION_OWNER, "swift", "swift.class", listOf("AgentCollaborationMode"),
+            "AgentCollaborationMode", "public", "class AgentCollaborationMode"),
+        symbol(DEFAULT_USR, "swift", "swift.type.property", listOf("AgentCollaborationMode", "default_"),
+            "default_", "open", "class var default_: AgentCollaborationMode { get }", listOf(COLLABORATION_OWNER)),
+        symbol(PLAN_USR, "swift", "swift.type.property", listOf("AgentCollaborationMode", "plan"),
+            "plan", "open", "class var plan: AgentCollaborationMode { get }", listOf(COLLABORATION_OWNER)),
     ).sortedBy { it.releaseString("precise") })
 
     private fun objectiveCSurface() = JsonArray(listOf(
@@ -418,6 +443,18 @@ class CrossLanguageAppleBindingEvidenceTest {
         symbol(DECLINE_USR, "objective-c", "objective-c.type.property",
             listOf("CodexAgentAgentApprovalDecision", "decline"), "decline", "public",
             "@property (class, readonly) CodexAgentAgentApprovalDecision * decline;", listOf(APPROVAL_OWNER)),
+        symbol(COLLABORATION_OWNER, "objective-c", "objective-c.class",
+            listOf("CodexAgentAgentCollaborationMode"), "CodexAgentAgentCollaborationMode", "public",
+            "@interface CodexAgentAgentCollaborationMode : CodexAgentKotlinEnum",
+            listOf("c:objc(cs)CodexAgentKotlinEnum")),
+        symbol(DEFAULT_USR, "objective-c", "objective-c.type.property",
+            listOf("CodexAgentAgentCollaborationMode", "default_"), "default_", "public",
+            "@property (class, readonly) CodexAgentAgentCollaborationMode * default_;",
+            listOf(COLLABORATION_OWNER)),
+        symbol(PLAN_USR, "objective-c", "objective-c.type.property",
+            listOf("CodexAgentAgentCollaborationMode", "plan"), "plan", "public",
+            "@property (class, readonly) CodexAgentAgentCollaborationMode * plan;",
+            listOf(COLLABORATION_OWNER)),
     ).sortedBy { it.releaseString("precise") })
 
     private fun swiftReferences() = JsonArray(listOf(
@@ -427,6 +464,8 @@ class CrossLanguageAppleBindingEvidenceTest {
         reference(MESSAGE_USR, "member_ref_expr", "message", null, "\$sSSD"),
         reference(ACCEPT_USR, "member_ref_expr", "accept", null, APPROVAL_SWIFT_TYPE),
         reference(DECLINE_USR, "member_ref_expr", "decline", null, APPROVAL_SWIFT_TYPE),
+        reference(DEFAULT_USR, "member_ref_expr", "default_", null, COLLABORATION_SWIFT_TYPE),
+        reference(PLAN_USR, "member_ref_expr", "plan", null, COLLABORATION_SWIFT_TYPE),
     ).sortedBy { it.releaseString("precise") })
 
     private fun objectiveCReferences() = JsonArray(listOf(
@@ -440,6 +479,10 @@ class CrossLanguageAppleBindingEvidenceTest {
             "CodexAgentAgentApprovalDecision * _Nonnull"),
         reference(DECLINE_USR, "ObjCMessageExpr", "decline", "CodexAgentAgentApprovalDecision",
             "CodexAgentAgentApprovalDecision * _Nonnull"),
+        reference(DEFAULT_USR, "ObjCMessageExpr", "default_", "CodexAgentAgentCollaborationMode",
+            "CodexAgentAgentCollaborationMode * _Nonnull"),
+        reference(PLAN_USR, "ObjCMessageExpr", "plan", "CodexAgentAgentCollaborationMode",
+            "CodexAgentAgentCollaborationMode * _Nonnull"),
     ).sortedBy { it.releaseString("precise") })
 
     private fun symbol(
@@ -492,7 +535,9 @@ class CrossLanguageAppleBindingEvidenceTest {
         "|{}isRecoverable[0]|" in capability -> RECOVERABLE_USR
         "|{}message[0]|" in capability -> MESSAGE_USR
         ".ACCEPT|null[0]" in capability -> ACCEPT_USR
-        else -> DECLINE_USR
+        ".DECLINE|null[0]" in capability -> DECLINE_USR
+        ".DEFAULT|null[0]" in capability -> DEFAULT_USR
+        else -> PLAN_USR
     }
 
     private fun canonicalConstructor(): String =
@@ -509,6 +554,10 @@ class CrossLanguageAppleBindingEvidenceTest {
     private fun canonicalApprovalDecision(name: String): String =
         "common|owner=$APPROVAL_CANONICAL_OWNER|kind=enum-entry|" +
             "abi=$APPROVAL_CANONICAL_OWNER.$name|null[0]"
+
+    private fun canonicalCollaborationMode(name: String): String =
+        "common|owner=$COLLABORATION_CANONICAL_OWNER|kind=enum-entry|" +
+            "abi=$COLLABORATION_CANONICAL_OWNER.$name|null[0]"
 
     private fun strings(values: Iterable<String>) = buildJsonArray { values.forEach { add(JsonPrimitive(it)) } }
     private fun JsonObject.withObject(name: String, value: JsonObject) = JsonObject(this + (name to value))
@@ -552,6 +601,12 @@ class CrossLanguageAppleBindingEvidenceTest {
         const val ACCEPT_USR = "$APPROVAL_OWNER(cpy)accept"
         const val DECLINE_USR = "$APPROVAL_OWNER(cpy)decline"
         const val APPROVAL_SWIFT_TYPE = "\$sSo010CodexAgentB16ApprovalDecisionCD"
+        const val COLLABORATION_CANONICAL_OWNER =
+            "io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode"
+        const val COLLABORATION_OWNER = "c:objc(cs)CodexAgentAgentCollaborationMode"
+        const val DEFAULT_USR = "$COLLABORATION_OWNER(cpy)default_"
+        const val PLAN_USR = "$COLLABORATION_OWNER(cpy)plan"
+        const val COLLABORATION_SWIFT_TYPE = "\$sSo010CodexAgentB17CollaborationModeCD"
         const val SWIFT_FAILURE_TEST =
             "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()"
         const val OBJECTIVE_C_FAILURE_TEST =

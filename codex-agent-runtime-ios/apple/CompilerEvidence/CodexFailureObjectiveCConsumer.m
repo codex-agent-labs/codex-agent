@@ -15,3 +15,9 @@ static BOOL consumeAgentApprovalDecisions(void) {
     CodexAgentAgentApprovalDecision *decline = [CodexAgentAgentApprovalDecision decline];
     return accept != decline;
 }
+
+static BOOL consumeAgentCollaborationModes(void) {
+    CodexAgentAgentCollaborationMode *defaultMode = [CodexAgentAgentCollaborationMode default_];
+    CodexAgentAgentCollaborationMode *plan = [CodexAgentAgentCollaborationMode plan];
+    return defaultMode != plan;
+}

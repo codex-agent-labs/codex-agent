@@ -57,6 +57,16 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertTrue(accept === AgentApprovalDecision.accept)
         XCTAssertTrue(decline === AgentApprovalDecision.decline)
 
+        let defaultMode = AgentCollaborationMode.default_
+        let plan = AgentCollaborationMode.plan
+        XCTAssertEqual(defaultMode.name, "DEFAULT")
+        XCTAssertEqual(defaultMode.ordinal, 0)
+        XCTAssertEqual(plan.name, "PLAN")
+        XCTAssertEqual(plan.ordinal, 1)
+        XCTAssertFalse(defaultMode === plan)
+        XCTAssertTrue(defaultMode === AgentCollaborationMode.default_)
+        XCTAssertTrue(plan === AgentCollaborationMode.plan)
+
         let failure = CodexFailure(
             code: "workspace_unavailable",
             message: "Workspace is unavailable",

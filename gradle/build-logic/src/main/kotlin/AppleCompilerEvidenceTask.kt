@@ -26,10 +26,13 @@ import org.gradle.work.DisableCachingByDefault
 internal const val APPLE_COMPILER_EVIDENCE_PROTOCOL = "codex-agent-apple-compiler-evidence-v1"
 internal const val APPLE_CODEX_FAILURE_OWNER_USR = "c:objc(cs)CodexAgentCodexFailure"
 internal const val APPLE_APPROVAL_DECISION_OWNER_USR = "c:objc(cs)CodexAgentAgentApprovalDecision"
+internal const val APPLE_COLLABORATION_MODE_OWNER_USR = "c:objc(cs)CodexAgentAgentCollaborationMode"
 private const val APPLE_CODEX_FAILURE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/CodexFailure"
 private const val APPLE_APPROVAL_DECISION_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision"
+private const val APPLE_COLLABORATION_MODE_CANONICAL_OWNER =
+    "io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode"
 
 private val appleCodexFailureMembers = linkedMapOf(
     "constructor:<init>" to "$APPLE_CODEX_FAILURE_OWNER_USR(im)initWithCode:message:isRecoverable:",
@@ -61,8 +64,22 @@ private val appleApprovalDecisionCoverageTokens = mapOf(
         "api-v1:AgentApprovalDecision#enum-entry:DECLINE#sha256:db4d1df5ec20f42363a10d2b7a416c5e114a21663f8f70e0b32f4608dade7d56",
 )
 
-private val appleBindingMembers = appleCodexFailureMembers + appleApprovalDecisionMembers
-private val appleBindingCoverageTokens = appleCodexFailureCoverageTokens + appleApprovalDecisionCoverageTokens
+private val appleCollaborationModeMembers = linkedMapOf(
+    "enum-entry:DEFAULT" to "$APPLE_COLLABORATION_MODE_OWNER_USR(cpy)default_",
+    "enum-entry:PLAN" to "$APPLE_COLLABORATION_MODE_OWNER_USR(cpy)plan",
+)
+
+private val appleCollaborationModeCoverageTokens = mapOf(
+    "enum-entry:DEFAULT" to
+        "api-v1:AgentCollaborationMode#enum-entry:DEFAULT#sha256:e7a82ccb52ea70efb42bb512dfc2ef7616813fd6e0668c6d661f6b3b01c8a3d3",
+    "enum-entry:PLAN" to
+        "api-v1:AgentCollaborationMode#enum-entry:PLAN#sha256:ec0e7395b27d5e890c396ea4e39af43f49b093b933ee9062c83fc9c07a754e4d",
+)
+
+private val appleBindingMembers =
+    appleCodexFailureMembers + appleApprovalDecisionMembers + appleCollaborationModeMembers
+private val appleBindingCoverageTokens =
+    appleCodexFailureCoverageTokens + appleApprovalDecisionCoverageTokens + appleCollaborationModeCoverageTokens
 
 private fun appleBindingShape(capability: String): String {
     val token = crossLanguageApiCoverageToken(capability)
@@ -158,6 +175,18 @@ private val expectedSwiftAppleBindingSymbols = linkedMapOf(
         "swift.type.property", listOf("AgentApprovalDecision", "decline"), "decline", "open",
         "class var decline: AgentApprovalDecision { get }", listOf(APPLE_APPROVAL_DECISION_OWNER_USR),
     ),
+    APPLE_COLLABORATION_MODE_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("AgentCollaborationMode"), "AgentCollaborationMode", "public",
+        "class AgentCollaborationMode", emptyList(),
+    ),
+    appleCollaborationModeMembers.getValue("enum-entry:DEFAULT") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentCollaborationMode", "default_"), "default_", "open",
+        "class var default_: AgentCollaborationMode { get }", listOf(APPLE_COLLABORATION_MODE_OWNER_USR),
+    ),
+    appleCollaborationModeMembers.getValue("enum-entry:PLAN") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentCollaborationMode", "plan"), "plan", "open",
+        "class var plan: AgentCollaborationMode { get }", listOf(APPLE_COLLABORATION_MODE_OWNER_USR),
+    ),
 )
 
 private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
@@ -205,12 +234,29 @@ private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
         "@property (class, readonly) CodexAgentAgentApprovalDecision * decline;",
         listOf(APPLE_APPROVAL_DECISION_OWNER_USR),
     ),
+    APPLE_COLLABORATION_MODE_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentAgentCollaborationMode"),
+        "CodexAgentAgentCollaborationMode", "public",
+        "@interface CodexAgentAgentCollaborationMode : CodexAgentKotlinEnum",
+        listOf("c:objc(cs)CodexAgentKotlinEnum"),
+    ),
+    appleCollaborationModeMembers.getValue("enum-entry:DEFAULT") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentCollaborationMode", "default_"), "default_", "public",
+        "@property (class, readonly) CodexAgentAgentCollaborationMode * default_;",
+        listOf(APPLE_COLLABORATION_MODE_OWNER_USR),
+    ),
+    appleCollaborationModeMembers.getValue("enum-entry:PLAN") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentCollaborationMode", "plan"), "plan", "public",
+        "@property (class, readonly) CodexAgentAgentCollaborationMode * plan;",
+        listOf(APPLE_COLLABORATION_MODE_OWNER_USR),
+    ),
 )
 
 internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> {
     val ownerPrefixes = setOf(
         "common|owner=$APPLE_CODEX_FAILURE_CANONICAL_OWNER|",
         "common|owner=$APPLE_APPROVAL_DECISION_CANONICAL_OWNER|",
+        "common|owner=$APPLE_COLLABORATION_MODE_CANONICAL_OWNER|",
     )
     val byShape = memberKeys.filter { key -> ownerPrefixes.any { prefix -> key.startsWith(prefix) } }.groupBy { key ->
         appleBindingShape(key)
@@ -300,7 +346,8 @@ private fun parseAppleBindingSurface(
         }
     }
     val memberOwners = appleCodexFailureMembers.values.associateWith { APPLE_CODEX_FAILURE_OWNER_USR } +
-        appleApprovalDecisionMembers.values.associateWith { APPLE_APPROVAL_DECISION_OWNER_USR }
+        appleApprovalDecisionMembers.values.associateWith { APPLE_APPROVAL_DECISION_OWNER_USR } +
+        appleCollaborationModeMembers.values.associateWith { APPLE_COLLABORATION_MODE_OWNER_USR }
     val relationships = root.appleArray("relationships").map { it.appleObject("$language relationship") }
         .filter { relationship ->
             relationship.appleString("kind") == "memberOf" &&
@@ -363,6 +410,8 @@ internal fun parseSwiftAppleBindingReferences(json: String): List<AppleCompilerR
         appleCodexFailureMembers.getValue("property:message") to ("member_ref_expr" to "message"),
         appleApprovalDecisionMembers.getValue("enum-entry:ACCEPT") to ("member_ref_expr" to "accept"),
         appleApprovalDecisionMembers.getValue("enum-entry:DECLINE") to ("member_ref_expr" to "decline"),
+        appleCollaborationModeMembers.getValue("enum-entry:DEFAULT") to ("member_ref_expr" to "default_"),
+        appleCollaborationModeMembers.getValue("enum-entry:PLAN") to ("member_ref_expr" to "plan"),
     )
     references.forEach { reference ->
         check(reference.kind to reference.name == expectedKinds.getValue(reference.precise) &&
@@ -438,7 +487,32 @@ internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleComp
         )
     }
     check(decisions == expectedDecisions) { "Objective-C AgentApprovalDecision references changed" }
-    return (constructor + properties + decisions).sortedBy(AppleCompilerReference::precise)
+    val collaborationModes = listOf("default_", "plan").map { name ->
+        val node = nodes.singleOrNull { candidate ->
+            candidate.appleStringOrNull("kind") == "ObjCMessageExpr" &&
+                candidate.appleStringOrNull("selector") == name
+        } ?: error("Objective-C AgentCollaborationMode reference changed: $name")
+        check(node.appleString("receiverKind") == "class") {
+            "Objective-C AgentCollaborationMode receiver changed: $name"
+        }
+        val shape = if (name == "default_") "enum-entry:DEFAULT" else "enum-entry:PLAN"
+        AppleCompilerReference(
+            appleCollaborationModeMembers.getValue(shape), "ObjCMessageExpr", name,
+            node.appleObject("classType").appleString("qualType"),
+            node.appleObject("type").appleString("qualType"), emptyList(),
+        )
+    }
+    val expectedCollaborationModes = listOf("default_", "plan").map { name ->
+        val shape = if (name == "default_") "enum-entry:DEFAULT" else "enum-entry:PLAN"
+        AppleCompilerReference(
+            appleCollaborationModeMembers.getValue(shape), "ObjCMessageExpr", name,
+            "CodexAgentAgentCollaborationMode", "CodexAgentAgentCollaborationMode * _Nonnull", emptyList(),
+        )
+    }
+    check(collaborationModes == expectedCollaborationModes) {
+        "Objective-C AgentCollaborationMode references changed"
+    }
+    return (constructor + properties + decisions + collaborationModes).sortedBy(AppleCompilerReference::precise)
 }
 
 private fun JsonObject.walkAppleObjects(): Sequence<JsonObject> = sequence {

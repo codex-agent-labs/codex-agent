@@ -12,3 +12,7 @@ func consumeCodexFailure() -> (String, String, Bool) {
 func consumeAgentApprovalDecisions() -> (AgentApprovalDecision, AgentApprovalDecision) {
     (AgentApprovalDecision.accept, AgentApprovalDecision.decline)
 }
+
+func consumeAgentCollaborationModes() -> (AgentCollaborationMode, AgentCollaborationMode) {
+    (AgentCollaborationMode.default_, AgentCollaborationMode.plan)
+}

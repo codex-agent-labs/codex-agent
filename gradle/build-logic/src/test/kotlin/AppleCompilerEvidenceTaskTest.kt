@@ -71,7 +71,7 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `canonical selection derives exactly six complete Apple binding capabilities`() {
+    fun `canonical selection derives exactly eight complete Apple binding capabilities`() {
         val keys = listOf(
             canonicalConstructor(),
             canonicalProperty("code", "kotlin/String!!"),
@@ -79,9 +79,11 @@ class AppleCompilerEvidenceTaskTest {
             canonicalProperty("message", "kotlin/String!!"),
             canonicalApprovalDecision("ACCEPT"),
             canonicalApprovalDecision("DECLINE"),
+            canonicalCollaborationMode("DEFAULT"),
+            canonicalCollaborationMode("PLAN"),
             canonicalProperty("value", "kotlin/String!!", owner = "Other"),
         )
-        val expected = keys.take(6)
+        val expected = keys.take(8)
         assertEquals(expected.sorted(), appleBindingCapabilityKeys(keys))
         assertFailsWith<IllegalStateException> { appleBindingCapabilityKeys(expected.drop(1)) }
         assertFailsWith<IllegalStateException> {
@@ -121,17 +123,26 @@ class AppleCompilerEvidenceTaskTest {
             canonicalApprovalDecision("ACCEPT").replace("null[0]", "null[1]"),
         ).forEach { replacement ->
             assertFailsWith<IllegalStateException> {
-                appleBindingCapabilityKeys(expected.dropLast(2) + replacement + expected.last())
+                appleBindingCapabilityKeys(expected.map { if (it == keys[4]) replacement else it })
+            }
+        }
+        listOf(
+            canonicalCollaborationMode("DEFAULT").replace(".DEFAULT", ".FUTURE"),
+            canonicalCollaborationMode("DEFAULT").replace("|kind=enum-entry|", "|kind=property|"),
+            canonicalCollaborationMode("DEFAULT").replace("null[0]", "null[1]"),
+        ).forEach { replacement ->
+            assertFailsWith<IllegalStateException> {
+                appleBindingCapabilityKeys(expected.map { if (it == keys[6]) replacement else it })
             }
         }
     }
 
     @Test
-    fun `real compiler shapes normalize to one exact six-member contract per language`() {
+    fun `real compiler shapes normalize to one exact eight-member contract per language`() {
         val swift = parseSwiftAppleBindingSurface(swiftSurfaceJson())
         val objectiveC = parseObjectiveCAppleBindingSurface(objectiveCSurfaceJson())
-        assertEquals(8, swift.size)
-        assertEquals(8, objectiveC.size)
+        assertEquals(11, swift.size)
+        assertEquals(11, objectiveC.size)
         assertEquals(swift.map(AppleCompilerSymbol::precise), objectiveC.map(AppleCompilerSymbol::precise))
         assertEquals("swift.init", swift.single { "initWithCode" in it.precise }.kind)
         assertEquals("objective-c.method", objectiveC.single { "initWithCode" in it.precise }.kind)
@@ -157,13 +168,13 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `compiled AST references bind six exact USRs and reject drift`() {
+    fun `compiled AST references bind eight exact USRs and reject drift`() {
         val swift = parseSwiftAppleBindingReferences(swiftReferencesJson())
         val objectiveC = parseObjectiveCAppleBindingReferences(objectiveCReferencesJson())
-        assertEquals(6, swift.size)
-        assertEquals(6, objectiveC.size)
+        assertEquals(8, swift.size)
+        assertEquals(8, objectiveC.size)
         assertEquals(swift.map(AppleCompilerReference::precise), objectiveC.map(AppleCompilerReference::precise))
-        assertEquals(6, swift.map(AppleCompilerReference::precise).distinct().size)
+        assertEquals(8, swift.map(AppleCompilerReference::precise).distinct().size)
 
         assertFailsWith<IllegalStateException> {
             parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(py)message", "(py)removed"))
@@ -193,6 +204,12 @@ class AppleCompilerEvidenceTaskTest {
                 ),
             )
         }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(cpy)plan", "(cpy)removed"))
+        }
+        assertFailsWith<IllegalStateException> {
+            parseObjectiveCAppleBindingReferences(objectiveCReferencesJson().replace("\"plan\"", "\"removed\""))
+        }
     }
 
     @Test
@@ -220,6 +237,10 @@ class AppleCompilerEvidenceTaskTest {
     private fun canonicalApprovalDecision(name: String): String =
         "common|owner=$APPROVAL_CANONICAL_OWNER|kind=enum-entry|" +
             "abi=$APPROVAL_CANONICAL_OWNER.$name|null[0]"
+
+    private fun canonicalCollaborationMode(name: String): String =
+        "common|owner=$COLLABORATION_CANONICAL_OWNER|kind=enum-entry|" +
+            "abi=$COLLABORATION_CANONICAL_OWNER.$name|null[0]"
 
     private fun swiftSurfaceJson(includeMessageRelationship: Boolean = true): String = surfaceJson(
         language = "swift",
@@ -250,8 +271,15 @@ class AppleCompilerEvidenceTaskTest {
                 "AgentApprovalDecision", "public",
                 fragments(keyword("class"), text(" "), identifier("AgentApprovalDecision")),
             ),
-            swiftTypeProperty(ACCEPT, "accept"),
-            swiftTypeProperty(DECLINE, "decline"),
+            swiftTypeProperty(ACCEPT, "accept", "AgentApprovalDecision", APPROVAL_OWNER),
+            swiftTypeProperty(DECLINE, "decline", "AgentApprovalDecision", APPROVAL_OWNER),
+            symbol(
+                COLLABORATION_OWNER, "swift", "swift.class", listOf("AgentCollaborationMode"),
+                "AgentCollaborationMode", "public",
+                fragments(keyword("class"), text(" "), identifier("AgentCollaborationMode")),
+            ),
+            swiftTypeProperty(DEFAULT, "default_", "AgentCollaborationMode", COLLABORATION_OWNER),
+            swiftTypeProperty(PLAN, "plan", "AgentCollaborationMode", COLLABORATION_OWNER),
         ),
         includeMessageRelationship = includeMessageRelationship,
     )
@@ -296,8 +324,18 @@ class AppleCompilerEvidenceTaskTest {
                     type("CodexAgentKotlinEnum", "c:objc(cs)CodexAgentKotlinEnum"),
                 ),
             ),
-            objectiveCTypeProperty(ACCEPT, "accept"),
-            objectiveCTypeProperty(DECLINE, "decline"),
+            objectiveCTypeProperty(ACCEPT, "accept", "AgentApprovalDecision", APPROVAL_OWNER),
+            objectiveCTypeProperty(DECLINE, "decline", "AgentApprovalDecision", APPROVAL_OWNER),
+            symbol(
+                COLLABORATION_OWNER, "objective-c", "objective-c.class",
+                listOf("CodexAgentAgentCollaborationMode"), "CodexAgentAgentCollaborationMode", "public",
+                fragments(
+                    keyword("@interface"), text(" "), identifier("CodexAgentAgentCollaborationMode"), text(" : "),
+                    type("CodexAgentKotlinEnum", "c:objc(cs)CodexAgentKotlinEnum"),
+                ),
+            ),
+            objectiveCTypeProperty(DEFAULT, "default_", "AgentCollaborationMode", COLLABORATION_OWNER),
+            objectiveCTypeProperty(PLAN, "plan", "AgentCollaborationMode", COLLABORATION_OWNER),
         ),
         includeMessageRelationship = includeMessageRelationship,
     )
@@ -317,6 +355,7 @@ class AppleCompilerEvidenceTaskTest {
             listOf(CONSTRUCTOR, CODE, RECOVERABLE).forEach { add(relationship(it)) }
             if (includeMessageRelationship) add(relationship(MESSAGE))
             listOf(ACCEPT, DECLINE).forEach { add(relationship(it, APPROVAL_OWNER)) }
+            listOf(DEFAULT, PLAN).forEach { add(relationship(it, COLLABORATION_OWNER)) }
         })
     })
 
@@ -351,11 +390,11 @@ class AppleCompilerEvidenceTaskTest {
         ),
     )
 
-    private fun swiftTypeProperty(precise: String, name: String) = symbol(
-        precise, "swift", "swift.type.property", listOf("AgentApprovalDecision", name), name, "open",
+    private fun swiftTypeProperty(precise: String, name: String, typeName: String, owner: String) = symbol(
+        precise, "swift", "swift.type.property", listOf(typeName, name), name, "open",
         fragments(
             keyword("class"), text(" "), keyword("var"), text(" "), identifier(name), text(": "),
-            type("AgentApprovalDecision", APPROVAL_OWNER), text(" { "), keyword("get"), text(" }"),
+            type(typeName, owner), text(" { "), keyword("get"), text(" }"),
         ),
     )
 
@@ -373,12 +412,12 @@ class AppleCompilerEvidenceTaskTest {
         ),
     )
 
-    private fun objectiveCTypeProperty(precise: String, name: String) = symbol(
+    private fun objectiveCTypeProperty(precise: String, name: String, typeName: String, owner: String) = symbol(
         precise, "objective-c", "objective-c.type.property",
-        listOf("CodexAgentAgentApprovalDecision", name), name, "public",
+        listOf("CodexAgent$typeName", name), name, "public",
         fragments(
             keyword("@property"), text(" ("), keyword("class"), text(", "), keyword("readonly"), text(") "),
-            type("CodexAgentAgentApprovalDecision", APPROVAL_OWNER), text(" * "), identifier(name), text(";"),
+            type("CodexAgent$typeName", owner), text(" * "), identifier(name), text(";"),
         ),
     )
 
@@ -412,6 +451,8 @@ class AppleCompilerEvidenceTaskTest {
             add(swiftReference("member_ref_expr", "message", MESSAGE, "\$sSSD"))
             add(swiftReference("member_ref_expr", "accept", ACCEPT, APPROVAL_SWIFT_TYPE))
             add(swiftReference("member_ref_expr", "decline", DECLINE, APPROVAL_SWIFT_TYPE))
+            add(swiftReference("member_ref_expr", "default_", DEFAULT, COLLABORATION_SWIFT_TYPE))
+            add(swiftReference("member_ref_expr", "plan", PLAN, COLLABORATION_SWIFT_TYPE))
         }) },
     )
 
@@ -442,6 +483,8 @@ class AppleCompilerEvidenceTaskTest {
             add(objectiveCPropertyReference("message"))
             add(objectiveCDecisionReference("accept"))
             add(objectiveCDecisionReference("decline"))
+            add(objectiveCCollaborationReference("default_"))
+            add(objectiveCCollaborationReference("plan"))
         }) },
     )
 
@@ -461,6 +504,13 @@ class AppleCompilerEvidenceTaskTest {
         put("classType", qualifiedType("CodexAgentAgentApprovalDecision"))
     }
 
+    private fun objectiveCCollaborationReference(name: String) = buildJsonObject {
+        put("kind", JsonPrimitive("ObjCMessageExpr")); put("selector", JsonPrimitive(name))
+        put("type", qualifiedType("CodexAgentAgentCollaborationMode * _Nonnull"))
+        put("receiverKind", JsonPrimitive("class"))
+        put("classType", qualifiedType("CodexAgentAgentCollaborationMode"))
+    }
+
     private fun qualifiedType(value: String) = buildJsonObject { put("qualType", JsonPrimitive(value)) }
 
     private companion object {
@@ -476,5 +526,11 @@ class AppleCompilerEvidenceTaskTest {
         const val ACCEPT = "$APPROVAL_OWNER(cpy)accept"
         const val DECLINE = "$APPROVAL_OWNER(cpy)decline"
         const val APPROVAL_SWIFT_TYPE = "\$sSo010CodexAgentB16ApprovalDecisionCD"
+        const val COLLABORATION_CANONICAL_OWNER =
+            "io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode"
+        const val COLLABORATION_OWNER = "c:objc(cs)CodexAgentAgentCollaborationMode"
+        const val DEFAULT = "$COLLABORATION_OWNER(cpy)default_"
+        const val PLAN = "$COLLABORATION_OWNER(cpy)plan"
+        const val COLLABORATION_SWIFT_TYPE = "\$sSo010CodexAgentB17CollaborationModeCD"
     }
 }
