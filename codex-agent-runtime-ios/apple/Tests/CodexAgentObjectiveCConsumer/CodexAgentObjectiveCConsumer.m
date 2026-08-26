@@ -486,6 +486,203 @@ static NSString *CDXVerifyD073OrdinaryValues(void) {
     return nil;
 }
 
+static NSString *CDXVerifyD074OrdinaryValues(void) {
+    CodexAgentConversationId *conversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"d074-conversation"];
+    CodexAgentAgentFormOption *option = [[CodexAgentAgentFormOption alloc]
+        initWithValue:@"choice" title:@"Choice" description:@"Choice description"];
+    CodexAgentAgentFormValueText *defaultValue = [[CodexAgentAgentFormValueText alloc]
+        initWithValue:@"https://example.com"];
+    CodexAgentDouble *minimum = [CodexAgentDouble numberWithDouble:1.5];
+    CodexAgentDouble *maximum = [CodexAgentDouble numberWithDouble:7.5];
+    CodexAgentLong *minimumLength = [CodexAgentLong numberWithLongLong:2];
+    CodexAgentLong *maximumLength = [CodexAgentLong numberWithLongLong:20];
+    CodexAgentLong *minimumSelections = [CodexAgentLong numberWithLongLong:1];
+    CodexAgentLong *maximumSelections = [CodexAgentLong numberWithLongLong:2];
+    CodexAgentAgentFormField *field = [[CodexAgentAgentFormField alloc]
+        initWithName:@"website"
+        title:@"Website"
+        description:@"Public website"
+        isRequired:YES
+        type:[CodexAgentAgentFormFieldType string]
+        options:@[option]
+        defaultValue:defaultValue
+        minimum:minimum
+        maximum:maximum
+        format:[CodexAgentAgentFormStringFormat uri]
+        minimumLength:minimumLength
+        maximumLength:maximumLength
+        minimumSelections:minimumSelections
+        maximumSelections:maximumSelections
+        allowsOther:YES
+        isSecret:YES];
+    if (![field.name isEqualToString:@"website"] ||
+        ![field.title isEqualToString:@"Website"] ||
+        ![field.description_ isEqualToString:@"Public website"] || !field.isRequired ||
+        field.type != [CodexAgentAgentFormFieldType string] ||
+        ![field.options isEqualToArray:@[option]] || field.defaultValue != defaultValue ||
+        field.minimum.doubleValue != 1.5 || field.maximum.doubleValue != 7.5 ||
+        field.format != [CodexAgentAgentFormStringFormat uri] ||
+        field.minimumLength.longLongValue != 2 || field.maximumLength.longLongValue != 20 ||
+        field.minimumSelections.longLongValue != 1 || field.maximumSelections.longLongValue != 2 ||
+        !field.allowsOther || !field.isSecret) {
+        return @"Objective-C D074 form field changed";
+    }
+
+    CodexAgentAgentElicitation *elicitation = [[CodexAgentAgentElicitation alloc]
+        initWithRequestId:@"d074-request"
+        serverName:@"d074-server"
+        conversationId:conversationId
+        message:@"Provide input"
+        form:@[field]
+        url:@"https://example.com/input"];
+    if (![elicitation.requestId isEqualToString:@"d074-request"] ||
+        ![elicitation.serverName isEqualToString:@"d074-server"] ||
+        elicitation.conversationId != conversationId ||
+        ![elicitation.message isEqualToString:@"Provide input"] ||
+        ![elicitation.form isEqualToArray:@[field]] ||
+        ![elicitation.url isEqualToString:@"https://example.com/input"]) {
+        return @"Objective-C D074 elicitation changed";
+    }
+
+    CodexAgentAgentHookHandlerCommand *commandHandler =
+        [[CodexAgentAgentHookHandlerCommand alloc] initWithCommand:@"echo ready" isAsync:YES];
+    if (![commandHandler.command isEqualToString:@"echo ready"] || !commandHandler.isAsync) {
+        return @"Objective-C D074 command hook handler changed";
+    }
+    CodexAgentAgentHookHandlerMcpTool *mcpHandler =
+        [[CodexAgentAgentHookHandlerMcpTool alloc] initWithServer:@"server" tool:@"review"];
+    if (![mcpHandler.server isEqualToString:@"server"] ||
+        ![mcpHandler.tool isEqualToString:@"review"]) {
+        return @"Objective-C D074 MCP hook handler changed";
+    }
+
+    CodexAgentAgentHookTrustStatus *modified = [CodexAgentAgentHookTrustStatus modified];
+    CodexAgentAgentResourceOrigin *pluginOrigin = [CodexAgentAgentResourceOrigin plugin];
+    CodexAgentAgentHook *hook = [[CodexAgentAgentHook alloc]
+        initWithKey:@"d074-hook"
+        currentHash:@"d074-hash"
+        isEnabled:YES
+        eventName:@"afterTurn"
+        handler:commandHandler
+        isManaged:NO
+        source:@"PLUGIN"
+        sourcePath:@"/hooks.json"
+        timeoutSeconds:30
+        trustStatus:modified
+        matcher:@"*.kt"
+        pluginId:@"d074-plugin"
+        statusMessage:@"Ready"
+        origin:pluginOrigin
+        canUninstall:YES];
+    if (![hook.key isEqualToString:@"d074-hook"] ||
+        ![hook.currentHash isEqualToString:@"d074-hash"] || !hook.isEnabled ||
+        ![hook.eventName isEqualToString:@"afterTurn"] || hook.handler != commandHandler ||
+        hook.isManaged || ![hook.source isEqualToString:@"PLUGIN"] ||
+        ![hook.sourcePath isEqualToString:@"/hooks.json"] || hook.timeoutSeconds != 30 ||
+        hook.trustStatus != modified || ![hook.matcher isEqualToString:@"*.kt"] ||
+        ![hook.pluginId isEqualToString:@"d074-plugin"] ||
+        ![hook.statusMessage isEqualToString:@"Ready"] || hook.origin != pluginOrigin ||
+        !hook.canUninstall || !hook.canTrust) {
+        return @"Objective-C D074 hook changed";
+    }
+
+    CodexAgentAgentHookRunStatus *completed = [CodexAgentAgentHookRunStatus completed];
+    CodexAgentAgentHookActivity *activity = [[CodexAgentAgentHookActivity alloc]
+        initWithId:@"d074-activity"
+        eventName:@"afterTurn"
+        handlerType:@"command"
+        status:completed
+        statusMessage:@"Complete"
+        details:@[@"first", @"second"]];
+    if (![activity.id isEqualToString:@"d074-activity"] ||
+        ![activity.eventName isEqualToString:@"afterTurn"] ||
+        ![activity.handlerType isEqualToString:@"command"] || activity.status != completed ||
+        ![activity.statusMessage isEqualToString:@"Complete"] ||
+        ![activity.details isEqualToArray:@[@"first", @"second"]]) {
+        return @"Objective-C D074 hook activity changed";
+    }
+    CodexAgentAgentHookCatalog *catalog = [[CodexAgentAgentHookCatalog alloc]
+        initWithHooks:@[hook]
+        warnings:@[@"warning"]
+        errors:@[@"error"]];
+    if (![catalog.hooks isEqualToArray:@[hook]] ||
+        ![catalog.warnings isEqualToArray:@[@"warning"]] ||
+        ![catalog.errors isEqualToArray:@[@"error"]]) {
+        return @"Objective-C D074 hook catalog changed";
+    }
+
+    CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
+        initWithId:@"d074-connector"
+        name:@"D074 Connector"
+        description:@"Connector"
+        installUrl:nil
+        isAccessible:YES
+        isEnabled:YES
+        pluginNames:@[]];
+    CodexAgentAgentIntegrationConnector *integration =
+        [[CodexAgentAgentIntegrationConnector alloc] initWithConnector:connector];
+    if (integration.connector != connector ||
+        ![integration.id isEqualToString:@"d074-connector"] ||
+        ![integration.displayName isEqualToString:@"D074 Connector"]) {
+        return @"Objective-C D074 connector integration changed";
+    }
+
+    CodexAgentAgentInvocationPlugin *pluginInvocation =
+        [[CodexAgentAgentInvocationPlugin alloc]
+            initWithName:@"plugin"
+            uri:@"plugin://plugin@marketplace"];
+    if (![pluginInvocation.name isEqualToString:@"plugin"] ||
+        ![pluginInvocation.uri isEqualToString:@"plugin://plugin@marketplace"] ||
+        ![pluginInvocation.key isEqualToString:@"plugin:plugin://plugin@marketplace"]) {
+        return @"Objective-C D074 plugin invocation changed";
+    }
+    CodexAgentAgentInvocationSkill *skillInvocation =
+        [[CodexAgentAgentInvocationSkill alloc]
+            initWithName:@"review"
+            path:@"/skills/review/SKILL.md"];
+    if (![skillInvocation.name isEqualToString:@"review"] ||
+        ![skillInvocation.path isEqualToString:@"/skills/review/SKILL.md"] ||
+        ![skillInvocation.key isEqualToString:@"skill:/skills/review/SKILL.md"]) {
+        return @"Objective-C D074 skill invocation changed";
+    }
+
+    CodexAgentAgentPlanStep *step = [[CodexAgentAgentPlanStep alloc]
+        initWithText:@"Inspect" status:[CodexAgentAgentPlanStepStatus inProgress]];
+    CodexAgentAgentPlanProgress *planProgress = [[CodexAgentAgentPlanProgress alloc]
+        initWithExplanation:@"D074 plan" steps:@[step]];
+    CodexAgentInt *exitCode = [CodexAgentInt numberWithInt:0];
+    CodexAgentAgentWorkActivity *writingFiles = [CodexAgentAgentWorkActivity writingFiles];
+    CodexAgentAgentTurnProgress *progress = [[CodexAgentAgentTurnProgress alloc]
+        initWithText:@"text"
+        commentary:@"commentary"
+        reasoning:@"reasoning"
+        plan:@"plan"
+        planProgress:planProgress
+        shellOutput:@"output"
+        shellExitCode:exitCode
+        workActivity:writingFiles
+        hookActivities:@[activity]
+        isTruncated:YES];
+    if (![progress.text isEqualToString:@"text"] ||
+        ![progress.commentary isEqualToString:@"commentary"] ||
+        ![progress.reasoning isEqualToString:@"reasoning"] ||
+        ![progress.plan isEqualToString:@"plan"] || progress.planProgress != planProgress ||
+        ![progress.shellOutput isEqualToString:@"output"] || progress.shellExitCode.intValue != 0 ||
+        progress.workActivity != writingFiles ||
+        ![progress.hookActivities isEqualToArray:@[activity]] || !progress.isTruncated) {
+        return @"Objective-C D074 turn progress changed";
+    }
+
+    CodexAgentCodexAuthenticationMethodApiKey *apiKey =
+        [[CodexAgentCodexAuthenticationMethodApiKey alloc] initWithValue:@"sk-d074"];
+    if (![apiKey.value isEqualToString:@"sk-d074"]) {
+        return @"Objective-C D074 API key changed";
+    }
+
+    return nil;
+}
+
 #undef CDX_VERIFY_ENUM
 
 typedef CDXOperation *(^CDXOperationFactory)(dispatch_block_t completed);
@@ -597,6 +794,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d073Failure = CDXVerifyD073OrdinaryValues();
     if (d073Failure != nil) {
         [self finishWithFailure:d073Failure];
+        return;
+    }
+    NSString *d074Failure = CDXVerifyD074OrdinaryValues();
+    if (d074Failure != nil) {
+        [self finishWithFailure:d074Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;

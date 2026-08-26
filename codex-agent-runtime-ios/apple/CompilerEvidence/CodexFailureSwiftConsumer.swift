@@ -503,3 +503,228 @@ func consumeD073CodexWorkspaceResolutionSelectionRequired(
     )
     return (resolution, resolution.reason, resolution.message)
 }
+
+func consumeD074AgentElicitation(
+    conversationId: ConversationId,
+    form: [AgentFormField]?
+) -> (AgentElicitation, ConversationId, [AgentFormField]?, String, String, String, String?) {
+    let elicitation = AgentElicitation(
+        requestId: "compiler-request",
+        serverName: "compiler-server",
+        conversationId: conversationId,
+        message: "Compiler evidence elicitation",
+        form: form,
+        url: "https://example.com/elicit"
+    )
+    return (
+        elicitation,
+        elicitation.conversationId,
+        elicitation.form,
+        elicitation.message,
+        elicitation.requestId,
+        elicitation.serverName,
+        elicitation.url
+    )
+}
+
+func consumeD074AgentFormField(
+    type: AgentFormFieldType,
+    options: [AgentFormOption],
+    defaultValue: (any AgentFormValue)?,
+    minimum: KotlinDouble?,
+    maximum: KotlinDouble?,
+    format: AgentFormStringFormat?,
+    minimumLength: KotlinLong?,
+    maximumLength: KotlinLong?,
+    minimumSelections: KotlinLong?,
+    maximumSelections: KotlinLong?
+) -> (
+    AgentFormField, Bool, (any AgentFormValue)?, String?, AgentFormStringFormat?, Bool, Bool,
+    KotlinDouble?, KotlinLong?, KotlinLong?, KotlinDouble?, KotlinLong?, KotlinLong?, String,
+    [AgentFormOption], String, AgentFormFieldType
+) {
+    let field = AgentFormField(
+        name: "compiler-field",
+        title: "Compiler Field",
+        description: "Compiler evidence field",
+        isRequired: true,
+        type: type,
+        options: options,
+        defaultValue: defaultValue,
+        minimum: minimum,
+        maximum: maximum,
+        format: format,
+        minimumLength: minimumLength,
+        maximumLength: maximumLength,
+        minimumSelections: minimumSelections,
+        maximumSelections: maximumSelections,
+        allowsOther: true,
+        isSecret: false
+    )
+    return (
+        field,
+        field.allowsOther,
+        field.defaultValue,
+        field.description_,
+        field.format,
+        field.isRequired,
+        field.isSecret,
+        field.maximum,
+        field.maximumLength,
+        field.maximumSelections,
+        field.minimum,
+        field.minimumLength,
+        field.minimumSelections,
+        field.name,
+        field.options,
+        field.title,
+        field.type
+    )
+}
+
+func consumeD074AgentHookHandlerCommand() -> (AgentHookHandlerCommand, String, Bool) {
+    let handler = AgentHookHandlerCommand(command: "echo compiler", isAsync: true)
+    return (handler, handler.command, handler.isAsync)
+}
+
+func consumeD074AgentHookHandlerMcpTool() -> (AgentHookHandlerMcpTool, String, String) {
+    let handler = AgentHookHandlerMcpTool(server: "compiler-server", tool: "compiler-tool")
+    return (handler, handler.server, handler.tool)
+}
+
+func consumeD074AgentHook(
+    handler: any AgentHookHandler,
+    trustStatus: AgentHookTrustStatus,
+    origin: AgentResourceOrigin
+) -> (
+    AgentHook, Bool, Bool, String, String, any AgentHookHandler, Bool, Bool, String, String?,
+    AgentResourceOrigin, String?, String, String, String?, Int64, AgentHookTrustStatus
+) {
+    let hook = AgentHook(
+        key: "compiler-hook",
+        currentHash: "compiler-hash",
+        isEnabled: true,
+        eventName: "afterTurn",
+        handler: handler,
+        isManaged: false,
+        source: "PLUGIN",
+        sourcePath: "/compiler/hook",
+        timeoutSeconds: 74,
+        trustStatus: trustStatus,
+        matcher: "*.swift",
+        pluginId: "compiler-plugin",
+        statusMessage: "Compiler evidence hook",
+        origin: origin,
+        canUninstall: true
+    )
+    return (
+        hook,
+        hook.canTrust,
+        hook.canUninstall,
+        hook.currentHash,
+        hook.eventName,
+        hook.handler,
+        hook.isEnabled,
+        hook.isManaged,
+        hook.key,
+        hook.matcher,
+        hook.origin,
+        hook.pluginId,
+        hook.source,
+        hook.sourcePath,
+        hook.statusMessage,
+        hook.timeoutSeconds,
+        hook.trustStatus
+    )
+}
+
+func consumeD074AgentHookActivity(
+    status: AgentHookRunStatus
+) -> (AgentHookActivity, [String], String, String, String, AgentHookRunStatus, String?) {
+    let activity = AgentHookActivity(
+        id: "compiler-activity",
+        eventName: "afterTurn",
+        handlerType: "command",
+        status: status,
+        statusMessage: "Compiler evidence activity",
+        details: ["compiler detail"]
+    )
+    return (
+        activity,
+        activity.details,
+        activity.eventName,
+        activity.handlerType,
+        activity.id,
+        activity.status,
+        activity.statusMessage
+    )
+}
+
+func consumeD074AgentHookCatalog(
+    hooks: [AgentHook]
+) -> (AgentHookCatalog, [String], [AgentHook], [String]) {
+    let catalog = AgentHookCatalog(
+        hooks: hooks,
+        warnings: ["compiler warning"],
+        errors: ["compiler error"]
+    )
+    return (catalog, catalog.errors, catalog.hooks, catalog.warnings)
+}
+
+func consumeD074AgentIntegrationConnector(
+    connector: AgentConnector
+) -> (AgentIntegrationConnector, AgentConnector, String, String) {
+    let integration = AgentIntegrationConnector(connector: connector)
+    return (integration, integration.connector, integration.displayName, integration.id)
+}
+
+func consumeD074AgentInvocationPlugin() -> (AgentInvocationPlugin, String, String, String) {
+    let invocation = AgentInvocationPlugin(name: "Compiler Plugin", uri: "plugin://compiler")
+    return (invocation, invocation.key, invocation.name, invocation.uri)
+}
+
+func consumeD074AgentInvocationSkill() -> (AgentInvocationSkill, String, String, String) {
+    let invocation = AgentInvocationSkill(name: "Compiler Skill", path: "/compiler/skill")
+    return (invocation, invocation.key, invocation.name, invocation.path)
+}
+
+func consumeD074AgentTurnProgress(
+    planProgress: AgentPlanProgress?,
+    shellExitCode: KotlinInt?,
+    workActivity: AgentWorkActivity?,
+    hookActivities: [AgentHookActivity]
+) -> (
+    AgentTurnProgress, String, [AgentHookActivity], Bool, String, AgentPlanProgress?, String,
+    KotlinInt?, String, String, AgentWorkActivity?
+) {
+    let progress = AgentTurnProgress(
+        text: "Compiler text",
+        commentary: "Compiler commentary",
+        reasoning: "Compiler reasoning",
+        plan: "Compiler plan",
+        planProgress: planProgress,
+        shellOutput: "Compiler output",
+        shellExitCode: shellExitCode,
+        workActivity: workActivity,
+        hookActivities: hookActivities,
+        isTruncated: true
+    )
+    return (
+        progress,
+        progress.commentary,
+        progress.hookActivities,
+        progress.isTruncated,
+        progress.plan,
+        progress.planProgress,
+        progress.reasoning,
+        progress.shellExitCode,
+        progress.shellOutput,
+        progress.text,
+        progress.workActivity
+    )
+}
+
+func consumeD074CodexAuthenticationMethodApiKey() -> (CodexAuthenticationMethodApiKey, String) {
+    let method = CodexAuthenticationMethodApiKey(value: "compiler-api-key")
+    return (method, method.value)
+}

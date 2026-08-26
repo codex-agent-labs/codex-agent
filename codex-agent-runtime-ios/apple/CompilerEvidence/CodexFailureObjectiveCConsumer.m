@@ -362,3 +362,145 @@ static BOOL consumeD073OrdinaryValues(
         selectionRequired.reason == notFoundReason &&
         [selectionRequired.message isEqualToString:@"Choose a workspace"];
 }
+
+static BOOL consumeD074OrdinaryValues(
+    CodexAgentConversationId *conversationId,
+    CodexAgentAgentFormOption *formOption,
+    id<CodexAgentAgentFormValue> defaultValue,
+    CodexAgentAgentFormFieldType *formFieldType,
+    CodexAgentAgentFormStringFormat *formStringFormat,
+    CodexAgentDouble *minimum,
+    CodexAgentDouble *maximum,
+    CodexAgentLong *minimumLength,
+    CodexAgentLong *maximumLength,
+    CodexAgentLong *minimumSelections,
+    CodexAgentLong *maximumSelections,
+    CodexAgentAgentHookRunStatus *hookRunStatus,
+    CodexAgentAgentHookTrustStatus *hookTrustStatus,
+    CodexAgentAgentResourceOrigin *resourceOrigin,
+    CodexAgentAgentConnector *connector,
+    CodexAgentAgentPlanProgress *planProgress,
+    CodexAgentInt *shellExitCode,
+    CodexAgentAgentWorkActivity *workActivity
+) {
+    CodexAgentAgentFormField *field = [[CodexAgentAgentFormField alloc]
+        initWithName:@"field"
+        title:@"Field"
+        description:@"Field description"
+        isRequired:YES
+        type:formFieldType
+        options:@[formOption]
+        defaultValue:defaultValue
+        minimum:minimum
+        maximum:maximum
+        format:formStringFormat
+        minimumLength:minimumLength
+        maximumLength:maximumLength
+        minimumSelections:minimumSelections
+        maximumSelections:maximumSelections
+        allowsOther:YES
+        isSecret:YES];
+    CodexAgentAgentElicitation *elicitation = [[CodexAgentAgentElicitation alloc]
+        initWithRequestId:@"request"
+        serverName:@"server"
+        conversationId:conversationId
+        message:@"Provide input"
+        form:@[field]
+        url:@"https://example.com/input"];
+    CodexAgentAgentHookHandlerCommand *commandHandler =
+        [[CodexAgentAgentHookHandlerCommand alloc] initWithCommand:@"echo ready" isAsync:YES];
+    id<CodexAgentAgentHookHandler> handler = commandHandler;
+    CodexAgentAgentHookHandlerMcpTool *mcpHandler =
+        [[CodexAgentAgentHookHandlerMcpTool alloc] initWithServer:@"server" tool:@"review"];
+    CodexAgentAgentHook *hook = [[CodexAgentAgentHook alloc]
+        initWithKey:@"hook"
+        currentHash:@"hash"
+        isEnabled:YES
+        eventName:@"afterTurn"
+        handler:handler
+        isManaged:NO
+        source:@"PROJECT"
+        sourcePath:@"/hooks.json"
+        timeoutSeconds:30
+        trustStatus:hookTrustStatus
+        matcher:@"*.kt"
+        pluginId:@"plugin"
+        statusMessage:@"Ready"
+        origin:resourceOrigin
+        canUninstall:YES];
+    CodexAgentAgentHookActivity *activity = [[CodexAgentAgentHookActivity alloc]
+        initWithId:@"activity"
+        eventName:@"afterTurn"
+        handlerType:@"command"
+        status:hookRunStatus
+        statusMessage:@"Complete"
+        details:@[@"first", @"second"]];
+    CodexAgentAgentHookCatalog *catalog = [[CodexAgentAgentHookCatalog alloc]
+        initWithHooks:@[hook]
+        warnings:@[@"warning"]
+        errors:@[@"error"]];
+    CodexAgentAgentIntegrationConnector *integration =
+        [[CodexAgentAgentIntegrationConnector alloc] initWithConnector:connector];
+    CodexAgentAgentInvocationPlugin *pluginInvocation =
+        [[CodexAgentAgentInvocationPlugin alloc] initWithName:@"plugin" uri:@"plugin://plugin@marketplace"];
+    CodexAgentAgentInvocationSkill *skillInvocation =
+        [[CodexAgentAgentInvocationSkill alloc] initWithName:@"skill" path:@"/skills/review/SKILL.md"];
+    CodexAgentAgentTurnProgress *progress = [[CodexAgentAgentTurnProgress alloc]
+        initWithText:@"text"
+        commentary:@"commentary"
+        reasoning:@"reasoning"
+        plan:@"plan"
+        planProgress:planProgress
+        shellOutput:@"output"
+        shellExitCode:shellExitCode
+        workActivity:workActivity
+        hookActivities:@[activity]
+        isTruncated:YES];
+    CodexAgentCodexAuthenticationMethodApiKey *apiKey =
+        [[CodexAgentCodexAuthenticationMethodApiKey alloc] initWithValue:@"sk-compiler"];
+
+    return [elicitation.requestId isEqualToString:@"request"] &&
+        [elicitation.serverName isEqualToString:@"server"] &&
+        elicitation.conversationId == conversationId &&
+        [elicitation.message isEqualToString:@"Provide input"] &&
+        [elicitation.form isEqualToArray:@[field]] &&
+        [elicitation.url isEqualToString:@"https://example.com/input"] &&
+        [field.name isEqualToString:@"field"] &&
+        [field.title isEqualToString:@"Field"] &&
+        [field.description_ isEqualToString:@"Field description"] &&
+        field.isRequired && field.type == formFieldType &&
+        [field.options isEqualToArray:@[formOption]] && field.defaultValue == defaultValue &&
+        field.minimum == minimum && field.maximum == maximum && field.format == formStringFormat &&
+        field.minimumLength == minimumLength && field.maximumLength == maximumLength &&
+        field.minimumSelections == minimumSelections && field.maximumSelections == maximumSelections &&
+        field.allowsOther && field.isSecret &&
+        [hook.key isEqualToString:@"hook"] && [hook.currentHash isEqualToString:@"hash"] &&
+        hook.isEnabled && [hook.eventName isEqualToString:@"afterTurn"] && hook.handler == commandHandler &&
+        !hook.isManaged && [hook.source isEqualToString:@"PROJECT"] &&
+        [hook.sourcePath isEqualToString:@"/hooks.json"] && hook.timeoutSeconds == 30 &&
+        hook.trustStatus == hookTrustStatus && [hook.matcher isEqualToString:@"*.kt"] &&
+        [hook.pluginId isEqualToString:@"plugin"] && [hook.statusMessage isEqualToString:@"Ready"] &&
+        hook.origin == resourceOrigin && hook.canUninstall && hook.canTrust &&
+        [activity.id isEqualToString:@"activity"] && [activity.eventName isEqualToString:@"afterTurn"] &&
+        [activity.handlerType isEqualToString:@"command"] && activity.status == hookRunStatus &&
+        [activity.statusMessage isEqualToString:@"Complete"] &&
+        [activity.details isEqualToArray:@[@"first", @"second"]] &&
+        [catalog.hooks isEqualToArray:@[hook]] && [catalog.warnings isEqualToArray:@[@"warning"]] &&
+        [catalog.errors isEqualToArray:@[@"error"]] &&
+        [commandHandler.command isEqualToString:@"echo ready"] && commandHandler.isAsync &&
+        [mcpHandler.server isEqualToString:@"server"] && [mcpHandler.tool isEqualToString:@"review"] &&
+        integration.connector == connector && [integration.id isEqualToString:@"connector-id"] &&
+        [integration.displayName isEqualToString:@"Connector"] &&
+        [pluginInvocation.name isEqualToString:@"plugin"] &&
+        [pluginInvocation.uri isEqualToString:@"plugin://plugin@marketplace"] &&
+        [pluginInvocation.key isEqualToString:@"plugin:plugin://plugin@marketplace"] &&
+        [skillInvocation.name isEqualToString:@"skill"] &&
+        [skillInvocation.path isEqualToString:@"/skills/review/SKILL.md"] &&
+        [skillInvocation.key isEqualToString:@"skill:/skills/review/SKILL.md"] &&
+        [progress.text isEqualToString:@"text"] && [progress.commentary isEqualToString:@"commentary"] &&
+        [progress.reasoning isEqualToString:@"reasoning"] && [progress.plan isEqualToString:@"plan"] &&
+        progress.planProgress == planProgress && [progress.shellOutput isEqualToString:@"output"] &&
+        progress.shellExitCode == shellExitCode && progress.workActivity == workActivity &&
+        [progress.hookActivities isEqualToArray:@[activity]] && progress.isTruncated &&
+        [apiKey.value isEqualToString:@"sk-compiler"];
+}

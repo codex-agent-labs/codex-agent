@@ -103,6 +103,7 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD065EnumValues()
         assertD065ImmutableValues()
         assertD073OrdinaryValues()
+        assertD074OrdinaryValues()
 
         let failure = CodexFailure(
             code: "workspace_unavailable",
@@ -540,6 +541,179 @@ final class CodexAgentObservationTests: XCTestCase {
         )
         XCTAssertTrue(selectionRequired.reason === CodexWorkspaceSelectionReason.notSelected)
         XCTAssertEqual(selectionRequired.message, "Select a workspace")
+    }
+
+    private func assertD074OrdinaryValues() {
+        let option = AgentFormOption(value: "swift", title: "Swift", description: "Swift option")
+        let defaultValue = AgentFormValueTextList(value: ["swift"])
+        let field = AgentFormField(
+            name: "languages",
+            title: "Languages",
+            description: "Select languages",
+            isRequired: true,
+            type: .multiSelect,
+            options: [option],
+            defaultValue: defaultValue,
+            minimum: KotlinDouble(value: 1),
+            maximum: KotlinDouble(value: 10),
+            format: .uri,
+            minimumLength: KotlinLong(value: 1),
+            maximumLength: KotlinLong(value: 20),
+            minimumSelections: KotlinLong(value: 1),
+            maximumSelections: KotlinLong(value: 3),
+            allowsOther: true,
+            isSecret: false
+        )
+        XCTAssertEqual(field.name, "languages")
+        XCTAssertEqual(field.title, "Languages")
+        XCTAssertEqual(field.description_, "Select languages")
+        XCTAssertTrue(field.isRequired)
+        XCTAssertTrue(field.type === AgentFormFieldType.multiSelect)
+        XCTAssertTrue(field.options.count == 1 && field.options[0] === option)
+        XCTAssertTrue((field.defaultValue as? AgentFormValueTextList) === defaultValue)
+        XCTAssertEqual(field.minimum?.doubleValue, 1)
+        XCTAssertEqual(field.maximum?.doubleValue, 10)
+        XCTAssertTrue(field.format === AgentFormStringFormat.uri)
+        XCTAssertEqual(field.minimumLength?.int64Value, 1)
+        XCTAssertEqual(field.maximumLength?.int64Value, 20)
+        XCTAssertEqual(field.minimumSelections?.int64Value, 1)
+        XCTAssertEqual(field.maximumSelections?.int64Value, 3)
+        XCTAssertTrue(field.allowsOther)
+        XCTAssertFalse(field.isSecret)
+
+        let conversationId = ConversationId(value: "d074-conversation")
+        let elicitation = AgentElicitation(
+            requestId: "d074-request",
+            serverName: "d074-server",
+            conversationId: conversationId,
+            message: "Select languages",
+            form: [field],
+            url: "https://example.com/elicit"
+        )
+        XCTAssertEqual(elicitation.requestId, "d074-request")
+        XCTAssertEqual(elicitation.serverName, "d074-server")
+        XCTAssertTrue(elicitation.conversationId === conversationId)
+        XCTAssertEqual(elicitation.message, "Select languages")
+        XCTAssertTrue(elicitation.form?.count == 1 && elicitation.form?[0] === field)
+        XCTAssertEqual(elicitation.url, "https://example.com/elicit")
+
+        let commandHandler = AgentHookHandlerCommand(command: "echo d074", isAsync: true)
+        XCTAssertEqual(commandHandler.command, "echo d074")
+        XCTAssertTrue(commandHandler.isAsync)
+
+        let mcpHandler = AgentHookHandlerMcpTool(server: "d074-server", tool: "review")
+        XCTAssertEqual(mcpHandler.server, "d074-server")
+        XCTAssertEqual(mcpHandler.tool, "review")
+
+        let hook = AgentHook(
+            key: "d074-hook",
+            currentHash: "d074-hash",
+            isEnabled: true,
+            eventName: "afterTurn",
+            handler: commandHandler,
+            isManaged: false,
+            source: "PLUGIN",
+            sourcePath: "/d074/hook",
+            timeoutSeconds: 74,
+            trustStatus: .modified,
+            matcher: "*.swift",
+            pluginId: "d074-plugin",
+            statusMessage: "D074 hook",
+            origin: .plugin,
+            canUninstall: true
+        )
+        XCTAssertEqual(hook.key, "d074-hook")
+        XCTAssertEqual(hook.currentHash, "d074-hash")
+        XCTAssertTrue(hook.isEnabled)
+        XCTAssertEqual(hook.eventName, "afterTurn")
+        XCTAssertTrue((hook.handler as? AgentHookHandlerCommand) === commandHandler)
+        XCTAssertFalse(hook.isManaged)
+        XCTAssertEqual(hook.source, "PLUGIN")
+        XCTAssertEqual(hook.sourcePath, "/d074/hook")
+        XCTAssertEqual(hook.timeoutSeconds, 74)
+        XCTAssertTrue(hook.trustStatus === AgentHookTrustStatus.modified)
+        XCTAssertEqual(hook.matcher, "*.swift")
+        XCTAssertEqual(hook.pluginId, "d074-plugin")
+        XCTAssertEqual(hook.statusMessage, "D074 hook")
+        XCTAssertTrue(hook.origin === AgentResourceOrigin.plugin)
+        XCTAssertTrue(hook.canUninstall)
+        XCTAssertTrue(hook.canTrust)
+
+        let hookCatalog = AgentHookCatalog(
+            hooks: [hook],
+            warnings: ["D074 warning"],
+            errors: ["D074 error"]
+        )
+        XCTAssertTrue(hookCatalog.hooks.count == 1 && hookCatalog.hooks[0] === hook)
+        XCTAssertEqual(hookCatalog.warnings, ["D074 warning"])
+        XCTAssertEqual(hookCatalog.errors, ["D074 error"])
+
+        let hookActivity = AgentHookActivity(
+            id: "d074-activity",
+            eventName: "afterTurn",
+            handlerType: "command",
+            status: .completed,
+            statusMessage: "D074 complete",
+            details: ["D074 detail"]
+        )
+        XCTAssertEqual(hookActivity.id, "d074-activity")
+        XCTAssertEqual(hookActivity.eventName, "afterTurn")
+        XCTAssertEqual(hookActivity.handlerType, "command")
+        XCTAssertTrue(hookActivity.status === AgentHookRunStatus.completed)
+        XCTAssertEqual(hookActivity.statusMessage, "D074 complete")
+        XCTAssertEqual(hookActivity.details, ["D074 detail"])
+
+        let connector = AgentConnector(
+            id: "d074-connector",
+            name: "D074 Connector",
+            description: "D074 connector",
+            installUrl: nil,
+            isAccessible: true,
+            isEnabled: true,
+            pluginNames: ["d074-plugin"]
+        )
+        let connectorIntegration = AgentIntegrationConnector(connector: connector)
+        XCTAssertTrue(connectorIntegration.connector === connector)
+        XCTAssertEqual(connectorIntegration.id, "d074-connector")
+        XCTAssertEqual(connectorIntegration.displayName, "D074 Connector")
+
+        let pluginInvocation = AgentInvocationPlugin(name: "D074 Plugin", uri: "plugin://d074")
+        XCTAssertEqual(pluginInvocation.name, "D074 Plugin")
+        XCTAssertEqual(pluginInvocation.uri, "plugin://d074")
+        XCTAssertEqual(pluginInvocation.key, "plugin:plugin://d074")
+
+        let skillInvocation = AgentInvocationSkill(name: "D074 Skill", path: "/d074/skill")
+        XCTAssertEqual(skillInvocation.name, "D074 Skill")
+        XCTAssertEqual(skillInvocation.path, "/d074/skill")
+        XCTAssertEqual(skillInvocation.key, "skill:/d074/skill")
+
+        let planStep = AgentPlanStep(text: "Verify D074", status: .completed)
+        let planProgress = AgentPlanProgress(explanation: "D074 plan", steps: [planStep])
+        let turnProgress = AgentTurnProgress(
+            text: "D074 text",
+            commentary: "D074 commentary",
+            reasoning: "D074 reasoning",
+            plan: "D074 plan",
+            planProgress: planProgress,
+            shellOutput: "D074 output",
+            shellExitCode: KotlinInt(value: 0),
+            workActivity: .writingFiles,
+            hookActivities: [hookActivity],
+            isTruncated: true
+        )
+        XCTAssertEqual(turnProgress.text, "D074 text")
+        XCTAssertEqual(turnProgress.commentary, "D074 commentary")
+        XCTAssertEqual(turnProgress.reasoning, "D074 reasoning")
+        XCTAssertEqual(turnProgress.plan, "D074 plan")
+        XCTAssertTrue(turnProgress.planProgress === planProgress)
+        XCTAssertEqual(turnProgress.shellOutput, "D074 output")
+        XCTAssertEqual(turnProgress.shellExitCode?.int32Value, 0)
+        XCTAssertTrue(turnProgress.workActivity === AgentWorkActivity.writingFiles)
+        XCTAssertTrue(turnProgress.hookActivities.count == 1 && turnProgress.hookActivities[0] === hookActivity)
+        XCTAssertTrue(turnProgress.isTruncated)
+
+        let apiKey = CodexAuthenticationMethodApiKey(value: "d074-api-key")
+        XCTAssertEqual(apiKey.value, "d074-api-key")
     }
 
     private func assertEnumValue<E: AnyObject>(
