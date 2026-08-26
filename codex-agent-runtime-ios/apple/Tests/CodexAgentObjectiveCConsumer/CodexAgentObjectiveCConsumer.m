@@ -333,6 +333,215 @@ static NSString *CDXVerifyD077McpServerValues(void) {
     return nil;
 }
 
+static NSString *CDXVerifyD078McpConfigurationValues(void) {
+    NSDictionary<NSString *, NSString *> *headers = @{
+        @"X-Static": @"value",
+        @"X-Trace": @"trace-value",
+    };
+    NSDictionary<NSString *, NSString *> *environmentHeaders = @{
+        @"Authorization": @"MCP_AUTH",
+        @"X-Environment": @"MCP_ENVIRONMENT",
+    };
+    CodexAgentAgentMcpTransportHttp *http = [[CodexAgentAgentMcpTransportHttp alloc]
+        initWithUrl:@"https://mcp.example.com"
+        bearerTokenEnvironmentVariable:@"MCP_TOKEN"
+        headers:headers
+        environmentHeaders:environmentHeaders
+        headersHelper:@"mcp-headers"];
+    if (![http.url isEqualToString:@"https://mcp.example.com"] ||
+        ![http.bearerTokenEnvironmentVariable isEqualToString:@"MCP_TOKEN"] ||
+        ![http.headers isEqualToDictionary:headers] ||
+        ![http.environmentHeaders isEqualToDictionary:environmentHeaders] ||
+        ![http.headersHelper isEqualToString:@"mcp-headers"]) {
+        return @"Objective-C D078 HTTP transport changed";
+    }
+    CodexAgentAgentMcpTransportHttp *defaultHttp = [[CodexAgentAgentMcpTransportHttp alloc]
+        initWithUrl:@"https://default.example.com"
+        bearerTokenEnvironmentVariable:nil
+        headers:nil
+        environmentHeaders:nil
+        headersHelper:nil];
+    if (defaultHttp.bearerTokenEnvironmentVariable != nil || defaultHttp.headers != nil ||
+        defaultHttp.environmentHeaders != nil || defaultHttp.headersHelper != nil) {
+        return @"Objective-C D078 HTTP transport defaults changed";
+    }
+
+    CodexAgentAgentMcpEnvironmentVariable *home =
+        [[CodexAgentAgentMcpEnvironmentVariable alloc] initWithName:@"HOME" source:nil];
+    CodexAgentAgentMcpEnvironmentVariable *remoteToken =
+        [[CodexAgentAgentMcpEnvironmentVariable alloc]
+            initWithName:@"REMOTE_TOKEN"
+            source:[CodexAgentAgentMcpEnvironmentSource remote]];
+    NSArray<NSString *> *arguments = @[@"server.js", @"--stdio"];
+    NSDictionary<NSString *, NSString *> *environment = @{
+        @"STATIC": @"value",
+        @"MODE": @"test",
+    };
+    NSArray<CodexAgentAgentMcpEnvironmentVariable *> *forwardedEnvironment = @[home, remoteToken];
+    CodexAgentAgentMcpTransportStdio *stdio = [[CodexAgentAgentMcpTransportStdio alloc]
+        initWithCommand:@"node"
+        arguments:arguments
+        workingDirectory:@"/workspace"
+        environment:environment
+        forwardedEnvironment:forwardedEnvironment];
+    if (![stdio.command isEqualToString:@"node"] ||
+        ![stdio.arguments isEqualToArray:arguments] ||
+        ![stdio.workingDirectory isEqualToString:@"/workspace"] ||
+        ![stdio.environment isEqualToDictionary:environment] ||
+        ![stdio.forwardedEnvironment isEqualToArray:forwardedEnvironment] ||
+        stdio.forwardedEnvironment[0] != home || stdio.forwardedEnvironment[1] != remoteToken) {
+        return @"Objective-C D078 stdio transport changed";
+    }
+    CodexAgentAgentMcpTransportStdio *defaultStdio = [[CodexAgentAgentMcpTransportStdio alloc]
+        initWithCommand:@"mcp"
+        arguments:@[]
+        workingDirectory:nil
+        environment:nil
+        forwardedEnvironment:@[]];
+    if (defaultStdio.arguments.count != 0 || defaultStdio.workingDirectory != nil ||
+        defaultStdio.environment != nil || defaultStdio.forwardedEnvironment.count != 0) {
+        return @"Objective-C D078 stdio transport defaults changed";
+    }
+
+    CodexAgentAgentMcpAuthentication *authentication = [CodexAgentAgentMcpAuthentication chatGpt];
+    CodexAgentAgentMcpToolExposureSurface *codeMode =
+        [CodexAgentAgentMcpToolExposureSurface codeMode];
+    CodexAgentAgentMcpToolExposureSurface *deferred =
+        [CodexAgentAgentMcpToolExposureSurface deferred];
+    NSArray<CodexAgentAgentMcpToolExposureSurface *> *omitToolsFrom = @[codeMode, deferred];
+    CodexAgentDouble *startupTimeout = [CodexAgentDouble numberWithDouble:3.5];
+    CodexAgentDouble *toolTimeout = [CodexAgentDouble numberWithDouble:9.0];
+    CodexAgentAgentMcpToolApproval *writes = [CodexAgentAgentMcpToolApproval writes];
+    NSArray<NSString *> *enabledTools = @[@"read", @"search"];
+    NSArray<NSString *> *disabledTools = @[@"write"];
+    NSArray<NSString *> *scopes = @[@"files.read", @"files.write"];
+    CodexAgentInt *callbackPort = [CodexAgentInt numberWithInt:9876];
+    CodexAgentAgentMcpOauthConfiguration *oauth =
+        [[CodexAgentAgentMcpOauthConfiguration alloc]
+            initWithClientId:@"client"
+            callbackPort:callbackPort];
+    CodexAgentAgentMcpToolConfiguration *readTool =
+        [[CodexAgentAgentMcpToolConfiguration alloc]
+            initWithApproval:[CodexAgentAgentMcpToolApproval prompt]];
+    CodexAgentAgentMcpToolConfiguration *writeTool =
+        [[CodexAgentAgentMcpToolConfiguration alloc]
+            initWithApproval:[CodexAgentAgentMcpToolApproval approve]];
+    NSDictionary<NSString *, CodexAgentAgentMcpToolConfiguration *> *tools = @{
+        @"read": readTool,
+        @"write": writeTool,
+    };
+    CodexAgentAgentMcpServerConfiguration *configuration =
+        [[CodexAgentAgentMcpServerConfiguration alloc]
+            initWithName:@"remote-mcp"
+            transport:http
+            authentication:authentication
+            environmentId:@"local"
+            isEnabled:NO
+            isRequired:YES
+            supportsParallelToolCalls:YES
+            omitToolsFrom:omitToolsFrom
+            startupTimeoutSeconds:startupTimeout
+            toolTimeoutSeconds:toolTimeout
+            defaultToolApproval:writes
+            enabledTools:enabledTools
+            disabledTools:disabledTools
+            scopes:scopes
+            oauth:oauth
+            oauthResource:@"https://mcp.example.com/resource"
+            tools:tools];
+    id<CodexAgentAgentMcpTransport> returnedTransport = configuration.transport;
+    NSDictionary<NSString *, CodexAgentAgentMcpToolConfiguration *> *returnedTools =
+        configuration.tools;
+    if (![configuration.name isEqualToString:@"remote-mcp"] || returnedTransport != http ||
+        ![(id)returnedTransport isKindOfClass:[CodexAgentAgentMcpTransportHttp class]] ||
+        configuration.authentication != authentication ||
+        ![configuration.environmentId isEqualToString:@"local"] || configuration.isEnabled ||
+        !configuration.isRequired || !configuration.supportsParallelToolCalls ||
+        ![configuration.omitToolsFrom isEqualToArray:omitToolsFrom] ||
+        configuration.omitToolsFrom[0] != codeMode || configuration.omitToolsFrom[1] != deferred ||
+        configuration.startupTimeoutSeconds.doubleValue != 3.5 ||
+        configuration.toolTimeoutSeconds.doubleValue != 9.0 ||
+        configuration.defaultToolApproval != writes ||
+        ![configuration.enabledTools isEqualToArray:enabledTools] ||
+        ![configuration.disabledTools isEqualToArray:disabledTools] ||
+        ![configuration.scopes isEqualToArray:scopes] || configuration.oauth != oauth ||
+        configuration.oauth.callbackPort.intValue != 9876 ||
+        ![configuration.oauthResource isEqualToString:@"https://mcp.example.com/resource"] ||
+        ![returnedTools isEqualToDictionary:tools] || returnedTools[@"read"] != readTool ||
+        returnedTools[@"write"] != writeTool ||
+        readTool.approval != [CodexAgentAgentMcpToolApproval prompt] ||
+        writeTool.approval != [CodexAgentAgentMcpToolApproval approve]) {
+        return @"Objective-C D078 MCP server configuration changed";
+    }
+
+    CodexAgentAgentMcpServerConfiguration *defaults =
+        [[CodexAgentAgentMcpServerConfiguration alloc]
+            initWithName:@"defaults"
+            transport:defaultHttp
+            authentication:nil
+            environmentId:@"local"
+            isEnabled:YES
+            isRequired:NO
+            supportsParallelToolCalls:NO
+            omitToolsFrom:nil
+            startupTimeoutSeconds:nil
+            toolTimeoutSeconds:nil
+            defaultToolApproval:nil
+            enabledTools:nil
+            disabledTools:nil
+            scopes:nil
+            oauth:nil
+            oauthResource:nil
+            tools:@{}];
+    if (defaults.authentication != nil || ![defaults.environmentId isEqualToString:@"local"] ||
+        !defaults.isEnabled || defaults.isRequired || defaults.supportsParallelToolCalls ||
+        defaults.omitToolsFrom != nil || defaults.startupTimeoutSeconds != nil ||
+        defaults.toolTimeoutSeconds != nil || defaults.defaultToolApproval != nil ||
+        defaults.enabledTools != nil || defaults.disabledTools != nil || defaults.scopes != nil ||
+        defaults.oauth != nil || defaults.oauthResource != nil || defaults.tools.count != 0) {
+        return @"Objective-C D078 MCP server configuration defaults changed";
+    }
+
+    CodexAgentAgentFormValueText *text =
+        [[CodexAgentAgentFormValueText alloc] initWithValue:@"Ada"];
+    CodexAgentAgentFormValueNumber *number =
+        [[CodexAgentAgentFormValueNumber alloc] initWithValue:7.5];
+    CodexAgentAgentFormValueBooleanValue *boolean =
+        [[CodexAgentAgentFormValueBooleanValue alloc] initWithValue:YES];
+    CodexAgentAgentFormValueTextList *list =
+        [[CodexAgentAgentFormValueTextList alloc] initWithValue:@[@"first", @"second"]];
+    NSDictionary<NSString *, id<CodexAgentAgentFormValue>> *content = @{
+        @"name": text,
+        @"score": number,
+        @"enabled": boolean,
+        @"choices": list,
+    };
+    CodexAgentAgentElicitationAction *accept = [CodexAgentAgentElicitationAction accept];
+    CodexAgentAgentElicitationResponse *response = [[CodexAgentAgentElicitationResponse alloc]
+        initWithAction:accept
+        content:content];
+    NSDictionary<NSString *, id<CodexAgentAgentFormValue>> *returnedContent = response.content;
+    if (response.action != accept || ![returnedContent isEqualToDictionary:content] ||
+        returnedContent[@"name"] != text || returnedContent[@"score"] != number ||
+        returnedContent[@"enabled"] != boolean || returnedContent[@"choices"] != list ||
+        ![(id)returnedContent[@"name"] isKindOfClass:[CodexAgentAgentFormValueText class]] ||
+        ![(id)returnedContent[@"score"] isKindOfClass:[CodexAgentAgentFormValueNumber class]] ||
+        ![(id)returnedContent[@"enabled"] isKindOfClass:[CodexAgentAgentFormValueBooleanValue class]] ||
+        ![(id)returnedContent[@"choices"] isKindOfClass:[CodexAgentAgentFormValueTextList class]] ||
+        ![text.value isEqualToString:@"Ada"] || number.value != 7.5 || !boolean.value ||
+        ![list.value isEqualToArray:@[@"first", @"second"]]) {
+        return @"Objective-C D078 elicitation response changed";
+    }
+    CodexAgentAgentElicitationResponse *emptyResponse = [[CodexAgentAgentElicitationResponse alloc]
+        initWithAction:accept
+        content:@{}];
+    if (emptyResponse.content.count != 0) {
+        return @"Objective-C D078 elicitation response default content changed";
+    }
+
+    return nil;
+}
+
 static NSString *CDXVerifyD073OrdinaryValues(void) {
     CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
         initWithId:@"connector-id"
@@ -903,6 +1112,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d077Failure = CDXVerifyD077McpServerValues();
     if (d077Failure != nil) {
         [self finishWithFailure:d077Failure];
+        return;
+    }
+    NSString *d078Failure = CDXVerifyD078McpConfigurationValues();
+    if (d078Failure != nil) {
+        [self finishWithFailure:d078Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;

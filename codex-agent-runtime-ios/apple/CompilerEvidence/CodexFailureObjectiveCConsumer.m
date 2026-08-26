@@ -93,6 +93,121 @@ static BOOL consumeD077McpServerValues(
         [integration.displayName isEqualToString:@"Compiler MCP"];
 }
 
+static BOOL consumeD078McpConfigurationValues(
+    CodexAgentAgentMcpAuthentication *authentication,
+    CodexAgentAgentMcpToolExposureSurface *exposureSurface,
+    CodexAgentAgentMcpToolApproval *approval,
+    CodexAgentAgentMcpOauthConfiguration *oauth,
+    CodexAgentAgentMcpToolConfiguration *toolConfiguration,
+    CodexAgentAgentMcpEnvironmentVariable *forwardedEnvironment,
+    CodexAgentAgentElicitationAction *elicitationAction,
+    id<CodexAgentAgentFormValue> formValue
+) {
+    NSDictionary<NSString *, NSString *> *headers = @{@"X-Static": @"value"};
+    NSDictionary<NSString *, NSString *> *environmentHeaders = @{@"Authorization": @"MCP_AUTH"};
+    CodexAgentAgentMcpTransportHttp *http = [[CodexAgentAgentMcpTransportHttp alloc]
+        initWithUrl:@"https://mcp.example.com"
+        bearerTokenEnvironmentVariable:@"MCP_TOKEN"
+        headers:headers
+        environmentHeaders:environmentHeaders
+        headersHelper:@"mcp-headers"];
+    NSString *httpUrl = http.url;
+    NSString *bearerTokenEnvironmentVariable = http.bearerTokenEnvironmentVariable;
+    NSDictionary<NSString *, NSString *> *returnedHeaders = http.headers;
+    NSDictionary<NSString *, NSString *> *returnedEnvironmentHeaders = http.environmentHeaders;
+    NSString *headersHelper = http.headersHelper;
+
+    NSArray<NSString *> *arguments = @[@"server.js", @"--stdio"];
+    NSDictionary<NSString *, NSString *> *environment = @{@"STATIC": @"value"};
+    NSArray<CodexAgentAgentMcpEnvironmentVariable *> *forwarded = @[forwardedEnvironment];
+    CodexAgentAgentMcpTransportStdio *stdio = [[CodexAgentAgentMcpTransportStdio alloc]
+        initWithCommand:@"node"
+        arguments:arguments
+        workingDirectory:@"/workspace"
+        environment:environment
+        forwardedEnvironment:forwarded];
+    NSString *command = stdio.command;
+    NSArray<NSString *> *returnedArguments = stdio.arguments;
+    NSString *workingDirectory = stdio.workingDirectory;
+    NSDictionary<NSString *, NSString *> *returnedEnvironment = stdio.environment;
+    NSArray<CodexAgentAgentMcpEnvironmentVariable *> *returnedForwarded = stdio.forwardedEnvironment;
+
+    CodexAgentDouble *startupTimeout = [CodexAgentDouble numberWithDouble:3.5];
+    CodexAgentDouble *toolTimeout = [CodexAgentDouble numberWithDouble:9.0];
+    NSArray<CodexAgentAgentMcpToolExposureSurface *> *omitToolsFrom = @[exposureSurface];
+    NSArray<NSString *> *enabledTools = @[@"read", @"search"];
+    NSArray<NSString *> *disabledTools = @[@"write"];
+    NSArray<NSString *> *scopes = @[@"files.read", @"files.write"];
+    NSDictionary<NSString *, CodexAgentAgentMcpToolConfiguration *> *tools = @{
+        @"write": toolConfiguration,
+    };
+    CodexAgentAgentMcpServerConfiguration *configuration =
+        [[CodexAgentAgentMcpServerConfiguration alloc]
+            initWithName:@"compiler-mcp"
+            transport:http
+            authentication:authentication
+            environmentId:@"local"
+            isEnabled:NO
+            isRequired:YES
+            supportsParallelToolCalls:YES
+            omitToolsFrom:omitToolsFrom
+            startupTimeoutSeconds:startupTimeout
+            toolTimeoutSeconds:toolTimeout
+            defaultToolApproval:approval
+            enabledTools:enabledTools
+            disabledTools:disabledTools
+            scopes:scopes
+            oauth:oauth
+            oauthResource:@"https://mcp.example.com/resource"
+            tools:tools];
+    NSString *name = configuration.name;
+    id<CodexAgentAgentMcpTransport> transport = configuration.transport;
+    CodexAgentAgentMcpAuthentication *returnedAuthentication = configuration.authentication;
+    NSString *environmentId = configuration.environmentId;
+    BOOL isEnabled = configuration.isEnabled;
+    BOOL isRequired = configuration.isRequired;
+    BOOL supportsParallelToolCalls = configuration.supportsParallelToolCalls;
+    NSArray<CodexAgentAgentMcpToolExposureSurface *> *returnedOmitToolsFrom =
+        configuration.omitToolsFrom;
+    CodexAgentDouble *returnedStartupTimeout = configuration.startupTimeoutSeconds;
+    CodexAgentDouble *returnedToolTimeout = configuration.toolTimeoutSeconds;
+    CodexAgentAgentMcpToolApproval *returnedApproval = configuration.defaultToolApproval;
+    NSArray<NSString *> *returnedEnabledTools = configuration.enabledTools;
+    NSArray<NSString *> *returnedDisabledTools = configuration.disabledTools;
+    NSArray<NSString *> *returnedScopes = configuration.scopes;
+    CodexAgentAgentMcpOauthConfiguration *returnedOauth = configuration.oauth;
+    NSString *oauthResource = configuration.oauthResource;
+    NSDictionary<NSString *, CodexAgentAgentMcpToolConfiguration *> *returnedTools = configuration.tools;
+
+    NSDictionary<NSString *, id<CodexAgentAgentFormValue>> *content = @{@"field": formValue};
+    CodexAgentAgentElicitationResponse *response = [[CodexAgentAgentElicitationResponse alloc]
+        initWithAction:elicitationAction
+        content:content];
+    CodexAgentAgentElicitationAction *returnedAction = response.action;
+    NSDictionary<NSString *, id<CodexAgentAgentFormValue>> *returnedContent = response.content;
+
+    return [httpUrl isEqualToString:@"https://mcp.example.com"] &&
+        [bearerTokenEnvironmentVariable isEqualToString:@"MCP_TOKEN"] &&
+        [returnedHeaders isEqualToDictionary:headers] &&
+        [returnedEnvironmentHeaders isEqualToDictionary:environmentHeaders] &&
+        [headersHelper isEqualToString:@"mcp-headers"] &&
+        [command isEqualToString:@"node"] && [returnedArguments isEqualToArray:arguments] &&
+        [workingDirectory isEqualToString:@"/workspace"] &&
+        [returnedEnvironment isEqualToDictionary:environment] &&
+        [returnedForwarded isEqualToArray:forwarded] &&
+        [name isEqualToString:@"compiler-mcp"] && transport == http &&
+        returnedAuthentication == authentication && [environmentId isEqualToString:@"local"] &&
+        !isEnabled && isRequired && supportsParallelToolCalls &&
+        [returnedOmitToolsFrom isEqualToArray:omitToolsFrom] &&
+        returnedStartupTimeout == startupTimeout && returnedToolTimeout == toolTimeout &&
+        returnedApproval == approval && [returnedEnabledTools isEqualToArray:enabledTools] &&
+        [returnedDisabledTools isEqualToArray:disabledTools] &&
+        [returnedScopes isEqualToArray:scopes] && returnedOauth == oauth &&
+        [oauthResource isEqualToString:@"https://mcp.example.com/resource"] &&
+        [returnedTools isEqualToDictionary:tools] && returnedAction == elicitationAction &&
+        [returnedContent isEqualToDictionary:content];
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

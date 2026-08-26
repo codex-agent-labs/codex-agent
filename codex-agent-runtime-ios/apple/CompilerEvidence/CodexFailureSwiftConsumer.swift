@@ -794,3 +794,115 @@ func consumeD077AgentMcpServer(
         integration.displayName
     )
 }
+
+func consumeD078AgentMcpTransportHttp() -> (
+    AgentMcpTransportHttp, String?, [String: String]?, [String: String]?, String?, String
+) {
+    let transport = AgentMcpTransportHttp(
+        url: "https://example.com/compiler-mcp",
+        bearerTokenEnvironmentVariable: "COMPILER_TOKEN",
+        headers: ["Authorization": "Bearer compiler", "X-Trace": "compiler"],
+        environmentHeaders: ["X-Region": "COMPILER_REGION", "X-Workspace": "COMPILER_WORKSPACE"],
+        headersHelper: "compiler-headers-helper"
+    )
+    return (
+        transport,
+        transport.bearerTokenEnvironmentVariable,
+        transport.environmentHeaders,
+        transport.headers,
+        transport.headersHelper,
+        transport.url
+    )
+}
+
+func consumeD078AgentMcpTransportStdio(
+    firstEnvironmentVariable: AgentMcpEnvironmentVariable,
+    secondEnvironmentVariable: AgentMcpEnvironmentVariable
+) -> (
+    AgentMcpTransportStdio, [String], String, [String: String]?, [AgentMcpEnvironmentVariable], String?
+) {
+    let transport = AgentMcpTransportStdio(
+        command: "compiler-mcp",
+        arguments: ["--stdio", "--verbose"],
+        workingDirectory: "/compiler/workspace",
+        environment: ["MODE": "compiler", "TRACE": "enabled"],
+        forwardedEnvironment: [firstEnvironmentVariable, secondEnvironmentVariable]
+    )
+    return (
+        transport,
+        transport.arguments,
+        transport.command,
+        transport.environment,
+        transport.forwardedEnvironment,
+        transport.workingDirectory
+    )
+}
+
+func consumeD078AgentMcpServerConfiguration(
+    transport: any AgentMcpTransport,
+    authentication: AgentMcpAuthentication,
+    omitToolsFrom: [AgentMcpToolExposureSurface],
+    startupTimeoutSeconds: KotlinDouble,
+    toolTimeoutSeconds: KotlinDouble,
+    defaultToolApproval: AgentMcpToolApproval,
+    oauth: AgentMcpOauthConfiguration,
+    readTool: AgentMcpToolConfiguration,
+    writeTool: AgentMcpToolConfiguration
+) -> (
+    AgentMcpServerConfiguration, AgentMcpAuthentication?, AgentMcpToolApproval?, [String]?, [String]?,
+    String, Bool, Bool, String, AgentMcpOauthConfiguration?, String?, [AgentMcpToolExposureSurface]?,
+    [String]?, KotlinDouble?, Bool, KotlinDouble?, [String: AgentMcpToolConfiguration], any AgentMcpTransport
+) {
+    let configuration = AgentMcpServerConfiguration(
+        name: "compiler-server",
+        transport: transport,
+        authentication: authentication,
+        environmentId: "local",
+        isEnabled: true,
+        isRequired: true,
+        supportsParallelToolCalls: true,
+        omitToolsFrom: omitToolsFrom,
+        startupTimeoutSeconds: startupTimeoutSeconds,
+        toolTimeoutSeconds: toolTimeoutSeconds,
+        defaultToolApproval: defaultToolApproval,
+        enabledTools: ["read", "write"],
+        disabledTools: ["delete", "admin"],
+        scopes: ["files.read", "files.write"],
+        oauth: oauth,
+        oauthResource: "https://example.com/compiler-resource",
+        tools: ["read": readTool, "write": writeTool]
+    )
+    return (
+        configuration,
+        configuration.authentication,
+        configuration.defaultToolApproval,
+        configuration.disabledTools,
+        configuration.enabledTools,
+        configuration.environmentId,
+        configuration.isEnabled,
+        configuration.isRequired,
+        configuration.name,
+        configuration.oauth,
+        configuration.oauthResource,
+        configuration.omitToolsFrom,
+        configuration.scopes,
+        configuration.startupTimeoutSeconds,
+        configuration.supportsParallelToolCalls,
+        configuration.toolTimeoutSeconds,
+        configuration.tools,
+        configuration.transport
+    )
+}
+
+func consumeD078AgentElicitationResponse(
+    text: any AgentFormValue,
+    number: any AgentFormValue,
+    boolean: any AgentFormValue,
+    list: any AgentFormValue
+) -> (AgentElicitationResponse, AgentElicitationAction, [String: any AgentFormValue]) {
+    let response = AgentElicitationResponse(
+        action: .accept,
+        content: ["text": text, "number": number, "boolean": boolean, "list": list]
+    )
+    return (response, response.action, response.content)
+}

@@ -106,6 +106,7 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD074OrdinaryValues()
         assertD075PendingValues()
         assertD077McpServerValues()
+        assertD078McpAndElicitationValues()
 
         let authorizationUrlCompanion = CodexAuthorizationUrl.companion
         let chatGptAuthorizationUrl = authorizationUrlCompanion.chatGpt(
@@ -789,6 +790,177 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertTrue(integration.server === oauthServer)
         XCTAssertEqual(integration.id, "d077-oauth")
         XCTAssertEqual(integration.displayName, "D077 OAuth Server")
+    }
+
+    private func assertD078McpAndElicitationValues() {
+        let http = AgentMcpTransportHttp(
+            url: "https://example.com/d078-mcp",
+            bearerTokenEnvironmentVariable: "MCP_BEARER_TOKEN",
+            headers: ["Authorization": "Bearer d078", "X-Trace": "d078"],
+            environmentHeaders: ["X-Region": "REGION", "X-Workspace": "WORKSPACE_ID"],
+            headersHelper: "security find-generic-password"
+        )
+        XCTAssertEqual(http.url, "https://example.com/d078-mcp")
+        XCTAssertEqual(http.bearerTokenEnvironmentVariable, "MCP_BEARER_TOKEN")
+        XCTAssertEqual(http.headers, ["Authorization": "Bearer d078", "X-Trace": "d078"])
+        XCTAssertEqual(http.environmentHeaders, ["X-Region": "REGION", "X-Workspace": "WORKSPACE_ID"])
+        XCTAssertEqual(http.headersHelper, "security find-generic-password")
+
+        let defaultHttp = AgentMcpTransportHttp(
+            url: "http://127.0.0.1:8",
+            bearerTokenEnvironmentVariable: nil,
+            headers: nil,
+            environmentHeaders: nil,
+            headersHelper: nil
+        )
+        XCTAssertNil(defaultHttp.bearerTokenEnvironmentVariable)
+        XCTAssertNil(defaultHttp.headers)
+        XCTAssertNil(defaultHttp.environmentHeaders)
+        XCTAssertNil(defaultHttp.headersHelper)
+
+        let forwardedToken = AgentMcpEnvironmentVariable(name: "TOKEN", source: .remote)
+        let forwardedHome = AgentMcpEnvironmentVariable(name: "HOME", source: nil)
+        let stdio = AgentMcpTransportStdio(
+            command: "npx",
+            arguments: ["-y", "@example/mcp", "--stdio"],
+            workingDirectory: "/tmp/d078",
+            environment: ["NODE_ENV": "test", "TRACE": "d078"],
+            forwardedEnvironment: [forwardedToken, forwardedHome]
+        )
+        XCTAssertEqual(stdio.command, "npx")
+        XCTAssertEqual(stdio.arguments, ["-y", "@example/mcp", "--stdio"])
+        XCTAssertEqual(stdio.workingDirectory, "/tmp/d078")
+        XCTAssertEqual(stdio.environment, ["NODE_ENV": "test", "TRACE": "d078"])
+        XCTAssertEqual(stdio.forwardedEnvironment.count, 2)
+        XCTAssertTrue(stdio.forwardedEnvironment[0] === forwardedToken)
+        XCTAssertTrue(stdio.forwardedEnvironment[1] === forwardedHome)
+        XCTAssertEqual(stdio.forwardedEnvironment[0].name, "TOKEN")
+        XCTAssertTrue(stdio.forwardedEnvironment[0].source === AgentMcpEnvironmentSource.remote)
+        XCTAssertEqual(stdio.forwardedEnvironment[1].name, "HOME")
+        XCTAssertNil(stdio.forwardedEnvironment[1].source)
+
+        let defaultStdio = AgentMcpTransportStdio(
+            command: "mcp",
+            arguments: [],
+            workingDirectory: nil,
+            environment: nil,
+            forwardedEnvironment: []
+        )
+        XCTAssertEqual(defaultStdio.arguments, [])
+        XCTAssertNil(defaultStdio.workingDirectory)
+        XCTAssertNil(defaultStdio.environment)
+        XCTAssertTrue(defaultStdio.forwardedEnvironment.isEmpty)
+
+        let startupTimeout = KotlinDouble(value: 12.5)
+        let toolTimeout = KotlinDouble(value: 45.75)
+        let oauth = AgentMcpOauthConfiguration(
+            clientId: "d078-client",
+            callbackPort: KotlinInt(value: 8_078)
+        )
+        let readTool = AgentMcpToolConfiguration(approval: .auto_)
+        let writeTool = AgentMcpToolConfiguration(approval: .prompt)
+        let configuration = AgentMcpServerConfiguration(
+            name: "d078-server",
+            transport: http,
+            authentication: .oauth,
+            environmentId: "local",
+            isEnabled: true,
+            isRequired: true,
+            supportsParallelToolCalls: true,
+            omitToolsFrom: [.codeMode, .deferred],
+            startupTimeoutSeconds: startupTimeout,
+            toolTimeoutSeconds: toolTimeout,
+            defaultToolApproval: .writes,
+            enabledTools: ["read", "write"],
+            disabledTools: ["delete", "admin"],
+            scopes: ["files.read", "files.write"],
+            oauth: oauth,
+            oauthResource: "https://example.com/d078-resource",
+            tools: ["read": readTool, "write": writeTool]
+        )
+        XCTAssertEqual(configuration.name, "d078-server")
+        XCTAssertTrue((configuration.transport as? AgentMcpTransportHttp) === http)
+        XCTAssertTrue(configuration.authentication === AgentMcpAuthentication.oauth)
+        XCTAssertEqual(configuration.environmentId, "local")
+        XCTAssertTrue(configuration.isEnabled)
+        XCTAssertTrue(configuration.isRequired)
+        XCTAssertTrue(configuration.supportsParallelToolCalls)
+        XCTAssertEqual(configuration.omitToolsFrom?.count, 2)
+        XCTAssertTrue(configuration.omitToolsFrom?[0] === AgentMcpToolExposureSurface.codeMode)
+        XCTAssertTrue(configuration.omitToolsFrom?[1] === AgentMcpToolExposureSurface.deferred)
+        XCTAssertEqual(configuration.startupTimeoutSeconds?.doubleValue, 12.5)
+        XCTAssertEqual(configuration.toolTimeoutSeconds?.doubleValue, 45.75)
+        XCTAssertTrue(configuration.defaultToolApproval === AgentMcpToolApproval.writes)
+        XCTAssertEqual(configuration.enabledTools, ["read", "write"])
+        XCTAssertEqual(configuration.disabledTools, ["delete", "admin"])
+        XCTAssertEqual(configuration.scopes, ["files.read", "files.write"])
+        XCTAssertTrue(configuration.oauth === oauth)
+        XCTAssertEqual(configuration.oauth?.clientId, "d078-client")
+        XCTAssertEqual(configuration.oauth?.callbackPort?.int32Value, 8_078)
+        XCTAssertEqual(configuration.oauthResource, "https://example.com/d078-resource")
+        XCTAssertEqual(Set(configuration.tools.keys), Set(["read", "write"]))
+        XCTAssertTrue(configuration.tools["read"] === readTool)
+        XCTAssertTrue(configuration.tools["write"] === writeTool)
+        XCTAssertTrue(configuration.tools["read"]?.approval === AgentMcpToolApproval.auto_)
+        XCTAssertTrue(configuration.tools["write"]?.approval === AgentMcpToolApproval.prompt)
+
+        let defaultConfiguration = AgentMcpServerConfiguration(
+            name: "d078-defaults",
+            transport: defaultHttp,
+            authentication: nil,
+            environmentId: "local",
+            isEnabled: true,
+            isRequired: false,
+            supportsParallelToolCalls: false,
+            omitToolsFrom: nil,
+            startupTimeoutSeconds: nil,
+            toolTimeoutSeconds: nil,
+            defaultToolApproval: nil,
+            enabledTools: nil,
+            disabledTools: nil,
+            scopes: nil,
+            oauth: nil,
+            oauthResource: nil,
+            tools: [:]
+        )
+        XCTAssertNil(defaultConfiguration.authentication)
+        XCTAssertEqual(defaultConfiguration.environmentId, "local")
+        XCTAssertTrue(defaultConfiguration.isEnabled)
+        XCTAssertFalse(defaultConfiguration.isRequired)
+        XCTAssertFalse(defaultConfiguration.supportsParallelToolCalls)
+        XCTAssertNil(defaultConfiguration.omitToolsFrom)
+        XCTAssertNil(defaultConfiguration.startupTimeoutSeconds)
+        XCTAssertNil(defaultConfiguration.toolTimeoutSeconds)
+        XCTAssertNil(defaultConfiguration.defaultToolApproval)
+        XCTAssertNil(defaultConfiguration.enabledTools)
+        XCTAssertNil(defaultConfiguration.disabledTools)
+        XCTAssertNil(defaultConfiguration.scopes)
+        XCTAssertNil(defaultConfiguration.oauth)
+        XCTAssertNil(defaultConfiguration.oauthResource)
+        XCTAssertTrue(defaultConfiguration.tools.isEmpty)
+
+        let text = AgentFormValueText(value: "D078 text")
+        let number = AgentFormValueNumber(value: 78.5)
+        let boolean = AgentFormValueBooleanValue(value: true)
+        let list = AgentFormValueTextList(value: ["D078", "ordered", "list"])
+        let response = AgentElicitationResponse(
+            action: .accept,
+            content: ["text": text, "number": number, "boolean": boolean, "list": list]
+        )
+        XCTAssertTrue(response.action === AgentElicitationAction.accept)
+        XCTAssertEqual(Set(response.content.keys), Set(["text", "number", "boolean", "list"]))
+        XCTAssertTrue((response.content["text"] as? AgentFormValueText) === text)
+        XCTAssertEqual((response.content["text"] as? AgentFormValueText)?.value, "D078 text")
+        XCTAssertTrue((response.content["number"] as? AgentFormValueNumber) === number)
+        XCTAssertEqual((response.content["number"] as? AgentFormValueNumber)?.value, 78.5)
+        XCTAssertTrue((response.content["boolean"] as? AgentFormValueBooleanValue) === boolean)
+        XCTAssertEqual((response.content["boolean"] as? AgentFormValueBooleanValue)?.value, true)
+        XCTAssertTrue((response.content["list"] as? AgentFormValueTextList) === list)
+        XCTAssertEqual((response.content["list"] as? AgentFormValueTextList)?.value, ["D078", "ordered", "list"])
+
+        let emptyResponse = AgentElicitationResponse(action: .decline, content: [:])
+        XCTAssertTrue(emptyResponse.action === AgentElicitationAction.decline)
+        XCTAssertTrue(emptyResponse.content.isEmpty)
     }
 
     private func assertEnumValue<E: AnyObject>(
