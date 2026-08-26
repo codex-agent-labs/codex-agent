@@ -76,6 +76,15 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
         [self finishWithFailure:@"Objective-C message roles changed"];
         return;
     }
+    CodexAgentAgentInstallationScope *userScope = [CodexAgentAgentInstallationScope user];
+    CodexAgentAgentInstallationScope *workspaceScope = [CodexAgentAgentInstallationScope workspace];
+    if (![userScope.name isEqualToString:@"User"] || userScope.ordinal != 0 ||
+        ![workspaceScope.name isEqualToString:@"Workspace"] || workspaceScope.ordinal != 1 ||
+        userScope == workspaceScope || userScope != [CodexAgentAgentInstallationScope user] ||
+        workspaceScope != [CodexAgentAgentInstallationScope workspace]) {
+        [self finishWithFailure:@"Objective-C installation scopes changed"];
+        return;
+    }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CDXConsumerTimeoutSeconds * NSEC_PER_SEC)),

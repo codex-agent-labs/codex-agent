@@ -71,7 +71,7 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `canonical selection derives exactly ten complete Apple binding capabilities`() {
+    fun `canonical selection derives exactly twelve complete Apple binding capabilities`() {
         val keys = listOf(
             canonicalConstructor(),
             canonicalProperty("code", "kotlin/String!!"),
@@ -83,9 +83,11 @@ class AppleCompilerEvidenceTaskTest {
             canonicalCollaborationMode("PLAN"),
             canonicalMessageRole("USER"),
             canonicalMessageRole("ASSISTANT"),
+            canonicalInstallationScope("User"),
+            canonicalInstallationScope("Workspace"),
             canonicalProperty("value", "kotlin/String!!", owner = "Other"),
         )
-        val expected = keys.take(10)
+        val expected = keys.take(12)
         assertEquals(expected.sorted(), appleBindingCapabilityKeys(keys))
         assertFailsWith<IllegalStateException> { appleBindingCapabilityKeys(expected.drop(1)) }
         assertFailsWith<IllegalStateException> {
@@ -146,14 +148,23 @@ class AppleCompilerEvidenceTaskTest {
                 appleBindingCapabilityKeys(expected.map { if (it == keys[8]) replacement else it })
             }
         }
+        listOf(
+            canonicalInstallationScope("User").replace(".User", ".Future"),
+            canonicalInstallationScope("User").replace("|kind=enum-entry|", "|kind=property|"),
+            canonicalInstallationScope("User").replace("null[0]", "null[1]"),
+        ).forEach { replacement ->
+            assertFailsWith<IllegalStateException> {
+                appleBindingCapabilityKeys(expected.map { if (it == keys[10]) replacement else it })
+            }
+        }
     }
 
     @Test
-    fun `real compiler shapes normalize to one exact ten-member contract per language`() {
+    fun `real compiler shapes normalize to one exact twelve-member contract per language`() {
         val swift = parseSwiftAppleBindingSurface(swiftSurfaceJson())
         val objectiveC = parseObjectiveCAppleBindingSurface(objectiveCSurfaceJson())
-        assertEquals(14, swift.size)
-        assertEquals(14, objectiveC.size)
+        assertEquals(17, swift.size)
+        assertEquals(17, objectiveC.size)
         assertEquals(swift.map(AppleCompilerSymbol::precise), objectiveC.map(AppleCompilerSymbol::precise))
         assertEquals("swift.init", swift.single { "initWithCode" in it.precise }.kind)
         assertEquals("objective-c.method", objectiveC.single { "initWithCode" in it.precise }.kind)
@@ -179,13 +190,13 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `compiled AST references bind ten exact USRs and reject drift`() {
+    fun `compiled AST references bind twelve exact USRs and reject drift`() {
         val swift = parseSwiftAppleBindingReferences(swiftReferencesJson())
         val objectiveC = parseObjectiveCAppleBindingReferences(objectiveCReferencesJson())
-        assertEquals(10, swift.size)
-        assertEquals(10, objectiveC.size)
+        assertEquals(12, swift.size)
+        assertEquals(12, objectiveC.size)
         assertEquals(swift.map(AppleCompilerReference::precise), objectiveC.map(AppleCompilerReference::precise))
-        assertEquals(10, swift.map(AppleCompilerReference::precise).distinct().size)
+        assertEquals(12, swift.map(AppleCompilerReference::precise).distinct().size)
 
         assertFailsWith<IllegalStateException> {
             parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(py)message", "(py)removed"))
@@ -196,6 +207,17 @@ class AppleCompilerEvidenceTaskTest {
         assertFailsWith<IllegalStateException> {
             parseObjectiveCAppleBindingReferences(
                 objectiveCReferencesJson().replace("CodexAgentCodexFailure *", "CDXFailure *"),
+            )
+        }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(cpy)workspace", "(cpy)removed"))
+        }
+        assertFailsWith<IllegalStateException> {
+            parseObjectiveCAppleBindingReferences(
+                objectiveCReferencesJson().replaceFirst(
+                    "CodexAgentAgentInstallationScope * _Nonnull",
+                    "CodexAgentAgentInstallationScope *",
+                ),
             )
         }
         assertFailsWith<IllegalStateException> {
@@ -268,6 +290,10 @@ class AppleCompilerEvidenceTaskTest {
         "common|owner=$MESSAGE_ROLE_CANONICAL_OWNER|kind=enum-entry|" +
             "abi=$MESSAGE_ROLE_CANONICAL_OWNER.$name|null[0]"
 
+    private fun canonicalInstallationScope(name: String): String =
+        "common|owner=$INSTALLATION_SCOPE_CANONICAL_OWNER|kind=enum-entry|" +
+            "abi=$INSTALLATION_SCOPE_CANONICAL_OWNER.$name|null[0]"
+
     private fun swiftSurfaceJson(includeMessageRelationship: Boolean = true): String = surfaceJson(
         language = "swift",
         symbols = listOf(
@@ -313,6 +339,17 @@ class AppleCompilerEvidenceTaskTest {
             ),
             swiftTypeProperty(USER, "user", "AgentMessageRole", MESSAGE_ROLE_OWNER),
             swiftTypeProperty(ASSISTANT, "assistant", "AgentMessageRole", MESSAGE_ROLE_OWNER),
+            symbol(
+                INSTALLATION_SCOPE_OWNER, "swift", "swift.class", listOf("AgentInstallationScope"),
+                "AgentInstallationScope", "public",
+                fragments(keyword("class"), text(" "), identifier("AgentInstallationScope")),
+            ),
+            swiftTypeProperty(
+                INSTALLATION_USER, "user", "AgentInstallationScope", INSTALLATION_SCOPE_OWNER,
+            ),
+            swiftTypeProperty(
+                INSTALLATION_WORKSPACE, "workspace", "AgentInstallationScope", INSTALLATION_SCOPE_OWNER,
+            ),
         ),
         includeMessageRelationship = includeMessageRelationship,
     )
@@ -379,6 +416,20 @@ class AppleCompilerEvidenceTaskTest {
             ),
             objectiveCTypeProperty(USER, "user", "AgentMessageRole", MESSAGE_ROLE_OWNER),
             objectiveCTypeProperty(ASSISTANT, "assistant", "AgentMessageRole", MESSAGE_ROLE_OWNER),
+            symbol(
+                INSTALLATION_SCOPE_OWNER, "objective-c", "objective-c.class",
+                listOf("CodexAgentAgentInstallationScope"), "CodexAgentAgentInstallationScope", "public",
+                fragments(
+                    keyword("@interface"), text(" "), identifier("CodexAgentAgentInstallationScope"), text(" : "),
+                    type("CodexAgentKotlinEnum", "c:objc(cs)CodexAgentKotlinEnum"),
+                ),
+            ),
+            objectiveCTypeProperty(
+                INSTALLATION_USER, "user", "AgentInstallationScope", INSTALLATION_SCOPE_OWNER,
+            ),
+            objectiveCTypeProperty(
+                INSTALLATION_WORKSPACE, "workspace", "AgentInstallationScope", INSTALLATION_SCOPE_OWNER,
+            ),
         ),
         includeMessageRelationship = includeMessageRelationship,
     )
@@ -400,6 +451,9 @@ class AppleCompilerEvidenceTaskTest {
             listOf(ACCEPT, DECLINE).forEach { add(relationship(it, APPROVAL_OWNER)) }
             listOf(DEFAULT, PLAN).forEach { add(relationship(it, COLLABORATION_OWNER)) }
             listOf(USER, ASSISTANT).forEach { add(relationship(it, MESSAGE_ROLE_OWNER)) }
+            listOf(INSTALLATION_USER, INSTALLATION_WORKSPACE).forEach {
+                add(relationship(it, INSTALLATION_SCOPE_OWNER))
+            }
         })
     })
 
@@ -499,6 +553,12 @@ class AppleCompilerEvidenceTaskTest {
             add(swiftReference("member_ref_expr", "plan", PLAN, COLLABORATION_SWIFT_TYPE))
             add(swiftReference("member_ref_expr", "user", USER, MESSAGE_ROLE_SWIFT_TYPE))
             add(swiftReference("member_ref_expr", "assistant", ASSISTANT, MESSAGE_ROLE_SWIFT_TYPE))
+            add(swiftReference(
+                "member_ref_expr", "user", INSTALLATION_USER, INSTALLATION_SCOPE_SWIFT_TYPE,
+            ))
+            add(swiftReference(
+                "member_ref_expr", "workspace", INSTALLATION_WORKSPACE, INSTALLATION_SCOPE_SWIFT_TYPE,
+            ))
         }) },
     )
 
@@ -533,6 +593,8 @@ class AppleCompilerEvidenceTaskTest {
             add(objectiveCCollaborationReference("plan"))
             add(objectiveCMessageRoleReference("user"))
             add(objectiveCMessageRoleReference("assistant"))
+            add(objectiveCInstallationScopeReference("user"))
+            add(objectiveCInstallationScopeReference("workspace"))
         }) },
     )
 
@@ -566,6 +628,13 @@ class AppleCompilerEvidenceTaskTest {
         put("classType", qualifiedType("CodexAgentAgentMessageRole"))
     }
 
+    private fun objectiveCInstallationScopeReference(name: String) = buildJsonObject {
+        put("kind", JsonPrimitive("ObjCMessageExpr")); put("selector", JsonPrimitive(name))
+        put("type", qualifiedType("CodexAgentAgentInstallationScope * _Nonnull"))
+        put("receiverKind", JsonPrimitive("class"))
+        put("classType", qualifiedType("CodexAgentAgentInstallationScope"))
+    }
+
     private fun qualifiedType(value: String) = buildJsonObject { put("qualType", JsonPrimitive(value)) }
 
     private companion object {
@@ -593,5 +662,11 @@ class AppleCompilerEvidenceTaskTest {
         const val USER = "$MESSAGE_ROLE_OWNER(cpy)user"
         const val ASSISTANT = "$MESSAGE_ROLE_OWNER(cpy)assistant"
         const val MESSAGE_ROLE_SWIFT_TYPE = "\$sSo010CodexAgentB11MessageRoleCD"
+        const val INSTALLATION_SCOPE_CANONICAL_OWNER =
+            "io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope"
+        const val INSTALLATION_SCOPE_OWNER = "c:objc(cs)CodexAgentAgentInstallationScope"
+        const val INSTALLATION_USER = "$INSTALLATION_SCOPE_OWNER(cpy)user"
+        const val INSTALLATION_WORKSPACE = "$INSTALLATION_SCOPE_OWNER(cpy)workspace"
+        const val INSTALLATION_SCOPE_SWIFT_TYPE = "\$sSo010CodexAgentB17InstallationScopeCD"
     }
 }

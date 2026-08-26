@@ -17,7 +17,7 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageAppleBindingEvidenceTest {
     @Test
-    fun `observes ten independent claims and 546 explicit gaps per Apple language`() {
+    fun `observes twelve independent claims and 544 explicit gaps per Apple language`() {
         val fixture = fixture()
         val report = fixture.derive()
 
@@ -29,11 +29,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         val languages = report.releaseArray("languages").map { it as JsonObject }
         assertEquals(listOf("objective-c", "swift"), languages.map { it.releaseString("language") })
         languages.forEach { language ->
-            assertEquals(14, language.releaseArray("publicSymbols").size)
-            assertEquals(10, language.releaseArray("referencedSymbols").size)
-            assertEquals(10, language.releaseArray("claims").size)
+            assertEquals(17, language.releaseArray("publicSymbols").size)
+            assertEquals(12, language.releaseArray("referencedSymbols").size)
+            assertEquals(12, language.releaseArray("claims").size)
             assertTrue(language.releaseArray("exclusions").isEmpty())
-            assertEquals(546, language.releaseArray("missingCapabilityKeys").size)
+            assertEquals(544, language.releaseArray("missingCapabilityKeys").size)
             assertEquals(
                 fixture.capabilities,
                 language.releaseArray("claims").map { (it as JsonObject).releaseString("canonicalKey") },
@@ -138,6 +138,20 @@ class CrossLanguageAppleBindingEvidenceTest {
                 "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
             ))
         })
+        val installationScopeReferenceTypeDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("swift").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == INSTALLATION_WORKSPACE_USR) {
+                    JsonObject(reference + ("valueType" to JsonPrimitive(MESSAGE_ROLE_SWIFT_TYPE)))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "swift" to changed,
+                "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
         val qualifierDrift = compiler.withObject("references", run {
             val changed = JsonArray(references.releaseArray("objectiveC").map { value ->
                 val reference = value as JsonObject
@@ -211,19 +225,25 @@ class CrossLanguageAppleBindingEvidenceTest {
         val futureMessageRole = fixture.canonical.copy(
             memberKeys = (fixture.canonical.memberKeys.dropLast(1) + canonicalMessageRole("FUTURE")).sorted(),
         )
+        val futureInstallationScope = fixture.canonical.copy(
+            memberKeys = (fixture.canonical.memberKeys.dropLast(1) + canonicalInstallationScope("Future")).sorted(),
+        )
 
         listOf(
             surfaceDrift, signatureDrift, typeDrift, readonlyDrift, selectorDrift, missingSurface,
             duplicateSurface, referenceDrift, swiftReferenceTypeDrift, collaborationReferenceTypeDrift,
-            messageRoleReferenceTypeDrift, qualifierDrift, swappedClaim, missingClaim, duplicateClaim, wrongOwnerClaim,
-            cdx, wrongArtifact, duplicateTarget,
+            messageRoleReferenceTypeDrift, installationScopeReferenceTypeDrift, qualifierDrift, swappedClaim,
+            missingClaim, duplicateClaim, wrongOwnerClaim, cdx, wrongArtifact, duplicateTarget,
         ).forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(compiler = drift) }
         }
         listOf(failedTests, renamedTests).forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(xctest = drift) }
         }
-        listOf(futureCanonical, overloadedCanonical, futureDecision, futureCollaboration, futureMessageRole)
+        listOf(
+            futureCanonical, overloadedCanonical, futureDecision, futureCollaboration, futureMessageRole,
+            futureInstallationScope,
+        )
             .forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(canonical = drift) }
         }
@@ -304,7 +324,9 @@ class CrossLanguageAppleBindingEvidenceTest {
             canonicalCollaborationMode("PLAN"),
             canonicalMessageRole("USER"),
             canonicalMessageRole("ASSISTANT"),
-        ) + (0 until 546).map { index ->
+            canonicalInstallationScope("User"),
+            canonicalInstallationScope("Workspace"),
+        ) + (0 until 544).map { index ->
             "common|owner=sample/Owner${index.toString().padStart(3, '0')}|kind=property|" +
                 "abi=sample/Owner$index.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!"
         }).sorted()
@@ -435,6 +457,15 @@ class CrossLanguageAppleBindingEvidenceTest {
             "user", "open", "class var user: AgentMessageRole { get }", listOf(MESSAGE_ROLE_OWNER)),
         symbol(ASSISTANT_USR, "swift", "swift.type.property", listOf("AgentMessageRole", "assistant"),
             "assistant", "open", "class var assistant: AgentMessageRole { get }", listOf(MESSAGE_ROLE_OWNER)),
+        symbol(INSTALLATION_SCOPE_OWNER, "swift", "swift.class", listOf("AgentInstallationScope"),
+            "AgentInstallationScope", "public", "class AgentInstallationScope"),
+        symbol(INSTALLATION_USER_USR, "swift", "swift.type.property", listOf("AgentInstallationScope", "user"),
+            "user", "open", "class var user: AgentInstallationScope { get }", listOf(INSTALLATION_SCOPE_OWNER)),
+        symbol(
+            INSTALLATION_WORKSPACE_USR, "swift", "swift.type.property",
+            listOf("AgentInstallationScope", "workspace"), "workspace", "open",
+            "class var workspace: AgentInstallationScope { get }", listOf(INSTALLATION_SCOPE_OWNER),
+        ),
     ).sortedBy { it.releaseString("precise") })
 
     private fun objectiveCSurface() = JsonArray(listOf(
@@ -491,6 +522,18 @@ class CrossLanguageAppleBindingEvidenceTest {
         symbol(ASSISTANT_USR, "objective-c", "objective-c.type.property",
             listOf("CodexAgentAgentMessageRole", "assistant"), "assistant", "public",
             "@property (class, readonly) CodexAgentAgentMessageRole * assistant;", listOf(MESSAGE_ROLE_OWNER)),
+        symbol(INSTALLATION_SCOPE_OWNER, "objective-c", "objective-c.class",
+            listOf("CodexAgentAgentInstallationScope"), "CodexAgentAgentInstallationScope", "public",
+            "@interface CodexAgentAgentInstallationScope : CodexAgentKotlinEnum",
+            listOf("c:objc(cs)CodexAgentKotlinEnum")),
+        symbol(INSTALLATION_USER_USR, "objective-c", "objective-c.type.property",
+            listOf("CodexAgentAgentInstallationScope", "user"), "user", "public",
+            "@property (class, readonly) CodexAgentAgentInstallationScope * user;",
+            listOf(INSTALLATION_SCOPE_OWNER)),
+        symbol(INSTALLATION_WORKSPACE_USR, "objective-c", "objective-c.type.property",
+            listOf("CodexAgentAgentInstallationScope", "workspace"), "workspace", "public",
+            "@property (class, readonly) CodexAgentAgentInstallationScope * workspace;",
+            listOf(INSTALLATION_SCOPE_OWNER)),
     ).sortedBy { it.releaseString("precise") })
 
     private fun swiftReferences() = JsonArray(listOf(
@@ -504,6 +547,10 @@ class CrossLanguageAppleBindingEvidenceTest {
         reference(PLAN_USR, "member_ref_expr", "plan", null, COLLABORATION_SWIFT_TYPE),
         reference(USER_USR, "member_ref_expr", "user", null, MESSAGE_ROLE_SWIFT_TYPE),
         reference(ASSISTANT_USR, "member_ref_expr", "assistant", null, MESSAGE_ROLE_SWIFT_TYPE),
+        reference(INSTALLATION_USER_USR, "member_ref_expr", "user", null, INSTALLATION_SCOPE_SWIFT_TYPE),
+        reference(
+            INSTALLATION_WORKSPACE_USR, "member_ref_expr", "workspace", null, INSTALLATION_SCOPE_SWIFT_TYPE,
+        ),
     ).sortedBy { it.releaseString("precise") })
 
     private fun objectiveCReferences() = JsonArray(listOf(
@@ -525,6 +572,10 @@ class CrossLanguageAppleBindingEvidenceTest {
             "CodexAgentAgentMessageRole * _Nonnull"),
         reference(ASSISTANT_USR, "ObjCMessageExpr", "assistant", "CodexAgentAgentMessageRole",
             "CodexAgentAgentMessageRole * _Nonnull"),
+        reference(INSTALLATION_USER_USR, "ObjCMessageExpr", "user", "CodexAgentAgentInstallationScope",
+            "CodexAgentAgentInstallationScope * _Nonnull"),
+        reference(INSTALLATION_WORKSPACE_USR, "ObjCMessageExpr", "workspace", "CodexAgentAgentInstallationScope",
+            "CodexAgentAgentInstallationScope * _Nonnull"),
     ).sortedBy { it.releaseString("precise") })
 
     private fun symbol(
@@ -581,7 +632,10 @@ class CrossLanguageAppleBindingEvidenceTest {
         ".DEFAULT|null[0]" in capability -> DEFAULT_USR
         ".PLAN|null[0]" in capability -> PLAN_USR
         ".USER|null[0]" in capability -> USER_USR
-        else -> ASSISTANT_USR
+        ".ASSISTANT|null[0]" in capability -> ASSISTANT_USR
+        ".User|null[0]" in capability -> INSTALLATION_USER_USR
+        ".Workspace|null[0]" in capability -> INSTALLATION_WORKSPACE_USR
+        else -> error("Unexpected Apple binding fixture capability: $capability")
     }
 
     private fun canonicalConstructor(): String =
@@ -606,6 +660,10 @@ class CrossLanguageAppleBindingEvidenceTest {
     private fun canonicalMessageRole(name: String): String =
         "common|owner=$MESSAGE_ROLE_CANONICAL_OWNER|kind=enum-entry|" +
             "abi=$MESSAGE_ROLE_CANONICAL_OWNER.$name|null[0]"
+
+    private fun canonicalInstallationScope(name: String): String =
+        "common|owner=$INSTALLATION_SCOPE_CANONICAL_OWNER|kind=enum-entry|" +
+            "abi=$INSTALLATION_SCOPE_CANONICAL_OWNER.$name|null[0]"
 
     private fun strings(values: Iterable<String>) = buildJsonArray { values.forEach { add(JsonPrimitive(it)) } }
     private fun JsonObject.withObject(name: String, value: JsonObject) = JsonObject(this + (name to value))
@@ -661,6 +719,12 @@ class CrossLanguageAppleBindingEvidenceTest {
         const val USER_USR = "$MESSAGE_ROLE_OWNER(cpy)user"
         const val ASSISTANT_USR = "$MESSAGE_ROLE_OWNER(cpy)assistant"
         const val MESSAGE_ROLE_SWIFT_TYPE = "\$sSo010CodexAgentB11MessageRoleCD"
+        const val INSTALLATION_SCOPE_CANONICAL_OWNER =
+            "io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope"
+        const val INSTALLATION_SCOPE_OWNER = "c:objc(cs)CodexAgentAgentInstallationScope"
+        const val INSTALLATION_USER_USR = "$INSTALLATION_SCOPE_OWNER(cpy)user"
+        const val INSTALLATION_WORKSPACE_USR = "$INSTALLATION_SCOPE_OWNER(cpy)workspace"
+        const val INSTALLATION_SCOPE_SWIFT_TYPE = "\$sSo010CodexAgentB17InstallationScopeCD"
         const val SWIFT_FAILURE_TEST =
             "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()"
         const val OBJECTIVE_C_FAILURE_TEST =

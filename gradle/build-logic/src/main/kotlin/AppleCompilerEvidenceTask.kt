@@ -28,6 +28,7 @@ internal const val APPLE_CODEX_FAILURE_OWNER_USR = "c:objc(cs)CodexAgentCodexFai
 internal const val APPLE_APPROVAL_DECISION_OWNER_USR = "c:objc(cs)CodexAgentAgentApprovalDecision"
 internal const val APPLE_COLLABORATION_MODE_OWNER_USR = "c:objc(cs)CodexAgentAgentCollaborationMode"
 internal const val APPLE_MESSAGE_ROLE_OWNER_USR = "c:objc(cs)CodexAgentAgentMessageRole"
+internal const val APPLE_INSTALLATION_SCOPE_OWNER_USR = "c:objc(cs)CodexAgentAgentInstallationScope"
 private const val APPLE_CODEX_FAILURE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/CodexFailure"
 private const val APPLE_APPROVAL_DECISION_CANONICAL_OWNER =
@@ -36,6 +37,8 @@ private const val APPLE_COLLABORATION_MODE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode"
 private const val APPLE_MESSAGE_ROLE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/AgentMessageRole"
+private const val APPLE_INSTALLATION_SCOPE_CANONICAL_OWNER =
+    "io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope"
 
 private val appleCodexFailureMembers = linkedMapOf(
     "constructor:<init>" to "$APPLE_CODEX_FAILURE_OWNER_USR(im)initWithCode:message:isRecoverable:",
@@ -91,11 +94,24 @@ private val appleMessageRoleCoverageTokens = mapOf(
         "api-v1:AgentMessageRole#enum-entry:ASSISTANT#sha256:f369c4f0e47685b440320333006c0c058783ee2a55f2b9c554839a8d9a0df128",
 )
 
+private val appleInstallationScopeMembers = linkedMapOf(
+    "enum-entry:User" to "$APPLE_INSTALLATION_SCOPE_OWNER_USR(cpy)user",
+    "enum-entry:Workspace" to "$APPLE_INSTALLATION_SCOPE_OWNER_USR(cpy)workspace",
+)
+
+private val appleInstallationScopeCoverageTokens = mapOf(
+    "enum-entry:User" to
+        "api-v1:AgentInstallationScope#enum-entry:User#sha256:2f69afc19c6f7a1b033fe00173acf97939c51d49f4e8f10c4cf7ee75d42477a3",
+    "enum-entry:Workspace" to
+        "api-v1:AgentInstallationScope#enum-entry:Workspace#sha256:fff8b4780086308bd27166be208daf44e8bb8595bcd4ce0de0fc4cd7d261b267",
+)
+
 private val appleBindingMembers =
-    appleCodexFailureMembers + appleApprovalDecisionMembers + appleCollaborationModeMembers + appleMessageRoleMembers
+    appleCodexFailureMembers + appleApprovalDecisionMembers + appleCollaborationModeMembers + appleMessageRoleMembers +
+        appleInstallationScopeMembers
 private val appleBindingCoverageTokens =
     appleCodexFailureCoverageTokens + appleApprovalDecisionCoverageTokens + appleCollaborationModeCoverageTokens +
-        appleMessageRoleCoverageTokens
+        appleMessageRoleCoverageTokens + appleInstallationScopeCoverageTokens
 
 private fun appleBindingShape(capability: String): String {
     val token = crossLanguageApiCoverageToken(capability)
@@ -215,6 +231,18 @@ private val expectedSwiftAppleBindingSymbols = linkedMapOf(
         "swift.type.property", listOf("AgentMessageRole", "assistant"), "assistant", "open",
         "class var assistant: AgentMessageRole { get }", listOf(APPLE_MESSAGE_ROLE_OWNER_USR),
     ),
+    APPLE_INSTALLATION_SCOPE_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("AgentInstallationScope"), "AgentInstallationScope", "public",
+        "class AgentInstallationScope", emptyList(),
+    ),
+    appleInstallationScopeMembers.getValue("enum-entry:User") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentInstallationScope", "user"), "user", "open",
+        "class var user: AgentInstallationScope { get }", listOf(APPLE_INSTALLATION_SCOPE_OWNER_USR),
+    ),
+    appleInstallationScopeMembers.getValue("enum-entry:Workspace") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentInstallationScope", "workspace"), "workspace", "open",
+        "class var workspace: AgentInstallationScope { get }", listOf(APPLE_INSTALLATION_SCOPE_OWNER_USR),
+    ),
 )
 
 private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
@@ -294,6 +322,22 @@ private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
         "@property (class, readonly) CodexAgentAgentMessageRole * assistant;",
         listOf(APPLE_MESSAGE_ROLE_OWNER_USR),
     ),
+    APPLE_INSTALLATION_SCOPE_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentAgentInstallationScope"),
+        "CodexAgentAgentInstallationScope", "public",
+        "@interface CodexAgentAgentInstallationScope : CodexAgentKotlinEnum",
+        listOf("c:objc(cs)CodexAgentKotlinEnum"),
+    ),
+    appleInstallationScopeMembers.getValue("enum-entry:User") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentInstallationScope", "user"), "user", "public",
+        "@property (class, readonly) CodexAgentAgentInstallationScope * user;",
+        listOf(APPLE_INSTALLATION_SCOPE_OWNER_USR),
+    ),
+    appleInstallationScopeMembers.getValue("enum-entry:Workspace") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentInstallationScope", "workspace"), "workspace", "public",
+        "@property (class, readonly) CodexAgentAgentInstallationScope * workspace;",
+        listOf(APPLE_INSTALLATION_SCOPE_OWNER_USR),
+    ),
 )
 
 internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> {
@@ -302,6 +346,7 @@ internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> 
         "common|owner=$APPLE_APPROVAL_DECISION_CANONICAL_OWNER|",
         "common|owner=$APPLE_COLLABORATION_MODE_CANONICAL_OWNER|",
         "common|owner=$APPLE_MESSAGE_ROLE_CANONICAL_OWNER|",
+        "common|owner=$APPLE_INSTALLATION_SCOPE_CANONICAL_OWNER|",
     )
     val byShape = memberKeys.filter { key -> ownerPrefixes.any { prefix -> key.startsWith(prefix) } }.groupBy { key ->
         appleBindingShape(key)
@@ -393,7 +438,8 @@ private fun parseAppleBindingSurface(
     val memberOwners = appleCodexFailureMembers.values.associateWith { APPLE_CODEX_FAILURE_OWNER_USR } +
         appleApprovalDecisionMembers.values.associateWith { APPLE_APPROVAL_DECISION_OWNER_USR } +
         appleCollaborationModeMembers.values.associateWith { APPLE_COLLABORATION_MODE_OWNER_USR } +
-        appleMessageRoleMembers.values.associateWith { APPLE_MESSAGE_ROLE_OWNER_USR }
+        appleMessageRoleMembers.values.associateWith { APPLE_MESSAGE_ROLE_OWNER_USR } +
+        appleInstallationScopeMembers.values.associateWith { APPLE_INSTALLATION_SCOPE_OWNER_USR }
     val relationships = root.appleArray("relationships").map { it.appleObject("$language relationship") }
         .filter { relationship ->
             relationship.appleString("kind") == "memberOf" &&
@@ -460,6 +506,8 @@ internal fun parseSwiftAppleBindingReferences(json: String): List<AppleCompilerR
         appleCollaborationModeMembers.getValue("enum-entry:PLAN") to ("member_ref_expr" to "plan"),
         appleMessageRoleMembers.getValue("enum-entry:USER") to ("member_ref_expr" to "user"),
         appleMessageRoleMembers.getValue("enum-entry:ASSISTANT") to ("member_ref_expr" to "assistant"),
+        appleInstallationScopeMembers.getValue("enum-entry:User") to ("member_ref_expr" to "user"),
+        appleInstallationScopeMembers.getValue("enum-entry:Workspace") to ("member_ref_expr" to "workspace"),
     )
     references.forEach { reference ->
         check(reference.kind to reference.name == expectedKinds.getValue(reference.precise) &&
@@ -563,7 +611,9 @@ internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleComp
     val messageRoles = listOf("user", "assistant").map { name ->
         val node = nodes.singleOrNull { candidate ->
             candidate.appleStringOrNull("kind") == "ObjCMessageExpr" &&
-                candidate.appleStringOrNull("selector") == name
+                candidate.appleStringOrNull("selector") == name &&
+                (candidate["classType"] as? JsonObject)?.appleStringOrNull("qualType") ==
+                "CodexAgentAgentMessageRole"
         } ?: error("Objective-C AgentMessageRole reference changed: $name")
         check(node.appleString("receiverKind") == "class") {
             "Objective-C AgentMessageRole receiver changed: $name"
@@ -583,7 +633,34 @@ internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleComp
         )
     }
     check(messageRoles == expectedMessageRoles) { "Objective-C AgentMessageRole references changed" }
-    return (constructor + properties + decisions + collaborationModes + messageRoles)
+    val installationScopes = listOf("user", "workspace").map { name ->
+        val node = nodes.singleOrNull { candidate ->
+            candidate.appleStringOrNull("kind") == "ObjCMessageExpr" &&
+                candidate.appleStringOrNull("selector") == name &&
+                (candidate["classType"] as? JsonObject)?.appleStringOrNull("qualType") ==
+                "CodexAgentAgentInstallationScope"
+        } ?: error("Objective-C AgentInstallationScope reference changed: $name")
+        check(node.appleString("receiverKind") == "class") {
+            "Objective-C AgentInstallationScope receiver changed: $name"
+        }
+        val shape = if (name == "user") "enum-entry:User" else "enum-entry:Workspace"
+        AppleCompilerReference(
+            appleInstallationScopeMembers.getValue(shape), "ObjCMessageExpr", name,
+            node.appleObject("classType").appleString("qualType"),
+            node.appleObject("type").appleString("qualType"), emptyList(),
+        )
+    }
+    val expectedInstallationScopes = listOf("user", "workspace").map { name ->
+        val shape = if (name == "user") "enum-entry:User" else "enum-entry:Workspace"
+        AppleCompilerReference(
+            appleInstallationScopeMembers.getValue(shape), "ObjCMessageExpr", name,
+            "CodexAgentAgentInstallationScope", "CodexAgentAgentInstallationScope * _Nonnull", emptyList(),
+        )
+    }
+    check(installationScopes == expectedInstallationScopes) {
+        "Objective-C AgentInstallationScope references changed"
+    }
+    return (constructor + properties + decisions + collaborationModes + messageRoles + installationScopes)
         .sortedBy(AppleCompilerReference::precise)
 }
 

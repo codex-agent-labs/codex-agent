@@ -20,3 +20,7 @@ func consumeAgentCollaborationModes() -> (AgentCollaborationMode, AgentCollabora
 func consumeAgentMessageRoles() -> (AgentMessageRole, AgentMessageRole) {
     (AgentMessageRole.user, AgentMessageRole.assistant)
 }
+
+func consumeAgentInstallationScopes() -> (AgentInstallationScope, AgentInstallationScope) {
+    (AgentInstallationScope.user, AgentInstallationScope.workspace)
+}

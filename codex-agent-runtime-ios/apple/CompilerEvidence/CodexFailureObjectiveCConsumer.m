@@ -27,3 +27,9 @@ static BOOL consumeAgentMessageRoles(void) {
     CodexAgentAgentMessageRole *assistant = [CodexAgentAgentMessageRole assistant];
     return user != assistant;
 }
+
+static BOOL consumeAgentInstallationScopes(void) {
+    CodexAgentAgentInstallationScope *user = [CodexAgentAgentInstallationScope user];
+    CodexAgentAgentInstallationScope *workspace = [CodexAgentAgentInstallationScope workspace];
+    return user != workspace;
+}
