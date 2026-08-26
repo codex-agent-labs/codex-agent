@@ -417,6 +417,22 @@ static BOOL consumeD082ElicitationHelpers(
         (fieldAccepts || !fieldAccepts);
 }
 
+static BOOL consumeD083ProtocolOwnerProperties(
+    id<CodexAgentAgentIntegration> integration,
+    id<CodexAgentAgentInvocation> invocation,
+    id<CodexAgentAgentPendingInteraction> interaction
+) {
+    NSString *integrationDisplayName = integration.displayName;
+    NSString *integrationId = integration.id;
+    NSString *invocationKey = invocation.key;
+    NSString *invocationName = invocation.name;
+    CodexAgentConversationId *conversationId = interaction.conversationId;
+    NSString *requestId = interaction.requestId;
+    return integrationDisplayName.length > 0 && integrationId.length > 0 &&
+        invocationKey.length > 0 && invocationName.length > 0 &&
+        conversationId != nil && requestId.length > 0;
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

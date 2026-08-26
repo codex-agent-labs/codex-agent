@@ -1123,3 +1123,18 @@ func consumeD082ElicitationHelpers(
     let declined = companion.decline()
     return (accepted, accepts, initialValues, validation, fieldAccepts, cancelled, declined)
 }
+
+func consumeD083ProtocolProperties(
+    integration: any AgentIntegration,
+    invocation: any AgentInvocation,
+    interaction: any AgentPendingInteraction
+) -> (String, String, String, String, ConversationId, String) {
+    (
+        integration.displayName,
+        integration.id,
+        invocation.key,
+        invocation.name,
+        interaction.conversationId,
+        interaction.requestId
+    )
+}

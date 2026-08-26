@@ -326,9 +326,12 @@ static NSString *CDXVerifyD077McpServerValues(void) {
 
     CodexAgentAgentIntegrationMcpServer *integration =
         [[CodexAgentAgentIntegrationMcpServer alloc] initWithServer:authorized];
-    if (integration.server != authorized ||
+    id<CodexAgentAgentIntegration> integrationView = integration;
+    if (integrationView != integration || integration.server != authorized ||
         ![integration.id isEqualToString:@"oauth-server"] ||
-        ![integration.displayName isEqualToString:@"OAuth Server"]) {
+        ![integration.displayName isEqualToString:@"OAuth Server"] ||
+        ![integrationView.id isEqualToString:@"oauth-server"] ||
+        ![integrationView.displayName isEqualToString:@"OAuth Server"]) {
         return @"Objective-C MCP server integration changed";
     }
     return nil;
@@ -1811,9 +1814,12 @@ static NSString *CDXVerifyD074OrdinaryValues(void) {
         pluginNames:@[]];
     CodexAgentAgentIntegrationConnector *integration =
         [[CodexAgentAgentIntegrationConnector alloc] initWithConnector:connector];
-    if (integration.connector != connector ||
+    id<CodexAgentAgentIntegration> integrationView = integration;
+    if (integrationView != integration || integration.connector != connector ||
         ![integration.id isEqualToString:@"d074-connector"] ||
-        ![integration.displayName isEqualToString:@"D074 Connector"]) {
+        ![integration.displayName isEqualToString:@"D074 Connector"] ||
+        ![integrationView.id isEqualToString:@"d074-connector"] ||
+        ![integrationView.displayName isEqualToString:@"D074 Connector"]) {
         return @"Objective-C D074 connector integration changed";
     }
 
@@ -1833,6 +1839,18 @@ static NSString *CDXVerifyD074OrdinaryValues(void) {
     if (![skillInvocation.name isEqualToString:@"review"] ||
         ![skillInvocation.path isEqualToString:@"/skills/review/SKILL.md"] ||
         ![skillInvocation.key isEqualToString:@"skill:/skills/review/SKILL.md"]) {
+        return @"Objective-C D074 skill invocation changed";
+    }
+    NSArray<id<CodexAgentAgentInvocation>> *invocations = @[pluginInvocation, skillInvocation];
+    id<CodexAgentAgentInvocation> pluginView = invocations[0];
+    id<CodexAgentAgentInvocation> skillView = invocations[1];
+    if (invocations.count != 2 || pluginView != pluginInvocation || skillView != skillInvocation ||
+        ![pluginView.name isEqualToString:@"plugin"] ||
+        ![pluginView.key isEqualToString:@"plugin:plugin://plugin@marketplace"] ||
+        ![pluginInvocation.uri isEqualToString:@"plugin://plugin@marketplace"] ||
+        ![skillView.name isEqualToString:@"review"] ||
+        ![skillInvocation.path isEqualToString:@"/skills/review/SKILL.md"] ||
+        ![skillView.key isEqualToString:@"skill:/skills/review/SKILL.md"]) {
         return @"Objective-C D074 skill invocation changed";
     }
 
@@ -1899,6 +1917,18 @@ static NSString *CDXVerifyD075PendingValues(void) {
     if (pendingElicitation.elicitation != elicitation ||
         ![pendingElicitation.requestId isEqualToString:@"d075-elicitation"] ||
         pendingElicitation.conversationId != conversationId) {
+        return @"Objective-C D075 pending elicitation changed";
+    }
+    NSArray<id<CodexAgentAgentPendingInteraction>> *pending = @[approval, pendingElicitation];
+    id<CodexAgentAgentPendingInteraction> approvalView = pending[0];
+    id<CodexAgentAgentPendingInteraction> elicitationView = pending[1];
+    if (pending.count != 2 || approvalView != approval || elicitationView != pendingElicitation ||
+        ![approvalView.requestId isEqualToString:@"d075-approval"] ||
+        approvalView.conversationId != conversationId ||
+        ![elicitationView.requestId isEqualToString:@"d075-elicitation"] ||
+        [approvalView.requestId isEqualToString:elicitationView.requestId] ||
+        elicitationView.conversationId != conversationId ||
+        pendingElicitation.elicitation != elicitation) {
         return @"Objective-C D075 pending elicitation changed";
     }
 

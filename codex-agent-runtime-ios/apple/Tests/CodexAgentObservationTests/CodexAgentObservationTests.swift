@@ -693,9 +693,12 @@ final class CodexAgentObservationTests: XCTestCase {
             pluginNames: ["d074-plugin"]
         )
         let connectorIntegration = AgentIntegrationConnector(connector: connector)
+        let connectorTarget: any AgentIntegration = connectorIntegration
         XCTAssertTrue(connectorIntegration.connector === connector)
         XCTAssertEqual(connectorIntegration.id, "d074-connector")
         XCTAssertEqual(connectorIntegration.displayName, "D074 Connector")
+        XCTAssertEqual(connectorTarget.id, "d074-connector")
+        XCTAssertEqual(connectorTarget.displayName, "D074 Connector")
 
         let pluginInvocation = AgentInvocationPlugin(name: "D074 Plugin", uri: "plugin://d074")
         XCTAssertEqual(pluginInvocation.name, "D074 Plugin")
@@ -791,9 +794,12 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertFalse(signedOutServer.isAuthorized)
 
         let integration = AgentIntegrationMcpServer(server: oauthServer)
+        let integrationTarget: any AgentIntegration = integration
         XCTAssertTrue(integration.server === oauthServer)
         XCTAssertEqual(integration.id, "d077-oauth")
         XCTAssertEqual(integration.displayName, "D077 OAuth Server")
+        XCTAssertEqual(integrationTarget.id, "d077-oauth")
+        XCTAssertEqual(integrationTarget.displayName, "D077 OAuth Server")
     }
 
     private func assertD078McpAndElicitationValues() {
@@ -997,6 +1003,12 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertEqual(richMessage.invocations.count, 2)
         XCTAssertTrue((richMessage.invocations[0] as? AgentInvocationPlugin) === plugin)
         XCTAssertTrue((richMessage.invocations[1] as? AgentInvocationSkill) === skill)
+        let firstInvocation: any AgentInvocation = richMessage.invocations[0]
+        let secondInvocation: any AgentInvocation = richMessage.invocations[1]
+        XCTAssertEqual(firstInvocation.name, "D079 Plugin")
+        XCTAssertEqual(firstInvocation.key, "plugin:plugin://d079")
+        XCTAssertEqual(secondInvocation.name, "D079 Skill")
+        XCTAssertEqual(secondInvocation.key, "skill:/d079/skill")
 
         let defaultMessage = AgentMessage(
             id: "d079-default-message",
@@ -1291,6 +1303,12 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertTrue((interactionState.pending[0] as? AgentPendingApproval) === approval)
         XCTAssertTrue((interactionState.pending[1] as? AgentPendingElicitation) === pendingElicitation)
         XCTAssertTrue((interactionState.pending[2] as? AgentPendingApproval) === otherApproval)
+        let approvalInteraction: any AgentPendingInteraction = interactionState.pending[0]
+        let elicitationInteraction: any AgentPendingInteraction = interactionState.pending[1]
+        XCTAssertEqual(approvalInteraction.requestId, "d080-resolving")
+        XCTAssertTrue(approvalInteraction.conversationId === conversationId)
+        XCTAssertEqual(elicitationInteraction.requestId, "d080-elicitation")
+        XCTAssertTrue(elicitationInteraction.conversationId === conversationId)
         XCTAssertEqual(interactionState.resolvingRequestIds.count, 1)
         XCTAssertTrue(interactionState.resolvingRequestIds.contains("d080-resolving"))
 
