@@ -1,6 +1,7 @@
 @file:OptIn(ExperimentalJsExport::class, ExperimentalJsStatic::class)
 
 import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
+import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalDecision as CoreApprovalDecision
 import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as CoreAuthenticationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentCapability as CoreCapability
 import io.github.codex_agent_labs.codexmobile.agent.AgentCatalogFreshness as CoreCatalogFreshness
@@ -11,6 +12,9 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSummary as 
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSettings
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState as CoreConversationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentConversationStatus
+import io.github.codex_agent_labs.codexmobile.agent.AgentElicitation as CoreElicitation
+import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationAction as CoreElicitationAction
+import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationResponse as CoreElicitationResponse
 import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidation as CoreElicitationValidation
 import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationIssue as CoreElicitationValidationIssue
 import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationReason as CoreElicitationValidationReason
@@ -33,6 +37,7 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentInstallationScope as Co
 import io.github.codex_agent_labs.codexmobile.agent.AgentIntegration as CoreIntegration
 import io.github.codex_agent_labs.codexmobile.agent.AgentIntegrationAuthorizationState as CoreIntegrationAuthorizationState
 import io.github.codex_agent_labs.codexmobile.agent.AgentIntegrationAuthorizationStatus as CoreIntegrationAuthorizationStatus
+import io.github.codex_agent_labs.codexmobile.agent.AgentInteractionState as CoreInteractionState
 import io.github.codex_agent_labs.codexmobile.agent.AgentInvocation as CoreInvocation
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
 import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable as CoreMcpEnvironmentVariable
@@ -51,6 +56,9 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentModel as CoreModel
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanProgress as CorePlanProgress
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanStep
 import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStepStatus as CorePlanStepStatus
+import io.github.codex_agent_labs.codexmobile.agent.AgentPendingApproval as CorePendingApproval
+import io.github.codex_agent_labs.codexmobile.agent.AgentPendingElicitation as CorePendingElicitation
+import io.github.codex_agent_labs.codexmobile.agent.AgentPendingInteraction as CorePendingInteraction
 import io.github.codex_agent_labs.codexmobile.agent.AgentPluginAuthPolicy as CorePluginAuthPolicy
 import io.github.codex_agent_labs.codexmobile.agent.AgentPluginCatalog as CorePluginCatalog
 import io.github.codex_agent_labs.codexmobile.agent.AgentPluginDetail as CorePluginDetail
@@ -80,6 +88,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexHost as CoreHost
 import io.github.codex_agent_labs.codexmobile.agent.CodexHostState as CoreHostState
 import io.github.codex_agent_labs.codexmobile.agent.CodexHooks as CoreHooks
 import io.github.codex_agent_labs.codexmobile.agent.CodexIntegrationAuthorization as CoreIntegrationAuthorization
+import io.github.codex_agent_labs.codexmobile.agent.CodexInteractions as CoreInteractions
 import io.github.codex_agent_labs.codexmobile.agent.CodexModels as CoreModels
 import io.github.codex_agent_labs.codexmobile.agent.CodexMcpServers as CoreMcpServers
 import io.github.codex_agent_labs.codexmobile.agent.CodexOperationException
@@ -138,6 +147,13 @@ public external interface AgentHookHandler
 /** Immutable MCP transport projected as a reviewed union of the two supported transports. */
 @JsExport
 public interface AgentMcpTransport
+
+/** Pending interaction projected as a reviewed approval-or-elicitation union. */
+@JsExport
+public interface AgentPendingInteraction {
+    public val requestId: String
+    public val conversationId: String
+}
 
 /** Immutable form option value. */
 @JsExport
@@ -583,6 +599,174 @@ public class AgentElicitationValidation public constructor(
         freezeSnapshot(this.issues)
         freezeSnapshot(this)
     }
+}
+
+/** Immutable canonical elicitation request. */
+@JsExport
+public class AgentElicitation public constructor(
+    requestId: String,
+    serverName: String,
+    conversationId: String,
+    message: String,
+    form: Array<AgentFormField>? = null,
+    url: String? = null,
+) {
+    public val requestId: String
+    public val serverName: String
+    public val conversationId: String
+    public val message: String
+    public val form: Array<AgentFormField>?
+    public val url: String?
+
+    init {
+        val core = canonicalElicitation(requestId, serverName, conversationId, message, form, url)
+        this.requestId = core.requestId
+        this.serverName = core.serverName
+        this.conversationId = core.conversationId.value
+        this.message = core.message
+        this.form = core.form?.map(CoreFormField::project)?.toTypedArray()
+        this.url = core.url
+        this.form?.let(::freezeSnapshot)
+        rememberCanonicalElicitation(this, core)
+        freezeSnapshot(this)
+    }
+
+    public fun initialValues(): Any = canonicalCopy().initialValues().projectRecord(CoreFormValue::project)
+
+    public fun validate(content: Any): AgentElicitationValidation =
+        canonicalCopy().validate(requireJavaScriptFormValueRecord(content, "content")).project()
+
+    public fun accept(content: Any): AgentElicitationResponse =
+        canonicalCopy().accept(requireJavaScriptFormValueRecord(content, "content")).project()
+
+    public fun accepts(response: AgentElicitationResponse): Boolean {
+        val value: Any? = response
+        require(value is AgentElicitationResponse) { "response must be an AgentElicitationResponse" }
+        return canonicalCopy().accepts(value.canonicalCopy())
+    }
+}
+
+/** Immutable canonical elicitation response. */
+@JsExport
+public class AgentElicitationResponse public constructor(
+    action: String,
+    content: Any = emptyJavaScriptRecord(),
+) {
+    public val action: String
+    public val content: Any
+
+    init {
+        val core = canonicalElicitationResponse(action, content)
+        this.action = core.action.name.lowercase()
+        this.content = core.content.projectRecord(CoreFormValue::project)
+        freezeSnapshot(this)
+    }
+
+    public companion object {
+        @JsStatic
+        public fun decline(): AgentElicitationResponse = CoreElicitationResponse.decline().project()
+
+        @JsStatic
+        public fun cancel(): AgentElicitationResponse = CoreElicitationResponse.cancel().project()
+    }
+}
+
+/** Immutable pending approval request. */
+@JsExport
+public class AgentPendingApproval public constructor(
+    requestId: String,
+    conversationId: String,
+    title: String,
+    details: String,
+) : AgentPendingInteraction {
+    public override val requestId: String
+    public override val conversationId: String
+    public val title: String
+    public val details: String
+
+    init {
+        val core = CorePendingApproval(
+            requestId.requireJavaScriptString("requestId"),
+            ConversationId(conversationId.requireJavaScriptString("conversationId")),
+            title.requireJavaScriptString("title"),
+            details.requireJavaScriptString("details"),
+        )
+        this.requestId = core.requestId
+        this.conversationId = core.conversationId.value
+        this.title = core.title
+        this.details = core.details
+        rememberCanonicalPending(this, core)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable pending elicitation request. */
+@JsExport
+public class AgentPendingElicitation public constructor(
+    elicitation: AgentElicitation,
+) : AgentPendingInteraction {
+    public val elicitation: AgentElicitation
+    public override val requestId: String
+    public override val conversationId: String
+
+    init {
+        val value: Any? = elicitation
+        require(value is AgentElicitation) { "elicitation must be an AgentElicitation" }
+        val core = CorePendingElicitation(value.canonicalCopy())
+        this.elicitation = core.elicitation.project()
+        this.requestId = core.requestId
+        this.conversationId = core.conversationId.value
+        rememberCanonicalPending(this, core)
+        freezeSnapshot(this)
+    }
+}
+
+/** Immutable interaction lifecycle snapshot. */
+@JsExport
+public class AgentInteractionState public constructor(
+    pending: Array<AgentPendingInteraction> = emptyArray(),
+    resolvingRequestIds: Array<String> = emptyArray(),
+    failure: CodexFailure? = null,
+) {
+    public val pending: Array<AgentPendingInteraction>
+    public val resolvingRequestIds: Array<String>
+    public val failure: CodexFailure?
+
+    init {
+        requireJavaScriptArray(pending, "pending")
+        requireJavaScriptArray(resolvingRequestIds, "resolvingRequestIds")
+        val corePending = List(pending.size) { index ->
+            requireOwnJavaScriptArrayIndex(pending, index, "pending")
+            pending[index].canonicalPending("pending[$index]")
+        }
+        val core = CoreInteractionState(
+            pending = corePending,
+            resolvingRequestIds = List(resolvingRequestIds.size) { index ->
+                requireOwnJavaScriptArrayIndex(resolvingRequestIds, index, "resolvingRequestIds")
+                resolvingRequestIds[index].requireJavaScriptString("resolvingRequestIds[$index]")
+            }.toSet(),
+            failure = failure.canonicalCopy("failure"),
+        )
+        this.pending = pending.copyOf()
+        this.resolvingRequestIds = core.resolvingRequestIds.toTypedArray()
+        this.failure = core.failure?.project()
+        freezeSnapshot(this.pending)
+        freezeSnapshot(this.resolvingRequestIds)
+        rememberCanonicalInteractionState(this, core)
+        freezeSnapshot(this)
+    }
+
+    public fun pendingFor(conversationId: String): Array<AgentPendingInteraction> {
+        val state = canonicalInteractionState(this)
+        val selected = state.pendingFor(
+            ConversationId(conversationId.requireJavaScriptString("conversationId")),
+        ).map { core -> pending.single { canonicalPending(it) === core } }.toTypedArray()
+        freezeSnapshot(selected)
+        return selected
+    }
+
+    public fun isResolving(interaction: AgentPendingInteraction): Boolean =
+        canonicalInteractionState(this).isResolving(interaction.canonicalPending("interaction"))
 }
 
 /** Immutable plan step value. */
@@ -1731,6 +1915,8 @@ public class CodexAgent internal constructor(
         CodexMcpServers(host, core.mcpServers, jsApiToken)
     private val integrationAuthorizationProjection: CodexIntegrationAuthorization =
         CodexIntegrationAuthorization(host, core, core.integrationAuthorization, jsApiToken)
+    private val interactionsProjection: CodexInteractions =
+        CodexInteractions(host, core, core.interactions, jsApiToken)
     private var cachedCoreConversation: CoreConversation? = null
     private var cachedConversation: CodexConversation? = null
 
@@ -1765,6 +1951,9 @@ public class CodexAgent internal constructor(
 
     public val integrationAuthorization: CodexIntegrationAuthorization
         get() = integrationAuthorizationProjection
+
+    public val interactions: CodexInteractions
+        get() = interactionsProjection
 
     public val activeConversation: CodexConversation?
         get() = if (host.owns(core)) core.conversations.active.value?.let(::wrapConversation) else null
@@ -2236,6 +2425,127 @@ public class CodexIntegrationAuthorization internal constructor(
     }
 }
 
+/** Agent-owned pending approval and elicitation lifecycle. */
+@JsExport
+public class CodexInteractions internal constructor(
+    private val host: CodexHost,
+    private val agent: CoreAgent,
+    private val core: CoreInteractions,
+    token: Any,
+) {
+    private val pendingProjections: dynamic = js("new WeakMap()")
+
+    init {
+        require(token === jsApiToken) { "Codex interactions are created by an Agent" }
+        hideBackingFields(this)
+    }
+
+    public val state: AgentInteractionState
+        get() = core.state.value.project()
+
+    public val approvals: Array<AgentPendingApproval>
+        get() = core.approvals.value.map { projectPending(it).unsafeCast<AgentPendingApproval>() }
+            .toTypedArray().frozen()
+
+    public val elicitations: Array<AgentPendingElicitation>
+        get() = core.elicitations.value.map { projectPending(it).unsafeCast<AgentPendingElicitation>() }
+            .toTypedArray().frozen()
+
+    public fun resolve(
+        interaction: AgentPendingInteraction,
+        resolution: Any,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        val value: Any? = interaction
+        when (value) {
+            is AgentPendingApproval -> core.resolve(
+                value.canonicalPending("interaction").unsafeCast<CorePendingApproval>(),
+                resolution.unsafeCast<String>().toCoreApprovalDecision("resolution"),
+            )
+            is AgentPendingElicitation -> {
+                require(resolution is AgentElicitationResponse) {
+                    "resolution must be an AgentElicitationResponse"
+                }
+                core.resolve(
+                    value.canonicalPending("interaction").unsafeCast<CorePendingElicitation>(),
+                    resolution.canonicalCopy(),
+                )
+            }
+            else -> throw IllegalArgumentException(
+                "interaction must be an AgentPendingApproval or AgentPendingElicitation",
+            )
+        }
+    }
+
+    public fun openUrl(
+        elicitation: AgentPendingElicitation,
+        signal: AbortSignal? = null,
+    ): Promise<Unit> = host.operationScope().codexUnitPromise(signal) {
+        val value: Any? = elicitation
+        require(value is AgentPendingElicitation) {
+            "elicitation must be an AgentPendingElicitation"
+        }
+        core.openUrl(value.canonicalPending("elicitation").unsafeCast<CorePendingElicitation>())
+    }
+
+    public fun observeState(listener: (AgentInteractionState) -> Unit): CodexObservation =
+        observeOwnedState(core.state, { it.project() }, listener)
+
+    public fun observeApprovals(listener: (Array<AgentPendingApproval>) -> Unit): CodexObservation =
+        observeOwnedState(
+            core.approvals,
+            { values -> values.map { projectPending(it).unsafeCast<AgentPendingApproval>() }.toTypedArray().frozen() },
+            listener,
+        )
+
+    public fun observeElicitations(listener: (Array<AgentPendingElicitation>) -> Unit): CodexObservation =
+        observeOwnedState(
+            core.elicitations,
+            { values -> values.map { projectPending(it).unsafeCast<AgentPendingElicitation>() }.toTypedArray().frozen() },
+            listener,
+        )
+
+    private fun CoreInteractionState.project(): AgentInteractionState = AgentInteractionState(
+        pending = pending.map(::projectPending).toTypedArray(),
+        resolvingRequestIds = resolvingRequestIds.toTypedArray(),
+        failure = failure?.project(),
+    ).also { rememberCanonicalInteractionState(it, this) }
+
+    private fun projectPending(core: CorePendingInteraction): AgentPendingInteraction {
+        val existing = pendingProjections.get(core).unsafeCast<AgentPendingInteraction?>()
+        if (existing != null) return existing
+        val projected: AgentPendingInteraction = when (core) {
+            is CorePendingApproval -> AgentPendingApproval(
+                core.requestId,
+                core.conversationId.value,
+                core.title,
+                core.details,
+            )
+            is CorePendingElicitation -> AgentPendingElicitation(core.elicitation.project())
+        }
+        rememberCanonicalPending(projected, core)
+        pendingProjections.set(core, projected)
+        return projected
+    }
+
+    private fun <T, R> observeOwnedState(
+        state: StateFlow<T>,
+        project: (T) -> R,
+        listener: (R) -> Unit,
+    ): CodexObservation {
+        val owned = combine(host.lifecycleState(), state) { hostState, value ->
+            OwnedValue(value, (hostState as? CoreHostState.Ready)?.agent !== agent)
+        }
+        return observeFlow(
+            scope = host.operationScope(),
+            state = owned,
+            project = { project(it.value) },
+            listener = listener,
+            isTerminal = { it.terminal },
+        )
+    }
+}
+
 /** Explicitly closeable canonical Conversation projection. */
 @JsExport
 public class CodexConversation internal constructor(
@@ -2544,6 +2854,10 @@ private fun requireJavaScriptRecord(value: Any?, name: String): List<Pair<String
     require(keys.size == ownKeyCount) { "$name must contain only enumerable string keys" }
     return List(keys.size) { index ->
         val key = keys[index]
+        val descriptor: dynamic = js("Object.getOwnPropertyDescriptor(value, key)")
+        require(js("Object.hasOwn(descriptor, 'value')") as Boolean) {
+            "$name must contain only data properties"
+        }
         key to value.asDynamic()[key].unsafeCast<Any?>()
     }
 }
@@ -2574,6 +2888,18 @@ private fun <T> Map<String, T>.projectRecord(project: (T) -> Any?): Any {
 }
 
 private fun emptyJavaScriptRecord(): Any = emptyMap<String, String>().projectRecord { it }
+
+private fun <T> Array<T>.frozen(): Array<T> {
+    freezeSnapshot(this)
+    return this
+}
+
+private fun requireJavaScriptFormValueRecord(value: Any?, name: String): Map<String, CoreFormValue> =
+    requireJavaScriptRecord(value, name).associate { (key, entry) ->
+        key to requireNotNull(entry.toCoreFormValue("$name.$key")) {
+            "$name.$key must be an AgentFormValue"
+        }
+    }
 
 private fun Array<String>?.canonicalStringList(name: String): List<String>? {
     if (this == null) return null
@@ -2829,6 +3155,95 @@ private fun AgentFormField.canonicalCopy(): CoreFormField = canonicalFormField(
     allowsOther = allowsOther,
     isSecret = isSecret,
 )
+
+private fun CoreFormField.project(): AgentFormField = AgentFormField(
+    name = name,
+    title = title,
+    type = type.name.lowercase(),
+    description = description,
+    isRequired = isRequired,
+    options = options.map(CoreFormOption::project).toTypedArray(),
+    defaultValue = defaultValue?.project(),
+    minimum = minimum,
+    maximum = maximum,
+    format = format?.name?.lowercase(),
+    minimumLength = minimumLength?.toJavaScriptBigInt(),
+    maximumLength = maximumLength?.toJavaScriptBigInt(),
+    minimumSelections = minimumSelections?.toJavaScriptBigInt(),
+    maximumSelections = maximumSelections?.toJavaScriptBigInt(),
+    allowsOther = allowsOther,
+    isSecret = isSecret,
+)
+
+private fun canonicalElicitation(
+    requestId: String,
+    serverName: String,
+    conversationId: String,
+    message: String,
+    form: Array<AgentFormField>?,
+    url: String?,
+): CoreElicitation {
+    form?.let { requireJavaScriptArray(it, "form") }
+    return CoreElicitation(
+        requestId = requestId.requireJavaScriptString("requestId"),
+        serverName = serverName.requireJavaScriptString("serverName"),
+        conversationId = ConversationId(conversationId.requireJavaScriptString("conversationId")),
+        message = message.requireJavaScriptString("message"),
+        form = form?.let { values ->
+            List(values.size) { index ->
+                requireOwnJavaScriptArrayIndex(values, index, "form")
+                val field: Any? = values[index]
+                require(field is AgentFormField) { "form[$index] must be an AgentFormField" }
+                field.canonicalCopy()
+            }
+        },
+        url = url.requireJavaScriptNullableString("url"),
+    )
+}
+
+private fun AgentElicitation.canonicalCopy(): CoreElicitation =
+    canonicalElicitationFor(this) ?: canonicalElicitation(
+        requestId,
+        serverName,
+        conversationId,
+        message,
+        form,
+        url,
+    )
+
+private fun canonicalElicitationResponse(action: String, content: Any): CoreElicitationResponse =
+    CoreElicitationResponse(
+        action = action.toCoreElicitationAction("action"),
+        content = requireJavaScriptFormValueRecord(content, "content"),
+    )
+
+private fun AgentElicitationResponse.canonicalCopy(): CoreElicitationResponse =
+    canonicalElicitationResponse(action, content)
+
+private fun String.toCoreElicitationAction(name: String): CoreElicitationAction {
+    val value = requireJavaScriptString(name)
+    return CoreElicitationAction.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown elicitation action: $value")
+}
+
+private fun String.toCoreApprovalDecision(name: String): CoreApprovalDecision {
+    val value = requireJavaScriptString(name)
+    return CoreApprovalDecision.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown approval decision: $value")
+}
+
+private fun CodexFailure?.canonicalCopy(name: String): CoreFailure? {
+    val value: Any? = this
+    require(value == null || value is CodexFailure) { "$name must be a CodexFailure or null" }
+    return value?.let {
+        val failure = it.unsafeCast<CodexFailure>()
+        CoreFailure(
+            code = failure.code.requireJavaScriptString("$name.code"),
+            message = failure.message.requireJavaScriptString("$name.message"),
+            isRecoverable = failure.recoverable.requireJavaScriptBoolean("$name.recoverable"),
+        )
+    }
+}
 
 private fun canonicalMcpServer(
     name: String,
@@ -3427,6 +3842,24 @@ private fun CoreIntegrationAuthorizationState.project(): AgentIntegrationAuthori
         failure = failure?.project(),
     )
 
+private fun CoreElicitation.project(): AgentElicitation = AgentElicitation(
+    requestId = requestId,
+    serverName = serverName,
+    conversationId = conversationId.value,
+    message = message,
+    form = form?.map(CoreFormField::project)?.toTypedArray(),
+    url = url,
+).also { rememberCanonicalElicitation(it, this) }
+
+private fun CoreElicitationResponse.project(): AgentElicitationResponse = AgentElicitationResponse(
+    action = action.name.lowercase(),
+    content = content.projectRecord(CoreFormValue::project),
+)
+
+private fun CoreElicitationValidation.project(): AgentElicitationValidation = AgentElicitationValidation(
+    issues.map { AgentElicitationValidationIssue(it.fieldName, it.reason.name.lowercase()) }.toTypedArray(),
+)
+
 private fun CoreServiceTier.project(): AgentServiceTier = AgentServiceTier(id, name, description)
 
 private fun CoreModel.project(): AgentModel = AgentModel(
@@ -3785,6 +4218,40 @@ private fun <T, R> observeFlow(
 }
 
 private val jsApiToken: Any = Any()
+private val canonicalElicitations: dynamic = js("new WeakMap()")
+private val canonicalPendingInteractions: dynamic = js("new WeakMap()")
+private val canonicalInteractionStates: dynamic = js("new WeakMap()")
+
+private fun rememberCanonicalElicitation(value: AgentElicitation, core: CoreElicitation): Unit {
+    canonicalElicitations.set(value, core)
+}
+
+private fun canonicalElicitationFor(value: AgentElicitation): CoreElicitation? =
+    canonicalElicitations.get(value).unsafeCast<CoreElicitation?>()
+
+private fun rememberCanonicalPending(value: AgentPendingInteraction, core: CorePendingInteraction): Unit {
+    canonicalPendingInteractions.set(value, core)
+}
+
+private fun canonicalPending(value: AgentPendingInteraction): CorePendingInteraction? =
+    canonicalPendingInteractions.get(value).unsafeCast<CorePendingInteraction?>()
+
+private fun AgentPendingInteraction.canonicalPending(name: String): CorePendingInteraction {
+    val value: Any? = this
+    require(value is AgentPendingApproval || value is AgentPendingElicitation) {
+        "$name must be an AgentPendingApproval or AgentPendingElicitation"
+    }
+    return requireNotNull(canonicalPending(this)) { "$name is not a canonical pending interaction" }
+}
+
+private fun rememberCanonicalInteractionState(value: AgentInteractionState, core: CoreInteractionState): Unit {
+    canonicalInteractionStates.set(value, core)
+}
+
+private fun canonicalInteractionState(value: AgentInteractionState): CoreInteractionState =
+    requireNotNull(canonicalInteractionStates.get(value).unsafeCast<CoreInteractionState?>()) {
+        "state is not an AgentInteractionState"
+    }
 
 private fun hideBackingFields(value: Any): Unit {
     js("Object.keys(value).forEach(function (key) { Object.defineProperty(value, key, { enumerable: false }); })")

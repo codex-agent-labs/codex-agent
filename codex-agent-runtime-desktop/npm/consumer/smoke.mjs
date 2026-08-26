@@ -407,6 +407,11 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.AgentFormBooleanValue, commonJsSdk.AgentFormBooleanValue);
   assert.equal(sdk.AgentFormTextListValue, commonJsSdk.AgentFormTextListValue);
   assert.equal(sdk.AgentFormField, commonJsSdk.AgentFormField);
+  assert.equal(sdk.AgentElicitation, commonJsSdk.AgentElicitation);
+  assert.equal(sdk.AgentElicitationResponse, commonJsSdk.AgentElicitationResponse);
+  assert.equal(sdk.AgentPendingApproval, commonJsSdk.AgentPendingApproval);
+  assert.equal(sdk.AgentPendingElicitation, commonJsSdk.AgentPendingElicitation);
+  assert.equal(sdk.AgentInteractionState, commonJsSdk.AgentInteractionState);
   assert.equal(sdk.AgentHookActivity, commonJsSdk.AgentHookActivity);
   assert.equal(sdk.AgentHook, commonJsSdk.AgentHook);
   assert.equal(sdk.AgentHookCatalog, commonJsSdk.AgentHookCatalog);
@@ -436,6 +441,19 @@ test('esm exposes the same runtime values as CommonJS', () => {
   assert.equal(sdk.CodexPlugins, commonJsSdk.CodexPlugins);
   assert.equal(sdk.CodexMcpServers, commonJsSdk.CodexMcpServers);
   assert.equal(sdk.CodexIntegrationAuthorization, commonJsSdk.CodexIntegrationAuthorization);
+  assert.equal(sdk.CodexInteractions, commonJsSdk.CodexInteractions);
+  assert.equal(
+    Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'interactions').get,
+    Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'interactions').get,
+  );
+  assert.equal(
+    sdk.CodexInteractions.prototype.resolve,
+    commonJsSdk.CodexInteractions.prototype.resolve,
+  );
+  assert.equal(
+    sdk.CodexInteractions.prototype.openUrl,
+    commonJsSdk.CodexInteractions.prototype.openUrl,
+  );
   assert.equal(
     Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'integrationAuthorization').get,
     Object.getOwnPropertyDescriptor(commonJsSdk.CodexAgent.prototype, 'integrationAuthorization').get,

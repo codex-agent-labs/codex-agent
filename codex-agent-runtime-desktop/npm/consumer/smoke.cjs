@@ -133,6 +133,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.throws(() => new sdk.CodexPlugins());
   assert.throws(() => new sdk.CodexMcpServers());
   assert.throws(() => new sdk.CodexIntegrationAuthorization());
+  assert.throws(() => new sdk.CodexInteractions());
   assert.throws(() => new sdk.CodexAuthenticationState());
   assert.throws(() => new sdk.CodexConversation());
   assert.throws(() => new sdk.CodexObservation());
@@ -169,6 +170,15 @@ test('cjs exposes the exact Node-only SDK surface', () => {
   assert.equal(typeof sdk.CodexIntegrationAuthorization.prototype.observeState, 'function');
   assert.equal(typeof sdk.CodexIntegrationAuthorization.prototype.observeActive, 'function');
   assert.equal(typeof sdk.CodexIntegrationAuthorization.prototype.observeAuthorizing, 'function');
+  assert.equal(
+    typeof Object.getOwnPropertyDescriptor(sdk.CodexAgent.prototype, 'interactions')?.get,
+    'function',
+  );
+  assert.equal(typeof sdk.CodexInteractions.prototype.resolve, 'function');
+  assert.equal(typeof sdk.CodexInteractions.prototype.openUrl, 'function');
+  assert.equal(typeof sdk.CodexInteractions.prototype.observeState, 'function');
+  assert.equal(typeof sdk.CodexInteractions.prototype.observeApprovals, 'function');
+  assert.equal(typeof sdk.CodexInteractions.prototype.observeElicitations, 'function');
   for (const constructor of [
     sdk.AgentConnector,
     sdk.AgentPluginReference,
@@ -182,6 +192,11 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentConversationSummary,
     sdk.AgentElicitationValidation,
     sdk.AgentElicitationValidationIssue,
+    sdk.AgentElicitation,
+    sdk.AgentElicitationResponse,
+    sdk.AgentPendingApproval,
+    sdk.AgentPendingElicitation,
+    sdk.AgentInteractionState,
     sdk.AgentFormBooleanValue,
     sdk.AgentFormField,
     sdk.AgentFormNumberValue,
@@ -226,6 +241,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.CodexPlugins,
     sdk.CodexMcpServers,
     sdk.CodexIntegrationAuthorization,
+    sdk.CodexInteractions,
     sdk.CodexObservation,
     sdk.CodexTurnProgress,
     sdk.CodexWorkspace,
@@ -461,6 +477,81 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     [() => new sdk.AgentFormField('name', 'Title', 'string', null, false, [], null,
       null, null, null, -1n), 'Minimum length must not be negative'],
     [() => emailField.accepts({}), 'value must be an AgentFormValue or null'],
+  ]) {
+    assert.throws(operation, (error) => error?.message === message);
+  }
+
+  const sourceElicitationForm = [formField];
+  const elicitation = new sdk.AgentElicitation(
+    'request', 'server', 'conversation', 'Choose colors', sourceElicitationForm, null,
+  );
+  sourceElicitationForm.length = 0;
+  const initialValues = elicitation.initialValues();
+  assert.deepEqual(
+    [elicitation.requestId, elicitation.serverName, elicitation.conversationId,
+      elicitation.message, elicitation.form.map(({ name }) => name), elicitation.url],
+    ['request', 'server', 'conversation', 'Choose colors', ['colors'], null],
+  );
+  assert.deepEqual(Object.keys(initialValues), ['colors']);
+  assert.deepEqual(initialValues.colors.value, ['red']);
+  assert.equal(elicitation.validate(initialValues).isValid, true);
+  const sourceContent = { colors: new sdk.AgentFormTextListValue(['blue']) };
+  const response = elicitation.accept(sourceContent);
+  sourceContent.colors = new sdk.AgentFormTextListValue(['changed']);
+  assert.deepEqual([response.action, response.content.colors.value], ['accept', ['blue']]);
+  assert.equal(elicitation.accepts(response), true);
+  assert.deepEqual(
+    [sdk.AgentElicitationResponse.decline().action, sdk.AgentElicitationResponse.cancel().action],
+    ['decline', 'cancel'],
+  );
+  assert.equal(elicitation.accepts(new sdk.AgentElicitationResponse('decline', {})), true);
+  assert.equal(elicitation.accepts(new sdk.AgentElicitationResponse('decline', sourceContent)), false);
+
+  const approval = new sdk.AgentPendingApproval('approval', 'conversation', 'Approve?', 'Details');
+  const pendingElicitation = new sdk.AgentPendingElicitation(elicitation);
+  const interactionState = new sdk.AgentInteractionState(
+    [approval, pendingElicitation], ['approval', 'approval'], null,
+  );
+  assert.deepEqual(
+    [approval.requestId, approval.conversationId, approval.title, approval.details],
+    ['approval', 'conversation', 'Approve?', 'Details'],
+  );
+  assert.equal(pendingElicitation.elicitation.requestId, 'request');
+  assert.equal(pendingElicitation.requestId, 'request');
+  assert.equal(pendingElicitation.conversationId, 'conversation');
+  assert.deepEqual(interactionState.pending.map(({ requestId }) => requestId), ['approval', 'request']);
+  assert.deepEqual(interactionState.resolvingRequestIds, ['approval']);
+  assert.equal(interactionState.failure, null);
+  assert.deepEqual(interactionState.pendingFor('conversation'), interactionState.pending);
+  assert.equal(interactionState.isResolving(approval), true);
+  assert.equal(interactionState.isResolving(
+    new sdk.AgentPendingApproval('approval', 'conversation', 'Approve?', 'Details'),
+  ), false);
+  for (const value of [elicitation, elicitation.form, initialValues, initialValues.colors,
+    response, response.content, response.content.colors, approval, pendingElicitation,
+    pendingElicitation.elicitation, interactionState, interactionState.pending,
+    interactionState.resolvingRequestIds]) {
+    assert.equal(Object.isFrozen(value), true);
+  }
+  for (const [operation, message] of [
+    [() => new sdk.AgentElicitation({}, 'server', 'conversation', 'Choose'),
+      'requestId must be a string'],
+    [() => new sdk.AgentElicitation('request', 'server', 'conversation', 'Choose', new Array(1)),
+      'form must not contain sparse elements'],
+    [() => new sdk.AgentElicitation('request', 'server', 'conversation', 'Choose', [{}]),
+      'form[0] must be an AgentFormField'],
+    [() => elicitation.validate(new Map()), 'content must be a plain object'],
+    [() => elicitation.validate(Object.defineProperty({}, 'field', {
+      enumerable: true,
+      get() { throw new Error('getter must not run'); },
+    })), 'content must contain only data properties'],
+    [() => elicitation.validate({ field: {} }), 'content.field must be an AgentFormValue or null'],
+    [() => new sdk.AgentElicitationResponse('ACCEPT'), 'Unknown elicitation action: ACCEPT'],
+    [() => new sdk.AgentPendingElicitation({}), 'elicitation must be an AgentElicitation'],
+    [() => new sdk.AgentInteractionState(new Array(1)),
+      'pending must not contain sparse elements'],
+    [() => new sdk.AgentInteractionState([{}]),
+      'pending[0] must be an AgentPendingApproval or AgentPendingElicitation'],
   ]) {
     assert.throws(operation, (error) => error?.message === message);
   }

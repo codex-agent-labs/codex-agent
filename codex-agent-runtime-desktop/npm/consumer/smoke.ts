@@ -3,6 +3,8 @@ import {
   AgentConnectorIntegration,
   AgentConversation,
   AgentConversationSummary,
+  AgentElicitation,
+  AgentElicitationResponse,
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormBooleanValue,
@@ -23,6 +25,7 @@ import {
   AgentMcpStdioTransport,
   AgentMcpToolConfiguration,
   AgentModel,
+  AgentInteractionState,
   AgentPlanProgress,
   AgentPlanStep,
   AgentPluginCatalog,
@@ -32,6 +35,8 @@ import {
   AgentPluginReference,
   AgentPluginSkill,
   AgentPluginSummary,
+  AgentPendingApproval,
+  AgentPendingElicitation,
   AgentServiceTier,
   AgentSkill,
   AgentSkillCatalog,
@@ -48,6 +53,7 @@ import {
   CodexHost,
   CodexHostState,
   CodexIntegrationAuthorization,
+  CodexInteractions,
   CodexHooks,
   CodexModels,
   CodexMcpServers,
@@ -86,6 +92,7 @@ import type {
   AgentMcpToolApproval,
   AgentMcpToolExposureSurface,
   AgentMcpTransport,
+  AgentPendingInteraction,
   AgentPlanStepStatus,
   AgentPluginAuthPolicy,
   AgentPluginInstallPolicy,
@@ -304,6 +311,90 @@ const validationReason: AgentElicitationValidationReason = validationIssue.reaso
 const validation = new AgentElicitationValidation([validationIssue]);
 const validationIssues: ReadonlyArray<AgentElicitationValidationIssue> = validation.issues;
 const validationIsValid: boolean = validation.isValid;
+const elicitationClass: typeof AgentElicitation = AgentElicitation;
+const elicitationResponseClass: typeof AgentElicitationResponse = AgentElicitationResponse;
+const pendingApprovalClass: typeof AgentPendingApproval = AgentPendingApproval;
+const pendingElicitationClass: typeof AgentPendingElicitation = AgentPendingElicitation;
+const interactionStateClass: typeof AgentInteractionState = AgentInteractionState;
+const elicitation = new AgentElicitation(
+  "request",
+  "server",
+  "conversation",
+  "Choose",
+  [formField],
+  null,
+);
+const elicitationRequestId: string = elicitation.requestId;
+const elicitationServerName: string = elicitation.serverName;
+const elicitationConversationId: string = elicitation.conversationId;
+const elicitationMessage: string = elicitation.message;
+const elicitationForm: ReadonlyArray<AgentFormField> | null | undefined = elicitation.form;
+const elicitationUrl: string | null | undefined = elicitation.url;
+const initialElicitationValues: Readonly<Record<string, AgentFormValue>> = elicitation.initialValues();
+const elicitationValidation: AgentElicitationValidation = elicitation.validate(initialElicitationValues);
+const elicitationResponse = elicitation.accept(initialElicitationValues);
+const constructedResponse = new AgentElicitationResponse("accept", initialElicitationValues);
+const elicitationAccepts: boolean = elicitation.accepts(elicitationResponse);
+const responseAction: AgentElicitationAction = elicitationResponse.action;
+const responseContent: Readonly<Record<string, AgentFormValue>> = elicitationResponse.content;
+const declinedResponse: AgentElicitationResponse = AgentElicitationResponse.decline();
+const cancelledResponse: AgentElicitationResponse = AgentElicitationResponse.cancel();
+const pendingApproval = new AgentPendingApproval("approval", "conversation", "Approve?", "Details");
+const pendingElicitation = new AgentPendingElicitation(elicitation);
+const pendingInteraction: AgentPendingInteraction = pendingApproval;
+const pendingApprovalRequestId: string = pendingApproval.requestId;
+const pendingApprovalConversationId: string = pendingApproval.conversationId;
+const pendingApprovalTitle: string = pendingApproval.title;
+const pendingApprovalDetails: string = pendingApproval.details;
+const pendingElicitationValue: AgentElicitation = pendingElicitation.elicitation;
+const pendingElicitationRequestId: string = pendingElicitation.requestId;
+const pendingElicitationConversationId: string = pendingElicitation.conversationId;
+const pendingRequestId: string = pendingInteraction.requestId;
+const pendingConversationId: string = pendingInteraction.conversationId;
+const interactionState = new AgentInteractionState(
+  [pendingApproval, pendingElicitation],
+  [pendingApproval.requestId],
+);
+const statePending: ReadonlyArray<AgentPendingInteraction> = interactionState.pending;
+const stateResolvingRequestIds: ReadonlyArray<string> = interactionState.resolvingRequestIds;
+const interactionFailure: CodexFailure | null | undefined = interactionState.failure;
+const conversationPending: ReadonlyArray<AgentPendingInteraction> =
+  interactionState.pendingFor("conversation");
+const interactionIsResolving: boolean = interactionState.isResolving(pendingApproval);
+void [
+  elicitationClass,
+  elicitationResponseClass,
+  constructedResponse,
+  pendingApprovalClass,
+  pendingElicitationClass,
+  interactionStateClass,
+  elicitationRequestId,
+  elicitationServerName,
+  elicitationConversationId,
+  elicitationMessage,
+  elicitationForm,
+  elicitationUrl,
+  elicitationValidation,
+  elicitationAccepts,
+  responseAction,
+  responseContent,
+  declinedResponse,
+  cancelledResponse,
+  pendingApprovalRequestId,
+  pendingApprovalConversationId,
+  pendingApprovalTitle,
+  pendingApprovalDetails,
+  pendingElicitationValue,
+  pendingElicitationRequestId,
+  pendingElicitationConversationId,
+  pendingRequestId,
+  pendingConversationId,
+  statePending,
+  stateResolvingRequestIds,
+  interactionFailure,
+  conversationPending,
+  interactionIsResolving,
+];
 const planStep = new AgentPlanStep("Ship", "in_progress");
 const planStepText: string = planStep.text;
 const planStepStatus: AgentPlanStepStatus = planStep.status;
@@ -710,6 +801,21 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
   integrationAuthorization.observeAuthorizing((next: boolean): void => void next).dispose();
   await integrationAuthorization.authorize(connectorIntegration, signal);
   await integrationAuthorization.cancel(signal);
+  const interactions: CodexInteractions = agent.interactions;
+  const interactionsClass: typeof CodexInteractions = CodexInteractions;
+  const currentInteractionState: AgentInteractionState = interactions.state;
+  const currentApprovals: ReadonlyArray<AgentPendingApproval> = interactions.approvals;
+  const currentElicitations: ReadonlyArray<AgentPendingElicitation> = interactions.elicitations;
+  interactions.observeState((next: AgentInteractionState): void => void next.pending).dispose();
+  interactions.observeApprovals(
+    (next: ReadonlyArray<AgentPendingApproval>): void => void next,
+  ).dispose();
+  interactions.observeElicitations(
+    (next: ReadonlyArray<AgentPendingElicitation>): void => void next,
+  ).dispose();
+  await interactions.resolve(pendingApproval, "accept", signal);
+  await interactions.resolve(pendingElicitation, elicitationResponse, signal);
+  await interactions.openUrl(pendingElicitation, signal);
   const conversation: CodexConversation = await agent.openConversation(
     null,
     approvalPreset,
@@ -799,6 +905,10 @@ async function useAgent(agent: CodexAgent, signal: AbortSignal): Promise<void> {
     deviceUserCode,
     authenticationFailure,
     integrationAuthorizationClass,
+    interactionsClass,
+    currentInteractionState,
+    currentApprovals,
+    currentElicitations,
     currentIntegrationAuthorizationState,
     activeIntegration,
     isAuthorizingIntegration,

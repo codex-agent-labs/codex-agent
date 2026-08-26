@@ -3,6 +3,8 @@ import {
   AgentConnectorIntegration,
   AgentConversation,
   AgentConversationSummary,
+  AgentElicitation,
+  AgentElicitationResponse,
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormBooleanValue,
@@ -23,6 +25,7 @@ import {
   AgentMcpStdioTransport,
   AgentMcpToolConfiguration,
   AgentModel,
+  AgentInteractionState,
   AgentPlanProgress,
   AgentPlanStep,
   AgentPluginCatalog,
@@ -32,6 +35,8 @@ import {
   AgentPluginReference,
   AgentPluginSkill,
   AgentPluginSummary,
+  AgentPendingApproval,
+  AgentPendingElicitation,
   AgentServiceTier,
   AgentSkill,
   AgentSkillCatalog,
@@ -43,6 +48,7 @@ import {
   CodexMcpServers,
   CodexPlugins,
   CodexIntegrationAuthorization,
+  CodexInteractions,
   AgentIntegrationAuthorizationState,
   CodexSkills,
   CodexHooks,
@@ -61,6 +67,7 @@ import type {
   AgentInvocation,
   AgentIntegration,
   AgentMcpTransport,
+  AgentPendingInteraction,
   AgentTurnRequest,
   CodexAgent,
   CodexAuthenticationState,
@@ -334,6 +341,72 @@ formField.isSecret = false;
 formField.accepts({ invalid: true });
 // @ts-expect-error Form-value unions exclude unrelated objects.
 const invalidFormValue: AgentFormValue = { invalid: true };
+
+const elicitation = new AgentElicitation("request", "server", "conversation", "Choose", [formField]);
+// @ts-expect-error Elicitation request IDs are strings.
+new AgentElicitation(1, "server", "conversation", "Choose");
+// @ts-expect-error Elicitation server names are strings.
+new AgentElicitation("request", 1, "conversation", "Choose");
+// @ts-expect-error Elicitation conversation IDs are strings.
+new AgentElicitation("request", "server", 1, "Choose");
+// @ts-expect-error Elicitation messages are strings.
+new AgentElicitation("request", "server", "conversation", 1);
+// @ts-expect-error Elicitation forms contain canonical fields.
+new AgentElicitation("request", "server", "conversation", "Choose", [{}]);
+// @ts-expect-error Elicitation URLs are nullable strings.
+new AgentElicitation("request", "server", "conversation", "Choose", [], 1);
+// @ts-expect-error Elicitation properties are readonly.
+elicitation.requestId = "changed";
+// @ts-expect-error Elicitation form collections are readonly.
+elicitation.form?.push(formField);
+// @ts-expect-error Elicitation content values use the reviewed union.
+elicitation.validate({ field: { invalid: true } });
+// @ts-expect-error Elicitation content values use the reviewed union.
+elicitation.accept({ field: { invalid: true } });
+// @ts-expect-error Elicitation acceptance requires a canonical response.
+elicitation.accepts({ action: "accept", content: {} });
+
+const elicitationResponse = new AgentElicitationResponse("accept", {});
+// @ts-expect-error Elicitation actions remain a closed domain.
+new AgentElicitationResponse("approve", {});
+// @ts-expect-error Elicitation response content uses reviewed values.
+new AgentElicitationResponse("accept", { field: { invalid: true } });
+// @ts-expect-error Elicitation response actions are readonly.
+elicitationResponse.action = "decline";
+// @ts-expect-error Elicitation response content is readonly.
+elicitationResponse.content.field = textValue;
+
+const pendingApproval = new AgentPendingApproval("approval", "conversation", "Approve?", "Details");
+const pendingElicitation = new AgentPendingElicitation(elicitation);
+const pendingInteraction: AgentPendingInteraction = pendingApproval;
+// @ts-expect-error Pending approval request IDs are strings.
+new AgentPendingApproval(1, "conversation", "Approve?", "Details");
+// @ts-expect-error Pending approval properties are readonly.
+pendingApproval.title = "Changed";
+// @ts-expect-error Pending elicitations require canonical elicitation values.
+new AgentPendingElicitation({});
+// @ts-expect-error Pending elicitation properties are readonly.
+pendingElicitation.elicitation = elicitation;
+// @ts-expect-error Pending-interaction unions exclude unrelated shapes.
+const invalidPendingInteraction: AgentPendingInteraction = { requestId: "request", conversationId: "conversation" };
+
+const interactionState = new AgentInteractionState([pendingInteraction], ["approval"]);
+// @ts-expect-error Interaction-state pending values use the reviewed union.
+new AgentInteractionState([{}]);
+// @ts-expect-error Resolving request IDs are strings.
+new AgentInteractionState([], [1]);
+// @ts-expect-error Interaction pending collections are readonly.
+interactionState.pending.push(pendingApproval);
+// @ts-expect-error Resolving-ID collections are readonly.
+interactionState.resolvingRequestIds.push("other");
+// @ts-expect-error Interaction failures are readonly.
+interactionState.failure = null;
+// @ts-expect-error pendingFor requires a conversation ID string.
+interactionState.pendingFor(1);
+// @ts-expect-error isResolving requires a pending interaction.
+interactionState.isResolving({});
+
+void invalidPendingInteraction;
 
 const mcpEnvironmentVariable = new AgentMcpEnvironmentVariable("TOKEN", "local");
 // @ts-expect-error MCP environment-variable names are strings.
@@ -1015,6 +1088,33 @@ async function rejectInvalidAuthentication(agent: CodexAgent): Promise<void> {
   await integrationAuthorization.authorize(connectorIntegration, {});
   // @ts-expect-error Cancellation signals must be AbortSignal values.
   await integrationAuthorization.cancel({});
+  const interactions = agent.interactions;
+  // @ts-expect-error Interaction controllers are created by an Agent.
+  new CodexInteractions();
+  // @ts-expect-error Interaction controllers are owned by the Agent.
+  agent.interactions = interactions;
+  // @ts-expect-error Interaction state is readonly.
+  interactions.state = interactionState;
+  // @ts-expect-error Approval snapshots are readonly.
+  interactions.approvals.push(pendingApproval);
+  // @ts-expect-error Elicitation snapshots are readonly.
+  interactions.elicitations.push(pendingElicitation);
+  // @ts-expect-error State observers receive interaction states.
+  interactions.observeState((value: boolean) => void value);
+  // @ts-expect-error Approval observers receive readonly approval arrays.
+  interactions.observeApprovals((value: boolean) => void value);
+  // @ts-expect-error Elicitation observers receive readonly elicitation arrays.
+  interactions.observeElicitations((value: boolean) => void value);
+  // @ts-expect-error Approval resolution requires a decision.
+  await interactions.resolve(pendingApproval, elicitationResponse);
+  // @ts-expect-error Elicitation resolution requires a response.
+  await interactions.resolve(pendingElicitation, "accept");
+  // @ts-expect-error Resolution signals must be AbortSignal values.
+  await interactions.resolve(pendingApproval, "accept", {});
+  // @ts-expect-error URL opening requires a pending elicitation.
+  await interactions.openUrl(pendingApproval);
+  // @ts-expect-error URL-opening signals must be AbortSignal values.
+  await interactions.openUrl(pendingElicitation, {});
   // @ts-expect-error Conversation IDs are strings.
   await agent.rename(1, "Renamed conversation");
   // @ts-expect-error Conversation names are strings.

@@ -48,6 +48,7 @@ export type AgentHookHandler =
     | { readonly type: "mcp_tool"; readonly server: string; readonly tool: string }
     | { readonly type: "prompt" };
 export type AgentMcpTransport = AgentMcpStdioTransport | AgentMcpHttpTransport;
+export type AgentPendingInteraction = AgentPendingApproval | AgentPendingElicitation;
 export declare class AgentFormOption {
     constructor(value: string, title?: string, description?: Nullable<string>);
     get value(): string;
@@ -164,6 +165,48 @@ export declare class AgentElicitationValidation {
     constructor(issues: ReadonlyArray<AgentElicitationValidationIssue>);
     get issues(): ReadonlyArray<AgentElicitationValidationIssue>;
     get isValid(): boolean;
+}
+export declare class AgentElicitation {
+    constructor(requestId: string, serverName: string, conversationId: string, message: string, form?: Nullable<ReadonlyArray<AgentFormField>>, url?: Nullable<string>);
+    get requestId(): string;
+    get serverName(): string;
+    get conversationId(): string;
+    get message(): string;
+    get form(): Nullable<ReadonlyArray<AgentFormField>>;
+    get url(): Nullable<string>;
+    initialValues(): Readonly<Record<string, AgentFormValue>>;
+    validate(content: Readonly<Record<string, AgentFormValue>>): AgentElicitationValidation;
+    accept(content: Readonly<Record<string, AgentFormValue>>): AgentElicitationResponse;
+    accepts(response: AgentElicitationResponse): boolean;
+}
+export declare class AgentElicitationResponse {
+    constructor(action: AgentElicitationAction, content?: Readonly<Record<string, AgentFormValue>>);
+    private readonly __agentElicitationResponseBrand: void;
+    get action(): AgentElicitationAction;
+    get content(): Readonly<Record<string, AgentFormValue>>;
+    static decline(): AgentElicitationResponse;
+    static cancel(): AgentElicitationResponse;
+}
+export declare class AgentPendingApproval {
+    constructor(requestId: string, conversationId: string, title: string, details: string);
+    get requestId(): string;
+    get conversationId(): string;
+    get title(): string;
+    get details(): string;
+}
+export declare class AgentPendingElicitation {
+    constructor(elicitation: AgentElicitation);
+    get elicitation(): AgentElicitation;
+    get requestId(): string;
+    get conversationId(): string;
+}
+export declare class AgentInteractionState {
+    constructor(pending?: ReadonlyArray<AgentPendingInteraction>, resolvingRequestIds?: ReadonlyArray<string>, failure?: Nullable<CodexFailure>);
+    get pending(): ReadonlyArray<AgentPendingInteraction>;
+    get resolvingRequestIds(): ReadonlyArray<string>;
+    get failure(): Nullable<CodexFailure>;
+    pendingFor(conversationId: string): ReadonlyArray<AgentPendingInteraction>;
+    isResolving(interaction: AgentPendingInteraction): boolean;
 }
 export declare class AgentPlanStep {
     constructor(text: string, status: AgentPlanStepStatus);
@@ -478,6 +521,7 @@ export declare class CodexAgent {
     get plugins(): CodexPlugins;
     get mcpServers(): CodexMcpServers;
     get integrationAuthorization(): CodexIntegrationAuthorization;
+    get interactions(): CodexInteractions;
     get activeConversation(): Nullable<CodexConversation>;
     listConversations(signal?: Nullable<AbortSignal>): Promise<ReadonlyArray<AgentConversationSummary>>;
     readConversation(conversationId: string, signal?: Nullable<AbortSignal>): Promise<AgentConversation>;
@@ -553,6 +597,18 @@ export declare class CodexIntegrationAuthorization {
     observeState(listener: (state: AgentIntegrationAuthorizationState) => void): CodexObservation;
     observeActive(listener: (target: Nullable<AgentIntegration>) => void): CodexObservation;
     observeAuthorizing(listener: (isAuthorizing: boolean) => void): CodexObservation;
+}
+export declare class CodexInteractions {
+    private constructor();
+    get state(): AgentInteractionState;
+    get approvals(): ReadonlyArray<AgentPendingApproval>;
+    get elicitations(): ReadonlyArray<AgentPendingElicitation>;
+    resolve(approval: AgentPendingApproval, decision: AgentApprovalDecision, signal?: Nullable<AbortSignal>): Promise<void>;
+    resolve(elicitation: AgentPendingElicitation, response: AgentElicitationResponse, signal?: Nullable<AbortSignal>): Promise<void>;
+    openUrl(elicitation: AgentPendingElicitation, signal?: Nullable<AbortSignal>): Promise<void>;
+    observeState(listener: (state: AgentInteractionState) => void): CodexObservation;
+    observeApprovals(listener: (approvals: ReadonlyArray<AgentPendingApproval>) => void): CodexObservation;
+    observeElicitations(listener: (elicitations: ReadonlyArray<AgentPendingElicitation>) => void): CodexObservation;
 }
 export declare class CodexConversation {
     private constructor();

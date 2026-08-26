@@ -164,6 +164,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
             !isAllowedAgentHookHandlerReuse(symbol, projections) &&
             !isAllowedIntegrationAuthorizationReuse(symbol, projections) &&
             !isAllowedAgentFormValueReuse(symbol, projections) &&
+            !isAllowedPendingInteractionReuse(symbol, projections) &&
             !isAllowedFlattenedValueReuse(symbol, projections)
         ) {
             errors += "Reused JavaScript/TypeScript public symbol $symbol for capabilities " +
@@ -178,6 +179,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
     errors += invalidIntegrationAuthorizationErrors(canonical.memberKeys, provisional)
     errors += invalidPluginsErrors(canonical.memberKeys, provisional)
     errors += invalidAgentFormFieldErrors(canonical.memberKeys, provisional)
+    errors += invalidInteractionsErrors(canonical.memberKeys, provisional)
 
     val rejectedKeys = errors.flatMap { error ->
         provisional.mapNotNull { projection -> projection.member.key.takeIf(error::contains) }
@@ -833,6 +835,9 @@ private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.isD059InteractionsSurfaceMember()) {
+        return interactionsProjectionCandidates(member, symbols)
+    }
     if (member.isD057AgentFormFieldSurfaceMember()) {
         return agentFormFieldProjectionCandidates(member, symbols)
     }
@@ -1126,6 +1131,72 @@ private val javaScriptAgentFormFieldSymbols = listOf(
     "getter:AgentFormField#type:AgentFormFieldType",
     "method:AgentFormField#accepts:(value: AgentFormValue | null | undefined): boolean",
     javaScriptAgentFormValueType,
+).sorted()
+private const val javaScriptPendingInteractionType =
+    "type:AgentPendingInteraction:AgentPendingApproval | AgentPendingElicitation"
+private val javaScriptInteractionsSymbols = listOf(
+    "class:AgentElicitation",
+    "class:AgentElicitationResponse",
+    "class:AgentInteractionState",
+    "class:AgentPendingApproval",
+    "class:AgentPendingElicitation",
+    "class:CodexInteractions",
+    "constructor:AgentElicitation#(requestId: string, serverName: string, conversationId: string, " +
+        "message: string, form?: ReadonlyArray<AgentFormField> | null | undefined, " +
+        "url?: string | null | undefined)",
+    "constructor:AgentElicitationResponse#(action: AgentElicitationAction, " +
+        "content?: Readonly<Record<string, AgentFormValue>>)",
+    "constructor:AgentInteractionState#(pending?: ReadonlyArray<AgentPendingInteraction>, " +
+        "resolvingRequestIds?: ReadonlyArray<string>, failure?: CodexFailure | null | undefined)",
+    "constructor:AgentPendingApproval#(requestId: string, conversationId: string, " +
+        "title: string, details: string)",
+    "constructor:AgentPendingElicitation#(elicitation: AgentElicitation)",
+    "getter:AgentElicitation#conversationId:string",
+    "getter:AgentElicitation#form:ReadonlyArray<AgentFormField> | null | undefined",
+    "getter:AgentElicitation#message:string",
+    "getter:AgentElicitation#requestId:string",
+    "getter:AgentElicitation#serverName:string",
+    "getter:AgentElicitation#url:string | null | undefined",
+    "getter:AgentElicitationResponse#action:AgentElicitationAction",
+    "getter:AgentElicitationResponse#content:Readonly<Record<string, AgentFormValue>>",
+    "getter:AgentInteractionState#failure:CodexFailure | null | undefined",
+    "getter:AgentInteractionState#pending:ReadonlyArray<AgentPendingInteraction>",
+    "getter:AgentInteractionState#resolvingRequestIds:ReadonlyArray<string>",
+    "getter:AgentPendingApproval#conversationId:string",
+    "getter:AgentPendingApproval#details:string",
+    "getter:AgentPendingApproval#requestId:string",
+    "getter:AgentPendingApproval#title:string",
+    "getter:AgentPendingElicitation#conversationId:string",
+    "getter:AgentPendingElicitation#elicitation:AgentElicitation",
+    "getter:AgentPendingElicitation#requestId:string",
+    "getter:CodexAgent#interactions:CodexInteractions",
+    "getter:CodexInteractions#approvals:ReadonlyArray<AgentPendingApproval>",
+    "getter:CodexInteractions#elicitations:ReadonlyArray<AgentPendingElicitation>",
+    "getter:CodexInteractions#state:AgentInteractionState",
+    "method:AgentElicitation#accept:(content: Readonly<Record<string, AgentFormValue>>): " +
+        "AgentElicitationResponse",
+    "method:AgentElicitation#accepts:(response: AgentElicitationResponse): boolean",
+    "method:AgentElicitation#initialValues:(): Readonly<Record<string, AgentFormValue>>",
+    "method:AgentElicitation#validate:(content: Readonly<Record<string, AgentFormValue>>): " +
+        "AgentElicitationValidation",
+    "method:AgentElicitationResponse#cancel[static]:(): AgentElicitationResponse",
+    "method:AgentElicitationResponse#decline[static]:(): AgentElicitationResponse",
+    "method:AgentInteractionState#isResolving:(interaction: AgentPendingInteraction): boolean",
+    "method:AgentInteractionState#pendingFor:(conversationId: string): " +
+        "ReadonlyArray<AgentPendingInteraction>",
+    "method:CodexInteractions#observeApprovals:(listener: " +
+        "(approvals: ReadonlyArray<AgentPendingApproval>) => void): CodexObservation",
+    "method:CodexInteractions#observeElicitations:(listener: " +
+        "(elicitations: ReadonlyArray<AgentPendingElicitation>) => void): CodexObservation",
+    "method:CodexInteractions#observeState:(listener: " +
+        "(state: AgentInteractionState) => void): CodexObservation",
+    "method:CodexInteractions#openUrl:(elicitation: AgentPendingElicitation, " +
+        "signal?: AbortSignal | null | undefined): Promise<void>",
+    "method:CodexInteractions#resolve:(approval: AgentPendingApproval, " +
+        "decision: AgentApprovalDecision, signal?: AbortSignal | null | undefined): Promise<void>",
+    "method:CodexInteractions#resolve:(elicitation: AgentPendingElicitation, " +
+        "response: AgentElicitationResponse, signal?: AbortSignal | null | undefined): Promise<void>",
+    javaScriptPendingInteractionType,
 ).sorted()
 private const val javaScriptAgentMessageCapabilities =
     "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"
@@ -1709,6 +1780,336 @@ private fun CanonicalJavaScriptMember.d057AgentFormFieldPublicSymbols(): List<St
         ) add(javaScriptAgentFormValueType)
         add(memberSymbol)
     }.distinct().sorted()
+}
+
+private fun interactionsProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    if (!member.isExactD059InteractionsMember() ||
+        !hasExactD059InteractionsInventory(symbols)
+    ) return emptyList()
+    val projected = member.d059InteractionsPublicSymbols()
+    return listOf(JavaScriptProjectionCandidate(
+        publicSymbols = projected,
+        scenarios = buildList {
+            add(CrossLanguageBindingScenario.VALUE_CONVERSION)
+            if (member.kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR || member.name in setOf(
+                    "form",
+                    "content",
+                    "initialValues",
+                    "validate",
+                    "accept",
+                    "accepts",
+                    "pending",
+                    "resolvingRequestIds",
+                    "pendingFor",
+                    "isResolving",
+                    "state",
+                    "approvals",
+                    "elicitations",
+                )
+            ) add(CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING)
+            if (member.returnType?.endsWith('?') == true ||
+                member.parameters.any { it.type.endsWith('?') }
+            ) add(CrossLanguageBindingScenario.NULLABILITY)
+            if (member.simpleOwner == "CodexInteractions" ||
+                member.simpleOwner == "CodexAgent" && member.name == "interactions"
+            ) add(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP)
+            if (member.simpleOwner == "CodexInteractions" && member.kind == CanonicalJavaScriptMemberKind.FUNCTION) {
+                add(CrossLanguageBindingScenario.ASYNC_SUCCESS)
+                add(CrossLanguageBindingScenario.ASYNC_FAILURE)
+                add(CrossLanguageBindingScenario.CANCELLATION)
+            }
+            if (member.simpleOwner == "CodexInteractions" && member.kind == CanonicalJavaScriptMemberKind.PROPERTY) {
+                add(CrossLanguageBindingScenario.STATE_CURRENT_VALUE)
+                add(CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE)
+                add(CrossLanguageBindingScenario.IDENTITY)
+            }
+        }.distinct(),
+        shareablePublicSymbols = projected.filterTo(mutableSetOf()) {
+            it == javaScriptPendingInteractionType
+        },
+        requiresConsumerReference = true,
+    ))
+}
+
+private fun hasExactD059InteractionsInventory(symbols: List<JavaScriptPublicSymbol>): Boolean {
+    val exactOwners = setOf(
+        "AgentElicitation",
+        "AgentElicitationResponse",
+        "AgentInteractionState",
+        "AgentPendingApproval",
+        "AgentPendingElicitation",
+        "CodexInteractions",
+    )
+    return javaScriptInteractionsSymbols.distinct().size == javaScriptInteractionsSymbols.size &&
+        symbols.filter { symbol ->
+            symbol.owner in exactOwners ||
+                symbol.kind == JavaScriptPublicSymbolKind.CLASS && symbol.name in exactOwners ||
+                symbol.owner == "CodexAgent" && symbol.name == "interactions" ||
+                symbol.owner == null && symbol.name == "AgentPendingInteraction"
+        }.map(JavaScriptPublicSymbol::raw) == javaScriptInteractionsSymbols
+}
+
+private fun CanonicalJavaScriptMember.isD059InteractionsSurfaceMember(): Boolean =
+    simpleOwner in setOf(
+        "AgentElicitation",
+        "AgentElicitationResponse",
+        "AgentElicitationResponse.Companion",
+        "AgentInteractionState",
+        "AgentPendingApproval",
+        "AgentPendingElicitation",
+        "AgentPendingInteraction",
+        "CodexInteractions",
+    ) || simpleOwner == "CodexAgent" && name == "interactions"
+
+private fun CanonicalJavaScriptMember.isExactD059InteractionsMember(): Boolean {
+    if (owner.substringBeforeLast('/') != canonicalAgentPackage) return false
+    fun canonical(name: String, nullable: Boolean = false): String =
+        "$canonicalAgentPackage/$name${if (nullable) "?" else "!!"}"
+    fun list(type: String, nullable: Boolean = false): String =
+        "kotlin.collections/List<INVARIANT:$type>${if (nullable) "?" else "!!"}"
+    fun set(type: String): String = "kotlin.collections/Set<INVARIANT:$type>!!"
+    fun map(value: String): String =
+        "kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:$value>!!"
+    fun stateFlow(type: String): String = "kotlinx.coroutines.flow/StateFlow<INVARIANT:$type>!!"
+    return when (simpleOwner) {
+        "AgentElicitation" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter(canonical("ConversationId"), false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter(list(canonical("AgentFormField"), nullable = true), true, false),
+                    CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "requestId", "serverName", "message" ->
+                    isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "conversationId" -> isExactProperty(simpleOwner, name, canonical("ConversationId"))
+                "form" -> isExactProperty(simpleOwner, name, list(canonical("AgentFormField"), nullable = true))
+                "url" -> isExactProperty(simpleOwner, name, "kotlin/String?")
+                else -> false
+            }
+            CanonicalJavaScriptMemberKind.FUNCTION -> when (name) {
+                "initialValues" -> isExactFunction(
+                    simpleOwner,
+                    name,
+                    map(canonical("AgentFormValue")),
+                    expectedSuspend = false,
+                    expectedParameters = emptyList(),
+                )
+                "validate", "accept" -> isExactFunction(
+                    simpleOwner,
+                    name,
+                    canonical(if (name == "validate") "AgentElicitationValidation" else "AgentElicitationResponse"),
+                    expectedSuspend = false,
+                    expectedParameters = listOf(
+                        CanonicalJavaScriptParameter(map(canonical("AgentFormValue")), false, false),
+                    ),
+                )
+                "accepts" -> isExactFunction(
+                    simpleOwner,
+                    name,
+                    "kotlin/Boolean!!",
+                    expectedSuspend = false,
+                    expectedParameters = listOf(
+                        CanonicalJavaScriptParameter(canonical("AgentElicitationResponse"), false, false),
+                    ),
+                )
+                else -> false
+            }
+            else -> false
+        }
+        "AgentElicitationResponse" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter(canonical("AgentElicitationAction"), false, false),
+                    CanonicalJavaScriptParameter(map(canonical("AgentFormValue")), true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "action" -> isExactProperty(simpleOwner, name, canonical("AgentElicitationAction"))
+                "content" -> isExactProperty(simpleOwner, name, map(canonical("AgentFormValue")))
+                else -> false
+            }
+            else -> false
+        }
+        "AgentElicitationResponse.Companion" -> kind == CanonicalJavaScriptMemberKind.FUNCTION &&
+            name in setOf("decline", "cancel") && isExactFunction(
+                simpleOwner,
+                name,
+                canonical("AgentElicitationResponse"),
+                expectedSuspend = false,
+                expectedParameters = emptyList(),
+            )
+        "AgentPendingApproval" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter(canonical("ConversationId"), false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                    CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "requestId", "title", "details" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "conversationId" -> isExactProperty(simpleOwner, name, canonical("ConversationId"))
+                else -> false
+            }
+            else -> false
+        }
+        "AgentPendingElicitation" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(CanonicalJavaScriptParameter(canonical("AgentElicitation"), false, false)),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "requestId" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+                "conversationId" -> isExactProperty(simpleOwner, name, canonical("ConversationId"))
+                "elicitation" -> isExactProperty(simpleOwner, name, canonical("AgentElicitation"))
+                else -> false
+            }
+            else -> false
+        }
+        "AgentPendingInteraction" -> kind == CanonicalJavaScriptMemberKind.PROPERTY && when (name) {
+            "requestId" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+            "conversationId" -> isExactProperty(simpleOwner, name, canonical("ConversationId"))
+            else -> false
+        }
+        "AgentInteractionState" -> when (kind) {
+            CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+                simpleOwner,
+                listOf(
+                    CanonicalJavaScriptParameter(list(canonical("AgentPendingInteraction")), true, false),
+                    CanonicalJavaScriptParameter(set("kotlin/String!!"), true, false),
+                    CanonicalJavaScriptParameter(canonical("CodexFailure", nullable = true), true, false),
+                ),
+            )
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "pending" -> isExactProperty(simpleOwner, name, list(canonical("AgentPendingInteraction")))
+                "resolvingRequestIds" -> isExactProperty(simpleOwner, name, set("kotlin/String!!"))
+                "failure" -> isExactProperty(simpleOwner, name, canonical("CodexFailure", nullable = true))
+                else -> false
+            }
+            CanonicalJavaScriptMemberKind.FUNCTION -> when (name) {
+                "pendingFor" -> isExactFunction(
+                    simpleOwner,
+                    name,
+                    list(canonical("AgentPendingInteraction")),
+                    expectedSuspend = false,
+                    expectedParameters = listOf(
+                        CanonicalJavaScriptParameter(canonical("ConversationId"), false, false),
+                    ),
+                )
+                "isResolving" -> isExactFunction(
+                    simpleOwner,
+                    name,
+                    "kotlin/Boolean!!",
+                    expectedSuspend = false,
+                    expectedParameters = listOf(
+                        CanonicalJavaScriptParameter(canonical("AgentPendingInteraction"), false, false),
+                    ),
+                )
+                else -> false
+            }
+            else -> false
+        }
+        "CodexInteractions" -> when (kind) {
+            CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+                "state" -> isExactProperty(simpleOwner, name, stateFlow(canonical("AgentInteractionState")))
+                "approvals" -> isExactProperty(
+                    simpleOwner,
+                    name,
+                    stateFlow(list(canonical("AgentPendingApproval"))),
+                )
+                "elicitations" -> isExactProperty(
+                    simpleOwner,
+                    name,
+                    stateFlow(list(canonical("AgentPendingElicitation"))),
+                )
+                else -> false
+            }
+            CanonicalJavaScriptMemberKind.FUNCTION -> when (name) {
+                "openUrl" -> isExactFunction(
+                    simpleOwner,
+                    name,
+                    "kotlin/Unit",
+                    expectedSuspend = true,
+                    expectedParameters = listOf(
+                        CanonicalJavaScriptParameter(canonical("AgentPendingElicitation"), false, false),
+                    ),
+                )
+                "resolve" -> parameters.size == 2 && isExactFunction(
+                    simpleOwner,
+                    name,
+                    "kotlin/Unit",
+                    expectedSuspend = true,
+                    expectedParameters = when (parameters.first().type) {
+                        canonical("AgentPendingApproval") -> listOf(
+                            CanonicalJavaScriptParameter(canonical("AgentPendingApproval"), false, false),
+                            CanonicalJavaScriptParameter(canonical("AgentApprovalDecision"), false, false),
+                        )
+                        canonical("AgentPendingElicitation") -> listOf(
+                            CanonicalJavaScriptParameter(canonical("AgentPendingElicitation"), false, false),
+                            CanonicalJavaScriptParameter(canonical("AgentElicitationResponse"), false, false),
+                        )
+                        else -> return false
+                    },
+                )
+                else -> false
+            }
+            else -> false
+        }
+        "CodexAgent" -> name == "interactions" &&
+            isExactProperty(simpleOwner, name, canonical("CodexInteractions"))
+        else -> false
+    }
+}
+
+private fun CanonicalJavaScriptMember.d059InteractionsPublicSymbols(): List<String> {
+    fun exact(kind: JavaScriptPublicSymbolKind, owner: String, name: String): String {
+        val matches = javaScriptInteractionsSymbols.filter { raw ->
+            val symbol = parseJavaScriptPublicSymbol(raw)
+            symbol.kind == kind && symbol.owner == owner && symbol.name == name
+        }
+        if (matches.size == 1) return matches.single()
+        check(owner == "CodexInteractions" && name == "resolve" && matches.size == 2)
+        val pendingType = if (parameters.first().type.endsWith("/AgentPendingApproval!!")) {
+            "AgentPendingApproval"
+        } else "AgentPendingElicitation"
+        val parameterName = if (pendingType == "AgentPendingApproval") "approval" else "elicitation"
+        return matches.single { "$parameterName: $pendingType" in it }
+    }
+    val owner = simpleOwner.removeSuffix(".Companion")
+    val expectedKind = when (kind) {
+        CanonicalJavaScriptMemberKind.CONSTRUCTOR -> JavaScriptPublicSymbolKind.CONSTRUCTOR
+        CanonicalJavaScriptMemberKind.PROPERTY -> JavaScriptPublicSymbolKind.GETTER
+        CanonicalJavaScriptMemberKind.FUNCTION -> JavaScriptPublicSymbolKind.METHOD
+        else -> error("Unsupported D059 Interactions capability kind: $key")
+    }
+    if (simpleOwner == "AgentPendingInteraction") return listOf(javaScriptPendingInteractionType)
+    val publicName = if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR) "constructor" else name
+    return buildList {
+        if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR) add("class:$owner")
+        if (simpleOwner == "CodexAgent" && name == "interactions") add("class:CodexInteractions")
+        if (simpleOwner == "CodexInteractions" && kind == CanonicalJavaScriptMemberKind.PROPERTY) {
+            val observer = when (name) {
+                "state" -> "observeState"
+                "approvals" -> "observeApprovals"
+                "elicitations" -> "observeElicitations"
+                else -> error("Unsupported D059 Interactions state property: $key")
+            }
+            add(exact(JavaScriptPublicSymbolKind.METHOD, owner, observer))
+        }
+        add(exact(expectedKind, owner, publicName))
+    }.sorted()
 }
 
 private fun pluginsProjectionCandidates(
@@ -3874,6 +4275,47 @@ private fun invalidAgentFormFieldErrors(
         javaScriptAgentFormFieldSymbols.toSet()
     return if (exact) emptyList() else listOf(
         "Incomplete JavaScript/TypeScript AgentFormField family for capabilities " +
+            (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
+                .distinct()
+                .sorted(),
+    )
+}
+
+private fun isAllowedPendingInteractionReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean = symbol == javaScriptPendingInteractionType && projections.size == 2 &&
+    projections.all { projection ->
+        projection.member.simpleOwner == "AgentPendingInteraction" &&
+            projection.member.name in setOf("requestId", "conversationId") &&
+            projection.member.isExactD059InteractionsMember() &&
+            projection.publicSymbols == listOf(javaScriptPendingInteractionType) &&
+            projection.shareablePublicSymbols == setOf(javaScriptPendingInteractionType)
+    }
+
+private fun invalidInteractionsErrors(
+    canonicalKeys: List<String>,
+    projections: List<JavaScriptProjection>,
+): List<String> {
+    val canonicalMembers = canonicalKeys.map(::parseCanonicalJavaScriptMember)
+        .filter(CanonicalJavaScriptMember::isD059InteractionsSurfaceMember)
+    val related = projections.filter { projection ->
+        projection.publicSymbols.any(javaScriptInteractionsSymbols::contains)
+    }
+    if (canonicalMembers.isEmpty() && related.isEmpty()) return emptyList()
+    val exact = canonicalMembers.size == 40 &&
+        canonicalMembers.all(CanonicalJavaScriptMember::isExactD059InteractionsMember) &&
+        canonicalMembers.map(CanonicalJavaScriptMember::key).distinct().size == 40 &&
+        related.size == 40 && related.map { it.member.key }.distinct().size == 40 &&
+        related.all { projection ->
+            projection.member.isExactD059InteractionsMember() &&
+                projection.publicSymbols == projection.member.d059InteractionsPublicSymbols() &&
+                projection.shareablePublicSymbols ==
+                projection.publicSymbols.filterTo(mutableSetOf()) { it == javaScriptPendingInteractionType }
+        } && related.flatMap(JavaScriptProjection::publicSymbols).toSet() ==
+        javaScriptInteractionsSymbols.toSet()
+    return if (exact) emptyList() else listOf(
+        "Incomplete JavaScript/TypeScript Interactions family for capabilities " +
             (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
                 .distinct()
                 .sorted(),

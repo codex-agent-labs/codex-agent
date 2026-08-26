@@ -262,6 +262,94 @@ class CodexNodeApiTest {
                 "value must be an AgentFormValue or null",
         ).forEach { (error, message) -> assertEquals(message, error?.message) }
 
+        val localElicitation = AgentElicitation(
+            requestId = "request-local",
+            serverName = "example",
+            conversationId = "thread-local",
+            message = "Choose colors",
+            form = arrayOf(multiSelectField),
+        )
+        val initialValues = localElicitation.initialValues()
+        assertEquals(
+            listOf("red"),
+            initialValues.asDynamic().colors.unsafeCast<AgentFormTextListValue>().value.toList(),
+        )
+        val validContent: dynamic = js("({})")
+        validContent.colors = AgentFormTextListValue(arrayOf("blue"))
+        assertTrue(localElicitation.validate(validContent).isValid)
+        val accepted = localElicitation.accept(validContent)
+        validContent.colors = AgentFormTextListValue(arrayOf("changed"))
+        assertEquals("accept", accepted.action)
+        assertEquals(
+            listOf("blue"),
+            accepted.content.asDynamic().colors.unsafeCast<AgentFormTextListValue>().value.toList(),
+        )
+        assertTrue(localElicitation.accepts(accepted))
+        assertTrue(localElicitation.accepts(AgentElicitationResponse.decline()))
+        assertTrue(localElicitation.accepts(AgentElicitationResponse.cancel()))
+        assertFalse(localElicitation.accepts(AgentElicitationResponse("decline", validContent)))
+        assertTrue(isFrozen(localElicitation))
+        assertTrue(isFrozen(checkNotNull(localElicitation.form)))
+        assertTrue(isFrozen(initialValues))
+        assertTrue(isFrozen(accepted))
+        assertTrue(isFrozen(accepted.content))
+
+        val localApproval = AgentPendingApproval("approval-local", "thread-local", "Review", "Details")
+        val localPendingElicitation = AgentPendingElicitation(localElicitation)
+        val localInteractionState = AgentInteractionState(
+            pending = arrayOf(localApproval, localPendingElicitation),
+            resolvingRequestIds = arrayOf("approval-local", "approval-local"),
+        )
+        assertEquals(listOf("approval-local", "request-local"), localInteractionState.pending.map {
+            it.requestId
+        })
+        assertEquals(listOf("approval-local"), localInteractionState.resolvingRequestIds.toList())
+        assertEquals(2, localInteractionState.pendingFor("thread-local").size)
+        assertTrue(localInteractionState.isResolving(localApproval))
+        assertFalse(localInteractionState.isResolving(
+            AgentPendingApproval("approval-local", "thread-local", "Review", "Details"),
+        ))
+        assertTrue(isFrozen(localApproval))
+        assertTrue(isFrozen(localPendingElicitation))
+        assertTrue(isFrozen(localPendingElicitation.elicitation))
+        assertTrue(isFrozen(localInteractionState))
+        assertTrue(isFrozen(localInteractionState.pending))
+        assertTrue(isFrozen(localInteractionState.resolvingRequestIds))
+
+        listOf(
+            runCatching {
+                AgentElicitation(
+                    js("({})").unsafeCast<String>(),
+                    "server",
+                    "thread",
+                    "message",
+                )
+            }.exceptionOrNull() to "requestId must be a string",
+            runCatching {
+                AgentElicitation(
+                    "request",
+                    "server",
+                    "thread",
+                    "message",
+                    js("new Array(1)").unsafeCast<Array<AgentFormField>>(),
+                )
+            }.exceptionOrNull() to "form must not contain sparse elements",
+            runCatching {
+                localElicitation.validate(js("new Map()"))
+            }.exceptionOrNull() to "content must be a plain object",
+            runCatching {
+                AgentElicitationResponse("ACCEPT")
+            }.exceptionOrNull() to "Unknown elicitation action: ACCEPT",
+            runCatching {
+                AgentPendingElicitation(js("({})").unsafeCast<AgentElicitation>())
+            }.exceptionOrNull() to "elicitation must be an AgentElicitation",
+            runCatching {
+                AgentInteractionState(
+                    js("new Array(1)").unsafeCast<Array<AgentPendingInteraction>>(),
+                )
+            }.exceptionOrNull() to "pending must not contain sparse elements",
+        ).forEach { (error, message) -> assertEquals(message, error?.message) }
+
         val sourcePluginNames = arrayOf("Plugin one", "Plugin two")
         val localConnector = AgentConnector(
             id = "connector-local",
@@ -1587,6 +1675,15 @@ class CodexNodeApiTest {
             assertNull(integrationAuthorization.active)
             assertFalse(integrationAuthorization.isAuthorizing)
             assertTrue(isFrozen(integrationAuthorization.state))
+            val interactions = shellAgent.interactions
+            assertSame(interactions, shellAgent.interactions)
+            assertTrue(interactions.state.pending.isEmpty())
+            assertTrue(interactions.approvals.isEmpty())
+            assertTrue(interactions.elicitations.isEmpty())
+            assertTrue(isFrozen(interactions.state))
+            assertTrue(isFrozen(interactions.state.pending))
+            assertTrue(isFrozen(interactions.state.resolvingRequestIds))
+            assertEquals(0, enumerablePropertyCount(interactions))
 
             val authorizationStates = mutableListOf<AgentIntegrationAuthorizationState>()
             val activeAuthorizations = mutableListOf<AgentIntegration?>()
@@ -1594,9 +1691,16 @@ class CodexNodeApiTest {
             val authorizationStateObservation = integrationAuthorization.observeState(authorizationStates::add)
             val activeAuthorizationObservation = integrationAuthorization.observeActive(activeAuthorizations::add)
             val authorizingObservation = integrationAuthorization.observeAuthorizing(authorizingValues::add)
+            val interactionStates = mutableListOf<AgentInteractionState>()
+            val approvalSnapshots = mutableListOf<Array<AgentPendingApproval>>()
+            val elicitationSnapshots = mutableListOf<Array<AgentPendingElicitation>>()
+            val interactionStateObservation = interactions.observeState(interactionStates::add)
+            val approvalObservation = interactions.observeApprovals(approvalSnapshots::add)
+            val elicitationObservation = interactions.observeElicitations(elicitationSnapshots::add)
             awaitCondition {
                 authorizationStates.isNotEmpty() && activeAuthorizations.isNotEmpty() &&
-                    authorizingValues.isNotEmpty()
+                    authorizingValues.isNotEmpty() && interactionStates.isNotEmpty() &&
+                    approvalSnapshots.isNotEmpty() && elicitationSnapshots.isNotEmpty()
             }
 
             val controller = js("new AbortController()")
@@ -2247,6 +2351,103 @@ class CodexNodeApiTest {
             assertEquals(3, shellRuntime.threadListRequests.size)
 
             val shellConversation = shellAgent.openConversation().await()
+            shellRuntime.request(901, "item/commandExecution/requestApproval", interactionApprovalRequest())
+            shellRuntime.request(902, "mcpServer/elicitation/request", interactionFormElicitation())
+            shellRuntime.request(903, "mcpServer/elicitation/request", interactionUrlElicitation())
+            awaitCondition("Pending interactions were not projected") {
+                interactions.state.pending.size == 3 && interactions.approvals.size == 1 &&
+                    interactions.elicitations.size == 2 &&
+                    interactionStates.lastOrNull()?.pending?.size == 3 &&
+                    approvalSnapshots.lastOrNull()?.size == 1 &&
+                    elicitationSnapshots.lastOrNull()?.size == 2
+            }
+            val pendingState = interactions.state
+            val approval = interactions.approvals.single()
+            val formElicitation = interactions.elicitations.first { it.requestId == "902" }
+            val urlElicitation = interactions.elicitations.first { it.requestId == "903" }
+            assertSame(approval, pendingState.pending[0])
+            assertSame(formElicitation, pendingState.pending[1])
+            assertSame(urlElicitation, pendingState.pending[2])
+            assertSame(approval, approvalSnapshots.last().single())
+            assertSame(formElicitation, elicitationSnapshots.last().first { it.requestId == "902" })
+            assertEquals("thread-js", approval.conversationId)
+            assertEquals("Approve command?", approval.title)
+            assertTrue("\\u{202E}" in approval.details)
+            assertTrue("\\u{A}" in approval.details)
+            assertFalse('\u202E' in approval.details)
+            assertEquals("example", formElicitation.elicitation.serverName)
+            assertEquals("Choose colors", formElicitation.elicitation.message)
+            assertNull(formElicitation.elicitation.url)
+            assertEquals("https://accounts.example.com/authorize", urlElicitation.elicitation.url)
+            assertNull(urlElicitation.elicitation.form)
+            assertEquals(3, pendingState.pendingFor("thread-js").size)
+            assertTrue(pendingState.pendingFor("other").isEmpty())
+            assertFalse(pendingState.isResolving(approval))
+            assertTrue(isFrozen(pendingState))
+            assertTrue(isFrozen(pendingState.pending))
+            assertTrue(isFrozen(pendingState.resolvingRequestIds))
+            pendingState.pending.forEach { assertTrue(isFrozen(it)) }
+
+            val copiedApproval = AgentPendingApproval(
+                approval.requestId,
+                approval.conversationId,
+                approval.title,
+                approval.details,
+            )
+            assertEquals(
+                "Interaction is no longer pending",
+                runCatching { interactions.resolve(copiedApproval, "accept").await() }
+                    .exceptionOrNull()?.message,
+            )
+
+            val interactionAbortController = js("new AbortController()")
+            interactionAbortController.abort()
+            val responsesBeforeAbort = shellRuntime.serverResponses.size
+            val abortedInteraction = runCatching {
+                interactions.resolve(
+                    approval,
+                    js("({})"),
+                    interactionAbortController.signal.unsafeCast<AbortSignal>(),
+                ).await()
+            }.exceptionOrNull()
+            assertEquals("AbortError", abortedInteraction?.asDynamic()?.name as String)
+            assertEquals(responsesBeforeAbort, shellRuntime.serverResponses.size)
+            assertFalse(interactions.state.isResolving(approval))
+
+            interactions.resolve(approval, "accept").await()
+            assertEquals("accept", shellRuntime.serverResponses.getValue(901)["decision"]?.jsonPrimitive?.content)
+            awaitCondition { interactions.approvals.isEmpty() }
+
+            val initialFormContent = formElicitation.elicitation.initialValues()
+            assertEquals(
+                listOf("red"),
+                initialFormContent.asDynamic().colors.unsafeCast<AgentFormTextListValue>().value.toList(),
+            )
+            val formResponse = formElicitation.elicitation.accept(initialFormContent)
+            interactions.resolve(formElicitation, formResponse).await()
+            val encodedFormResponse = shellRuntime.serverResponses.getValue(902)
+            assertEquals("accept", encodedFormResponse["action"]?.jsonPrimitive?.content)
+            assertEquals(
+                listOf("red"),
+                encodedFormResponse["content"]?.jsonObject?.get("colors")?.jsonArray
+                    ?.map { it.jsonPrimitive.content },
+            )
+            interactions.openUrl(urlElicitation).await()
+            assertEquals("https://accounts.example.com/authorize", authorizationBrowser.urls.last().value)
+            interactions.resolve(urlElicitation, AgentElicitationResponse.decline()).await()
+            assertEquals("decline", shellRuntime.serverResponses.getValue(903)["action"]?.jsonPrimitive?.content)
+            awaitCondition { interactions.state.pending.isEmpty() }
+            assertEquals(1, authorizationBrowser.closedPresentations)
+            assertTrue(interactionStates.any { it.resolvingRequestIds.isNotEmpty() })
+            assertTrue(interactionStates.last().pending.isEmpty())
+            interactionStates.forEach { state ->
+                assertTrue(isFrozen(state))
+                assertTrue(isFrozen(state.pending))
+                assertTrue(isFrozen(state.resolvingRequestIds))
+            }
+            approvalSnapshots.forEach { assertTrue(isFrozen(it)) }
+            elicitationSnapshots.forEach { assertTrue(isFrozen(it)) }
+
             val turnStartsBeforeAbort = shellRuntime.turnStartRequests.size
             val requestsBeforeAbort = shellRuntime.requestMethods.size
             val unreadRequest = js(
@@ -2499,7 +2700,7 @@ class CodexNodeApiTest {
                 integrationAuthorization.state.status == "idle" &&
                     integrationAuthorization.active == null && !integrationAuthorization.isAuthorizing
             }
-            assertEquals(3, authorizationBrowser.closedPresentations)
+            assertEquals(4, authorizationBrowser.closedPresentations)
 
             shellRuntime.failNextMcpOauthLogin = true
             val authorizationFailureValue = runCatching {
@@ -2585,6 +2786,23 @@ class CodexNodeApiTest {
             assertEquals("Conversation is closed", closedSend?.message)
             assertEquals(turnStartsBeforeClosedSend, shellRuntime.turnStartRequests.size)
             assertEquals(requestsBeforeClosedSend, shellRuntime.requestMethods.size)
+
+            shellRuntime.request(
+                904,
+                "item/commandExecution/requestApproval",
+                interactionApprovalRequest("thread-resumed"),
+            )
+            awaitCondition { interactions.approvals.singleOrNull()?.requestId == "904" }
+            val failedApproval = interactions.approvals.single()
+            shellRuntime.failNextServerResponse = true
+            val resolutionFailure = assertIs<CodexError>(runCatching {
+                interactions.resolve(failedApproval, "decline").await()
+            }.exceptionOrNull())
+            assertEquals("approval_resolution_failed", resolutionFailure.code)
+            assertEquals("Could not resolve approval", resolutionFailure.message)
+            assertEquals("approval_resolution_failed", interactions.state.failure?.code)
+            assertTrue(isFrozen(checkNotNull(interactions.state.failure)))
+
             shellHost.close().await()
             assertSame(connectors, shellAgent.connectors)
             assertSame(models, shellAgent.models)
@@ -2593,6 +2811,10 @@ class CodexNodeApiTest {
             assertSame(plugins, shellAgent.plugins)
             assertSame(mcpServers, shellAgent.mcpServers)
             assertSame(integrationAuthorization, shellAgent.integrationAuthorization)
+            assertSame(interactions, shellAgent.interactions)
+            assertTrue(interactions.state.pending.isEmpty())
+            assertTrue(interactions.approvals.isEmpty())
+            assertTrue(interactions.elicitations.isEmpty())
             val requestsBeforeClosedList = shellRuntime.appListRequests.size
             val conversationRequestsBeforeClosedList = shellRuntime.threadListRequests.size
             val conversationRequestsBeforeClosedRead = shellRuntime.threadReadRequests.size
@@ -2690,9 +2912,17 @@ class CodexNodeApiTest {
                 assertEquals("Codex agent is closed", closedAuthorizationOperation.message)
             }
             assertEquals(authorizationRequestsBeforeClosed, shellRuntime.requestMethods.size)
+            listOf(
+                runCatching { interactions.resolve(failedApproval, "accept").await() }.exceptionOrNull(),
+                runCatching { interactions.openUrl(urlElicitation).await() }.exceptionOrNull(),
+            ).forEach { closedInteractionOperation ->
+                assertEquals("IllegalStateException", closedInteractionOperation?.asDynamic()?.name as String)
+                assertEquals("Codex agent is closed", closedInteractionOperation.message)
+            }
             awaitCondition {
                 authorizationStateObservation.isClosed && activeAuthorizationObservation.isClosed &&
-                    authorizingObservation.isClosed
+                    authorizingObservation.isClosed && interactionStateObservation.isClosed &&
+                    approvalObservation.isClosed && elicitationObservation.isClosed
             }
             val requestsBeforePureResolution = shellRuntime.requestMethods.size
             assertEquals("medium", models.resolveEffort(preferredModel, "default").await())
@@ -3188,6 +3418,8 @@ private class ApiTestRuntime : CodexRuntime {
     var accountReadEntered: CompletableDeferred<Unit>? = null
     var accountReadRelease: CompletableDeferred<Unit>? = null
     val requestMethods: MutableList<String> = mutableListOf()
+    val serverResponses: MutableMap<Long, JsonObject> = mutableMapOf()
+    var failNextServerResponse: Boolean = false
     var apiKey: String? = null
     var cancelRequests: Int = 0
     var logoutRequests: Int = 0
@@ -3306,6 +3538,16 @@ private class ApiTestRuntime : CodexRuntime {
             put("success", true)
         })
 
+    suspend fun request(id: Long, method: String, params: JsonObject): Unit {
+        eventChannel.send(CodexRuntimeEvent.Received(CodexJsonLine(
+            buildJsonObject {
+                put("id", id)
+                put("method", method)
+                put("params", params)
+            }.toString(),
+        )))
+    }
+
     override suspend fun start(): Unit {
         started = true
     }
@@ -3313,7 +3555,15 @@ private class ApiTestRuntime : CodexRuntime {
     override suspend fun send(line: CodexJsonLine): Unit {
         val request = Json.parseToJsonElement(line.value).jsonObject
         val id = request["id"]?.jsonPrimitive?.long ?: return
-        val method = request["method"]?.jsonPrimitive?.content ?: return
+        val method = request["method"]?.jsonPrimitive?.content
+        if (method == null) {
+            if (failNextServerResponse) {
+                failNextServerResponse = false
+                error("interaction response denied")
+            }
+            serverResponses[id] = checkNotNull(request["result"]).jsonObject
+            return
+        }
         requestMethods += method
         when (method) {
             "initialize" -> respond(id, initializeResult())
@@ -3735,6 +3985,50 @@ private fun hookRun(status: String, statusMessage: String, details: List<String>
     put("startedAt", 0)
     put("status", status)
     put("statusMessage", statusMessage)
+}
+
+private fun interactionApprovalRequest(threadId: String = "thread-js"): JsonObject = buildJsonObject {
+    put("itemId", "approval-item")
+    put("startedAtMs", 1)
+    put("threadId", threadId)
+    put("turnId", "turn-interaction")
+    put("command", "git status")
+    put("reason", "Inspect\u202Ehidden\nworkspace")
+}
+
+private fun interactionFormElicitation(): JsonObject = buildJsonObject {
+    put("serverName", "example")
+    put("threadId", "thread-js")
+    put("elicitationId", "elicitation-form")
+    put("message", "Choose colors")
+    put("turnId", "turn-interaction")
+    put("mode", "form")
+    putJsonObject("requestedSchema") {
+        put("type", "object")
+        putJsonArray("required") { add(JsonPrimitive("colors")) }
+        putJsonObject("properties") {
+            putJsonObject("colors") {
+                put("type", "array")
+                putJsonArray("default") { add(JsonPrimitive("red")) }
+                putJsonObject("items") {
+                    putJsonArray("enum") {
+                        add(JsonPrimitive("red"))
+                        add(JsonPrimitive("blue"))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun interactionUrlElicitation(): JsonObject = buildJsonObject {
+    put("serverName", "example")
+    put("threadId", "thread-js")
+    put("elicitationId", "elicitation-url")
+    put("message", "Sign in")
+    put("url", "https://accounts.example.com/authorize")
+    put("turnId", "turn-interaction")
+    put("mode", "url")
 }
 
 private fun initializeResult(): JsonObject = buildJsonObject {

@@ -216,6 +216,16 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
 }"""
         val reviewedAgentMcpTransportDeclaration =
             "export type AgentMcpTransport = AgentMcpStdioTransport | AgentMcpHttpTransport;"
+        val rawAgentPendingInteractionDeclaration =
+            """export declare interface AgentPendingInteraction {
+    readonly requestId: string;
+    readonly conversationId: string;
+    readonly __doNotUseOrImplementIt: {
+        readonly AgentPendingInteraction: unique symbol;
+    };
+}"""
+        val reviewedAgentPendingInteractionDeclaration =
+            "export type AgentPendingInteraction = AgentPendingApproval | AgentPendingElicitation;"
         val rawAgentFormFieldDeclaration =
             """export declare class AgentFormField {
     constructor(name: string, title: string, type: string, description?: Nullable<string>, isRequired?: boolean, options?: Array<AgentFormOption>, defaultValue?: Nullable<any>, minimum?: Nullable<number>, maximum?: Nullable<number>, format?: Nullable<string>, minimumLength?: Nullable<bigint>, maximumLength?: Nullable<bigint>, minimumSelections?: Nullable<bigint>, maximumSelections?: Nullable<bigint>, allowsOther?: boolean, isSecret?: boolean);
@@ -262,6 +272,93 @@ export declare class AgentFormField {
     get allowsOther(): boolean;
     get isSecret(): boolean;
     accepts(value: Nullable<AgentFormValue>): boolean;
+}"""
+        val rawInteractionValueDeclarations =
+            """export declare class AgentElicitation {
+    constructor(requestId: string, serverName: string, conversationId: string, message: string, form?: Nullable<Array<AgentFormField>>, url?: Nullable<string>);
+    get requestId(): string;
+    get serverName(): string;
+    get conversationId(): string;
+    get message(): string;
+    get form(): Nullable<Array<AgentFormField>>;
+    get url(): Nullable<string>;
+    initialValues(): any;
+    validate(content: any): AgentElicitationValidation;
+    accept(content: any): AgentElicitationResponse;
+    accepts(response: AgentElicitationResponse): boolean;
+}
+export declare class AgentElicitationResponse {
+    constructor(action: string, content?: any);
+    get action(): string;
+    get content(): any;
+    static decline(): AgentElicitationResponse;
+    static cancel(): AgentElicitationResponse;
+}
+export declare class AgentPendingApproval implements AgentPendingInteraction {
+    constructor(requestId: string, conversationId: string, title: string, details: string);
+    get requestId(): string;
+    get conversationId(): string;
+    get title(): string;
+    get details(): string;
+    readonly __doNotUseOrImplementIt: AgentPendingInteraction["__doNotUseOrImplementIt"];
+}
+export declare class AgentPendingElicitation implements AgentPendingInteraction {
+    constructor(elicitation: AgentElicitation);
+    get elicitation(): AgentElicitation;
+    get requestId(): string;
+    get conversationId(): string;
+    readonly __doNotUseOrImplementIt: AgentPendingInteraction["__doNotUseOrImplementIt"];
+}
+export declare class AgentInteractionState {
+    constructor(pending?: Array<AgentPendingInteraction>, resolvingRequestIds?: Array<string>, failure?: Nullable<CodexFailure>);
+    get pending(): Array<AgentPendingInteraction>;
+    get resolvingRequestIds(): Array<string>;
+    get failure(): Nullable<CodexFailure>;
+    pendingFor(conversationId: string): Array<AgentPendingInteraction>;
+    isResolving(interaction: AgentPendingInteraction): boolean;
+}"""
+        val reviewedInteractionValueDeclarations =
+            """export declare class AgentElicitation {
+    constructor(requestId: string, serverName: string, conversationId: string, message: string, form?: Nullable<ReadonlyArray<AgentFormField>>, url?: Nullable<string>);
+    get requestId(): string;
+    get serverName(): string;
+    get conversationId(): string;
+    get message(): string;
+    get form(): Nullable<ReadonlyArray<AgentFormField>>;
+    get url(): Nullable<string>;
+    initialValues(): Readonly<Record<string, AgentFormValue>>;
+    validate(content: Readonly<Record<string, AgentFormValue>>): AgentElicitationValidation;
+    accept(content: Readonly<Record<string, AgentFormValue>>): AgentElicitationResponse;
+    accepts(response: AgentElicitationResponse): boolean;
+}
+export declare class AgentElicitationResponse {
+    constructor(action: AgentElicitationAction, content?: Readonly<Record<string, AgentFormValue>>);
+    private readonly __agentElicitationResponseBrand: void;
+    get action(): AgentElicitationAction;
+    get content(): Readonly<Record<string, AgentFormValue>>;
+    static decline(): AgentElicitationResponse;
+    static cancel(): AgentElicitationResponse;
+}
+export declare class AgentPendingApproval {
+    constructor(requestId: string, conversationId: string, title: string, details: string);
+    get requestId(): string;
+    get conversationId(): string;
+    get title(): string;
+    get details(): string;
+}
+export declare class AgentPendingElicitation {
+    constructor(elicitation: AgentElicitation);
+    get elicitation(): AgentElicitation;
+    get requestId(): string;
+    get conversationId(): string;
+}
+export declare class AgentInteractionState {
+    constructor(pending?: ReadonlyArray<AgentPendingInteraction>, resolvingRequestIds?: ReadonlyArray<string>, failure?: Nullable<CodexFailure>);
+    get pending(): ReadonlyArray<AgentPendingInteraction>;
+    get resolvingRequestIds(): ReadonlyArray<string>;
+    get failure(): Nullable<CodexFailure>;
+    pendingFor(conversationId: string): ReadonlyArray<AgentPendingInteraction>;
+    isResolving(interaction: AgentPendingInteraction): boolean;
 }"""
         val rawAgentConnectorDeclaration =
             """export declare class AgentConnector {
@@ -907,6 +1004,31 @@ export declare class AgentPluginInstallResult {
     observeActive(listener: (target: Nullable<AgentIntegration>) => void): CodexObservation;
     observeAuthorizing(listener: (isAuthorizing: boolean) => void): CodexObservation;
 }"""
+        val rawCodexInteractionsDeclaration =
+            """export declare class CodexInteractions {
+    private constructor();
+    get state(): AgentInteractionState;
+    get approvals(): Array<AgentPendingApproval>;
+    get elicitations(): Array<AgentPendingElicitation>;
+    resolve(interaction: AgentPendingInteraction, resolution: any, signal?: Nullable<AbortSignal>): Promise<void>;
+    openUrl(elicitation: AgentPendingElicitation, signal?: Nullable<AbortSignal>): Promise<void>;
+    observeState(listener: (p0: AgentInteractionState) => void): CodexObservation;
+    observeApprovals(listener: (p0: Array<AgentPendingApproval>) => void): CodexObservation;
+    observeElicitations(listener: (p0: Array<AgentPendingElicitation>) => void): CodexObservation;
+}"""
+        val reviewedCodexInteractionsDeclaration =
+            """export declare class CodexInteractions {
+    private constructor();
+    get state(): AgentInteractionState;
+    get approvals(): ReadonlyArray<AgentPendingApproval>;
+    get elicitations(): ReadonlyArray<AgentPendingElicitation>;
+    resolve(approval: AgentPendingApproval, decision: AgentApprovalDecision, signal?: Nullable<AbortSignal>): Promise<void>;
+    resolve(elicitation: AgentPendingElicitation, response: AgentElicitationResponse, signal?: Nullable<AbortSignal>): Promise<void>;
+    openUrl(elicitation: AgentPendingElicitation, signal?: Nullable<AbortSignal>): Promise<void>;
+    observeState(listener: (state: AgentInteractionState) => void): CodexObservation;
+    observeApprovals(listener: (approvals: ReadonlyArray<AgentPendingApproval>) => void): CodexObservation;
+    observeElicitations(listener: (elicitations: ReadonlyArray<AgentPendingElicitation>) => void): CodexObservation;
+}"""
         check(actual.lineSequence().count { it == rawAgentSkillScopeDisplayNameDeclaration } == 1) {
             "Unexpected agentSkillScopeDisplayName TypeScript declaration"
         }
@@ -937,8 +1059,14 @@ export declare class AgentPluginInstallResult {
         check(actual.split(rawAgentMcpTransportDeclaration).size == 2) {
             "Unexpected AgentMcpTransport TypeScript declaration"
         }
+        check(actual.split(rawAgentPendingInteractionDeclaration).size == 2) {
+            "Unexpected AgentPendingInteraction TypeScript declaration"
+        }
         check(actual.split(rawAgentFormFieldDeclaration).size == 2) {
             "Unexpected AgentFormField TypeScript declaration"
+        }
+        check(actual.split(rawInteractionValueDeclarations).size == 2) {
+            "Unexpected interaction value TypeScript declarations"
         }
         check(actual.split(rawAgentConnectorDeclaration).size == 2) {
             "Unexpected AgentConnector TypeScript declaration"
@@ -1062,6 +1190,12 @@ export declare class AgentPluginInstallResult {
         check(actual.split(rawCodexIntegrationAuthorizationDeclaration).size == 2) {
             "Unexpected CodexIntegrationAuthorization TypeScript declaration"
         }
+        check(actual.lineSequence().count { it == "    get interactions(): CodexInteractions;" } == 1) {
+            "Unexpected CodexAgent.interactions TypeScript declaration"
+        }
+        check(actual.split(rawCodexInteractionsDeclaration).size == 2) {
+            "Unexpected CodexInteractions TypeScript declaration"
+        }
         actual = actual.replace(
             "type Nullable<T> = T | null | undefined\n",
             """type Nullable<T> = T | null | undefined;
@@ -1097,8 +1231,14 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
             rawAgentMcpTransportDeclaration,
             reviewedAgentMcpTransportDeclaration,
         ).replace(
+            rawAgentPendingInteractionDeclaration,
+            reviewedAgentPendingInteractionDeclaration,
+        ).replace(
             rawAgentFormFieldDeclaration,
             reviewedAgentFormFieldDeclaration,
+        ).replace(
+            rawInteractionValueDeclarations,
+            reviewedInteractionValueDeclarations,
         ).replace(
             rawAgentConnectorDeclaration,
             reviewedAgentConnectorDeclaration,
@@ -1183,6 +1323,9 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         ).replace(
             rawCodexIntegrationAuthorizationDeclaration,
             reviewedCodexIntegrationAuthorizationDeclaration,
+        ).replace(
+            rawCodexInteractionsDeclaration,
+            reviewedCodexInteractionsDeclaration,
         ).replace(
             """export declare class AgentFormTextListValue {
     constructor(value: Array<string>);

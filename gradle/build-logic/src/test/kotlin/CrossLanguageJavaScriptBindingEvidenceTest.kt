@@ -908,6 +908,125 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `interactions close exact elicitation identity state and controller family`() {
+        val keys = d059InteractionsKeys()
+        val symbols = d059InteractionsSymbols()
+        val evidence = derive(keys, symbols, references = D059_PUBLIC_SYMBOLS)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(40, keys.size)
+        assertEquals(40, claims.size)
+        assertEquals(48, D059_PUBLIC_SYMBOLS.size)
+        assertEquals(D059_PUBLIC_SYMBOLS, evidence.packedApi.referencedSymbols)
+        assertEquals(D059_PUBLIC_SYMBOLS.toSet(), claims.values.flatMap { it.publicSymbols }.toSet())
+        assertEquals(544, 504 + claims.size)
+        assertEquals(0, 40 - claims.size)
+        assertEquals(556, 544 + 12)
+        assertEquals(0, 9 - 9)
+
+        val pendingType = D059_PUBLIC_SYMBOLS.single { it.startsWith("type:AgentPendingInteraction:") }
+        assertEquals(2, claims.values.count { pendingType in it.publicSymbols })
+        claims.values.filter { "/CodexInteractions|" in it.capabilityKey }.forEach { claim ->
+            assertTrue(CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP in claim.sharedScenarios)
+        }
+        claims.values.filter {
+            "/CodexInteractions|kind=function" in it.capabilityKey
+        }.forEach { claim ->
+            assertTrue(CrossLanguageBindingScenario.ASYNC_SUCCESS in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.ASYNC_FAILURE in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.CANCELLATION in claim.sharedScenarios)
+        }
+        claims.values.filter {
+            "/CodexInteractions|kind=property" in it.capabilityKey
+        }.forEach { claim ->
+            assertTrue(CrossLanguageBindingScenario.STATE_CURRENT_VALUE in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE in claim.sharedScenarios)
+            assertTrue(CrossLanguageBindingScenario.IDENTITY in claim.sharedScenarios)
+        }
+        val currentSymbols = d059CurrentPublicSymbols()
+        assertEquals(517, currentSymbols.size)
+        assertEquals(105, symbolExports(currentSymbols).first.size)
+        assertEquals(73, symbolExports(currentSymbols).second.size)
+    }
+
+    @Test
+    fun `interactions reject partial future drift unreferenced and unauthorized reuse`() {
+        val keys = d059InteractionsKeys()
+        val symbols = d059InteractionsSymbols()
+
+        keys.forEach { exact ->
+            val drifted = when {
+                "|kind=constructor|" in exact -> exact.replace("suspend=false", "suspend=true")
+                "|kind=property|" in exact -> exact.replace("propertyKind=VAL", "propertyKind=VAR")
+                "/CodexInteractions|" in exact -> exact.replace("suspend=true", "suspend=false")
+                else -> exact.replace("suspend=false", "suspend=true")
+            }
+            val drift = derive(keys - exact + drifted, symbols, references = D059_PUBLIC_SYMBOLS)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted canonical drift: $drifted")
+        }
+
+        val elicitationConstructor = keys.single { "/AgentElicitation|kind=constructor" in it }
+        val statePending = keys.single { "/AgentInteractionState|kind=property" in it && ".pending|" in it }
+        val approvalResolve = keys.single {
+            "/CodexInteractions|kind=function" in it && ".resolve|" in it && "AgentPendingApproval" in it
+        }
+        listOf(
+            elicitationConstructor to elicitationConstructor.replaceFirst("kotlin/String?:default=true", "kotlin/String?:default=false"),
+            statePending to statePending.replace("kotlin.collections/List", "kotlin.collections.Set"),
+            approvalResolve to approvalResolve.replace("AgentApprovalDecision!!", "AgentElicitationResponse!!"),
+        ).forEach { (exact, drifted) ->
+            val drift = derive(keys - exact + drifted, symbols, references = D059_PUBLIC_SYMBOLS)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted signature drift: $drifted")
+        }
+
+        keys.forEach { omitted ->
+            val partial = derive(keys - omitted, symbols, references = D059_PUBLIC_SYMBOLS)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys }, "Accepted without $omitted")
+        }
+        D059_PUBLIC_SYMBOLS.forEach { omitted ->
+            val unreferenced = derive(keys, symbols, references = D059_PUBLIC_SYMBOLS - omitted)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && omitted in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        val future = canonicalProperty("CodexInteractions", "future", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureEvidence = derive(keys + future, symbols, references = D059_PUBLIC_SYMBOLS)
+        assertTrue(future in futureEvidence.missingCapabilityKeys)
+        assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey in keys })
+
+        val futureSymbol = "getter:CodexInteractions#future:string"
+        val futurePublic = derive(
+            keys,
+            (symbols + futureSymbol).sorted(),
+            references = (D059_PUBLIC_SYMBOLS + futureSymbol).sorted(),
+        )
+        assertTrue(futurePublic.projectionClaims.none { it.capabilityKey in keys })
+
+        val pendingType = D059_PUBLIC_SYMBOLS.single { it.startsWith("type:AgentPendingInteraction:") }
+        val foreign = canonicalProperty("ForeignPending", "requestId", "kotlin/String!!")
+        val unauthorized = derive(keys + foreign, symbols, references = D059_PUBLIC_SYMBOLS)
+        assertTrue(unauthorized.projectionClaims.none {
+            it.capabilityKey == foreign && pendingType in it.publicSymbols
+        })
+
+        assertFailsWith<IllegalStateException> {
+            derive(keys, (symbols + symbols.first()).sorted(), references = D059_PUBLIC_SYMBOLS)
+        }
+        val exactGetter = D059_PUBLIC_SYMBOLS.single { it == "getter:AgentElicitation#requestId:string" }
+        val ambiguousGetter = "$exactGetter | number"
+        val ambiguous = derive(
+            keys,
+            (symbols + ambiguousGetter).sorted(),
+            references = (D059_PUBLIC_SYMBOLS + ambiguousGetter).sorted(),
+        )
+        assertTrue(ambiguous.projectionClaims.none { it.capabilityKey in keys })
+    }
+
+    @Test
     fun `state projection requires exact current callback and observation return types`() {
         val key = canonicalProperty(
             "Stream",
@@ -5616,6 +5735,157 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
 
     private fun d057AgentFormFieldSymbols(): List<String> = D057_PUBLIC_SYMBOLS
 
+    private fun d059InteractionsKeys(): List<String> = listOf(
+        canonicalConstructor(
+            "AgentElicitation",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "example/ConversationId!!",
+                "kotlin/String!!",
+                "kotlin.collections/List<INVARIANT:example/AgentFormField!!>?",
+                "kotlin/String?",
+            ),
+            defaultParameterIndices = setOf(4, 5),
+        ),
+        canonicalProperty("AgentElicitation", "requestId", "kotlin/String!!"),
+        canonicalProperty("AgentElicitation", "serverName", "kotlin/String!!"),
+        canonicalProperty("AgentElicitation", "conversationId", "example/ConversationId!!"),
+        canonicalProperty("AgentElicitation", "message", "kotlin/String!!"),
+        canonicalProperty(
+            "AgentElicitation",
+            "form",
+            "kotlin.collections/List<INVARIANT:example/AgentFormField!!>?",
+        ),
+        canonicalProperty("AgentElicitation", "url", "kotlin/String?"),
+        canonicalFunction(
+            "AgentElicitation",
+            "initialValues",
+            returnType = FORM_VALUE_MAP,
+        ),
+        canonicalFunction(
+            "AgentElicitation",
+            "validate",
+            returnType = "example/AgentElicitationValidation!!",
+            parameters = listOf(FORM_VALUE_MAP),
+        ),
+        canonicalFunction(
+            "AgentElicitation",
+            "accept",
+            returnType = "example/AgentElicitationResponse!!",
+            parameters = listOf(FORM_VALUE_MAP),
+        ),
+        canonicalFunction(
+            "AgentElicitation",
+            "accepts",
+            returnType = "kotlin/Boolean!!",
+            parameters = listOf("example/AgentElicitationResponse!!"),
+        ),
+        canonicalConstructor(
+            "AgentElicitationResponse",
+            listOf("example/AgentElicitationAction!!", FORM_VALUE_MAP),
+            defaultParameterIndices = setOf(1),
+        ),
+        canonicalProperty("AgentElicitationResponse", "action", "example/AgentElicitationAction!!"),
+        canonicalProperty("AgentElicitationResponse", "content", FORM_VALUE_MAP),
+        canonicalFunction(
+            "AgentElicitationResponse.Companion",
+            "decline",
+            returnType = "example/AgentElicitationResponse!!",
+        ),
+        canonicalFunction(
+            "AgentElicitationResponse.Companion",
+            "cancel",
+            returnType = "example/AgentElicitationResponse!!",
+        ),
+        canonicalConstructor(
+            "AgentPendingApproval",
+            listOf("kotlin/String!!", "example/ConversationId!!", "kotlin/String!!", "kotlin/String!!"),
+        ),
+        canonicalProperty("AgentPendingApproval", "requestId", "kotlin/String!!"),
+        canonicalProperty("AgentPendingApproval", "conversationId", "example/ConversationId!!"),
+        canonicalProperty("AgentPendingApproval", "title", "kotlin/String!!"),
+        canonicalProperty("AgentPendingApproval", "details", "kotlin/String!!"),
+        canonicalConstructor("AgentPendingElicitation", listOf("example/AgentElicitation!!")),
+        canonicalProperty("AgentPendingElicitation", "elicitation", "example/AgentElicitation!!"),
+        canonicalProperty("AgentPendingElicitation", "requestId", "kotlin/String!!"),
+        canonicalProperty("AgentPendingElicitation", "conversationId", "example/ConversationId!!"),
+        canonicalProperty("AgentPendingInteraction", "requestId", "kotlin/String!!"),
+        canonicalProperty("AgentPendingInteraction", "conversationId", "example/ConversationId!!"),
+        canonicalConstructor(
+            "AgentInteractionState",
+            listOf(
+                "kotlin.collections/List<INVARIANT:example/AgentPendingInteraction!!>!!",
+                "kotlin.collections/Set<INVARIANT:kotlin/String!!>!!",
+                "example/CodexFailure?",
+            ),
+            defaultParameterIndices = setOf(0, 1, 2),
+        ),
+        canonicalProperty(
+            "AgentInteractionState",
+            "pending",
+            "kotlin.collections/List<INVARIANT:example/AgentPendingInteraction!!>!!",
+        ),
+        canonicalProperty(
+            "AgentInteractionState",
+            "resolvingRequestIds",
+            "kotlin.collections/Set<INVARIANT:kotlin/String!!>!!",
+        ),
+        canonicalProperty("AgentInteractionState", "failure", "example/CodexFailure?"),
+        canonicalFunction(
+            "AgentInteractionState",
+            "pendingFor",
+            returnType = "kotlin.collections/List<INVARIANT:example/AgentPendingInteraction!!>!!",
+            parameters = listOf("example/ConversationId!!"),
+        ),
+        canonicalFunction(
+            "AgentInteractionState",
+            "isResolving",
+            returnType = "kotlin/Boolean!!",
+            parameters = listOf("example/AgentPendingInteraction!!"),
+        ),
+        canonicalProperty(
+            "CodexInteractions",
+            "state",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:example/AgentInteractionState!!>!!",
+        ),
+        canonicalProperty(
+            "CodexInteractions",
+            "approvals",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+                "kotlin.collections/List<INVARIANT:example/AgentPendingApproval!!>!!>!!",
+        ),
+        canonicalProperty(
+            "CodexInteractions",
+            "elicitations",
+            "kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+                "kotlin.collections/List<INVARIANT:example/AgentPendingElicitation!!>!!>!!",
+        ),
+        canonicalFunction(
+            "CodexInteractions",
+            "resolve",
+            suspendFunction = true,
+            parameters = listOf("example/AgentPendingApproval!!", "example/AgentApprovalDecision!!"),
+        ),
+        canonicalFunction(
+            "CodexInteractions",
+            "resolve",
+            suspendFunction = true,
+            parameters = listOf("example/AgentPendingElicitation!!", "example/AgentElicitationResponse!!"),
+        ),
+        canonicalFunction(
+            "CodexInteractions",
+            "openUrl",
+            suspendFunction = true,
+            parameters = listOf("example/AgentPendingElicitation!!"),
+        ),
+        canonicalProperty("CodexAgent", "interactions", "example/CodexInteractions!!"),
+    ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }.sorted()
+        .also { assertEquals(40, it.size) }
+
+    private fun d059InteractionsSymbols(): List<String> =
+        (D059_PUBLIC_SYMBOLS + "class:CodexAgent").distinct().sorted()
+
     private fun conversationStateSymbols(): List<String> = listOf(
         "class:CodexConversation",
         "class:CodexConversationState",
@@ -6201,6 +6471,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         (d054CurrentPublicSymbols() + D057_PUBLIC_SYMBOLS).distinct().sorted()
             .also { assertEquals(469, it.size) }
 
+    private fun d059CurrentPublicSymbols(): List<String> =
+        (d057CurrentPublicSymbols() + D059_PUBLIC_SYMBOLS).distinct().sorted()
+            .also { assertEquals(517, it.size) }
+
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
@@ -6621,6 +6895,79 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "type:AgentFormValue:AgentFormBooleanValue | AgentFormNumberValue | " +
                 "AgentFormTextListValue | AgentFormTextValue",
         ).sorted().also { assertEquals(20, it.size) }
+
+        private const val FORM_VALUE_MAP =
+            "kotlin.collections/Map<INVARIANT:kotlin/String!!," +
+                "INVARIANT:example/AgentFormValue!!>!!"
+
+        private val D059_PUBLIC_SYMBOLS = listOf(
+            "class:AgentElicitation",
+            "class:AgentElicitationResponse",
+            "class:AgentInteractionState",
+            "class:AgentPendingApproval",
+            "class:AgentPendingElicitation",
+            "class:CodexInteractions",
+            "constructor:AgentElicitation#(requestId: string, serverName: string, " +
+                "conversationId: string, message: string, " +
+                "form?: ReadonlyArray<AgentFormField> | null | undefined, " +
+                "url?: string | null | undefined)",
+            "constructor:AgentElicitationResponse#(action: AgentElicitationAction, " +
+                "content?: Readonly<Record<string, AgentFormValue>>)",
+            "constructor:AgentInteractionState#(pending?: ReadonlyArray<AgentPendingInteraction>, " +
+                "resolvingRequestIds?: ReadonlyArray<string>, " +
+                "failure?: CodexFailure | null | undefined)",
+            "constructor:AgentPendingApproval#(requestId: string, conversationId: string, " +
+                "title: string, details: string)",
+            "constructor:AgentPendingElicitation#(elicitation: AgentElicitation)",
+            "getter:AgentElicitation#conversationId:string",
+            "getter:AgentElicitation#form:ReadonlyArray<AgentFormField> | null | undefined",
+            "getter:AgentElicitation#message:string",
+            "getter:AgentElicitation#requestId:string",
+            "getter:AgentElicitation#serverName:string",
+            "getter:AgentElicitation#url:string | null | undefined",
+            "getter:AgentElicitationResponse#action:AgentElicitationAction",
+            "getter:AgentElicitationResponse#content:Readonly<Record<string, AgentFormValue>>",
+            "getter:AgentInteractionState#failure:CodexFailure | null | undefined",
+            "getter:AgentInteractionState#pending:ReadonlyArray<AgentPendingInteraction>",
+            "getter:AgentInteractionState#resolvingRequestIds:ReadonlyArray<string>",
+            "getter:AgentPendingApproval#conversationId:string",
+            "getter:AgentPendingApproval#details:string",
+            "getter:AgentPendingApproval#requestId:string",
+            "getter:AgentPendingApproval#title:string",
+            "getter:AgentPendingElicitation#conversationId:string",
+            "getter:AgentPendingElicitation#elicitation:AgentElicitation",
+            "getter:AgentPendingElicitation#requestId:string",
+            "getter:CodexAgent#interactions:CodexInteractions",
+            "getter:CodexInteractions#approvals:ReadonlyArray<AgentPendingApproval>",
+            "getter:CodexInteractions#elicitations:ReadonlyArray<AgentPendingElicitation>",
+            "getter:CodexInteractions#state:AgentInteractionState",
+            "method:AgentElicitation#accept:(content: Readonly<Record<string, AgentFormValue>>): " +
+                "AgentElicitationResponse",
+            "method:AgentElicitation#accepts:(response: AgentElicitationResponse): boolean",
+            "method:AgentElicitation#initialValues:(): Readonly<Record<string, AgentFormValue>>",
+            "method:AgentElicitation#validate:(content: Readonly<Record<string, AgentFormValue>>): " +
+                "AgentElicitationValidation",
+            "method:AgentElicitationResponse#cancel[static]:(): AgentElicitationResponse",
+            "method:AgentElicitationResponse#decline[static]:(): AgentElicitationResponse",
+            "method:AgentInteractionState#isResolving:(interaction: AgentPendingInteraction): boolean",
+            "method:AgentInteractionState#pendingFor:(conversationId: string): " +
+                "ReadonlyArray<AgentPendingInteraction>",
+            "method:CodexInteractions#observeApprovals:(listener: " +
+                "(approvals: ReadonlyArray<AgentPendingApproval>) => void): CodexObservation",
+            "method:CodexInteractions#observeElicitations:(listener: " +
+                "(elicitations: ReadonlyArray<AgentPendingElicitation>) => void): CodexObservation",
+            "method:CodexInteractions#observeState:(listener: " +
+                "(state: AgentInteractionState) => void): CodexObservation",
+            "method:CodexInteractions#openUrl:(elicitation: AgentPendingElicitation, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+            "method:CodexInteractions#resolve:(approval: AgentPendingApproval, " +
+                "decision: AgentApprovalDecision, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+            "method:CodexInteractions#resolve:(elicitation: AgentPendingElicitation, " +
+                "response: AgentElicitationResponse, " +
+                "signal?: AbortSignal | null | undefined): Promise<void>",
+            "type:AgentPendingInteraction:AgentPendingApproval | AgentPendingElicitation",
+        ).sorted().also { assertEquals(48, it.size) }
 
         private val AUTHENTICATION_OVERLOADS = listOf(
             "method:CodexAuthentication#authenticate:" +
