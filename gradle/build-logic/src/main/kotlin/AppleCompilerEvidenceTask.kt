@@ -27,12 +27,15 @@ internal const val APPLE_COMPILER_EVIDENCE_PROTOCOL = "codex-agent-apple-compile
 internal const val APPLE_CODEX_FAILURE_OWNER_USR = "c:objc(cs)CodexAgentCodexFailure"
 internal const val APPLE_APPROVAL_DECISION_OWNER_USR = "c:objc(cs)CodexAgentAgentApprovalDecision"
 internal const val APPLE_COLLABORATION_MODE_OWNER_USR = "c:objc(cs)CodexAgentAgentCollaborationMode"
+internal const val APPLE_MESSAGE_ROLE_OWNER_USR = "c:objc(cs)CodexAgentAgentMessageRole"
 private const val APPLE_CODEX_FAILURE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/CodexFailure"
 private const val APPLE_APPROVAL_DECISION_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision"
 private const val APPLE_COLLABORATION_MODE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode"
+private const val APPLE_MESSAGE_ROLE_CANONICAL_OWNER =
+    "io.github.codex_agent_labs.codexmobile.agent/AgentMessageRole"
 
 private val appleCodexFailureMembers = linkedMapOf(
     "constructor:<init>" to "$APPLE_CODEX_FAILURE_OWNER_USR(im)initWithCode:message:isRecoverable:",
@@ -76,10 +79,23 @@ private val appleCollaborationModeCoverageTokens = mapOf(
         "api-v1:AgentCollaborationMode#enum-entry:PLAN#sha256:ec0e7395b27d5e890c396ea4e39af43f49b093b933ee9062c83fc9c07a754e4d",
 )
 
+private val appleMessageRoleMembers = linkedMapOf(
+    "enum-entry:USER" to "$APPLE_MESSAGE_ROLE_OWNER_USR(cpy)user",
+    "enum-entry:ASSISTANT" to "$APPLE_MESSAGE_ROLE_OWNER_USR(cpy)assistant",
+)
+
+private val appleMessageRoleCoverageTokens = mapOf(
+    "enum-entry:USER" to
+        "api-v1:AgentMessageRole#enum-entry:USER#sha256:5572c10ccfb5180d31c30ba322e62f73ce28013434d77ee9e6fe416e076fe895",
+    "enum-entry:ASSISTANT" to
+        "api-v1:AgentMessageRole#enum-entry:ASSISTANT#sha256:f369c4f0e47685b440320333006c0c058783ee2a55f2b9c554839a8d9a0df128",
+)
+
 private val appleBindingMembers =
-    appleCodexFailureMembers + appleApprovalDecisionMembers + appleCollaborationModeMembers
+    appleCodexFailureMembers + appleApprovalDecisionMembers + appleCollaborationModeMembers + appleMessageRoleMembers
 private val appleBindingCoverageTokens =
-    appleCodexFailureCoverageTokens + appleApprovalDecisionCoverageTokens + appleCollaborationModeCoverageTokens
+    appleCodexFailureCoverageTokens + appleApprovalDecisionCoverageTokens + appleCollaborationModeCoverageTokens +
+        appleMessageRoleCoverageTokens
 
 private fun appleBindingShape(capability: String): String {
     val token = crossLanguageApiCoverageToken(capability)
@@ -187,6 +203,18 @@ private val expectedSwiftAppleBindingSymbols = linkedMapOf(
         "swift.type.property", listOf("AgentCollaborationMode", "plan"), "plan", "open",
         "class var plan: AgentCollaborationMode { get }", listOf(APPLE_COLLABORATION_MODE_OWNER_USR),
     ),
+    APPLE_MESSAGE_ROLE_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("AgentMessageRole"), "AgentMessageRole", "public",
+        "class AgentMessageRole", emptyList(),
+    ),
+    appleMessageRoleMembers.getValue("enum-entry:USER") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentMessageRole", "user"), "user", "open",
+        "class var user: AgentMessageRole { get }", listOf(APPLE_MESSAGE_ROLE_OWNER_USR),
+    ),
+    appleMessageRoleMembers.getValue("enum-entry:ASSISTANT") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentMessageRole", "assistant"), "assistant", "open",
+        "class var assistant: AgentMessageRole { get }", listOf(APPLE_MESSAGE_ROLE_OWNER_USR),
+    ),
 )
 
 private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
@@ -250,6 +278,22 @@ private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
         "@property (class, readonly) CodexAgentAgentCollaborationMode * plan;",
         listOf(APPLE_COLLABORATION_MODE_OWNER_USR),
     ),
+    APPLE_MESSAGE_ROLE_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentAgentMessageRole"),
+        "CodexAgentAgentMessageRole", "public",
+        "@interface CodexAgentAgentMessageRole : CodexAgentKotlinEnum",
+        listOf("c:objc(cs)CodexAgentKotlinEnum"),
+    ),
+    appleMessageRoleMembers.getValue("enum-entry:USER") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentMessageRole", "user"), "user", "public",
+        "@property (class, readonly) CodexAgentAgentMessageRole * user;",
+        listOf(APPLE_MESSAGE_ROLE_OWNER_USR),
+    ),
+    appleMessageRoleMembers.getValue("enum-entry:ASSISTANT") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentMessageRole", "assistant"), "assistant", "public",
+        "@property (class, readonly) CodexAgentAgentMessageRole * assistant;",
+        listOf(APPLE_MESSAGE_ROLE_OWNER_USR),
+    ),
 )
 
 internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> {
@@ -257,6 +301,7 @@ internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> 
         "common|owner=$APPLE_CODEX_FAILURE_CANONICAL_OWNER|",
         "common|owner=$APPLE_APPROVAL_DECISION_CANONICAL_OWNER|",
         "common|owner=$APPLE_COLLABORATION_MODE_CANONICAL_OWNER|",
+        "common|owner=$APPLE_MESSAGE_ROLE_CANONICAL_OWNER|",
     )
     val byShape = memberKeys.filter { key -> ownerPrefixes.any { prefix -> key.startsWith(prefix) } }.groupBy { key ->
         appleBindingShape(key)
@@ -347,7 +392,8 @@ private fun parseAppleBindingSurface(
     }
     val memberOwners = appleCodexFailureMembers.values.associateWith { APPLE_CODEX_FAILURE_OWNER_USR } +
         appleApprovalDecisionMembers.values.associateWith { APPLE_APPROVAL_DECISION_OWNER_USR } +
-        appleCollaborationModeMembers.values.associateWith { APPLE_COLLABORATION_MODE_OWNER_USR }
+        appleCollaborationModeMembers.values.associateWith { APPLE_COLLABORATION_MODE_OWNER_USR } +
+        appleMessageRoleMembers.values.associateWith { APPLE_MESSAGE_ROLE_OWNER_USR }
     val relationships = root.appleArray("relationships").map { it.appleObject("$language relationship") }
         .filter { relationship ->
             relationship.appleString("kind") == "memberOf" &&
@@ -412,6 +458,8 @@ internal fun parseSwiftAppleBindingReferences(json: String): List<AppleCompilerR
         appleApprovalDecisionMembers.getValue("enum-entry:DECLINE") to ("member_ref_expr" to "decline"),
         appleCollaborationModeMembers.getValue("enum-entry:DEFAULT") to ("member_ref_expr" to "default_"),
         appleCollaborationModeMembers.getValue("enum-entry:PLAN") to ("member_ref_expr" to "plan"),
+        appleMessageRoleMembers.getValue("enum-entry:USER") to ("member_ref_expr" to "user"),
+        appleMessageRoleMembers.getValue("enum-entry:ASSISTANT") to ("member_ref_expr" to "assistant"),
     )
     references.forEach { reference ->
         check(reference.kind to reference.name == expectedKinds.getValue(reference.precise) &&
@@ -512,7 +560,31 @@ internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleComp
     check(collaborationModes == expectedCollaborationModes) {
         "Objective-C AgentCollaborationMode references changed"
     }
-    return (constructor + properties + decisions + collaborationModes).sortedBy(AppleCompilerReference::precise)
+    val messageRoles = listOf("user", "assistant").map { name ->
+        val node = nodes.singleOrNull { candidate ->
+            candidate.appleStringOrNull("kind") == "ObjCMessageExpr" &&
+                candidate.appleStringOrNull("selector") == name
+        } ?: error("Objective-C AgentMessageRole reference changed: $name")
+        check(node.appleString("receiverKind") == "class") {
+            "Objective-C AgentMessageRole receiver changed: $name"
+        }
+        val shape = if (name == "user") "enum-entry:USER" else "enum-entry:ASSISTANT"
+        AppleCompilerReference(
+            appleMessageRoleMembers.getValue(shape), "ObjCMessageExpr", name,
+            node.appleObject("classType").appleString("qualType"),
+            node.appleObject("type").appleString("qualType"), emptyList(),
+        )
+    }
+    val expectedMessageRoles = listOf("user", "assistant").map { name ->
+        val shape = if (name == "user") "enum-entry:USER" else "enum-entry:ASSISTANT"
+        AppleCompilerReference(
+            appleMessageRoleMembers.getValue(shape), "ObjCMessageExpr", name,
+            "CodexAgentAgentMessageRole", "CodexAgentAgentMessageRole * _Nonnull", emptyList(),
+        )
+    }
+    check(messageRoles == expectedMessageRoles) { "Objective-C AgentMessageRole references changed" }
+    return (constructor + properties + decisions + collaborationModes + messageRoles)
+        .sortedBy(AppleCompilerReference::precise)
 }
 
 private fun JsonObject.walkAppleObjects(): Sequence<JsonObject> = sequence {

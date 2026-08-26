@@ -21,3 +21,9 @@ static BOOL consumeAgentCollaborationModes(void) {
     CodexAgentAgentCollaborationMode *plan = [CodexAgentAgentCollaborationMode plan];
     return defaultMode != plan;
 }
+
+static BOOL consumeAgentMessageRoles(void) {
+    CodexAgentAgentMessageRole *user = [CodexAgentAgentMessageRole user];
+    CodexAgentAgentMessageRole *assistant = [CodexAgentAgentMessageRole assistant];
+    return user != assistant;
+}

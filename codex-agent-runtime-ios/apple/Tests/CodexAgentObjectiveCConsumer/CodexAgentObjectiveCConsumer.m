@@ -67,6 +67,15 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
         [self finishWithFailure:@"Objective-C collaboration modes changed"];
         return;
     }
+    CodexAgentAgentMessageRole *user = [CodexAgentAgentMessageRole user];
+    CodexAgentAgentMessageRole *assistant = [CodexAgentAgentMessageRole assistant];
+    if (![user.name isEqualToString:@"USER"] || user.ordinal != 0 ||
+        ![assistant.name isEqualToString:@"ASSISTANT"] || assistant.ordinal != 1 ||
+        user == assistant || user != [CodexAgentAgentMessageRole user] ||
+        assistant != [CodexAgentAgentMessageRole assistant]) {
+        [self finishWithFailure:@"Objective-C message roles changed"];
+        return;
+    }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CDXConsumerTimeoutSeconds * NSEC_PER_SEC)),

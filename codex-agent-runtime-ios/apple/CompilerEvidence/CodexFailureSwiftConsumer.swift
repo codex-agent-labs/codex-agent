@@ -16,3 +16,7 @@ func consumeAgentApprovalDecisions() -> (AgentApprovalDecision, AgentApprovalDec
 func consumeAgentCollaborationModes() -> (AgentCollaborationMode, AgentCollaborationMode) {
     (AgentCollaborationMode.default_, AgentCollaborationMode.plan)
 }
+
+func consumeAgentMessageRoles() -> (AgentMessageRole, AgentMessageRole) {
+    (AgentMessageRole.user, AgentMessageRole.assistant)
+}

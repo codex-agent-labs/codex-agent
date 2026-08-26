@@ -33,6 +33,8 @@ private const val appleApprovalAcceptUsr = "$APPLE_APPROVAL_DECISION_OWNER_USR(c
 private const val appleApprovalDeclineUsr = "$APPLE_APPROVAL_DECISION_OWNER_USR(cpy)decline"
 private const val appleCollaborationDefaultUsr = "$APPLE_COLLABORATION_MODE_OWNER_USR(cpy)default_"
 private const val appleCollaborationPlanUsr = "$APPLE_COLLABORATION_MODE_OWNER_USR(cpy)plan"
+private const val appleMessageRoleUserUsr = "$APPLE_MESSAGE_ROLE_OWNER_USR(cpy)user"
+private const val appleMessageRoleAssistantUsr = "$APPLE_MESSAGE_ROLE_OWNER_USR(cpy)assistant"
 private const val swiftFailureTest =
     "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()"
 private const val objectiveCFailureTest =
@@ -100,7 +102,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
     canonical.canonical.coverageReceiptSha256.appleSha256("canonical coverage receipt")
     canonical.targetSha256.getValue("native").appleSha256("canonical native target")
     val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-    check(capabilities.size == 8) { "Apple binding capability count changed" }
+    check(capabilities.size == 10) { "Apple binding capability count changed" }
     val usrByCapability = capabilities.associateWith(::appleBindingUsr)
 
     compilerEvidence.appleKeys(
@@ -195,7 +197,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
 
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
-    check(missing.size == 548) { "Apple partial binding gap count changed: ${missing.size}" }
+    check(missing.size == 546) { "Apple partial binding gap count changed: ${missing.size}" }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()
@@ -302,12 +304,13 @@ private fun appleLanguageEvidence(
     behaviorTest: String,
     missing: List<String>,
 ) = buildJsonObject {
-    check(publicSymbols.size == 11 && referencedSymbols.size == 8 &&
+    check(publicSymbols.size == 14 && referencedSymbols.size == 10 &&
         referencedSymbols.toSet() == publicSymbols.toSet() -
             setOf(
                 APPLE_CODEX_FAILURE_OWNER_USR,
                 APPLE_APPROVAL_DECISION_OWNER_USR,
                 APPLE_COLLABORATION_MODE_OWNER_USR,
+                APPLE_MESSAGE_ROLE_OWNER_USR,
             )
     ) { "$language Apple binding symbol/reference inventory changed" }
     put("language", JsonPrimitive(language))
@@ -337,6 +340,8 @@ private fun appleBindingUsr(capability: String): String = when {
     ".DECLINE|null[0]" in capability -> appleApprovalDeclineUsr
     ".DEFAULT|null[0]" in capability -> appleCollaborationDefaultUsr
     ".PLAN|null[0]" in capability -> appleCollaborationPlanUsr
+    ".USER|null[0]" in capability -> appleMessageRoleUserUsr
+    ".ASSISTANT|null[0]" in capability -> appleMessageRoleAssistantUsr
     else -> error("Unexpected canonical Apple binding capability: $capability")
 }
 
@@ -393,6 +398,21 @@ private fun expectedSwiftAppleBindingSurface(): List<AppleCompilerSymbol> = list
         appleCollaborationPlanUsr, "swift", "swift.type.property", listOf("AgentCollaborationMode", "plan"),
         "plan", "open", "class var plan: AgentCollaborationMode { get }",
         listOf(APPLE_COLLABORATION_MODE_OWNER_USR), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        APPLE_MESSAGE_ROLE_OWNER_USR, "swift", "swift.class", listOf("AgentMessageRole"),
+        "AgentMessageRole", "public", "class AgentMessageRole", emptyList(), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleMessageRoleUserUsr, "swift", "swift.type.property", listOf("AgentMessageRole", "user"),
+        "user", "open", "class var user: AgentMessageRole { get }",
+        listOf(APPLE_MESSAGE_ROLE_OWNER_USR), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleMessageRoleAssistantUsr, "swift", "swift.type.property",
+        listOf("AgentMessageRole", "assistant"), "assistant", "open",
+        "class var assistant: AgentMessageRole { get }",
+        listOf(APPLE_MESSAGE_ROLE_OWNER_USR), emptyList(), null,
     ),
 ).sortedBy(AppleCompilerSymbol::precise)
 
@@ -466,6 +486,24 @@ private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> =
         "@property (class, readonly) CodexAgentAgentCollaborationMode * plan;",
         listOf(APPLE_COLLABORATION_MODE_OWNER_USR), emptyList(), null,
     ),
+    AppleCompilerSymbol(
+        APPLE_MESSAGE_ROLE_OWNER_USR, "objective-c", "objective-c.class",
+        listOf("CodexAgentAgentMessageRole"), "CodexAgentAgentMessageRole", "public",
+        "@interface CodexAgentAgentMessageRole : CodexAgentKotlinEnum",
+        listOf("c:objc(cs)CodexAgentKotlinEnum"), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleMessageRoleUserUsr, "objective-c", "objective-c.type.property",
+        listOf("CodexAgentAgentMessageRole", "user"), "user", "public",
+        "@property (class, readonly) CodexAgentAgentMessageRole * user;",
+        listOf(APPLE_MESSAGE_ROLE_OWNER_USR), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleMessageRoleAssistantUsr, "objective-c", "objective-c.type.property",
+        listOf("CodexAgentAgentMessageRole", "assistant"), "assistant", "public",
+        "@property (class, readonly) CodexAgentAgentMessageRole * assistant;",
+        listOf(APPLE_MESSAGE_ROLE_OWNER_USR), emptyList(), null,
+    ),
 ).sortedBy(AppleCompilerSymbol::precise)
 
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
@@ -493,6 +531,14 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     AppleCompilerReference(
         appleCollaborationPlanUsr, "member_ref_expr", "plan", null,
         "\$sSo010CodexAgentB17CollaborationModeCD", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleMessageRoleUserUsr, "member_ref_expr", "user", null,
+        "\$sSo010CodexAgentB11MessageRoleCD", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleMessageRoleAssistantUsr, "member_ref_expr", "assistant", null,
+        "\$sSo010CodexAgentB11MessageRoleCD", emptyList(),
     ),
 ).sortedBy(AppleCompilerReference::precise)
 
@@ -528,6 +574,14 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     AppleCompilerReference(
         appleCollaborationPlanUsr, "ObjCMessageExpr", "plan", "CodexAgentAgentCollaborationMode",
         "CodexAgentAgentCollaborationMode * _Nonnull", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleMessageRoleUserUsr, "ObjCMessageExpr", "user", "CodexAgentAgentMessageRole",
+        "CodexAgentAgentMessageRole * _Nonnull", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleMessageRoleAssistantUsr, "ObjCMessageExpr", "assistant", "CodexAgentAgentMessageRole",
+        "CodexAgentAgentMessageRole * _Nonnull", emptyList(),
     ),
 ).sortedBy(AppleCompilerReference::precise)
 
