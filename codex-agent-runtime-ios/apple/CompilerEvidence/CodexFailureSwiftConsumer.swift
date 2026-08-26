@@ -906,3 +906,80 @@ func consumeD078AgentElicitationResponse(
     )
     return (response, response.action, response.content)
 }
+
+func consumeD079AgentMessage(
+    plugin: AgentInvocationPlugin,
+    skill: AgentInvocationSkill
+) -> (
+    AgentMessage, Set<AgentCapability>, String?, AgentCollaborationMode, KotlinInt?, String,
+    [any AgentInvocation], String?, String?, AgentMessageRole, String?, String
+) {
+    let message = AgentMessage(
+        id: "compiler-message",
+        clientMessageId: "compiler-client-message",
+        role: .assistant,
+        text: "Compiler message",
+        collaborationMode: .plan,
+        reasoning: "Compiler reasoning",
+        plan: "Compiler plan",
+        shellCommand: "compiler command",
+        exitCode: KotlinInt(value: 79),
+        capabilities: [.webSearch],
+        invocations: [plugin, skill]
+    )
+    return (
+        message,
+        message.capabilities,
+        message.clientMessageId,
+        message.collaborationMode,
+        message.exitCode,
+        message.id,
+        message.invocations,
+        message.plan,
+        message.reasoning,
+        message.role,
+        message.shellCommand,
+        message.text
+    )
+}
+
+func consumeD079AgentTurnRequest(
+    plugin: AgentInvocationPlugin,
+    skill: AgentInvocationSkill
+) -> (
+    AgentTurnRequest, AgentApprovalPreset, Set<AgentCapability>, String?, AgentCollaborationMode,
+    String?, [any AgentInvocation], String?, String, String?
+) {
+    let request = AgentTurnRequest(
+        prompt: "Compiler request",
+        clientMessageId: "compiler-request-client-message",
+        model: "compiler-model",
+        effort: "compiler-effort",
+        serviceTier: "compiler-tier",
+        approvalPreset: .strict,
+        capabilities: [.webSearch],
+        invocations: [skill, plugin],
+        collaborationMode: .plan
+    )
+    return (
+        request,
+        request.approvalPreset,
+        request.capabilities,
+        request.clientMessageId,
+        request.collaborationMode,
+        request.effort,
+        request.invocations,
+        request.model,
+        request.prompt,
+        request.serviceTier
+    )
+}
+
+func consumeD079AgentConversation(
+    summary: AgentConversationSummary,
+    firstMessage: AgentMessage,
+    secondMessage: AgentMessage
+) -> (AgentConversation, [AgentMessage], AgentConversationSummary) {
+    let conversation = AgentConversation(summary: summary, messages: [firstMessage, secondMessage])
+    return (conversation, conversation.messages, conversation.summary)
+}

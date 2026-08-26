@@ -208,6 +208,88 @@ static BOOL consumeD078McpConfigurationValues(
         [returnedContent isEqualToDictionary:content];
 }
 
+static BOOL consumeD079ConversationValues(
+    CodexAgentAgentConversationSummary *summary,
+    CodexAgentAgentInvocationPlugin *pluginInvocation,
+    CodexAgentAgentInvocationSkill *skillInvocation
+) {
+    CodexAgentAgentCapability *webSearch = [CodexAgentAgentCapability webSearch];
+    NSSet<CodexAgentAgentCapability *> *capabilities = [NSSet setWithObject:webSearch];
+    NSArray<id<CodexAgentAgentInvocation>> *invocations = @[pluginInvocation, skillInvocation];
+    CodexAgentInt *exitCode = [CodexAgentInt numberWithInt:7];
+    CodexAgentAgentMessage *message = [[CodexAgentAgentMessage alloc]
+        initWithId:@"compiler-message"
+        clientMessageId:@"compiler-client-message"
+        role:[CodexAgentAgentMessageRole assistant]
+        text:@"Compiler message"
+        collaborationMode:[CodexAgentAgentCollaborationMode plan]
+        reasoning:@"Compiler reasoning"
+        plan:@"Compiler plan"
+        shellCommand:@"echo compiler"
+        exitCode:exitCode
+        capabilities:capabilities
+        invocations:invocations];
+    NSSet<CodexAgentAgentCapability *> *returnedMessageCapabilities = message.capabilities;
+    NSString *returnedClientMessageId = message.clientMessageId;
+    CodexAgentAgentCollaborationMode *returnedMessageCollaboration = message.collaborationMode;
+    CodexAgentInt *returnedExitCode = message.exitCode;
+    NSString *returnedMessageId = message.id;
+    NSArray<id<CodexAgentAgentInvocation>> *returnedMessageInvocations = message.invocations;
+    NSString *returnedPlan = message.plan;
+    NSString *returnedReasoning = message.reasoning;
+    CodexAgentAgentMessageRole *returnedRole = message.role;
+    NSString *returnedShellCommand = message.shellCommand;
+    NSString *returnedText = message.text;
+
+    CodexAgentAgentTurnRequest *request = [[CodexAgentAgentTurnRequest alloc]
+        initWithPrompt:@"Compiler prompt"
+        clientMessageId:@"compiler-request"
+        model:@"compiler-model"
+        effort:@"high"
+        serviceTier:@"fast"
+        approvalPreset:[CodexAgentAgentApprovalPreset strict]
+        capabilities:capabilities
+        invocations:invocations
+        collaborationMode:[CodexAgentAgentCollaborationMode plan]];
+    CodexAgentAgentApprovalPreset *returnedApprovalPreset = request.approvalPreset;
+    NSSet<CodexAgentAgentCapability *> *returnedRequestCapabilities = request.capabilities;
+    NSString *returnedRequestClientMessageId = request.clientMessageId;
+    CodexAgentAgentCollaborationMode *returnedRequestCollaboration = request.collaborationMode;
+    NSString *returnedEffort = request.effort;
+    NSArray<id<CodexAgentAgentInvocation>> *returnedRequestInvocations = request.invocations;
+    NSString *returnedModel = request.model;
+    NSString *returnedPrompt = request.prompt;
+    NSString *returnedServiceTier = request.serviceTier;
+
+    NSArray<CodexAgentAgentMessage *> *messages = @[message];
+    CodexAgentAgentConversation *conversation = [[CodexAgentAgentConversation alloc]
+        initWithSummary:summary
+        messages:messages];
+    NSArray<CodexAgentAgentMessage *> *returnedMessages = conversation.messages;
+    CodexAgentAgentConversationSummary *returnedSummary = conversation.summary;
+
+    return [returnedMessageCapabilities isEqualToSet:capabilities] &&
+        [returnedClientMessageId isEqualToString:@"compiler-client-message"] &&
+        returnedMessageCollaboration == [CodexAgentAgentCollaborationMode plan] &&
+        returnedExitCode == exitCode && [returnedMessageId isEqualToString:@"compiler-message"] &&
+        [returnedMessageInvocations isEqualToArray:invocations] &&
+        [returnedPlan isEqualToString:@"Compiler plan"] &&
+        [returnedReasoning isEqualToString:@"Compiler reasoning"] &&
+        returnedRole == [CodexAgentAgentMessageRole assistant] &&
+        [returnedShellCommand isEqualToString:@"echo compiler"] &&
+        [returnedText isEqualToString:@"Compiler message"] &&
+        returnedApprovalPreset == [CodexAgentAgentApprovalPreset strict] &&
+        [returnedRequestCapabilities isEqualToSet:capabilities] &&
+        [returnedRequestClientMessageId isEqualToString:@"compiler-request"] &&
+        returnedRequestCollaboration == [CodexAgentAgentCollaborationMode plan] &&
+        [returnedEffort isEqualToString:@"high"] &&
+        [returnedRequestInvocations isEqualToArray:invocations] &&
+        [returnedModel isEqualToString:@"compiler-model"] &&
+        [returnedPrompt isEqualToString:@"Compiler prompt"] &&
+        [returnedServiceTier isEqualToString:@"fast"] &&
+        [returnedMessages isEqualToArray:messages] && returnedSummary == summary;
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

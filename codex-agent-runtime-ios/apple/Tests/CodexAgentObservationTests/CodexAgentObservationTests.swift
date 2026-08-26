@@ -107,6 +107,7 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD075PendingValues()
         assertD077McpServerValues()
         assertD078McpAndElicitationValues()
+        assertD079ConversationValues()
 
         let authorizationUrlCompanion = CodexAuthorizationUrl.companion
         let chatGptAuthorizationUrl = authorizationUrlCompanion.chatGpt(
@@ -961,6 +962,116 @@ final class CodexAgentObservationTests: XCTestCase {
         let emptyResponse = AgentElicitationResponse(action: .decline, content: [:])
         XCTAssertTrue(emptyResponse.action === AgentElicitationAction.decline)
         XCTAssertTrue(emptyResponse.content.isEmpty)
+    }
+
+    private func assertD079ConversationValues() {
+        let plugin = AgentInvocationPlugin(name: "D079 Plugin", uri: "plugin://d079")
+        let skill = AgentInvocationSkill(name: "D079 Skill", path: "/d079/skill")
+        let richMessage = AgentMessage(
+            id: "d079-rich-message",
+            clientMessageId: "d079-rich-client-message",
+            role: .assistant,
+            text: "D079 rich message",
+            collaborationMode: .plan,
+            reasoning: "D079 reasoning",
+            plan: "D079 plan",
+            shellCommand: "printf d079",
+            exitCode: KotlinInt(value: 79),
+            capabilities: [.webSearch],
+            invocations: [plugin, skill]
+        )
+        XCTAssertEqual(richMessage.id, "d079-rich-message")
+        XCTAssertEqual(richMessage.clientMessageId, "d079-rich-client-message")
+        XCTAssertTrue(richMessage.role === AgentMessageRole.assistant)
+        XCTAssertEqual(richMessage.text, "D079 rich message")
+        XCTAssertTrue(richMessage.collaborationMode === AgentCollaborationMode.plan)
+        XCTAssertEqual(richMessage.reasoning, "D079 reasoning")
+        XCTAssertEqual(richMessage.plan, "D079 plan")
+        XCTAssertEqual(richMessage.shellCommand, "printf d079")
+        XCTAssertEqual(richMessage.exitCode?.int32Value, 79)
+        XCTAssertEqual(richMessage.capabilities.count, 1)
+        XCTAssertTrue(richMessage.capabilities.contains(AgentCapability.webSearch))
+        XCTAssertEqual(richMessage.invocations.count, 2)
+        XCTAssertTrue((richMessage.invocations[0] as? AgentInvocationPlugin) === plugin)
+        XCTAssertTrue((richMessage.invocations[1] as? AgentInvocationSkill) === skill)
+
+        let defaultMessage = AgentMessage(
+            id: "d079-default-message",
+            clientMessageId: nil,
+            role: .user,
+            text: "D079 default message",
+            collaborationMode: .default_,
+            reasoning: nil,
+            plan: nil,
+            shellCommand: nil,
+            exitCode: nil,
+            capabilities: [],
+            invocations: []
+        )
+        XCTAssertNil(defaultMessage.clientMessageId)
+        XCTAssertTrue(defaultMessage.role === AgentMessageRole.user)
+        XCTAssertTrue(defaultMessage.collaborationMode === AgentCollaborationMode.default_)
+        XCTAssertNil(defaultMessage.reasoning)
+        XCTAssertNil(defaultMessage.plan)
+        XCTAssertNil(defaultMessage.shellCommand)
+        XCTAssertNil(defaultMessage.exitCode)
+        XCTAssertTrue(defaultMessage.capabilities.isEmpty)
+        XCTAssertTrue(defaultMessage.invocations.isEmpty)
+
+        let richRequest = AgentTurnRequest(
+            prompt: "D079 rich request",
+            clientMessageId: "d079-request-client-message",
+            model: "d079-model",
+            effort: "high",
+            serviceTier: "fast",
+            approvalPreset: .strict,
+            capabilities: [.webSearch],
+            invocations: [skill, plugin],
+            collaborationMode: .plan
+        )
+        XCTAssertEqual(richRequest.prompt, "D079 rich request")
+        XCTAssertEqual(richRequest.clientMessageId, "d079-request-client-message")
+        XCTAssertEqual(richRequest.model, "d079-model")
+        XCTAssertEqual(richRequest.effort, "high")
+        XCTAssertEqual(richRequest.serviceTier, "fast")
+        XCTAssertTrue(richRequest.approvalPreset === AgentApprovalPreset.strict)
+        XCTAssertEqual(richRequest.capabilities.count, 1)
+        XCTAssertTrue(richRequest.capabilities.contains(AgentCapability.webSearch))
+        XCTAssertEqual(richRequest.invocations.count, 2)
+        XCTAssertTrue((richRequest.invocations[0] as? AgentInvocationSkill) === skill)
+        XCTAssertTrue((richRequest.invocations[1] as? AgentInvocationPlugin) === plugin)
+        XCTAssertTrue(richRequest.collaborationMode === AgentCollaborationMode.plan)
+
+        let defaultRequest = AgentTurnRequest(
+            prompt: "D079 default request",
+            clientMessageId: nil,
+            model: nil,
+            effort: nil,
+            serviceTier: nil,
+            approvalPreset: .autoReview,
+            capabilities: [],
+            invocations: [],
+            collaborationMode: .default_
+        )
+        XCTAssertNil(defaultRequest.clientMessageId)
+        XCTAssertNil(defaultRequest.model)
+        XCTAssertNil(defaultRequest.effort)
+        XCTAssertNil(defaultRequest.serviceTier)
+        XCTAssertTrue(defaultRequest.approvalPreset === AgentApprovalPreset.autoReview)
+        XCTAssertTrue(defaultRequest.capabilities.isEmpty)
+        XCTAssertTrue(defaultRequest.invocations.isEmpty)
+        XCTAssertTrue(defaultRequest.collaborationMode === AgentCollaborationMode.default_)
+
+        let summary = AgentConversationSummary(
+            conversationId: ConversationId(value: "d079-conversation"),
+            title: "D079 Conversation",
+            updatedAtEpochSeconds: 79
+        )
+        let conversation = AgentConversation(summary: summary, messages: [richMessage, defaultMessage])
+        XCTAssertTrue(conversation.summary === summary)
+        XCTAssertEqual(conversation.messages.count, 2)
+        XCTAssertTrue(conversation.messages[0] === richMessage)
+        XCTAssertTrue(conversation.messages[1] === defaultMessage)
     }
 
     private func assertEnumValue<E: AnyObject>(

@@ -343,6 +343,37 @@ private val appleElicitationContentMap = AppleOrdinaryType(
     "NSDictionary<NSString *,id<CodexAgentAgentFormValue>> * _Nonnull",
     listOf("s:SS", "c:objc(pl)CodexAgentAgentFormValue"),
 )
+private val appleConversationSummaryType = appleClassType(
+    "AgentConversationSummary", "AgentConversationSummary", "CodexAgentAgentConversationSummary",
+    "\$sSo010CodexAgentB19ConversationSummaryCD",
+)
+private val appleMessageRoleType = appleClassType(
+    "AgentMessageRole", "AgentMessageRole", "CodexAgentAgentMessageRole",
+    "\$sSo010CodexAgentB11MessageRoleCD",
+)
+private val appleCollaborationModeType = appleClassType(
+    "AgentCollaborationMode", "AgentCollaborationMode", "CodexAgentAgentCollaborationMode",
+    "\$sSo010CodexAgentB17CollaborationModeCD",
+)
+private val appleCapabilitySet = AppleOrdinaryType(
+    "kotlin.collections/Set<INVARIANT:$appleCanonicalPackage/AgentCapability!!>!!",
+    "kotlin.collections.Set<$appleCanonicalAbiPackage.AgentCapability>",
+    "Set<AgentCapability>", "s:Sh", "\$sShySo010CodexAgentB10CapabilityCGD",
+    "NSSet<CodexAgentAgentCapability *> *", "c:Q\$objc(cs)NSSet",
+    "NSSet<CodexAgentAgentCapability *> * _Nonnull",
+    listOf("s:Sh", appleOwnerUsr("CodexAgentAgentCapability")),
+)
+private val appleInvocationList = AppleOrdinaryType(
+    "kotlin.collections/List<INVARIANT:$appleCanonicalPackage/AgentInvocation!!>!!",
+    "kotlin.collections.List<$appleCanonicalAbiPackage.AgentInvocation>",
+    "[any AgentInvocation]", "c:objc(pl)CodexAgentAgentInvocation",
+    "\$sSaySo010CodexAgentB10Invocation_pGD",
+    "NSArray<id<CodexAgentAgentInvocation>> *", "c:Q\$objc(cs)NSArray",
+    "NSArray<id<CodexAgentAgentInvocation>> * _Nonnull",
+)
+private val appleMessageList = appleClassListType(
+    "AgentMessage", "AgentMessage", "CodexAgentAgentMessage", "\$sSaySo010CodexAgentB7MessageCGD",
+)
 
 private fun appleEntries(vararg values: Pair<String, String>): List<Pair<String, String>> = values.toList()
 
@@ -1109,6 +1140,101 @@ private val d078AppleValues = listOf(
     ),
 )
 
+private val d079AppleValues = listOf(
+    AppleOrdinaryValue(
+        "AgentConversation", "AgentConversation", "CodexAgentAgentConversation",
+        "\$sySo010CodexAgentB12ConversationCSo0abbC7SummaryC_SaySo0abB7MessageCGtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("summary", appleConversationSummaryType),
+            AppleOrdinaryParameter(
+                "messages", appleMessageList, objectiveCAst = "NSArray<CodexAgentAgentMessage *> *",
+            ),
+        ), listOf(
+            AppleOrdinaryProperty("messages", appleMessageList),
+            AppleOrdinaryProperty("summary", appleConversationSummaryType),
+        ),
+    ),
+    AppleOrdinaryValue(
+        "AgentMessage", "AgentMessage", "CodexAgentAgentMessage",
+        "\$sySo010CodexAgentB7MessageCSS_SSSgSo0abbC4RoleCSSSo0abB17CollaborationModeCA3C" +
+            "So0aB3IntCSgShySo0abB10CapabilityCGSaySo0abB10Invocation_pGtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("id", appleString),
+            AppleOrdinaryParameter("clientMessageId", appleNullableString),
+            AppleOrdinaryParameter(
+                "role", appleMessageRoleType, objectiveCAst = "CodexAgentAgentMessageRole * _Nonnull",
+            ),
+            AppleOrdinaryParameter("text", appleString),
+            AppleOrdinaryParameter(
+                "collaborationMode", appleCollaborationModeType, hasDefault = true,
+                objectiveCAst = "CodexAgentAgentCollaborationMode * _Nonnull",
+            ),
+            AppleOrdinaryParameter("reasoning", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("plan", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("shellCommand", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("exitCode", appleNullableInt, hasDefault = true),
+            AppleOrdinaryParameter(
+                "capabilities", appleCapabilitySet, hasDefault = true,
+                objectiveCAst = "NSSet<CodexAgentAgentCapability *> *",
+            ),
+            AppleOrdinaryParameter(
+                "invocations", appleInvocationList, hasDefault = true,
+                objectiveCAst = "NSArray<id<CodexAgentAgentInvocation>> *",
+            ),
+        ), listOf(
+            AppleOrdinaryProperty("capabilities", appleCapabilitySet),
+            AppleOrdinaryProperty("clientMessageId", appleNullableString),
+            AppleOrdinaryProperty("collaborationMode", appleCollaborationModeType),
+            AppleOrdinaryProperty("exitCode", appleNullableInt),
+            AppleOrdinaryProperty("id", appleString),
+            AppleOrdinaryProperty("invocations", appleInvocationList),
+            AppleOrdinaryProperty("plan", appleNullableString),
+            AppleOrdinaryProperty("reasoning", appleNullableString),
+            AppleOrdinaryProperty("role", appleMessageRoleType),
+            AppleOrdinaryProperty("shellCommand", appleNullableString),
+            AppleOrdinaryProperty("text", appleString),
+        ),
+    ),
+    AppleOrdinaryValue(
+        "AgentTurnRequest", "AgentTurnRequest", "CodexAgentAgentTurnRequest",
+        "\$sySo010CodexAgentB11TurnRequestCSS_SSSgA3CSo0abB14ApprovalPresetCShySo0abB10CapabilityCG" +
+            "SaySo0abB10Invocation_pGSo0abB17CollaborationModeCtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("prompt", appleString),
+            AppleOrdinaryParameter("clientMessageId", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("model", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("effort", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("serviceTier", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter(
+                "approvalPreset", appleApprovalPresetType, hasDefault = true,
+                objectiveCAst = "CodexAgentAgentApprovalPreset * _Nonnull",
+            ),
+            AppleOrdinaryParameter(
+                "capabilities", appleCapabilitySet, hasDefault = true,
+                objectiveCAst = "NSSet<CodexAgentAgentCapability *> *",
+            ),
+            AppleOrdinaryParameter(
+                "invocations", appleInvocationList, hasDefault = true,
+                objectiveCAst = "NSArray<id<CodexAgentAgentInvocation>> *",
+            ),
+            AppleOrdinaryParameter(
+                "collaborationMode", appleCollaborationModeType, hasDefault = true,
+                objectiveCAst = "CodexAgentAgentCollaborationMode * _Nonnull",
+            ),
+        ), listOf(
+            AppleOrdinaryProperty("approvalPreset", appleApprovalPresetType),
+            AppleOrdinaryProperty("capabilities", appleCapabilitySet),
+            AppleOrdinaryProperty("clientMessageId", appleNullableString),
+            AppleOrdinaryProperty("collaborationMode", appleCollaborationModeType),
+            AppleOrdinaryProperty("effort", appleNullableString),
+            AppleOrdinaryProperty("invocations", appleInvocationList),
+            AppleOrdinaryProperty("model", appleNullableString),
+            AppleOrdinaryProperty("prompt", appleString),
+            AppleOrdinaryProperty("serviceTier", appleNullableString),
+        ),
+    ),
+)
+
 private fun appleEnumKey(owner: String, entry: String): String =
     "common|owner=$appleCanonicalPackage/$owner|kind=enum-entry|" +
         "abi=$appleCanonicalAbiPackage/$owner.$entry|null[0]"
@@ -1276,6 +1402,22 @@ private val d078OrdinaryCapabilities: List<AppleOrdinaryCapability> = buildList 
 }
 private val d078OrdinaryCapabilitiesByKey = d078OrdinaryCapabilities.associateBy { it.canonicalKey }
 
+private val d079OrdinaryCapabilities: List<AppleOrdinaryCapability> = buildList {
+    d079AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        add(AppleOrdinaryCapability(appleConstructorKey(owner), "${ownerUsr}(im)${owner.objectiveCSelector}"))
+        owner.properties.forEach { property ->
+            add(AppleOrdinaryCapability(
+                applePropertyKey(owner.canonicalOwner, property), "${ownerUsr}(py)${property.appleName}",
+            ))
+        }
+    }
+}.also { capabilities ->
+    check(capabilities.size == 25 && capabilities.map { it.canonicalKey }.distinct().size == 25 &&
+        capabilities.map { it.usr }.distinct().size == 25
+    ) { "D079 Apple ordinary capability inventory changed" }
+}
+private val d079OrdinaryCapabilitiesByKey = d079OrdinaryCapabilities.associateBy { it.canonicalKey }
 
 private val expectedAppleTests = listOf(
     "CodexAgentObservationTests/testBufferingCancellationAndDroppedStreamReleaseTheObservation()",
@@ -1485,6 +1627,30 @@ private fun d077ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol>
 
 private fun d078ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = buildMap {
     d078AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        put(ownerUsr, ExpectedAppleCompilerSymbol(
+            "swift.class", listOf(owner.swiftName), owner.swiftName, "public",
+            "class ${owner.swiftName}", emptyList(),
+        ))
+        val title = swiftConstructorTitle(owner.parameters)
+        put("$ownerUsr(im)${owner.objectiveCSelector}", ExpectedAppleCompilerSymbol(
+            "swift.init", listOf(owner.swiftName, title), title, "public",
+            "init(${owner.parameters.joinToString(", ") { "${it.name}: ${it.type.swift}" }})",
+            owner.parameters.flatMap { it.type.swiftIdentifiers },
+            owner.parameters.map { it.name to "${it.name}: ${it.type.swift}" },
+        ))
+        owner.properties.forEach { property ->
+            put("$ownerUsr(py)${property.appleName}", ExpectedAppleCompilerSymbol(
+                "swift.property", listOf(owner.swiftName, property.appleName), property.appleName, "open",
+                "var ${property.appleName}: ${property.type.swift} { get }",
+                property.type.swiftIdentifiers,
+            ))
+        }
+    }
+}
+
+private fun d079ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = buildMap {
+    d079AppleValues.forEach { owner ->
         val ownerUsr = appleOwnerUsr(owner.objectiveCName)
         put(ownerUsr, ExpectedAppleCompilerSymbol(
             "swift.class", listOf(owner.swiftName), owner.swiftName, "public",
@@ -1729,6 +1895,31 @@ private fun d078ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSy
     }
 }
 
+private fun d079ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = buildMap {
+    d079AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        put(ownerUsr, ExpectedAppleCompilerSymbol(
+            "objective-c.class", listOf(owner.objectiveCName), owner.objectiveCName, "public",
+            "@interface ${owner.objectiveCName} : CodexAgentBase", listOf("c:objc(cs)CodexAgentBase"),
+        ))
+        put("$ownerUsr(im)${owner.objectiveCSelector}", ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf(owner.objectiveCName, owner.objectiveCSelector),
+            owner.objectiveCSelector, "public", objectiveCConstructorDeclaration(owner),
+            owner.parameters.map { it.type.objectiveCIdentifier },
+            owner.parameters.map { it.name to "(${it.type.objectiveC}) ${it.name}" },
+            "instancetype",
+        ))
+        owner.properties.forEach { property ->
+            put("$ownerUsr(py)${property.appleName}", ExpectedAppleCompilerSymbol(
+                "objective-c.property", listOf(owner.objectiveCName, property.appleName),
+                property.appleName, "public",
+                "@property (readonly) ${property.type.objectiveC} ${property.appleName};",
+                listOf(property.type.objectiveCIdentifier),
+            ))
+        }
+    }
+}
+
 private fun Map<String, ExpectedAppleCompilerSymbol>.appleSymbols(interfaceLanguage: String): List<AppleCompilerSymbol> =
     map { (precise, symbol) ->
         AppleCompilerSymbol(
@@ -1769,7 +1960,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
     canonical.canonical.coverageReceiptSha256.appleSha256("canonical coverage receipt")
     canonical.targetSha256.getValue("native").appleSha256("canonical native target")
     val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-    check(capabilities.size == 396) { "Apple binding capability count changed" }
+    check(capabilities.size == 421) { "Apple binding capability count changed" }
     val usrByCapability = capabilities.associateWith(::appleBindingUsr)
 
     compilerEvidence.appleKeys(
@@ -1864,7 +2055,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
 
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
-    check(missing.size == 160) { "Apple partial binding gap count changed: ${missing.size}" }
+    check(missing.size == 135) { "Apple partial binding gap count changed: ${missing.size}" }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()
@@ -1975,7 +2166,7 @@ private fun appleLanguageEvidence(
         .filter { it.kind == "swift.class" }
         .map(AppleCompilerSymbol::precise)
         .toSet()
-    check(publicSymbols.size == 481 && referencedSymbols.size == 396 && ownerUsrs.size == 85 &&
+    check(publicSymbols.size == 509 && referencedSymbols.size == 421 && ownerUsrs.size == 88 &&
         referencedSymbols.toSet() == publicSymbols.toSet() - ownerUsrs
     ) { "$language Apple binding symbol/reference inventory changed" }
     put("language", JsonPrimitive(language))
@@ -2003,7 +2194,8 @@ private fun appleBindingUsr(capability: String): String =
         ?: d075OrdinaryCapabilitiesByKey[capability]?.usr
         ?: d076AuthorizationUrlCapabilitiesByKey[capability]?.usr
         ?: d077OrdinaryCapabilitiesByKey[capability]?.usr
-        ?: d078OrdinaryCapabilitiesByKey[capability]?.usr ?: when {
+        ?: d078OrdinaryCapabilitiesByKey[capability]?.usr
+        ?: d079OrdinaryCapabilitiesByKey[capability]?.usr ?: when {
     "|owner=io.github.codex_agent_labs.codexmobile.agent/CodexFailure|kind=constructor|" in capability ->
         appleFailureConstructorUsr
     "|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=constructor|" in capability ->
@@ -2145,7 +2337,8 @@ private fun expectedSwiftAppleBindingSurface(): List<AppleCompilerSymbol> = list
     .plus(d075ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d076ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d077ExpectedSwiftSymbols().appleSymbols("swift"))
-    .plus(d078ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
+    .plus(d078ExpectedSwiftSymbols().appleSymbols("swift"))
+    .plus(d079ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
 
 private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> = listOf(
     AppleCompilerSymbol(
@@ -2294,7 +2487,8 @@ private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> =
     .plus(d075ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d076ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d077ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
-    .plus(d078ExpectedObjectiveCSymbols().appleSymbols("objective-c")).sortedBy(AppleCompilerSymbol::precise)
+    .plus(d078ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
+    .plus(d079ExpectedObjectiveCSymbols().appleSymbols("objective-c")).sortedBy(AppleCompilerSymbol::precise)
 
 private fun d065ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = buildList {
     d065AppleEnums.forEach { owner ->
@@ -2505,6 +2699,31 @@ private fun d078ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerRe
     }
 }
 
+private fun d079ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = buildList {
+    d079AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        add(AppleCompilerReference("$ownerUsr(im)${owner.objectiveCSelector}", "declref_expr", "init", null,
+            owner.swiftConstructorAst, emptyList()))
+        owner.properties.forEach { property ->
+            add(AppleCompilerReference("$ownerUsr(py)${property.appleName}", "member_ref_expr",
+                property.appleName, null, property.type.swiftAst, emptyList()))
+        }
+    }
+}
+
+private fun d079ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = buildList {
+    d079AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        add(AppleCompilerReference("$ownerUsr(im)${owner.objectiveCSelector}", "ObjCMessageExpr",
+            owner.objectiveCSelector, owner.objectiveCName, "${owner.objectiveCName} *",
+            owner.parameters.map { it.objectiveCAst }))
+        owner.properties.forEach { property ->
+            add(AppleCompilerReference("$ownerUsr(py)${property.appleName}", "ObjCPropertyRefExpr",
+                property.appleName, "${owner.objectiveCName} *", "<pseudo-object type>", emptyList()))
+        }
+    }
+}
+
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
         appleFailureConstructorUsr, "declref_expr", "init", null,
@@ -2566,7 +2785,8 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     .plus(d075ExpectedSwiftAppleBindingReferences())
     .plus(d076ExpectedSwiftAppleBindingReferences())
     .plus(d077ExpectedSwiftAppleBindingReferences())
-    .plus(d078ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d078ExpectedSwiftAppleBindingReferences())
+    .plus(d079ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
@@ -2639,7 +2859,8 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     .plus(d075ExpectedObjectiveCAppleBindingReferences())
     .plus(d076ExpectedObjectiveCAppleBindingReferences())
     .plus(d077ExpectedObjectiveCAppleBindingReferences())
-    .plus(d078ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d078ExpectedObjectiveCAppleBindingReferences())
+    .plus(d079ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun JsonElement.appleSymbol(): AppleCompilerSymbol {
     val symbol = appleObject("Apple compiler symbol").also {

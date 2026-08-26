@@ -542,6 +542,138 @@ static NSString *CDXVerifyD078McpConfigurationValues(void) {
     return nil;
 }
 
+static NSString *CDXVerifyD079ConversationValues(void) {
+    CodexAgentConversationId *conversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"d079-conversation"];
+    CodexAgentAgentConversationSummary *summary = [[CodexAgentAgentConversationSummary alloc]
+        initWithConversationId:conversationId
+        title:@"D079 conversation"
+        updatedAtEpochSeconds:79];
+    CodexAgentAgentInvocationPlugin *pluginInvocation =
+        [[CodexAgentAgentInvocationPlugin alloc]
+            initWithName:@"review-plugin"
+            uri:@"plugin://review-plugin@marketplace"];
+    CodexAgentAgentInvocationSkill *skillInvocation =
+        [[CodexAgentAgentInvocationSkill alloc]
+            initWithName:@"review-skill"
+            path:@"/skills/review/SKILL.md"];
+    NSArray<id<CodexAgentAgentInvocation>> *invocations = @[pluginInvocation, skillInvocation];
+    CodexAgentAgentCapability *webSearch = [CodexAgentAgentCapability webSearch];
+    NSSet<CodexAgentAgentCapability *> *capabilities = [NSSet setWithObject:webSearch];
+    CodexAgentInt *exitCode = [CodexAgentInt numberWithInt:7];
+    CodexAgentAgentMessage *message = [[CodexAgentAgentMessage alloc]
+        initWithId:@"d079-message"
+        clientMessageId:@"d079-client-message"
+        role:[CodexAgentAgentMessageRole assistant]
+        text:@"D079 complete"
+        collaborationMode:[CodexAgentAgentCollaborationMode plan]
+        reasoning:@"Checked every value"
+        plan:@"Ship D079"
+        shellCommand:@"echo d079"
+        exitCode:exitCode
+        capabilities:capabilities
+        invocations:invocations];
+    if (![message.id isEqualToString:@"d079-message"] ||
+        ![message.clientMessageId isEqualToString:@"d079-client-message"] ||
+        message.role != [CodexAgentAgentMessageRole assistant] ||
+        ![message.text isEqualToString:@"D079 complete"] ||
+        message.collaborationMode != [CodexAgentAgentCollaborationMode plan] ||
+        ![message.reasoning isEqualToString:@"Checked every value"] ||
+        ![message.plan isEqualToString:@"Ship D079"] ||
+        ![message.shellCommand isEqualToString:@"echo d079"] ||
+        message.exitCode == nil || message.exitCode.intValue != 7 ||
+        message.capabilities.count != 1 || ![message.capabilities containsObject:webSearch] ||
+        message.invocations.count != 2 || message.invocations[0] != pluginInvocation ||
+        message.invocations[1] != skillInvocation) {
+        return @"Objective-C D079 rich message changed";
+    }
+    CodexAgentAgentInvocationPlugin *returnedPlugin =
+        (CodexAgentAgentInvocationPlugin *)message.invocations[0];
+    CodexAgentAgentInvocationSkill *returnedSkill =
+        (CodexAgentAgentInvocationSkill *)message.invocations[1];
+    if (![(id)returnedPlugin isKindOfClass:[CodexAgentAgentInvocationPlugin class]] ||
+        ![(id)returnedSkill isKindOfClass:[CodexAgentAgentInvocationSkill class]] ||
+        returnedPlugin != pluginInvocation || returnedSkill != skillInvocation) {
+        return @"Objective-C D079 invocation projection changed";
+    }
+
+    NSSet<CodexAgentAgentCapability *> *emptyCapabilities = [NSSet set];
+    NSArray<id<CodexAgentAgentInvocation>> *emptyInvocations = @[];
+    CodexAgentAgentMessage *defaultMessage = [[CodexAgentAgentMessage alloc]
+        initWithId:@"d079-default-message"
+        clientMessageId:nil
+        role:[CodexAgentAgentMessageRole user]
+        text:@"Default message"
+        collaborationMode:[CodexAgentAgentCollaborationMode default_]
+        reasoning:nil
+        plan:nil
+        shellCommand:nil
+        exitCode:nil
+        capabilities:emptyCapabilities
+        invocations:emptyInvocations];
+    if (defaultMessage.clientMessageId != nil ||
+        defaultMessage.collaborationMode != [CodexAgentAgentCollaborationMode default_] ||
+        defaultMessage.reasoning != nil || defaultMessage.plan != nil ||
+        defaultMessage.shellCommand != nil || defaultMessage.exitCode != nil ||
+        defaultMessage.capabilities.count != 0 || defaultMessage.invocations.count != 0) {
+        return @"Objective-C D079 message defaults changed";
+    }
+
+    CodexAgentAgentTurnRequest *request = [[CodexAgentAgentTurnRequest alloc]
+        initWithPrompt:@"Review D079"
+        clientMessageId:@"d079-request"
+        model:@"codex-model"
+        effort:@"high"
+        serviceTier:@"fast"
+        approvalPreset:[CodexAgentAgentApprovalPreset strict]
+        capabilities:capabilities
+        invocations:invocations
+        collaborationMode:[CodexAgentAgentCollaborationMode plan]];
+    if (![request.prompt isEqualToString:@"Review D079"] ||
+        ![request.clientMessageId isEqualToString:@"d079-request"] ||
+        ![request.model isEqualToString:@"codex-model"] ||
+        ![request.effort isEqualToString:@"high"] ||
+        ![request.serviceTier isEqualToString:@"fast"] ||
+        request.approvalPreset != [CodexAgentAgentApprovalPreset strict] ||
+        request.capabilities.count != 1 || ![request.capabilities containsObject:webSearch] ||
+        request.invocations.count != 2 || request.invocations[0] != pluginInvocation ||
+        request.invocations[1] != skillInvocation ||
+        request.collaborationMode != [CodexAgentAgentCollaborationMode plan]) {
+        return @"Objective-C D079 rich turn request changed";
+    }
+
+    CodexAgentAgentTurnRequest *defaultRequest = [[CodexAgentAgentTurnRequest alloc]
+        initWithPrompt:@"Default request"
+        clientMessageId:nil
+        model:nil
+        effort:nil
+        serviceTier:nil
+        approvalPreset:[CodexAgentAgentApprovalPreset autoReview]
+        capabilities:emptyCapabilities
+        invocations:emptyInvocations
+        collaborationMode:[CodexAgentAgentCollaborationMode default_]];
+    if (![defaultRequest.prompt isEqualToString:@"Default request"] ||
+        defaultRequest.clientMessageId != nil || defaultRequest.model != nil ||
+        defaultRequest.effort != nil || defaultRequest.serviceTier != nil ||
+        defaultRequest.approvalPreset != [CodexAgentAgentApprovalPreset autoReview] ||
+        defaultRequest.capabilities.count != 0 || defaultRequest.invocations.count != 0 ||
+        defaultRequest.collaborationMode != [CodexAgentAgentCollaborationMode default_]) {
+        return @"Objective-C D079 turn-request defaults changed";
+    }
+
+    NSArray<CodexAgentAgentMessage *> *messages = @[message, defaultMessage];
+    CodexAgentAgentConversation *conversation = [[CodexAgentAgentConversation alloc]
+        initWithSummary:summary
+        messages:messages];
+    if (conversation.summary != summary || conversation.messages.count != 2 ||
+        ![conversation.messages isEqualToArray:messages] ||
+        conversation.messages[0] != message || conversation.messages[1] != defaultMessage) {
+        return @"Objective-C D079 conversation projection changed";
+    }
+
+    return nil;
+}
+
 static NSString *CDXVerifyD073OrdinaryValues(void) {
     CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
         initWithId:@"connector-id"
@@ -1117,6 +1249,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d078Failure = CDXVerifyD078McpConfigurationValues();
     if (d078Failure != nil) {
         [self finishWithFailure:d078Failure];
+        return;
+    }
+    NSString *d079Failure = CDXVerifyD079ConversationValues();
+    if (d079Failure != nil) {
+        [self finishWithFailure:d079Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;
