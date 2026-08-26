@@ -294,6 +294,45 @@ static NSString *CDXVerifyD076AuthorizationUrls(void) {
     return nil;
 }
 
+static NSString *CDXVerifyD077McpServerValues(void) {
+    CodexAgentAgentMcpAuthStatus *oauth = [CodexAgentAgentMcpAuthStatus oauth];
+    CodexAgentAgentMcpAuthStatus *notLoggedIn = [CodexAgentAgentMcpAuthStatus notLoggedIn];
+    CodexAgentAgentResourceOrigin *workspace = [CodexAgentAgentResourceOrigin workspace];
+    CodexAgentAgentMcpServer *authorized = [[CodexAgentAgentMcpServer alloc]
+        initWithName:@"oauth-server"
+        displayName:@"OAuth Server"
+        authStatus:oauth
+        configuration:nil
+        origin:workspace
+        canRemove:YES];
+    if (![authorized.name isEqualToString:@"oauth-server"] ||
+        ![authorized.displayName isEqualToString:@"OAuth Server"] ||
+        authorized.authStatus != oauth || authorized.configuration != nil ||
+        authorized.origin != workspace || !authorized.canRemove || !authorized.isAuthorized) {
+        return @"Objective-C MCP server values changed";
+    }
+
+    CodexAgentAgentMcpServer *unauthorized = [[CodexAgentAgentMcpServer alloc]
+        initWithName:@"signed-out-server"
+        displayName:@"Signed-out Server"
+        authStatus:notLoggedIn
+        configuration:nil
+        origin:workspace
+        canRemove:NO];
+    if (unauthorized.authStatus != notLoggedIn || unauthorized.isAuthorized) {
+        return @"Objective-C MCP server authorization changed";
+    }
+
+    CodexAgentAgentIntegrationMcpServer *integration =
+        [[CodexAgentAgentIntegrationMcpServer alloc] initWithServer:authorized];
+    if (integration.server != authorized ||
+        ![integration.id isEqualToString:@"oauth-server"] ||
+        ![integration.displayName isEqualToString:@"OAuth Server"]) {
+        return @"Objective-C MCP server integration changed";
+    }
+    return nil;
+}
+
 static NSString *CDXVerifyD073OrdinaryValues(void) {
     CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
         initWithId:@"connector-id"
@@ -859,6 +898,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d076Failure = CDXVerifyD076AuthorizationUrls();
     if (d076Failure != nil) {
         [self finishWithFailure:d076Failure];
+        return;
+    }
+    NSString *d077Failure = CDXVerifyD077McpServerValues();
+    if (d077Failure != nil) {
+        [self finishWithFailure:d077Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;

@@ -68,6 +68,31 @@ static BOOL consumeD076AuthorizationUrls(
         external.purpose != nil;
 }
 
+static BOOL consumeD077McpServerValues(
+    CodexAgentAgentMcpAuthStatus *oauthStatus,
+    CodexAgentAgentResourceOrigin *workspaceOrigin
+) {
+    CodexAgentAgentMcpServer *server = [[CodexAgentAgentMcpServer alloc]
+        initWithName:@"compiler-mcp"
+        displayName:@"Compiler MCP"
+        authStatus:oauthStatus
+        configuration:nil
+        origin:workspaceOrigin
+        canRemove:YES];
+    CodexAgentAgentIntegrationMcpServer *integration =
+        [[CodexAgentAgentIntegrationMcpServer alloc] initWithServer:server];
+    return [server.name isEqualToString:@"compiler-mcp"] &&
+        [server.displayName isEqualToString:@"Compiler MCP"] &&
+        server.authStatus == oauthStatus &&
+        server.configuration == nil &&
+        server.origin == workspaceOrigin &&
+        server.canRemove &&
+        server.isAuthorized &&
+        integration.server == server &&
+        [integration.id isEqualToString:@"compiler-mcp"] &&
+        [integration.displayName isEqualToString:@"Compiler MCP"];
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

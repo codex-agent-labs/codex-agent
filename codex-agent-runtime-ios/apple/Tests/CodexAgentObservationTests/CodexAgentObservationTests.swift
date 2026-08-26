@@ -105,6 +105,7 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD073OrdinaryValues()
         assertD074OrdinaryValues()
         assertD075PendingValues()
+        assertD077McpServerValues()
 
         let authorizationUrlCompanion = CodexAuthorizationUrl.companion
         let chatGptAuthorizationUrl = authorizationUrlCompanion.chatGpt(
@@ -755,6 +756,39 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertTrue(pendingElicitation.conversationId === conversationId)
         XCTAssertTrue(pendingElicitation.elicitation === elicitation)
         XCTAssertEqual(pendingElicitation.requestId, "d075-elicitation")
+    }
+
+    private func assertD077McpServerValues() {
+        let oauthServer = AgentMcpServer(
+            name: "d077-oauth",
+            displayName: "D077 OAuth Server",
+            authStatus: .oauth,
+            configuration: nil,
+            origin: .workspace,
+            canRemove: true
+        )
+        XCTAssertEqual(oauthServer.name, "d077-oauth")
+        XCTAssertEqual(oauthServer.displayName, "D077 OAuth Server")
+        XCTAssertTrue(oauthServer.authStatus === AgentMcpAuthStatus.oauth)
+        XCTAssertNil(oauthServer.configuration)
+        XCTAssertTrue(oauthServer.origin === AgentResourceOrigin.workspace)
+        XCTAssertTrue(oauthServer.canRemove)
+        XCTAssertTrue(oauthServer.isAuthorized)
+
+        let signedOutServer = AgentMcpServer(
+            name: "d077-signed-out",
+            displayName: "D077 Signed-out Server",
+            authStatus: .notLoggedIn,
+            configuration: nil,
+            origin: .workspace,
+            canRemove: false
+        )
+        XCTAssertFalse(signedOutServer.isAuthorized)
+
+        let integration = AgentIntegrationMcpServer(server: oauthServer)
+        XCTAssertTrue(integration.server === oauthServer)
+        XCTAssertEqual(integration.id, "d077-oauth")
+        XCTAssertEqual(integration.displayName, "D077 OAuth Server")
     }
 
     private func assertEnumValue<E: AnyObject>(

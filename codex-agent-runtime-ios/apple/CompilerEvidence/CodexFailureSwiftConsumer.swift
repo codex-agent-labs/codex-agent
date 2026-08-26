@@ -761,3 +761,36 @@ func consumeD075AgentPendingElicitation(
     let pending = AgentPendingElicitation(elicitation: elicitation)
     return (pending, pending.conversationId, pending.elicitation, pending.requestId)
 }
+
+func consumeD077AgentMcpServer(
+    authStatus: AgentMcpAuthStatus,
+    configuration: AgentMcpServerConfiguration?,
+    origin: AgentResourceOrigin
+) -> (
+    AgentMcpServer, String, String, AgentMcpAuthStatus, AgentMcpServerConfiguration?,
+    AgentResourceOrigin, Bool, Bool, AgentIntegrationMcpServer, AgentMcpServer, String, String
+) {
+    let server = AgentMcpServer(
+        name: "compiler-server",
+        displayName: "Compiler Server",
+        authStatus: authStatus,
+        configuration: configuration,
+        origin: origin,
+        canRemove: true
+    )
+    let integration = AgentIntegrationMcpServer(server: server)
+    return (
+        server,
+        server.name,
+        server.displayName,
+        server.authStatus,
+        server.configuration,
+        server.origin,
+        server.canRemove,
+        server.isAuthorized,
+        integration,
+        integration.server,
+        integration.id,
+        integration.displayName
+    )
+}
