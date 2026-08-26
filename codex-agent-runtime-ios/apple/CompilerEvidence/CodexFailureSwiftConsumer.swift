@@ -1102,3 +1102,24 @@ func consumeD081SingletonObjects() -> (
         CodexHostStateRestoring.shared
     )
 }
+
+func consumeD082ElicitationHelpers(
+    elicitation: AgentElicitation,
+    field: AgentFormField,
+    value: (any AgentFormValue)?,
+    content: [String: any AgentFormValue],
+    response: AgentElicitationResponse,
+    companion: AgentElicitationResponse.Companion
+) -> (
+    AgentElicitationResponse, Bool, [String: any AgentFormValue], AgentElicitationValidation,
+    Bool, AgentElicitationResponse, AgentElicitationResponse
+) {
+    let accepted = elicitation.accept(content: content)
+    let accepts = elicitation.accepts(response: response)
+    let initialValues = elicitation.initialValues()
+    let validation = elicitation.validate(content: content)
+    let fieldAccepts = field.accepts(value: value)
+    let cancelled = companion.cancel()
+    let declined = companion.decline()
+    return (accepted, accepts, initialValues, validation, fieldAccepts, cancelled, declined)
+}

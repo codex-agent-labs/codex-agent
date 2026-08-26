@@ -110,6 +110,7 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD079ConversationValues()
         assertD080StateSnapshots()
         assertD081SingletonObjects()
+        assertD082ElicitationHelpers()
 
         let authorizationUrlCompanion = CodexAuthorizationUrl.companion
         let chatGptAuthorizationUrl = authorizationUrlCompanion.chatGpt(
@@ -1362,6 +1363,298 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertFalse(closed.isEqual(new))
         XCTAssertFalse(closed.isEqual(restoring))
         XCTAssertFalse(new.isEqual(restoring))
+    }
+
+    private func assertD082ElicitationHelpers() {
+        let alpha = AgentFormOption(value: "a", title: "Alpha", description: nil)
+        let beta = AgentFormOption(value: "b", title: "Beta", description: nil)
+        let defaultName = AgentFormValueText(value: "Ada")
+        var defaultSelections = ["a"]
+        let defaultMany = AgentFormValueTextList(value: defaultSelections)
+
+        let name = AgentFormField(
+            name: "name",
+            title: "Name",
+            description: nil,
+            isRequired: true,
+            type: .string,
+            options: [],
+            defaultValue: defaultName,
+            minimum: nil,
+            maximum: nil,
+            format: nil,
+            minimumLength: KotlinLong(value: 2),
+            maximumLength: KotlinLong(value: 4),
+            minimumSelections: nil,
+            maximumSelections: nil,
+            allowsOther: false,
+            isSecret: false
+        )
+        let email = AgentFormField(
+            name: "email",
+            title: "Email",
+            description: nil,
+            isRequired: false,
+            type: .string,
+            options: [],
+            defaultValue: nil,
+            minimum: nil,
+            maximum: nil,
+            format: .email,
+            minimumLength: nil,
+            maximumLength: nil,
+            minimumSelections: nil,
+            maximumSelections: nil,
+            allowsOther: false,
+            isSecret: false
+        )
+        let count = AgentFormField(
+            name: "count",
+            title: "Count",
+            description: nil,
+            isRequired: false,
+            type: .integer,
+            options: [],
+            defaultValue: nil,
+            minimum: KotlinDouble(value: 1),
+            maximum: KotlinDouble(value: 3),
+            format: nil,
+            minimumLength: nil,
+            maximumLength: nil,
+            minimumSelections: nil,
+            maximumSelections: nil,
+            allowsOther: false,
+            isSecret: false
+        )
+        let ratio = AgentFormField(
+            name: "ratio",
+            title: "Ratio",
+            description: nil,
+            isRequired: false,
+            type: .number,
+            options: [],
+            defaultValue: nil,
+            minimum: KotlinDouble(value: 0),
+            maximum: KotlinDouble(value: 1),
+            format: nil,
+            minimumLength: nil,
+            maximumLength: nil,
+            minimumSelections: nil,
+            maximumSelections: nil,
+            allowsOther: false,
+            isSecret: false
+        )
+        let enabled = AgentFormField(
+            name: "enabled",
+            title: "Enabled",
+            description: nil,
+            isRequired: false,
+            type: .boolean,
+            options: [],
+            defaultValue: nil,
+            minimum: nil,
+            maximum: nil,
+            format: nil,
+            minimumLength: nil,
+            maximumLength: nil,
+            minimumSelections: nil,
+            maximumSelections: nil,
+            allowsOther: false,
+            isSecret: false
+        )
+        let choice = AgentFormField(
+            name: "choice",
+            title: "Choice",
+            description: nil,
+            isRequired: false,
+            type: .singleSelect,
+            options: [alpha, beta],
+            defaultValue: nil,
+            minimum: nil,
+            maximum: nil,
+            format: nil,
+            minimumLength: nil,
+            maximumLength: nil,
+            minimumSelections: nil,
+            maximumSelections: nil,
+            allowsOther: false,
+            isSecret: false
+        )
+        let many = AgentFormField(
+            name: "many",
+            title: "Many",
+            description: nil,
+            isRequired: true,
+            type: .multiSelect,
+            options: [alpha, beta],
+            defaultValue: defaultMany,
+            minimum: nil,
+            maximum: nil,
+            format: nil,
+            minimumLength: nil,
+            maximumLength: nil,
+            minimumSelections: KotlinLong(value: 1),
+            maximumSelections: KotlinLong(value: 2),
+            allowsOther: false,
+            isSecret: false
+        )
+        let elicitation = AgentElicitation(
+            requestId: "d082-request",
+            serverName: "d082-server",
+            conversationId: ConversationId(value: "d082-conversation"),
+            message: "Configure D082",
+            form: [name, email, count, ratio, enabled, choice, many],
+            url: nil
+        )
+
+        let initialValues = elicitation.initialValues()
+        defaultSelections.append("b")
+        XCTAssertEqual(Set(initialValues.keys), Set(["name", "many"]))
+        XCTAssertEqual((initialValues["name"] as? AgentFormValueText)?.value, "Ada")
+        XCTAssertEqual((initialValues["many"] as? AgentFormValueTextList)?.value, ["a"])
+        XCTAssertNil(initialValues["email"])
+
+        let validContent: [String: any AgentFormValue] = [
+            "name": AgentFormValueText(value: "okay"),
+            "email": AgentFormValueText(value: "user@example.com"),
+            "count": AgentFormValueNumber(value: 2),
+            "ratio": AgentFormValueNumber(value: 0.5),
+            "enabled": AgentFormValueBooleanValue(value: true),
+            "choice": AgentFormValueText(value: "a"),
+            "many": AgentFormValueTextList(value: ["a", "b"]),
+        ]
+        let valid = elicitation.validate(content: validContent)
+        XCTAssertTrue(valid.isValid)
+        XCTAssertTrue(valid.issues.isEmpty)
+
+        var missingContent = validContent
+        missingContent.removeValue(forKey: "name")
+        let missing = elicitation.validate(content: missingContent)
+        XCTAssertEqual(missing.issues.count, 1)
+        XCTAssertEqual(missing.issues[0].fieldName, "name")
+        XCTAssertTrue(missing.issues[0].reason === AgentElicitationValidationReason.missingRequired)
+
+        var unknownContent = validContent
+        unknownContent["unknown"] = AgentFormValueText(value: "value")
+        let unknown = elicitation.validate(content: unknownContent)
+        XCTAssertEqual(unknown.issues.count, 1)
+        XCTAssertEqual(unknown.issues[0].fieldName, "unknown")
+        XCTAssertTrue(unknown.issues[0].reason === AgentElicitationValidationReason.unknownField)
+
+        let invalidValues: [(String, any AgentFormValue, AgentElicitationValidationReason)] = [
+            ("name", AgentFormValueNumber(value: 1), .invalidType),
+            ("count", AgentFormValueNumber(value: .nan), .nonFiniteNumber),
+            ("name", AgentFormValueText(value: "x"), .belowMinimum),
+            ("name", AgentFormValueText(value: "abcde"), .aboveMaximum),
+            ("count", AgentFormValueNumber(value: 1.5), .nonInteger),
+            ("email", AgentFormValueText(value: "invalid"), .invalidFormat),
+            ("choice", AgentFormValueText(value: "z"), .invalidSelection),
+            ("many", AgentFormValueTextList(value: ["a", "a"]), .duplicateSelection),
+        ]
+        for (fieldName, value, reason) in invalidValues {
+            var content = validContent
+            content[fieldName] = value
+            let validation = elicitation.validate(content: content)
+            XCTAssertEqual(validation.issues.count, 1)
+            XCTAssertEqual(validation.issues[0].fieldName, fieldName)
+            XCTAssertTrue(validation.issues[0].reason === reason)
+        }
+
+        var selected = ["a"]
+        let selectedValue = AgentFormValueTextList(value: selected)
+        var acceptedContent = validContent
+        acceptedContent["many"] = selectedValue
+        let accepted = elicitation.accept(content: acceptedContent)
+        selected.append("b")
+        XCTAssertTrue(accepted.action === AgentElicitationAction.accept)
+        XCTAssertEqual(Set(accepted.content.keys), Set(acceptedContent.keys))
+        XCTAssertEqual((accepted.content["name"] as? AgentFormValueText)?.value, "okay")
+        XCTAssertEqual((accepted.content["many"] as? AgentFormValueTextList)?.value, ["a"])
+        XCTAssertTrue(elicitation.accepts(response: accepted))
+
+        var invalidAcceptedContent = validContent
+        invalidAcceptedContent["name"] = AgentFormValueText(value: "")
+        let invalidAccepted = AgentElicitationResponse(
+            action: .accept,
+            content: invalidAcceptedContent
+        )
+        XCTAssertFalse(elicitation.accepts(response: invalidAccepted))
+
+        let companion = AgentElicitationResponse.companion
+        let cancelled = companion.cancel()
+        let declined = companion.decline()
+        XCTAssertTrue(cancelled.action === AgentElicitationAction.cancel)
+        XCTAssertTrue(cancelled.content.isEmpty)
+        XCTAssertTrue(declined.action === AgentElicitationAction.decline)
+        XCTAssertTrue(declined.content.isEmpty)
+        XCTAssertTrue(elicitation.accepts(response: cancelled))
+        XCTAssertTrue(elicitation.accepts(response: declined))
+        XCTAssertFalse(
+            elicitation.accepts(
+                response: AgentElicitationResponse(
+                    action: .cancel,
+                    content: ["name": AgentFormValueText(value: "okay")]
+                )
+            )
+        )
+        XCTAssertFalse(
+            elicitation.accepts(
+                response: AgentElicitationResponse(
+                    action: .decline,
+                    content: ["name": AgentFormValueText(value: "okay")]
+                )
+            )
+        )
+
+        let urlOnly = AgentElicitation(
+            requestId: "d082-url-request",
+            serverName: "d082-server",
+            conversationId: ConversationId(value: "d082-url-conversation"),
+            message: "Authorize D082",
+            form: nil,
+            url: "https://example.com/d082"
+        )
+        XCTAssertTrue(
+            urlOnly.accepts(response: AgentElicitationResponse(action: .accept, content: [:]))
+        )
+        XCTAssertFalse(
+            urlOnly.accepts(
+                response: AgentElicitationResponse(
+                    action: .accept,
+                    content: ["unexpected": AgentFormValueText(value: "value")]
+                )
+            )
+        )
+
+        XCTAssertFalse(name.accepts(value: nil))
+        XCTAssertTrue(name.accepts(value: AgentFormValueText(value: "okay")))
+        XCTAssertFalse(name.accepts(value: AgentFormValueText(value: " ")))
+        XCTAssertFalse(name.accepts(value: AgentFormValueText(value: "x")))
+        XCTAssertFalse(name.accepts(value: AgentFormValueText(value: "abcde")))
+        XCTAssertFalse(name.accepts(value: AgentFormValueBooleanValue(value: true)))
+        XCTAssertTrue(email.accepts(value: nil))
+        XCTAssertTrue(email.accepts(value: AgentFormValueText(value: "user@example.com")))
+        XCTAssertFalse(email.accepts(value: AgentFormValueText(value: "invalid")))
+        XCTAssertTrue(count.accepts(value: AgentFormValueNumber(value: 1)))
+        XCTAssertTrue(count.accepts(value: AgentFormValueNumber(value: 3)))
+        XCTAssertFalse(count.accepts(value: AgentFormValueNumber(value: 0)))
+        XCTAssertFalse(count.accepts(value: AgentFormValueNumber(value: 4)))
+        XCTAssertFalse(count.accepts(value: AgentFormValueNumber(value: 1.5)))
+        XCTAssertFalse(count.accepts(value: AgentFormValueNumber(value: .infinity)))
+        XCTAssertFalse(count.accepts(value: AgentFormValueText(value: "2")))
+        XCTAssertTrue(ratio.accepts(value: AgentFormValueNumber(value: 0.5)))
+        XCTAssertFalse(ratio.accepts(value: AgentFormValueText(value: "0.5")))
+        XCTAssertTrue(enabled.accepts(value: AgentFormValueBooleanValue(value: false)))
+        XCTAssertFalse(enabled.accepts(value: AgentFormValueText(value: "false")))
+        XCTAssertTrue(choice.accepts(value: AgentFormValueText(value: "a")))
+        XCTAssertFalse(choice.accepts(value: AgentFormValueText(value: "z")))
+        XCTAssertFalse(choice.accepts(value: AgentFormValueNumber(value: 1)))
+        XCTAssertTrue(many.accepts(value: AgentFormValueTextList(value: ["a", "b"])))
+        XCTAssertFalse(many.accepts(value: AgentFormValueTextList(value: [])))
+        XCTAssertFalse(many.accepts(value: AgentFormValueTextList(value: ["a", "a"])))
+        XCTAssertFalse(many.accepts(value: AgentFormValueTextList(value: ["z"])))
+        XCTAssertFalse(many.accepts(value: AgentFormValueTextList(value: ["a", "b", "a"])))
+        XCTAssertFalse(many.accepts(value: AgentFormValueText(value: "a")))
     }
 
     private func assertEnumValue<E: AnyObject>(

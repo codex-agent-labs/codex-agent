@@ -1697,6 +1697,66 @@ private val d081Capabilities = d081AppleObjects.map { (canonicalOwner, objective
 }
 private val d081CapabilitiesByKey = d081Capabilities.associateBy { it.canonicalKey }
 
+private val d082ElicitationCapabilities = listOf(
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/AgentElicitationResponse.Companion|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/AgentElicitationResponse.Companion.cancel|cancel(){}[0]|" +
+            "return=$appleCanonicalPackage/AgentElicitationResponse!!|suspend=false|parameters=[]",
+        "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)cancel",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/AgentElicitationResponse.Companion|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/AgentElicitationResponse.Companion.decline|decline(){}[0]|" +
+            "return=$appleCanonicalPackage/AgentElicitationResponse!!|suspend=false|parameters=[]",
+        "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)decline",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/AgentElicitation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/AgentElicitation.accepts|" +
+            "accepts($appleCanonicalAbiPackage.AgentElicitationResponse){}[0]|return=kotlin/Boolean!!|" +
+            "suspend=false|parameters=[REGULAR:$appleCanonicalPackage/AgentElicitationResponse!!:" +
+            "default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptsResponse:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/AgentElicitation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/AgentElicitation.accept|" +
+            "accept(kotlin.collections.Map<kotlin.String,$appleCanonicalAbiPackage.AgentFormValue>){}[0]|" +
+            "return=$appleCanonicalPackage/AgentElicitationResponse!!|suspend=false|" +
+            "parameters=[REGULAR:kotlin.collections/Map<INVARIANT:kotlin/String!!," +
+            "INVARIANT:$appleCanonicalPackage/AgentFormValue!!>!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptContent:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/AgentElicitation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/AgentElicitation.initialValues|initialValues(){}[0]|" +
+            "return=kotlin.collections/Map<INVARIANT:kotlin/String!!," +
+            "INVARIANT:$appleCanonicalPackage/AgentFormValue!!>!!|suspend=false|parameters=[]",
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)initialValues",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/AgentElicitation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/AgentElicitation.validate|" +
+            "validate(kotlin.collections.Map<kotlin.String,$appleCanonicalAbiPackage.AgentFormValue>){}[0]|" +
+            "return=$appleCanonicalPackage/AgentElicitationValidation!!|suspend=false|" +
+            "parameters=[REGULAR:kotlin.collections/Map<INVARIANT:kotlin/String!!," +
+            "INVARIANT:$appleCanonicalPackage/AgentFormValue!!>!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)validateContent:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/AgentFormField|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/AgentFormField.accepts|" +
+            "accepts($appleCanonicalAbiPackage.AgentFormValue?){}[0]|return=kotlin/Boolean!!|suspend=false|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentFormValue?:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentAgentFormField")}(im)acceptsValue:",
+    ),
+).also { capabilities ->
+    check(capabilities.size == 7 && capabilities.map { it.canonicalKey }.distinct().size == 7 &&
+        capabilities.map { it.usr }.distinct().size == 7
+    ) { "D082 Apple elicitation capability inventory changed" }
+}
+private val d082ElicitationCapabilitiesByKey = d082ElicitationCapabilities.associateBy { it.canonicalKey }
+
 private val expectedAppleTests = listOf(
     "CodexAgentObservationTests/testBufferingCancellationAndDroppedStreamReleaseTheObservation()",
     swiftFailureTest,
@@ -2003,6 +2063,63 @@ private fun d081ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol>
     }
 }
 
+private fun d082ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion") to ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("AgentElicitationResponse", "Companion"),
+        "AgentElicitationResponse.Companion", "public", "class Companion", emptyList(),
+    ),
+    "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)cancel" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("AgentElicitationResponse", "Companion", "cancel()"),
+            "cancel()", "open", "func cancel() -> AgentElicitationResponse",
+            listOf(appleOwnerUsr("CodexAgentAgentElicitationResponse")), emptyList(),
+            "AgentElicitationResponse",
+        ),
+    "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)decline" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("AgentElicitationResponse", "Companion", "decline()"),
+            "decline()", "open", "func decline() -> AgentElicitationResponse",
+            listOf(appleOwnerUsr("CodexAgentAgentElicitationResponse")), emptyList(),
+            "AgentElicitationResponse",
+        ),
+    "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptContent:" to ExpectedAppleCompilerSymbol(
+        "swift.method", listOf("AgentElicitation", "accept(content:)"), "accept(content:)", "open",
+        "func accept(content: [String : any AgentFormValue]) -> AgentElicitationResponse",
+        listOf(
+            "s:SS", "c:objc(pl)CodexAgentAgentFormValue",
+            appleOwnerUsr("CodexAgentAgentElicitationResponse"),
+        ),
+        listOf("content" to "content: [String : any AgentFormValue]"), "AgentElicitationResponse",
+    ),
+    "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptsResponse:" to ExpectedAppleCompilerSymbol(
+        "swift.method", listOf("AgentElicitation", "accepts(response:)"), "accepts(response:)", "open",
+        "func accepts(response: AgentElicitationResponse) -> Bool",
+        listOf(appleOwnerUsr("CodexAgentAgentElicitationResponse"), "s:Sb"),
+        listOf("response" to "response: AgentElicitationResponse"), "Bool",
+    ),
+    "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)initialValues" to ExpectedAppleCompilerSymbol(
+        "swift.method", listOf("AgentElicitation", "initialValues()"), "initialValues()", "open",
+        "func initialValues() -> [String : any AgentFormValue]",
+        listOf("s:SS", "c:objc(pl)CodexAgentAgentFormValue"), emptyList(),
+        "[String : any AgentFormValue]",
+    ),
+    "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)validateContent:" to ExpectedAppleCompilerSymbol(
+        "swift.method", listOf("AgentElicitation", "validate(content:)"), "validate(content:)", "open",
+        "func validate(content: [String : any AgentFormValue]) -> AgentElicitationValidation",
+        listOf(
+            "s:SS", "c:objc(pl)CodexAgentAgentFormValue",
+            appleOwnerUsr("CodexAgentAgentElicitationValidation"),
+        ),
+        listOf("content" to "content: [String : any AgentFormValue]"), "AgentElicitationValidation",
+    ),
+    "${appleOwnerUsr("CodexAgentAgentFormField")}(im)acceptsValue:" to ExpectedAppleCompilerSymbol(
+        "swift.method", listOf("AgentFormField", "accepts(value:)"), "accepts(value:)", "open",
+        "func accepts(value: (any AgentFormValue)?) -> Bool",
+        listOf("c:objc(pl)CodexAgentAgentFormValue", "s:Sb"),
+        listOf("value" to "value: (any AgentFormValue)?"), "Bool",
+    ),
+)
+
 private fun objectiveCConstructorDeclaration(owner: AppleOrdinaryValue): String {
     val parameters = owner.parameters.mapIndexed { index, parameter ->
         val selector = if (index == 0) {
@@ -2305,6 +2422,71 @@ private fun d081ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSy
     }
 }
 
+private fun d082ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion") to ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentAgentElicitationResponseCompanion"),
+        "CodexAgentAgentElicitationResponseCompanion", "public",
+        "@interface CodexAgentAgentElicitationResponseCompanion : CodexAgentBase",
+        listOf("c:objc(cs)CodexAgentBase"),
+    ),
+    "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)cancel" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentAgentElicitationResponseCompanion", "cancel"),
+            "cancel", "public", "- (CodexAgentAgentElicitationResponse *) cancel;",
+            listOf(appleOwnerUsr("CodexAgentAgentElicitationResponse")), emptyList(),
+            "CodexAgentAgentElicitationResponse *",
+        ),
+    "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)decline" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentAgentElicitationResponseCompanion", "decline"),
+            "decline", "public", "- (CodexAgentAgentElicitationResponse *) decline;",
+            listOf(appleOwnerUsr("CodexAgentAgentElicitationResponse")), emptyList(),
+            "CodexAgentAgentElicitationResponse *",
+        ),
+    "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptContent:" to ExpectedAppleCompilerSymbol(
+        "objective-c.method", listOf("CodexAgentAgentElicitation", "acceptContent:"),
+        "acceptContent:", "public",
+        "- (CodexAgentAgentElicitationResponse *) " +
+            "acceptContent:(NSDictionary<NSString *,id<CodexAgentAgentFormValue>> *) content;",
+        listOf(
+            appleOwnerUsr("CodexAgentAgentElicitationResponse"), "c:Q\$objc(cs)NSDictionary",
+        ),
+        listOf("content" to "(NSDictionary<NSString *,id<CodexAgentAgentFormValue>> *) content"),
+        "CodexAgentAgentElicitationResponse *",
+    ),
+    "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptsResponse:" to ExpectedAppleCompilerSymbol(
+        "objective-c.method", listOf("CodexAgentAgentElicitation", "acceptsResponse:"),
+        "acceptsResponse:", "public",
+        "- (BOOL) acceptsResponse:(CodexAgentAgentElicitationResponse *) response;",
+        listOf("c:@T@BOOL", appleOwnerUsr("CodexAgentAgentElicitationResponse")),
+        listOf("response" to "(CodexAgentAgentElicitationResponse *) response"), "BOOL",
+    ),
+    "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)initialValues" to ExpectedAppleCompilerSymbol(
+        "objective-c.method", listOf("CodexAgentAgentElicitation", "initialValues"),
+        "initialValues", "public",
+        "- (NSDictionary<NSString *,id<CodexAgentAgentFormValue>> *) initialValues;",
+        listOf("c:Q\$objc(cs)NSDictionary"), emptyList(),
+        "NSDictionary<NSString *,id<CodexAgentAgentFormValue>> *",
+    ),
+    "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)validateContent:" to ExpectedAppleCompilerSymbol(
+        "objective-c.method", listOf("CodexAgentAgentElicitation", "validateContent:"),
+        "validateContent:", "public",
+        "- (CodexAgentAgentElicitationValidation *) " +
+            "validateContent:(NSDictionary<NSString *,id<CodexAgentAgentFormValue>> *) content;",
+        listOf(
+            appleOwnerUsr("CodexAgentAgentElicitationValidation"), "c:Q\$objc(cs)NSDictionary",
+        ),
+        listOf("content" to "(NSDictionary<NSString *,id<CodexAgentAgentFormValue>> *) content"),
+        "CodexAgentAgentElicitationValidation *",
+    ),
+    "${appleOwnerUsr("CodexAgentAgentFormField")}(im)acceptsValue:" to ExpectedAppleCompilerSymbol(
+        "objective-c.method", listOf("CodexAgentAgentFormField", "acceptsValue:"),
+        "acceptsValue:", "public", "- (BOOL) acceptsValue:(id<CodexAgentAgentFormValue>) value;",
+        listOf("c:@T@BOOL", "c:Qoobjc(pl)CodexAgentAgentFormValue"),
+        listOf("value" to "(id<CodexAgentAgentFormValue>) value"), "BOOL",
+    ),
+)
+
 private fun Map<String, ExpectedAppleCompilerSymbol>.appleSymbols(interfaceLanguage: String): List<AppleCompilerSymbol> =
     map { (precise, symbol) ->
         AppleCompilerSymbol(
@@ -2345,7 +2527,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
     canonical.canonical.coverageReceiptSha256.appleSha256("canonical coverage receipt")
     canonical.targetSha256.getValue("native").appleSha256("canonical native target")
     val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-    check(capabilities.size == 456) { "Apple binding capability count changed" }
+    check(capabilities.size == 463) { "Apple binding capability count changed" }
     val usrByCapability = capabilities.associateWith(::appleBindingUsr)
 
     compilerEvidence.appleKeys(
@@ -2440,7 +2622,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
 
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
-    check(missing.size == 100) { "Apple partial binding gap count changed: ${missing.size}" }
+    check(missing.size == 93) { "Apple partial binding gap count changed: ${missing.size}" }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()
@@ -2551,7 +2733,7 @@ private fun appleLanguageEvidence(
         .filter { it.kind == "swift.class" }
         .map(AppleCompilerSymbol::precise)
         .toSet()
-    check(publicSymbols.size == 555 && referencedSymbols.size == 456 && ownerUsrs.size == 99 &&
+    check(publicSymbols.size == 563 && referencedSymbols.size == 463 && ownerUsrs.size == 100 &&
         referencedSymbols.toSet() == publicSymbols.toSet() - ownerUsrs
     ) { "$language Apple binding symbol/reference inventory changed" }
     put("language", JsonPrimitive(language))
@@ -2582,7 +2764,8 @@ private fun appleBindingUsr(capability: String): String =
         ?: d078OrdinaryCapabilitiesByKey[capability]?.usr
         ?: d079OrdinaryCapabilitiesByKey[capability]?.usr
         ?: d080CapabilitiesByKey[capability]?.usr
-        ?: d081CapabilitiesByKey[capability]?.usr ?: when {
+        ?: d081CapabilitiesByKey[capability]?.usr
+        ?: d082ElicitationCapabilitiesByKey[capability]?.usr ?: when {
     "|owner=io.github.codex_agent_labs.codexmobile.agent/CodexFailure|kind=constructor|" in capability ->
         appleFailureConstructorUsr
     "|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=constructor|" in capability ->
@@ -2727,7 +2910,8 @@ private fun expectedSwiftAppleBindingSurface(): List<AppleCompilerSymbol> = list
     .plus(d078ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d079ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d080ExpectedSwiftSymbols().appleSymbols("swift"))
-    .plus(d081ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
+    .plus(d081ExpectedSwiftSymbols().appleSymbols("swift"))
+    .plus(d082ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
 
 private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> = listOf(
     AppleCompilerSymbol(
@@ -2879,7 +3063,8 @@ private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> =
     .plus(d078ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d079ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d080ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
-    .plus(d081ExpectedObjectiveCSymbols().appleSymbols("objective-c")).sortedBy(AppleCompilerSymbol::precise)
+    .plus(d081ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
+    .plus(d082ExpectedObjectiveCSymbols().appleSymbols("objective-c")).sortedBy(AppleCompilerSymbol::precise)
 
 private fun d065ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = buildList {
     d065AppleEnums.forEach { owner ->
@@ -3177,6 +3362,86 @@ private fun d081ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerRe
         )
     }
 
+private fun d082ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptContent:",
+        "declref_expr", "accept", null,
+        "\$sySo010CodexAgentB19ElicitationResponseCSDySSSo0abB9FormValue_pG_tcSo0abbC0CcD",
+        emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptsResponse:",
+        "declref_expr", "accepts", null,
+        "\$sySbSo010CodexAgentB19ElicitationResponseC_tcSo0abbC0CcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)initialValues",
+        "declref_expr", "initialValues", null,
+        "\$sySDySSSo010CodexAgentB9FormValue_pGycSo0abB11ElicitationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)validateContent:",
+        "declref_expr", "validate", null,
+        "\$sySo010CodexAgentB21ElicitationValidationCSDySSSo0abB9FormValue_pG_tcSo0abbC0CcD",
+        emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentFormField")}(im)acceptsValue:",
+        "declref_expr", "accepts", null,
+        "\$sySbSo010CodexAgentB9FormValue_pSg_tcSo0abbC5FieldCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)cancel",
+        "declref_expr", "cancel", null,
+        "\$sySo010CodexAgentB19ElicitationResponseCycSo0abbcD9CompanionCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)decline",
+        "declref_expr", "decline", null,
+        "\$sySo010CodexAgentB19ElicitationResponseCycSo0abbcD9CompanionCcD", emptyList(),
+    ),
+)
+
+private fun d082ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptContent:",
+        "ObjCMessageExpr", "acceptContent:", "CodexAgentAgentElicitation *",
+        "CodexAgentAgentElicitationResponse *",
+        listOf("NSDictionary<NSString *,id<CodexAgentAgentFormValue>> *"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)acceptsResponse:",
+        "ObjCMessageExpr", "acceptsResponse:", "CodexAgentAgentElicitation *", "BOOL",
+        listOf("CodexAgentAgentElicitationResponse *"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)initialValues",
+        "ObjCMessageExpr", "initialValues", "CodexAgentAgentElicitation *",
+        "NSDictionary<NSString *,id<CodexAgentAgentFormValue>> *", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitation")}(im)validateContent:",
+        "ObjCMessageExpr", "validateContent:", "CodexAgentAgentElicitation *",
+        "CodexAgentAgentElicitationValidation *",
+        listOf("NSDictionary<NSString *,id<CodexAgentAgentFormValue>> *"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentFormField")}(im)acceptsValue:",
+        "ObjCMessageExpr", "acceptsValue:", "CodexAgentAgentFormField *", "BOOL",
+        listOf("id<CodexAgentAgentFormValue>"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)cancel",
+        "ObjCMessageExpr", "cancel", "CodexAgentAgentElicitationResponseCompanion *",
+        "CodexAgentAgentElicitationResponse *", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentAgentElicitationResponseCompanion")}(im)decline",
+        "ObjCMessageExpr", "decline", "CodexAgentAgentElicitationResponseCompanion *",
+        "CodexAgentAgentElicitationResponse *", emptyList(),
+    ),
+)
+
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
         appleFailureConstructorUsr, "declref_expr", "init", null,
@@ -3241,7 +3506,8 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     .plus(d078ExpectedSwiftAppleBindingReferences())
     .plus(d079ExpectedSwiftAppleBindingReferences())
     .plus(d080ExpectedSwiftAppleBindingReferences())
-    .plus(d081ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d081ExpectedSwiftAppleBindingReferences())
+    .plus(d082ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
@@ -3317,7 +3583,8 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     .plus(d078ExpectedObjectiveCAppleBindingReferences())
     .plus(d079ExpectedObjectiveCAppleBindingReferences())
     .plus(d080ExpectedObjectiveCAppleBindingReferences())
-    .plus(d081ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d081ExpectedObjectiveCAppleBindingReferences())
+    .plus(d082ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun JsonElement.appleSymbol(): AppleCompilerSymbol {
     val symbol = appleObject("Apple compiler symbol").also {

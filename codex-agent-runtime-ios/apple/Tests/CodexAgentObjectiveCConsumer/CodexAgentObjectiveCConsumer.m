@@ -1,6 +1,7 @@
 #import "CodexAgentObjectiveCConsumer.h"
 
 #import <CodexAgent/CodexAgent.h>
+#include <math.h>
 
 #define CDX_VERIFY_ENUM(TYPE, SELECTOR, EXPECTED_NAME, EXPECTED_ORDINAL) do { \
     TYPE *value = [TYPE SELECTOR]; \
@@ -1039,6 +1040,432 @@ static NSString *CDXVerifyD081SingletonObjects(void) {
     return nil;
 }
 
+static NSString *CDXVerifyD082ElicitationHelpers(
+    CodexAgentAgentElicitationResponseCompanion *companion
+) {
+    CodexAgentConversationId *conversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"d082-conversation"];
+    CodexAgentAgentFormOption *optionA = [[CodexAgentAgentFormOption alloc]
+        initWithValue:@"a" title:@"A" description:nil];
+    CodexAgentAgentFormOption *optionB = [[CodexAgentAgentFormOption alloc]
+        initWithValue:@"b" title:@"B" description:nil];
+    CodexAgentAgentFormOption *optionC = [[CodexAgentAgentFormOption alloc]
+        initWithValue:@"c" title:@"C" description:nil];
+    NSArray<CodexAgentAgentFormOption *> *options = @[optionA, optionB, optionC];
+    CodexAgentLong *minimumNameLength = [CodexAgentLong numberWithLongLong:2];
+    CodexAgentLong *maximumNameLength = [CodexAgentLong numberWithLongLong:4];
+    CodexAgentDouble *minimumNumber = [CodexAgentDouble numberWithDouble:0.0];
+    CodexAgentDouble *maximumNumber = [CodexAgentDouble numberWithDouble:1.0];
+    CodexAgentDouble *minimumInteger = [CodexAgentDouble numberWithDouble:1.0];
+    CodexAgentDouble *maximumInteger = [CodexAgentDouble numberWithDouble:3.0];
+    CodexAgentLong *minimumSelections = [CodexAgentLong numberWithLongLong:1];
+    CodexAgentLong *maximumSelections = [CodexAgentLong numberWithLongLong:2];
+    NSMutableArray<NSString *> *defaultSelections = [NSMutableArray arrayWithObject:@"a"];
+    CodexAgentAgentFormValueNumber *defaultCount =
+        [[CodexAgentAgentFormValueNumber alloc] initWithValue:2.0];
+    CodexAgentAgentFormValueTextList *defaultManyValue =
+        [[CodexAgentAgentFormValueTextList alloc] initWithValue:defaultSelections];
+
+    CodexAgentAgentFormField *name = [[CodexAgentAgentFormField alloc]
+        initWithName:@"name"
+        title:@"Name"
+        description:nil
+        isRequired:YES
+        type:[CodexAgentAgentFormFieldType string]
+        options:@[]
+        defaultValue:nil
+        minimum:nil
+        maximum:nil
+        format:nil
+        minimumLength:minimumNameLength
+        maximumLength:maximumNameLength
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *email = [[CodexAgentAgentFormField alloc]
+        initWithName:@"email"
+        title:@"Email"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType string]
+        options:@[]
+        defaultValue:nil
+        minimum:nil
+        maximum:nil
+        format:[CodexAgentAgentFormStringFormat email]
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *uri = [[CodexAgentAgentFormField alloc]
+        initWithName:@"uri"
+        title:@"URI"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType string]
+        options:@[]
+        defaultValue:nil
+        minimum:nil
+        maximum:nil
+        format:[CodexAgentAgentFormStringFormat uri]
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *date = [[CodexAgentAgentFormField alloc]
+        initWithName:@"date"
+        title:@"Date"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType string]
+        options:@[]
+        defaultValue:nil
+        minimum:nil
+        maximum:nil
+        format:[CodexAgentAgentFormStringFormat date]
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *timestamp = [[CodexAgentAgentFormField alloc]
+        initWithName:@"timestamp"
+        title:@"Timestamp"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType string]
+        options:@[]
+        defaultValue:nil
+        minimum:nil
+        maximum:nil
+        format:[CodexAgentAgentFormStringFormat dateTime]
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *count = [[CodexAgentAgentFormField alloc]
+        initWithName:@"count"
+        title:@"Count"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType integer]
+        options:@[]
+        defaultValue:defaultCount
+        minimum:minimumInteger
+        maximum:maximumInteger
+        format:nil
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *ratio = [[CodexAgentAgentFormField alloc]
+        initWithName:@"ratio"
+        title:@"Ratio"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType number]
+        options:@[]
+        defaultValue:nil
+        minimum:minimumNumber
+        maximum:maximumNumber
+        format:nil
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *enabled = [[CodexAgentAgentFormField alloc]
+        initWithName:@"enabled"
+        title:@"Enabled"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType boolean]
+        options:@[]
+        defaultValue:nil
+        minimum:nil
+        maximum:nil
+        format:nil
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *choice = [[CodexAgentAgentFormField alloc]
+        initWithName:@"choice"
+        title:@"Choice"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType singleSelect]
+        options:options
+        defaultValue:nil
+        minimum:nil
+        maximum:nil
+        format:nil
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *otherChoice = [[CodexAgentAgentFormField alloc]
+        initWithName:@"other"
+        title:@"Other"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType singleSelect]
+        options:@[optionA]
+        defaultValue:nil
+        minimum:nil
+        maximum:nil
+        format:nil
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:YES
+        isSecret:NO];
+    CodexAgentAgentFormField *many = [[CodexAgentAgentFormField alloc]
+        initWithName:@"many"
+        title:@"Many"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType multiSelect]
+        options:options
+        defaultValue:nil
+        minimum:nil
+        maximum:nil
+        format:nil
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:minimumSelections
+        maximumSelections:maximumSelections
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentFormField *defaultMany = [[CodexAgentAgentFormField alloc]
+        initWithName:@"default_many"
+        title:@"Default many"
+        description:nil
+        isRequired:NO
+        type:[CodexAgentAgentFormFieldType multiSelect]
+        options:@[optionA, optionB]
+        defaultValue:defaultManyValue
+        minimum:nil
+        maximum:nil
+        format:nil
+        minimumLength:nil
+        maximumLength:nil
+        minimumSelections:nil
+        maximumSelections:nil
+        allowsOther:NO
+        isSecret:NO];
+    CodexAgentAgentElicitation *elicitation = [[CodexAgentAgentElicitation alloc]
+        initWithRequestId:@"d082-request"
+        serverName:@"d082-server"
+        conversationId:conversationId
+        message:@"Configure"
+        form:@[name, email, uri, date, timestamp, count, ratio, enabled, choice, many, defaultMany]
+        url:nil];
+
+    NSDictionary<NSString *, id<CodexAgentAgentFormValue>> *initialValues =
+        [elicitation initialValues];
+    CodexAgentAgentFormValueNumber *initialCount =
+        (CodexAgentAgentFormValueNumber *)initialValues[@"count"];
+    CodexAgentAgentFormValueTextList *initialMany =
+        (CodexAgentAgentFormValueTextList *)initialValues[@"default_many"];
+    [defaultSelections addObject:@"b"];
+    if (initialValues.count != 2 || initialValues[@"name"] != nil ||
+        ![(id)initialCount isKindOfClass:[CodexAgentAgentFormValueNumber class]] ||
+        initialCount.value != 2.0 ||
+        ![(id)initialMany isKindOfClass:[CodexAgentAgentFormValueTextList class]] ||
+        ![initialMany.value isEqualToArray:@[@"a"]]) {
+        return @"Objective-C D082 initial-value snapshot changed";
+    }
+
+    CodexAgentAgentFormValueText *validName =
+        [[CodexAgentAgentFormValueText alloc] initWithValue:@"Ada"];
+    CodexAgentAgentFormValueBooleanValue *trueValue =
+        [[CodexAgentAgentFormValueBooleanValue alloc] initWithValue:YES];
+    CodexAgentAgentFormValueNumber *validRatio =
+        [[CodexAgentAgentFormValueNumber alloc] initWithValue:0.5];
+    CodexAgentAgentFormValueNumber *validInteger =
+        [[CodexAgentAgentFormValueNumber alloc] initWithValue:2.0];
+    CodexAgentAgentFormValueText *validEmail =
+        [[CodexAgentAgentFormValueText alloc] initWithValue:@"user@example.com"];
+    CodexAgentAgentFormValueText *validUri =
+        [[CodexAgentAgentFormValueText alloc] initWithValue:@"https://example.com"];
+    CodexAgentAgentFormValueText *validDate =
+        [[CodexAgentAgentFormValueText alloc] initWithValue:@"2024-02-29"];
+    CodexAgentAgentFormValueText *validTimestamp =
+        [[CodexAgentAgentFormValueText alloc] initWithValue:@"2026-01-01T12:00:00.123+01:00"];
+    CodexAgentAgentFormValueText *selectedA =
+        [[CodexAgentAgentFormValueText alloc] initWithValue:@"a"];
+    NSMutableArray<NSString *> *selectedValues = [NSMutableArray arrayWithObject:@"a"];
+    CodexAgentAgentFormValueTextList *selectedMany =
+        [[CodexAgentAgentFormValueTextList alloc] initWithValue:selectedValues];
+
+    if (![name acceptsValue:validName] || [name acceptsValue:nil] ||
+        [name acceptsValue:[[CodexAgentAgentFormValueText alloc] initWithValue:@"x"]] ||
+        [name acceptsValue:[[CodexAgentAgentFormValueText alloc] initWithValue:@"abcde"]] ||
+        [name acceptsValue:trueValue] || ![ratio acceptsValue:nil] ||
+        ![ratio acceptsValue:validRatio] ||
+        [ratio acceptsValue:[[CodexAgentAgentFormValueNumber alloc] initWithValue:-0.1]] ||
+        [ratio acceptsValue:[[CodexAgentAgentFormValueNumber alloc] initWithValue:1.1]] ||
+        [ratio acceptsValue:[[CodexAgentAgentFormValueNumber alloc] initWithValue:NAN]] ||
+        ![count acceptsValue:validInteger] ||
+        [count acceptsValue:[[CodexAgentAgentFormValueNumber alloc] initWithValue:1.5]] ||
+        ![enabled acceptsValue:trueValue] || [enabled acceptsValue:validName] ||
+        ![email acceptsValue:validEmail] ||
+        [email acceptsValue:[[CodexAgentAgentFormValueText alloc] initWithValue:@"invalid"]] ||
+        ![uri acceptsValue:validUri] ||
+        [uri acceptsValue:[[CodexAgentAgentFormValueText alloc] initWithValue:@"not a uri"]] ||
+        ![date acceptsValue:validDate] ||
+        [date acceptsValue:[[CodexAgentAgentFormValueText alloc] initWithValue:@"2026-02-31"]] ||
+        ![timestamp acceptsValue:validTimestamp] ||
+        [timestamp acceptsValue:[[CodexAgentAgentFormValueText alloc]
+            initWithValue:@"2026-01-01T12:00:00+garbage"]] ||
+        ![choice acceptsValue:selectedA] ||
+        [choice acceptsValue:[[CodexAgentAgentFormValueText alloc] initWithValue:@"z"]] ||
+        ![otherChoice acceptsValue:[[CodexAgentAgentFormValueText alloc] initWithValue:@"custom"]] ||
+        [otherChoice acceptsValue:[[CodexAgentAgentFormValueText alloc] initWithValue:@" "]] ||
+        ![many acceptsValue:selectedMany] ||
+        [many acceptsValue:[[CodexAgentAgentFormValueTextList alloc] initWithValue:@[]]] ||
+        [many acceptsValue:[[CodexAgentAgentFormValueTextList alloc]
+            initWithValue:@[@"a", @"a"]]] ||
+        [many acceptsValue:[[CodexAgentAgentFormValueTextList alloc]
+            initWithValue:@[@"a", @"b", @"c"]]] ||
+        [many acceptsValue:[[CodexAgentAgentFormValueTextList alloc] initWithValue:@[@"z"]]]) {
+        return @"Objective-C D082 form-field acceptance changed";
+    }
+
+    NSArray<NSArray *> *validationCases = @[
+        @[@{}, @"name", [CodexAgentAgentElicitationValidationReason missingRequired]],
+        @[@{@"name": validName, @"unknown": validName}, @"unknown",
+            [CodexAgentAgentElicitationValidationReason unknownField]],
+        @[@{@"name": validInteger}, @"name",
+            [CodexAgentAgentElicitationValidationReason invalidType]],
+        @[@{@"name": validName, @"ratio":
+            [[CodexAgentAgentFormValueNumber alloc] initWithValue:NAN]}, @"ratio",
+            [CodexAgentAgentElicitationValidationReason nonFiniteNumber]],
+        @[@{@"name": validName, @"ratio":
+            [[CodexAgentAgentFormValueNumber alloc] initWithValue:-0.1]}, @"ratio",
+            [CodexAgentAgentElicitationValidationReason belowMinimum]],
+        @[@{@"name": validName, @"ratio":
+            [[CodexAgentAgentFormValueNumber alloc] initWithValue:1.1]}, @"ratio",
+            [CodexAgentAgentElicitationValidationReason aboveMaximum]],
+        @[@{@"name": validName, @"count":
+            [[CodexAgentAgentFormValueNumber alloc] initWithValue:1.5]}, @"count",
+            [CodexAgentAgentElicitationValidationReason nonInteger]],
+        @[@{@"name": validName, @"email":
+            [[CodexAgentAgentFormValueText alloc] initWithValue:@"invalid"]}, @"email",
+            [CodexAgentAgentElicitationValidationReason invalidFormat]],
+        @[@{@"name": validName, @"choice":
+            [[CodexAgentAgentFormValueText alloc] initWithValue:@"z"]}, @"choice",
+            [CodexAgentAgentElicitationValidationReason invalidSelection]],
+        @[@{@"name": validName, @"many":
+            [[CodexAgentAgentFormValueTextList alloc] initWithValue:@[@"a", @"a"]]}, @"many",
+            [CodexAgentAgentElicitationValidationReason duplicateSelection]],
+    ];
+    for (NSArray *validationCase in validationCases) {
+        NSDictionary<NSString *, id<CodexAgentAgentFormValue>> *caseContent =
+            (id)validationCase[0];
+        NSString *expectedField = validationCase[1];
+        CodexAgentAgentElicitationValidationReason *expectedReason = validationCase[2];
+        CodexAgentAgentElicitationValidation *validation =
+            [elicitation validateContent:caseContent];
+        CodexAgentAgentElicitationValidationIssue *issue = validation.issues.firstObject;
+        if (validation.isValid || validation.issues.count != 1 ||
+            ![issue.fieldName isEqualToString:expectedField] || issue.reason != expectedReason) {
+            return @"Objective-C D082 validation reasons changed";
+        }
+    }
+
+    NSDictionary<NSString *, id<CodexAgentAgentFormValue>> *content = @{
+        @"name": validName,
+        @"email": validEmail,
+        @"uri": validUri,
+        @"date": validDate,
+        @"timestamp": validTimestamp,
+        @"count": validInteger,
+        @"ratio": validRatio,
+        @"enabled": trueValue,
+        @"choice": selectedA,
+        @"many": selectedMany,
+    };
+    CodexAgentAgentElicitationResponse *accepted = [elicitation acceptContent:content];
+    CodexAgentAgentFormValueText *acceptedName =
+        (CodexAgentAgentFormValueText *)accepted.content[@"name"];
+    CodexAgentAgentFormValueTextList *acceptedMany =
+        (CodexAgentAgentFormValueTextList *)accepted.content[@"many"];
+    [selectedValues addObject:@"b"];
+    if (accepted.action != [CodexAgentAgentElicitationAction accept] ||
+        accepted.content.count != content.count ||
+        ![(id)acceptedName isKindOfClass:[CodexAgentAgentFormValueText class]] ||
+        ![acceptedName.value isEqualToString:@"Ada"] ||
+        ![(id)acceptedMany isKindOfClass:[CodexAgentAgentFormValueTextList class]] ||
+        ![acceptedMany.value isEqualToArray:@[@"a"]] ||
+        ![elicitation acceptsResponse:accepted]) {
+        return @"Objective-C D082 accepted response changed";
+    }
+
+    CodexAgentAgentElicitationResponse *invalidAccept = [[CodexAgentAgentElicitationResponse alloc]
+        initWithAction:[CodexAgentAgentElicitationAction accept]
+        content:@{}];
+    CodexAgentAgentElicitationResponse *declined = [companion decline];
+    CodexAgentAgentElicitationResponse *cancelled = [companion cancel];
+    CodexAgentAgentElicitationResponse *contentfulDecline =
+        [[CodexAgentAgentElicitationResponse alloc]
+            initWithAction:[CodexAgentAgentElicitationAction decline]
+            content:@{@"name": validName}];
+    CodexAgentAgentElicitationResponse *contentfulCancel =
+        [[CodexAgentAgentElicitationResponse alloc]
+            initWithAction:[CodexAgentAgentElicitationAction cancel]
+            content:@{@"name": validName}];
+    if ([elicitation acceptsResponse:invalidAccept] ||
+        declined.action != [CodexAgentAgentElicitationAction decline] ||
+        declined.content.count != 0 ||
+        cancelled.action != [CodexAgentAgentElicitationAction cancel] ||
+        cancelled.content.count != 0 || ![elicitation acceptsResponse:declined] ||
+        ![elicitation acceptsResponse:cancelled] ||
+        [elicitation acceptsResponse:contentfulDecline] ||
+        [elicitation acceptsResponse:contentfulCancel]) {
+        return @"Objective-C D082 response-action acceptance changed";
+    }
+
+    CodexAgentAgentElicitation *urlOnly = [[CodexAgentAgentElicitation alloc]
+        initWithRequestId:@"d082-url"
+        serverName:@"d082-server"
+        conversationId:conversationId
+        message:@"Authorize"
+        form:nil
+        url:@"https://example.com"];
+    CodexAgentAgentElicitationResponse *emptyAccept = [[CodexAgentAgentElicitationResponse alloc]
+        initWithAction:[CodexAgentAgentElicitationAction accept]
+        content:@{}];
+    CodexAgentAgentElicitationResponse *unexpectedAccept =
+        [[CodexAgentAgentElicitationResponse alloc]
+            initWithAction:[CodexAgentAgentElicitationAction accept]
+            content:@{@"unexpected": validName}];
+    if (![urlOnly acceptsResponse:emptyAccept] ||
+        [urlOnly acceptsResponse:unexpectedAccept] ||
+        ![urlOnly validateContent:@{}].isValid) {
+        return @"Objective-C D082 URL-only acceptance changed";
+    }
+
+    return nil;
+}
+
 static NSString *CDXVerifyD073OrdinaryValues(void) {
     CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
         initWithId:@"connector-id"
@@ -1629,6 +2056,14 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d081Failure = CDXVerifyD081SingletonObjects();
     if (d081Failure != nil) {
         [self finishWithFailure:d081Failure];
+        return;
+    }
+    CodexAgentAgentElicitationResponseCompanion *elicitationResponseCompanion =
+        [CodexAgentAgentElicitationResponse companion];
+    NSString *d082Failure =
+        CDXVerifyD082ElicitationHelpers(elicitationResponseCompanion);
+    if (d082Failure != nil) {
+        [self finishWithFailure:d082Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;

@@ -396,6 +396,27 @@ static BOOL consumeD081SingletonObjects(void) {
         deviceCodeAuthentication != nil && closed != nil && newState != nil && restoring != nil;
 }
 
+static BOOL consumeD082ElicitationHelpers(
+    CodexAgentAgentElicitation *elicitation,
+    CodexAgentAgentFormField *field,
+    id<CodexAgentAgentFormValue> value,
+    NSDictionary<NSString *, id<CodexAgentAgentFormValue>> *content,
+    CodexAgentAgentElicitationResponse *response,
+    CodexAgentAgentElicitationResponseCompanion *companion
+) {
+    CodexAgentAgentElicitationResponse *accepted = [elicitation acceptContent:content];
+    BOOL accepts = [elicitation acceptsResponse:response];
+    NSDictionary<NSString *, id<CodexAgentAgentFormValue>> *initialValues =
+        [elicitation initialValues];
+    CodexAgentAgentElicitationValidation *validation = [elicitation validateContent:content];
+    BOOL fieldAccepts = [field acceptsValue:value];
+    CodexAgentAgentElicitationResponse *cancelled = [companion cancel];
+    CodexAgentAgentElicitationResponse *declined = [companion decline];
+    return accepted != nil && initialValues != nil && validation != nil &&
+        cancelled != nil && declined != nil && (accepts || !accepts) &&
+        (fieldAccepts || !fieldAccepts);
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];
