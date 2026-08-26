@@ -277,6 +277,23 @@ static NSString *CDXVerifyD065Values(
     return nil;
 }
 
+static NSString *CDXVerifyD076AuthorizationUrls(void) {
+    CodexAgentCodexAuthorizationUrlCompanion *companion =
+        [CodexAgentCodexAuthorizationUrl companion];
+    NSString *chatGptValue = @"https://auth.openai.com/oauth/authorize";
+    NSString *externalValue = @"https://example.com/oauth";
+    CodexAgentCodexAuthorizationUrl *chatGpt = [companion chatGptValue:chatGptValue];
+    CodexAgentCodexAuthorizationUrl *external = [companion externalValue:externalValue];
+
+    if (![chatGpt.value isEqualToString:chatGptValue] ||
+        chatGpt.purpose != [CodexAgentCodexAuthorizationPurpose chatGpt] ||
+        ![external.value isEqualToString:externalValue] ||
+        external.purpose != [CodexAgentCodexAuthorizationPurpose external]) {
+        return @"Objective-C authorization URLs changed";
+    }
+    return nil;
+}
+
 static NSString *CDXVerifyD073OrdinaryValues(void) {
     CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
         initWithId:@"connector-id"
@@ -837,6 +854,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d075Failure = CDXVerifyD075PendingValues();
     if (d075Failure != nil) {
         [self finishWithFailure:d075Failure];
+        return;
+    }
+    NSString *d076Failure = CDXVerifyD076AuthorizationUrls();
+    if (d076Failure != nil) {
+        [self finishWithFailure:d076Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;

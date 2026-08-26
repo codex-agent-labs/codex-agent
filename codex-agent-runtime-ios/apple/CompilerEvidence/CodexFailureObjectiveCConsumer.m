@@ -57,6 +57,17 @@ static BOOL consumeAgentMcpEnvironmentSources(void) {
         variable.source == remote;
 }
 
+static BOOL consumeD076AuthorizationUrls(
+    CodexAgentCodexAuthorizationUrlCompanion *companion
+) {
+    CodexAgentCodexAuthorizationUrl *chatGpt =
+        [companion chatGptValue:@"https://auth.openai.com/oauth/authorize"];
+    CodexAgentCodexAuthorizationUrl *external =
+        [companion externalValue:@"https://example.com/oauth"];
+    return [chatGpt.value isEqualToString:@"https://auth.openai.com/oauth/authorize"] &&
+        external.purpose != nil;
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

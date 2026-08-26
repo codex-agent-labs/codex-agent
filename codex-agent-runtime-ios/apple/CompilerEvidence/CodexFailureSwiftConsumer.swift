@@ -132,6 +132,14 @@ func consumeD065CodexAuthorizationPurposes() -> [CodexAuthorizationPurpose] {
     [.chatGpt, .external]
 }
 
+func consumeD076CodexAuthorizationUrls(
+    companion: CodexAuthorizationUrl.Companion
+) -> (CodexAuthorizationUrl, String, CodexAuthorizationUrl, CodexAuthorizationPurpose) {
+    let chatGpt = companion.chatGpt(value: "https://auth.openai.com/authorize?client=compiler")
+    let external = companion.external(value: "https://example.com/oauth")
+    return (chatGpt, chatGpt.value, external, external.purpose)
+}
+
 func consumeD065CodexWorkspaceSelectionReasons() -> [CodexWorkspaceSelectionReason] {
     [.notSelected, .notFound, .accessRevoked, .invalidSelection]
 }

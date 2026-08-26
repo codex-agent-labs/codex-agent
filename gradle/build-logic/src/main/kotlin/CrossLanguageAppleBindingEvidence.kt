@@ -41,6 +41,12 @@ private const val appleInstallationScopeUserUsr = "$APPLE_INSTALLATION_SCOPE_OWN
 private const val appleInstallationScopeWorkspaceUsr = "$APPLE_INSTALLATION_SCOPE_OWNER_USR(cpy)workspace"
 private const val appleMcpEnvironmentLocalUsr = "$APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR(cpy)local"
 private const val appleMcpEnvironmentRemoteUsr = "$APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR(cpy)remote"
+private const val appleAuthorizationChatGptUsr =
+    "$APPLE_AUTHORIZATION_URL_COMPANION_OWNER_USR(im)chatGptValue:"
+private const val appleAuthorizationExternalUsr =
+    "$APPLE_AUTHORIZATION_URL_COMPANION_OWNER_USR(im)externalValue:"
+private const val appleAuthorizationValueUsr = "$APPLE_AUTHORIZATION_URL_OWNER_USR(py)value"
+private const val appleAuthorizationPurposeUsr = "$APPLE_AUTHORIZATION_URL_OWNER_USR(py)purpose"
 private const val swiftFailureTest =
     "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()"
 private const val objectiveCFailureTest =
@@ -974,6 +980,42 @@ private val d075OrdinaryCapabilities: List<AppleOrdinaryCapability> = buildList 
 }
 private val d075OrdinaryCapabilitiesByKey = d075OrdinaryCapabilities.associateBy { it.canonicalKey }
 
+private val d076AuthorizationUrlCapabilities = listOf(
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthorizationUrl.Companion|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthorizationUrl.Companion.chatGpt|" +
+            "chatGpt(kotlin.String){}[0]|return=$appleCanonicalPackage/CodexAuthorizationUrl!!|" +
+            "suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+        appleAuthorizationChatGptUsr,
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthorizationUrl.Companion|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthorizationUrl.Companion.external|" +
+            "external(kotlin.String){}[0]|return=$appleCanonicalPackage/CodexAuthorizationUrl!!|" +
+            "suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+        appleAuthorizationExternalUsr,
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthorizationUrl|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthorizationUrl.value|{}value[0]|" +
+            "propertyKind=VAL|type=kotlin/String!!",
+        appleAuthorizationValueUsr,
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthorizationUrl|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthorizationUrl.purpose|{}purpose[0]|propertyKind=VAL|" +
+            "type=$appleCanonicalPackage/CodexAuthorizationPurpose!!",
+        appleAuthorizationPurposeUsr,
+    ),
+).also { capabilities ->
+    check(capabilities.size == 4 && capabilities.map { it.canonicalKey }.distinct().size == 4 &&
+        capabilities.map { it.usr }.distinct().size == 4
+    ) { "D076 Apple authorization URL capability inventory changed" }
+}
+private val d076AuthorizationUrlCapabilitiesByKey = d076AuthorizationUrlCapabilities.associateBy {
+    it.canonicalKey
+}
+
 
 private val expectedAppleTests = listOf(
     "CodexAgentObservationTests/testBufferingCancellationAndDroppedStreamReleaseTheObservation()",
@@ -1125,6 +1167,38 @@ private fun d075ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol>
     }
 }
 
+private fun d076ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    APPLE_AUTHORIZATION_URL_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("CodexAuthorizationUrl"), "CodexAuthorizationUrl", "public",
+        "class CodexAuthorizationUrl", emptyList(),
+    ),
+    APPLE_AUTHORIZATION_URL_COMPANION_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("CodexAuthorizationUrl", "Companion"),
+        "CodexAuthorizationUrl.Companion", "public", "class Companion", emptyList(),
+    ),
+    appleAuthorizationChatGptUsr to ExpectedAppleCompilerSymbol(
+        "swift.method", listOf("CodexAuthorizationUrl", "Companion", "chatGpt(value:)"),
+        "chatGpt(value:)", "open", "func chatGpt(value: String) -> CodexAuthorizationUrl",
+        listOf("s:SS", APPLE_AUTHORIZATION_URL_OWNER_USR), listOf("value" to "value: String"),
+        "CodexAuthorizationUrl",
+    ),
+    appleAuthorizationExternalUsr to ExpectedAppleCompilerSymbol(
+        "swift.method", listOf("CodexAuthorizationUrl", "Companion", "external(value:)"),
+        "external(value:)", "open", "func external(value: String) -> CodexAuthorizationUrl",
+        listOf("s:SS", APPLE_AUTHORIZATION_URL_OWNER_USR), listOf("value" to "value: String"),
+        "CodexAuthorizationUrl",
+    ),
+    appleAuthorizationValueUsr to ExpectedAppleCompilerSymbol(
+        "swift.property", listOf("CodexAuthorizationUrl", "value"), "value", "open",
+        "var value: String { get }", listOf("s:SS"),
+    ),
+    appleAuthorizationPurposeUsr to ExpectedAppleCompilerSymbol(
+        "swift.property", listOf("CodexAuthorizationUrl", "purpose"), "purpose", "open",
+        "var purpose: CodexAuthorizationPurpose { get }",
+        listOf("c:objc(cs)CodexAgentCodexAuthorizationPurpose"),
+    ),
+)
+
 private fun objectiveCConstructorDeclaration(owner: AppleOrdinaryValue): String {
     val parameters = owner.parameters.mapIndexed { index, parameter ->
         val selector = if (index == 0) {
@@ -1259,6 +1333,44 @@ private fun d075ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSy
     }
 }
 
+private fun d076ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    APPLE_AUTHORIZATION_URL_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentCodexAuthorizationUrl"),
+        "CodexAgentCodexAuthorizationUrl", "public",
+        "@interface CodexAgentCodexAuthorizationUrl : CodexAgentBase",
+        listOf("c:objc(cs)CodexAgentBase"),
+    ),
+    APPLE_AUTHORIZATION_URL_COMPANION_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentCodexAuthorizationUrlCompanion"),
+        "CodexAgentCodexAuthorizationUrlCompanion", "public",
+        "@interface CodexAgentCodexAuthorizationUrlCompanion : CodexAgentBase",
+        listOf("c:objc(cs)CodexAgentBase"),
+    ),
+    appleAuthorizationChatGptUsr to ExpectedAppleCompilerSymbol(
+        "objective-c.method", listOf("CodexAgentCodexAuthorizationUrlCompanion", "chatGptValue:"),
+        "chatGptValue:", "public",
+        "- (CodexAgentCodexAuthorizationUrl *) chatGptValue:(NSString *) value;",
+        listOf(APPLE_AUTHORIZATION_URL_OWNER_USR, "c:objc(cs)NSString"),
+        listOf("value" to "(NSString *) value"), "CodexAgentCodexAuthorizationUrl *",
+    ),
+    appleAuthorizationExternalUsr to ExpectedAppleCompilerSymbol(
+        "objective-c.method", listOf("CodexAgentCodexAuthorizationUrlCompanion", "externalValue:"),
+        "externalValue:", "public",
+        "- (CodexAgentCodexAuthorizationUrl *) externalValue:(NSString *) value;",
+        listOf(APPLE_AUTHORIZATION_URL_OWNER_USR, "c:objc(cs)NSString"),
+        listOf("value" to "(NSString *) value"), "CodexAgentCodexAuthorizationUrl *",
+    ),
+    appleAuthorizationValueUsr to ExpectedAppleCompilerSymbol(
+        "objective-c.property", listOf("CodexAgentCodexAuthorizationUrl", "value"),
+        "value", "public", "@property (readonly) NSString * value;", listOf("c:objc(cs)NSString"),
+    ),
+    appleAuthorizationPurposeUsr to ExpectedAppleCompilerSymbol(
+        "objective-c.property", listOf("CodexAgentCodexAuthorizationUrl", "purpose"),
+        "purpose", "public", "@property (readonly) CodexAgentCodexAuthorizationPurpose * purpose;",
+        listOf("c:objc(cs)CodexAgentCodexAuthorizationPurpose"),
+    ),
+)
+
 private fun Map<String, ExpectedAppleCompilerSymbol>.appleSymbols(interfaceLanguage: String): List<AppleCompilerSymbol> =
     map { (precise, symbol) ->
         AppleCompilerSymbol(
@@ -1299,7 +1411,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
     canonical.canonical.coverageReceiptSha256.appleSha256("canonical coverage receipt")
     canonical.targetSha256.getValue("native").appleSha256("canonical native target")
     val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-    check(capabilities.size == 347) { "Apple binding capability count changed" }
+    check(capabilities.size == 351) { "Apple binding capability count changed" }
     val usrByCapability = capabilities.associateWith(::appleBindingUsr)
 
     compilerEvidence.appleKeys(
@@ -1394,7 +1506,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
 
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
-    check(missing.size == 209) { "Apple partial binding gap count changed: ${missing.size}" }
+    check(missing.size == 205) { "Apple partial binding gap count changed: ${missing.size}" }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()
@@ -1505,7 +1617,7 @@ private fun appleLanguageEvidence(
         .filter { it.kind == "swift.class" }
         .map(AppleCompilerSymbol::precise)
         .toSet()
-    check(publicSymbols.size == 424 && referencedSymbols.size == 347 && ownerUsrs.size == 77 &&
+    check(publicSymbols.size == 430 && referencedSymbols.size == 351 && ownerUsrs.size == 79 &&
         referencedSymbols.toSet() == publicSymbols.toSet() - ownerUsrs
     ) { "$language Apple binding symbol/reference inventory changed" }
     put("language", JsonPrimitive(language))
@@ -1530,7 +1642,8 @@ private fun appleBindingUsr(capability: String): String =
     d065OrdinaryCapabilitiesByKey[capability]?.usr
         ?: d073OrdinaryCapabilitiesByKey[capability]?.usr
         ?: d074OrdinaryCapabilitiesByKey[capability]?.usr
-        ?: d075OrdinaryCapabilitiesByKey[capability]?.usr ?: when {
+        ?: d075OrdinaryCapabilitiesByKey[capability]?.usr
+        ?: d076AuthorizationUrlCapabilitiesByKey[capability]?.usr ?: when {
     "|owner=io.github.codex_agent_labs.codexmobile.agent/CodexFailure|kind=constructor|" in capability ->
         appleFailureConstructorUsr
     "|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=constructor|" in capability ->
@@ -1669,7 +1782,8 @@ private fun expectedSwiftAppleBindingSurface(): List<AppleCompilerSymbol> = list
 ).plus(d065ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d073ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d074ExpectedSwiftSymbols().appleSymbols("swift"))
-    .plus(d075ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
+    .plus(d075ExpectedSwiftSymbols().appleSymbols("swift"))
+    .plus(d076ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
 
 private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> = listOf(
     AppleCompilerSymbol(
@@ -1815,7 +1929,8 @@ private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> =
 ).plus(d065ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d073ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d074ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
-    .plus(d075ExpectedObjectiveCSymbols().appleSymbols("objective-c")).sortedBy(AppleCompilerSymbol::precise)
+    .plus(d075ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
+    .plus(d076ExpectedObjectiveCSymbols().appleSymbols("objective-c")).sortedBy(AppleCompilerSymbol::precise)
 
 private fun d065ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = buildList {
     d065AppleEnums.forEach { owner ->
@@ -1939,6 +2054,43 @@ private fun d075ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerRe
     }
 }
 
+private fun d076ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        appleAuthorizationChatGptUsr, "declref_expr", "chatGpt", null,
+        "\$sySo010CodexAgentA16AuthorizationUrlCSS_tcSo0abacD9CompanionCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleAuthorizationExternalUsr, "declref_expr", "external", null,
+        "\$sySo010CodexAgentA16AuthorizationUrlCSS_tcSo0abacD9CompanionCcD", emptyList(),
+    ),
+    AppleCompilerReference(appleAuthorizationValueUsr, "member_ref_expr", "value", null, "\$sSSD", emptyList()),
+    AppleCompilerReference(
+        appleAuthorizationPurposeUsr, "member_ref_expr", "purpose", null,
+        "\$sSo010CodexAgentA20AuthorizationPurposeCD", emptyList(),
+    ),
+)
+
+private fun d076ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        appleAuthorizationChatGptUsr, "ObjCMessageExpr", "chatGptValue:",
+        "CodexAgentCodexAuthorizationUrlCompanion *", "CodexAgentCodexAuthorizationUrl *",
+        listOf("NSString *"),
+    ),
+    AppleCompilerReference(
+        appleAuthorizationExternalUsr, "ObjCMessageExpr", "externalValue:",
+        "CodexAgentCodexAuthorizationUrlCompanion *", "CodexAgentCodexAuthorizationUrl *",
+        listOf("NSString *"),
+    ),
+    AppleCompilerReference(
+        appleAuthorizationValueUsr, "ObjCPropertyRefExpr", "value", "CodexAgentCodexAuthorizationUrl *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleAuthorizationPurposeUsr, "ObjCPropertyRefExpr", "purpose", "CodexAgentCodexAuthorizationUrl *",
+        "<pseudo-object type>", emptyList(),
+    ),
+)
+
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
         appleFailureConstructorUsr, "declref_expr", "init", null,
@@ -1997,7 +2149,8 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
 ).plus(d065ExpectedSwiftAppleBindingReferences())
     .plus(d073ExpectedSwiftAppleBindingReferences())
     .plus(d074ExpectedSwiftAppleBindingReferences())
-    .plus(d075ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d075ExpectedSwiftAppleBindingReferences())
+    .plus(d076ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
@@ -2067,7 +2220,8 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
 ).plus(d065ExpectedObjectiveCAppleBindingReferences())
     .plus(d073ExpectedObjectiveCAppleBindingReferences())
     .plus(d074ExpectedObjectiveCAppleBindingReferences())
-    .plus(d075ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d075ExpectedObjectiveCAppleBindingReferences())
+    .plus(d076ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun JsonElement.appleSymbol(): AppleCompilerSymbol {
     val symbol = appleObject("Apple compiler symbol").also {

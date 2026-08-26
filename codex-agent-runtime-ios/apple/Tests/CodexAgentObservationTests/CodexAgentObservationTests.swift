@@ -106,6 +106,19 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD074OrdinaryValues()
         assertD075PendingValues()
 
+        let authorizationUrlCompanion = CodexAuthorizationUrl.companion
+        let chatGptAuthorizationUrl = authorizationUrlCompanion.chatGpt(
+            value: "https://auth.openai.com/authorize?client=codex"
+        )
+        XCTAssertEqual(chatGptAuthorizationUrl.value, "https://auth.openai.com/authorize?client=codex")
+        XCTAssertTrue(chatGptAuthorizationUrl.purpose === CodexAuthorizationPurpose.chatGpt)
+
+        let externalAuthorizationUrl = authorizationUrlCompanion.external(
+            value: "https://example.com/oauth"
+        )
+        XCTAssertEqual(externalAuthorizationUrl.value, "https://example.com/oauth")
+        XCTAssertTrue(externalAuthorizationUrl.purpose === CodexAuthorizationPurpose.external)
+
         let failure = CodexFailure(
             code: "workspace_unavailable",
             message: "Workspace is unavailable",
