@@ -199,6 +199,18 @@ class AppleCompilerEvidenceTaskTest {
 
     @Test
     fun `real compiler shapes normalize to one exact 174-member contract per language`() {
+        assertEquals(
+            "c:objc(cs)CodexAgentAgentApprovalPreset",
+            appleCompilerFixtureMemberOwnerUsr("c:objc(cs)CodexAgentAgentApprovalPreset(cpy)never"),
+        )
+        listOf(
+            "c:objc(cs)Owner(cm)future(py)value",
+            "c:objc(cs)(py)value",
+            "c:objc(cs)Owner(py)",
+            "c:objc(cs)Owner(cm)value",
+        ).forEach { malformed ->
+            assertFailsWith<IllegalStateException> { appleCompilerFixtureMemberOwnerUsr(malformed) }
+        }
         val swift = parseSwiftAppleBindingSurface(swiftSurfaceJson())
         val objectiveC = parseObjectiveCAppleBindingSurface(objectiveCSurfaceJson())
         assertEquals(220, swift.size)
@@ -221,6 +233,20 @@ class AppleCompilerEvidenceTaskTest {
         }
         assertFailsWith<IllegalStateException> {
             parseObjectiveCAppleBindingSurface(objectiveCSurfaceJson(includeMessageRelationship = false))
+        }
+        val d065EnumUsr = appleCompilerFixtureD065Capabilities.single {
+            "/AgentApprovalPreset.NEVER|" in it.canonicalKey
+        }.usr
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingSurface(swiftSurfaceJson(missingD065Relationship = d065EnumUsr))
+        }
+        val d065ConstructorUsr = appleCompilerFixtureD065Capabilities.single {
+            "/AgentFormOption.<init>|" in it.canonicalKey
+        }.usr
+        assertFailsWith<IllegalStateException> {
+            parseObjectiveCAppleBindingSurface(
+                objectiveCSurfaceJson(wrongD065Relationship = d065ConstructorUsr),
+            )
         }
         assertFailsWith<IllegalStateException> {
             parseSwiftAppleBindingSurface(
@@ -363,7 +389,11 @@ class AppleCompilerEvidenceTaskTest {
         "common|owner=$MCP_ENVIRONMENT_SOURCE_CANONICAL_OWNER|kind=enum-entry|" +
             "abi=$MCP_ENVIRONMENT_SOURCE_CANONICAL_OWNER.$name|null[0]"
 
-    private fun swiftSurfaceJson(includeMessageRelationship: Boolean = true): String = surfaceJson(
+    private fun swiftSurfaceJson(
+        includeMessageRelationship: Boolean = true,
+        missingD065Relationship: String? = null,
+        wrongD065Relationship: String? = null,
+    ): String = surfaceJson(
         language = "swift",
         symbols = listOf(
             symbol(
@@ -456,9 +486,15 @@ class AppleCompilerEvidenceTaskTest {
             expectedRawSymbol(precise, "swift", expected)
         },
         includeMessageRelationship = includeMessageRelationship,
+        missingD065Relationship = missingD065Relationship,
+        wrongD065Relationship = wrongD065Relationship,
     )
 
-    private fun objectiveCSurfaceJson(includeMessageRelationship: Boolean = true): String = surfaceJson(
+    private fun objectiveCSurfaceJson(
+        includeMessageRelationship: Boolean = true,
+        missingD065Relationship: String? = null,
+        wrongD065Relationship: String? = null,
+    ): String = surfaceJson(
         language = "objective-c",
         symbols = listOf(
             symbol(
@@ -583,12 +619,16 @@ class AppleCompilerEvidenceTaskTest {
             expectedRawSymbol(precise, "objective-c", expected)
         },
         includeMessageRelationship = includeMessageRelationship,
+        missingD065Relationship = missingD065Relationship,
+        wrongD065Relationship = wrongD065Relationship,
     )
 
     private fun surfaceJson(
         language: String,
         symbols: List<JsonObject>,
         includeMessageRelationship: Boolean,
+        missingD065Relationship: String?,
+        wrongD065Relationship: String?,
     ): String = releaseJson.encodeToString(JsonElement.serializer(), buildJsonObject {
         put("symbols", JsonArray(symbols + buildJsonObject {
             put("identifier", buildJsonObject {
@@ -617,7 +657,12 @@ class AppleCompilerEvidenceTaskTest {
                 appleCompilerFixtureD065ObjectiveCSymbols()
             }
             d065Symbols.filterValues { it.path.size > 1 }.keys.forEach { precise ->
-                add(relationship(precise, appleOwnerUsr(precise)))
+                if (precise != missingD065Relationship) {
+                    add(relationship(
+                        precise,
+                        if (precise == wrongD065Relationship) OWNER else appleOwnerUsr(precise),
+                    ))
+                }
             }
         })
     })

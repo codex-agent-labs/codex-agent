@@ -189,6 +189,17 @@ internal data class AppleOrdinaryCapability(val canonicalKey: String, val usr: S
 
 private fun appleOwnerUsr(objectiveCName: String): String = "c:objc(cs)$objectiveCName"
 
+private val appleMemberUsrPattern = Regex("""^(c:objc\(cs\)[^()]+)\((cpy|py|im)\)([^()]+)$""")
+
+private fun appleMemberOwnerUsr(memberUsr: String): String {
+    val match = checkNotNull(appleMemberUsrPattern.matchEntire(memberUsr)) {
+        "Unexpected Apple member USR: $memberUsr"
+    }
+    return match.groupValues[1]
+}
+
+internal fun appleCompilerFixtureMemberOwnerUsr(memberUsr: String): String = appleMemberOwnerUsr(memberUsr)
+
 private fun appleClassType(
     canonicalOwner: String,
     swiftName: String,
@@ -1062,13 +1073,25 @@ private fun parseAppleBindingSurface(
             "$language Apple binding symbol changed: ${actual.precise}"
         }
     }
-    val memberOwners = appleCodexFailureMembers.values.associateWith { APPLE_CODEX_FAILURE_OWNER_USR } +
-        appleConversationIdMembers.values.associateWith { APPLE_CONVERSATION_ID_OWNER_USR } +
-        appleApprovalDecisionMembers.values.associateWith { APPLE_APPROVAL_DECISION_OWNER_USR } +
-        appleCollaborationModeMembers.values.associateWith { APPLE_COLLABORATION_MODE_OWNER_USR } +
-        appleMessageRoleMembers.values.associateWith { APPLE_MESSAGE_ROLE_OWNER_USR } +
-        appleInstallationScopeMembers.values.associateWith { APPLE_INSTALLATION_SCOPE_OWNER_USR } +
-        appleMcpEnvironmentSourceMembers.values.associateWith { APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR }
+    val establishedMemberUsrs = listOf(
+        appleCodexFailureMembers, appleConversationIdMembers, appleApprovalDecisionMembers,
+        appleCollaborationModeMembers, appleMessageRoleMembers, appleInstallationScopeMembers,
+        appleMcpEnvironmentSourceMembers,
+    ).flatMap { it.values }
+    check(establishedMemberUsrs.size == 16 && establishedMemberUsrs.distinct().size == 16) {
+        "Established Apple member inventory changed"
+    }
+    val ordinaryMemberUsrs = d065OrdinaryCapabilities.map(AppleOrdinaryCapability::usr)
+    check(ordinaryMemberUsrs.size == 158 && ordinaryMemberUsrs.distinct().size == 158) {
+        "D065 Apple member inventory changed"
+    }
+    val selectedMemberUsrs = establishedMemberUsrs + ordinaryMemberUsrs
+    check(selectedMemberUsrs.size == 174 && selectedMemberUsrs.distinct().size == 174) {
+        "Selected Apple member inventory changed"
+    }
+    val memberOwners = selectedMemberUsrs.associateWith(::appleMemberOwnerUsr)
+    val expectedMemberUsrs = expected.filterValues { it.path.size > 1 }.keys
+    check(memberOwners.keys == expectedMemberUsrs) { "Expected Apple member ownership inventory changed" }
     val relationships = root.appleArray("relationships").map { it.appleObject("$language relationship") }
         .filter { relationship ->
             relationship.appleString("kind") == "memberOf" &&
