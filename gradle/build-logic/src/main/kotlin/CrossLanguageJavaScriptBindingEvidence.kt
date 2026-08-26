@@ -10,7 +10,7 @@ import kotlinx.serialization.json.longOrNull
 import org.w3c.dom.Element
 
 internal const val JAVASCRIPT_CANONICAL_CAPABILITY_COUNT = 556
-internal const val JAVASCRIPT_NPM_PACKAGE = "@codex-agent-labs/codex-agent"
+internal const val JAVASCRIPT_NPM_PACKAGE = "@${CodexAgentBuild.REPOSITORY}"
 
 private const val packedSurfaceTest = "cjs exposes the exact Node-only SDK surface"
 private const val packedLifecycleTest = "cjs projects lifecycle state failure cleanup and terminal delivery"
