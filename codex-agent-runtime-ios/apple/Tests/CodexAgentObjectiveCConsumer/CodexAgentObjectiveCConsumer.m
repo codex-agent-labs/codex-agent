@@ -683,6 +683,39 @@ static NSString *CDXVerifyD074OrdinaryValues(void) {
     return nil;
 }
 
+static NSString *CDXVerifyD075PendingValues(void) {
+    CodexAgentConversationId *conversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"d075-conversation"];
+    CodexAgentAgentPendingApproval *approval = [[CodexAgentAgentPendingApproval alloc]
+        initWithRequestId:@"d075-approval"
+        conversationId:conversationId
+        title:@"Approve"
+        details:@"Review the request"];
+    if (![approval.requestId isEqualToString:@"d075-approval"] ||
+        approval.conversationId != conversationId ||
+        ![approval.title isEqualToString:@"Approve"] ||
+        ![approval.details isEqualToString:@"Review the request"]) {
+        return @"Objective-C D075 pending approval changed";
+    }
+
+    CodexAgentAgentElicitation *elicitation = [[CodexAgentAgentElicitation alloc]
+        initWithRequestId:@"d075-elicitation"
+        serverName:@"server"
+        conversationId:conversationId
+        message:@"Provide input"
+        form:nil
+        url:nil];
+    CodexAgentAgentPendingElicitation *pendingElicitation =
+        [[CodexAgentAgentPendingElicitation alloc] initWithElicitation:elicitation];
+    if (pendingElicitation.elicitation != elicitation ||
+        ![pendingElicitation.requestId isEqualToString:@"d075-elicitation"] ||
+        pendingElicitation.conversationId != conversationId) {
+        return @"Objective-C D075 pending elicitation changed";
+    }
+
+    return nil;
+}
+
 #undef CDX_VERIFY_ENUM
 
 typedef CDXOperation *(^CDXOperationFactory)(dispatch_block_t completed);
@@ -799,6 +832,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d074Failure = CDXVerifyD074OrdinaryValues();
     if (d074Failure != nil) {
         [self finishWithFailure:d074Failure];
+        return;
+    }
+    NSString *d075Failure = CDXVerifyD075PendingValues();
+    if (d075Failure != nil) {
+        [self finishWithFailure:d075Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;

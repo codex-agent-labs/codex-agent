@@ -504,3 +504,24 @@ static BOOL consumeD074OrdinaryValues(
         [progress.hookActivities isEqualToArray:@[activity]] && progress.isTruncated &&
         [apiKey.value isEqualToString:@"sk-compiler"];
 }
+
+static BOOL consumeD075PendingValues(
+    CodexAgentConversationId *conversationId,
+    CodexAgentAgentElicitation *elicitation
+) {
+    CodexAgentAgentPendingApproval *approval = [[CodexAgentAgentPendingApproval alloc]
+        initWithRequestId:@"approval"
+        conversationId:conversationId
+        title:@"Approve"
+        details:@"Details"];
+    CodexAgentAgentPendingElicitation *pendingElicitation =
+        [[CodexAgentAgentPendingElicitation alloc] initWithElicitation:elicitation];
+
+    return [approval.requestId isEqualToString:@"approval"] &&
+        approval.conversationId == conversationId &&
+        [approval.title isEqualToString:@"Approve"] &&
+        [approval.details isEqualToString:@"Details"] &&
+        pendingElicitation.elicitation == elicitation &&
+        [pendingElicitation.requestId isEqualToString:@"request"] &&
+        pendingElicitation.conversationId == conversationId;
+}

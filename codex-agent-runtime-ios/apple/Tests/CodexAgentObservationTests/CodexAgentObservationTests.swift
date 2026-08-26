@@ -104,6 +104,7 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD065ImmutableValues()
         assertD073OrdinaryValues()
         assertD074OrdinaryValues()
+        assertD075PendingValues()
 
         let failure = CodexFailure(
             code: "workspace_unavailable",
@@ -714,6 +715,33 @@ final class CodexAgentObservationTests: XCTestCase {
 
         let apiKey = CodexAuthenticationMethodApiKey(value: "d074-api-key")
         XCTAssertEqual(apiKey.value, "d074-api-key")
+    }
+
+    private func assertD075PendingValues() {
+        let conversationId = ConversationId(value: "d075-conversation")
+        let approval = AgentPendingApproval(
+            requestId: "d075-approval",
+            conversationId: conversationId,
+            title: "D075 approval",
+            details: "D075 approval details"
+        )
+        XCTAssertTrue(approval.conversationId === conversationId)
+        XCTAssertEqual(approval.details, "D075 approval details")
+        XCTAssertEqual(approval.requestId, "d075-approval")
+        XCTAssertEqual(approval.title, "D075 approval")
+
+        let elicitation = AgentElicitation(
+            requestId: "d075-elicitation",
+            serverName: "d075-server",
+            conversationId: conversationId,
+            message: "D075 elicitation",
+            form: nil,
+            url: nil
+        )
+        let pendingElicitation = AgentPendingElicitation(elicitation: elicitation)
+        XCTAssertTrue(pendingElicitation.conversationId === conversationId)
+        XCTAssertTrue(pendingElicitation.elicitation === elicitation)
+        XCTAssertEqual(pendingElicitation.requestId, "d075-elicitation")
     }
 
     private func assertEnumValue<E: AnyObject>(

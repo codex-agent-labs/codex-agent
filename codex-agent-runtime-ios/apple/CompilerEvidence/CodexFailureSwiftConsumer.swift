@@ -728,3 +728,28 @@ func consumeD074CodexAuthenticationMethodApiKey() -> (CodexAuthenticationMethodA
     let method = CodexAuthenticationMethodApiKey(value: "compiler-api-key")
     return (method, method.value)
 }
+
+func consumeD075AgentPendingApproval(
+    conversationId: ConversationId
+) -> (AgentPendingApproval, ConversationId, String, String, String) {
+    let approval = AgentPendingApproval(
+        requestId: "compiler-approval",
+        conversationId: conversationId,
+        title: "Compiler approval",
+        details: "Compiler approval details"
+    )
+    return (
+        approval,
+        approval.conversationId,
+        approval.details,
+        approval.requestId,
+        approval.title
+    )
+}
+
+func consumeD075AgentPendingElicitation(
+    elicitation: AgentElicitation
+) -> (AgentPendingElicitation, ConversationId, AgentElicitation, String) {
+    let pending = AgentPendingElicitation(elicitation: elicitation)
+    return (pending, pending.conversationId, pending.elicitation, pending.requestId)
+}
