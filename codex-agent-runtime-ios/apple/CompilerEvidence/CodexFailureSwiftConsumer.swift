@@ -1168,3 +1168,23 @@ func consumeD084HostAndStateGateway(
     try await host.selectWorkspace(selection: selection)
     try await host.close()
 }
+
+func consumeD085AgentGateway(agent: CodexAgent) {
+    _ = agent.workspace
+    _ = agent.authentication
+    let connectors = agent.connectors
+    _ = agent.conversations
+    let hooks = agent.hooks
+    _ = agent.integrationAuthorization
+    _ = agent.interactions
+    let mcpServers = agent.mcpServers
+    _ = agent.models
+    let plugins = agent.plugins
+    let skills = agent.skills
+
+    _ = connectors.isAvailable
+    _ = hooks.isAvailable
+    _ = mcpServers.isAvailable
+    _ = plugins.isAvailable
+    _ = skills.isAvailable
+}

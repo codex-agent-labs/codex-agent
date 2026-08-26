@@ -2332,6 +2332,88 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
         [self finishWithFailure:readyFailure ?: @"Objective-C canonical Ready lost its agent"];
         return;
     }
+    CodexAgentCodexAuthentication *authentication = ready.agent.authentication;
+    if (authentication == nil || authentication != ready.agent.authentication) {
+        [self finishWithFailure:@"Objective-C canonical authentication controller was not stable"];
+        return;
+    }
+    CodexAgentCodexConnectors *connectors = ready.agent.connectors;
+    if (connectors == nil || connectors != ready.agent.connectors) {
+        [self finishWithFailure:@"Objective-C canonical connectors controller was not stable"];
+        return;
+    }
+    CodexAgentCodexConversations *conversations = ready.agent.conversations;
+    if (conversations == nil || conversations != ready.agent.conversations) {
+        [self finishWithFailure:@"Objective-C canonical conversations controller was not stable"];
+        return;
+    }
+    CodexAgentCodexHooks *hooks = ready.agent.hooks;
+    if (hooks == nil || hooks != ready.agent.hooks) {
+        [self finishWithFailure:@"Objective-C canonical hooks controller was not stable"];
+        return;
+    }
+    CodexAgentCodexIntegrationAuthorization *integrationAuthorization =
+        ready.agent.integrationAuthorization;
+    if (integrationAuthorization == nil ||
+        integrationAuthorization != ready.agent.integrationAuthorization) {
+        [self finishWithFailure:
+            @"Objective-C canonical integration-authorization controller was not stable"];
+        return;
+    }
+    CodexAgentCodexInteractions *interactions = ready.agent.interactions;
+    if (interactions == nil || interactions != ready.agent.interactions) {
+        [self finishWithFailure:@"Objective-C canonical interactions controller was not stable"];
+        return;
+    }
+    CodexAgentCodexMcpServers *mcpServers = ready.agent.mcpServers;
+    if (mcpServers == nil || mcpServers != ready.agent.mcpServers) {
+        [self finishWithFailure:@"Objective-C canonical MCP-servers controller was not stable"];
+        return;
+    }
+    CodexAgentCodexModels *models = ready.agent.models;
+    if (models == nil || models != ready.agent.models) {
+        [self finishWithFailure:@"Objective-C canonical models controller was not stable"];
+        return;
+    }
+    CodexAgentCodexPlugins *plugins = ready.agent.plugins;
+    if (plugins == nil || plugins != ready.agent.plugins) {
+        [self finishWithFailure:@"Objective-C canonical plugins controller was not stable"];
+        return;
+    }
+    CodexAgentCodexSkills *skills = ready.agent.skills;
+    if (skills == nil || skills != ready.agent.skills) {
+        [self finishWithFailure:@"Objective-C canonical skills controller was not stable"];
+        return;
+    }
+    CodexAgentCodexWorkspace *workspace = ready.agent.workspace;
+    if (workspace == nil || workspace != ready.agent.workspace) {
+        [self finishWithFailure:@"Objective-C canonical workspace controller was not stable"];
+        return;
+    }
+    if (![workspace.path isEqualToString:self.canonicalWorkspaceURL.path]) {
+        [self finishWithFailure:@"Objective-C canonical workspace controller changed its path"];
+        return;
+    }
+    if (!skills.isAvailable) {
+        [self finishWithFailure:@"Objective-C canonical skills availability changed"];
+        return;
+    }
+    if (connectors.isAvailable) {
+        [self finishWithFailure:@"Objective-C canonical connectors availability changed"];
+        return;
+    }
+    if (hooks.isAvailable) {
+        [self finishWithFailure:@"Objective-C canonical hooks availability changed"];
+        return;
+    }
+    if (mcpServers.isAvailable) {
+        [self finishWithFailure:@"Objective-C canonical MCP-servers availability changed"];
+        return;
+    }
+    if (plugins.isAvailable) {
+        [self finishWithFailure:@"Objective-C canonical plugins availability changed"];
+        return;
+    }
     [self closeCanonicalHost];
 }
 

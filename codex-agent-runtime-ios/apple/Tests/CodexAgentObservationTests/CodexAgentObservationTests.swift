@@ -1869,6 +1869,38 @@ final class CodexAgentObservationTests: XCTestCase {
         let readyCopy = CodexHostStateReady(agent: ready.agent)
         XCTAssertTrue(readyCopy.agent === ready.agent)
 
+        let agent = ready.agent
+        let workspace = agent.workspace
+        XCTAssertEqual(workspace.path, workspaceURL.path)
+        XCTAssertTrue(workspace === agent.workspace)
+
+        let authentication = agent.authentication
+        XCTAssertTrue(authentication === agent.authentication)
+        let connectors = agent.connectors
+        XCTAssertTrue(connectors === agent.connectors)
+        let conversations = agent.conversations
+        XCTAssertTrue(conversations === agent.conversations)
+        let hooks = agent.hooks
+        XCTAssertTrue(hooks === agent.hooks)
+        let integrationAuthorization = agent.integrationAuthorization
+        XCTAssertTrue(integrationAuthorization === agent.integrationAuthorization)
+        let interactions = agent.interactions
+        XCTAssertTrue(interactions === agent.interactions)
+        let mcpServers = agent.mcpServers
+        XCTAssertTrue(mcpServers === agent.mcpServers)
+        let models = agent.models
+        XCTAssertTrue(models === agent.models)
+        let plugins = agent.plugins
+        XCTAssertTrue(plugins === agent.plugins)
+        let skills = agent.skills
+        XCTAssertTrue(skills === agent.skills)
+
+        XCTAssertFalse(connectors.isAvailable)
+        XCTAssertFalse(hooks.isAvailable)
+        XCTAssertFalse(mcpServers.isAvailable)
+        XCTAssertFalse(plugins.isAvailable)
+        XCTAssertTrue(skills.isAvailable)
+
         try await host.close()
         await fulfillment(of: [closedObserved], timeout: 30)
         _ = try XCTUnwrap(host.lifecycleState.value as? CodexHostStateClosed)

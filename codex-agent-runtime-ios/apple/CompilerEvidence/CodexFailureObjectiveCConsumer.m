@@ -477,6 +477,32 @@ static BOOL consumeD084HostGateway(
         returnedAgent == agent && returnedRequirement == requirement;
 }
 
+static BOOL consumeD085AgentControllers(CodexAgentCodexAgent *agent) {
+    CodexAgentCodexAuthentication *authentication = agent.authentication;
+    CodexAgentCodexConnectors *connectors = agent.connectors;
+    CodexAgentCodexConversations *conversations = agent.conversations;
+    CodexAgentCodexHooks *hooks = agent.hooks;
+    CodexAgentCodexIntegrationAuthorization *integrationAuthorization =
+        agent.integrationAuthorization;
+    CodexAgentCodexInteractions *interactions = agent.interactions;
+    CodexAgentCodexMcpServers *mcpServers = agent.mcpServers;
+    CodexAgentCodexModels *models = agent.models;
+    CodexAgentCodexPlugins *plugins = agent.plugins;
+    CodexAgentCodexSkills *skills = agent.skills;
+    CodexAgentCodexWorkspace *workspace = agent.workspace;
+    BOOL connectorsAvailable = connectors.isAvailable;
+    BOOL hooksAvailable = hooks.isAvailable;
+    BOOL mcpServersAvailable = mcpServers.isAvailable;
+    BOOL pluginsAvailable = plugins.isAvailable;
+    BOOL skillsAvailable = skills.isAvailable;
+    return authentication != nil && connectors != nil && conversations != nil && hooks != nil &&
+        integrationAuthorization != nil && interactions != nil && mcpServers != nil && models != nil &&
+        plugins != nil && skills != nil && workspace != nil &&
+        (connectorsAvailable || !connectorsAvailable) && (hooksAvailable || !hooksAvailable) &&
+        (mcpServersAvailable || !mcpServersAvailable) && (pluginsAvailable || !pluginsAvailable) &&
+        (skillsAvailable || !skillsAvailable);
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];
