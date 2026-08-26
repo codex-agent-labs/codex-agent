@@ -108,6 +108,7 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD077McpServerValues()
         assertD078McpAndElicitationValues()
         assertD079ConversationValues()
+        assertD080StateSnapshots()
 
         let authorizationUrlCompanion = CodexAuthorizationUrl.companion
         let chatGptAuthorizationUrl = authorizationUrlCompanion.chatGpt(
@@ -1072,6 +1073,259 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertEqual(conversation.messages.count, 2)
         XCTAssertTrue(conversation.messages[0] === richMessage)
         XCTAssertTrue(conversation.messages[1] === defaultMessage)
+    }
+
+    private func assertD080StateSnapshots() {
+        let failure = CodexFailure(
+            code: "d080_failure",
+            message: "D080 failure",
+            isRecoverable: true
+        )
+        let pendingSignInUrl = CodexAuthorizationUrl.companion.chatGpt(
+            value: "https://auth.openai.com/d080"
+        )
+        let deviceVerificationUrl = CodexAuthorizationUrl.companion.external(
+            value: "https://example.com/d080/device"
+        )
+        let authenticationState = AgentAuthenticationState(
+            status: .authenticating,
+            pendingSignInUrl: pendingSignInUrl,
+            deviceVerificationUrl: deviceVerificationUrl,
+            deviceUserCode: "D080-CODE",
+            failure: failure
+        )
+        XCTAssertTrue(authenticationState.status === AgentAuthenticationStatus.authenticating)
+        XCTAssertTrue(authenticationState.pendingSignInUrl === pendingSignInUrl)
+        XCTAssertTrue(authenticationState.deviceVerificationUrl === deviceVerificationUrl)
+        XCTAssertEqual(authenticationState.deviceUserCode, "D080-CODE")
+        XCTAssertTrue(authenticationState.failure === failure)
+
+        let defaultAuthenticationState = AgentAuthenticationState(
+            status: .signedOut,
+            pendingSignInUrl: nil,
+            deviceVerificationUrl: nil,
+            deviceUserCode: nil,
+            failure: nil
+        )
+        XCTAssertTrue(defaultAuthenticationState.status === AgentAuthenticationStatus.signedOut)
+        XCTAssertNil(defaultAuthenticationState.pendingSignInUrl)
+        XCTAssertNil(defaultAuthenticationState.deviceVerificationUrl)
+        XCTAssertNil(defaultAuthenticationState.deviceUserCode)
+        XCTAssertNil(defaultAuthenticationState.failure)
+
+        let conversationId = ConversationId(value: "d080-conversation")
+        let summary = AgentConversationSummary(
+            conversationId: conversationId,
+            title: "D080 Conversation",
+            updatedAtEpochSeconds: 80
+        )
+        let conversation = AgentConversation(summary: summary, messages: [])
+        let turnProgress = AgentTurnProgress(
+            text: "D080 text",
+            commentary: "D080 commentary",
+            reasoning: "D080 reasoning",
+            plan: "D080 plan",
+            planProgress: nil,
+            shellOutput: "D080 output",
+            shellExitCode: KotlinInt(value: 80),
+            workActivity: .runningCommand,
+            hookActivities: [],
+            isTruncated: false
+        )
+        let conversationState = AgentConversationState(
+            status: .failed,
+            conversationId: conversationId,
+            conversation: conversation,
+            turnProgress: turnProgress,
+            model: "d080-model",
+            effort: "high",
+            serviceTier: "fast",
+            failure: failure
+        )
+        XCTAssertTrue(conversationState.status === AgentConversationStatus.failed)
+        XCTAssertTrue(conversationState.conversationId === conversationId)
+        XCTAssertTrue(conversationState.conversation === conversation)
+        XCTAssertTrue(conversationState.turnProgress === turnProgress)
+        XCTAssertEqual(conversationState.model, "d080-model")
+        XCTAssertEqual(conversationState.effort, "high")
+        XCTAssertEqual(conversationState.serviceTier, "fast")
+        XCTAssertTrue(conversationState.failure === failure)
+        XCTAssertTrue(conversationState.canStartTurn)
+        XCTAssertTrue(conversationState.canReload)
+        XCTAssertFalse(conversationState.canCancelTurn)
+
+        let defaultTurnProgress = AgentTurnProgress(
+            text: "",
+            commentary: "",
+            reasoning: "",
+            plan: "",
+            planProgress: nil,
+            shellOutput: "",
+            shellExitCode: nil,
+            workActivity: nil,
+            hookActivities: [],
+            isTruncated: false
+        )
+        let defaultConversationState = AgentConversationState(
+            status: .theNew,
+            conversationId: nil,
+            conversation: nil,
+            turnProgress: defaultTurnProgress,
+            model: nil,
+            effort: nil,
+            serviceTier: nil,
+            failure: nil
+        )
+        XCTAssertTrue(defaultConversationState.status === AgentConversationStatus.theNew)
+        XCTAssertNil(defaultConversationState.conversationId)
+        XCTAssertNil(defaultConversationState.conversation)
+        XCTAssertTrue(defaultConversationState.turnProgress === defaultTurnProgress)
+        XCTAssertNil(defaultConversationState.model)
+        XCTAssertNil(defaultConversationState.effort)
+        XCTAssertNil(defaultConversationState.serviceTier)
+        XCTAssertNil(defaultConversationState.failure)
+        XCTAssertFalse(defaultConversationState.canStartTurn)
+        XCTAssertFalse(defaultConversationState.canReload)
+        XCTAssertFalse(defaultConversationState.canCancelTurn)
+
+        let nonRecoverableFailure = CodexFailure(
+            code: "d080_terminal",
+            message: "D080 terminal failure",
+            isRecoverable: false
+        )
+        let snapshot: (
+            AgentConversationStatus, ConversationId?, CodexFailure?
+        ) -> AgentConversationState = { status, id, stateFailure in
+            AgentConversationState(
+                status: status,
+                conversationId: id,
+                conversation: nil,
+                turnProgress: defaultTurnProgress,
+                model: nil,
+                effort: nil,
+                serviceTier: nil,
+                failure: stateFailure
+            )
+        }
+        let capabilityMatrix: [(
+            String, AgentConversationState, Bool, Bool, Bool
+        )] = [
+            ("NEW", snapshot(.theNew, conversationId, nil), false, false, false),
+            ("OPENING", snapshot(.opening, conversationId, nil), false, false, false),
+            ("READY", snapshot(.ready, conversationId, nil), true, true, false),
+            ("READY without ID", snapshot(.ready, nil, nil), false, false, false),
+            ("STARTING_TURN", snapshot(.startingTurn, conversationId, nil), false, false, true),
+            ("RUNNING_TURN", snapshot(.runningTurn, conversationId, nil), false, false, true),
+            ("CANCELLING_TURN", snapshot(.cancellingTurn, conversationId, nil), false, false, false),
+            ("RELOADING", snapshot(.reloading, conversationId, nil), false, false, false),
+            ("FAILED recoverable", snapshot(.failed, conversationId, failure), true, true, false),
+            ("FAILED terminal", snapshot(.failed, conversationId, nonRecoverableFailure), false, true, false),
+            ("FAILED without ID", snapshot(.failed, nil, failure), false, false, false),
+            ("CLOSED", snapshot(.closed, conversationId, nil), false, false, false),
+        ]
+        for (label, state, canStart, canReload, canCancel) in capabilityMatrix {
+            XCTAssertEqual(state.canStartTurn, canStart, label)
+            XCTAssertEqual(state.canReload, canReload, label)
+            XCTAssertEqual(state.canCancelTurn, canCancel, label)
+        }
+
+        let connector = AgentConnector(
+            id: "d080-connector",
+            name: "D080 Connector",
+            description: "D080 integration target",
+            installUrl: nil,
+            isAccessible: true,
+            isEnabled: true,
+            pluginNames: []
+        )
+        let integration = AgentIntegrationConnector(connector: connector)
+        let integrationState = AgentIntegrationAuthorizationState(
+            status: .failed,
+            target: integration,
+            failure: failure
+        )
+        XCTAssertTrue(integrationState.status === AgentIntegrationAuthorizationStatus.failed)
+        XCTAssertTrue((integrationState.target as? AgentIntegrationConnector) === integration)
+        XCTAssertTrue(integrationState.failure === failure)
+
+        let defaultIntegrationState = AgentIntegrationAuthorizationState(
+            status: .idle,
+            target: nil,
+            failure: nil
+        )
+        XCTAssertTrue(defaultIntegrationState.status === AgentIntegrationAuthorizationStatus.idle)
+        XCTAssertNil(defaultIntegrationState.target)
+        XCTAssertNil(defaultIntegrationState.failure)
+
+        let otherConversationId = ConversationId(value: "d080-other-conversation")
+        let approval = AgentPendingApproval(
+            requestId: "d080-resolving",
+            conversationId: conversationId,
+            title: "D080 approval",
+            details: "D080 approval details"
+        )
+        let elicitation = AgentElicitation(
+            requestId: "d080-elicitation",
+            serverName: "d080-server",
+            conversationId: conversationId,
+            message: "D080 elicitation",
+            form: nil,
+            url: nil
+        )
+        let pendingElicitation = AgentPendingElicitation(elicitation: elicitation)
+        let otherApproval = AgentPendingApproval(
+            requestId: "d080-other",
+            conversationId: otherConversationId,
+            title: "D080 other approval",
+            details: "D080 other approval details"
+        )
+        let interactionState = AgentInteractionState(
+            pending: [approval, pendingElicitation, otherApproval],
+            resolvingRequestIds: ["d080-resolving"],
+            failure: failure
+        )
+        XCTAssertTrue(interactionState.failure === failure)
+        XCTAssertEqual(interactionState.pending.count, 3)
+        XCTAssertTrue((interactionState.pending[0] as? AgentPendingApproval) === approval)
+        XCTAssertTrue((interactionState.pending[1] as? AgentPendingElicitation) === pendingElicitation)
+        XCTAssertTrue((interactionState.pending[2] as? AgentPendingApproval) === otherApproval)
+        XCTAssertEqual(interactionState.resolvingRequestIds.count, 1)
+        XCTAssertTrue(interactionState.resolvingRequestIds.contains("d080-resolving"))
+
+        let conversationPending = interactionState.pendingFor(conversationId: conversationId)
+        XCTAssertEqual(conversationPending.count, 2)
+        XCTAssertTrue((conversationPending[0] as? AgentPendingApproval) === approval)
+        XCTAssertTrue((conversationPending[1] as? AgentPendingElicitation) === pendingElicitation)
+        let otherPending = interactionState.pendingFor(conversationId: otherConversationId)
+        XCTAssertEqual(otherPending.count, 1)
+        XCTAssertTrue((otherPending[0] as? AgentPendingApproval) === otherApproval)
+        XCTAssertTrue(
+            interactionState.pendingFor(
+                conversationId: ConversationId(value: "d080-unknown-conversation")
+            ).isEmpty
+        )
+
+        XCTAssertTrue(interactionState.isResolving(interaction: approval))
+        let sameIdClone = AgentPendingApproval(
+            requestId: "d080-resolving",
+            conversationId: conversationId,
+            title: "D080 cloned approval",
+            details: "D080 cloned approval details"
+        )
+        XCTAssertFalse(interactionState.isResolving(interaction: sameIdClone))
+        XCTAssertFalse(interactionState.isResolving(interaction: pendingElicitation))
+        XCTAssertFalse(interactionState.isResolving(interaction: otherApproval))
+
+        let defaultInteractionState = AgentInteractionState(
+            pending: [],
+            resolvingRequestIds: [],
+            failure: nil
+        )
+        XCTAssertTrue(defaultInteractionState.pending.isEmpty)
+        XCTAssertTrue(defaultInteractionState.resolvingRequestIds.isEmpty)
+        XCTAssertNil(defaultInteractionState.failure)
+        XCTAssertTrue(defaultInteractionState.pendingFor(conversationId: conversationId).isEmpty)
+        XCTAssertFalse(defaultInteractionState.isResolving(interaction: approval))
     }
 
     private func assertEnumValue<E: AnyObject>(

@@ -983,3 +983,102 @@ func consumeD079AgentConversation(
     let conversation = AgentConversation(summary: summary, messages: [firstMessage, secondMessage])
     return (conversation, conversation.messages, conversation.summary)
 }
+
+func consumeD080AgentAuthenticationState(
+    status: AgentAuthenticationStatus,
+    pendingSignInUrl: CodexAuthorizationUrl,
+    deviceVerificationUrl: CodexAuthorizationUrl,
+    failure: CodexFailure
+) -> (
+    AgentAuthenticationState, String?, CodexAuthorizationUrl?, CodexFailure?,
+    CodexAuthorizationUrl?, AgentAuthenticationStatus
+) {
+    let state = AgentAuthenticationState(
+        status: status,
+        pendingSignInUrl: pendingSignInUrl,
+        deviceVerificationUrl: deviceVerificationUrl,
+        deviceUserCode: "compiler-device-code",
+        failure: failure
+    )
+    return (
+        state,
+        state.deviceUserCode,
+        state.deviceVerificationUrl,
+        state.failure,
+        state.pendingSignInUrl,
+        state.status
+    )
+}
+
+func consumeD080AgentConversationState(
+    status: AgentConversationStatus,
+    conversationId: ConversationId,
+    conversation: AgentConversation,
+    turnProgress: AgentTurnProgress,
+    failure: CodexFailure
+) -> (
+    AgentConversationState, Bool, Bool, Bool, AgentConversation?, ConversationId?, String?,
+    CodexFailure?, String?, String?, AgentConversationStatus, AgentTurnProgress
+) {
+    let state = AgentConversationState(
+        status: status,
+        conversationId: conversationId,
+        conversation: conversation,
+        turnProgress: turnProgress,
+        model: "compiler-model",
+        effort: "compiler-effort",
+        serviceTier: "compiler-tier",
+        failure: failure
+    )
+    return (
+        state,
+        state.canCancelTurn,
+        state.canReload,
+        state.canStartTurn,
+        state.conversation,
+        state.conversationId,
+        state.effort,
+        state.failure,
+        state.model,
+        state.serviceTier,
+        state.status,
+        state.turnProgress
+    )
+}
+
+func consumeD080AgentIntegrationAuthorizationState(
+    status: AgentIntegrationAuthorizationStatus,
+    target: any AgentIntegration,
+    failure: CodexFailure
+) -> (
+    AgentIntegrationAuthorizationState, CodexFailure?, AgentIntegrationAuthorizationStatus,
+    (any AgentIntegration)?
+) {
+    let state = AgentIntegrationAuthorizationState(status: status, target: target, failure: failure)
+    return (state, state.failure, state.status, state.target)
+}
+
+func consumeD080AgentInteractionState(
+    pending: [any AgentPendingInteraction],
+    resolvingRequestIds: Set<String>,
+    failure: CodexFailure,
+    conversationId: ConversationId,
+    interaction: any AgentPendingInteraction
+) -> (
+    AgentInteractionState, CodexFailure?, [any AgentPendingInteraction], Set<String>,
+    [any AgentPendingInteraction], Bool
+) {
+    let state = AgentInteractionState(
+        pending: pending,
+        resolvingRequestIds: resolvingRequestIds,
+        failure: failure
+    )
+    return (
+        state,
+        state.failure,
+        state.pending,
+        state.resolvingRequestIds,
+        state.pendingFor(conversationId: conversationId),
+        state.isResolving(interaction: interaction)
+    )
+}

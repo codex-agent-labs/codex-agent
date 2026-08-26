@@ -290,6 +290,95 @@ static BOOL consumeD079ConversationValues(
         [returnedMessages isEqualToArray:messages] && returnedSummary == summary;
 }
 
+static BOOL consumeD080StateValues(
+    CodexAgentAgentAuthenticationStatus *authenticationStatusInput,
+    CodexAgentAgentConversationStatus *conversationStatusInput,
+    CodexAgentAgentIntegrationAuthorizationStatus *integrationStatusInput,
+    CodexAgentCodexAuthorizationUrl *pendingSignInUrl,
+    CodexAgentCodexAuthorizationUrl *deviceVerificationUrl,
+    CodexAgentCodexFailure *failure,
+    CodexAgentConversationId *conversationId,
+    CodexAgentAgentConversation *conversation,
+    CodexAgentAgentTurnProgress *turnProgress,
+    CodexAgentAgentIntegrationConnector *integration,
+    CodexAgentAgentPendingApproval *approval,
+    CodexAgentAgentPendingElicitation *elicitation
+) {
+    CodexAgentAgentAuthenticationState *authentication =
+        [[CodexAgentAgentAuthenticationState alloc]
+            initWithStatus:authenticationStatusInput
+            pendingSignInUrl:pendingSignInUrl
+            deviceVerificationUrl:deviceVerificationUrl
+            deviceUserCode:@"compiler-code"
+            failure:failure];
+    NSString *deviceUserCode = authentication.deviceUserCode;
+    CodexAgentCodexAuthorizationUrl *returnedDeviceVerificationUrl =
+        authentication.deviceVerificationUrl;
+    CodexAgentCodexFailure *authenticationFailure = authentication.failure;
+    CodexAgentCodexAuthorizationUrl *returnedPendingSignInUrl = authentication.pendingSignInUrl;
+    CodexAgentAgentAuthenticationStatus *authenticationStatus = authentication.status;
+
+    CodexAgentAgentConversationState *conversationState =
+        [[CodexAgentAgentConversationState alloc]
+            initWithStatus:conversationStatusInput
+            conversationId:conversationId
+            conversation:conversation
+            turnProgress:turnProgress
+            model:@"compiler-model"
+            effort:@"high"
+            serviceTier:@"fast"
+            failure:failure];
+    BOOL canCancelTurn = conversationState.canCancelTurn;
+    BOOL canReload = conversationState.canReload;
+    BOOL canStartTurn = conversationState.canStartTurn;
+    CodexAgentAgentConversation *returnedConversation = conversationState.conversation;
+    CodexAgentConversationId *returnedConversationId = conversationState.conversationId;
+    NSString *effort = conversationState.effort;
+    CodexAgentCodexFailure *conversationFailure = conversationState.failure;
+    NSString *model = conversationState.model;
+    NSString *serviceTier = conversationState.serviceTier;
+    CodexAgentAgentConversationStatus *conversationStatus = conversationState.status;
+    CodexAgentAgentTurnProgress *returnedTurnProgress = conversationState.turnProgress;
+
+    CodexAgentAgentIntegrationAuthorizationState *integrationState =
+        [[CodexAgentAgentIntegrationAuthorizationState alloc]
+            initWithStatus:integrationStatusInput
+            target:integration
+            failure:failure];
+    CodexAgentCodexFailure *integrationFailure = integrationState.failure;
+    CodexAgentAgentIntegrationAuthorizationStatus *integrationStatus = integrationState.status;
+    id<CodexAgentAgentIntegration> returnedTarget = integrationState.target;
+
+    NSArray<id<CodexAgentAgentPendingInteraction>> *pending = @[approval, elicitation];
+    NSSet<NSString *> *resolvingRequestIds = [NSSet setWithObject:@"approval"];
+    CodexAgentAgentInteractionState *interactionState = [[CodexAgentAgentInteractionState alloc]
+        initWithPending:pending
+        resolvingRequestIds:resolvingRequestIds
+        failure:failure];
+    CodexAgentCodexFailure *interactionFailure = interactionState.failure;
+    NSArray<id<CodexAgentAgentPendingInteraction>> *returnedPending = interactionState.pending;
+    NSSet<NSString *> *returnedResolvingRequestIds = interactionState.resolvingRequestIds;
+    NSArray<id<CodexAgentAgentPendingInteraction>> *conversationPending =
+        [interactionState pendingForConversationId:conversationId];
+    BOOL isResolving = [interactionState isResolvingInteraction:approval];
+
+    return [deviceUserCode isEqualToString:@"compiler-code"] &&
+        returnedDeviceVerificationUrl == deviceVerificationUrl &&
+        authenticationFailure == failure && returnedPendingSignInUrl == pendingSignInUrl &&
+        authenticationStatus == authenticationStatusInput &&
+        !canCancelTurn && canReload && canStartTurn && returnedConversation == conversation &&
+        returnedConversationId == conversationId && [effort isEqualToString:@"high"] &&
+        conversationFailure == failure && [model isEqualToString:@"compiler-model"] &&
+        [serviceTier isEqualToString:@"fast"] &&
+        conversationStatus == conversationStatusInput &&
+        returnedTurnProgress == turnProgress && integrationFailure == failure &&
+        integrationStatus == integrationStatusInput &&
+        returnedTarget == integration && interactionFailure == failure &&
+        [returnedPending isEqualToArray:pending] &&
+        [returnedResolvingRequestIds isEqualToSet:resolvingRequestIds] &&
+        conversationPending.count == pending.count && isResolving;
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

@@ -674,6 +674,322 @@ static NSString *CDXVerifyD079ConversationValues(void) {
     return nil;
 }
 
+static NSString *CDXVerifyD080StateValues(void) {
+    CodexAgentCodexFailure *recoverableFailure = [[CodexAgentCodexFailure alloc]
+        initWithCode:@"d080-recoverable"
+        message:@"Retry D080"
+        isRecoverable:YES];
+    CodexAgentCodexFailure *terminalFailure = [[CodexAgentCodexFailure alloc]
+        initWithCode:@"d080-terminal"
+        message:@"Stop D080"
+        isRecoverable:NO];
+    CodexAgentCodexAuthorizationUrlCompanion *urlCompanion =
+        [CodexAgentCodexAuthorizationUrl companion];
+    CodexAgentCodexAuthorizationUrl *pendingSignInUrl =
+        [urlCompanion externalValue:@"https://example.com/d080/sign-in"];
+    CodexAgentCodexAuthorizationUrl *deviceVerificationUrl =
+        [urlCompanion chatGptValue:@"https://auth.openai.com/d080/device"];
+
+    CodexAgentAgentAuthenticationState *authentication =
+        [[CodexAgentAgentAuthenticationState alloc]
+            initWithStatus:[CodexAgentAgentAuthenticationStatus authenticating]
+            pendingSignInUrl:pendingSignInUrl
+            deviceVerificationUrl:deviceVerificationUrl
+            deviceUserCode:@"D080-CODE"
+            failure:recoverableFailure];
+    if (authentication.status != [CodexAgentAgentAuthenticationStatus authenticating] ||
+        authentication.pendingSignInUrl != pendingSignInUrl ||
+        authentication.deviceVerificationUrl != deviceVerificationUrl ||
+        ![authentication.deviceUserCode isEqualToString:@"D080-CODE"] ||
+        authentication.failure != recoverableFailure) {
+        return @"Objective-C D080 authentication state changed";
+    }
+    CodexAgentAgentAuthenticationState *defaultAuthentication =
+        [[CodexAgentAgentAuthenticationState alloc]
+            initWithStatus:[CodexAgentAgentAuthenticationStatus signedOut]
+            pendingSignInUrl:nil
+            deviceVerificationUrl:nil
+            deviceUserCode:nil
+            failure:nil];
+    if (defaultAuthentication.status != [CodexAgentAgentAuthenticationStatus signedOut] ||
+        defaultAuthentication.pendingSignInUrl != nil ||
+        defaultAuthentication.deviceVerificationUrl != nil ||
+        defaultAuthentication.deviceUserCode != nil || defaultAuthentication.failure != nil) {
+        return @"Objective-C D080 authentication defaults changed";
+    }
+
+    CodexAgentConversationId *conversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"d080-conversation"];
+    CodexAgentAgentConversationSummary *summary = [[CodexAgentAgentConversationSummary alloc]
+        initWithConversationId:conversationId
+        title:@"D080 conversation"
+        updatedAtEpochSeconds:80];
+    CodexAgentAgentConversation *conversation = [[CodexAgentAgentConversation alloc]
+        initWithSummary:summary
+        messages:@[]];
+    CodexAgentAgentTurnProgress *turnProgress = [[CodexAgentAgentTurnProgress alloc]
+        initWithText:@"D080 text"
+        commentary:@"D080 commentary"
+        reasoning:nil
+        plan:nil
+        planProgress:nil
+        shellOutput:nil
+        shellExitCode:nil
+        workActivity:nil
+        hookActivities:@[]
+        isTruncated:NO];
+    CodexAgentAgentConversationState *readyState =
+        [[CodexAgentAgentConversationState alloc]
+            initWithStatus:[CodexAgentAgentConversationStatus ready]
+            conversationId:conversationId
+            conversation:conversation
+            turnProgress:turnProgress
+            model:@"d080-model"
+            effort:@"high"
+            serviceTier:@"fast"
+            failure:recoverableFailure];
+    if (readyState.status != [CodexAgentAgentConversationStatus ready] ||
+        readyState.conversationId != conversationId || readyState.conversation != conversation ||
+        readyState.turnProgress != turnProgress ||
+        ![readyState.model isEqualToString:@"d080-model"] ||
+        ![readyState.effort isEqualToString:@"high"] ||
+        ![readyState.serviceTier isEqualToString:@"fast"] ||
+        readyState.failure != recoverableFailure || !readyState.canStartTurn ||
+        !readyState.canReload || readyState.canCancelTurn) {
+        return @"Objective-C D080 rich conversation state changed";
+    }
+
+    CodexAgentAgentTurnProgress *defaultTurnProgress = [[CodexAgentAgentTurnProgress alloc]
+        initWithText:nil
+        commentary:nil
+        reasoning:nil
+        plan:nil
+        planProgress:nil
+        shellOutput:nil
+        shellExitCode:nil
+        workActivity:nil
+        hookActivities:@[]
+        isTruncated:NO];
+    CodexAgentAgentConversationState *defaultConversationState =
+        [[CodexAgentAgentConversationState alloc]
+            initWithStatus:[CodexAgentAgentConversationStatus theNew]
+            conversationId:nil
+            conversation:nil
+            turnProgress:defaultTurnProgress
+            model:nil
+            effort:nil
+            serviceTier:nil
+            failure:nil];
+    if (defaultConversationState.status != [CodexAgentAgentConversationStatus theNew] ||
+        defaultConversationState.conversationId != nil ||
+        defaultConversationState.conversation != nil ||
+        defaultConversationState.turnProgress != defaultTurnProgress ||
+        defaultConversationState.model != nil || defaultConversationState.effort != nil ||
+        defaultConversationState.serviceTier != nil || defaultConversationState.failure != nil ||
+        defaultConversationState.canStartTurn || defaultConversationState.canReload ||
+        defaultConversationState.canCancelTurn) {
+        return @"Objective-C D080 conversation defaults changed";
+    }
+
+    CodexAgentAgentConversationState *readyWithoutId =
+        [[CodexAgentAgentConversationState alloc]
+            initWithStatus:[CodexAgentAgentConversationStatus ready]
+            conversationId:nil
+            conversation:nil
+            turnProgress:defaultTurnProgress
+            model:nil
+            effort:nil
+            serviceTier:nil
+            failure:nil];
+    CodexAgentAgentConversationState *recoverableFailed =
+        [[CodexAgentAgentConversationState alloc]
+            initWithStatus:[CodexAgentAgentConversationStatus failed]
+            conversationId:conversationId
+            conversation:nil
+            turnProgress:defaultTurnProgress
+            model:nil
+            effort:nil
+            serviceTier:nil
+            failure:recoverableFailure];
+    CodexAgentAgentConversationState *terminalFailed =
+        [[CodexAgentAgentConversationState alloc]
+            initWithStatus:[CodexAgentAgentConversationStatus failed]
+            conversationId:conversationId
+            conversation:nil
+            turnProgress:defaultTurnProgress
+            model:nil
+            effort:nil
+            serviceTier:nil
+            failure:terminalFailure];
+    CodexAgentAgentConversationState *failureMissing =
+        [[CodexAgentAgentConversationState alloc]
+            initWithStatus:[CodexAgentAgentConversationStatus failed]
+            conversationId:conversationId
+            conversation:nil
+            turnProgress:defaultTurnProgress
+            model:nil
+            effort:nil
+            serviceTier:nil
+            failure:nil];
+    CodexAgentAgentConversationState *starting =
+        [[CodexAgentAgentConversationState alloc]
+            initWithStatus:[CodexAgentAgentConversationStatus startingTurn]
+            conversationId:conversationId
+            conversation:nil
+            turnProgress:defaultTurnProgress
+            model:nil
+            effort:nil
+            serviceTier:nil
+            failure:nil];
+    CodexAgentAgentConversationState *running =
+        [[CodexAgentAgentConversationState alloc]
+            initWithStatus:[CodexAgentAgentConversationStatus runningTurn]
+            conversationId:conversationId
+            conversation:nil
+            turnProgress:defaultTurnProgress
+            model:nil
+            effort:nil
+            serviceTier:nil
+            failure:nil];
+    if (readyWithoutId.canStartTurn || readyWithoutId.canReload ||
+        readyWithoutId.canCancelTurn || !recoverableFailed.canStartTurn ||
+        !recoverableFailed.canReload || recoverableFailed.canCancelTurn ||
+        terminalFailed.canStartTurn || !terminalFailed.canReload ||
+        terminalFailed.canCancelTurn || failureMissing.canStartTurn ||
+        !failureMissing.canReload || failureMissing.canCancelTurn ||
+        starting.canStartTurn || starting.canReload || !starting.canCancelTurn ||
+        running.canStartTurn || running.canReload || !running.canCancelTurn) {
+        return @"Objective-C D080 conversation capability matrix changed";
+    }
+
+    CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
+        initWithId:@"d080-connector"
+        name:@"D080 Connector"
+        description:nil
+        installUrl:nil
+        isAccessible:YES
+        isEnabled:YES
+        pluginNames:@[]];
+    CodexAgentAgentIntegrationConnector *integration =
+        [[CodexAgentAgentIntegrationConnector alloc] initWithConnector:connector];
+    CodexAgentAgentIntegrationAuthorizationState *integrationState =
+        [[CodexAgentAgentIntegrationAuthorizationState alloc]
+            initWithStatus:[CodexAgentAgentIntegrationAuthorizationStatus starting]
+            target:integration
+            failure:recoverableFailure];
+    id<CodexAgentAgentIntegration> returnedTarget = integrationState.target;
+    CodexAgentAgentIntegrationConnector *returnedIntegration =
+        (CodexAgentAgentIntegrationConnector *)returnedTarget;
+    if (integrationState.status != [CodexAgentAgentIntegrationAuthorizationStatus starting] ||
+        integrationState.failure != recoverableFailure || returnedTarget != integration ||
+        ![(id)returnedTarget isKindOfClass:[CodexAgentAgentIntegrationConnector class]] ||
+        returnedIntegration != integration || returnedIntegration.connector != connector) {
+        return @"Objective-C D080 integration authorization state changed";
+    }
+    CodexAgentAgentIntegrationAuthorizationState *defaultIntegrationState =
+        [[CodexAgentAgentIntegrationAuthorizationState alloc]
+            initWithStatus:[CodexAgentAgentIntegrationAuthorizationStatus idle]
+            target:nil
+            failure:nil];
+    if (defaultIntegrationState.status != [CodexAgentAgentIntegrationAuthorizationStatus idle] ||
+        defaultIntegrationState.target != nil || defaultIntegrationState.failure != nil) {
+        return @"Objective-C D080 integration authorization defaults changed";
+    }
+
+    CodexAgentConversationId *otherConversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"d080-other-conversation"];
+    CodexAgentAgentPendingApproval *approval = [[CodexAgentAgentPendingApproval alloc]
+        initWithRequestId:@"d080-approval"
+        conversationId:conversationId
+        title:@"Approve D080"
+        details:nil];
+    CodexAgentAgentElicitation *elicitation = [[CodexAgentAgentElicitation alloc]
+        initWithRequestId:@"d080-elicitation"
+        serverName:@"d080-server"
+        conversationId:conversationId
+        message:@"Provide D080 input"
+        form:nil
+        url:nil];
+    CodexAgentAgentPendingElicitation *pendingElicitation =
+        [[CodexAgentAgentPendingElicitation alloc] initWithElicitation:elicitation];
+    CodexAgentAgentPendingApproval *otherApproval = [[CodexAgentAgentPendingApproval alloc]
+        initWithRequestId:@"d080-other-approval"
+        conversationId:otherConversationId
+        title:@"Approve other"
+        details:nil];
+    CodexAgentAgentPendingApproval *sameRequestDifferentInstance =
+        [[CodexAgentAgentPendingApproval alloc]
+            initWithRequestId:@"d080-approval"
+            conversationId:conversationId
+            title:@"Not owned"
+            details:nil];
+    CodexAgentAgentPendingApproval *unresolvedDetached =
+        [[CodexAgentAgentPendingApproval alloc]
+            initWithRequestId:@"d080-detached"
+            conversationId:conversationId
+            title:@"Detached"
+            details:nil];
+    NSArray<id<CodexAgentAgentPendingInteraction>> *pending =
+        @[approval, pendingElicitation, otherApproval];
+    NSSet<NSString *> *resolvingRequestIds = [NSSet setWithObjects:@"d080-approval", nil];
+    CodexAgentAgentInteractionState *interactionState = [[CodexAgentAgentInteractionState alloc]
+        initWithPending:pending
+        resolvingRequestIds:resolvingRequestIds
+        failure:recoverableFailure];
+    if (interactionState.failure != recoverableFailure || interactionState.pending.count != 3 ||
+        interactionState.pending[0] != approval ||
+        interactionState.pending[1] != pendingElicitation ||
+        interactionState.pending[2] != otherApproval ||
+        interactionState.resolvingRequestIds.count != 1 ||
+        ![interactionState.resolvingRequestIds containsObject:@"d080-approval"]) {
+        return @"Objective-C D080 interaction state changed";
+    }
+    NSArray<id<CodexAgentAgentPendingInteraction>> *conversationPending =
+        [interactionState pendingForConversationId:conversationId];
+    NSArray<id<CodexAgentAgentPendingInteraction>> *otherPending =
+        [interactionState pendingForConversationId:otherConversationId];
+    CodexAgentConversationId *missingConversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"d080-missing-conversation"];
+    NSArray<id<CodexAgentAgentPendingInteraction>> *missingPending =
+        [interactionState pendingForConversationId:missingConversationId];
+    CodexAgentAgentPendingApproval *returnedApproval =
+        (CodexAgentAgentPendingApproval *)conversationPending[0];
+    CodexAgentAgentPendingElicitation *returnedElicitation =
+        (CodexAgentAgentPendingElicitation *)conversationPending[1];
+    CodexAgentAgentPendingApproval *returnedOtherApproval =
+        (CodexAgentAgentPendingApproval *)otherPending[0];
+    if (conversationPending.count != 2 || conversationPending[0] != approval ||
+        conversationPending[1] != pendingElicitation || otherPending.count != 1 ||
+        otherPending[0] != otherApproval || missingPending.count != 0 ||
+        ![(id)returnedApproval isKindOfClass:[CodexAgentAgentPendingApproval class]] ||
+        ![(id)returnedElicitation isKindOfClass:[CodexAgentAgentPendingElicitation class]] ||
+        ![(id)returnedOtherApproval isKindOfClass:[CodexAgentAgentPendingApproval class]] ||
+        returnedApproval != approval || returnedElicitation != pendingElicitation ||
+        returnedOtherApproval != otherApproval) {
+        return @"Objective-C D080 pending filtering changed";
+    }
+    if (![interactionState isResolvingInteraction:approval] ||
+        [interactionState isResolvingInteraction:sameRequestDifferentInstance] ||
+        [interactionState isResolvingInteraction:pendingElicitation] ||
+        [interactionState isResolvingInteraction:unresolvedDetached]) {
+        return @"Objective-C D080 resolving identity matrix changed";
+    }
+    CodexAgentAgentInteractionState *defaultInteractionState =
+        [[CodexAgentAgentInteractionState alloc]
+            initWithPending:@[]
+            resolvingRequestIds:[NSSet set]
+            failure:nil];
+    if (defaultInteractionState.pending.count != 0 ||
+        defaultInteractionState.resolvingRequestIds.count != 0 ||
+        defaultInteractionState.failure != nil ||
+        [defaultInteractionState isResolvingInteraction:approval] ||
+        [defaultInteractionState pendingForConversationId:conversationId].count != 0) {
+        return @"Objective-C D080 interaction defaults changed";
+    }
+
+    return nil;
+}
+
 static NSString *CDXVerifyD073OrdinaryValues(void) {
     CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
         initWithId:@"connector-id"
@@ -1254,6 +1570,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d079Failure = CDXVerifyD079ConversationValues();
     if (d079Failure != nil) {
         [self finishWithFailure:d079Failure];
+        return;
+    }
+    NSString *d080Failure = CDXVerifyD080StateValues();
+    if (d080Failure != nil) {
+        [self finishWithFailure:d080Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;
