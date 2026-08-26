@@ -123,6 +123,145 @@ class CodexNodeApiTest {
             }.exceptionOrNull() to "uri must be a string",
         ).forEach { (error, message) -> assertEquals(message, error?.message) }
 
+        val emailField = AgentFormField(
+            name = "email",
+            title = "Email",
+            type = "string",
+            description = "Account email",
+            isRequired = true,
+            defaultValue = AgentFormTextValue("user@example.com"),
+            minimumLength = javaScriptBigInt("3"),
+            maximumLength = javaScriptBigInt("80"),
+            format = "email",
+            isSecret = true,
+        )
+        assertEquals("email", emailField.name)
+        assertEquals("Email", emailField.title)
+        assertEquals("string", emailField.type)
+        assertEquals("Account email", emailField.description)
+        assertTrue(emailField.isRequired)
+        assertTrue(emailField.options.isEmpty())
+        assertEquals("user@example.com", assertIs<AgentFormTextValue>(emailField.defaultValue).value)
+        assertNull(emailField.minimum)
+        assertNull(emailField.maximum)
+        assertEquals("email", emailField.format)
+        assertEquals("3", emailField.minimumLength?.toString())
+        assertEquals("80", emailField.maximumLength?.toString())
+        assertNull(emailField.minimumSelections)
+        assertNull(emailField.maximumSelections)
+        assertFalse(emailField.allowsOther)
+        assertTrue(emailField.isSecret)
+        assertTrue(emailField.accepts(AgentFormTextValue("person@example.com")))
+        assertFalse(emailField.accepts(AgentFormTextValue("invalid")))
+        assertFalse(emailField.accepts(AgentFormNumberValue(1.0)))
+        assertFalse(emailField.accepts(null))
+        assertTrue(isFrozen(emailField))
+        assertTrue(isFrozen(emailField.options))
+        assertTrue(isFrozen(checkNotNull(emailField.defaultValue)))
+        assertEquals(0, enumerablePropertyCount(emailField))
+
+        val integerField = AgentFormField(
+            name = "count",
+            title = "Count",
+            type = "integer",
+            minimum = 1.0,
+            maximum = 3.0,
+        )
+        assertTrue(integerField.accepts(AgentFormNumberValue(2.0)))
+        assertFalse(integerField.accepts(AgentFormNumberValue(2.5)))
+        assertFalse(integerField.accepts(AgentFormNumberValue(Double.POSITIVE_INFINITY)))
+        assertFalse(integerField.accepts(AgentFormTextValue("2")))
+
+        val sourceFormOptions = arrayOf(AgentFormOption("red", "Red"), AgentFormOption("blue", "Blue"))
+        val sourceDefaultSelections = arrayOf("red")
+        val multiSelectField = AgentFormField(
+            name = "colors",
+            title = "Colors",
+            type = "multi_select",
+            isRequired = true,
+            options = sourceFormOptions,
+            defaultValue = AgentFormTextListValue(sourceDefaultSelections),
+            minimumSelections = javaScriptBigInt("1"),
+            maximumSelections = javaScriptBigInt("2"),
+        )
+        sourceFormOptions[0] = AgentFormOption("changed")
+        sourceDefaultSelections[0] = "changed"
+        assertEquals(listOf("red", "blue"), multiSelectField.options.map(AgentFormOption::value))
+        val defaultSelections = assertIs<AgentFormTextListValue>(multiSelectField.defaultValue)
+        assertEquals(listOf("red"), defaultSelections.value.toList())
+        assertTrue(multiSelectField.accepts(AgentFormTextListValue(arrayOf("red", "blue"))))
+        assertFalse(multiSelectField.accepts(AgentFormTextListValue(arrayOf("red", "red"))))
+        assertFalse(multiSelectField.accepts(AgentFormTextListValue(arrayOf("other"))))
+        assertFalse(multiSelectField.accepts(AgentFormTextListValue(emptyArray())))
+        assertTrue(isFrozen(multiSelectField.options.single { it.value == "red" }))
+        assertTrue(isFrozen(defaultSelections))
+        assertTrue(isFrozen(defaultSelections.value))
+
+        val booleanField = AgentFormField("enabled", "Enabled", "boolean")
+        assertTrue(booleanField.accepts(AgentFormBooleanValue(true)))
+        assertFalse(booleanField.accepts(AgentFormTextValue("true")))
+        listOf(
+            runCatching {
+                AgentFormField(js("({})").unsafeCast<String>(), "Title", "string")
+            }.exceptionOrNull() to "name must be a string",
+            runCatching {
+                AgentFormField("name", "Title", "STRING")
+            }.exceptionOrNull() to "Unknown form field type: STRING",
+            runCatching {
+                AgentFormField(
+                    "name",
+                    "Title",
+                    "string",
+                    options = js("new Array(1)").unsafeCast<Array<AgentFormOption>>(),
+                )
+            }.exceptionOrNull() to "options must not contain sparse elements",
+            runCatching {
+                AgentFormField(
+                    "name",
+                    "Title",
+                    "string",
+                    options = js("[{}]").unsafeCast<Array<AgentFormOption>>(),
+                )
+            }.exceptionOrNull() to "options[0] must be an AgentFormOption",
+            runCatching {
+                AgentFormField("name", "Title", "string", defaultValue = js("({})"))
+            }.exceptionOrNull() to "defaultValue must be an AgentFormValue or null",
+            runCatching {
+                AgentFormField(
+                    "name",
+                    "Title",
+                    "string",
+                    minimum = js("'1'").unsafeCast<Double>(),
+                )
+            }.exceptionOrNull() to "minimum must be a number or null",
+            runCatching {
+                AgentFormField(
+                    "name",
+                    "Title",
+                    "string",
+                    minimumLength = js("1").unsafeCast<Long>(),
+                )
+            }.exceptionOrNull() to "minimumLength must be a bigint",
+            runCatching {
+                AgentFormField(
+                    "name",
+                    "Title",
+                    "string",
+                    minimumLength = javaScriptBigInt("9223372036854775808"),
+                )
+            }.exceptionOrNull() to "minimumLength must fit a signed 64-bit integer",
+            runCatching {
+                AgentFormField(
+                    "name",
+                    "Title",
+                    "string",
+                    minimumLength = javaScriptBigInt("-1"),
+                )
+            }.exceptionOrNull() to "Minimum length must not be negative",
+            runCatching { emailField.accepts(js("({})")) }.exceptionOrNull() to
+                "value must be an AgentFormValue or null",
+        ).forEach { (error, message) -> assertEquals(message, error?.message) }
+
         val sourcePluginNames = arrayOf("Plugin one", "Plugin two")
         val localConnector = AgentConnector(
             id = "connector-local",

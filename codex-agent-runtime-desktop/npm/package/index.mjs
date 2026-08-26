@@ -7,6 +7,7 @@ export const AgentFormTextValue = api.AgentFormTextValue;
 export const AgentFormNumberValue = api.AgentFormNumberValue;
 export const AgentFormBooleanValue = api.AgentFormBooleanValue;
 export const AgentFormTextListValue = api.AgentFormTextListValue;
+export const AgentFormField = api.AgentFormField;
 export const AgentHookActivity = api.AgentHookActivity;
 export const AgentHook = api.AgentHook;
 export const AgentHookCatalog = api.AgentHookCatalog;

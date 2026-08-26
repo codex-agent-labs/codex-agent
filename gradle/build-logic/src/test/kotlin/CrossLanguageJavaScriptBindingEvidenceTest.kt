@@ -765,6 +765,149 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     }
 
     @Test
+    fun `form field closes exact immutable value validation family`() {
+        val keys = d057AgentFormFieldKeys()
+        val symbols = d057AgentFormFieldSymbols()
+        val evidence = derive(keys, symbols, references = D057_PUBLIC_SYMBOLS)
+        val claims = evidence.projectionClaims.associateBy(CrossLanguageProjectionClaim::capabilityKey)
+
+        assertTrue(evidence.errors.isEmpty(), evidence.errors.joinToString("\n"))
+        assertTrue(evidence.missingCapabilityKeys.isEmpty(), evidence.missingCapabilityKeys.joinToString("\n"))
+        assertTrue(evidence.applicabilityExclusions.isEmpty())
+        assertEquals(18, keys.size)
+        assertEquals(18, claims.size)
+        assertEquals(20, D057_PUBLIC_SYMBOLS.size)
+        assertEquals(D057_PUBLIC_SYMBOLS, evidence.packedApi.referencedSymbols)
+        assertEquals(D057_PUBLIC_SYMBOLS.toSet(), claims.values.flatMap { it.publicSymbols }.toSet())
+        assertEquals(504, 486 + claims.size)
+        assertEquals(40, 58 - claims.size)
+        assertEquals(556, 504 + 12 + 40)
+        assertEquals(9, 10 - 1)
+
+        val valueAlias = D057_PUBLIC_SYMBOLS.single { it.startsWith("type:AgentFormValue:") }
+        assertEquals(3, claims.values.count { valueAlias in it.publicSymbols })
+        claims.values.forEach { claim ->
+            assertTrue(CrossLanguageBindingScenario.VALUE_CONVERSION in claim.sharedScenarios)
+        }
+        listOf("options", "defaultValue", "accepts").forEach { memberName ->
+            val claim = claims.values.single {
+                ".${memberName}|" in it.capabilityKey ||
+                    memberName == "accepts" && "|abi=" in it.capabilityKey && ".accepts|" in it.capabilityKey
+            }
+            assertTrue(CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING in claim.sharedScenarios)
+        }
+        val currentSymbols = d057CurrentPublicSymbols()
+        assertEquals(469, currentSymbols.size)
+        assertEquals(98, symbolExports(currentSymbols).first.size)
+        assertEquals(67, symbolExports(currentSymbols).second.size)
+    }
+
+    @Test
+    fun `form field rejects partial future canonical public reference and value alias reuse drift`() {
+        val keys = d057AgentFormFieldKeys()
+        val symbols = d057AgentFormFieldSymbols()
+
+        keys.forEach { exact ->
+            val drifted = when {
+                "|kind=constructor|" in exact -> exact.replace("suspend=false", "suspend=true")
+                "|kind=property|" in exact -> exact.replace("propertyKind=VAL", "propertyKind=VAR")
+                else -> exact.replace("suspend=false", "suspend=true")
+            }
+            val drift = derive(keys - exact + drifted, symbols, references = D057_PUBLIC_SYMBOLS)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted canonical drift: $drifted")
+        }
+
+        val constructor = keys.single { "|kind=constructor|" in it }
+        val options = keys.single { ".options|" in it }
+        val accepts = keys.single { "|kind=function|" in it && ".accepts|" in it }
+        listOf(
+            constructor to constructor.replaceFirst("kotlin/String?:default=true", "kotlin/String?:default=false"),
+            constructor to constructor.replaceFirst("kotlin/Long?", "kotlin/Int?"),
+            options to options.replace("kotlin.collections/List", "kotlin.collections.Set"),
+            accepts to accepts.replace("AgentFormValue?", "AgentFormValue!!"),
+        ).forEach { (exact, drifted) ->
+            val drift = derive(keys - exact + drifted, symbols, references = D057_PUBLIC_SYMBOLS)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted signature drift: $drifted")
+        }
+
+        D057_PUBLIC_SYMBOLS.forEach { exact ->
+            val drifted = when {
+                exact.startsWith("class:") -> "${exact}Drift"
+                exact.startsWith("type:") -> exact.replace(
+                    "AgentFormBooleanValue | AgentFormNumberValue",
+                    "AgentFormNumberValue | AgentFormBooleanValue",
+                )
+                exact.startsWith("constructor:") -> exact.replaceFirst("title: string", "title?: string")
+                exact.startsWith("getter:") -> "$exact | false"
+                else -> exact.replaceFirst("value: AgentFormValue", "value?: AgentFormValue")
+            }
+            val renamedClass = exact.removePrefix("class:").takeIf { exact.startsWith("class:") }
+            val driftSymbols = if (renamedClass == null) {
+                symbols.map { if (it == exact) drifted else it }.sorted()
+            } else {
+                val pattern = Regex("\\b${Regex.escape(renamedClass)}\\b")
+                symbols.map { it.replace(pattern, "${renamedClass}Drift") }.sorted()
+            }
+            val references = if (renamedClass == null) {
+                D057_PUBLIC_SYMBOLS.map { if (it == exact) drifted else it }.sorted()
+            } else {
+                val pattern = Regex("\\b${Regex.escape(renamedClass)}\\b")
+                D057_PUBLIC_SYMBOLS.map { it.replace(pattern, "${renamedClass}Drift") }.sorted()
+            }
+            val drift = derive(keys, driftSymbols, references = references)
+            assertTrue(drift.projectionClaims.none { it.capabilityKey in keys }, "Accepted public drift: $drifted")
+        }
+
+        keys.forEach { omitted ->
+            val partial = derive(keys - omitted, symbols, references = D057_PUBLIC_SYMBOLS)
+            assertTrue(partial.projectionClaims.none { it.capabilityKey in keys }, "Accepted without $omitted")
+        }
+        D057_PUBLIC_SYMBOLS.forEach { omitted ->
+            val unreferenced = derive(keys, symbols, references = D057_PUBLIC_SYMBOLS - omitted)
+            assertTrue(unreferenced.errors.any { "Unreferenced exceptional" in it && omitted in it })
+            assertTrue(unreferenced.projectionClaims.none { it.capabilityKey in keys })
+        }
+
+        val future = canonicalProperty("AgentFormField", "future", "kotlin/String!!")
+            .replace("example/", "$CANONICAL_AGENT_PACKAGE/")
+        val futureEvidence = derive(keys + future, symbols, references = D057_PUBLIC_SYMBOLS)
+        assertTrue(future in futureEvidence.missingCapabilityKeys)
+        assertTrue(futureEvidence.projectionClaims.none { it.capabilityKey in keys })
+
+        val foreign = keys.first().replace(CANONICAL_AGENT_PACKAGE, "foreign")
+        val crossPackage = derive(keys + foreign, symbols, references = D057_PUBLIC_SYMBOLS)
+        assertTrue(foreign in crossPackage.missingCapabilityKeys)
+        assertTrue(crossPackage.projectionClaims.none { it.capabilityKey in keys })
+
+        val duplicateCapability = derive(keys + keys.first(), symbols, references = D057_PUBLIC_SYMBOLS)
+        assertTrue(duplicateCapability.errors.any {
+            "Incomplete JavaScript/TypeScript AgentFormField family" in it ||
+                "Reused JavaScript/TypeScript public symbol" in it
+        })
+        assertTrue(duplicateCapability.projectionClaims.none { it.capabilityKey in keys })
+
+        val futureSymbol = "getter:AgentFormField#future:string"
+        val futurePublic = derive(
+            keys,
+            (symbols + futureSymbol).sorted(),
+            references = (D057_PUBLIC_SYMBOLS + futureSymbol).sorted(),
+        )
+        assertTrue(futurePublic.projectionClaims.none { it.capabilityKey in keys })
+
+        assertFailsWith<IllegalStateException> {
+            derive(keys, (symbols + symbols.first()).sorted(), references = D057_PUBLIC_SYMBOLS)
+        }
+        val getter = D057_PUBLIC_SYMBOLS.single { it == "getter:AgentFormField#name:string" }
+        val ambiguous = "$getter | number"
+        val ambiguousEvidence = derive(
+            keys,
+            (symbols + ambiguous).sorted(),
+            references = (D057_PUBLIC_SYMBOLS + ambiguous).sorted(),
+        )
+        assertTrue(ambiguousEvidence.projectionClaims.none { it.capabilityKey in keys })
+    }
+
+    @Test
     fun `state projection requires exact current callback and observation return types`() {
         val key = canonicalProperty(
             "Stream",
@@ -5419,6 +5562,60 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
     private fun d054PluginsSymbols(): List<String> =
         (D054_PUBLIC_SYMBOLS + "class:CodexAgent").distinct().sorted()
 
+    private fun d057AgentFormFieldKeys(): List<String> = listOf(
+        canonicalConstructor(
+            "AgentFormField",
+            listOf(
+                "kotlin/String!!",
+                "kotlin/String!!",
+                "kotlin/String?",
+                "kotlin/Boolean!!",
+                "example/AgentFormFieldType!!",
+                "kotlin.collections/List<INVARIANT:example/AgentFormOption!!>!!",
+                "example/AgentFormValue?",
+                "kotlin/Double?",
+                "kotlin/Double?",
+                "example/AgentFormStringFormat?",
+                "kotlin/Long?",
+                "kotlin/Long?",
+                "kotlin/Long?",
+                "kotlin/Long?",
+                "kotlin/Boolean!!",
+                "kotlin/Boolean!!",
+            ),
+            defaultParameterIndices = (2..3).toSet() + (5..15).toSet(),
+        ),
+        canonicalProperty("AgentFormField", "name", "kotlin/String!!"),
+        canonicalProperty("AgentFormField", "title", "kotlin/String!!"),
+        canonicalProperty("AgentFormField", "description", "kotlin/String?"),
+        canonicalProperty("AgentFormField", "isRequired", "kotlin/Boolean!!"),
+        canonicalProperty("AgentFormField", "type", "example/AgentFormFieldType!!"),
+        canonicalProperty(
+            "AgentFormField",
+            "options",
+            "kotlin.collections/List<INVARIANT:example/AgentFormOption!!>!!",
+        ),
+        canonicalProperty("AgentFormField", "defaultValue", "example/AgentFormValue?"),
+        canonicalProperty("AgentFormField", "minimum", "kotlin/Double?"),
+        canonicalProperty("AgentFormField", "maximum", "kotlin/Double?"),
+        canonicalProperty("AgentFormField", "format", "example/AgentFormStringFormat?"),
+        canonicalProperty("AgentFormField", "minimumLength", "kotlin/Long?"),
+        canonicalProperty("AgentFormField", "maximumLength", "kotlin/Long?"),
+        canonicalProperty("AgentFormField", "minimumSelections", "kotlin/Long?"),
+        canonicalProperty("AgentFormField", "maximumSelections", "kotlin/Long?"),
+        canonicalProperty("AgentFormField", "allowsOther", "kotlin/Boolean!!"),
+        canonicalProperty("AgentFormField", "isSecret", "kotlin/Boolean!!"),
+        canonicalFunction(
+            "AgentFormField",
+            "accepts",
+            returnType = "kotlin/Boolean!!",
+            parameters = listOf("example/AgentFormValue?"),
+        ),
+    ).map { it.replace("example/", "$CANONICAL_AGENT_PACKAGE/") }.sorted()
+        .also { assertEquals(18, it.size) }
+
+    private fun d057AgentFormFieldSymbols(): List<String> = D057_PUBLIC_SYMBOLS
+
     private fun conversationStateSymbols(): List<String> = listOf(
         "class:CodexConversation",
         "class:CodexConversationState",
@@ -6000,6 +6197,10 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         (d051CurrentPublicSymbols() + D054_PUBLIC_SYMBOLS).distinct().sorted()
             .also { assertEquals(449, it.size) }
 
+    private fun d057CurrentPublicSymbols(): List<String> =
+        (d054CurrentPublicSymbols() + D057_PUBLIC_SYMBOLS).distinct().sorted()
+            .also { assertEquals(469, it.size) }
+
     private fun modelPublicSymbols(): List<String> = MODELS_PUBLIC_SYMBOLS.lineSequence()
         .filter(String::isNotBlank)
         .toList()
@@ -6387,6 +6588,39 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "method:CodexPlugins#uninstall:(plugin: AgentPluginReference, " +
                 "signal?: AbortSignal | null | undefined): Promise<void>",
         ).sorted().also { assertEquals(54, it.size) }
+
+        private val D057_PUBLIC_SYMBOLS = listOf(
+            "class:AgentFormField",
+            "constructor:AgentFormField#(name: string, title: string, type: AgentFormFieldType, " +
+                "description?: string | null | undefined, isRequired?: boolean, " +
+                "options?: ReadonlyArray<AgentFormOption>, " +
+                "defaultValue?: AgentFormValue | null | undefined, " +
+                "minimum?: number | null | undefined, maximum?: number | null | undefined, " +
+                "format?: AgentFormStringFormat | null | undefined, " +
+                "minimumLength?: bigint | null | undefined, maximumLength?: bigint | null | undefined, " +
+                "minimumSelections?: bigint | null | undefined, " +
+                "maximumSelections?: bigint | null | undefined, " +
+                "allowsOther?: boolean, isSecret?: boolean)",
+            "getter:AgentFormField#allowsOther:boolean",
+            "getter:AgentFormField#defaultValue:AgentFormValue | null | undefined",
+            "getter:AgentFormField#description:string | null | undefined",
+            "getter:AgentFormField#format:AgentFormStringFormat | null | undefined",
+            "getter:AgentFormField#isRequired:boolean",
+            "getter:AgentFormField#isSecret:boolean",
+            "getter:AgentFormField#maximum:number | null | undefined",
+            "getter:AgentFormField#maximumLength:bigint | null | undefined",
+            "getter:AgentFormField#maximumSelections:bigint | null | undefined",
+            "getter:AgentFormField#minimum:number | null | undefined",
+            "getter:AgentFormField#minimumLength:bigint | null | undefined",
+            "getter:AgentFormField#minimumSelections:bigint | null | undefined",
+            "getter:AgentFormField#name:string",
+            "getter:AgentFormField#options:ReadonlyArray<AgentFormOption>",
+            "getter:AgentFormField#title:string",
+            "getter:AgentFormField#type:AgentFormFieldType",
+            "method:AgentFormField#accepts:(value: AgentFormValue | null | undefined): boolean",
+            "type:AgentFormValue:AgentFormBooleanValue | AgentFormNumberValue | " +
+                "AgentFormTextListValue | AgentFormTextValue",
+        ).sorted().also { assertEquals(20, it.size) }
 
         private val AUTHENTICATION_OVERLOADS = listOf(
             "method:CodexAuthentication#authenticate:" +

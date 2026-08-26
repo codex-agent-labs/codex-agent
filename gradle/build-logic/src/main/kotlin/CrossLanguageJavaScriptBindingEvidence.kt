@@ -163,6 +163,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
             !isAllowedAgentTurnRequestReuse(symbol, projections) &&
             !isAllowedAgentHookHandlerReuse(symbol, projections) &&
             !isAllowedIntegrationAuthorizationReuse(symbol, projections) &&
+            !isAllowedAgentFormValueReuse(symbol, projections) &&
             !isAllowedFlattenedValueReuse(symbol, projections)
         ) {
             errors += "Reused JavaScript/TypeScript public symbol $symbol for capabilities " +
@@ -176,6 +177,7 @@ internal fun deriveCrossLanguageJavaScriptBindingEvidence(
     errors += invalidMcpServersErrors(canonical.memberKeys, provisional)
     errors += invalidIntegrationAuthorizationErrors(canonical.memberKeys, provisional)
     errors += invalidPluginsErrors(canonical.memberKeys, provisional)
+    errors += invalidAgentFormFieldErrors(canonical.memberKeys, provisional)
 
     val rejectedKeys = errors.flatMap { error ->
         provisional.mapNotNull { projection -> projection.member.key.takeIf(error::contains) }
@@ -831,6 +833,9 @@ private fun javaScriptProjectionCandidates(
     member: CanonicalJavaScriptMember,
     symbols: List<JavaScriptPublicSymbol>,
 ): List<JavaScriptProjectionCandidate> {
+    if (member.isD057AgentFormFieldSurfaceMember()) {
+        return agentFormFieldProjectionCandidates(member, symbols)
+    }
     if (member.isD054PluginsSurfaceMember()) {
         return pluginsProjectionCandidates(member, symbols)
     }
@@ -1088,6 +1093,39 @@ private val javaScriptPluginsSymbols = listOf(
         "signal?: AbortSignal | null | undefined): Promise<AgentPluginDetail>",
     "method:CodexPlugins#uninstall:(plugin: AgentPluginReference, " +
         "signal?: AbortSignal | null | undefined): Promise<void>",
+).sorted()
+private const val javaScriptAgentFormValueType =
+    "type:AgentFormValue:AgentFormBooleanValue | AgentFormNumberValue | " +
+        "AgentFormTextListValue | AgentFormTextValue"
+private val javaScriptAgentFormFieldSymbols = listOf(
+    "class:AgentFormField",
+    "constructor:AgentFormField#(name: string, title: string, type: AgentFormFieldType, " +
+        "description?: string | null | undefined, isRequired?: boolean, " +
+        "options?: ReadonlyArray<AgentFormOption>, " +
+        "defaultValue?: AgentFormValue | null | undefined, " +
+        "minimum?: number | null | undefined, maximum?: number | null | undefined, " +
+        "format?: AgentFormStringFormat | null | undefined, " +
+        "minimumLength?: bigint | null | undefined, maximumLength?: bigint | null | undefined, " +
+        "minimumSelections?: bigint | null | undefined, maximumSelections?: bigint | null | undefined, " +
+        "allowsOther?: boolean, isSecret?: boolean)",
+    "getter:AgentFormField#allowsOther:boolean",
+    "getter:AgentFormField#defaultValue:AgentFormValue | null | undefined",
+    "getter:AgentFormField#description:string | null | undefined",
+    "getter:AgentFormField#format:AgentFormStringFormat | null | undefined",
+    "getter:AgentFormField#isRequired:boolean",
+    "getter:AgentFormField#isSecret:boolean",
+    "getter:AgentFormField#maximum:number | null | undefined",
+    "getter:AgentFormField#maximumLength:bigint | null | undefined",
+    "getter:AgentFormField#maximumSelections:bigint | null | undefined",
+    "getter:AgentFormField#minimum:number | null | undefined",
+    "getter:AgentFormField#minimumLength:bigint | null | undefined",
+    "getter:AgentFormField#minimumSelections:bigint | null | undefined",
+    "getter:AgentFormField#name:string",
+    "getter:AgentFormField#options:ReadonlyArray<AgentFormOption>",
+    "getter:AgentFormField#title:string",
+    "getter:AgentFormField#type:AgentFormFieldType",
+    "method:AgentFormField#accepts:(value: AgentFormValue | null | undefined): boolean",
+    javaScriptAgentFormValueType,
 ).sorted()
 private const val javaScriptAgentMessageCapabilities =
     "getter:CodexMessage#capabilities:ReadonlyArray<AgentCapability>"
@@ -1559,6 +1597,118 @@ private fun CanonicalJavaScriptMember.d050McpServersPublicSymbols(): List<String
         }
         add(memberSymbol)
     }.sorted()
+}
+
+private fun agentFormFieldProjectionCandidates(
+    member: CanonicalJavaScriptMember,
+    symbols: List<JavaScriptPublicSymbol>,
+): List<JavaScriptProjectionCandidate> {
+    if (!member.isExactD057AgentFormFieldMember() ||
+        !hasExactD057AgentFormFieldInventory(symbols)
+    ) return emptyList()
+    val projected = member.d057AgentFormFieldPublicSymbols()
+    return listOf(JavaScriptProjectionCandidate(
+        publicSymbols = projected,
+        scenarios = buildList {
+            add(CrossLanguageBindingScenario.VALUE_CONVERSION)
+            if (member.kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR ||
+                member.name in setOf("options", "defaultValue", "accepts")
+            ) add(CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING)
+            if (member.returnType?.endsWith('?') == true ||
+                member.parameters.any { it.type.endsWith('?') }
+            ) add(CrossLanguageBindingScenario.NULLABILITY)
+        }.distinct(),
+        shareablePublicSymbols = projected.filterTo(mutableSetOf()) { it == javaScriptAgentFormValueType },
+        requiresConsumerReference = true,
+    ))
+}
+
+private fun hasExactD057AgentFormFieldInventory(symbols: List<JavaScriptPublicSymbol>): Boolean =
+    hasExactJavaScriptSymbolInventory(symbols, javaScriptAgentFormFieldSymbols) &&
+        symbols.filter { symbol ->
+            symbol.owner == "AgentFormField" ||
+                symbol.kind == JavaScriptPublicSymbolKind.CLASS && symbol.name == "AgentFormField" ||
+                symbol.owner == null && symbol.name == "AgentFormValue"
+        }.map(JavaScriptPublicSymbol::raw) == javaScriptAgentFormFieldSymbols
+
+private fun CanonicalJavaScriptMember.isD057AgentFormFieldSurfaceMember(): Boolean =
+    simpleOwner == "AgentFormField"
+
+private fun CanonicalJavaScriptMember.isExactD057AgentFormFieldMember(): Boolean {
+    if (owner != "$canonicalAgentPackage/AgentFormField") return false
+    fun canonical(name: String, nullable: Boolean = false): String =
+        "$canonicalAgentPackage/$name${if (nullable) "?" else "!!"}"
+    fun list(type: String): String = "kotlin.collections/List<INVARIANT:$type>!!"
+    return when (kind) {
+        CanonicalJavaScriptMemberKind.CONSTRUCTOR -> isExactConstructor(
+            simpleOwner,
+            listOf(
+                CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                CanonicalJavaScriptParameter("kotlin/String!!", false, false),
+                CanonicalJavaScriptParameter("kotlin/String?", true, false),
+                CanonicalJavaScriptParameter("kotlin/Boolean!!", true, false),
+                CanonicalJavaScriptParameter(canonical("AgentFormFieldType"), false, false),
+                CanonicalJavaScriptParameter(list(canonical("AgentFormOption")), true, false),
+                CanonicalJavaScriptParameter(canonical("AgentFormValue", nullable = true), true, false),
+                CanonicalJavaScriptParameter("kotlin/Double?", true, false),
+                CanonicalJavaScriptParameter("kotlin/Double?", true, false),
+                CanonicalJavaScriptParameter(canonical("AgentFormStringFormat", nullable = true), true, false),
+                CanonicalJavaScriptParameter("kotlin/Long?", true, false),
+                CanonicalJavaScriptParameter("kotlin/Long?", true, false),
+                CanonicalJavaScriptParameter("kotlin/Long?", true, false),
+                CanonicalJavaScriptParameter("kotlin/Long?", true, false),
+                CanonicalJavaScriptParameter("kotlin/Boolean!!", true, false),
+                CanonicalJavaScriptParameter("kotlin/Boolean!!", true, false),
+            ),
+        )
+        CanonicalJavaScriptMemberKind.PROPERTY -> when (name) {
+            "name", "title" -> isExactProperty(simpleOwner, name, "kotlin/String!!")
+            "description" -> isExactProperty(simpleOwner, name, "kotlin/String?")
+            "isRequired", "allowsOther", "isSecret" ->
+                isExactProperty(simpleOwner, name, "kotlin/Boolean!!")
+            "type" -> isExactProperty(simpleOwner, name, canonical("AgentFormFieldType"))
+            "options" -> isExactProperty(simpleOwner, name, list(canonical("AgentFormOption")))
+            "defaultValue" ->
+                isExactProperty(simpleOwner, name, canonical("AgentFormValue", nullable = true))
+            "minimum", "maximum" -> isExactProperty(simpleOwner, name, "kotlin/Double?")
+            "format" ->
+                isExactProperty(simpleOwner, name, canonical("AgentFormStringFormat", nullable = true))
+            "minimumLength", "maximumLength", "minimumSelections", "maximumSelections" ->
+                isExactProperty(simpleOwner, name, "kotlin/Long?")
+            else -> false
+        }
+        CanonicalJavaScriptMemberKind.FUNCTION -> name == "accepts" && isExactFunction(
+            simpleOwner,
+            name,
+            "kotlin/Boolean!!",
+            expectedSuspend = false,
+            expectedParameters = listOf(
+                CanonicalJavaScriptParameter(canonical("AgentFormValue", nullable = true), false, false),
+            ),
+        )
+        else -> false
+    }
+}
+
+private fun CanonicalJavaScriptMember.d057AgentFormFieldPublicSymbols(): List<String> {
+    val expectedKind = when (kind) {
+        CanonicalJavaScriptMemberKind.CONSTRUCTOR -> JavaScriptPublicSymbolKind.CONSTRUCTOR
+        CanonicalJavaScriptMemberKind.PROPERTY -> JavaScriptPublicSymbolKind.GETTER
+        CanonicalJavaScriptMemberKind.FUNCTION -> JavaScriptPublicSymbolKind.METHOD
+        else -> error("Unsupported D057 AgentFormField capability kind: $key")
+    }
+    val memberSymbol = javaScriptAgentFormFieldSymbols.single { raw ->
+        val symbol = parseJavaScriptPublicSymbol(raw)
+        symbol.kind == expectedKind && symbol.owner == simpleOwner &&
+            symbol.name == if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR) "constructor" else name
+    }
+    return buildList {
+        if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR) add("class:AgentFormField")
+        if (kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR ||
+            name == "defaultValue" || name == "accepts"
+        ) add(javaScriptAgentFormValueType)
+        add(memberSymbol)
+    }.distinct().sorted()
 }
 
 private fun pluginsProjectionCandidates(
@@ -3679,6 +3829,51 @@ private fun invalidPluginsErrors(
         javaScriptPluginsSymbols.toSet()
     return if (exact) emptyList() else listOf(
         "Incomplete JavaScript/TypeScript Plugins family for capabilities " +
+            (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
+                .distinct()
+                .sorted(),
+    )
+}
+
+private fun isAllowedAgentFormValueReuse(
+    symbol: String,
+    projections: List<JavaScriptProjection>,
+): Boolean {
+    if (symbol != javaScriptAgentFormValueType || projections.size != 3) return false
+    val expectedNames = setOf("constructor", "defaultValue", "accepts")
+    return projections.all { projection ->
+        projection.member.isExactD057AgentFormFieldMember() &&
+            projection.shareablePublicSymbols == setOf(javaScriptAgentFormValueType) &&
+            projection.publicSymbols == projection.member.d057AgentFormFieldPublicSymbols()
+    } && projections.map { projection ->
+        if (projection.member.kind == CanonicalJavaScriptMemberKind.CONSTRUCTOR) "constructor"
+        else projection.member.name
+    }.toSet() == expectedNames
+}
+
+private fun invalidAgentFormFieldErrors(
+    canonicalKeys: List<String>,
+    projections: List<JavaScriptProjection>,
+): List<String> {
+    val canonicalMembers = canonicalKeys.map(::parseCanonicalJavaScriptMember)
+        .filter(CanonicalJavaScriptMember::isD057AgentFormFieldSurfaceMember)
+    val related = projections.filter { projection ->
+        projection.publicSymbols.any(javaScriptAgentFormFieldSymbols::contains)
+    }
+    if (canonicalMembers.isEmpty() && related.isEmpty()) return emptyList()
+    val exact = canonicalMembers.size == 18 &&
+        canonicalMembers.all(CanonicalJavaScriptMember::isExactD057AgentFormFieldMember) &&
+        canonicalMembers.map(CanonicalJavaScriptMember::key).distinct().size == 18 &&
+        related.size == 18 && related.map { it.member.key }.distinct().size == 18 &&
+        related.all { projection ->
+            projection.member.isExactD057AgentFormFieldMember() &&
+                projection.publicSymbols == projection.member.d057AgentFormFieldPublicSymbols() &&
+                projection.shareablePublicSymbols ==
+                projection.publicSymbols.filterTo(mutableSetOf()) { it == javaScriptAgentFormValueType }
+        } && related.flatMap(JavaScriptProjection::publicSymbols).toSet() ==
+        javaScriptAgentFormFieldSymbols.toSet()
+    return if (exact) emptyList() else listOf(
+        "Incomplete JavaScript/TypeScript AgentFormField family for capabilities " +
             (canonicalMembers.map(CanonicalJavaScriptMember::key) + related.map { it.member.key })
                 .distinct()
                 .sorted(),

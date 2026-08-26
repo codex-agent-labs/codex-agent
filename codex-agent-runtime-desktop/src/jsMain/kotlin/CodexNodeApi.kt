@@ -14,7 +14,11 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentConversationStatus
 import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidation as CoreElicitationValidation
 import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationIssue as CoreElicitationValidationIssue
 import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationReason as CoreElicitationValidationReason
+import io.github.codex_agent_labs.codexmobile.agent.AgentFormField as CoreFormField
+import io.github.codex_agent_labs.codexmobile.agent.AgentFormFieldType as CoreFormFieldType
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormOption as CoreFormOption
+import io.github.codex_agent_labs.codexmobile.agent.AgentFormStringFormat as CoreFormStringFormat
+import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue as CoreFormValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.BooleanValue as CoreFormBooleanValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Number as CoreFormNumberValue
 import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Text as CoreFormTextValue
@@ -212,6 +216,86 @@ public class AgentFormTextListValue public constructor(value: Array<String>) {
         freezeSnapshot(this.value)
         freezeSnapshot(this)
     }
+}
+
+/** Immutable canonical elicitation form field. */
+@JsExport
+@Suppress("LongParameterList")
+public class AgentFormField public constructor(
+    name: String,
+    title: String,
+    type: String,
+    description: String? = null,
+    isRequired: Boolean = false,
+    options: Array<AgentFormOption> = emptyArray(),
+    defaultValue: Any? = null,
+    minimum: Double? = null,
+    maximum: Double? = null,
+    format: String? = null,
+    minimumLength: Long? = null,
+    maximumLength: Long? = null,
+    minimumSelections: Long? = null,
+    maximumSelections: Long? = null,
+    allowsOther: Boolean = false,
+    isSecret: Boolean = false,
+) {
+    public val name: String
+    public val title: String
+    public val type: String
+    public val description: String?
+    public val isRequired: Boolean
+    public val options: Array<AgentFormOption>
+    public val defaultValue: Any?
+    public val minimum: Double?
+    public val maximum: Double?
+    public val format: String?
+    public val minimumLength: Long?
+    public val maximumLength: Long?
+    public val minimumSelections: Long?
+    public val maximumSelections: Long?
+    public val allowsOther: Boolean
+    public val isSecret: Boolean
+
+    init {
+        val core = canonicalFormField(
+            name = name,
+            title = title,
+            type = type,
+            description = description,
+            isRequired = isRequired,
+            options = options,
+            defaultValue = defaultValue,
+            minimum = minimum,
+            maximum = maximum,
+            format = format,
+            minimumLength = minimumLength,
+            maximumLength = maximumLength,
+            minimumSelections = minimumSelections,
+            maximumSelections = maximumSelections,
+            allowsOther = allowsOther,
+            isSecret = isSecret,
+        )
+        this.name = core.name
+        this.title = core.title
+        this.type = core.type.name.lowercase()
+        this.description = core.description
+        this.isRequired = core.isRequired
+        this.options = core.options.map(CoreFormOption::project).toTypedArray()
+        this.defaultValue = core.defaultValue?.project()
+        this.minimum = core.minimum
+        this.maximum = core.maximum
+        this.format = core.format?.name?.lowercase()
+        this.minimumLength = core.minimumLength?.toJavaScriptBigInt()
+        this.maximumLength = core.maximumLength?.toJavaScriptBigInt()
+        this.minimumSelections = core.minimumSelections?.toJavaScriptBigInt()
+        this.maximumSelections = core.maximumSelections?.toJavaScriptBigInt()
+        this.allowsOther = core.allowsOther
+        this.isSecret = core.isSecret
+        freezeSnapshot(this.options)
+        freezeSnapshot(this)
+    }
+
+    public fun accepts(value: Any?): Boolean = canonicalCopy().accepts(value.toCoreFormValue("value"))
 }
 
 /** Immutable MCP environment-variable reference. */
@@ -2307,6 +2391,18 @@ private fun String.toCoreElicitationValidationReason(): CoreElicitationValidatio
     CoreElicitationValidationReason.entries.singleOrNull { it.name.lowercase() == this }
         ?: throw IllegalArgumentException("Unknown elicitation validation reason: $this")
 
+private fun String.toCoreFormFieldType(): CoreFormFieldType {
+    val value = requireJavaScriptString("type")
+    return CoreFormFieldType.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown form field type: $value")
+}
+
+private fun String?.toCoreFormStringFormat(): CoreFormStringFormat? {
+    val value = requireJavaScriptNullableString("format") ?: return null
+    return CoreFormStringFormat.entries.singleOrNull { it.name.lowercase() == value }
+        ?: throw IllegalArgumentException("Unknown form string format: $value")
+}
+
 private fun String.toCorePlanStepStatus(): CorePlanStepStatus =
     CorePlanStepStatus.entries.singleOrNull { it.name.lowercase() == this }
         ?: throw IllegalArgumentException("Unknown plan step status: $this")
@@ -2644,6 +2740,95 @@ private fun AgentMcpServerConfiguration.canonicalCopy(): CoreMcpServerConfigurat
         oauthResource,
         tools,
     )
+
+private fun AgentFormOption.canonicalCopy(): CoreFormOption = CoreFormOption(
+    value = value.requireJavaScriptString("value"),
+    title = title.requireJavaScriptString("title"),
+    description = description.requireJavaScriptNullableString("description"),
+)
+
+private fun Any?.toCoreFormValue(name: String): CoreFormValue? = when (val value = this) {
+    null -> null
+    is AgentFormTextValue -> CoreFormTextValue(value.value.requireJavaScriptString("$name.value"))
+    is AgentFormNumberValue -> CoreFormNumberValue(value.value.requireJavaScriptNumber("$name.value"))
+    is AgentFormBooleanValue -> CoreFormBooleanValue(value.value.requireJavaScriptBoolean("$name.value"))
+    is AgentFormTextListValue -> {
+        requireJavaScriptArray(value.value, "$name.value")
+        CoreFormTextListValue(List(value.value.size) { index ->
+            requireOwnJavaScriptArrayIndex(value.value, index, "$name.value")
+            value.value[index].requireJavaScriptString("$name.value[$index]")
+        })
+    }
+    else -> throw IllegalArgumentException("$name must be an AgentFormValue or null")
+}
+
+@Suppress("LongParameterList")
+private fun canonicalFormField(
+    name: String,
+    title: String,
+    type: String,
+    description: String?,
+    isRequired: Boolean,
+    options: Array<AgentFormOption>,
+    defaultValue: Any?,
+    minimum: Double?,
+    maximum: Double?,
+    format: String?,
+    minimumLength: Long?,
+    maximumLength: Long?,
+    minimumSelections: Long?,
+    maximumSelections: Long?,
+    allowsOther: Boolean,
+    isSecret: Boolean,
+): CoreFormField {
+    requireJavaScriptArray(options, "options")
+    return CoreFormField(
+        name = name.requireJavaScriptString("name"),
+        title = title.requireJavaScriptString("title"),
+        description = description.requireJavaScriptNullableString("description"),
+        isRequired = isRequired.requireJavaScriptBoolean("isRequired"),
+        type = type.toCoreFormFieldType(),
+        options = List(options.size) { index ->
+            requireOwnJavaScriptArrayIndex(options, index, "options")
+            val option: Any? = options[index]
+            require(option is AgentFormOption) { "options[$index] must be an AgentFormOption" }
+            option.canonicalCopy()
+        },
+        defaultValue = defaultValue.toCoreFormValue("defaultValue"),
+        minimum = minimum.requireJavaScriptNullableNumber("minimum"),
+        maximum = maximum.requireJavaScriptNullableNumber("maximum"),
+        format = format.toCoreFormStringFormat(),
+        minimumLength = minimumLength.requireJavaScriptNullableBigInt("minimumLength")
+            ?.toString()?.toLong(),
+        maximumLength = maximumLength.requireJavaScriptNullableBigInt("maximumLength")
+            ?.toString()?.toLong(),
+        minimumSelections = minimumSelections.requireJavaScriptNullableBigInt("minimumSelections")
+            ?.toString()?.toLong(),
+        maximumSelections = maximumSelections.requireJavaScriptNullableBigInt("maximumSelections")
+            ?.toString()?.toLong(),
+        allowsOther = allowsOther.requireJavaScriptBoolean("allowsOther"),
+        isSecret = isSecret.requireJavaScriptBoolean("isSecret"),
+    )
+}
+
+private fun AgentFormField.canonicalCopy(): CoreFormField = canonicalFormField(
+    name = name,
+    title = title,
+    type = type,
+    description = description,
+    isRequired = isRequired,
+    options = options,
+    defaultValue = defaultValue,
+    minimum = minimum,
+    maximum = maximum,
+    format = format,
+    minimumLength = minimumLength,
+    maximumLength = maximumLength,
+    minimumSelections = minimumSelections,
+    maximumSelections = maximumSelections,
+    allowsOther = allowsOther,
+    isSecret = isSecret,
+)
 
 private fun canonicalMcpServer(
     name: String,
@@ -3102,6 +3287,15 @@ private fun modelResolutionScope(host: CodexHost, resolution: String): Coroutine
     }
 
 private fun CoreWorkspace.project(): CodexWorkspace = CodexWorkspace(path, displayName)
+
+private fun CoreFormOption.project(): AgentFormOption = AgentFormOption(value, title, description)
+
+private fun CoreFormValue.project(): Any = when (this) {
+    is CoreFormTextValue -> AgentFormTextValue(value)
+    is CoreFormNumberValue -> AgentFormNumberValue(value)
+    is CoreFormBooleanValue -> AgentFormBooleanValue(value)
+    is CoreFormTextListValue -> AgentFormTextListValue(value.toTypedArray())
+}
 
 private fun CoreConnector.project(): AgentConnector = AgentConnector(
     id = id,

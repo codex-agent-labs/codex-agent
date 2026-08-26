@@ -6,6 +6,7 @@ import {
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormBooleanValue,
+  AgentFormField,
   AgentFormNumberValue,
   AgentFormOption,
   AgentFormTextListValue,
@@ -71,6 +72,7 @@ import type {
   AgentElicitationValidationReason,
   AgentFormFieldType,
   AgentFormStringFormat,
+  AgentFormValue,
   AgentHookRunStatus,
   AgentHookHandler,
   AgentHookTrustStatus,
@@ -138,6 +140,43 @@ const formBooleanValue = new AgentFormBooleanValue(true);
 const formBoolean: boolean = formBooleanValue.value;
 const formTextListValue = new AgentFormTextListValue(["first", "second"]);
 const formTextList: ReadonlyArray<string> = formTextListValue.value;
+const formFieldClass: typeof AgentFormField = AgentFormField;
+const formDefaultValue: AgentFormValue = formTextValue;
+const formField = new AgentFormField(
+  "email",
+  "Email",
+  "string",
+  "Account email",
+  true,
+  [formOption],
+  formDefaultValue,
+  null,
+  null,
+  "email",
+  3n,
+  80n,
+  null,
+  null,
+  false,
+  true,
+);
+const formFieldName: string = formField.name;
+const formFieldTitle: string = formField.title;
+const formFieldType: AgentFormFieldType = formField.type;
+const formFieldDescription: string | null | undefined = formField.description;
+const formFieldRequired: boolean = formField.isRequired;
+const formFieldOptions: ReadonlyArray<AgentFormOption> = formField.options;
+const formFieldDefaultValue: AgentFormValue | null | undefined = formField.defaultValue;
+const formFieldMinimum: number | null | undefined = formField.minimum;
+const formFieldMaximum: number | null | undefined = formField.maximum;
+const formFieldFormat: AgentFormStringFormat | null | undefined = formField.format;
+const formFieldMinimumLength: bigint | null | undefined = formField.minimumLength;
+const formFieldMaximumLength: bigint | null | undefined = formField.maximumLength;
+const formFieldMinimumSelections: bigint | null | undefined = formField.minimumSelections;
+const formFieldMaximumSelections: bigint | null | undefined = formField.maximumSelections;
+const formFieldAllowsOther: boolean = formField.allowsOther;
+const formFieldSecret: boolean = formField.isSecret;
+const formFieldAccepts: boolean = formField.accepts(new AgentFormTextValue("person@example.com"));
 const mcpEnvironmentVariables = [
   new AgentMcpEnvironmentVariable("TOKEN"),
   new AgentMcpEnvironmentVariable("OPTIONAL_TOKEN", null),

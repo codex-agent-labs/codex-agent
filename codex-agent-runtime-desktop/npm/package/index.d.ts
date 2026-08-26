@@ -70,6 +70,31 @@ export declare class AgentFormTextListValue {
     constructor(value: ReadonlyArray<string>);
     get value(): ReadonlyArray<string>;
 }
+export type AgentFormValue =
+    | AgentFormBooleanValue
+    | AgentFormNumberValue
+    | AgentFormTextListValue
+    | AgentFormTextValue;
+export declare class AgentFormField {
+    constructor(name: string, title: string, type: AgentFormFieldType, description?: Nullable<string>, isRequired?: boolean, options?: ReadonlyArray<AgentFormOption>, defaultValue?: Nullable<AgentFormValue>, minimum?: Nullable<number>, maximum?: Nullable<number>, format?: Nullable<AgentFormStringFormat>, minimumLength?: Nullable<bigint>, maximumLength?: Nullable<bigint>, minimumSelections?: Nullable<bigint>, maximumSelections?: Nullable<bigint>, allowsOther?: boolean, isSecret?: boolean);
+    get name(): string;
+    get title(): string;
+    get type(): AgentFormFieldType;
+    get description(): Nullable<string>;
+    get isRequired(): boolean;
+    get options(): ReadonlyArray<AgentFormOption>;
+    get defaultValue(): Nullable<AgentFormValue>;
+    get minimum(): Nullable<number>;
+    get maximum(): Nullable<number>;
+    get format(): Nullable<AgentFormStringFormat>;
+    get minimumLength(): Nullable<bigint>;
+    get maximumLength(): Nullable<bigint>;
+    get minimumSelections(): Nullable<bigint>;
+    get maximumSelections(): Nullable<bigint>;
+    get allowsOther(): boolean;
+    get isSecret(): boolean;
+    accepts(value: Nullable<AgentFormValue>): boolean;
+}
 export declare class AgentMcpEnvironmentVariable {
     constructor(name: string, source?: Nullable<AgentMcpEnvironmentSource>);
     get name(): string;

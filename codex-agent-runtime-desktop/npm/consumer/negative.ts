@@ -6,6 +6,7 @@ import {
   AgentElicitationValidation,
   AgentElicitationValidationIssue,
   AgentFormBooleanValue,
+  AgentFormField,
   AgentFormNumberValue,
   AgentFormOption,
   AgentFormTextListValue,
@@ -54,6 +55,7 @@ import {
 } from "@codex-agent-labs/codex-agent";
 import type {
   AgentCapability,
+  AgentFormValue,
   AgentHookHandler,
   AgentHookTrustStatus,
   AgentInvocation,
@@ -241,6 +243,97 @@ new AgentFormTextListValue();
 textListValue.value = [];
 // @ts-expect-error Text-list form value elements are readonly.
 textListValue.value.push("third");
+
+const formField = new AgentFormField(
+  "email",
+  "Email",
+  "string",
+  null,
+  true,
+  [option],
+  textValue,
+  null,
+  null,
+  "email",
+  3n,
+  80n,
+  null,
+  null,
+  false,
+  true,
+);
+// @ts-expect-error Form fields require name, title, and type.
+new AgentFormField("email", "Email");
+// @ts-expect-error Form-field names are strings.
+new AgentFormField(1, "Email", "string");
+// @ts-expect-error Form-field titles are strings.
+new AgentFormField("email", 1, "string");
+// @ts-expect-error Form-field types remain a closed typed domain.
+new AgentFormField("email", "Email", "text");
+// @ts-expect-error Form-field descriptions are nullable strings.
+new AgentFormField("email", "Email", "string", 1);
+// @ts-expect-error Required markers are booleans.
+new AgentFormField("email", "Email", "string", null, "true");
+// @ts-expect-error Form-field options use canonical option values.
+new AgentFormField("email", "Email", "string", null, false, [{}]);
+// @ts-expect-error Default values use one of the reviewed form-value shapes.
+new AgentFormField("email", "Email", "string", null, false, [], { invalid: true });
+// @ts-expect-error Numeric minima are nullable numbers.
+new AgentFormField("email", "Email", "string", null, false, [], null, "1");
+// @ts-expect-error Numeric maxima are nullable numbers.
+new AgentFormField("email", "Email", "string", null, false, [], null, null, "2");
+// @ts-expect-error String formats remain a closed typed domain.
+new AgentFormField("email", "Email", "string", null, false, [], null, null, null, "EMAIL");
+// @ts-expect-error Length bounds use bigint values.
+new AgentFormField("email", "Email", "string", null, false, [], null, null, null, null, 1);
+// @ts-expect-error Maximum lengths use bigint values.
+new AgentFormField("email", "Email", "string", null, false, [], null, null, null, null, 1n, 2);
+// @ts-expect-error Selection minima use bigint values.
+new AgentFormField("email", "Email", "string", null, false, [], null, null, null, null, 1n, 2n, 1);
+// @ts-expect-error Selection maxima use bigint values.
+new AgentFormField("email", "Email", "string", null, false, [], null, null, null, null, 1n, 2n, 1n, 2);
+// @ts-expect-error Other-value flags are booleans.
+new AgentFormField("email", "Email", "string", null, false, [], null, null, null, null, 1n, 2n, 1n, 2n, "true");
+// @ts-expect-error Secret flags are booleans.
+new AgentFormField("email", "Email", "string", null, false, [], null, null, null, null, 1n, 2n, 1n, 2n, false, "true");
+// @ts-expect-error Immutable form-field names are readonly.
+formField.name = "changed";
+// @ts-expect-error Immutable form-field titles are readonly.
+formField.title = "Changed";
+// @ts-expect-error Immutable form-field types are readonly.
+formField.type = "number";
+// @ts-expect-error Immutable form-field descriptions are readonly.
+formField.description = null;
+// @ts-expect-error Immutable required markers are readonly.
+formField.isRequired = false;
+// @ts-expect-error Immutable form-field options cannot be replaced.
+formField.options = [];
+// @ts-expect-error Form-field option collections are readonly.
+formField.options.push(option);
+// @ts-expect-error Immutable default values are readonly.
+formField.defaultValue = null;
+// @ts-expect-error Immutable numeric minima are readonly.
+formField.minimum = 0;
+// @ts-expect-error Immutable numeric maxima are readonly.
+formField.maximum = 1;
+// @ts-expect-error Immutable string formats are readonly.
+formField.format = "uri";
+// @ts-expect-error Immutable minimum lengths are readonly.
+formField.minimumLength = 1n;
+// @ts-expect-error Immutable maximum lengths are readonly.
+formField.maximumLength = 2n;
+// @ts-expect-error Immutable minimum selections are readonly.
+formField.minimumSelections = 1n;
+// @ts-expect-error Immutable maximum selections are readonly.
+formField.maximumSelections = 2n;
+// @ts-expect-error Immutable other-value flags are readonly.
+formField.allowsOther = true;
+// @ts-expect-error Immutable secret flags are readonly.
+formField.isSecret = false;
+// @ts-expect-error Form-field validation accepts reviewed form values or null.
+formField.accepts({ invalid: true });
+// @ts-expect-error Form-value unions exclude unrelated objects.
+const invalidFormValue: AgentFormValue = { invalid: true };
 
 const mcpEnvironmentVariable = new AgentMcpEnvironmentVariable("TOKEN", "local");
 // @ts-expect-error MCP environment-variable names are strings.

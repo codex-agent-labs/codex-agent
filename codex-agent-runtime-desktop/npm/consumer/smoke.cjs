@@ -183,6 +183,7 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     sdk.AgentElicitationValidation,
     sdk.AgentElicitationValidationIssue,
     sdk.AgentFormBooleanValue,
+    sdk.AgentFormField,
     sdk.AgentFormNumberValue,
     sdk.AgentFormOption,
     sdk.AgentFormTextListValue,
@@ -384,6 +385,84 @@ test('cjs exposes the exact Node-only SDK surface', () => {
     new Proxy({}, {}),
   ]) {
     assert.throws(() => new sdk.AgentFormTextListValue([invalid]));
+  }
+
+  const sourceFieldOptions = [new sdk.AgentFormOption('red', 'Red'), new sdk.AgentFormOption('blue', 'Blue')];
+  const sourceDefaultSelections = ['red'];
+  const formField = new sdk.AgentFormField(
+    'colors',
+    'Colors',
+    'multi_select',
+    'Choose colors',
+    true,
+    sourceFieldOptions,
+    new sdk.AgentFormTextListValue(sourceDefaultSelections),
+    null,
+    null,
+    null,
+    null,
+    null,
+    1n,
+    2n,
+    false,
+    true,
+  );
+  sourceFieldOptions[0] = new sdk.AgentFormOption('changed');
+  sourceDefaultSelections[0] = 'changed';
+  assert.deepEqual(
+    [formField.name, formField.title, formField.type, formField.description, formField.isRequired,
+      formField.options.map(({ value }) => value), formField.defaultValue.value,
+      formField.minimum, formField.maximum, formField.format, formField.minimumLength,
+      formField.maximumLength, formField.minimumSelections, formField.maximumSelections,
+      formField.allowsOther, formField.isSecret],
+    ['colors', 'Colors', 'multi_select', 'Choose colors', true, ['red', 'blue'], ['red'],
+      null, null, null, null, null, 1n, 2n, false, true],
+  );
+  assert.equal(formField.accepts(new sdk.AgentFormTextListValue(['red', 'blue'])), true);
+  assert.equal(formField.accepts(new sdk.AgentFormTextListValue(['red', 'red'])), false);
+  assert.equal(formField.accepts(new sdk.AgentFormTextListValue(['other'])), false);
+  assert.equal(formField.accepts(null), false);
+  for (const value of [formField, formField.options, ...formField.options,
+    formField.defaultValue, formField.defaultValue.value]) {
+    assert.equal(Object.isFrozen(value), true);
+  }
+
+  const emailField = new sdk.AgentFormField(
+    'email', 'Email', 'string', null, true, [], null, null, null, 'email', 3n, 80n,
+  );
+  assert.equal(emailField.accepts(new sdk.AgentFormTextValue('person@example.com')), true);
+  assert.equal(emailField.accepts(new sdk.AgentFormTextValue('invalid')), false);
+  assert.equal(emailField.accepts(new sdk.AgentFormNumberValue(1)), false);
+  const integerField = new sdk.AgentFormField('count', 'Count', 'integer', null, false, [], null, 1, 3);
+  assert.equal(integerField.accepts(new sdk.AgentFormNumberValue(2)), true);
+  assert.equal(integerField.accepts(new sdk.AgentFormNumberValue(2.5)), false);
+  assert.equal(integerField.accepts(new sdk.AgentFormNumberValue(Infinity)), false);
+  assert.equal(new sdk.AgentFormField('enabled', 'Enabled', 'boolean')
+    .accepts(new sdk.AgentFormBooleanValue(true)), true);
+
+  for (const [operation, message] of [
+    [() => new sdk.AgentFormField({}, 'Title', 'string'), 'name must be a string'],
+    [() => new sdk.AgentFormField('name', 'Title', 'STRING'), 'Unknown form field type: STRING'],
+    [() => new sdk.AgentFormField('name', 'Title', 'string', null, false, new Array(1)),
+      'options must not contain sparse elements'],
+    [() => new sdk.AgentFormField('name', 'Title', 'string', null, false, [{}]),
+      'options[0] must be an AgentFormOption'],
+    [() => new sdk.AgentFormField('name', 'Title', 'string', null, false, [], {}),
+      'defaultValue must be an AgentFormValue or null'],
+    [() => new sdk.AgentFormField('name', 'Title', 'string', null, false, [], null, '1'),
+      'minimum must be a number or null'],
+    [() => new sdk.AgentFormField('name', 'Title', 'string', null, false, [], null,
+      null, null, 'EMAIL'), 'Unknown form string format: EMAIL'],
+    [() => new sdk.AgentFormField('name', 'Title', 'string', null, false, [], null,
+      null, null, null, 1), 'minimumLength must be a bigint'],
+    [() => new sdk.AgentFormField('name', 'Title', 'string', null, false, [], null,
+      null, null, null, 9223372036854775808n),
+    'minimumLength must fit a signed 64-bit integer'],
+    [() => new sdk.AgentFormField('name', 'Title', 'string', null, false, [], null,
+      null, null, null, -1n), 'Minimum length must not be negative'],
+    [() => emailField.accepts({}), 'value must be an AgentFormValue or null'],
+  ]) {
+    assert.throws(operation, (error) => error?.message === message);
   }
 
   const defaultMcpEnvironmentVariable = new sdk.AgentMcpEnvironmentVariable('TOKEN');
