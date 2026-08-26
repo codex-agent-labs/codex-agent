@@ -278,8 +278,12 @@ The core tasks write exact-tree evidence under
 - `canonical-api.json` is the compiler-derived owner and member inventory.
 - `canonical-coverage.json` binds every member to successful canonical tests.
 - `bindings/kotlin-parity.json` and `bindings/java-parity.json` are verified
-  language receipts.
-- `binding-obligations-m7_5.json` is the all-language obligation audit.
+  core language receipts.
+- `codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/javascript-typescript-parity.json`
+  is the verified JavaScript/TypeScript receipt.
+- `binding-obligations-m7_5.json` is the partial all-language obligation audit;
+  it consumes the Kotlin, Java, and JavaScript/TypeScript receipts and remains
+  incomplete until the Apple receipts exist.
 
 For a binding, add the smallest idiomatic public artifact projection and a real
 consumer test. Extend that language's evidence derivation so each exact
@@ -294,8 +298,8 @@ report. The current focused gates are:
 ./gradlew :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity
 ```
 
-The JavaScript/TypeScript receipt is
-`codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/javascript-typescript-parity.json`.
+The core audit runs the strict JavaScript/TypeScript gate transitively; invoke
+the desktop task directly only for a focused JavaScript/TypeScript check.
 An active pair without verified projection evidence is `missing`. A future
 phase pair remains applicable but `pending`: at M7.5 Kotlin, Java, Swift,
 Objective-C, and JavaScript/TypeScript are active; M8 activates C ABI; the

@@ -54,6 +54,16 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertNotIn(":codex-agent-core:verifyJavaBindingParity", contracts)
         self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", contracts)
 
+    def test_node_js_runs_one_strict_binding_gate_for_build_or_test(self) -> None:
+        driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
+        node_js = driver.split("  node-js)", 1)[1].split("  node-wasm)", 1)[0]
+        strict = ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity"
+
+        self.assertIn('if [ "$build" = true ] || [ "$test_lane" = true ]; then', node_js)
+        self.assertEqual(1, node_js.count(strict))
+        self.assertNotIn(":codex-agent-runtime-desktop:verifyPackedNpmConsumers", node_js)
+        self.assertNotIn(":codex-agent-runtime-desktop:jsNodeTest", node_js)
+
     def test_swift_tests_run_exact_apple_compiler_observation(self) -> None:
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
         swift_tests = driver.split("  ios-swift-tests)", 1)[1].split("  ios-package)", 1)[0]
@@ -289,7 +299,10 @@ class ImpactPlanTest(GitFixture):
         result, plan_path, _ = self.make_plan("js/Main.kt")
         self.assertTrue(result["lanes"]["portable"]["build"])
         self.assertTrue(result["lanes"]["node-js"]["build"])
+        self.assertTrue(result["lanes"]["contracts"]["build"])
         self.assertFalse(result["lanes"]["node-wasm"]["build"])
+        contracts_inventory = plan_path.parent / "inventories/contracts/production-inputs.git-tree"
+        self.assertIn("\tjs/Main.kt\n", contracts_inventory.read_text(encoding="utf-8"))
         for lane in (name for name in LANES if name.startswith("desktop-")):
             self.assertTrue(result["lanes"][lane]["build"])
             self.assertTrue(result["lanes"][lane]["test"])
@@ -343,7 +356,7 @@ class ImpactPlanTest(GitFixture):
             "codex-agent-runtime-desktop/npm/consumer/smoke.ts",
         ):
             self.assertEqual(
-                {"node-js", "consumer-node-js"},
+                {"contracts", "node-js", "consumer-node-js"},
                 {lane for lane in LANES if matches(lane, "production", npm)},
             )
             self.assertFalse(any(matches(lane, "test", npm) for lane in LANES))
@@ -642,7 +655,7 @@ class RealImpactPlanTest(unittest.TestCase):
         )
         self.assertEqual(
             {
-                "portable", "node-js", "node-wasm",
+                "contracts", "portable", "node-js", "node-wasm",
                 "desktop-macos-arm64", "desktop-macos-x64",
                 "desktop-linux-arm64", "desktop-linux-x64", "desktop-windows-x64",
             },
@@ -674,7 +687,7 @@ class RealImpactPlanTest(unittest.TestCase):
             "io/github/codex_agent_labs/codexmobile/appserver/runtime/NodeHostFilesSecurityTest.kt"
         )
         self.assertEqual(
-            {"portable", "node-js", "node-wasm"},
+            {"contracts", "portable", "node-js", "node-wasm"},
             matching_lanes("test", web_host_files_test),
         )
         for test_path in (shared_host_policy_test, desktop_host_files_test, web_host_files_test):
@@ -991,6 +1004,12 @@ class StageArchiveTest(unittest.TestCase):
         expected = (
             ("build", "codex-agent-runtime-desktop/build/npm/consumer/public-api.json", "npm-public-api-report"),
             ("build", "codex-agent-runtime-desktop/build/npm/consumer/packed-tests.xml", "npm-packed-test-report"),
+            (
+                "test",
+                "codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/"
+                "javascript-typescript-parity.json",
+                "cross-language-javascript-typescript-binding-receipt-evidence",
+            ),
         )
         self.assertEqual(expected, OUTPUTS["node-js"])
 
@@ -1143,6 +1162,20 @@ class StageProductionRestoreTest(unittest.TestCase):
             self.assertEqual({}, artifacts)
             self.assertEqual({}, evidence)
             self.assertFalse((root / "output/payload").exists())
+
+    def test_restored_node_js_production_drops_binding_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_evidence = ("payload/public-api.json", "npm-public-api-report")
+            binding_receipt = (
+                "payload/javascript-typescript-parity.json",
+                "cross-language-javascript-typescript-binding-receipt-evidence",
+            )
+            source = self.source(root, [], [build_evidence, binding_receipt])
+            artifacts, evidence = restore_production_files(source, root / "output", "node-js")
+            self.assertEqual({}, artifacts)
+            self.assertEqual({build_evidence[0]: build_evidence[1]}, evidence)
+            self.assertFalse((root / "output" / binding_receipt[0]).exists())
 
     def test_restored_production_keeps_build_owned_evidence(self) -> None:
         cases = (

@@ -39,6 +39,12 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
     "node-js": (
         ("build", "codex-agent-runtime-desktop/build/npm/consumer/public-api.json", "npm-public-api-report"),
         ("build", "codex-agent-runtime-desktop/build/npm/consumer/packed-tests.xml", "npm-packed-test-report"),
+        (
+            "test",
+            "codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/"
+            "javascript-typescript-parity.json",
+            "cross-language-javascript-typescript-binding-receipt-evidence",
+        ),
     ),
     "desktop-macos-arm64": (
         ("build", "codex-agent-runtime-desktop/build/distributions/*-app-server-macos-arm64.zip", "classifier"),

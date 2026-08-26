@@ -20,11 +20,22 @@ class CrossLanguageBindingTasksTest {
                 val audit = layout.buildDirectory.file("reports/cross-language-api/binding-obligations-m7_5.json")
                 val receipt = layout.buildDirectory.file("reports/cross-language-api/bindings/kotlin-parity.json")
                 val javaReceipt = layout.buildDirectory.file("reports/cross-language-api/bindings/java-parity.json")
+                val javaScriptReceipt = layout.buildDirectory.file(
+                    "reports/cross-language-api/bindings/javascript-typescript-parity.json",
+                )
+                val javaScriptPreflight = tasks.register<Delete>(
+                    "invalidateJavaScriptTypeScriptBindingParityOutput",
+                ) {
+                    delete(javaScriptReceipt)
+                }
                 val preflight = tasks.register<Delete>("invalidateCrossLanguageBindingParityOutputs") {
+                    dependsOn(javaScriptPreflight)
                     delete(coverage, audit, receipt, javaReceipt)
                 }
                 tasks.configureEach {
-                    if (name != preflight.name) mustRunAfter(preflight)
+                    if (name !in setOf(preflight.name, javaScriptPreflight.name)) {
+                        mustRunAfter(preflight)
+                    }
                 }
                 val failingPrerequisite = tasks.register("failingCoveragePrerequisite") {
                     doLast { throw GradleException("intentional coverage prerequisite failure") }
@@ -56,8 +67,17 @@ class CrossLanguageBindingTasksTest {
                         }
                     }
                 }
+                val javaScriptGate = tasks.register("verifyJavaScriptTypeScriptBindingParity") {
+                    dependsOn(coverageGate)
+                    doLast {
+                        javaScriptReceipt.get().asFile.apply {
+                            parentFile.mkdirs()
+                            writeText("unexpected JavaScript success")
+                        }
+                    }
+                }
                 tasks.register("auditCrossLanguageBindingParity") {
-                    dependsOn(kotlinGate, javaGate)
+                    dependsOn(kotlinGate, javaGate, javaScriptGate)
                     doLast {
                         audit.get().asFile.apply {
                             parentFile.mkdirs()
@@ -70,6 +90,9 @@ class CrossLanguageBindingTasksTest {
             val audit = root.staleOutput("reports/cross-language-api/binding-obligations-m7_5.json")
             val receipt = root.staleOutput("reports/cross-language-api/bindings/kotlin-parity.json")
             val javaReceipt = root.staleOutput("reports/cross-language-api/bindings/java-parity.json")
+            val javaScriptReceipt = root.staleOutput(
+                "reports/cross-language-api/bindings/javascript-typescript-parity.json",
+            )
 
             val result = GradleRunner.create()
                 .withProjectDir(root)
@@ -87,6 +110,7 @@ class CrossLanguageBindingTasksTest {
             assertFalse(audit.exists())
             assertFalse(receipt.exists())
             assertFalse(javaReceipt.exists())
+            assertFalse(javaScriptReceipt.exists())
 
             val wiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
             listOf(
@@ -94,13 +118,15 @@ class CrossLanguageBindingTasksTest {
                 "reports/cross-language-api/binding-obligations-m7_5.json",
                 "reports/cross-language-api/bindings/kotlin-parity.json",
                 "reports/cross-language-api/bindings/java-parity.json",
+                "javascript-typescript-parity.json",
                 "tasks.configureEach",
                 "mustRunAfter(invalidateCrossLanguageBindingParityOutputs)",
                 "verifyCrossLanguageApiCoverage.configure",
                 "dependsOn(invalidateCrossLanguageBindingParityOutputs)",
-                "dependsOn(verifyKotlinBindingParity, verifyJavaBindingParity)",
+                ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity",
                 "kotlinReceipt.set(verifyKotlinBindingParity.flatMap",
                 "javaReceipt.set(verifyJavaBindingParity.flatMap",
+                "javaScriptTypeScriptReceipt.set(javaScriptTypeScriptBindingParityReceiptFile)",
             ).forEach { contract ->
                 assertTrue(contract in wiring, "Missing convention-plugin cleanup contract: $contract")
             }

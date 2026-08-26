@@ -35,17 +35,22 @@ class NodeDesktopWorkflowContractTest {
     }
 
     @Test
-    fun `only the Node JS build lane verifies the packed npm SDK`() {
+    fun `Node JS runs the strict binding gate once and contracts receive pinned Node`() {
         val nodeJs = driver.substringAfter("  node-js)").substringBefore("  node-wasm)")
         val nodeWasm = driver.substringAfter("  node-wasm)").substringBefore("  desktop-macos-arm64)")
-        val packedTask = ":codex-agent-runtime-desktop:verifyPackedNpmConsumers"
+        val strictTask = ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity"
+        val ci = workflows.getValue("ci.yml")
 
-        assertEquals(1, Regex(Regex.escape(packedTask)).findAll(nodeJs).count())
-        assertEquals(1, Regex(Regex.escape(":codex-agent-runtime-desktop:jsNodeTest")).findAll(nodeJs).count())
-        assertFalse(packedTask in nodeWasm)
+        assertEquals(1, Regex(Regex.escape(strictTask)).findAll(nodeJs).count())
+        assertFalse(":codex-agent-runtime-desktop:verifyPackedNpmConsumers" in nodeJs)
+        assertFalse(":codex-agent-runtime-desktop:jsNodeTest" in nodeJs)
+        assertFalse(strictTask in nodeWasm)
         assertEquals(
             1,
             Regex(Regex.escape(":codex-agent-runtime-desktop:wasmJsNodeTest")).findAll(nodeWasm).count(),
+        )
+        assertTrue(
+            "(matrix.lane == 'contracts' || contains(matrix.lane, 'node')) && '24.18.0'" in ci,
         )
     }
 

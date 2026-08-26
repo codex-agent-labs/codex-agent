@@ -97,8 +97,9 @@ case "$lane" in
     ./gradlew "${tasks[@]}" "${args[@]}"
     ;;
   node-js)
-    [ "$build" != true ] || ./gradlew :codex-agent-runtime-desktop:verifyPackedNpmConsumers "${args[@]}"
-    [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-desktop:jsNodeTest "${args[@]}"
+    if [ "$build" = true ] || [ "$test_lane" = true ]; then
+      ./gradlew :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity "${args[@]}"
+    fi
     ;;
   node-wasm)
     [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-desktop:wasmJsNodeTest "${args[@]}"

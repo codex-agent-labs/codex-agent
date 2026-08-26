@@ -28,6 +28,10 @@ abstract class AuditCrossLanguageBindingParityTask : DefaultTask() {
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val javaReceipt: RegularFileProperty
 
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val javaScriptTypeScriptReceipt: RegularFileProperty
+
     @get:OutputFile
     abstract val auditFile: RegularFileProperty
 
@@ -35,6 +39,7 @@ abstract class AuditCrossLanguageBindingParityTask : DefaultTask() {
     fun audit() {
         val kotlinReceiptFile = kotlinReceipt.get().asFile
         val javaReceiptFile = javaReceipt.get().asFile
+        val javaScriptTypeScriptReceiptFile = javaScriptTypeScriptReceipt.get().asFile
         writeCrossLanguageBindingAudit(
             phase = CrossLanguageBindingPhase.M7_5,
             apiReport = apiReport.get().asFile,
@@ -42,6 +47,7 @@ abstract class AuditCrossLanguageBindingParityTask : DefaultTask() {
             receiptFiles = mapOf(
                 CrossLanguageBinding.KOTLIN to kotlinReceiptFile,
                 CrossLanguageBinding.JAVA to javaReceiptFile,
+                CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT to javaScriptTypeScriptReceiptFile,
             ),
             auditFile = auditFile.get().asFile,
         )

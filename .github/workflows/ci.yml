@@ -129,7 +129,7 @@ jobs:
           build: ${{ matrix.build }}
           test: ${{ matrix.test }}
           metadata: ${{ matrix.metadata }}
-          node-version: ${{ contains(matrix.lane, 'node') && '24.18.0' || 'none' }}
+          node-version: ${{ (matrix.lane == 'contracts' || contains(matrix.lane, 'node')) && '24.18.0' || 'none' }}
 
   android:
     if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'

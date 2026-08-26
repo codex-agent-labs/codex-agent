@@ -9,8 +9,24 @@ import kotlinx.serialization.json.JsonPrimitive
 
 class CrossLanguageBindingAuditTest {
     @Test
-    fun `materializes Kotlin and Java proof with every remaining active and future pair`() {
-        val receipts = receipts(CrossLanguageBinding.KOTLIN, CrossLanguageBinding.JAVA, members = FULL_MEMBER_SET)
+    fun `materializes Kotlin Java and JavaScript proof with every remaining active and future pair`() {
+        val javaScript = receipt(CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT, FULL_MEMBER_SET).let { receipt ->
+            receipt.copy(
+                projectionClaims = receipt.projectionClaims.drop(JS_EXCLUSION_COUNT),
+                applicabilityExclusions = FULL_MEMBER_SET.take(JS_EXCLUSION_COUNT).map { member ->
+                    CrossLanguageApplicabilityExclusion(
+                        member,
+                        receipt.language,
+                        "JavaScript receives this immutable canonical value from the SDK.",
+                    )
+                },
+            )
+        }
+        val receipts = receipts(
+            CrossLanguageBinding.KOTLIN,
+            CrossLanguageBinding.JAVA,
+            members = FULL_MEMBER_SET,
+        ) + (CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT to javaScript)
         val digests = receiptDigests(receipts)
         val audit = buildCrossLanguageBindingAudit(
             CrossLanguageBindingPhase.M7_5,
@@ -22,20 +38,29 @@ class CrossLanguageBindingAuditTest {
 
         assertEquals("incomplete", audit.result)
         assertEquals(6_116, audit.summary.total)
-        assertEquals(2_780, audit.summary.active)
+        assertEquals(2_768, audit.summary.active)
         assertEquals(3_336, audit.summary.pending)
-        assertEquals(1_112, audit.summary.satisfied)
-        assertEquals(1_668, audit.summary.missing)
-        assertEquals(1_710, audit.errors.size)
-        assertEquals(1_668, audit.errors.count { it.startsWith("Missing active binding projection ") })
-        assertEquals(42, audit.errors.count { "shared scenario evidence" in it })
+        assertEquals(12, audit.summary.excluded)
+        assertEquals(1_656, audit.summary.satisfied)
+        assertEquals(1_112, audit.summary.missing)
+        assertEquals(1_140, audit.errors.size)
+        assertEquals(1_112, audit.errors.count { it.startsWith("Missing active binding projection ") })
+        assertEquals(28, audit.errors.count { "shared scenario evidence" in it })
         assertEquals(digests, audit.languageReceiptSha256)
-        for (language in listOf(CrossLanguageBinding.KOTLIN, CrossLanguageBinding.JAVA)) {
-            assertTrue(audit.obligations.filter { it.language == language }.all {
-                it.parityStatus == CrossLanguageObligationStatus.SATISFIED
-            })
+        for (language in listOf(
+            CrossLanguageBinding.KOTLIN,
+            CrossLanguageBinding.JAVA,
+            CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT,
+        )) {
             assertTrue(audit.errors.none { "Missing active binding projection ${language.id}:" in it })
         }
+        assertTrue(audit.obligations.filter {
+            it.language in setOf(CrossLanguageBinding.KOTLIN, CrossLanguageBinding.JAVA)
+        }.all { it.parityStatus == CrossLanguageObligationStatus.SATISFIED })
+        assertEquals(JS_EXCLUSION_COUNT, audit.obligations.count {
+            it.language == CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT &&
+                it.parityStatus == CrossLanguageObligationStatus.EXCLUDED
+        })
         assertTrue(audit.obligations.filter { it.language == CrossLanguageBinding.C_ABI }.all {
             it.parityStatus == CrossLanguageObligationStatus.PENDING
         })
@@ -321,5 +346,6 @@ class CrossLanguageBindingAuditTest {
         val FULL_MEMBER_SET = (0 until 556).map { index ->
             "common|owner=sample/Owner$index|kind=property|abi=sample/Owner$index.value"
         }
+        const val JS_EXCLUSION_COUNT = 12
     }
 }

@@ -206,7 +206,7 @@ class ReleaseToolingCliFunctionalTest {
             "packageNodeRuntimeEvidenceRunner",
             "packageNodeWasmRuntimeEvidenceRunner",
         ).forEach { task -> assertEquals(1, Regex(Regex.escape(task)).findAll(driver).count(), task) }
-        assertTrue(":codex-agent-runtime-desktop:jsNodeTest" in driver)
+        assertTrue(":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity" in driver)
         assertTrue(":codex-agent-runtime-desktop:wasmJsNodeTest" in driver)
         listOf(
             "codex-agent-jvm-runtime-evidence-runner.zip",

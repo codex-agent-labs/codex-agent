@@ -46,7 +46,7 @@ CATEGORIES = ("production", "test", "metadata")
 
 DEPENDENCIES = {
     "android": ("consumer-android",),
-    "node-js": ("consumer-node-js",),
+    "node-js": ("contracts", "consumer-node-js"),
     "node-wasm": ("consumer-node-wasm",),
     "desktop-macos-arm64": ("consumer-desktop",),
     "desktop-macos-x64": ("consumer-desktop",),

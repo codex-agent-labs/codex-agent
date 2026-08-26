@@ -12,4 +12,7 @@ codex-agent-core/src/commonMain/**
 codex-agent-core/src/commonTest/**
 codex-agent-core/src/jvmAndAndroidMain/**
 codex-agent-core/src/jvmTest/**
+codex-agent-runtime-desktop/src/commonTest/**
+codex-agent-runtime-desktop/src/webTest/**
+codex-agent-runtime-desktop/src/jsTest/**
 tooling/protocol-generator/src/test/**
