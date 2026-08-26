@@ -71,7 +71,7 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `canonical selection derives exactly sixteen complete Apple binding capabilities`() {
+    fun `canonical selection derives exactly 174 complete Apple binding capabilities`() {
         val keys = listOf(
             canonicalConstructor(),
             canonicalProperty("code", "kotlin/String!!"),
@@ -91,8 +91,9 @@ class AppleCompilerEvidenceTaskTest {
             canonicalProperty("value", "kotlin/String!!", owner = "ConversationId"),
             canonicalProperty("value", "kotlin/String!!", owner = "Other"),
         )
-        val expected = keys.take(16)
-        assertEquals(expected.sorted(), appleBindingCapabilityKeys(keys))
+        val expected = keys.take(16) +
+            appleCompilerFixtureD065Capabilities.map(AppleOrdinaryCapability::canonicalKey)
+        assertEquals(expected.sorted(), appleBindingCapabilityKeys(expected + keys.last()))
         assertFailsWith<IllegalStateException> { appleBindingCapabilityKeys(expected.drop(1)) }
         assertFailsWith<IllegalStateException> {
             appleBindingCapabilityKeys(keys + canonicalProperty("future", "kotlin/String!!"))
@@ -197,16 +198,16 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `real compiler shapes normalize to one exact sixteen-member contract per language`() {
+    fun `real compiler shapes normalize to one exact 174-member contract per language`() {
         val swift = parseSwiftAppleBindingSurface(swiftSurfaceJson())
         val objectiveC = parseObjectiveCAppleBindingSurface(objectiveCSurfaceJson())
-        assertEquals(23, swift.size)
-        assertEquals(23, objectiveC.size)
+        assertEquals(220, swift.size)
+        assertEquals(220, objectiveC.size)
         assertEquals(swift.map(AppleCompilerSymbol::precise), objectiveC.map(AppleCompilerSymbol::precise))
-        assertEquals("swift.init", swift.single { "initWithCode" in it.precise }.kind)
-        assertEquals("objective-c.method", objectiveC.single { "initWithCode" in it.precise }.kind)
-        assertEquals("swift.init", swift.single { "initWithValue" in it.precise }.kind)
-        assertEquals("objective-c.method", objectiveC.single { "initWithValue" in it.precise }.kind)
+        assertEquals("swift.init", swift.single { it.precise == CONSTRUCTOR }.kind)
+        assertEquals("objective-c.method", objectiveC.single { it.precise == CONSTRUCTOR }.kind)
+        assertEquals("swift.init", swift.single { it.precise == CONVERSATION_ID_CONSTRUCTOR }.kind)
+        assertEquals("objective-c.method", objectiveC.single { it.precise == CONVERSATION_ID_CONSTRUCTOR }.kind)
         assertTrue(swift.none { it.path.first() == "CDXFailure" })
         assertTrue(objectiveC.none { it.path.first() == "CDXFailure" })
 
@@ -229,13 +230,13 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `compiled AST references bind sixteen exact USRs and reject drift`() {
+    fun `compiled AST references bind 174 exact USRs and reject drift`() {
         val swift = parseSwiftAppleBindingReferences(swiftReferencesJson())
         val objectiveC = parseObjectiveCAppleBindingReferences(objectiveCReferencesJson())
-        assertEquals(16, swift.size)
-        assertEquals(16, objectiveC.size)
+        assertEquals(174, swift.size)
+        assertEquals(174, objectiveC.size)
         assertEquals(swift.map(AppleCompilerReference::precise), objectiveC.map(AppleCompilerReference::precise))
-        assertEquals(16, swift.map(AppleCompilerReference::precise).distinct().size)
+        assertEquals(174, swift.map(AppleCompilerReference::precise).distinct().size)
 
         assertFailsWith<IllegalStateException> {
             parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(py)message", "(py)removed"))
@@ -451,7 +452,9 @@ class AppleCompilerEvidenceTaskTest {
             swiftTypeProperty(
                 MCP_ENVIRONMENT_REMOTE, "remote", "AgentMcpEnvironmentSource", MCP_ENVIRONMENT_SOURCE_OWNER,
             ),
-        ),
+        ) + appleCompilerFixtureD065SwiftSymbols().map { (precise, expected) ->
+            expectedRawSymbol(precise, "swift", expected)
+        },
         includeMessageRelationship = includeMessageRelationship,
     )
 
@@ -576,7 +579,9 @@ class AppleCompilerEvidenceTaskTest {
             objectiveCTypeProperty(
                 MCP_ENVIRONMENT_REMOTE, "remote", "AgentMcpEnvironmentSource", MCP_ENVIRONMENT_SOURCE_OWNER,
             ),
-        ),
+        ) + appleCompilerFixtureD065ObjectiveCSymbols().map { (precise, expected) ->
+            expectedRawSymbol(precise, "objective-c", expected)
+        },
         includeMessageRelationship = includeMessageRelationship,
     )
 
@@ -606,8 +611,38 @@ class AppleCompilerEvidenceTaskTest {
             listOf(MCP_ENVIRONMENT_LOCAL, MCP_ENVIRONMENT_REMOTE).forEach {
                 add(relationship(it, MCP_ENVIRONMENT_SOURCE_OWNER))
             }
+            val d065Symbols = if (language == "swift") {
+                appleCompilerFixtureD065SwiftSymbols()
+            } else {
+                appleCompilerFixtureD065ObjectiveCSymbols()
+            }
+            d065Symbols.filterValues { it.path.size > 1 }.keys.forEach { precise ->
+                add(relationship(precise, appleOwnerUsr(precise)))
+            }
         })
     })
+
+    private fun expectedRawSymbol(
+        precise: String,
+        language: String,
+        expected: ExpectedAppleCompilerSymbol,
+    ) = symbol(
+        precise,
+        language,
+        expected.kind,
+        expected.path,
+        expected.title,
+        expected.access,
+        fragments(
+            text(expected.declaration),
+            *expected.typeIdentifiers.map { type("", it) }.toTypedArray(),
+        ),
+        expected.parameters.map { (name, declaration) -> parameter(name, fragments(text(declaration))) },
+        expected.returns?.let { fragments(text(it)) },
+    )
+
+    private fun appleOwnerUsr(memberUsr: String): String =
+        listOf("(cpy)", "(py)", "(im)").fold(memberUsr) { owner, marker -> owner.substringBefore(marker) }
 
     private fun symbol(
         precise: String,
@@ -694,8 +729,8 @@ class AppleCompilerEvidenceTaskTest {
     private fun swiftReferencesJson(): String = releaseJson.encodeToString(
         JsonElement.serializer(),
         buildJsonObject { put("inner", buildJsonArray {
-            add(swiftReference("declref_expr", "init", CONSTRUCTOR, "constructor-type"))
-            add(swiftReference("declref_expr", "init", CONSTRUCTOR, "constructor-type"))
+            add(swiftReference("declref_expr", "init", CONSTRUCTOR, FAILURE_SWIFT_CONSTRUCTOR_TYPE))
+            add(swiftReference("declref_expr", "init", CONSTRUCTOR, FAILURE_SWIFT_CONSTRUCTOR_TYPE))
             add(swiftReference("member_ref_expr", "code", CODE, "\$sSSD"))
             add(swiftReference("member_ref_expr", "isRecoverable", RECOVERABLE, "\$sSbD"))
             add(swiftReference("member_ref_expr", "message", MESSAGE, "\$sSSD"))
@@ -721,6 +756,11 @@ class AppleCompilerEvidenceTaskTest {
             add(swiftReference(
                 "member_ref_expr", "remote", MCP_ENVIRONMENT_REMOTE, MCP_ENVIRONMENT_SOURCE_SWIFT_TYPE,
             ))
+            val d065Usrs =
+                appleCompilerFixtureD065Capabilities.mapTo(mutableSetOf(), AppleOrdinaryCapability::usr)
+            appleCompilerFixtureSwiftReferences().filter { it.precise in d065Usrs }.forEach { reference ->
+                add(swiftReference(reference.kind, reference.name, reference.precise, reference.valueType))
+            }
         }) },
     )
 
@@ -769,8 +809,42 @@ class AppleCompilerEvidenceTaskTest {
             add(objectiveCInstallationScopeReference("workspace"))
             add(objectiveCMcpEnvironmentSourceReference("local"))
             add(objectiveCMcpEnvironmentSourceReference("remote"))
+            val d065Usrs =
+                appleCompilerFixtureD065Capabilities.mapTo(mutableSetOf(), AppleOrdinaryCapability::usr)
+            appleCompilerFixtureObjectiveCReferences().filter { it.precise in d065Usrs }.forEach { reference ->
+                add(objectiveCReference(reference))
+            }
         }) },
     )
+
+    private fun objectiveCReference(reference: AppleCompilerReference) = when (reference.kind) {
+        "ObjCMessageExpr" -> buildJsonObject {
+            put("kind", JsonPrimitive(reference.kind))
+            put("selector", JsonPrimitive(reference.name))
+            put("type", qualifiedType(reference.valueType))
+            if (reference.argumentTypes.isEmpty()) {
+                put("receiverKind", JsonPrimitive("class"))
+                put("classType", qualifiedType(requireNotNull(reference.receiverType)))
+            } else {
+                put("inner", buildJsonArray {
+                    add(buildJsonObject {
+                        put("classType", qualifiedType(requireNotNull(reference.receiverType)))
+                    })
+                    reference.argumentTypes.forEach { add(buildJsonObject { put("type", qualifiedType(it)) }) }
+                })
+            }
+        }
+        "ObjCPropertyRefExpr" -> buildJsonObject {
+            put("kind", JsonPrimitive(reference.kind))
+            put("type", qualifiedType(reference.valueType))
+            put("property", buildJsonObject { put("name", JsonPrimitive(reference.name)) })
+            put("isMessagingGetter", JsonPrimitive(true))
+            put("inner", buildJsonArray {
+                add(buildJsonObject { put("type", qualifiedType(requireNotNull(reference.receiverType))) })
+            })
+        }
+        else -> error("Unexpected Objective-C reference kind: ${reference.kind}")
+    }
 
     private fun objectiveCPropertyReference(name: String) = buildJsonObject {
         put("kind", JsonPrimitive("ObjCPropertyRefExpr")); put("type", qualifiedType("<pseudo-object type>"))
@@ -795,6 +869,7 @@ class AppleCompilerEvidenceTaskTest {
         put("type", qualifiedType("CodexAgentAgentApprovalDecision * _Nonnull"))
         put("receiverKind", JsonPrimitive("class"))
         put("classType", qualifiedType("CodexAgentAgentApprovalDecision"))
+        put("inner", buildJsonArray {})
     }
 
     private fun objectiveCCollaborationReference(name: String) = buildJsonObject {
@@ -802,6 +877,7 @@ class AppleCompilerEvidenceTaskTest {
         put("type", qualifiedType("CodexAgentAgentCollaborationMode * _Nonnull"))
         put("receiverKind", JsonPrimitive("class"))
         put("classType", qualifiedType("CodexAgentAgentCollaborationMode"))
+        put("inner", buildJsonArray {})
     }
 
     private fun objectiveCMessageRoleReference(name: String) = buildJsonObject {
@@ -809,6 +885,7 @@ class AppleCompilerEvidenceTaskTest {
         put("type", qualifiedType("CodexAgentAgentMessageRole * _Nonnull"))
         put("receiverKind", JsonPrimitive("class"))
         put("classType", qualifiedType("CodexAgentAgentMessageRole"))
+        put("inner", buildJsonArray {})
     }
 
     private fun objectiveCInstallationScopeReference(name: String) = buildJsonObject {
@@ -816,6 +893,7 @@ class AppleCompilerEvidenceTaskTest {
         put("type", qualifiedType("CodexAgentAgentInstallationScope * _Nonnull"))
         put("receiverKind", JsonPrimitive("class"))
         put("classType", qualifiedType("CodexAgentAgentInstallationScope"))
+        put("inner", buildJsonArray {})
     }
 
     private fun objectiveCMcpEnvironmentSourceReference(name: String) = buildJsonObject {
@@ -823,6 +901,7 @@ class AppleCompilerEvidenceTaskTest {
         put("type", qualifiedType("CodexAgentAgentMcpEnvironmentSource * _Nonnull"))
         put("receiverKind", JsonPrimitive("class"))
         put("classType", qualifiedType("CodexAgentAgentMcpEnvironmentSource"))
+        put("inner", buildJsonArray {})
     }
 
     private fun qualifiedType(value: String) = buildJsonObject { put("qualType", JsonPrimitive(value)) }
@@ -831,6 +910,7 @@ class AppleCompilerEvidenceTaskTest {
         const val CANONICAL_OWNER = "io.github.codex_agent_labs.codexmobile.agent/CodexFailure"
         const val OWNER = "c:objc(cs)CodexAgentCodexFailure"
         const val CONSTRUCTOR = "$OWNER(im)initWithCode:message:isRecoverable:"
+        const val FAILURE_SWIFT_CONSTRUCTOR_TYPE = "\$sySo010CodexAgentA7FailureCSS_SSSbtcABmcD"
         const val CODE = "$OWNER(py)code"
         const val RECOVERABLE = "$OWNER(py)isRecoverable"
         const val MESSAGE = "$OWNER(py)message"

@@ -17,7 +17,7 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageAppleBindingEvidenceTest {
     @Test
-    fun `observes sixteen independent claims and 540 explicit gaps per Apple language`() {
+    fun `observes 174 independent claims and 382 explicit gaps per Apple language`() {
         val fixture = fixture()
         val report = fixture.derive()
 
@@ -29,11 +29,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         val languages = report.releaseArray("languages").map { it as JsonObject }
         assertEquals(listOf("objective-c", "swift"), languages.map { it.releaseString("language") })
         languages.forEach { language ->
-            assertEquals(23, language.releaseArray("publicSymbols").size)
-            assertEquals(16, language.releaseArray("referencedSymbols").size)
-            assertEquals(16, language.releaseArray("claims").size)
+            assertEquals(220, language.releaseArray("publicSymbols").size)
+            assertEquals(174, language.releaseArray("referencedSymbols").size)
+            assertEquals(174, language.releaseArray("claims").size)
             assertTrue(language.releaseArray("exclusions").isEmpty())
-            assertEquals(540, language.releaseArray("missingCapabilityKeys").size)
+            assertEquals(382, language.releaseArray("missingCapabilityKeys").size)
             assertEquals(
                 fixture.capabilities,
                 language.releaseArray("claims").map { (it as JsonObject).releaseString("canonicalKey") },
@@ -57,24 +57,47 @@ class CrossLanguageAppleBindingEvidenceTest {
         val compiler = fixture.compiler
         val surface = compiler.releaseObject("surface")
         val swift = surface.releaseArray("swift")
+        fun surfaceIndex(language: String, precise: String): Int =
+            surface.releaseArray(language).indexOfFirst {
+                (it as JsonObject).releaseString("precise") == precise
+            }.also { check(it >= 0) { "Missing fixture symbol: $precise" } }
+        val swiftCodeIndex = surfaceIndex("swift", CODE_USR)
         val changedSwift = JsonArray(swift.mapIndexed { index, value ->
-            if (index == 2) JsonObject((value as JsonObject) + ("accessLevel" to JsonPrimitive("public"))) else value
+            if (index == swiftCodeIndex) {
+                JsonObject((value as JsonObject) + ("accessLevel" to JsonPrimitive("public")))
+            } else {
+                value
+            }
         })
         val surfaceDrift = compiler.withObject("surface", JsonObject(surface + mapOf(
             "swift" to changedSwift,
             "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changedSwift)),
         )))
         val signatureDrift = compiler.surfaceDrift(
-            "swift", 1, "declaration", JsonPrimitive("init(code: String, message: String)"),
+            "swift", surfaceIndex("swift", CONSTRUCTOR),
+            "declaration", JsonPrimitive("init(code: String, message: String)"),
         )
         val typeDrift = compiler.surfaceDrift(
-            "swift", 2, "typeIdentifiers", strings(listOf("s:Si")),
+            "swift", swiftCodeIndex, "typeIdentifiers", strings(listOf("s:Si")),
         )
         val readonlyDrift = compiler.surfaceDrift(
-            "objectiveC", 2, "declaration", JsonPrimitive("@property (readwrite) NSString * code;"),
+            "objectiveC", surfaceIndex("objectiveC", CODE_USR),
+            "declaration", JsonPrimitive("@property (readwrite) NSString * code;"),
         )
         val selectorDrift = compiler.surfaceDrift(
-            "objectiveC", 1, "title", JsonPrimitive("initWithMessage:code:isRecoverable:"),
+            "objectiveC", surfaceIndex("objectiveC", CONSTRUCTOR),
+            "title", JsonPrimitive("initWithMessage:code:isRecoverable:"),
+        )
+        val ordinaryEnumDrift = compiler.surfaceDrift(
+            "swift", surfaceIndex("swift", D065_ENUM_USR), "title", JsonPrimitive("removed"),
+        )
+        val ordinaryConstructorDrift = compiler.surfaceDrift(
+            "objectiveC", surfaceIndex("objectiveC", D065_CONSTRUCTOR_USR),
+            "parameters", buildJsonArray {},
+        )
+        val ordinaryPropertyDrift = compiler.surfaceDrift(
+            "swift", surfaceIndex("swift", D065_PROPERTY_USR),
+            "typeIdentifiers", strings(listOf("s:Si")),
         )
         val missingSurface = compiler.withObject("surface", run {
             val reduced = JsonArray(swift.dropLast(1))
@@ -294,6 +317,7 @@ class CrossLanguageAppleBindingEvidenceTest {
 
         listOf(
             surfaceDrift, signatureDrift, typeDrift, readonlyDrift, selectorDrift, missingSurface,
+            ordinaryEnumDrift, ordinaryConstructorDrift, ordinaryPropertyDrift,
             duplicateSurface, referenceDrift, swiftReferenceTypeDrift, collaborationReferenceTypeDrift,
             messageRoleReferenceTypeDrift, installationScopeReferenceTypeDrift,
             mcpEnvironmentSourceReferenceTypeDrift, mcpEnvironmentSourceReceiverDrift, qualifierDrift,
@@ -395,10 +419,11 @@ class CrossLanguageAppleBindingEvidenceTest {
             canonicalMcpEnvironmentSource("REMOTE"),
             canonicalConversationIdConstructor(),
             canonicalProperty("value", "kotlin/String!!", owner = "ConversationId"),
-        ) + (0 until 540).map { index ->
-            "common|owner=sample/Owner${index.toString().padStart(3, '0')}|kind=property|" +
-                "abi=sample/Owner$index.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!"
-        }).sorted()
+        ) + appleCompilerFixtureD065Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
+            (0 until 382).map { index ->
+                "common|owner=sample/Owner${index.toString().padStart(3, '0')}|kind=property|" +
+                    "abi=sample/Owner$index.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!"
+            }).sorted()
         val canonical = CrossLanguageCanonicalApiEvidence(
             members,
             CrossLanguageBindingCanonicalIdentity(SHA_A, SHA_B),
@@ -493,7 +518,7 @@ class CrossLanguageAppleBindingEvidenceTest {
         )
     }
 
-    private fun swiftSurface() = JsonArray(listOf(
+    private fun swiftSurface() = JsonArray((listOf(
         symbol(OWNER, "swift", "swift.class", listOf("CodexFailure"), "CodexFailure", "public", "class CodexFailure"),
         symbol(
             CONSTRUCTOR, "swift", "swift.init", listOf("CodexFailure", "init(code:message:isRecoverable:)"),
@@ -550,9 +575,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         symbol(MCP_ENVIRONMENT_REMOTE_USR, "swift", "swift.type.property",
             listOf("AgentMcpEnvironmentSource", "remote"), "remote", "open",
             "class var remote: AgentMcpEnvironmentSource { get }", listOf(MCP_ENVIRONMENT_SOURCE_OWNER)),
-    ).sortedBy { it.releaseString("precise") })
+    ) + appleCompilerFixtureD065SwiftSymbols().map { (precise, expected) ->
+        expectedSymbol(precise, "swift", expected)
+    }).sortedBy { it.releaseString("precise") })
 
-    private fun objectiveCSurface() = JsonArray(listOf(
+    private fun objectiveCSurface() = JsonArray((listOf(
         symbol(OWNER, "objective-c", "objective-c.class", listOf("CodexAgentCodexFailure"),
             "CodexAgentCodexFailure", "public", "@interface CodexAgentCodexFailure : CodexAgentBase",
             listOf("c:objc(cs)CodexAgentBase")),
@@ -640,9 +667,11 @@ class CrossLanguageAppleBindingEvidenceTest {
             listOf("CodexAgentAgentMcpEnvironmentSource", "remote"), "remote", "public",
             "@property (class, readonly) CodexAgentAgentMcpEnvironmentSource * remote;",
             listOf(MCP_ENVIRONMENT_SOURCE_OWNER)),
-    ).sortedBy { it.releaseString("precise") })
+    ) + appleCompilerFixtureD065ObjectiveCSymbols().map { (precise, expected) ->
+        expectedSymbol(precise, "objective-c", expected)
+    }).sortedBy { it.releaseString("precise") })
 
-    private fun swiftReferences() = JsonArray(listOf(
+    private fun swiftReferences() = JsonArray((listOf(
         reference(CONSTRUCTOR, "declref_expr", "init", null, "\$sySo010CodexAgentA7FailureCSS_SSSbtcABmcD"),
         reference(CODE_USR, "member_ref_expr", "code", null, "\$sSSD"),
         reference(RECOVERABLE_USR, "member_ref_expr", "isRecoverable", null, "\$sSbD"),
@@ -664,9 +693,12 @@ class CrossLanguageAppleBindingEvidenceTest {
         reference(
             MCP_ENVIRONMENT_REMOTE_USR, "member_ref_expr", "remote", null, MCP_ENVIRONMENT_SOURCE_SWIFT_TYPE,
         ),
+    ) + appleCompilerFixtureSwiftReferences()
+        .filter { it.precise in appleCompilerFixtureD065Capabilities.map(AppleOrdinaryCapability::usr) }
+        .map(::expectedReference)
     ).sortedBy { it.releaseString("precise") })
 
-    private fun objectiveCReferences() = JsonArray(listOf(
+    private fun objectiveCReferences() = JsonArray((listOf(
         reference(CONSTRUCTOR, "ObjCMessageExpr", "initWithCode:message:isRecoverable:",
             "CodexAgentCodexFailure", "CodexAgentCodexFailure *", listOf("NSString *", "NSString *", "BOOL")),
         reference(CODE_USR, "ObjCPropertyRefExpr", "code", "CodexAgentCodexFailure *", "<pseudo-object type>"),
@@ -697,7 +729,36 @@ class CrossLanguageAppleBindingEvidenceTest {
             "CodexAgentAgentMcpEnvironmentSource * _Nonnull"),
         reference(MCP_ENVIRONMENT_REMOTE_USR, "ObjCMessageExpr", "remote", "CodexAgentAgentMcpEnvironmentSource",
             "CodexAgentAgentMcpEnvironmentSource * _Nonnull"),
+    ) + appleCompilerFixtureObjectiveCReferences()
+        .filter { it.precise in appleCompilerFixtureD065Capabilities.map(AppleOrdinaryCapability::usr) }
+        .map(::expectedReference)
     ).sortedBy { it.releaseString("precise") })
+
+    private fun expectedSymbol(
+        precise: String,
+        language: String,
+        expected: ExpectedAppleCompilerSymbol,
+    ) = symbol(
+        precise,
+        language,
+        expected.kind,
+        expected.path,
+        expected.title,
+        expected.access,
+        expected.declaration,
+        expected.typeIdentifiers,
+        expected.parameters,
+        expected.returns,
+    )
+
+    private fun expectedReference(expected: AppleCompilerReference) = reference(
+        expected.precise,
+        expected.kind,
+        expected.name,
+        expected.receiverType,
+        expected.valueType,
+        expected.argumentTypes,
+    )
 
     private fun symbol(
         precise: String,
@@ -743,7 +804,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             put("moduleMapSha256", JsonPrimitive(digests.moduleMapSha256))
         }
 
-    private fun usr(capability: String) = when {
+    private fun usr(capability: String): String =
+        appleCompilerFixtureD065Capabilities.singleOrNull { it.canonicalKey == capability }?.usr ?: when {
         "|owner=$CANONICAL_OWNER|kind=constructor|" in capability -> CONSTRUCTOR
         "|owner=$CONVERSATION_ID_CANONICAL_OWNER|kind=constructor|" in capability ->
             CONVERSATION_ID_CONSTRUCTOR_USR
@@ -877,6 +939,10 @@ class CrossLanguageAppleBindingEvidenceTest {
         const val MCP_ENVIRONMENT_LOCAL_USR = "$MCP_ENVIRONMENT_SOURCE_OWNER(cpy)local"
         const val MCP_ENVIRONMENT_REMOTE_USR = "$MCP_ENVIRONMENT_SOURCE_OWNER(cpy)remote"
         const val MCP_ENVIRONMENT_SOURCE_SWIFT_TYPE = "\$sSo010CodexAgentB20McpEnvironmentSourceCD"
+        const val D065_ENUM_USR = "c:objc(cs)CodexAgentAgentApprovalPreset(cpy)never"
+        const val D065_CONSTRUCTOR_USR =
+            "c:objc(cs)CodexAgentAgentFormOption(im)initWithValue:title:description:"
+        const val D065_PROPERTY_USR = "c:objc(cs)CodexAgentAgentFormOption(py)description_"
         const val SWIFT_FAILURE_TEST =
             "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()"
         const val OBJECTIVE_C_FAILURE_TEST =

@@ -100,6 +100,9 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertTrue(localEnvironment === AgentMcpEnvironmentSource.local)
         XCTAssertTrue(remoteEnvironment === AgentMcpEnvironmentSource.remote)
 
+        assertD065EnumValues()
+        assertD065ImmutableValues()
+
         let failure = CodexFailure(
             code: "workspace_unavailable",
             message: "Workspace is unavailable",
@@ -110,6 +113,266 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertEqual(error.codexFailure?.code, failure.code)
         XCTAssertEqual(error.codexFailure?.message, failure.message)
         XCTAssertEqual(error.codexFailure?.isRecoverable, failure.isRecoverable)
+    }
+
+    private func assertD065EnumValues() {
+        assertEnumValue(AgentApprovalPreset.never, stable: AgentApprovalPreset.never, name: "NEVER", ordinal: 0)
+        assertEnumValue(AgentApprovalPreset.autoReview, stable: AgentApprovalPreset.autoReview, name: "AUTO_REVIEW", ordinal: 1)
+        assertEnumValue(AgentApprovalPreset.askMe, stable: AgentApprovalPreset.askMe, name: "ASK_ME", ordinal: 2)
+        assertEnumValue(AgentApprovalPreset.strict, stable: AgentApprovalPreset.strict, name: "STRICT", ordinal: 3)
+
+        assertEnumValue(AgentAuthenticationStatus.signedOut, stable: AgentAuthenticationStatus.signedOut, name: "SIGNED_OUT", ordinal: 0)
+        assertEnumValue(AgentAuthenticationStatus.authenticating, stable: AgentAuthenticationStatus.authenticating, name: "AUTHENTICATING", ordinal: 1)
+        assertEnumValue(AgentAuthenticationStatus.authenticated, stable: AgentAuthenticationStatus.authenticated, name: "AUTHENTICATED", ordinal: 2)
+
+        assertEnumValue(AgentCapability.webSearch, stable: AgentCapability.webSearch, name: "WEB_SEARCH", ordinal: 0)
+
+        assertEnumValue(AgentCatalogFreshness.live, stable: AgentCatalogFreshness.live, name: "LIVE", ordinal: 0)
+        assertEnumValue(AgentCatalogFreshness.freshCache, stable: AgentCatalogFreshness.freshCache, name: "FRESH_CACHE", ordinal: 1)
+        assertEnumValue(AgentCatalogFreshness.staleCache, stable: AgentCatalogFreshness.staleCache, name: "STALE_CACHE", ordinal: 2)
+
+        assertEnumValue(AgentConversationStatus.theNew, stable: AgentConversationStatus.theNew, name: "NEW", ordinal: 0)
+        assertEnumValue(AgentConversationStatus.opening, stable: AgentConversationStatus.opening, name: "OPENING", ordinal: 1)
+        assertEnumValue(AgentConversationStatus.ready, stable: AgentConversationStatus.ready, name: "READY", ordinal: 2)
+        assertEnumValue(AgentConversationStatus.startingTurn, stable: AgentConversationStatus.startingTurn, name: "STARTING_TURN", ordinal: 3)
+        assertEnumValue(AgentConversationStatus.runningTurn, stable: AgentConversationStatus.runningTurn, name: "RUNNING_TURN", ordinal: 4)
+        assertEnumValue(AgentConversationStatus.cancellingTurn, stable: AgentConversationStatus.cancellingTurn, name: "CANCELLING_TURN", ordinal: 5)
+        assertEnumValue(AgentConversationStatus.reloading, stable: AgentConversationStatus.reloading, name: "RELOADING", ordinal: 6)
+        assertEnumValue(AgentConversationStatus.failed, stable: AgentConversationStatus.failed, name: "FAILED", ordinal: 7)
+        assertEnumValue(AgentConversationStatus.closed, stable: AgentConversationStatus.closed, name: "CLOSED", ordinal: 8)
+
+        assertEnumValue(AgentElicitationAction.accept, stable: AgentElicitationAction.accept, name: "ACCEPT", ordinal: 0)
+        assertEnumValue(AgentElicitationAction.decline, stable: AgentElicitationAction.decline, name: "DECLINE", ordinal: 1)
+        assertEnumValue(AgentElicitationAction.cancel, stable: AgentElicitationAction.cancel, name: "CANCEL", ordinal: 2)
+
+        assertEnumValue(AgentElicitationValidationReason.missingRequired, stable: AgentElicitationValidationReason.missingRequired, name: "MISSING_REQUIRED", ordinal: 0)
+        assertEnumValue(AgentElicitationValidationReason.unknownField, stable: AgentElicitationValidationReason.unknownField, name: "UNKNOWN_FIELD", ordinal: 1)
+        assertEnumValue(AgentElicitationValidationReason.invalidType, stable: AgentElicitationValidationReason.invalidType, name: "INVALID_TYPE", ordinal: 2)
+        assertEnumValue(AgentElicitationValidationReason.nonFiniteNumber, stable: AgentElicitationValidationReason.nonFiniteNumber, name: "NON_FINITE_NUMBER", ordinal: 3)
+        assertEnumValue(AgentElicitationValidationReason.belowMinimum, stable: AgentElicitationValidationReason.belowMinimum, name: "BELOW_MINIMUM", ordinal: 4)
+        assertEnumValue(AgentElicitationValidationReason.aboveMaximum, stable: AgentElicitationValidationReason.aboveMaximum, name: "ABOVE_MAXIMUM", ordinal: 5)
+        assertEnumValue(AgentElicitationValidationReason.nonInteger, stable: AgentElicitationValidationReason.nonInteger, name: "NON_INTEGER", ordinal: 6)
+        assertEnumValue(AgentElicitationValidationReason.invalidFormat, stable: AgentElicitationValidationReason.invalidFormat, name: "INVALID_FORMAT", ordinal: 7)
+        assertEnumValue(AgentElicitationValidationReason.invalidSelection, stable: AgentElicitationValidationReason.invalidSelection, name: "INVALID_SELECTION", ordinal: 8)
+        assertEnumValue(AgentElicitationValidationReason.duplicateSelection, stable: AgentElicitationValidationReason.duplicateSelection, name: "DUPLICATE_SELECTION", ordinal: 9)
+
+        assertEnumValue(AgentFormFieldType.string, stable: AgentFormFieldType.string, name: "STRING", ordinal: 0)
+        assertEnumValue(AgentFormFieldType.number, stable: AgentFormFieldType.number, name: "NUMBER", ordinal: 1)
+        assertEnumValue(AgentFormFieldType.integer, stable: AgentFormFieldType.integer, name: "INTEGER", ordinal: 2)
+        assertEnumValue(AgentFormFieldType.boolean, stable: AgentFormFieldType.boolean, name: "BOOLEAN", ordinal: 3)
+        assertEnumValue(AgentFormFieldType.singleSelect, stable: AgentFormFieldType.singleSelect, name: "SINGLE_SELECT", ordinal: 4)
+        assertEnumValue(AgentFormFieldType.multiSelect, stable: AgentFormFieldType.multiSelect, name: "MULTI_SELECT", ordinal: 5)
+
+        assertEnumValue(AgentFormStringFormat.email, stable: AgentFormStringFormat.email, name: "EMAIL", ordinal: 0)
+        assertEnumValue(AgentFormStringFormat.uri, stable: AgentFormStringFormat.uri, name: "URI", ordinal: 1)
+        assertEnumValue(AgentFormStringFormat.date, stable: AgentFormStringFormat.date, name: "DATE", ordinal: 2)
+        assertEnumValue(AgentFormStringFormat.dateTime, stable: AgentFormStringFormat.dateTime, name: "DATE_TIME", ordinal: 3)
+
+        assertEnumValue(AgentHookRunStatus.running, stable: AgentHookRunStatus.running, name: "RUNNING", ordinal: 0)
+        assertEnumValue(AgentHookRunStatus.completed, stable: AgentHookRunStatus.completed, name: "COMPLETED", ordinal: 1)
+        assertEnumValue(AgentHookRunStatus.failed, stable: AgentHookRunStatus.failed, name: "FAILED", ordinal: 2)
+        assertEnumValue(AgentHookRunStatus.blocked, stable: AgentHookRunStatus.blocked, name: "BLOCKED", ordinal: 3)
+        assertEnumValue(AgentHookRunStatus.stopped, stable: AgentHookRunStatus.stopped, name: "STOPPED", ordinal: 4)
+
+        assertEnumValue(AgentHookTrustStatus.managed, stable: AgentHookTrustStatus.managed, name: "MANAGED", ordinal: 0)
+        assertEnumValue(AgentHookTrustStatus.untrusted, stable: AgentHookTrustStatus.untrusted, name: "UNTRUSTED", ordinal: 1)
+        assertEnumValue(AgentHookTrustStatus.trusted, stable: AgentHookTrustStatus.trusted, name: "TRUSTED", ordinal: 2)
+        assertEnumValue(AgentHookTrustStatus.modified, stable: AgentHookTrustStatus.modified, name: "MODIFIED", ordinal: 3)
+
+        assertEnumValue(AgentIntegrationAuthorizationStatus.idle, stable: AgentIntegrationAuthorizationStatus.idle, name: "IDLE", ordinal: 0)
+        assertEnumValue(AgentIntegrationAuthorizationStatus.starting, stable: AgentIntegrationAuthorizationStatus.starting, name: "STARTING", ordinal: 1)
+        assertEnumValue(AgentIntegrationAuthorizationStatus.awaitingCompletion, stable: AgentIntegrationAuthorizationStatus.awaitingCompletion, name: "AWAITING_COMPLETION", ordinal: 2)
+        assertEnumValue(AgentIntegrationAuthorizationStatus.authorized, stable: AgentIntegrationAuthorizationStatus.authorized, name: "AUTHORIZED", ordinal: 3)
+        assertEnumValue(AgentIntegrationAuthorizationStatus.failed, stable: AgentIntegrationAuthorizationStatus.failed, name: "FAILED", ordinal: 4)
+
+        assertEnumValue(AgentMcpAuthStatus.unknown, stable: AgentMcpAuthStatus.unknown, name: "UNKNOWN", ordinal: 0)
+        assertEnumValue(AgentMcpAuthStatus.unsupported, stable: AgentMcpAuthStatus.unsupported, name: "UNSUPPORTED", ordinal: 1)
+        assertEnumValue(AgentMcpAuthStatus.notLoggedIn, stable: AgentMcpAuthStatus.notLoggedIn, name: "NOT_LOGGED_IN", ordinal: 2)
+        assertEnumValue(AgentMcpAuthStatus.bearerToken, stable: AgentMcpAuthStatus.bearerToken, name: "BEARER_TOKEN", ordinal: 3)
+        assertEnumValue(AgentMcpAuthStatus.oauth, stable: AgentMcpAuthStatus.oauth, name: "OAUTH", ordinal: 4)
+
+        assertEnumValue(AgentMcpAuthentication.oauth, stable: AgentMcpAuthentication.oauth, name: "OAUTH", ordinal: 0)
+        assertEnumValue(AgentMcpAuthentication.chatGpt, stable: AgentMcpAuthentication.chatGpt, name: "CHAT_GPT", ordinal: 1)
+
+        assertEnumValue(AgentMcpToolApproval.auto_, stable: AgentMcpToolApproval.auto_, name: "AUTO", ordinal: 0)
+        assertEnumValue(AgentMcpToolApproval.prompt, stable: AgentMcpToolApproval.prompt, name: "PROMPT", ordinal: 1)
+        assertEnumValue(AgentMcpToolApproval.writes, stable: AgentMcpToolApproval.writes, name: "WRITES", ordinal: 2)
+        assertEnumValue(AgentMcpToolApproval.approve, stable: AgentMcpToolApproval.approve, name: "APPROVE", ordinal: 3)
+
+        assertEnumValue(AgentMcpToolExposureSurface.codeMode, stable: AgentMcpToolExposureSurface.codeMode, name: "CODE_MODE", ordinal: 0)
+        assertEnumValue(AgentMcpToolExposureSurface.deferred, stable: AgentMcpToolExposureSurface.deferred, name: "DEFERRED", ordinal: 1)
+        assertEnumValue(AgentMcpToolExposureSurface.direct, stable: AgentMcpToolExposureSurface.direct, name: "DIRECT", ordinal: 2)
+
+        assertEnumValue(AgentPlanStepStatus.pending, stable: AgentPlanStepStatus.pending, name: "PENDING", ordinal: 0)
+        assertEnumValue(AgentPlanStepStatus.inProgress, stable: AgentPlanStepStatus.inProgress, name: "IN_PROGRESS", ordinal: 1)
+        assertEnumValue(AgentPlanStepStatus.completed, stable: AgentPlanStepStatus.completed, name: "COMPLETED", ordinal: 2)
+
+        assertEnumValue(AgentPluginAuthPolicy.onInstall, stable: AgentPluginAuthPolicy.onInstall, name: "ON_INSTALL", ordinal: 0)
+        assertEnumValue(AgentPluginAuthPolicy.onUse, stable: AgentPluginAuthPolicy.onUse, name: "ON_USE", ordinal: 1)
+
+        assertEnumValue(AgentPluginInstallPolicy.notAvailable, stable: AgentPluginInstallPolicy.notAvailable, name: "NOT_AVAILABLE", ordinal: 0)
+        assertEnumValue(AgentPluginInstallPolicy.available, stable: AgentPluginInstallPolicy.available, name: "AVAILABLE", ordinal: 1)
+        assertEnumValue(AgentPluginInstallPolicy.installedByDefault, stable: AgentPluginInstallPolicy.installedByDefault, name: "INSTALLED_BY_DEFAULT", ordinal: 2)
+
+        assertEnumValue(AgentResolution.preferred, stable: AgentResolution.preferred, name: "Preferred", ordinal: 0)
+        assertEnumValue(AgentResolution.default_, stable: AgentResolution.default_, name: "Default", ordinal: 1)
+        assertEnumValue(AgentResolution.first, stable: AgentResolution.first, name: "First", ordinal: 2)
+
+        assertEnumValue(AgentResourceOrigin.user, stable: AgentResourceOrigin.user, name: "USER", ordinal: 0)
+        assertEnumValue(AgentResourceOrigin.workspace, stable: AgentResourceOrigin.workspace, name: "WORKSPACE", ordinal: 1)
+        assertEnumValue(AgentResourceOrigin.plugin, stable: AgentResourceOrigin.plugin, name: "PLUGIN", ordinal: 2)
+        assertEnumValue(AgentResourceOrigin.managed, stable: AgentResourceOrigin.managed, name: "MANAGED", ordinal: 3)
+        assertEnumValue(AgentResourceOrigin.unknown, stable: AgentResourceOrigin.unknown, name: "UNKNOWN", ordinal: 4)
+
+        assertEnumValue(AgentSkillScope.system, stable: AgentSkillScope.system, name: "SYSTEM", ordinal: 0)
+        assertEnumValue(AgentSkillScope.user, stable: AgentSkillScope.user, name: "USER", ordinal: 1)
+        assertEnumValue(AgentSkillScope.repo, stable: AgentSkillScope.repo, name: "REPO", ordinal: 2)
+        assertEnumValue(AgentSkillScope.plugin, stable: AgentSkillScope.plugin, name: "PLUGIN", ordinal: 3)
+        assertEnumValue(AgentSkillScope.admin, stable: AgentSkillScope.admin, name: "ADMIN", ordinal: 4)
+
+        assertEnumValue(AgentWorkActivity.runningCommand, stable: AgentWorkActivity.runningCommand, name: "RUNNING_COMMAND", ordinal: 0)
+        assertEnumValue(AgentWorkActivity.writingFiles, stable: AgentWorkActivity.writingFiles, name: "WRITING_FILES", ordinal: 1)
+
+        assertEnumValue(CodexAuthorizationPurpose.chatGpt, stable: CodexAuthorizationPurpose.chatGpt, name: "CHAT_GPT", ordinal: 0)
+        assertEnumValue(CodexAuthorizationPurpose.external, stable: CodexAuthorizationPurpose.external, name: "EXTERNAL", ordinal: 1)
+
+        assertEnumValue(CodexWorkspaceSelectionReason.notSelected, stable: CodexWorkspaceSelectionReason.notSelected, name: "NOT_SELECTED", ordinal: 0)
+        assertEnumValue(CodexWorkspaceSelectionReason.notFound, stable: CodexWorkspaceSelectionReason.notFound, name: "NOT_FOUND", ordinal: 1)
+        assertEnumValue(CodexWorkspaceSelectionReason.accessRevoked, stable: CodexWorkspaceSelectionReason.accessRevoked, name: "ACCESS_REVOKED", ordinal: 2)
+        assertEnumValue(CodexWorkspaceSelectionReason.invalidSelection, stable: CodexWorkspaceSelectionReason.invalidSelection, name: "INVALID_SELECTION", ordinal: 3)
+    }
+
+    private func assertD065ImmutableValues() {
+        let conversationId = ConversationId(value: "d065-conversation")
+        let summary = AgentConversationSummary(
+            conversationId: conversationId,
+            title: "D065 conversation",
+            updatedAtEpochSeconds: 1_700_000_065
+        )
+        XCTAssertTrue(summary.conversationId === conversationId)
+        XCTAssertEqual(summary.title, "D065 conversation")
+        XCTAssertEqual(summary.updatedAtEpochSeconds, 1_700_000_065)
+
+        let option = AgentFormOption(value: "option", title: "Option", description: "Description")
+        XCTAssertEqual(option.value, "option")
+        XCTAssertEqual(option.title, "Option")
+        XCTAssertEqual(option.description_, "Description")
+        XCTAssertNil(AgentFormOption(value: "nil", title: "Nil", description: nil).description_)
+
+        let environment = AgentMcpEnvironmentVariable(name: "TOKEN", source: .remote)
+        XCTAssertEqual(environment.name, "TOKEN")
+        XCTAssertTrue(environment.source === AgentMcpEnvironmentSource.remote)
+        XCTAssertNil(AgentMcpEnvironmentVariable(name: "LOCAL_TOKEN", source: nil).source)
+
+        let oauth = AgentMcpOauthConfiguration(
+            clientId: "d065-client",
+            callbackPort: KotlinInt(value: 8_065)
+        )
+        XCTAssertEqual(oauth.clientId, "d065-client")
+        XCTAssertEqual(oauth.callbackPort?.int32Value, 8_065)
+        let defaultOauth = AgentMcpOauthConfiguration(clientId: nil, callbackPort: nil)
+        XCTAssertNil(defaultOauth.clientId)
+        XCTAssertNil(defaultOauth.callbackPort)
+
+        let plugin = AgentPluginReference(
+            id: "d065-plugin-id",
+            name: "d065-plugin",
+            marketplaceName: "d065-marketplace",
+            marketplacePath: "/d065/marketplace",
+            remotePluginId: "d065-remote"
+        )
+        XCTAssertEqual(plugin.id, "d065-plugin-id")
+        XCTAssertEqual(plugin.name, "d065-plugin")
+        XCTAssertEqual(plugin.marketplaceName, "d065-marketplace")
+        XCTAssertEqual(plugin.marketplacePath, "/d065/marketplace")
+        XCTAssertEqual(plugin.remotePluginId, "d065-remote")
+        XCTAssertEqual(plugin.uri, "plugin://d065-plugin@d065-marketplace")
+        let localPlugin = AgentPluginReference(
+            id: "local",
+            name: "local",
+            marketplaceName: "marketplace",
+            marketplacePath: nil,
+            remotePluginId: nil
+        )
+        XCTAssertNil(localPlugin.marketplacePath)
+        XCTAssertNil(localPlugin.remotePluginId)
+
+        let pluginSkill = AgentPluginSkill(
+            name: "d065-skill",
+            description: "D065 skill",
+            isEnabled: true,
+            path: "/d065/skill"
+        )
+        XCTAssertEqual(pluginSkill.name, "d065-skill")
+        XCTAssertEqual(pluginSkill.description_, "D065 skill")
+        XCTAssertTrue(pluginSkill.isEnabled)
+        XCTAssertEqual(pluginSkill.path, "/d065/skill")
+        XCTAssertNil(AgentPluginSkill(name: "nil", description: "Nil", isEnabled: false, path: nil).path)
+
+        let tier = AgentServiceTier(id: "d065-tier", name: "D065 Tier", description: "D065 service tier")
+        XCTAssertEqual(tier.id, "d065-tier")
+        XCTAssertEqual(tier.name, "D065 Tier")
+        XCTAssertEqual(tier.description_, "D065 service tier")
+
+        let chunk = AgentSkillChunk(content: "chunk", nextOffset: KotlinLong(value: 65), totalBytes: 100)
+        XCTAssertEqual(chunk.content, "chunk")
+        XCTAssertEqual(chunk.nextOffset?.int64Value, 65)
+        XCTAssertEqual(chunk.totalBytes, 100)
+        XCTAssertNil(AgentSkillChunk(content: "complete", nextOffset: nil, totalBytes: 8).nextOffset)
+
+        let clientInfo = CodexClientInfo(name: "d065", title: "D065", version: "1.0")
+        XCTAssertEqual(clientInfo.name, "d065")
+        XCTAssertEqual(clientInfo.title, "D065")
+        XCTAssertEqual(clientInfo.version, "1.0")
+
+        let workspace = CodexWorkspace(path: "/d065/workspace", displayName: "D065 Workspace")
+        XCTAssertEqual(workspace.path, "/d065/workspace")
+        XCTAssertEqual(workspace.displayName, "D065 Workspace")
+
+        XCTAssertEqual(AgentApprovalPreset.never.displayName, "Never")
+        XCTAssertEqual(AgentApprovalPreset.autoReview.displayName, "Auto review")
+        XCTAssertEqual(AgentApprovalPreset.askMe.displayName, "Ask me")
+        XCTAssertEqual(AgentApprovalPreset.strict.displayName, "Strict")
+
+        let capability = AgentCapability.webSearch
+        XCTAssertEqual(capability.id, "web_search")
+        XCTAssertEqual(capability.displayLabel, "Web search")
+        XCTAssertEqual(capability.icon, "🌐")
+        XCTAssertEqual(capability.promptLabel, "Use 🌐 Web search")
+
+        XCTAssertEqual(AgentSkillScope.system.displayName, "Built in")
+        XCTAssertEqual(AgentSkillScope.user.displayName, "User")
+        XCTAssertEqual(AgentSkillScope.repo.displayName, "Workspace")
+        XCTAssertEqual(AgentSkillScope.plugin.displayName, "Plugin")
+        XCTAssertEqual(AgentSkillScope.admin.displayName, "Managed")
+
+        let settings = AgentConversationSettings(approvalPreset: .strict, serviceTier: "fast")
+        XCTAssertTrue(settings.approvalPreset === AgentApprovalPreset.strict)
+        XCTAssertEqual(settings.serviceTier, "fast")
+        XCTAssertNil(AgentConversationSettings(approvalPreset: .autoReview, serviceTier: nil).serviceTier)
+
+        let issue = AgentElicitationValidationIssue(fieldName: "email", reason: .invalidFormat)
+        XCTAssertEqual(issue.fieldName, "email")
+        XCTAssertTrue(issue.reason === AgentElicitationValidationReason.invalidFormat)
+
+        let step = AgentPlanStep(text: "Verify D065", status: .inProgress)
+        XCTAssertEqual(step.text, "Verify D065")
+        XCTAssertTrue(step.status === AgentPlanStepStatus.inProgress)
+
+        let tool = AgentMcpToolConfiguration(approval: .writes)
+        XCTAssertTrue(tool.approval === AgentMcpToolApproval.writes)
+        XCTAssertNil(AgentMcpToolConfiguration(approval: nil).approval)
+    }
+
+    private func assertEnumValue<E: AnyObject>(
+        _ value: KotlinEnum<E>,
+        stable: KotlinEnum<E>,
+        name: String,
+        ordinal: Int32
+    ) {
+        XCTAssertEqual(value.name, name)
+        XCTAssertEqual(value.ordinal, ordinal)
+        XCTAssertTrue(value === stable)
     }
 
     func testObjectiveCConsumerExposesStructuredFailure() async {
