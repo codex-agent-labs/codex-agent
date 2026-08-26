@@ -17,7 +17,7 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageAppleBindingEvidenceTest {
     @Test
-    fun `observes twelve independent claims and 544 explicit gaps per Apple language`() {
+    fun `observes fourteen independent claims and 542 explicit gaps per Apple language`() {
         val fixture = fixture()
         val report = fixture.derive()
 
@@ -29,11 +29,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         val languages = report.releaseArray("languages").map { it as JsonObject }
         assertEquals(listOf("objective-c", "swift"), languages.map { it.releaseString("language") })
         languages.forEach { language ->
-            assertEquals(17, language.releaseArray("publicSymbols").size)
-            assertEquals(12, language.releaseArray("referencedSymbols").size)
-            assertEquals(12, language.releaseArray("claims").size)
+            assertEquals(20, language.releaseArray("publicSymbols").size)
+            assertEquals(14, language.releaseArray("referencedSymbols").size)
+            assertEquals(14, language.releaseArray("claims").size)
             assertTrue(language.releaseArray("exclusions").isEmpty())
-            assertEquals(544, language.releaseArray("missingCapabilityKeys").size)
+            assertEquals(542, language.releaseArray("missingCapabilityKeys").size)
             assertEquals(
                 fixture.capabilities,
                 language.releaseArray("claims").map { (it as JsonObject).releaseString("canonicalKey") },
@@ -152,6 +152,34 @@ class CrossLanguageAppleBindingEvidenceTest {
                 "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
             ))
         })
+        val mcpEnvironmentSourceReferenceTypeDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("swift").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == MCP_ENVIRONMENT_REMOTE_USR) {
+                    JsonObject(reference + ("valueType" to JsonPrimitive(INSTALLATION_SCOPE_SWIFT_TYPE)))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "swift" to changed,
+                "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
+        val mcpEnvironmentSourceReceiverDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("objectiveC").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == MCP_ENVIRONMENT_LOCAL_USR) {
+                    JsonObject(reference + ("receiverType" to JsonPrimitive("CodexAgentAgentInstallationScope")))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "objectiveC" to changed,
+                "objectiveCSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
         val qualifierDrift = compiler.withObject("references", run {
             val changed = JsonArray(references.releaseArray("objectiveC").map { value ->
                 val reference = value as JsonObject
@@ -228,12 +256,16 @@ class CrossLanguageAppleBindingEvidenceTest {
         val futureInstallationScope = fixture.canonical.copy(
             memberKeys = (fixture.canonical.memberKeys.dropLast(1) + canonicalInstallationScope("Future")).sorted(),
         )
+        val futureMcpEnvironmentSource = fixture.canonical.copy(
+            memberKeys = (fixture.canonical.memberKeys.dropLast(1) + canonicalMcpEnvironmentSource("FUTURE")).sorted(),
+        )
 
         listOf(
             surfaceDrift, signatureDrift, typeDrift, readonlyDrift, selectorDrift, missingSurface,
             duplicateSurface, referenceDrift, swiftReferenceTypeDrift, collaborationReferenceTypeDrift,
-            messageRoleReferenceTypeDrift, installationScopeReferenceTypeDrift, qualifierDrift, swappedClaim,
-            missingClaim, duplicateClaim, wrongOwnerClaim, cdx, wrongArtifact, duplicateTarget,
+            messageRoleReferenceTypeDrift, installationScopeReferenceTypeDrift,
+            mcpEnvironmentSourceReferenceTypeDrift, mcpEnvironmentSourceReceiverDrift, qualifierDrift,
+            swappedClaim, missingClaim, duplicateClaim, wrongOwnerClaim, cdx, wrongArtifact, duplicateTarget,
         ).forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(compiler = drift) }
         }
@@ -242,7 +274,7 @@ class CrossLanguageAppleBindingEvidenceTest {
         }
         listOf(
             futureCanonical, overloadedCanonical, futureDecision, futureCollaboration, futureMessageRole,
-            futureInstallationScope,
+            futureInstallationScope, futureMcpEnvironmentSource,
         )
             .forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(canonical = drift) }
@@ -326,7 +358,9 @@ class CrossLanguageAppleBindingEvidenceTest {
             canonicalMessageRole("ASSISTANT"),
             canonicalInstallationScope("User"),
             canonicalInstallationScope("Workspace"),
-        ) + (0 until 544).map { index ->
+            canonicalMcpEnvironmentSource("LOCAL"),
+            canonicalMcpEnvironmentSource("REMOTE"),
+        ) + (0 until 542).map { index ->
             "common|owner=sample/Owner${index.toString().padStart(3, '0')}|kind=property|" +
                 "abi=sample/Owner$index.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!"
         }).sorted()
@@ -466,6 +500,14 @@ class CrossLanguageAppleBindingEvidenceTest {
             listOf("AgentInstallationScope", "workspace"), "workspace", "open",
             "class var workspace: AgentInstallationScope { get }", listOf(INSTALLATION_SCOPE_OWNER),
         ),
+        symbol(MCP_ENVIRONMENT_SOURCE_OWNER, "swift", "swift.class", listOf("AgentMcpEnvironmentSource"),
+            "AgentMcpEnvironmentSource", "public", "class AgentMcpEnvironmentSource"),
+        symbol(MCP_ENVIRONMENT_LOCAL_USR, "swift", "swift.type.property",
+            listOf("AgentMcpEnvironmentSource", "local"), "local", "open",
+            "class var local: AgentMcpEnvironmentSource { get }", listOf(MCP_ENVIRONMENT_SOURCE_OWNER)),
+        symbol(MCP_ENVIRONMENT_REMOTE_USR, "swift", "swift.type.property",
+            listOf("AgentMcpEnvironmentSource", "remote"), "remote", "open",
+            "class var remote: AgentMcpEnvironmentSource { get }", listOf(MCP_ENVIRONMENT_SOURCE_OWNER)),
     ).sortedBy { it.releaseString("precise") })
 
     private fun objectiveCSurface() = JsonArray(listOf(
@@ -534,6 +576,18 @@ class CrossLanguageAppleBindingEvidenceTest {
             listOf("CodexAgentAgentInstallationScope", "workspace"), "workspace", "public",
             "@property (class, readonly) CodexAgentAgentInstallationScope * workspace;",
             listOf(INSTALLATION_SCOPE_OWNER)),
+        symbol(MCP_ENVIRONMENT_SOURCE_OWNER, "objective-c", "objective-c.class",
+            listOf("CodexAgentAgentMcpEnvironmentSource"), "CodexAgentAgentMcpEnvironmentSource", "public",
+            "@interface CodexAgentAgentMcpEnvironmentSource : CodexAgentKotlinEnum",
+            listOf("c:objc(cs)CodexAgentKotlinEnum")),
+        symbol(MCP_ENVIRONMENT_LOCAL_USR, "objective-c", "objective-c.type.property",
+            listOf("CodexAgentAgentMcpEnvironmentSource", "local"), "local", "public",
+            "@property (class, readonly) CodexAgentAgentMcpEnvironmentSource * local;",
+            listOf(MCP_ENVIRONMENT_SOURCE_OWNER)),
+        symbol(MCP_ENVIRONMENT_REMOTE_USR, "objective-c", "objective-c.type.property",
+            listOf("CodexAgentAgentMcpEnvironmentSource", "remote"), "remote", "public",
+            "@property (class, readonly) CodexAgentAgentMcpEnvironmentSource * remote;",
+            listOf(MCP_ENVIRONMENT_SOURCE_OWNER)),
     ).sortedBy { it.releaseString("precise") })
 
     private fun swiftReferences() = JsonArray(listOf(
@@ -550,6 +604,10 @@ class CrossLanguageAppleBindingEvidenceTest {
         reference(INSTALLATION_USER_USR, "member_ref_expr", "user", null, INSTALLATION_SCOPE_SWIFT_TYPE),
         reference(
             INSTALLATION_WORKSPACE_USR, "member_ref_expr", "workspace", null, INSTALLATION_SCOPE_SWIFT_TYPE,
+        ),
+        reference(MCP_ENVIRONMENT_LOCAL_USR, "member_ref_expr", "local", null, MCP_ENVIRONMENT_SOURCE_SWIFT_TYPE),
+        reference(
+            MCP_ENVIRONMENT_REMOTE_USR, "member_ref_expr", "remote", null, MCP_ENVIRONMENT_SOURCE_SWIFT_TYPE,
         ),
     ).sortedBy { it.releaseString("precise") })
 
@@ -576,6 +634,10 @@ class CrossLanguageAppleBindingEvidenceTest {
             "CodexAgentAgentInstallationScope * _Nonnull"),
         reference(INSTALLATION_WORKSPACE_USR, "ObjCMessageExpr", "workspace", "CodexAgentAgentInstallationScope",
             "CodexAgentAgentInstallationScope * _Nonnull"),
+        reference(MCP_ENVIRONMENT_LOCAL_USR, "ObjCMessageExpr", "local", "CodexAgentAgentMcpEnvironmentSource",
+            "CodexAgentAgentMcpEnvironmentSource * _Nonnull"),
+        reference(MCP_ENVIRONMENT_REMOTE_USR, "ObjCMessageExpr", "remote", "CodexAgentAgentMcpEnvironmentSource",
+            "CodexAgentAgentMcpEnvironmentSource * _Nonnull"),
     ).sortedBy { it.releaseString("precise") })
 
     private fun symbol(
@@ -635,6 +697,8 @@ class CrossLanguageAppleBindingEvidenceTest {
         ".ASSISTANT|null[0]" in capability -> ASSISTANT_USR
         ".User|null[0]" in capability -> INSTALLATION_USER_USR
         ".Workspace|null[0]" in capability -> INSTALLATION_WORKSPACE_USR
+        ".LOCAL|null[0]" in capability -> MCP_ENVIRONMENT_LOCAL_USR
+        ".REMOTE|null[0]" in capability -> MCP_ENVIRONMENT_REMOTE_USR
         else -> error("Unexpected Apple binding fixture capability: $capability")
     }
 
@@ -664,6 +728,10 @@ class CrossLanguageAppleBindingEvidenceTest {
     private fun canonicalInstallationScope(name: String): String =
         "common|owner=$INSTALLATION_SCOPE_CANONICAL_OWNER|kind=enum-entry|" +
             "abi=$INSTALLATION_SCOPE_CANONICAL_OWNER.$name|null[0]"
+
+    private fun canonicalMcpEnvironmentSource(name: String): String =
+        "common|owner=$MCP_ENVIRONMENT_SOURCE_CANONICAL_OWNER|kind=enum-entry|" +
+            "abi=$MCP_ENVIRONMENT_SOURCE_CANONICAL_OWNER.$name|null[0]"
 
     private fun strings(values: Iterable<String>) = buildJsonArray { values.forEach { add(JsonPrimitive(it)) } }
     private fun JsonObject.withObject(name: String, value: JsonObject) = JsonObject(this + (name to value))
@@ -725,6 +793,12 @@ class CrossLanguageAppleBindingEvidenceTest {
         const val INSTALLATION_USER_USR = "$INSTALLATION_SCOPE_OWNER(cpy)user"
         const val INSTALLATION_WORKSPACE_USR = "$INSTALLATION_SCOPE_OWNER(cpy)workspace"
         const val INSTALLATION_SCOPE_SWIFT_TYPE = "\$sSo010CodexAgentB17InstallationScopeCD"
+        const val MCP_ENVIRONMENT_SOURCE_CANONICAL_OWNER =
+            "io.github.codex_agent_labs.codexmobile.agent/AgentMcpEnvironmentSource"
+        const val MCP_ENVIRONMENT_SOURCE_OWNER = "c:objc(cs)CodexAgentAgentMcpEnvironmentSource"
+        const val MCP_ENVIRONMENT_LOCAL_USR = "$MCP_ENVIRONMENT_SOURCE_OWNER(cpy)local"
+        const val MCP_ENVIRONMENT_REMOTE_USR = "$MCP_ENVIRONMENT_SOURCE_OWNER(cpy)remote"
+        const val MCP_ENVIRONMENT_SOURCE_SWIFT_TYPE = "\$sSo010CodexAgentB20McpEnvironmentSourceCD"
         const val SWIFT_FAILURE_TEST =
             "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()"
         const val OBJECTIVE_C_FAILURE_TEST =

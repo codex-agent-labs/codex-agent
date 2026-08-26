@@ -87,6 +87,16 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertTrue(userScope === AgentInstallationScope.user)
         XCTAssertTrue(workspaceScope === AgentInstallationScope.workspace)
 
+        let localEnvironment = AgentMcpEnvironmentSource.local
+        let remoteEnvironment = AgentMcpEnvironmentSource.remote
+        XCTAssertEqual(localEnvironment.name, "LOCAL")
+        XCTAssertEqual(localEnvironment.ordinal, 0)
+        XCTAssertEqual(remoteEnvironment.name, "REMOTE")
+        XCTAssertEqual(remoteEnvironment.ordinal, 1)
+        XCTAssertFalse(localEnvironment === remoteEnvironment)
+        XCTAssertTrue(localEnvironment === AgentMcpEnvironmentSource.local)
+        XCTAssertTrue(remoteEnvironment === AgentMcpEnvironmentSource.remote)
+
         let failure = CodexFailure(
             code: "workspace_unavailable",
             message: "Workspace is unavailable",

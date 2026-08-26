@@ -33,3 +33,9 @@ static BOOL consumeAgentInstallationScopes(void) {
     CodexAgentAgentInstallationScope *workspace = [CodexAgentAgentInstallationScope workspace];
     return user != workspace;
 }
+
+static BOOL consumeAgentMcpEnvironmentSources(void) {
+    CodexAgentAgentMcpEnvironmentSource *local = [CodexAgentAgentMcpEnvironmentSource local];
+    CodexAgentAgentMcpEnvironmentSource *remote = [CodexAgentAgentMcpEnvironmentSource remote];
+    return local != remote;
+}

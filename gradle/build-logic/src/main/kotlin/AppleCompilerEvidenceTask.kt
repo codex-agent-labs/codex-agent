@@ -29,6 +29,7 @@ internal const val APPLE_APPROVAL_DECISION_OWNER_USR = "c:objc(cs)CodexAgentAgen
 internal const val APPLE_COLLABORATION_MODE_OWNER_USR = "c:objc(cs)CodexAgentAgentCollaborationMode"
 internal const val APPLE_MESSAGE_ROLE_OWNER_USR = "c:objc(cs)CodexAgentAgentMessageRole"
 internal const val APPLE_INSTALLATION_SCOPE_OWNER_USR = "c:objc(cs)CodexAgentAgentInstallationScope"
+internal const val APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR = "c:objc(cs)CodexAgentAgentMcpEnvironmentSource"
 private const val APPLE_CODEX_FAILURE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/CodexFailure"
 private const val APPLE_APPROVAL_DECISION_CANONICAL_OWNER =
@@ -39,6 +40,8 @@ private const val APPLE_MESSAGE_ROLE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/AgentMessageRole"
 private const val APPLE_INSTALLATION_SCOPE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope"
+private const val APPLE_MCP_ENVIRONMENT_SOURCE_CANONICAL_OWNER =
+    "io.github.codex_agent_labs.codexmobile.agent/AgentMcpEnvironmentSource"
 
 private val appleCodexFailureMembers = linkedMapOf(
     "constructor:<init>" to "$APPLE_CODEX_FAILURE_OWNER_USR(im)initWithCode:message:isRecoverable:",
@@ -106,12 +109,24 @@ private val appleInstallationScopeCoverageTokens = mapOf(
         "api-v1:AgentInstallationScope#enum-entry:Workspace#sha256:fff8b4780086308bd27166be208daf44e8bb8595bcd4ce0de0fc4cd7d261b267",
 )
 
+private val appleMcpEnvironmentSourceMembers = linkedMapOf(
+    "enum-entry:LOCAL" to "$APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR(cpy)local",
+    "enum-entry:REMOTE" to "$APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR(cpy)remote",
+)
+
+private val appleMcpEnvironmentSourceCoverageTokens = mapOf(
+    "enum-entry:LOCAL" to
+        "api-v1:AgentMcpEnvironmentSource#enum-entry:LOCAL#sha256:40057398186ec13d19eb3fc39bc9c1049a83d95baaf69b91e2ae6af4f15216cb",
+    "enum-entry:REMOTE" to
+        "api-v1:AgentMcpEnvironmentSource#enum-entry:REMOTE#sha256:6f5abdbe115733f4b06fa9e6652b6e6ed03d721494d32a2cee5b175c41b686e7",
+)
+
 private val appleBindingMembers =
     appleCodexFailureMembers + appleApprovalDecisionMembers + appleCollaborationModeMembers + appleMessageRoleMembers +
-        appleInstallationScopeMembers
+        appleInstallationScopeMembers + appleMcpEnvironmentSourceMembers
 private val appleBindingCoverageTokens =
     appleCodexFailureCoverageTokens + appleApprovalDecisionCoverageTokens + appleCollaborationModeCoverageTokens +
-        appleMessageRoleCoverageTokens + appleInstallationScopeCoverageTokens
+        appleMessageRoleCoverageTokens + appleInstallationScopeCoverageTokens + appleMcpEnvironmentSourceCoverageTokens
 
 private fun appleBindingShape(capability: String): String {
     val token = crossLanguageApiCoverageToken(capability)
@@ -243,6 +258,18 @@ private val expectedSwiftAppleBindingSymbols = linkedMapOf(
         "swift.type.property", listOf("AgentInstallationScope", "workspace"), "workspace", "open",
         "class var workspace: AgentInstallationScope { get }", listOf(APPLE_INSTALLATION_SCOPE_OWNER_USR),
     ),
+    APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("AgentMcpEnvironmentSource"), "AgentMcpEnvironmentSource", "public",
+        "class AgentMcpEnvironmentSource", emptyList(),
+    ),
+    appleMcpEnvironmentSourceMembers.getValue("enum-entry:LOCAL") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentMcpEnvironmentSource", "local"), "local", "open",
+        "class var local: AgentMcpEnvironmentSource { get }", listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR),
+    ),
+    appleMcpEnvironmentSourceMembers.getValue("enum-entry:REMOTE") to ExpectedAppleCompilerSymbol(
+        "swift.type.property", listOf("AgentMcpEnvironmentSource", "remote"), "remote", "open",
+        "class var remote: AgentMcpEnvironmentSource { get }", listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR),
+    ),
 )
 
 private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
@@ -338,6 +365,22 @@ private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
         "@property (class, readonly) CodexAgentAgentInstallationScope * workspace;",
         listOf(APPLE_INSTALLATION_SCOPE_OWNER_USR),
     ),
+    APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentAgentMcpEnvironmentSource"),
+        "CodexAgentAgentMcpEnvironmentSource", "public",
+        "@interface CodexAgentAgentMcpEnvironmentSource : CodexAgentKotlinEnum",
+        listOf("c:objc(cs)CodexAgentKotlinEnum"),
+    ),
+    appleMcpEnvironmentSourceMembers.getValue("enum-entry:LOCAL") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentMcpEnvironmentSource", "local"), "local", "public",
+        "@property (class, readonly) CodexAgentAgentMcpEnvironmentSource * local;",
+        listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR),
+    ),
+    appleMcpEnvironmentSourceMembers.getValue("enum-entry:REMOTE") to ExpectedAppleCompilerSymbol(
+        "objective-c.type.property", listOf("CodexAgentAgentMcpEnvironmentSource", "remote"), "remote", "public",
+        "@property (class, readonly) CodexAgentAgentMcpEnvironmentSource * remote;",
+        listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR),
+    ),
 )
 
 internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> {
@@ -347,6 +390,7 @@ internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> 
         "common|owner=$APPLE_COLLABORATION_MODE_CANONICAL_OWNER|",
         "common|owner=$APPLE_MESSAGE_ROLE_CANONICAL_OWNER|",
         "common|owner=$APPLE_INSTALLATION_SCOPE_CANONICAL_OWNER|",
+        "common|owner=$APPLE_MCP_ENVIRONMENT_SOURCE_CANONICAL_OWNER|",
     )
     val byShape = memberKeys.filter { key -> ownerPrefixes.any { prefix -> key.startsWith(prefix) } }.groupBy { key ->
         appleBindingShape(key)
@@ -439,7 +483,8 @@ private fun parseAppleBindingSurface(
         appleApprovalDecisionMembers.values.associateWith { APPLE_APPROVAL_DECISION_OWNER_USR } +
         appleCollaborationModeMembers.values.associateWith { APPLE_COLLABORATION_MODE_OWNER_USR } +
         appleMessageRoleMembers.values.associateWith { APPLE_MESSAGE_ROLE_OWNER_USR } +
-        appleInstallationScopeMembers.values.associateWith { APPLE_INSTALLATION_SCOPE_OWNER_USR }
+        appleInstallationScopeMembers.values.associateWith { APPLE_INSTALLATION_SCOPE_OWNER_USR } +
+        appleMcpEnvironmentSourceMembers.values.associateWith { APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR }
     val relationships = root.appleArray("relationships").map { it.appleObject("$language relationship") }
         .filter { relationship ->
             relationship.appleString("kind") == "memberOf" &&
@@ -508,6 +553,8 @@ internal fun parseSwiftAppleBindingReferences(json: String): List<AppleCompilerR
         appleMessageRoleMembers.getValue("enum-entry:ASSISTANT") to ("member_ref_expr" to "assistant"),
         appleInstallationScopeMembers.getValue("enum-entry:User") to ("member_ref_expr" to "user"),
         appleInstallationScopeMembers.getValue("enum-entry:Workspace") to ("member_ref_expr" to "workspace"),
+        appleMcpEnvironmentSourceMembers.getValue("enum-entry:LOCAL") to ("member_ref_expr" to "local"),
+        appleMcpEnvironmentSourceMembers.getValue("enum-entry:REMOTE") to ("member_ref_expr" to "remote"),
     )
     references.forEach { reference ->
         check(reference.kind to reference.name == expectedKinds.getValue(reference.precise) &&
@@ -660,7 +707,35 @@ internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleComp
     check(installationScopes == expectedInstallationScopes) {
         "Objective-C AgentInstallationScope references changed"
     }
-    return (constructor + properties + decisions + collaborationModes + messageRoles + installationScopes)
+    val environmentSources = listOf("local", "remote").map { name ->
+        val node = nodes.singleOrNull { candidate ->
+            candidate.appleStringOrNull("kind") == "ObjCMessageExpr" &&
+                candidate.appleStringOrNull("selector") == name &&
+                (candidate["classType"] as? JsonObject)?.appleStringOrNull("qualType") ==
+                "CodexAgentAgentMcpEnvironmentSource"
+        } ?: error("Objective-C AgentMcpEnvironmentSource reference changed: $name")
+        check(node.appleString("receiverKind") == "class") {
+            "Objective-C AgentMcpEnvironmentSource receiver changed: $name"
+        }
+        val shape = "enum-entry:${name.uppercase()}"
+        AppleCompilerReference(
+            appleMcpEnvironmentSourceMembers.getValue(shape), "ObjCMessageExpr", name,
+            node.appleObject("classType").appleString("qualType"),
+            node.appleObject("type").appleString("qualType"), emptyList(),
+        )
+    }
+    val expectedEnvironmentSources = listOf("local", "remote").map { name ->
+        AppleCompilerReference(
+            appleMcpEnvironmentSourceMembers.getValue("enum-entry:${name.uppercase()}"),
+            "ObjCMessageExpr", name, "CodexAgentAgentMcpEnvironmentSource",
+            "CodexAgentAgentMcpEnvironmentSource * _Nonnull", emptyList(),
+        )
+    }
+    check(environmentSources == expectedEnvironmentSources) {
+        "Objective-C AgentMcpEnvironmentSource references changed"
+    }
+    return (constructor + properties + decisions + collaborationModes + messageRoles + installationScopes +
+        environmentSources)
         .sortedBy(AppleCompilerReference::precise)
 }
 

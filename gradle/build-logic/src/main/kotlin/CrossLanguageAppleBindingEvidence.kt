@@ -37,6 +37,8 @@ private const val appleMessageRoleUserUsr = "$APPLE_MESSAGE_ROLE_OWNER_USR(cpy)u
 private const val appleMessageRoleAssistantUsr = "$APPLE_MESSAGE_ROLE_OWNER_USR(cpy)assistant"
 private const val appleInstallationScopeUserUsr = "$APPLE_INSTALLATION_SCOPE_OWNER_USR(cpy)user"
 private const val appleInstallationScopeWorkspaceUsr = "$APPLE_INSTALLATION_SCOPE_OWNER_USR(cpy)workspace"
+private const val appleMcpEnvironmentLocalUsr = "$APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR(cpy)local"
+private const val appleMcpEnvironmentRemoteUsr = "$APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR(cpy)remote"
 private const val swiftFailureTest =
     "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()"
 private const val objectiveCFailureTest =
@@ -104,7 +106,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
     canonical.canonical.coverageReceiptSha256.appleSha256("canonical coverage receipt")
     canonical.targetSha256.getValue("native").appleSha256("canonical native target")
     val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-    check(capabilities.size == 12) { "Apple binding capability count changed" }
+    check(capabilities.size == 14) { "Apple binding capability count changed" }
     val usrByCapability = capabilities.associateWith(::appleBindingUsr)
 
     compilerEvidence.appleKeys(
@@ -199,7 +201,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
 
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
-    check(missing.size == 544) { "Apple partial binding gap count changed: ${missing.size}" }
+    check(missing.size == 542) { "Apple partial binding gap count changed: ${missing.size}" }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()
@@ -306,7 +308,7 @@ private fun appleLanguageEvidence(
     behaviorTest: String,
     missing: List<String>,
 ) = buildJsonObject {
-    check(publicSymbols.size == 17 && referencedSymbols.size == 12 &&
+    check(publicSymbols.size == 20 && referencedSymbols.size == 14 &&
         referencedSymbols.toSet() == publicSymbols.toSet() -
             setOf(
                 APPLE_CODEX_FAILURE_OWNER_USR,
@@ -314,6 +316,7 @@ private fun appleLanguageEvidence(
                 APPLE_COLLABORATION_MODE_OWNER_USR,
                 APPLE_MESSAGE_ROLE_OWNER_USR,
                 APPLE_INSTALLATION_SCOPE_OWNER_USR,
+                APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR,
             )
     ) { "$language Apple binding symbol/reference inventory changed" }
     put("language", JsonPrimitive(language))
@@ -347,6 +350,8 @@ private fun appleBindingUsr(capability: String): String = when {
     ".ASSISTANT|null[0]" in capability -> appleMessageRoleAssistantUsr
     ".User|null[0]" in capability -> appleInstallationScopeUserUsr
     ".Workspace|null[0]" in capability -> appleInstallationScopeWorkspaceUsr
+    ".LOCAL|null[0]" in capability -> appleMcpEnvironmentLocalUsr
+    ".REMOTE|null[0]" in capability -> appleMcpEnvironmentRemoteUsr
     else -> error("Unexpected canonical Apple binding capability: $capability")
 }
 
@@ -433,6 +438,22 @@ private fun expectedSwiftAppleBindingSurface(): List<AppleCompilerSymbol> = list
         listOf("AgentInstallationScope", "workspace"), "workspace", "open",
         "class var workspace: AgentInstallationScope { get }",
         listOf(APPLE_INSTALLATION_SCOPE_OWNER_USR), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR, "swift", "swift.class", listOf("AgentMcpEnvironmentSource"),
+        "AgentMcpEnvironmentSource", "public", "class AgentMcpEnvironmentSource", emptyList(), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleMcpEnvironmentLocalUsr, "swift", "swift.type.property",
+        listOf("AgentMcpEnvironmentSource", "local"), "local", "open",
+        "class var local: AgentMcpEnvironmentSource { get }",
+        listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleMcpEnvironmentRemoteUsr, "swift", "swift.type.property",
+        listOf("AgentMcpEnvironmentSource", "remote"), "remote", "open",
+        "class var remote: AgentMcpEnvironmentSource { get }",
+        listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR), emptyList(), null,
     ),
 ).sortedBy(AppleCompilerSymbol::precise)
 
@@ -542,6 +563,24 @@ private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> =
         "@property (class, readonly) CodexAgentAgentInstallationScope * workspace;",
         listOf(APPLE_INSTALLATION_SCOPE_OWNER_USR), emptyList(), null,
     ),
+    AppleCompilerSymbol(
+        APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR, "objective-c", "objective-c.class",
+        listOf("CodexAgentAgentMcpEnvironmentSource"), "CodexAgentAgentMcpEnvironmentSource", "public",
+        "@interface CodexAgentAgentMcpEnvironmentSource : CodexAgentKotlinEnum",
+        listOf("c:objc(cs)CodexAgentKotlinEnum"), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleMcpEnvironmentLocalUsr, "objective-c", "objective-c.type.property",
+        listOf("CodexAgentAgentMcpEnvironmentSource", "local"), "local", "public",
+        "@property (class, readonly) CodexAgentAgentMcpEnvironmentSource * local;",
+        listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleMcpEnvironmentRemoteUsr, "objective-c", "objective-c.type.property",
+        listOf("CodexAgentAgentMcpEnvironmentSource", "remote"), "remote", "public",
+        "@property (class, readonly) CodexAgentAgentMcpEnvironmentSource * remote;",
+        listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR), emptyList(), null,
+    ),
 ).sortedBy(AppleCompilerSymbol::precise)
 
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
@@ -585,6 +624,14 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     AppleCompilerReference(
         appleInstallationScopeWorkspaceUsr, "member_ref_expr", "workspace", null,
         "\$sSo010CodexAgentB17InstallationScopeCD", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleMcpEnvironmentLocalUsr, "member_ref_expr", "local", null,
+        "\$sSo010CodexAgentB20McpEnvironmentSourceCD", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleMcpEnvironmentRemoteUsr, "member_ref_expr", "remote", null,
+        "\$sSo010CodexAgentB20McpEnvironmentSourceCD", emptyList(),
     ),
 ).sortedBy(AppleCompilerReference::precise)
 
@@ -636,6 +683,14 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     AppleCompilerReference(
         appleInstallationScopeWorkspaceUsr, "ObjCMessageExpr", "workspace", "CodexAgentAgentInstallationScope",
         "CodexAgentAgentInstallationScope * _Nonnull", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleMcpEnvironmentLocalUsr, "ObjCMessageExpr", "local", "CodexAgentAgentMcpEnvironmentSource",
+        "CodexAgentAgentMcpEnvironmentSource * _Nonnull", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleMcpEnvironmentRemoteUsr, "ObjCMessageExpr", "remote", "CodexAgentAgentMcpEnvironmentSource",
+        "CodexAgentAgentMcpEnvironmentSource * _Nonnull", emptyList(),
     ),
 ).sortedBy(AppleCompilerReference::precise)
 

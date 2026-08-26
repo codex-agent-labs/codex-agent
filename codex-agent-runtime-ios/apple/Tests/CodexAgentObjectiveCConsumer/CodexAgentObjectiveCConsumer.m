@@ -85,6 +85,18 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
         [self finishWithFailure:@"Objective-C installation scopes changed"];
         return;
     }
+    CodexAgentAgentMcpEnvironmentSource *localEnvironment =
+        [CodexAgentAgentMcpEnvironmentSource local];
+    CodexAgentAgentMcpEnvironmentSource *remoteEnvironment =
+        [CodexAgentAgentMcpEnvironmentSource remote];
+    if (![localEnvironment.name isEqualToString:@"LOCAL"] || localEnvironment.ordinal != 0 ||
+        ![remoteEnvironment.name isEqualToString:@"REMOTE"] || remoteEnvironment.ordinal != 1 ||
+        localEnvironment == remoteEnvironment ||
+        localEnvironment != [CodexAgentAgentMcpEnvironmentSource local] ||
+        remoteEnvironment != [CodexAgentAgentMcpEnvironmentSource remote]) {
+        [self finishWithFailure:@"Objective-C MCP environment sources changed"];
+        return;
+    }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CDXConsumerTimeoutSeconds * NSEC_PER_SEC)),

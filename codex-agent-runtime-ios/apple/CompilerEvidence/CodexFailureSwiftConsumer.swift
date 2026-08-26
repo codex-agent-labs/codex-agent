@@ -24,3 +24,7 @@ func consumeAgentMessageRoles() -> (AgentMessageRole, AgentMessageRole) {
 func consumeAgentInstallationScopes() -> (AgentInstallationScope, AgentInstallationScope) {
     (AgentInstallationScope.user, AgentInstallationScope.workspace)
 }
+
+func consumeAgentMcpEnvironmentSources() -> (AgentMcpEnvironmentSource, AgentMcpEnvironmentSource) {
+    (AgentMcpEnvironmentSource.local, AgentMcpEnvironmentSource.remote)
+}
