@@ -379,6 +379,23 @@ static BOOL consumeD080StateValues(
         conversationPending.count == pending.count && isResolving;
 }
 
+static BOOL consumeD081SingletonObjects(void) {
+    CodexAgentAgentHookHandlerAgent *agentHandler =
+        [CodexAgentAgentHookHandlerAgent shared];
+    CodexAgentAgentHookHandlerPrompt *promptHandler =
+        [CodexAgentAgentHookHandlerPrompt shared];
+    CodexAgentCodexAuthenticationMethodChatGptBrowser *browserAuthentication =
+        [CodexAgentCodexAuthenticationMethodChatGptBrowser shared];
+    CodexAgentCodexAuthenticationMethodChatGptDeviceCode *deviceCodeAuthentication =
+        [CodexAgentCodexAuthenticationMethodChatGptDeviceCode shared];
+    CodexAgentCodexHostStateClosed *closed = [CodexAgentCodexHostStateClosed shared];
+    CodexAgentCodexHostStateNew *newState = [CodexAgentCodexHostStateNew shared];
+    CodexAgentCodexHostStateRestoring *restoring = [CodexAgentCodexHostStateRestoring shared];
+
+    return agentHandler != nil && promptHandler != nil && browserAuthentication != nil &&
+        deviceCodeAuthentication != nil && closed != nil && newState != nil && restoring != nil;
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

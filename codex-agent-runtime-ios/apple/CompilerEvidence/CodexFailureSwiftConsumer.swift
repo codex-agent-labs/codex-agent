@@ -1082,3 +1082,23 @@ func consumeD080AgentInteractionState(
         state.isResolving(interaction: interaction)
     )
 }
+
+func consumeD081SingletonObjects() -> (
+    AgentHookHandlerAgent,
+    AgentHookHandlerPrompt,
+    CodexAuthenticationMethodChatGptBrowser,
+    CodexAuthenticationMethodChatGptDeviceCode,
+    CodexHostStateClosed,
+    CodexHostStateNew,
+    CodexHostStateRestoring
+) {
+    (
+        AgentHookHandlerAgent.shared,
+        AgentHookHandlerPrompt.shared,
+        CodexAuthenticationMethodChatGptBrowser.shared,
+        CodexAuthenticationMethodChatGptDeviceCode.shared,
+        CodexHostStateClosed.shared,
+        CodexHostStateNew.shared,
+        CodexHostStateRestoring.shared
+    )
+}

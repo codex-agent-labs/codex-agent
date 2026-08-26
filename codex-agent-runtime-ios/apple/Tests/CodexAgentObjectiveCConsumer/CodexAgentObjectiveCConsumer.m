@@ -990,6 +990,55 @@ static NSString *CDXVerifyD080StateValues(void) {
     return nil;
 }
 
+static NSString *CDXVerifyD081SingletonObjects(void) {
+    CodexAgentAgentHookHandlerAgent *agentHandlerFirst =
+        [CodexAgentAgentHookHandlerAgent shared];
+    CodexAgentAgentHookHandlerAgent *agentHandlerSecond =
+        [CodexAgentAgentHookHandlerAgent shared];
+    CodexAgentAgentHookHandlerPrompt *promptHandlerFirst =
+        [CodexAgentAgentHookHandlerPrompt shared];
+    CodexAgentAgentHookHandlerPrompt *promptHandlerSecond =
+        [CodexAgentAgentHookHandlerPrompt shared];
+    if (agentHandlerFirst == nil || agentHandlerSecond == nil || promptHandlerFirst == nil ||
+        promptHandlerSecond == nil || ![agentHandlerFirst isEqual:agentHandlerSecond] ||
+        ![promptHandlerFirst isEqual:promptHandlerSecond] ||
+        [agentHandlerFirst isEqual:promptHandlerFirst]) {
+        return @"Objective-C D081 hook-handler singleton identity changed";
+    }
+
+    CodexAgentCodexAuthenticationMethodChatGptBrowser *browserFirst =
+        [CodexAgentCodexAuthenticationMethodChatGptBrowser shared];
+    CodexAgentCodexAuthenticationMethodChatGptBrowser *browserSecond =
+        [CodexAgentCodexAuthenticationMethodChatGptBrowser shared];
+    CodexAgentCodexAuthenticationMethodChatGptDeviceCode *deviceCodeFirst =
+        [CodexAgentCodexAuthenticationMethodChatGptDeviceCode shared];
+    CodexAgentCodexAuthenticationMethodChatGptDeviceCode *deviceCodeSecond =
+        [CodexAgentCodexAuthenticationMethodChatGptDeviceCode shared];
+    if (browserFirst == nil || browserSecond == nil || deviceCodeFirst == nil ||
+        deviceCodeSecond == nil || ![browserFirst isEqual:browserSecond] ||
+        ![deviceCodeFirst isEqual:deviceCodeSecond] || [browserFirst isEqual:deviceCodeFirst]) {
+        return @"Objective-C D081 authentication-method singleton identity changed";
+    }
+
+    CodexAgentCodexHostStateClosed *closedFirst = [CodexAgentCodexHostStateClosed shared];
+    CodexAgentCodexHostStateClosed *closedSecond = [CodexAgentCodexHostStateClosed shared];
+    CodexAgentCodexHostStateNew *newFirst = [CodexAgentCodexHostStateNew shared];
+    CodexAgentCodexHostStateNew *newSecond = [CodexAgentCodexHostStateNew shared];
+    CodexAgentCodexHostStateRestoring *restoringFirst =
+        [CodexAgentCodexHostStateRestoring shared];
+    CodexAgentCodexHostStateRestoring *restoringSecond =
+        [CodexAgentCodexHostStateRestoring shared];
+    if (closedFirst == nil || closedSecond == nil || newFirst == nil || newSecond == nil ||
+        restoringFirst == nil || restoringSecond == nil ||
+        ![closedFirst isEqual:closedSecond] || ![newFirst isEqual:newSecond] ||
+        ![restoringFirst isEqual:restoringSecond] || [closedFirst isEqual:newFirst] ||
+        [closedFirst isEqual:restoringFirst] || [newFirst isEqual:restoringFirst]) {
+        return @"Objective-C D081 host-state singleton identity changed";
+    }
+
+    return nil;
+}
+
 static NSString *CDXVerifyD073OrdinaryValues(void) {
     CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
         initWithId:@"connector-id"
@@ -1575,6 +1624,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d080Failure = CDXVerifyD080StateValues();
     if (d080Failure != nil) {
         [self finishWithFailure:d080Failure];
+        return;
+    }
+    NSString *d081Failure = CDXVerifyD081SingletonObjects();
+    if (d081Failure != nil) {
+        [self finishWithFailure:d081Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;

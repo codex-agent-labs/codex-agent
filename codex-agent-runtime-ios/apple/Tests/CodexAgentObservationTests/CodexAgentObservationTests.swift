@@ -109,6 +109,7 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD078McpAndElicitationValues()
         assertD079ConversationValues()
         assertD080StateSnapshots()
+        assertD081SingletonObjects()
 
         let authorizationUrlCompanion = CodexAuthorizationUrl.companion
         let chatGptAuthorizationUrl = authorizationUrlCompanion.chatGpt(
@@ -1326,6 +1327,41 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertNil(defaultInteractionState.failure)
         XCTAssertTrue(defaultInteractionState.pendingFor(conversationId: conversationId).isEmpty)
         XCTAssertFalse(defaultInteractionState.isResolving(interaction: approval))
+    }
+
+    private func assertD081SingletonObjects() {
+        let agent: AgentHookHandlerAgent = AgentHookHandlerAgent.shared
+        let stableAgent: AgentHookHandlerAgent = AgentHookHandlerAgent.shared
+        let prompt: AgentHookHandlerPrompt = AgentHookHandlerPrompt.shared
+        let stablePrompt: AgentHookHandlerPrompt = AgentHookHandlerPrompt.shared
+        XCTAssertTrue(agent.isEqual(stableAgent))
+        XCTAssertTrue(prompt.isEqual(stablePrompt))
+        XCTAssertFalse(agent.isEqual(prompt))
+
+        let browser: CodexAuthenticationMethodChatGptBrowser =
+            CodexAuthenticationMethodChatGptBrowser.shared
+        let stableBrowser: CodexAuthenticationMethodChatGptBrowser =
+            CodexAuthenticationMethodChatGptBrowser.shared
+        let deviceCode: CodexAuthenticationMethodChatGptDeviceCode =
+            CodexAuthenticationMethodChatGptDeviceCode.shared
+        let stableDeviceCode: CodexAuthenticationMethodChatGptDeviceCode =
+            CodexAuthenticationMethodChatGptDeviceCode.shared
+        XCTAssertTrue(browser.isEqual(stableBrowser))
+        XCTAssertTrue(deviceCode.isEqual(stableDeviceCode))
+        XCTAssertFalse(browser.isEqual(deviceCode))
+
+        let closed: CodexHostStateClosed = CodexHostStateClosed.shared
+        let stableClosed: CodexHostStateClosed = CodexHostStateClosed.shared
+        let new: CodexHostStateNew = CodexHostStateNew.shared
+        let stableNew: CodexHostStateNew = CodexHostStateNew.shared
+        let restoring: CodexHostStateRestoring = CodexHostStateRestoring.shared
+        let stableRestoring: CodexHostStateRestoring = CodexHostStateRestoring.shared
+        XCTAssertTrue(closed.isEqual(stableClosed))
+        XCTAssertTrue(new.isEqual(stableNew))
+        XCTAssertTrue(restoring.isEqual(stableRestoring))
+        XCTAssertFalse(closed.isEqual(new))
+        XCTAssertFalse(closed.isEqual(restoring))
+        XCTAssertFalse(new.isEqual(restoring))
     }
 
     private func assertEnumValue<E: AnyObject>(

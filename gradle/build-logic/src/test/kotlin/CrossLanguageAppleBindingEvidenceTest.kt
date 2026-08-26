@@ -17,7 +17,7 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageAppleBindingEvidenceTest {
     @Test
-    fun `observes 449 independent claims and 107 explicit gaps per Apple language`() {
+    fun `observes 456 independent claims and 100 explicit gaps per Apple language`() {
         val fixture = fixture()
         val report = fixture.derive()
 
@@ -29,11 +29,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         val languages = report.releaseArray("languages").map { it as JsonObject }
         assertEquals(listOf("objective-c", "swift"), languages.map { it.releaseString("language") })
         languages.forEach { language ->
-            assertEquals(541, language.releaseArray("publicSymbols").size)
-            assertEquals(449, language.releaseArray("referencedSymbols").size)
-            assertEquals(449, language.releaseArray("claims").size)
+            assertEquals(555, language.releaseArray("publicSymbols").size)
+            assertEquals(456, language.releaseArray("referencedSymbols").size)
+            assertEquals(456, language.releaseArray("claims").size)
             assertTrue(language.releaseArray("exclusions").isEmpty())
-            assertEquals(107, language.releaseArray("missingCapabilityKeys").size)
+            assertEquals(100, language.releaseArray("missingCapabilityKeys").size)
             assertEquals(
                 fixture.capabilities,
                 language.releaseArray("claims").map { (it as JsonObject).releaseString("canonicalKey") },
@@ -164,6 +164,13 @@ class CrossLanguageAppleBindingEvidenceTest {
         val d080SetIdentifierDrift = compiler.surfaceDrift(
             "swift", surfaceIndex("swift", d080SetPropertyUsr), "typeIdentifiers",
             strings(listOf("s:SS", "s:Sh")),
+        )
+        val d081SharedUsr = appleCompilerFixtureD081Capabilities.single {
+            "/AgentHookHandler.Agent|" in it.canonicalKey
+        }.usr
+        val d081SharedSurfaceDrift = compiler.surfaceDrift(
+            "swift", surfaceIndex("swift", d081SharedUsr),
+            "declaration", JsonPrimitive("class var shared: AgentHookHandlerPrompt { get }"),
         )
         val missingSurface = compiler.withObject("surface", run {
             val reduced = JsonArray(swift.dropLast(1))
@@ -468,6 +475,38 @@ class CrossLanguageAppleBindingEvidenceTest {
                 "objectiveCSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
             ))
         })
+        val d081SwiftReferenceDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("swift").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == d081SharedUsr) {
+                    JsonObject(reference + ("valueType" to JsonPrimitive(
+                        "\$sSo010CodexAgentB17HookHandlerPromptCD",
+                    )))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "swift" to changed,
+                "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
+        val d081ObjectiveCReferenceDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("objectiveC").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == d081SharedUsr) {
+                    JsonObject(reference + ("receiverType" to JsonPrimitive(
+                        "CodexAgentAgentHookHandlerPrompt",
+                    )))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "objectiveC" to changed,
+                "objectiveCSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
         val claims = compiler.releaseArray("claims")
         val first = claims.first() as JsonObject
         val swappedClaim = compiler.withArray("claims", JsonArray(listOf(
@@ -591,6 +630,15 @@ class CrossLanguageAppleBindingEvidenceTest {
                 }
             }.sorted(),
         )
+        val changedD081Object = fixture.canonical.copy(
+            memberKeys = fixture.canonical.memberKeys.map { key ->
+                if ("/AgentHookHandler.Agent|kind=object|" in key) {
+                    key.replace("|kind=object|", "|kind=property|")
+                } else {
+                    key
+                }
+            }.sorted(),
+        )
 
         listOf(
             surfaceDrift, signatureDrift, typeDrift, readonlyDrift, selectorDrift, missingSurface,
@@ -599,6 +647,7 @@ class CrossLanguageAppleBindingEvidenceTest {
             d077ConstructorDrift, d077NullablePropertyDrift, d078ContentIdentifierDrift,
             d079SetIdentifierDrift, d079ConstructorSurfaceDrift,
             d080ConstructorSurfaceDrift, d080MethodSurfaceDrift, d080SetIdentifierDrift,
+            d081SharedSurfaceDrift,
             duplicateSurface, referenceDrift, swiftReferenceTypeDrift, collaborationReferenceTypeDrift,
             messageRoleReferenceTypeDrift, installationScopeReferenceTypeDrift,
             mcpEnvironmentSourceReferenceTypeDrift, mcpEnvironmentSourceReceiverDrift, qualifierDrift,
@@ -607,6 +656,7 @@ class CrossLanguageAppleBindingEvidenceTest {
             d078SwiftReferenceDrift, d078ObjectiveCReceiverDrift,
             d079SwiftReferenceDrift, d079ObjectiveCConstructorDrift,
             d080SwiftMethodReferenceDrift, d080ObjectiveCMethodReferenceDrift,
+            d081SwiftReferenceDrift, d081ObjectiveCReferenceDrift,
             conversationIdConstructorTypeDrift, conversationIdReceiverDrift,
             swappedClaim, missingClaim, duplicateClaim, wrongOwnerClaim, cdx, wrongArtifact, duplicateTarget,
         ).forEach { drift ->
@@ -619,7 +669,7 @@ class CrossLanguageAppleBindingEvidenceTest {
             futureCanonical, overloadedCanonical, futureDecision, futureCollaboration, futureMessageRole,
             futureInstallationScope, futureMcpEnvironmentSource, changedConversationId,
             changedAuthorizationFactory, changedD077Constructor, changedD078Constructor, changedD079Constructor,
-            changedD080Constructor, changedD080Method,
+            changedD080Constructor, changedD080Method, changedD081Object,
         )
             .forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(canonical = drift) }
@@ -716,7 +766,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             appleCompilerFixtureD078Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
             appleCompilerFixtureD079Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
             appleCompilerFixtureD080Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
-            (0 until 107).map { index ->
+            appleCompilerFixtureD081Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
+            (0 until 100).map { index ->
                 "common|owner=sample/Owner${index.toString().padStart(3, '0')}|kind=property|" +
                     "abi=sample/Owner$index.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!"
             }).sorted()
@@ -889,6 +940,8 @@ class CrossLanguageAppleBindingEvidenceTest {
         expectedSymbol(precise, "swift", expected)
     } + appleCompilerFixtureD080SwiftSymbols().map { (precise, expected) ->
         expectedSymbol(precise, "swift", expected)
+    } + appleCompilerFixtureD081SwiftSymbols().map { (precise, expected) ->
+        expectedSymbol(precise, "swift", expected)
     }).sortedBy { it.releaseString("precise") })
 
     private fun objectiveCSurface() = JsonArray((listOf(
@@ -997,6 +1050,8 @@ class CrossLanguageAppleBindingEvidenceTest {
         expectedSymbol(precise, "objective-c", expected)
     } + appleCompilerFixtureD080ObjectiveCSymbols().map { (precise, expected) ->
         expectedSymbol(precise, "objective-c", expected)
+    } + appleCompilerFixtureD081ObjectiveCSymbols().map { (precise, expected) ->
+        expectedSymbol(precise, "objective-c", expected)
     }).sortedBy { it.releaseString("precise") })
 
     private fun swiftReferences() = JsonArray((listOf(
@@ -1026,7 +1081,7 @@ class CrossLanguageAppleBindingEvidenceTest {
             appleCompilerFixtureD074Capabilities + appleCompilerFixtureD075Capabilities +
             appleCompilerFixtureD076Capabilities + appleCompilerFixtureD077Capabilities +
             appleCompilerFixtureD078Capabilities + appleCompilerFixtureD079Capabilities +
-            appleCompilerFixtureD080Capabilities)
+            appleCompilerFixtureD080Capabilities + appleCompilerFixtureD081Capabilities)
             .map(AppleOrdinaryCapability::usr) }
         .map(::expectedReference)
     ).sortedBy { it.releaseString("precise") })
@@ -1067,7 +1122,7 @@ class CrossLanguageAppleBindingEvidenceTest {
             appleCompilerFixtureD074Capabilities + appleCompilerFixtureD075Capabilities +
             appleCompilerFixtureD076Capabilities + appleCompilerFixtureD077Capabilities +
             appleCompilerFixtureD078Capabilities + appleCompilerFixtureD079Capabilities +
-            appleCompilerFixtureD080Capabilities)
+            appleCompilerFixtureD080Capabilities + appleCompilerFixtureD081Capabilities)
             .map(AppleOrdinaryCapability::usr) }
         .map(::expectedReference)
     ).sortedBy { it.releaseString("precise") })
@@ -1147,7 +1202,7 @@ class CrossLanguageAppleBindingEvidenceTest {
             appleCompilerFixtureD074Capabilities + appleCompilerFixtureD075Capabilities +
             appleCompilerFixtureD076Capabilities + appleCompilerFixtureD077Capabilities +
             appleCompilerFixtureD078Capabilities + appleCompilerFixtureD079Capabilities +
-            appleCompilerFixtureD080Capabilities)
+            appleCompilerFixtureD080Capabilities + appleCompilerFixtureD081Capabilities)
             .singleOrNull { it.canonicalKey == capability }?.usr ?: when {
         "|owner=$CANONICAL_OWNER|kind=constructor|" in capability -> CONSTRUCTOR
         "|owner=$CONVERSATION_ID_CANONICAL_OWNER|kind=constructor|" in capability ->
