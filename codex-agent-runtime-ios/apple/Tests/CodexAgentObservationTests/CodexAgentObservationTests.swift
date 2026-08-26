@@ -2,6 +2,7 @@ import CodexAgent
 @testable import CodexAgentObservation
 import CodexAgentObjectiveCConsumer
 import CodexAgentSwiftSupport
+import Foundation
 import XCTest
 
 final class CodexAgentObservationTests: XCTestCase {
@@ -46,7 +47,7 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertNil(weakToken)
     }
 
-    func testCodexOperationErrorsExposeStructuredFailure() {
+    func testCodexOperationErrorsExposeStructuredFailure() async throws {
         let conversationId = ConversationId(value: "conversation-1")
         XCTAssertEqual(conversationId.value, "conversation-1")
 
@@ -111,6 +112,7 @@ final class CodexAgentObservationTests: XCTestCase {
         assertD080StateSnapshots()
         assertD081SingletonObjects()
         assertD082ElicitationHelpers()
+        try await assertD084HostLifecycle()
 
         let authorizationUrlCompanion = CodexAuthorizationUrl.companion
         let chatGptAuthorizationUrl = authorizationUrlCompanion.chatGpt(
@@ -1673,6 +1675,220 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertFalse(many.accepts(value: AgentFormValueTextList(value: ["z"])))
         XCTAssertFalse(many.accepts(value: AgentFormValueTextList(value: ["a", "b", "a"])))
         XCTAssertFalse(many.accepts(value: AgentFormValueText(value: "a")))
+
+    }
+
+    private func assertD084HostLifecycle() async throws {
+        let sandbox = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "codex-agent-swift-d084-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let workspaceURL = sandbox.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: workspaceURL,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+
+        let firstRestoreEntered = expectation(description: "D084 first restore entered")
+        let selectionEntered = expectation(description: "D084 selection entered")
+        let firstPrepareEntered = expectation(description: "D084 first prepare entered")
+        let secondPrepareEntered = expectation(description: "D084 second prepare entered")
+
+        let newObserved = expectation(description: "D084 New observed")
+        let firstRestoringObserved = expectation(description: "D084 first Restoring observed")
+        let workspaceRequiredObserved = expectation(description: "D084 WorkspaceRequired observed")
+        let secondRestoringObserved = expectation(description: "D084 second Restoring observed")
+        let firstPreparingObserved = expectation(description: "D084 first Preparing observed")
+        let failedObserved = expectation(description: "D084 Failed observed")
+        let secondPreparingObserved = expectation(description: "D084 second Preparing observed")
+        let readyObserved = expectation(description: "D084 Ready observed")
+        let closedObserved = expectation(description: "D084 Closed observed")
+        let lateStateObserved = expectation(description: "D084 state observed after Closed")
+        lateStateObserved.isInverted = true
+
+        let backingPlatform = IosCodexPlatform(
+            sandboxRootPath: sandbox.path,
+            credentialProtection: .whenUnlocked,
+            authorizationBrowser: D084AuthorizationBrowser(),
+            codexHomePath: sandbox
+                .appendingPathComponent("Library/Application Support/CodexAgent", isDirectory: true)
+                .path,
+            storageRoots: nil
+        )
+        let platform = D084GatedPlatform(
+            backing: backingPlatform,
+            restoreEntered: { firstRestoreEntered.fulfill() },
+            selectionEntered: { selectionEntered.fulfill() },
+            prepareEntered: [
+                { firstPrepareEntered.fulfill() },
+                { secondPrepareEntered.fulfill() },
+            ]
+        )
+        let host = CodexHost(
+            platform: platform,
+            clientInfo: CodexClientInfo(
+                name: "swift-d084",
+                title: "Swift D084",
+                version: "0.2.0"
+            )
+        )
+
+        let lifecycleReceipt = Task { () -> [String] in
+            var receipt: [String] = []
+            var restoringCount = 0
+            var preparingCount = 0
+            var didObserveClosed = false
+            for await state in host.lifecycleStates {
+                if didObserveClosed {
+                    lateStateObserved.fulfill()
+                    return receipt
+                }
+                switch state {
+                case is CodexHostStateNew:
+                    receipt.append("New")
+                    newObserved.fulfill()
+                case is CodexHostStateRestoring:
+                    restoringCount += 1
+                    receipt.append("Restoring")
+                    if restoringCount == 1 {
+                        firstRestoringObserved.fulfill()
+                    } else {
+                        secondRestoringObserved.fulfill()
+                    }
+                case is CodexHostStateWorkspaceRequired:
+                    receipt.append("WorkspaceRequired")
+                    workspaceRequiredObserved.fulfill()
+                case is CodexHostStatePreparing:
+                    preparingCount += 1
+                    receipt.append("Preparing")
+                    if preparingCount == 1 {
+                        firstPreparingObserved.fulfill()
+                    } else {
+                        secondPreparingObserved.fulfill()
+                    }
+                case is CodexHostStateFailed:
+                    receipt.append("Failed")
+                    failedObserved.fulfill()
+                case is CodexHostStateReady:
+                    receipt.append("Ready")
+                    readyObserved.fulfill()
+                case is CodexHostStateClosed:
+                    receipt.append("Closed")
+                    closedObserved.fulfill()
+                    didObserveClosed = true
+                default:
+                    XCTFail("Unexpected D084 host state: \(type(of: state))")
+                }
+            }
+            return receipt
+        }
+        defer { lifecycleReceipt.cancel() }
+
+        _ = try XCTUnwrap(host.lifecycleState.value as? CodexHostStateNew)
+        await fulfillment(of: [newObserved], timeout: 30)
+
+        let start = Task { try await host.start() }
+        await fulfillment(
+            of: [firstRestoringObserved, firstRestoreEntered],
+            timeout: 30
+        )
+        platform.releaseRestore()
+        try await start.value
+        await fulfillment(of: [workspaceRequiredObserved], timeout: 30)
+
+        let workspaceRequired = try XCTUnwrap(
+            host.lifecycleState.value as? CodexHostStateWorkspaceRequired
+        )
+        XCTAssertTrue(
+            workspaceRequired.requirement.reason === CodexWorkspaceSelectionReason.notSelected
+        )
+        let workspaceRequiredCopy = CodexHostStateWorkspaceRequired(
+            requirement: workspaceRequired.requirement
+        )
+        XCTAssertEqual(workspaceRequiredCopy.requirement.message, workspaceRequired.requirement.message)
+
+        let selection = Task {
+            try await host.selectWorkspace(selection: IosCodexWorkspaceSelection(url: workspaceURL))
+        }
+        await fulfillment(
+            of: [secondRestoringObserved, selectionEntered],
+            timeout: 30
+        )
+        platform.releaseSelection()
+        await fulfillment(
+            of: [firstPreparingObserved, firstPrepareEntered],
+            timeout: 30
+        )
+
+        let preparing = try XCTUnwrap(host.lifecycleState.value as? CodexHostStatePreparing)
+        XCTAssertEqual(preparing.workspace.path, workspaceURL.path)
+        let preparingCopy = CodexHostStatePreparing(workspace: preparing.workspace)
+        XCTAssertEqual(preparingCopy.workspace.path, workspaceURL.path)
+
+        platform.releasePrepare(
+            failure: NSError(
+                domain: "CodexAgent.D084",
+                code: 84,
+                userInfo: [NSLocalizedDescriptionKey: "D084 deterministic prepare failure"]
+            )
+        )
+        do {
+            try await selection.value
+            XCTFail("D084 workspace selection should expose the injected prepare failure")
+        } catch {
+            // The structured Failed state below is the public error receipt.
+        }
+        await fulfillment(of: [failedObserved], timeout: 30)
+
+        let failed = try XCTUnwrap(host.lifecycleState.value as? CodexHostStateFailed)
+        XCTAssertEqual(failed.workspace?.path, workspaceURL.path)
+        XCTAssertEqual(failed.failure.code, "runtime_prepare_failed")
+        XCTAssertTrue(failed.failure.isRecoverable)
+        let failedCopy = CodexHostStateFailed(
+            workspace: failed.workspace,
+            failure: failed.failure
+        )
+        XCTAssertEqual(failedCopy.workspace?.path, workspaceURL.path)
+        XCTAssertEqual(failedCopy.failure.code, failed.failure.code)
+        XCTAssertTrue(failedCopy.failure === failed.failure)
+        let failedWithoutWorkspace = CodexHostStateFailed(workspace: nil, failure: failed.failure)
+        XCTAssertNil(failedWithoutWorkspace.workspace)
+        XCTAssertTrue(failedWithoutWorkspace.failure === failed.failure)
+
+        let retry = Task { try await host.start() }
+        await fulfillment(
+            of: [secondPreparingObserved, secondPrepareEntered],
+            timeout: 30
+        )
+        platform.releasePrepare(failure: nil)
+        try await retry.value
+        await fulfillment(of: [readyObserved], timeout: 120)
+
+        let ready = try XCTUnwrap(host.lifecycleState.value as? CodexHostStateReady)
+        let readyCopy = CodexHostStateReady(agent: ready.agent)
+        XCTAssertTrue(readyCopy.agent === ready.agent)
+
+        try await host.close()
+        await fulfillment(of: [closedObserved], timeout: 30)
+        _ = try XCTUnwrap(host.lifecycleState.value as? CodexHostStateClosed)
+        await fulfillment(of: [lateStateObserved], timeout: 0.1)
+        lifecycleReceipt.cancel()
+        let observedLifecycle = await lifecycleReceipt.value
+        XCTAssertEqual(
+            observedLifecycle,
+            [
+                "New",
+                "Restoring",
+                "WorkspaceRequired",
+                "Restoring",
+                "Preparing",
+                "Failed",
+                "Preparing",
+                "Ready",
+                "Closed",
+            ]
+        )
     }
 
     private func assertEnumValue<E: AnyObject>(
@@ -1693,6 +1909,165 @@ final class CodexAgentObservationTests: XCTestCase {
             objectiveCConsumer.fulfill()
         }
         await fulfillment(of: [objectiveCConsumer], timeout: 120)
+    }
+}
+
+private final class D084AuthorizationBrowser: NSObject, CodexAuthorizationBrowser {
+    func open(url: CodexAuthorizationUrl) throws -> any CodexAuthorizationPresentation {
+        D084AuthorizationPresentation()
+    }
+}
+
+private final class D084AuthorizationPresentation: NSObject, CodexAuthorizationPresentation {
+    func close() {}
+}
+
+private typealias D084ResolutionCompletion = @Sendable (
+    (any CodexWorkspaceResolution)?,
+    (any Error)?
+) -> Void
+
+private final class D084GatedWorkspaceStore: NSObject, CodexWorkspaceStore {
+    private let backing: any CodexWorkspaceStore
+    private let restoreEntered: () -> Void
+    private let selectionEntered: () -> Void
+    private let lock = NSLock()
+    private var pendingRestore: D084ResolutionCompletion?
+    private var pendingSelection: (
+        selection: any CodexWorkspaceSelection,
+        completion: D084ResolutionCompletion
+    )?
+
+    init(
+        backing: any CodexWorkspaceStore,
+        restoreEntered: @escaping () -> Void,
+        selectionEntered: @escaping () -> Void
+    ) {
+        self.backing = backing
+        self.restoreEntered = restoreEntered
+        self.selectionEntered = selectionEntered
+        super.init()
+    }
+
+    func restore(completionHandler: @escaping D084ResolutionCompletion) {
+        lock.lock()
+        precondition(pendingRestore == nil, "D084 restore is already pending")
+        pendingRestore = completionHandler
+        lock.unlock()
+        restoreEntered()
+    }
+
+    func releaseRestore() {
+        lock.lock()
+        let completion = pendingRestore
+        pendingRestore = nil
+        lock.unlock()
+        precondition(completion != nil, "D084 restore was not pending")
+        backing.restore(completionHandler: completion!)
+    }
+
+    func select(
+        selection: any CodexWorkspaceSelection,
+        completionHandler: @escaping D084ResolutionCompletion
+    ) {
+        lock.lock()
+        precondition(pendingSelection == nil, "D084 selection is already pending")
+        pendingSelection = (selection, completionHandler)
+        lock.unlock()
+        selectionEntered()
+    }
+
+    func releaseSelection() {
+        lock.lock()
+        let pending = pendingSelection
+        pendingSelection = nil
+        lock.unlock()
+        precondition(pending != nil, "D084 selection was not pending")
+        backing.select(
+            selection: pending!.selection,
+            completionHandler: pending!.completion
+        )
+    }
+
+    func clear(completionHandler: @escaping @Sendable ((any Error)?) -> Void) {
+        backing.clear(completionHandler: completionHandler)
+    }
+}
+
+private typealias D084PrepareCompletion = @Sendable (
+    PreparedCodexRuntime?,
+    (any Error)?
+) -> Void
+
+private final class D084GatedPlatform: NSObject, CodexPlatform {
+    private let backing: IosCodexPlatform
+    private let gatedWorkspaceStore: D084GatedWorkspaceStore
+    private let prepareEntered: [() -> Void]
+    private let lock = NSLock()
+    private var prepareCallCount = 0
+    private var pendingPrepares: [(
+        workspace: CodexWorkspace,
+        completion: D084PrepareCompletion
+    )] = []
+
+    var authorizationBrowser: any CodexAuthorizationBrowser {
+        backing.authorizationBrowser
+    }
+
+    var workspaceStore: any CodexWorkspaceStore {
+        gatedWorkspaceStore
+    }
+
+    init(
+        backing: IosCodexPlatform,
+        restoreEntered: @escaping () -> Void,
+        selectionEntered: @escaping () -> Void,
+        prepareEntered: [() -> Void]
+    ) {
+        self.backing = backing
+        gatedWorkspaceStore = D084GatedWorkspaceStore(
+            backing: backing.workspaceStore,
+            restoreEntered: restoreEntered,
+            selectionEntered: selectionEntered
+        )
+        self.prepareEntered = prepareEntered
+        super.init()
+    }
+
+    func prepare(
+        workspace: CodexWorkspace,
+        completionHandler: @escaping D084PrepareCompletion
+    ) {
+        lock.lock()
+        let callIndex = prepareCallCount
+        precondition(callIndex < prepareEntered.count, "Unexpected D084 prepare call")
+        prepareCallCount += 1
+        pendingPrepares.append((workspace, completionHandler))
+        lock.unlock()
+        prepareEntered[callIndex]()
+    }
+
+    func releaseRestore() {
+        gatedWorkspaceStore.releaseRestore()
+    }
+
+    func releaseSelection() {
+        gatedWorkspaceStore.releaseSelection()
+    }
+
+    func releasePrepare(failure: (any Error)?) {
+        lock.lock()
+        let pending = pendingPrepares.isEmpty ? nil : pendingPrepares.removeFirst()
+        lock.unlock()
+        precondition(pending != nil, "D084 prepare was not pending")
+        if let failure {
+            pending!.completion(nil, failure)
+        } else {
+            backing.prepare(
+                workspace: pending!.workspace,
+                completionHandler: pending!.completion
+            )
+        }
     }
 }
 

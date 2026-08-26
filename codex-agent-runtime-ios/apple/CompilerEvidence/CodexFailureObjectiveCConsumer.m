@@ -433,6 +433,50 @@ static BOOL consumeD083ProtocolOwnerProperties(
         conversationId != nil && requestId.length > 0;
 }
 
+static BOOL consumeD084HostGateway(
+    id<CodexAgentCodexPlatform> platform,
+    CodexAgentCodexClientInfo *clientInfo,
+    id<CodexAgentCodexWorkspaceSelection> selection,
+    CodexAgentCodexWorkspace *workspace,
+    CodexAgentCodexFailure *failure,
+    CodexAgentCodexAgent *agent,
+    CodexAgentCodexWorkspaceResolutionSelectionRequired *requirement
+) {
+    CodexAgentCodexHost *host = [[CodexAgentCodexHost alloc]
+        initWithPlatform:platform
+              clientInfo:clientInfo];
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> lifecycleState = host.lifecycleState;
+    [host startWithCompletionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [host selectWorkspaceSelection:selection completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [host closeWithCompletionHandler:^(NSError *error) {
+        (void)error;
+    }];
+
+    CodexAgentCodexHostStateFailed *failed = [[CodexAgentCodexHostStateFailed alloc]
+        initWithWorkspace:workspace
+                 failure:failure];
+    CodexAgentCodexFailure *returnedFailure = failed.failure;
+    CodexAgentCodexWorkspace *failedWorkspace = failed.workspace;
+    CodexAgentCodexHostStatePreparing *preparing = [[CodexAgentCodexHostStatePreparing alloc]
+        initWithWorkspace:workspace];
+    CodexAgentCodexWorkspace *preparingWorkspace = preparing.workspace;
+    CodexAgentCodexHostStateReady *ready = [[CodexAgentCodexHostStateReady alloc]
+        initWithAgent:agent];
+    CodexAgentCodexAgent *returnedAgent = ready.agent;
+    CodexAgentCodexHostStateWorkspaceRequired *workspaceRequired =
+        [[CodexAgentCodexHostStateWorkspaceRequired alloc] initWithRequirement:requirement];
+    CodexAgentCodexWorkspaceResolutionSelectionRequired *returnedRequirement =
+        workspaceRequired.requirement;
+
+    return lifecycleState != nil && returnedFailure == failure &&
+        failedWorkspace == workspace && preparingWorkspace == workspace &&
+        returnedAgent == agent && returnedRequirement == requirement;
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

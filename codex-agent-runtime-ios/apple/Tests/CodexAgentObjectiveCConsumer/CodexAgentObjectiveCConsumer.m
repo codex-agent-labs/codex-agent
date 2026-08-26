@@ -1935,6 +1935,46 @@ static NSString *CDXVerifyD075PendingValues(void) {
     return nil;
 }
 
+static NSString *CDXVerifyD084HostStatePayloads(CodexAgentCodexWorkspace *workspace) {
+    CodexAgentCodexFailure *failure = [[CodexAgentCodexFailure alloc]
+        initWithCode:@"d084_failure"
+              message:@"D084 failure"
+        isRecoverable:YES];
+    CodexAgentCodexHostStateFailed *failed = [[CodexAgentCodexHostStateFailed alloc]
+        initWithWorkspace:workspace
+                 failure:failure];
+    CodexAgentCodexHostStateFailed *workspaceLessFailed = [[CodexAgentCodexHostStateFailed alloc]
+        initWithWorkspace:nil
+                 failure:failure];
+    if (failed.workspace != workspace || failed.failure != failure ||
+        workspaceLessFailed.workspace != nil || workspaceLessFailed.failure != failure) {
+        return @"Objective-C D084 Failed payload changed";
+    }
+
+    CodexAgentCodexHostStatePreparing *preparing = [[CodexAgentCodexHostStatePreparing alloc]
+        initWithWorkspace:workspace];
+    if (preparing.workspace != workspace) {
+        return @"Objective-C D084 Preparing payload changed";
+    }
+
+    CodexAgentCodexWorkspaceResolutionSelectionRequired *requirement =
+        [[CodexAgentCodexWorkspaceResolutionSelectionRequired alloc]
+            initWithReason:[CodexAgentCodexWorkspaceSelectionReason notFound]
+                    message:@"Choose a D084 workspace"];
+    CodexAgentCodexHostStateWorkspaceRequired *workspaceRequired =
+        [[CodexAgentCodexHostStateWorkspaceRequired alloc] initWithRequirement:requirement];
+    if (workspaceRequired.requirement != requirement) {
+        return @"Objective-C D084 WorkspaceRequired payload changed";
+    }
+    return nil;
+}
+
+static NSString *CDXVerifyD084ReadyPayload(CodexAgentCodexAgent *agent) {
+    CodexAgentCodexHostStateReady *ready = [[CodexAgentCodexHostStateReady alloc]
+        initWithAgent:agent];
+    return ready.agent == agent ? nil : @"Objective-C D084 Ready payload changed";
+}
+
 #undef CDX_VERIFY_ENUM
 
 typedef CDXOperation *(^CDXOperationFactory)(dispatch_block_t completed);
@@ -1943,11 +1983,29 @@ static const NSTimeInterval CDXConsumerTimeoutSeconds = 110.0;
 static const NSTimeInterval CDXCleanupTimeoutSeconds = 5.0;
 static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 
+@interface CDXD084AuthorizationBrowser : NSObject <CodexAgentCodexAuthorizationBrowser>
+@end
+
+@implementation CDXD084AuthorizationBrowser
+
+- (id<CodexAgentCodexAuthorizationPresentation> _Nullable)openUrl:
+    (CodexAgentCodexAuthorizationUrl *)url
+    error:(NSError * _Nullable * _Nullable)error {
+    (void)url;
+    (void)error;
+    return [CodexAgentCodexAuthorizationPresentationCompanion companion].None;
+}
+
+@end
+
 @interface CDXObjectiveCConsumerRun : NSObject
 
 @property(nonatomic, copy) CDXObjectiveCConsumerCompletion completion;
 @property(nonatomic, copy) NSString *sandboxRoot;
 @property(nonatomic, strong) NSURL *workspaceURL;
+@property(nonatomic, strong) NSURL *canonicalWorkspaceURL;
+@property(nonatomic, strong) CodexAgentCodexHost *canonicalHost;
+@property(nonatomic, strong) CodexAgentCodexStateObservation *canonicalHostObservation;
 @property(nonatomic, strong) CDXHost *host;
 @property(nonatomic, strong) CDXAgent *agent;
 @property(nonatomic, strong) CDXConversation *conversation;
@@ -1966,6 +2024,17 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 @property(nonatomic) BOOL completed;
 @property(nonatomic) NSUInteger hostCallbackCount;
 @property(nonatomic) NSUInteger hostCallbackCountAtInvalidation;
+@property(nonatomic) NSUInteger canonicalHostChangeCount;
+@property(nonatomic) BOOL canonicalObservedNew;
+@property(nonatomic) BOOL canonicalObservedWorkspaceRequired;
+@property(nonatomic) BOOL canonicalObservedReady;
+@property(nonatomic) BOOL canonicalObservedClosed;
+@property(nonatomic) BOOL canonicalStartCompleted;
+@property(nonatomic) BOOL canonicalStartAdvanced;
+@property(nonatomic) BOOL canonicalSelectionCompleted;
+@property(nonatomic) BOOL canonicalSelectionAdvanced;
+@property(nonatomic) BOOL canonicalCloseCompleted;
+@property(nonatomic) BOOL canonicalCloseAdvanced;
 
 - (instancetype)initWithCompletion:(CDXObjectiveCConsumerCompletion)completion;
 - (void)run;
@@ -2119,6 +2188,187 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
         return;
     }
     self.workspaceURL = [NSURL fileURLWithPath:workspacePath isDirectory:YES];
+    NSString *canonicalRoot = [self.sandboxRoot stringByAppendingPathComponent:@"canonical"];
+    NSString *canonicalWorkspacePath = [canonicalRoot stringByAppendingPathComponent:@"workspace"];
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:canonicalWorkspacePath
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:&directoryError]) {
+        [self finishWithFailure:directoryError.localizedDescription];
+        return;
+    }
+    self.canonicalWorkspaceURL = [NSURL fileURLWithPath:canonicalWorkspacePath isDirectory:YES];
+    CodexAgentCodexWorkspace *canonicalWorkspace = [[CodexAgentCodexWorkspace alloc]
+        initWithPath:canonicalWorkspacePath
+         displayName:@"D084 Workspace"];
+    NSString *d084Failure = CDXVerifyD084HostStatePayloads(canonicalWorkspace);
+    if (d084Failure != nil) {
+        [self finishWithFailure:d084Failure];
+        return;
+    }
+    [self startCanonicalLifecycle];
+}
+
+- (void)startCanonicalLifecycle {
+    NSString *canonicalRoot = self.canonicalWorkspaceURL.URLByDeletingLastPathComponent.path;
+    NSString *codexHome = [canonicalRoot
+        stringByAppendingPathComponent:@"Library/Application Support/CodexAgent"];
+    CDXD084AuthorizationBrowser *browser = [[CDXD084AuthorizationBrowser alloc] init];
+    CodexAgentIosCodexPlatform *platform = [[CodexAgentIosCodexPlatform alloc]
+        initWithSandboxRootPath:canonicalRoot
+          credentialProtection:[CodexAgentIosCodexCredentialProtection whileOpen]
+          authorizationBrowser:browser
+                 codexHomePath:codexHome
+                  storageRoots:nil];
+    CodexAgentCodexClientInfo *clientInfo = [[CodexAgentCodexClientInfo alloc]
+        initWithName:@"objective-c-canonical"
+               title:@"Objective-C Canonical Consumer"
+             version:@"0.2.0"];
+    self.canonicalHost = [[CodexAgentCodexHost alloc]
+        initWithPlatform:platform
+              clientInfo:clientInfo];
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> lifecycleState =
+        self.canonicalHost.lifecycleState;
+    if (![lifecycleState.value isKindOfClass:[CodexAgentCodexHostStateNew class]]) {
+        [self finishWithFailure:@"Objective-C canonical host did not expose current New state"];
+        return;
+    }
+
+    __weak CDXObjectiveCConsumerRun *weakSelf = self;
+    self.canonicalHostObservation = [[CodexAgentCodexStateObservation alloc]
+        initWithState:lifecycleState
+              onValue:^(id _Nullable value) {
+        CDXObjectiveCConsumerRun *run = weakSelf;
+        if (run == nil || run.finishing) return;
+        if (![NSThread isMainThread]) {
+            [run finishWithFailure:@"Objective-C canonical state changed off the main queue"];
+            return;
+        }
+        run.canonicalHostChangeCount += 1;
+        run.canonicalObservedNew |= [value isKindOfClass:[CodexAgentCodexHostStateNew class]];
+        run.canonicalObservedWorkspaceRequired |=
+            [value isKindOfClass:[CodexAgentCodexHostStateWorkspaceRequired class]];
+        run.canonicalObservedReady |= [value isKindOfClass:[CodexAgentCodexHostStateReady class]];
+        run.canonicalObservedClosed |= [value isKindOfClass:[CodexAgentCodexHostStateClosed class]];
+        [run continueCanonicalStartIfReady];
+        [run continueCanonicalSelectionIfReady];
+        [run continueCanonicalCloseIfReady];
+    }];
+    if (!self.canonicalObservedNew || self.canonicalHostChangeCount != 1) {
+        [self finishWithFailure:@"Objective-C canonical observation omitted its current value"];
+        return;
+    }
+
+    [self.canonicalHost startWithCompletionHandler:^(NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CDXObjectiveCConsumerRun *run = weakSelf;
+            if (run == nil || run.finishing) return;
+            if (error != nil) {
+                [run finishWithFailure:[@"Objective-C canonical start failed: "
+                    stringByAppendingString:error.localizedDescription]];
+                return;
+            }
+            run.canonicalStartCompleted = YES;
+            [run continueCanonicalStartIfReady];
+        });
+    }];
+}
+
+- (void)continueCanonicalStartIfReady {
+    if (!self.canonicalStartCompleted || !self.canonicalObservedWorkspaceRequired ||
+        self.canonicalStartAdvanced || self.finishing) return;
+    self.canonicalStartAdvanced = YES;
+    id current = self.canonicalHost.lifecycleState.value;
+    if (![current isKindOfClass:[CodexAgentCodexHostStateWorkspaceRequired class]] ||
+        self.canonicalHostChangeCount < 2) {
+        [self finishWithFailure:@"Objective-C canonical start omitted its state change"];
+        return;
+    }
+    CodexAgentCodexHostStateWorkspaceRequired *workspaceRequired = current;
+    if (workspaceRequired.requirement.message.length == 0 ||
+        workspaceRequired.requirement.reason == nil) {
+        [self finishWithFailure:@"Objective-C canonical workspace requirement lost its payload"];
+        return;
+    }
+    [self selectCanonicalWorkspace];
+}
+
+- (void)selectCanonicalWorkspace {
+    CodexAgentIosCodexWorkspaceSelection *selection =
+        [[CodexAgentIosCodexWorkspaceSelection alloc] initWithUrl:self.canonicalWorkspaceURL];
+    __weak CDXObjectiveCConsumerRun *weakSelf = self;
+    [self.canonicalHost selectWorkspaceSelection:selection completionHandler:^(NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CDXObjectiveCConsumerRun *run = weakSelf;
+            if (run == nil || run.finishing) return;
+            id current = run.canonicalHost.lifecycleState.value;
+            if (error != nil || [current isKindOfClass:[CodexAgentCodexHostStateFailed class]]) {
+                CodexAgentCodexHostStateFailed *failed =
+                    [current isKindOfClass:[CodexAgentCodexHostStateFailed class]] ? current : nil;
+                NSString *detail = failed.failure.message ?: error.localizedDescription ?: @"unknown";
+                [run finishWithFailure:[@"Objective-C canonical selection failed: "
+                    stringByAppendingString:detail]];
+                return;
+            }
+            run.canonicalSelectionCompleted = YES;
+            [run continueCanonicalSelectionIfReady];
+        });
+    }];
+}
+
+- (void)continueCanonicalSelectionIfReady {
+    if (!self.canonicalSelectionCompleted || !self.canonicalObservedReady ||
+        self.canonicalSelectionAdvanced || self.finishing) return;
+    self.canonicalSelectionAdvanced = YES;
+    id current = self.canonicalHost.lifecycleState.value;
+    if (![current isKindOfClass:[CodexAgentCodexHostStateReady class]] ||
+        self.canonicalHostChangeCount < 3) {
+        [self finishWithFailure:@"Objective-C canonical selection omitted Ready state"];
+        return;
+    }
+    CodexAgentCodexHostStateReady *ready = current;
+    NSString *readyFailure = CDXVerifyD084ReadyPayload(ready.agent);
+    if (ready.agent == nil || readyFailure != nil) {
+        [self finishWithFailure:readyFailure ?: @"Objective-C canonical Ready lost its agent"];
+        return;
+    }
+    [self closeCanonicalHost];
+}
+
+- (void)closeCanonicalHost {
+    __weak CDXObjectiveCConsumerRun *weakSelf = self;
+    [self.canonicalHost closeWithCompletionHandler:^(NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CDXObjectiveCConsumerRun *run = weakSelf;
+            if (run == nil || run.finishing) return;
+            if (error != nil) {
+                [run finishWithFailure:error.localizedDescription];
+                return;
+            }
+            run.canonicalCloseCompleted = YES;
+            [run continueCanonicalCloseIfReady];
+        });
+    }];
+}
+
+- (void)continueCanonicalCloseIfReady {
+    if (!self.canonicalCloseCompleted || !self.canonicalObservedClosed ||
+        self.canonicalCloseAdvanced || self.finishing) return;
+    self.canonicalCloseAdvanced = YES;
+    id current = self.canonicalHost.lifecycleState.value;
+    if (![current isKindOfClass:[CodexAgentCodexHostStateClosed class]] ||
+        self.canonicalHostChangeCount < 4) {
+        [self finishWithFailure:@"Objective-C canonical close omitted Closed state"];
+        return;
+    }
+    [self.canonicalHostObservation close];
+    self.canonicalHostObservation = nil;
+    self.canonicalHost = nil;
+    [self startLegacyLifecycle];
+}
+
+- (void)startLegacyLifecycle {
+    __weak CDXObjectiveCConsumerRun *weakSelf = self;
     self.host = [[CDXHost alloc]
         initWithSandboxRootPath:self.sandboxRoot
                     clientName:@"objective-c-consumer"
@@ -2410,6 +2660,8 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     [self.activeConversationObservation dispose];
     [self.conversationObservation invalidate];
     [self.conversationObservation dispose];
+    [self.canonicalHostObservation close];
+    self.canonicalHostObservation = nil;
 
     __weak CDXObjectiveCConsumerRun *weakSelf = self;
     dispatch_after(
@@ -2427,15 +2679,35 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
         if (run == nil) return;
         [run completeWithFailure:failure ?: cleanupFailure];
     };
-    if (self.host == nil) {
-        complete(nil);
-        return;
-    }
-    [self.host disposeWithCompletion:^(CDXOperationResult *result) {
+    void (^closeLegacyHost)(void) = ^{
         CDXObjectiveCConsumerRun *run = weakSelf;
         if (run == nil) return;
-        complete(result.success ? nil : [run describeFailure:result.failure
-                                                       prefix:@"Objective-C host cleanup failed"]);
+        if (run.host == nil) {
+            complete(nil);
+            return;
+        }
+        [run.host disposeWithCompletion:^(CDXOperationResult *result) {
+            CDXObjectiveCConsumerRun *completedRun = weakSelf;
+            if (completedRun == nil) return;
+            complete(result.success ? nil : [completedRun describeFailure:result.failure
+                prefix:@"Objective-C host cleanup failed"]);
+        }];
+    };
+    CodexAgentCodexHost *canonicalHost = self.canonicalHost;
+    self.canonicalHost = nil;
+    if (canonicalHost == nil) {
+        closeLegacyHost();
+        return;
+    }
+    [canonicalHost closeWithCompletionHandler:^(NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error != nil && failure == nil) {
+                complete([@"Objective-C canonical host cleanup failed: "
+                    stringByAppendingString:error.localizedDescription]);
+                return;
+            }
+            closeLegacyHost();
+        });
     }];
 }
 
@@ -2449,7 +2721,10 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     self.hostObservation = nil;
     self.activeConversationObservation = nil;
     self.conversationObservation = nil;
+    self.canonicalHostObservation = nil;
     self.workspaceURL = nil;
+    self.canonicalWorkspaceURL = nil;
+    self.canonicalHost = nil;
     self.host = nil;
     self.agent = nil;
     self.conversation = nil;

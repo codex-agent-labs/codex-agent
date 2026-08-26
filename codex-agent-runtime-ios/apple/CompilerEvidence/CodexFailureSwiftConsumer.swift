@@ -1138,3 +1138,33 @@ func consumeD083ProtocolProperties(
         interaction.requestId
     )
 }
+
+func consumeD084HostAndStateGateway(
+    platform: any CodexPlatform,
+    clientInfo: CodexClientInfo,
+    selection: any CodexWorkspaceSelection,
+    workspace: CodexWorkspace,
+    failure: CodexFailure,
+    agent: CodexAgent,
+    requirement: CodexWorkspaceResolutionSelectionRequired
+) async throws {
+    let host = CodexHost(platform: platform, clientInfo: clientInfo)
+    _ = host.lifecycleState
+
+    let failed = CodexHostStateFailed(workspace: workspace, failure: failure)
+    _ = failed.failure
+    _ = failed.workspace
+
+    let preparing = CodexHostStatePreparing(workspace: workspace)
+    _ = preparing.workspace
+
+    let ready = CodexHostStateReady(agent: agent)
+    _ = ready.agent
+
+    let workspaceRequired = CodexHostStateWorkspaceRequired(requirement: requirement)
+    _ = workspaceRequired.requirement
+
+    try await host.start()
+    try await host.selectWorkspace(selection: selection)
+    try await host.close()
+}
