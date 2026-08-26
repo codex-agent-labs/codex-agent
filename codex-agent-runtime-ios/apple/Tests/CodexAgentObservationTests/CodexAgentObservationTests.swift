@@ -102,6 +102,7 @@ final class CodexAgentObservationTests: XCTestCase {
 
         assertD065EnumValues()
         assertD065ImmutableValues()
+        assertD073OrdinaryValues()
 
         let failure = CodexFailure(
             code: "workspace_unavailable",
@@ -362,6 +363,183 @@ final class CodexAgentObservationTests: XCTestCase {
         let tool = AgentMcpToolConfiguration(approval: .writes)
         XCTAssertTrue(tool.approval === AgentMcpToolApproval.writes)
         XCTAssertNil(AgentMcpToolConfiguration(approval: nil).approval)
+    }
+
+    private func assertD073OrdinaryValues() {
+        let connector = AgentConnector(
+            id: "d073-connector",
+            name: "D073 Connector",
+            description: "D073 connector description",
+            installUrl: "https://example.com/install",
+            isAccessible: true,
+            isEnabled: false,
+            pluginNames: ["d073-plugin"]
+        )
+        XCTAssertEqual(connector.id, "d073-connector")
+        XCTAssertEqual(connector.name, "D073 Connector")
+        XCTAssertEqual(connector.description_, "D073 connector description")
+        XCTAssertEqual(connector.installUrl, "https://example.com/install")
+        XCTAssertTrue(connector.isAccessible)
+        XCTAssertFalse(connector.isEnabled)
+        XCTAssertEqual(connector.pluginNames, ["d073-plugin"])
+
+        let issue = AgentElicitationValidationIssue(fieldName: "field", reason: .invalidType)
+        let validation = AgentElicitationValidation(issues: [issue])
+        XCTAssertFalse(validation.isValid)
+        XCTAssertTrue(validation.issues.count == 1 && validation.issues[0] === issue)
+
+        let booleanValue = AgentFormValueBooleanValue(value: true)
+        XCTAssertTrue(booleanValue.value)
+        let numberValue = AgentFormValueNumber(value: 73.5)
+        XCTAssertEqual(numberValue.value, 73.5)
+        let textValue = AgentFormValueText(value: "D073 text")
+        XCTAssertEqual(textValue.value, "D073 text")
+        let textListValue = AgentFormValueTextList(value: ["D073", "text"])
+        XCTAssertEqual(textListValue.value, ["D073", "text"])
+
+        let tier = AgentServiceTier(id: "d073-tier", name: "D073 Tier", description: "D073 tier")
+        let model = AgentModel(
+            id: "d073-model",
+            displayName: "D073 Model",
+            description: "D073 model description",
+            supportedEfforts: ["low", "high"],
+            defaultEffort: "high",
+            isDefault: true,
+            serviceTiers: [tier],
+            defaultServiceTier: "d073-tier"
+        )
+        XCTAssertEqual(model.id, "d073-model")
+        XCTAssertEqual(model.displayName, "D073 Model")
+        XCTAssertEqual(model.description_, "D073 model description")
+        XCTAssertEqual(model.supportedEfforts, ["low", "high"])
+        XCTAssertEqual(model.defaultEffort, "high")
+        XCTAssertTrue(model.isDefault)
+        XCTAssertTrue(model.serviceTiers.count == 1 && model.serviceTiers[0] === tier)
+        XCTAssertEqual(model.defaultServiceTier, "d073-tier")
+
+        let step = AgentPlanStep(text: "Verify D073", status: .inProgress)
+        let progress = AgentPlanProgress(explanation: "D073 plan", steps: [step])
+        XCTAssertEqual(progress.explanation, "D073 plan")
+        XCTAssertTrue(progress.steps.count == 1 && progress.steps[0] === step)
+
+        let reference = AgentPluginReference(
+            id: "d073-plugin",
+            name: "d073-plugin",
+            marketplaceName: "d073-marketplace",
+            marketplacePath: "/d073/marketplace",
+            remotePluginId: "d073-remote"
+        )
+        let summary = AgentPluginSummary(
+            reference: reference,
+            displayName: "D073 Plugin",
+            description: "D073 plugin description",
+            isInstalled: true,
+            isEnabled: false,
+            installPolicy: .available,
+            authPolicy: .onUse,
+            isAvailable: true,
+            capabilities: ["skill", "connector"],
+            brandColor: "#123456",
+            privacyPolicyUrl: "https://example.com/privacy",
+            termsOfServiceUrl: "https://example.com/terms",
+            websiteUrl: "https://example.com/plugin"
+        )
+        XCTAssertTrue(summary.reference === reference)
+        XCTAssertEqual(summary.displayName, "D073 Plugin")
+        XCTAssertEqual(summary.description_, "D073 plugin description")
+        XCTAssertTrue(summary.isInstalled)
+        XCTAssertFalse(summary.isEnabled)
+        XCTAssertTrue(summary.installPolicy === AgentPluginInstallPolicy.available)
+        XCTAssertTrue(summary.authPolicy === AgentPluginAuthPolicy.onUse)
+        XCTAssertTrue(summary.isAvailable)
+        XCTAssertEqual(summary.capabilities, ["skill", "connector"])
+        XCTAssertEqual(summary.brandColor, "#123456")
+        XCTAssertEqual(summary.privacyPolicyUrl, "https://example.com/privacy")
+        XCTAssertEqual(summary.termsOfServiceUrl, "https://example.com/terms")
+        XCTAssertEqual(summary.websiteUrl, "https://example.com/plugin")
+
+        let catalog = AgentPluginCatalog(
+            plugins: [summary],
+            errors: ["D073 warning"],
+            freshness: .freshCache
+        )
+        XCTAssertTrue(catalog.plugins.count == 1 && catalog.plugins[0] === summary)
+        XCTAssertEqual(catalog.errors, ["D073 warning"])
+        XCTAssertTrue(catalog.freshness === AgentCatalogFreshness.freshCache)
+
+        let pluginSkill = AgentPluginSkill(
+            name: "d073-plugin-skill",
+            description: "D073 plugin skill",
+            isEnabled: true,
+            path: "/d073/plugin-skill"
+        )
+        let detail = AgentPluginDetail(
+            summary: summary,
+            description: "D073 detail",
+            skills: [pluginSkill],
+            connectors: [connector],
+            mcpServers: ["d073-server"],
+            hookCount: 2
+        )
+        XCTAssertTrue(detail.summary === summary)
+        XCTAssertEqual(detail.description_, "D073 detail")
+        XCTAssertTrue(detail.skills.count == 1 && detail.skills[0] === pluginSkill)
+        XCTAssertTrue(detail.connectors.count == 1 && detail.connectors[0] === connector)
+        XCTAssertEqual(detail.mcpServers, ["d073-server"])
+        XCTAssertEqual(detail.hookCount, 2)
+
+        let installResult = AgentPluginInstallResult(
+            authPolicy: .onUse,
+            connectorsNeedingAuthentication: [connector],
+            message: "D073 authentication required"
+        )
+        XCTAssertTrue(installResult.authPolicy === AgentPluginAuthPolicy.onUse)
+        XCTAssertTrue(
+            installResult.connectorsNeedingAuthentication.count == 1 &&
+                installResult.connectorsNeedingAuthentication[0] === connector
+        )
+        XCTAssertEqual(installResult.message, "D073 authentication required")
+
+        let skill = AgentSkill(
+            name: "d073-skill",
+            displayName: "D073 Skill",
+            description: "D073 skill description",
+            path: "/d073/skill",
+            scope: .repo,
+            isEnabled: true,
+            brandColor: "#654321",
+            dependencies: ["git"],
+            canUninstall: true,
+            origin: .workspace
+        )
+        XCTAssertEqual(skill.name, "d073-skill")
+        XCTAssertEqual(skill.displayName, "D073 Skill")
+        XCTAssertEqual(skill.description_, "D073 skill description")
+        XCTAssertEqual(skill.path, "/d073/skill")
+        XCTAssertTrue(skill.scope === AgentSkillScope.repo)
+        XCTAssertTrue(skill.isEnabled)
+        XCTAssertEqual(skill.brandColor, "#654321")
+        XCTAssertEqual(skill.dependencies, ["git"])
+        XCTAssertTrue(skill.canUninstall)
+        XCTAssertTrue(skill.origin === AgentResourceOrigin.workspace)
+
+        let skillCatalog = AgentSkillCatalog(skills: [skill], errors: ["D073 warning"])
+        XCTAssertTrue(skillCatalog.skills.count == 1 && skillCatalog.skills[0] === skill)
+        XCTAssertEqual(skillCatalog.errors, ["D073 warning"])
+
+        let selection = CodexPathWorkspaceSelection(path: "/d073/workspace")
+        XCTAssertEqual(selection.path, "/d073/workspace")
+
+        let workspace = CodexWorkspace(path: "/d073/workspace", displayName: "D073 Workspace")
+        let available = CodexWorkspaceResolutionAvailable(workspace: workspace)
+        XCTAssertTrue(available.workspace === workspace)
+
+        let selectionRequired = CodexWorkspaceResolutionSelectionRequired(
+            reason: .notSelected,
+            message: "Select a workspace"
+        )
+        XCTAssertTrue(selectionRequired.reason === CodexWorkspaceSelectionReason.notSelected)
+        XCTAssertEqual(selectionRequired.message, "Select a workspace")
     }
 
     private func assertEnumValue<E: AnyObject>(

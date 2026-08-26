@@ -17,7 +17,7 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageAppleBindingEvidenceTest {
     @Test
-    fun `observes 174 independent claims and 382 explicit gaps per Apple language`() {
+    fun `observes 255 independent claims and 301 explicit gaps per Apple language`() {
         val fixture = fixture()
         val report = fixture.derive()
 
@@ -29,11 +29,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         val languages = report.releaseArray("languages").map { it as JsonObject }
         assertEquals(listOf("objective-c", "swift"), languages.map { it.releaseString("language") })
         languages.forEach { language ->
-            assertEquals(220, language.releaseArray("publicSymbols").size)
-            assertEquals(174, language.releaseArray("referencedSymbols").size)
-            assertEquals(174, language.releaseArray("claims").size)
+            assertEquals(318, language.releaseArray("publicSymbols").size)
+            assertEquals(255, language.releaseArray("referencedSymbols").size)
+            assertEquals(255, language.releaseArray("claims").size)
             assertTrue(language.releaseArray("exclusions").isEmpty())
-            assertEquals(382, language.releaseArray("missingCapabilityKeys").size)
+            assertEquals(301, language.releaseArray("missingCapabilityKeys").size)
             assertEquals(
                 fixture.capabilities,
                 language.releaseArray("claims").map { (it as JsonObject).releaseString("canonicalKey") },
@@ -420,7 +420,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             canonicalConversationIdConstructor(),
             canonicalProperty("value", "kotlin/String!!", owner = "ConversationId"),
         ) + appleCompilerFixtureD065Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
-            (0 until 382).map { index ->
+            appleCompilerFixtureD073Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
+            (0 until 301).map { index ->
                 "common|owner=sample/Owner${index.toString().padStart(3, '0')}|kind=property|" +
                     "abi=sample/Owner$index.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!"
             }).sorted()
@@ -577,6 +578,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             "class var remote: AgentMcpEnvironmentSource { get }", listOf(MCP_ENVIRONMENT_SOURCE_OWNER)),
     ) + appleCompilerFixtureD065SwiftSymbols().map { (precise, expected) ->
         expectedSymbol(precise, "swift", expected)
+    } + appleCompilerFixtureD073SwiftSymbols().map { (precise, expected) ->
+        expectedSymbol(precise, "swift", expected)
     }).sortedBy { it.releaseString("precise") })
 
     private fun objectiveCSurface() = JsonArray((listOf(
@@ -669,6 +672,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             listOf(MCP_ENVIRONMENT_SOURCE_OWNER)),
     ) + appleCompilerFixtureD065ObjectiveCSymbols().map { (precise, expected) ->
         expectedSymbol(precise, "objective-c", expected)
+    } + appleCompilerFixtureD073ObjectiveCSymbols().map { (precise, expected) ->
+        expectedSymbol(precise, "objective-c", expected)
     }).sortedBy { it.releaseString("precise") })
 
     private fun swiftReferences() = JsonArray((listOf(
@@ -694,7 +699,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             MCP_ENVIRONMENT_REMOTE_USR, "member_ref_expr", "remote", null, MCP_ENVIRONMENT_SOURCE_SWIFT_TYPE,
         ),
     ) + appleCompilerFixtureSwiftReferences()
-        .filter { it.precise in appleCompilerFixtureD065Capabilities.map(AppleOrdinaryCapability::usr) }
+        .filter { it.precise in (appleCompilerFixtureD065Capabilities + appleCompilerFixtureD073Capabilities)
+            .map(AppleOrdinaryCapability::usr) }
         .map(::expectedReference)
     ).sortedBy { it.releaseString("precise") })
 
@@ -730,7 +736,8 @@ class CrossLanguageAppleBindingEvidenceTest {
         reference(MCP_ENVIRONMENT_REMOTE_USR, "ObjCMessageExpr", "remote", "CodexAgentAgentMcpEnvironmentSource",
             "CodexAgentAgentMcpEnvironmentSource * _Nonnull"),
     ) + appleCompilerFixtureObjectiveCReferences()
-        .filter { it.precise in appleCompilerFixtureD065Capabilities.map(AppleOrdinaryCapability::usr) }
+        .filter { it.precise in (appleCompilerFixtureD065Capabilities + appleCompilerFixtureD073Capabilities)
+            .map(AppleOrdinaryCapability::usr) }
         .map(::expectedReference)
     ).sortedBy { it.releaseString("precise") })
 
@@ -805,7 +812,8 @@ class CrossLanguageAppleBindingEvidenceTest {
         }
 
     private fun usr(capability: String): String =
-        appleCompilerFixtureD065Capabilities.singleOrNull { it.canonicalKey == capability }?.usr ?: when {
+        (appleCompilerFixtureD065Capabilities + appleCompilerFixtureD073Capabilities)
+            .singleOrNull { it.canonicalKey == capability }?.usr ?: when {
         "|owner=$CANONICAL_OWNER|kind=constructor|" in capability -> CONSTRUCTOR
         "|owner=$CONVERSATION_ID_CANONICAL_OWNER|kind=constructor|" in capability ->
             CONVERSATION_ID_CONSTRUCTOR_USR

@@ -277,6 +277,215 @@ static NSString *CDXVerifyD065Values(
     return nil;
 }
 
+static NSString *CDXVerifyD073OrdinaryValues(void) {
+    CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
+        initWithId:@"connector-id"
+        name:@"Connector"
+        description:@"Connector description"
+        installUrl:@"https://example.com/install"
+        isAccessible:YES
+        isEnabled:NO
+        pluginNames:@[@"plugin"]];
+    if (![connector.id isEqualToString:@"connector-id"] ||
+        ![connector.name isEqualToString:@"Connector"] ||
+        ![connector.description_ isEqualToString:@"Connector description"] ||
+        ![connector.installUrl isEqualToString:@"https://example.com/install"] ||
+        !connector.isAccessible || connector.isEnabled ||
+        ![connector.pluginNames isEqualToArray:@[@"plugin"]]) {
+        return @"Objective-C D073 connector changed";
+    }
+
+    CodexAgentAgentElicitationValidationIssue *validationIssue =
+        [[CodexAgentAgentElicitationValidationIssue alloc]
+            initWithFieldName:@"field"
+            reason:[CodexAgentAgentElicitationValidationReason invalidType]];
+    CodexAgentAgentElicitationValidation *validation =
+        [[CodexAgentAgentElicitationValidation alloc] initWithIssues:@[validationIssue]];
+    if (![validation.issues isEqualToArray:@[validationIssue]] || validation.isValid) {
+        return @"Objective-C D073 elicitation validation changed";
+    }
+
+    CodexAgentAgentFormValueBooleanValue *booleanValue =
+        [[CodexAgentAgentFormValueBooleanValue alloc] initWithValue:YES];
+    if (!booleanValue.value) {
+        return @"Objective-C D073 boolean form value changed";
+    }
+    CodexAgentAgentFormValueNumber *numberValue =
+        [[CodexAgentAgentFormValueNumber alloc] initWithValue:7.5];
+    if (numberValue.value != 7.5) {
+        return @"Objective-C D073 number form value changed";
+    }
+    CodexAgentAgentFormValueText *textValue =
+        [[CodexAgentAgentFormValueText alloc] initWithValue:@"text"];
+    if (![textValue.value isEqualToString:@"text"]) {
+        return @"Objective-C D073 text form value changed";
+    }
+    CodexAgentAgentFormValueTextList *textListValue =
+        [[CodexAgentAgentFormValueTextList alloc] initWithValue:@[@"first", @"second"]];
+    if (![textListValue.value isEqualToArray:@[@"first", @"second"]]) {
+        return @"Objective-C D073 text-list form value changed";
+    }
+
+    CodexAgentAgentServiceTier *serviceTier = [[CodexAgentAgentServiceTier alloc]
+        initWithId:@"fast" name:@"Fast" description:@"Fast tier"];
+    CodexAgentAgentModel *model = [[CodexAgentAgentModel alloc]
+        initWithId:@"model-id"
+        displayName:@"Model"
+        description:@"Model description"
+        supportedEfforts:@[@"low", @"high"]
+        defaultEffort:@"high"
+        isDefault:YES
+        serviceTiers:@[serviceTier]
+        defaultServiceTier:@"fast"];
+    if (![model.id isEqualToString:@"model-id"] ||
+        ![model.displayName isEqualToString:@"Model"] ||
+        ![model.description_ isEqualToString:@"Model description"] ||
+        ![model.supportedEfforts isEqualToArray:@[@"low", @"high"]] ||
+        ![model.defaultEffort isEqualToString:@"high"] || !model.isDefault ||
+        ![model.serviceTiers isEqualToArray:@[serviceTier]] ||
+        ![model.defaultServiceTier isEqualToString:@"fast"]) {
+        return @"Objective-C D073 model changed";
+    }
+
+    CodexAgentAgentPlanStep *planStep = [[CodexAgentAgentPlanStep alloc]
+        initWithText:@"Inspect" status:[CodexAgentAgentPlanStepStatus inProgress]];
+    CodexAgentAgentPlanProgress *planProgress = [[CodexAgentAgentPlanProgress alloc]
+        initWithExplanation:@"Plan explanation" steps:@[planStep]];
+    if (![planProgress.explanation isEqualToString:@"Plan explanation"] ||
+        ![planProgress.steps isEqualToArray:@[planStep]]) {
+        return @"Objective-C D073 plan progress changed";
+    }
+
+    CodexAgentAgentPluginReference *pluginReference = [[CodexAgentAgentPluginReference alloc]
+        initWithId:@"plugin-id"
+        name:@"plugin"
+        marketplaceName:@"marketplace"
+        marketplacePath:@"/marketplace/plugin"
+        remotePluginId:@"remote-plugin"];
+    CodexAgentAgentPluginSummary *pluginSummary = [[CodexAgentAgentPluginSummary alloc]
+        initWithReference:pluginReference
+        displayName:@"Plugin"
+        description:@"Plugin description"
+        isInstalled:YES
+        isEnabled:NO
+        installPolicy:[CodexAgentAgentPluginInstallPolicy available]
+        authPolicy:[CodexAgentAgentPluginAuthPolicy onUse]
+        isAvailable:YES
+        capabilities:@[@"tools", @"hooks"]
+        brandColor:@"#123456"
+        privacyPolicyUrl:@"https://example.com/privacy"
+        termsOfServiceUrl:@"https://example.com/terms"
+        websiteUrl:@"https://example.com"];
+    if (pluginSummary.reference != pluginReference ||
+        ![pluginSummary.displayName isEqualToString:@"Plugin"] ||
+        ![pluginSummary.description_ isEqualToString:@"Plugin description"] ||
+        !pluginSummary.isInstalled || pluginSummary.isEnabled ||
+        pluginSummary.installPolicy != [CodexAgentAgentPluginInstallPolicy available] ||
+        pluginSummary.authPolicy != [CodexAgentAgentPluginAuthPolicy onUse] ||
+        !pluginSummary.isAvailable ||
+        ![pluginSummary.capabilities isEqualToArray:@[@"tools", @"hooks"]] ||
+        ![pluginSummary.brandColor isEqualToString:@"#123456"] ||
+        ![pluginSummary.privacyPolicyUrl isEqualToString:@"https://example.com/privacy"] ||
+        ![pluginSummary.termsOfServiceUrl isEqualToString:@"https://example.com/terms"] ||
+        ![pluginSummary.websiteUrl isEqualToString:@"https://example.com"]) {
+        return @"Objective-C D073 plugin summary changed";
+    }
+
+    CodexAgentAgentPluginSkill *pluginSkill = [[CodexAgentAgentPluginSkill alloc]
+        initWithName:@"plugin-skill"
+        description:@"Plugin skill"
+        isEnabled:YES
+        path:@"/plugins/skill"];
+    CodexAgentAgentPluginCatalog *pluginCatalog = [[CodexAgentAgentPluginCatalog alloc]
+        initWithPlugins:@[pluginSummary]
+        errors:@[@"catalog warning"]
+        freshness:[CodexAgentAgentCatalogFreshness freshCache]];
+    if (![pluginCatalog.plugins isEqualToArray:@[pluginSummary]] ||
+        ![pluginCatalog.errors isEqualToArray:@[@"catalog warning"]] ||
+        pluginCatalog.freshness != [CodexAgentAgentCatalogFreshness freshCache]) {
+        return @"Objective-C D073 plugin catalog changed";
+    }
+
+    CodexAgentAgentPluginDetail *pluginDetail = [[CodexAgentAgentPluginDetail alloc]
+        initWithSummary:pluginSummary
+        description:@"Detailed plugin"
+        skills:@[pluginSkill]
+        connectors:@[connector]
+        mcpServers:@[@"filesystem"]
+        hookCount:3];
+    if (pluginDetail.summary != pluginSummary ||
+        ![pluginDetail.description_ isEqualToString:@"Detailed plugin"] ||
+        ![pluginDetail.skills isEqualToArray:@[pluginSkill]] ||
+        ![pluginDetail.connectors isEqualToArray:@[connector]] ||
+        ![pluginDetail.mcpServers isEqualToArray:@[@"filesystem"]] ||
+        pluginDetail.hookCount != 3) {
+        return @"Objective-C D073 plugin detail changed";
+    }
+
+    CodexAgentAgentPluginInstallResult *installResult =
+        [[CodexAgentAgentPluginInstallResult alloc]
+            initWithAuthPolicy:[CodexAgentAgentPluginAuthPolicy onInstall]
+            connectorsNeedingAuthentication:@[connector]
+            message:@"Authenticate connector"];
+    if (installResult.authPolicy != [CodexAgentAgentPluginAuthPolicy onInstall] ||
+        ![installResult.connectorsNeedingAuthentication isEqualToArray:@[connector]] ||
+        ![installResult.message isEqualToString:@"Authenticate connector"]) {
+        return @"Objective-C D073 plugin install result changed";
+    }
+
+    CodexAgentAgentSkill *skill = [[CodexAgentAgentSkill alloc]
+        initWithName:@"skill"
+        displayName:@"Skill"
+        description:@"Skill description"
+        path:@"/skills/skill"
+        scope:[CodexAgentAgentSkillScope repo]
+        isEnabled:YES
+        brandColor:@"#abcdef"
+        dependencies:@[@"git"]
+        canUninstall:YES
+        origin:[CodexAgentAgentResourceOrigin workspace]];
+    if (![skill.name isEqualToString:@"skill"] ||
+        ![skill.displayName isEqualToString:@"Skill"] ||
+        ![skill.description_ isEqualToString:@"Skill description"] ||
+        ![skill.path isEqualToString:@"/skills/skill"] ||
+        skill.scope != [CodexAgentAgentSkillScope repo] || !skill.isEnabled ||
+        ![skill.brandColor isEqualToString:@"#abcdef"] ||
+        ![skill.dependencies isEqualToArray:@[@"git"]] || !skill.canUninstall ||
+        skill.origin != [CodexAgentAgentResourceOrigin workspace]) {
+        return @"Objective-C D073 skill changed";
+    }
+
+    CodexAgentAgentSkillCatalog *skillCatalog = [[CodexAgentAgentSkillCatalog alloc]
+        initWithSkills:@[skill] errors:@[@"skill warning"]];
+    if (![skillCatalog.skills isEqualToArray:@[skill]] ||
+        ![skillCatalog.errors isEqualToArray:@[@"skill warning"]]) {
+        return @"Objective-C D073 skill catalog changed";
+    }
+
+    CodexAgentCodexPathWorkspaceSelection *pathSelection =
+        [[CodexAgentCodexPathWorkspaceSelection alloc] initWithPath:@"/workspace"];
+    if (![pathSelection.path isEqualToString:@"/workspace"]) {
+        return @"Objective-C D073 path workspace selection changed";
+    }
+    CodexAgentCodexWorkspace *workspace = [[CodexAgentCodexWorkspace alloc]
+        initWithPath:@"/workspace" displayName:@"Workspace"];
+    CodexAgentCodexWorkspaceResolutionAvailable *available =
+        [[CodexAgentCodexWorkspaceResolutionAvailable alloc] initWithWorkspace:workspace];
+    if (available.workspace != workspace) {
+        return @"Objective-C D073 available workspace resolution changed";
+    }
+    CodexAgentCodexWorkspaceResolutionSelectionRequired *selectionRequired =
+        [[CodexAgentCodexWorkspaceResolutionSelectionRequired alloc]
+            initWithReason:[CodexAgentCodexWorkspaceSelectionReason notFound]
+            message:@"Choose a workspace"];
+    if (selectionRequired.reason != [CodexAgentCodexWorkspaceSelectionReason notFound] ||
+        ![selectionRequired.message isEqualToString:@"Choose a workspace"]) {
+        return @"Objective-C D073 selection-required workspace resolution changed";
+    }
+
+    return nil;
+}
+
 #undef CDX_VERIFY_ENUM
 
 typedef CDXOperation *(^CDXOperationFactory)(dispatch_block_t completed);
@@ -383,6 +592,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *d065Failure = CDXVerifyD065Values(conversationId, remoteEnvironment);
     if (d065Failure != nil) {
         [self finishWithFailure:d065Failure];
+        return;
+    }
+    NSString *d073Failure = CDXVerifyD073OrdinaryValues();
+    if (d073Failure != nil) {
+        [self finishWithFailure:d073Failure];
         return;
     }
     __weak CDXObjectiveCConsumerRun *weakSelf = self;

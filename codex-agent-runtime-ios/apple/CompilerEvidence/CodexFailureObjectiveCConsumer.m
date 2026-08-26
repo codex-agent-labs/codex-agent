@@ -208,3 +208,157 @@ static BOOL consumeD065AppleValues(void) {
         [planStep.text isEqualToString:@"Inspect"] && planStep.status == pendingStep &&
         tool.approval == promptApproval;
 }
+
+static BOOL consumeD073OrdinaryValues(
+    CodexAgentAgentElicitationValidationIssue *validationIssue,
+    CodexAgentAgentServiceTier *serviceTier,
+    CodexAgentAgentPlanStep *planStep,
+    CodexAgentAgentPluginReference *pluginReference,
+    CodexAgentAgentPluginSkill *pluginSkill,
+    CodexAgentCodexWorkspace *workspace,
+    CodexAgentAgentPluginInstallPolicy *availableInstallPolicy,
+    CodexAgentAgentPluginAuthPolicy *authPolicy,
+    CodexAgentAgentCatalogFreshness *freshCache,
+    CodexAgentAgentSkillScope *repoScope,
+    CodexAgentAgentResourceOrigin *workspaceOrigin,
+    CodexAgentCodexWorkspaceSelectionReason *notFoundReason
+) {
+    CodexAgentAgentConnector *connector = [[CodexAgentAgentConnector alloc]
+        initWithId:@"connector-id"
+        name:@"Connector"
+        description:@"Connector description"
+        installUrl:@"https://example.com/install"
+        isAccessible:YES
+        isEnabled:NO
+        pluginNames:@[@"plugin"]];
+    CodexAgentAgentElicitationValidation *validation =
+        [[CodexAgentAgentElicitationValidation alloc] initWithIssues:@[validationIssue]];
+    CodexAgentAgentFormValueBooleanValue *booleanValue =
+        [[CodexAgentAgentFormValueBooleanValue alloc] initWithValue:YES];
+    CodexAgentAgentFormValueNumber *numberValue =
+        [[CodexAgentAgentFormValueNumber alloc] initWithValue:7.5];
+    CodexAgentAgentFormValueText *textValue =
+        [[CodexAgentAgentFormValueText alloc] initWithValue:@"text"];
+    CodexAgentAgentFormValueTextList *textListValue =
+        [[CodexAgentAgentFormValueTextList alloc] initWithValue:@[@"first", @"second"]];
+    CodexAgentAgentModel *model = [[CodexAgentAgentModel alloc]
+        initWithId:@"model-id"
+        displayName:@"Model"
+        description:@"Model description"
+        supportedEfforts:@[@"low", @"high"]
+        defaultEffort:@"high"
+        isDefault:YES
+        serviceTiers:@[serviceTier]
+        defaultServiceTier:@"fast"];
+    CodexAgentAgentPlanProgress *planProgress = [[CodexAgentAgentPlanProgress alloc]
+        initWithExplanation:@"Plan explanation" steps:@[planStep]];
+    CodexAgentAgentPluginSummary *pluginSummary = [[CodexAgentAgentPluginSummary alloc]
+        initWithReference:pluginReference
+        displayName:@"Plugin"
+        description:@"Plugin description"
+        isInstalled:YES
+        isEnabled:NO
+        installPolicy:availableInstallPolicy
+        authPolicy:authPolicy
+        isAvailable:YES
+        capabilities:@[@"tools", @"hooks"]
+        brandColor:@"#123456"
+        privacyPolicyUrl:@"https://example.com/privacy"
+        termsOfServiceUrl:@"https://example.com/terms"
+        websiteUrl:@"https://example.com"];
+    CodexAgentAgentPluginCatalog *pluginCatalog = [[CodexAgentAgentPluginCatalog alloc]
+        initWithPlugins:@[pluginSummary]
+        errors:@[@"catalog warning"]
+        freshness:freshCache];
+    CodexAgentAgentPluginDetail *pluginDetail = [[CodexAgentAgentPluginDetail alloc]
+        initWithSummary:pluginSummary
+        description:@"Detailed plugin"
+        skills:@[pluginSkill]
+        connectors:@[connector]
+        mcpServers:@[@"filesystem"]
+        hookCount:3];
+    CodexAgentAgentPluginInstallResult *installResult =
+        [[CodexAgentAgentPluginInstallResult alloc]
+            initWithAuthPolicy:authPolicy
+            connectorsNeedingAuthentication:@[connector]
+            message:@"Authenticate connector"];
+    CodexAgentAgentSkill *skill = [[CodexAgentAgentSkill alloc]
+        initWithName:@"skill"
+        displayName:@"Skill"
+        description:@"Skill description"
+        path:@"/skills/skill"
+        scope:repoScope
+        isEnabled:YES
+        brandColor:@"#abcdef"
+        dependencies:@[@"git"]
+        canUninstall:YES
+        origin:workspaceOrigin];
+    CodexAgentAgentSkillCatalog *skillCatalog = [[CodexAgentAgentSkillCatalog alloc]
+        initWithSkills:@[skill] errors:@[@"skill warning"]];
+    CodexAgentCodexPathWorkspaceSelection *pathSelection =
+        [[CodexAgentCodexPathWorkspaceSelection alloc] initWithPath:@"/workspace"];
+    CodexAgentCodexWorkspaceResolutionAvailable *available =
+        [[CodexAgentCodexWorkspaceResolutionAvailable alloc] initWithWorkspace:workspace];
+    CodexAgentCodexWorkspaceResolutionSelectionRequired *selectionRequired =
+        [[CodexAgentCodexWorkspaceResolutionSelectionRequired alloc]
+            initWithReason:notFoundReason
+            message:@"Choose a workspace"];
+
+    return [connector.id isEqualToString:@"connector-id"] &&
+        [connector.name isEqualToString:@"Connector"] &&
+        [connector.description_ isEqualToString:@"Connector description"] &&
+        [connector.installUrl isEqualToString:@"https://example.com/install"] &&
+        connector.isAccessible && !connector.isEnabled &&
+        [connector.pluginNames isEqualToArray:@[@"plugin"]] &&
+        [validation.issues isEqualToArray:@[validationIssue]] && !validation.isValid &&
+        booleanValue.value && numberValue.value == 7.5 &&
+        [textValue.value isEqualToString:@"text"] &&
+        [textListValue.value isEqualToArray:@[@"first", @"second"]] &&
+        [model.id isEqualToString:@"model-id"] &&
+        [model.displayName isEqualToString:@"Model"] &&
+        [model.description_ isEqualToString:@"Model description"] &&
+        [model.supportedEfforts isEqualToArray:@[@"low", @"high"]] &&
+        [model.defaultEffort isEqualToString:@"high"] && model.isDefault &&
+        [model.serviceTiers isEqualToArray:@[serviceTier]] &&
+        [model.defaultServiceTier isEqualToString:@"fast"] &&
+        [planProgress.explanation isEqualToString:@"Plan explanation"] &&
+        [planProgress.steps isEqualToArray:@[planStep]] &&
+        [pluginCatalog.plugins isEqualToArray:@[pluginSummary]] &&
+        [pluginCatalog.errors isEqualToArray:@[@"catalog warning"]] &&
+        pluginCatalog.freshness == freshCache &&
+        pluginDetail.summary == pluginSummary &&
+        [pluginDetail.description_ isEqualToString:@"Detailed plugin"] &&
+        [pluginDetail.skills isEqualToArray:@[pluginSkill]] &&
+        [pluginDetail.connectors isEqualToArray:@[connector]] &&
+        [pluginDetail.mcpServers isEqualToArray:@[@"filesystem"]] &&
+        pluginDetail.hookCount == 3 &&
+        installResult.authPolicy == authPolicy &&
+        [installResult.connectorsNeedingAuthentication isEqualToArray:@[connector]] &&
+        [installResult.message isEqualToString:@"Authenticate connector"] &&
+        pluginSummary.reference == pluginReference &&
+        [pluginSummary.displayName isEqualToString:@"Plugin"] &&
+        [pluginSummary.description_ isEqualToString:@"Plugin description"] &&
+        pluginSummary.isInstalled && !pluginSummary.isEnabled &&
+        pluginSummary.installPolicy == availableInstallPolicy &&
+        pluginSummary.authPolicy == authPolicy &&
+        pluginSummary.isAvailable &&
+        [pluginSummary.capabilities isEqualToArray:@[@"tools", @"hooks"]] &&
+        [pluginSummary.brandColor isEqualToString:@"#123456"] &&
+        [pluginSummary.privacyPolicyUrl isEqualToString:@"https://example.com/privacy"] &&
+        [pluginSummary.termsOfServiceUrl isEqualToString:@"https://example.com/terms"] &&
+        [pluginSummary.websiteUrl isEqualToString:@"https://example.com"] &&
+        [skill.name isEqualToString:@"skill"] &&
+        [skill.displayName isEqualToString:@"Skill"] &&
+        [skill.description_ isEqualToString:@"Skill description"] &&
+        [skill.path isEqualToString:@"/skills/skill"] &&
+        skill.scope == repoScope && skill.isEnabled &&
+        [skill.brandColor isEqualToString:@"#abcdef"] &&
+        [skill.dependencies isEqualToArray:@[@"git"]] && skill.canUninstall &&
+        skill.origin == workspaceOrigin &&
+        [skillCatalog.skills isEqualToArray:@[skill]] &&
+        [skillCatalog.errors isEqualToArray:@[@"skill warning"]] &&
+        [pathSelection.path isEqualToString:@"/workspace"] &&
+        available.workspace == workspace &&
+        selectionRequired.reason == notFoundReason &&
+        [selectionRequired.message isEqualToString:@"Choose a workspace"];
+}

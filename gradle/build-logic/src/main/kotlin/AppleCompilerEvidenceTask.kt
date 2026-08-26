@@ -228,6 +228,14 @@ private val appleBoolean = AppleOrdinaryType(
     "kotlin/Boolean!!", "kotlin.Boolean", "Bool", "s:Sb", "\$sSbD",
     "BOOL", "c:@T@BOOL",
 )
+private val appleDouble = AppleOrdinaryType(
+    "kotlin/Double!!", "kotlin.Double", "Double", "s:Sd", "\$sSdD",
+    "double", "c:d",
+)
+private val appleInt = AppleOrdinaryType(
+    "kotlin/Int!!", "kotlin.Int", "Int32", "s:s5Int32V", "\$ss5Int32VD",
+    "int32_t", "c:@T@int32_t",
+)
 private val appleLong = AppleOrdinaryType(
     "kotlin/Long!!", "kotlin.Long", "Int64", "s:s5Int64V", "\$ss5Int64VD",
     "int64_t", "c:@T@int64_t",
@@ -262,6 +270,84 @@ private val applePlanStepStatusType = appleClassType(
 private val appleNullableMcpToolApprovalType = appleClassType(
     "AgentMcpToolApproval", "AgentMcpToolApproval", "CodexAgentAgentMcpToolApproval",
     "\$sSo010CodexAgentB15McpToolApprovalCSgD", nullable = true,
+)
+private val appleCatalogFreshnessType = appleClassType(
+    "AgentCatalogFreshness", "AgentCatalogFreshness", "CodexAgentAgentCatalogFreshness",
+    "\$sSo010CodexAgentB16CatalogFreshnessCD",
+)
+private val applePluginAuthPolicyType = appleClassType(
+    "AgentPluginAuthPolicy", "AgentPluginAuthPolicy", "CodexAgentAgentPluginAuthPolicy",
+    "\$sSo010CodexAgentB16PluginAuthPolicyCD",
+)
+private val applePluginInstallPolicyType = appleClassType(
+    "AgentPluginInstallPolicy", "AgentPluginInstallPolicy", "CodexAgentAgentPluginInstallPolicy",
+    "\$sSo010CodexAgentB19PluginInstallPolicyCD",
+)
+private val applePluginReferenceType = appleClassType(
+    "AgentPluginReference", "AgentPluginReference", "CodexAgentAgentPluginReference",
+    "\$sSo010CodexAgentB15PluginReferenceCD",
+)
+private val applePluginSummaryType = appleClassType(
+    "AgentPluginSummary", "AgentPluginSummary", "CodexAgentAgentPluginSummary",
+    "\$sSo010CodexAgentB13PluginSummaryCD",
+)
+private val appleSkillScopeType = appleClassType(
+    "AgentSkillScope", "AgentSkillScope", "CodexAgentAgentSkillScope",
+    "\$sSo010CodexAgentB10SkillScopeCD",
+)
+private val appleResourceOriginType = appleClassType(
+    "AgentResourceOrigin", "AgentResourceOrigin", "CodexAgentAgentResourceOrigin",
+    "\$sSo010CodexAgentB14ResourceOriginCD",
+)
+private val appleWorkspaceType = appleClassType(
+    "CodexWorkspace", "CodexWorkspace", "CodexAgentCodexWorkspace", "\$sSo010CodexAgentA9WorkspaceCD",
+)
+private val appleWorkspaceSelectionReasonType = appleClassType(
+    "CodexWorkspaceSelectionReason", "CodexWorkspaceSelectionReason",
+    "CodexAgentCodexWorkspaceSelectionReason", "\$sSo010CodexAgentA24WorkspaceSelectionReasonCD",
+)
+
+private val appleStringList = AppleOrdinaryType(
+    "kotlin.collections/List<INVARIANT:kotlin/String!!>!!", "kotlin.collections.List<kotlin.String>",
+    "[String]", "s:SS", "\$sSaySSGD", "NSArray<NSString *> *", "c:Q\$objc(cs)NSArray",
+    "NSArray<NSString *> * _Nonnull",
+)
+private fun appleClassListType(
+    canonicalOwner: String,
+    swiftName: String,
+    objectiveCName: String,
+    swiftAst: String,
+) = AppleOrdinaryType(
+    "kotlin.collections/List<INVARIANT:$appleCanonicalPackage/$canonicalOwner!!>!!",
+    "kotlin.collections.List<$appleCanonicalAbiPackage.$canonicalOwner>",
+    "[$swiftName]", appleOwnerUsr(objectiveCName), swiftAst,
+    "NSArray<$objectiveCName *> *", "c:Q\$objc(cs)NSArray",
+    "NSArray<$objectiveCName *> * _Nonnull",
+)
+private val appleValidationIssueList = appleClassListType(
+    "AgentElicitationValidationIssue", "AgentElicitationValidationIssue",
+    "CodexAgentAgentElicitationValidationIssue", "\$sSaySo010CodexAgentB26ElicitationValidationIssueCGD",
+)
+private val appleServiceTierList = appleClassListType(
+    "AgentServiceTier", "AgentServiceTier", "CodexAgentAgentServiceTier",
+    "\$sSaySo010CodexAgentB11ServiceTierCGD",
+)
+private val applePlanStepList = appleClassListType(
+    "AgentPlanStep", "AgentPlanStep", "CodexAgentAgentPlanStep", "\$sSaySo010CodexAgentB8PlanStepCGD",
+)
+private val applePluginSummaryList = appleClassListType(
+    "AgentPluginSummary", "AgentPluginSummary", "CodexAgentAgentPluginSummary",
+    "\$sSaySo010CodexAgentB13PluginSummaryCGD",
+)
+private val applePluginSkillList = appleClassListType(
+    "AgentPluginSkill", "AgentPluginSkill", "CodexAgentAgentPluginSkill",
+    "\$sSaySo010CodexAgentB11PluginSkillCGD",
+)
+private val appleConnectorList = appleClassListType(
+    "AgentConnector", "AgentConnector", "CodexAgentAgentConnector", "\$sSaySo010CodexAgentB9ConnectorCGD",
+)
+private val appleSkillList = appleClassListType(
+    "AgentSkill", "AgentSkill", "CodexAgentAgentSkill", "\$sSaySo010CodexAgentB5SkillCGD",
 )
 
 private fun appleEntries(vararg values: Pair<String, String>): List<Pair<String, String>> = values.toList()
@@ -510,6 +596,187 @@ private val d065AppleValues = listOf(
         listOf(AppleOrdinaryProperty("approval", appleNullableMcpToolApprovalType))),
 )
 
+private val d073AppleValues = listOf(
+    AppleOrdinaryValue("AgentConnector", "AgentConnector", "CodexAgentAgentConnector",
+        "\$sySo010CodexAgentB9ConnectorCSS_S3SSgS2bSaySSGtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("id", appleString), AppleOrdinaryParameter("name", appleString),
+            AppleOrdinaryParameter("description", appleString, hasDefault = true),
+            AppleOrdinaryParameter("installUrl", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("isAccessible", appleBoolean, hasDefault = true),
+            AppleOrdinaryParameter("isEnabled", appleBoolean, hasDefault = true),
+            AppleOrdinaryParameter("pluginNames", appleStringList, hasDefault = true),
+        ), listOf(
+            AppleOrdinaryProperty("description", appleString, "description_"),
+            AppleOrdinaryProperty("id", appleString), AppleOrdinaryProperty("installUrl", appleNullableString),
+            AppleOrdinaryProperty("isAccessible", appleBoolean), AppleOrdinaryProperty("isEnabled", appleBoolean),
+            AppleOrdinaryProperty("name", appleString), AppleOrdinaryProperty("pluginNames", appleStringList),
+        )),
+    AppleOrdinaryValue("AgentElicitationValidation", "AgentElicitationValidation",
+        "CodexAgentAgentElicitationValidation",
+        "\$sySo010CodexAgentB21ElicitationValidationCSaySo0abbcD5IssueCG_tcABmcD",
+        listOf(AppleOrdinaryParameter("issues", appleValidationIssueList)),
+        listOf(
+            AppleOrdinaryProperty("isValid", appleBoolean),
+            AppleOrdinaryProperty("issues", appleValidationIssueList),
+        )),
+    AppleOrdinaryValue("AgentFormValue.BooleanValue", "AgentFormValueBooleanValue",
+        "CodexAgentAgentFormValueBooleanValue", "\$sySo010CodexAgentb16FormValueBooleanD0CSb_tcABmcD",
+        listOf(AppleOrdinaryParameter("value", appleBoolean)),
+        listOf(AppleOrdinaryProperty("value", appleBoolean))),
+    AppleOrdinaryValue("AgentFormValue.Number", "AgentFormValueNumber", "CodexAgentAgentFormValueNumber",
+        "\$sySo010CodexAgentB15FormValueNumberCSd_tcABmcD",
+        listOf(AppleOrdinaryParameter("value", appleDouble)),
+        listOf(AppleOrdinaryProperty("value", appleDouble))),
+    AppleOrdinaryValue("AgentFormValue.Text", "AgentFormValueText", "CodexAgentAgentFormValueText",
+        "\$sySo010CodexAgentB13FormValueTextCSS_tcABmcD",
+        listOf(AppleOrdinaryParameter("value", appleString)),
+        listOf(AppleOrdinaryProperty("value", appleString))),
+    AppleOrdinaryValue("AgentFormValue.TextList", "AgentFormValueTextList",
+        "CodexAgentAgentFormValueTextList", "\$sySo010CodexAgentB17FormValueTextListCSaySSG_tcABmcD",
+        listOf(AppleOrdinaryParameter("value", appleStringList)),
+        listOf(AppleOrdinaryProperty("value", appleStringList))),
+    AppleOrdinaryValue("AgentModel", "AgentModel", "CodexAgentAgentModel",
+        "\$sySo010CodexAgentB5ModelCSS_S2SSaySSGSSSbSaySo0abB11ServiceTierCGSSSgtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("id", appleString), AppleOrdinaryParameter("displayName", appleString),
+            AppleOrdinaryParameter("description", appleString),
+            AppleOrdinaryParameter("supportedEfforts", appleStringList),
+            AppleOrdinaryParameter("defaultEffort", appleString), AppleOrdinaryParameter("isDefault", appleBoolean),
+            AppleOrdinaryParameter("serviceTiers", appleServiceTierList, hasDefault = true),
+            AppleOrdinaryParameter("defaultServiceTier", appleNullableString, hasDefault = true),
+        ), listOf(
+            AppleOrdinaryProperty("defaultEffort", appleString),
+            AppleOrdinaryProperty("defaultServiceTier", appleNullableString),
+            AppleOrdinaryProperty("description", appleString, "description_"),
+            AppleOrdinaryProperty("displayName", appleString), AppleOrdinaryProperty("id", appleString),
+            AppleOrdinaryProperty("isDefault", appleBoolean),
+            AppleOrdinaryProperty("serviceTiers", appleServiceTierList),
+            AppleOrdinaryProperty("supportedEfforts", appleStringList),
+        )),
+    AppleOrdinaryValue("AgentPlanProgress", "AgentPlanProgress", "CodexAgentAgentPlanProgress",
+        "\$sySo010CodexAgentB12PlanProgressCSSSg_SaySo0abbC4StepCGtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("explanation", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("steps", applePlanStepList, hasDefault = true),
+        ), listOf(
+            AppleOrdinaryProperty("explanation", appleNullableString),
+            AppleOrdinaryProperty("steps", applePlanStepList),
+        )),
+    AppleOrdinaryValue("AgentPluginCatalog", "AgentPluginCatalog", "CodexAgentAgentPluginCatalog",
+        "\$sySo010CodexAgentB13PluginCatalogCSaySo0abbC7SummaryCG_SaySSGSo0abbD9FreshnessCtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("plugins", applePluginSummaryList),
+            AppleOrdinaryParameter("errors", appleStringList, hasDefault = true),
+            AppleOrdinaryParameter("freshness", appleCatalogFreshnessType, hasDefault = true),
+        ), listOf(
+            AppleOrdinaryProperty("errors", appleStringList),
+            AppleOrdinaryProperty("freshness", appleCatalogFreshnessType),
+            AppleOrdinaryProperty("plugins", applePluginSummaryList),
+        )),
+    AppleOrdinaryValue("AgentPluginDetail", "AgentPluginDetail", "CodexAgentAgentPluginDetail",
+        "\$sySo010CodexAgentB12PluginDetailCSo0abbC7SummaryC_SSSaySo0abbC5SkillCGSaySo0abB9ConnectorCGSaySSGs5Int32VtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("summary", applePluginSummaryType),
+            AppleOrdinaryParameter("description", appleString),
+            AppleOrdinaryParameter("skills", applePluginSkillList),
+            AppleOrdinaryParameter("connectors", appleConnectorList),
+            AppleOrdinaryParameter("mcpServers", appleStringList),
+            AppleOrdinaryParameter("hookCount", appleInt, objectiveCAst = "int"),
+        ), listOf(
+            AppleOrdinaryProperty("connectors", appleConnectorList),
+            AppleOrdinaryProperty("description", appleString, "description_"),
+            AppleOrdinaryProperty("hookCount", appleInt), AppleOrdinaryProperty("mcpServers", appleStringList),
+            AppleOrdinaryProperty("skills", applePluginSkillList),
+            AppleOrdinaryProperty("summary", applePluginSummaryType),
+        )),
+    AppleOrdinaryValue("AgentPluginInstallResult", "AgentPluginInstallResult",
+        "CodexAgentAgentPluginInstallResult",
+        "\$sySo010CodexAgentB19PluginInstallResultCSo0abbC10AuthPolicyC_SaySo0abB9ConnectorCGSSSgtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("authPolicy", applePluginAuthPolicyType),
+            AppleOrdinaryParameter("connectorsNeedingAuthentication", appleConnectorList),
+            AppleOrdinaryParameter("message", appleNullableString, hasDefault = true),
+        ), listOf(
+            AppleOrdinaryProperty("authPolicy", applePluginAuthPolicyType),
+            AppleOrdinaryProperty("connectorsNeedingAuthentication", appleConnectorList),
+            AppleOrdinaryProperty("message", appleNullableString),
+        )),
+    AppleOrdinaryValue("AgentPluginSummary", "AgentPluginSummary", "CodexAgentAgentPluginSummary",
+        "\$sySo010CodexAgentB13PluginSummaryCSo0abbC9ReferenceC_S2SS2bSo0abbC13InstallPolicyCSo0abbc4AuthG0CSbSaySSGSSSgA3JtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("reference", applePluginReferenceType),
+            AppleOrdinaryParameter("displayName", appleString), AppleOrdinaryParameter("description", appleString),
+            AppleOrdinaryParameter("isInstalled", appleBoolean), AppleOrdinaryParameter("isEnabled", appleBoolean),
+            AppleOrdinaryParameter("installPolicy", applePluginInstallPolicyType),
+            AppleOrdinaryParameter("authPolicy", applePluginAuthPolicyType),
+            AppleOrdinaryParameter("isAvailable", appleBoolean),
+            AppleOrdinaryParameter("capabilities", appleStringList, hasDefault = true),
+            AppleOrdinaryParameter("brandColor", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("privacyPolicyUrl", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("termsOfServiceUrl", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("websiteUrl", appleNullableString, hasDefault = true),
+        ), listOf(
+            AppleOrdinaryProperty("authPolicy", applePluginAuthPolicyType),
+            AppleOrdinaryProperty("brandColor", appleNullableString),
+            AppleOrdinaryProperty("capabilities", appleStringList),
+            AppleOrdinaryProperty("description", appleString, "description_"),
+            AppleOrdinaryProperty("displayName", appleString),
+            AppleOrdinaryProperty("installPolicy", applePluginInstallPolicyType),
+            AppleOrdinaryProperty("isAvailable", appleBoolean), AppleOrdinaryProperty("isEnabled", appleBoolean),
+            AppleOrdinaryProperty("isInstalled", appleBoolean),
+            AppleOrdinaryProperty("privacyPolicyUrl", appleNullableString),
+            AppleOrdinaryProperty("reference", applePluginReferenceType),
+            AppleOrdinaryProperty("termsOfServiceUrl", appleNullableString),
+            AppleOrdinaryProperty("websiteUrl", appleNullableString),
+        )),
+    AppleOrdinaryValue("AgentSkill", "AgentSkill", "CodexAgentAgentSkill",
+        "\$sySo010CodexAgentB5SkillCSS_S3SSo0abbC5ScopeCSbSSSgSaySSGSbSo0abB14ResourceOriginCtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("name", appleString), AppleOrdinaryParameter("displayName", appleString),
+            AppleOrdinaryParameter("description", appleString), AppleOrdinaryParameter("path", appleString),
+            AppleOrdinaryParameter("scope", appleSkillScopeType), AppleOrdinaryParameter("isEnabled", appleBoolean),
+            AppleOrdinaryParameter("brandColor", appleNullableString, hasDefault = true),
+            AppleOrdinaryParameter("dependencies", appleStringList, hasDefault = true),
+            AppleOrdinaryParameter("canUninstall", appleBoolean, hasDefault = true),
+            AppleOrdinaryParameter("origin", appleResourceOriginType, hasDefault = true),
+        ), listOf(
+            AppleOrdinaryProperty("brandColor", appleNullableString),
+            AppleOrdinaryProperty("canUninstall", appleBoolean),
+            AppleOrdinaryProperty("dependencies", appleStringList),
+            AppleOrdinaryProperty("description", appleString, "description_"),
+            AppleOrdinaryProperty("displayName", appleString), AppleOrdinaryProperty("isEnabled", appleBoolean),
+            AppleOrdinaryProperty("name", appleString), AppleOrdinaryProperty("origin", appleResourceOriginType),
+            AppleOrdinaryProperty("path", appleString), AppleOrdinaryProperty("scope", appleSkillScopeType),
+        )),
+    AppleOrdinaryValue("AgentSkillCatalog", "AgentSkillCatalog", "CodexAgentAgentSkillCatalog",
+        "\$sySo010CodexAgentB12SkillCatalogCSaySo0abbC0CG_SaySSGtcABmcD",
+        listOf(
+            AppleOrdinaryParameter("skills", appleSkillList),
+            AppleOrdinaryParameter("errors", appleStringList, hasDefault = true),
+        ), listOf(
+            AppleOrdinaryProperty("errors", appleStringList), AppleOrdinaryProperty("skills", appleSkillList),
+        )),
+    AppleOrdinaryValue("CodexPathWorkspaceSelection", "CodexPathWorkspaceSelection",
+        "CodexAgentCodexPathWorkspaceSelection", "\$sySo010CodexAgentA22PathWorkspaceSelectionCSS_tcABmcD",
+        listOf(AppleOrdinaryParameter("path", appleString)), listOf(AppleOrdinaryProperty("path", appleString))),
+    AppleOrdinaryValue("CodexWorkspaceResolution.Available", "CodexWorkspaceResolutionAvailable",
+        "CodexAgentCodexWorkspaceResolutionAvailable",
+        "\$sySo010CodexAgentA28WorkspaceResolutionAvailableCSo0abaC0C_tcABmcD",
+        listOf(AppleOrdinaryParameter("workspace", appleWorkspaceType)),
+        listOf(AppleOrdinaryProperty("workspace", appleWorkspaceType))),
+    AppleOrdinaryValue("CodexWorkspaceResolution.SelectionRequired",
+        "CodexWorkspaceResolutionSelectionRequired", "CodexAgentCodexWorkspaceResolutionSelectionRequired",
+        "\$sySo010CodexAgentA36WorkspaceResolutionSelectionRequiredCSo0abacE6ReasonC_SStcABmcD",
+        listOf(
+            AppleOrdinaryParameter("reason", appleWorkspaceSelectionReasonType),
+            AppleOrdinaryParameter("message", appleString),
+        ), listOf(
+            AppleOrdinaryProperty("message", appleString),
+            AppleOrdinaryProperty("reason", appleWorkspaceSelectionReasonType),
+        )),
+)
+
 private fun appleEnumKey(owner: String, entry: String): String =
     "common|owner=$appleCanonicalPackage/$owner|kind=enum-entry|" +
         "abi=$appleCanonicalAbiPackage/$owner.$entry|null[0]"
@@ -556,6 +823,23 @@ private val d065OrdinaryCapabilities: List<AppleOrdinaryCapability> = buildList 
 }
 private val d065OrdinaryCapabilitiesByKey = d065OrdinaryCapabilities.associateBy { it.canonicalKey }
 
+private val d073OrdinaryCapabilities: List<AppleOrdinaryCapability> = buildList {
+    d073AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        add(AppleOrdinaryCapability(appleConstructorKey(owner), "$ownerUsr(im)${owner.objectiveCSelector}"))
+        owner.properties.forEach { property ->
+            add(AppleOrdinaryCapability(
+                applePropertyKey(owner.canonicalOwner, property), "$ownerUsr(py)${property.appleName}",
+            ))
+        }
+    }
+}.also { capabilities ->
+    check(capabilities.size == 81 && capabilities.map { it.canonicalKey }.distinct().size == 81 &&
+        capabilities.map { it.usr }.distinct().size == 81
+    ) { "D073 Apple ordinary capability inventory changed" }
+}
+private val d073OrdinaryCapabilitiesByKey = d073OrdinaryCapabilities.associateBy { it.canonicalKey }
+
 internal val appleCompilerFixtureD065Capabilities: List<AppleOrdinaryCapability>
     get() = d065OrdinaryCapabilities
 
@@ -564,6 +848,15 @@ internal fun appleCompilerFixtureD065SwiftSymbols(): Map<String, ExpectedAppleCo
 
 internal fun appleCompilerFixtureD065ObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
     d065ExpectedObjectiveCSymbols()
+
+internal val appleCompilerFixtureD073Capabilities: List<AppleOrdinaryCapability>
+    get() = d073OrdinaryCapabilities
+
+internal fun appleCompilerFixtureD073SwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
+    d073ExpectedSwiftSymbols()
+
+internal fun appleCompilerFixtureD073ObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
+    d073ExpectedObjectiveCSymbols()
 
 internal fun appleCompilerFixtureSwiftReferences(): List<AppleCompilerReference> =
     expectedSwiftAppleBindingReferences()
@@ -576,6 +869,8 @@ private val appleBindingMembers =
         appleCollaborationModeMembers + appleMessageRoleMembers + appleInstallationScopeMembers +
         appleMcpEnvironmentSourceMembers + d065OrdinaryCapabilities.associate {
             "d065:${it.canonicalKey}" to it.usr
+        } + d073OrdinaryCapabilities.associate {
+            "d073:${it.canonicalKey}" to it.usr
         }
 private val appleBindingCoverageTokens =
     appleCodexFailureCoverageTokens + appleConversationIdCoverageTokens + appleApprovalDecisionCoverageTokens +
@@ -586,6 +881,7 @@ private fun appleBindingShape(capability: String): String {
     val token = crossLanguageApiCoverageToken(capability)
     return appleBindingCoverageTokens.entries.singleOrNull { it.value == token }?.key
         ?: d065OrdinaryCapabilitiesByKey[capability]?.let { "d065:${it.canonicalKey}" }
+        ?: d073OrdinaryCapabilitiesByKey[capability]?.let { "d073:${it.canonicalKey}" }
         ?: error("Unexpected canonical Apple binding capability: $capability")
 }
 
@@ -669,6 +965,30 @@ private fun d065ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol>
     }
 }
 
+private fun d073ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = buildMap {
+    d073AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        put(ownerUsr, ExpectedAppleCompilerSymbol(
+            "swift.class", listOf(owner.swiftName), owner.swiftName, "public",
+            "class ${owner.swiftName}", emptyList(),
+        ))
+        val title = swiftConstructorTitle(owner.parameters)
+        put("$ownerUsr(im)${owner.objectiveCSelector}", ExpectedAppleCompilerSymbol(
+            "swift.init", listOf(owner.swiftName, title), title, "public",
+            "init(${owner.parameters.joinToString(", ") { "${it.name}: ${it.type.swift}" }})",
+            owner.parameters.map { it.type.swiftIdentifier },
+            owner.parameters.map { it.name to "${it.name}: ${it.type.swift}" },
+        ))
+        owner.properties.forEach { property ->
+            put("$ownerUsr(py)${property.appleName}", ExpectedAppleCompilerSymbol(
+                "swift.property", listOf(owner.swiftName, property.appleName), property.appleName, "open",
+                "var ${property.appleName}: ${property.type.swift} { get }",
+                listOf(property.type.swiftIdentifier),
+            ))
+        }
+    }
+}
+
 private fun objectiveCConstructorDeclaration(owner: AppleOrdinaryValue): String {
     val parameters = owner.parameters.mapIndexed { index, parameter ->
         val selector = if (index == 0) {
@@ -705,6 +1025,31 @@ private fun d065ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSy
         }
     }
     d065AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        put(ownerUsr, ExpectedAppleCompilerSymbol(
+            "objective-c.class", listOf(owner.objectiveCName), owner.objectiveCName, "public",
+            "@interface ${owner.objectiveCName} : CodexAgentBase", listOf("c:objc(cs)CodexAgentBase"),
+        ))
+        put("$ownerUsr(im)${owner.objectiveCSelector}", ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf(owner.objectiveCName, owner.objectiveCSelector),
+            owner.objectiveCSelector, "public", objectiveCConstructorDeclaration(owner),
+            owner.parameters.map { it.type.objectiveCIdentifier },
+            owner.parameters.map { it.name to "(${it.type.objectiveC}) ${it.name}" },
+            "instancetype",
+        ))
+        owner.properties.forEach { property ->
+            put("$ownerUsr(py)${property.appleName}", ExpectedAppleCompilerSymbol(
+                "objective-c.property", listOf(owner.objectiveCName, property.appleName),
+                property.appleName, "public",
+                "@property (readonly) ${property.type.objectiveC} ${property.appleName};",
+                listOf(property.type.objectiveCIdentifier),
+            ))
+        }
+    }
+}
+
+private fun d073ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = buildMap {
+    d073AppleValues.forEach { owner ->
         val ownerUsr = appleOwnerUsr(owner.objectiveCName)
         put(ownerUsr, ExpectedAppleCompilerSymbol(
             "objective-c.class", listOf(owner.objectiveCName), owner.objectiveCName, "public",
@@ -843,7 +1188,7 @@ private val expectedSwiftAppleBindingSymbols = linkedMapOf(
         "swift.type.property", listOf("AgentMcpEnvironmentSource", "remote"), "remote", "open",
         "class var remote: AgentMcpEnvironmentSource { get }", listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR),
     ),
-) + d065ExpectedSwiftSymbols()
+) + d065ExpectedSwiftSymbols() + d073ExpectedSwiftSymbols()
 
 private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
     APPLE_CODEX_FAILURE_OWNER_USR to ExpectedAppleCompilerSymbol(
@@ -967,7 +1312,7 @@ private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
         "@property (class, readonly) CodexAgentAgentMcpEnvironmentSource * remote;",
         listOf(APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR),
     ),
-) + d065ExpectedObjectiveCSymbols()
+) + d065ExpectedObjectiveCSymbols() + d073ExpectedObjectiveCSymbols()
 
 internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> {
     val ownerPrefixes = setOf(
@@ -982,15 +1327,17 @@ internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> 
     val byShape = memberKeys.filter { key -> ownerPrefixes.any { prefix -> key.startsWith(prefix) } }.groupBy { key ->
         appleBindingShape(key)
     }
-    val priorMembers = appleBindingMembers.filterKeys { !it.startsWith("d065:") }
+    val priorMembers = appleBindingMembers.filterKeys { !it.startsWith("d065:") && !it.startsWith("d073:") }
     check(byShape.keys == priorMembers.keys) {
         "Canonical Apple binding capability set changed: ${byShape.keys.sorted()}"
     }
     check(byShape.values.all { it.size == 1 }) { "Canonical Apple binding capabilities are overloaded" }
     val d065Keys = d065OrdinaryCapabilities.map { it.canonicalKey }
     check(d065Keys.all(memberKeys::contains)) { "Canonical D065 Apple binding capability set changed" }
-    return (byShape.values.map { it.single() } + d065Keys).sorted().also { capabilities ->
-        check(capabilities.size == 174 && capabilities.distinct().size == 174) {
+    val d073Keys = d073OrdinaryCapabilities.map { it.canonicalKey }
+    check(d073Keys.all(memberKeys::contains)) { "Canonical D073 Apple binding capability set changed" }
+    return (byShape.values.map { it.single() } + d065Keys + d073Keys).sorted().also { capabilities ->
+        check(capabilities.size == 255 && capabilities.distinct().size == 255) {
             "Canonical Apple binding capability count changed"
         }
     }
@@ -1085,8 +1432,12 @@ private fun parseAppleBindingSurface(
     check(ordinaryMemberUsrs.size == 158 && ordinaryMemberUsrs.distinct().size == 158) {
         "D065 Apple member inventory changed"
     }
-    val selectedMemberUsrs = establishedMemberUsrs + ordinaryMemberUsrs
-    check(selectedMemberUsrs.size == 174 && selectedMemberUsrs.distinct().size == 174) {
+    val d073MemberUsrs = d073OrdinaryCapabilities.map(AppleOrdinaryCapability::usr)
+    check(d073MemberUsrs.size == 81 && d073MemberUsrs.distinct().size == 81) {
+        "D073 Apple member inventory changed"
+    }
+    val selectedMemberUsrs = establishedMemberUsrs + ordinaryMemberUsrs + d073MemberUsrs
+    check(selectedMemberUsrs.size == 255 && selectedMemberUsrs.distinct().size == 255) {
         "Selected Apple member inventory changed"
     }
     val memberOwners = selectedMemberUsrs.associateWith(::appleMemberOwnerUsr)
@@ -1180,6 +1531,15 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
                 property.appleName, null, property.type.swiftAst, emptyList()))
         }
     }
+    d073AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        add(AppleCompilerReference("$ownerUsr(im)${owner.objectiveCSelector}", "declref_expr", "init", null,
+            owner.swiftConstructorAst, emptyList()))
+        owner.properties.forEach { property ->
+            add(AppleCompilerReference("$ownerUsr(py)${property.appleName}", "member_ref_expr",
+                property.appleName, null, property.type.swiftAst, emptyList()))
+        }
+    }
 }.sortedBy(AppleCompilerReference::precise)
 
 private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = buildList {
@@ -1223,6 +1583,16 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
         }
     }
     d065AppleValues.forEach { owner ->
+        val ownerUsr = appleOwnerUsr(owner.objectiveCName)
+        add(AppleCompilerReference("$ownerUsr(im)${owner.objectiveCSelector}", "ObjCMessageExpr",
+            owner.objectiveCSelector, owner.objectiveCName, "${owner.objectiveCName} *",
+            owner.parameters.map { it.objectiveCAst }))
+        owner.properties.forEach { property ->
+            add(AppleCompilerReference("$ownerUsr(py)${property.appleName}", "ObjCPropertyRefExpr",
+                property.appleName, "${owner.objectiveCName} *", "<pseudo-object type>", emptyList()))
+        }
+    }
+    d073AppleValues.forEach { owner ->
         val ownerUsr = appleOwnerUsr(owner.objectiveCName)
         add(AppleCompilerReference("$ownerUsr(im)${owner.objectiveCSelector}", "ObjCMessageExpr",
             owner.objectiveCSelector, owner.objectiveCName, "${owner.objectiveCName} *",

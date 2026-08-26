@@ -263,3 +263,243 @@ func consumeD065AgentMcpToolConfiguration(
     let configuration = AgentMcpToolConfiguration(approval: approval)
     return (configuration, configuration.approval)
 }
+
+func consumeD073AgentConnector() -> (
+    AgentConnector, String, String, String, String?, Bool, Bool, [String]
+) {
+    let connector = AgentConnector(
+        id: "connector-id",
+        name: "Connector",
+        description: "Compiler evidence connector",
+        installUrl: "https://example.com/install",
+        isAccessible: true,
+        isEnabled: false,
+        pluginNames: ["compiler-plugin"]
+    )
+    return (
+        connector,
+        connector.id,
+        connector.name,
+        connector.description_,
+        connector.installUrl,
+        connector.isAccessible,
+        connector.isEnabled,
+        connector.pluginNames
+    )
+}
+
+func consumeD073AgentElicitationValidation(
+    issues: [AgentElicitationValidationIssue]
+) -> (AgentElicitationValidation, Bool, [AgentElicitationValidationIssue]) {
+    let validation = AgentElicitationValidation(issues: issues)
+    return (validation, validation.isValid, validation.issues)
+}
+
+func consumeD073AgentFormValueBooleanValue() -> (AgentFormValueBooleanValue, Bool) {
+    let value = AgentFormValueBooleanValue(value: true)
+    return (value, value.value)
+}
+
+func consumeD073AgentFormValueNumber() -> (AgentFormValueNumber, Double) {
+    let value = AgentFormValueNumber(value: 73.0)
+    return (value, value.value)
+}
+
+func consumeD073AgentFormValueText() -> (AgentFormValueText, String) {
+    let value = AgentFormValueText(value: "compiler evidence")
+    return (value, value.value)
+}
+
+func consumeD073AgentFormValueTextList() -> (AgentFormValueTextList, [String]) {
+    let value = AgentFormValueTextList(value: ["compiler", "evidence"])
+    return (value, value.value)
+}
+
+func consumeD073AgentModel(
+    serviceTiers: [AgentServiceTier]
+) -> (
+    AgentModel, String, String, String, [String], String, Bool, [AgentServiceTier], String?
+) {
+    let model = AgentModel(
+        id: "model-id",
+        displayName: "Model",
+        description: "Compiler evidence model",
+        supportedEfforts: ["low", "high"],
+        defaultEffort: "high",
+        isDefault: true,
+        serviceTiers: serviceTiers,
+        defaultServiceTier: "fast"
+    )
+    return (
+        model,
+        model.id,
+        model.displayName,
+        model.description_,
+        model.supportedEfforts,
+        model.defaultEffort,
+        model.isDefault,
+        model.serviceTiers,
+        model.defaultServiceTier
+    )
+}
+
+func consumeD073AgentPlanProgress(
+    steps: [AgentPlanStep]
+) -> (AgentPlanProgress, String?, [AgentPlanStep]) {
+    let progress = AgentPlanProgress(explanation: "Compiler evidence plan", steps: steps)
+    return (progress, progress.explanation, progress.steps)
+}
+
+func consumeD073AgentPluginCatalog(
+    plugins: [AgentPluginSummary],
+    freshness: AgentCatalogFreshness
+) -> (AgentPluginCatalog, [AgentPluginSummary], [String], AgentCatalogFreshness) {
+    let catalog = AgentPluginCatalog(
+        plugins: plugins,
+        errors: ["compiler evidence warning"],
+        freshness: freshness
+    )
+    return (catalog, catalog.plugins, catalog.errors, catalog.freshness)
+}
+
+func consumeD073AgentPluginDetail(
+    summary: AgentPluginSummary,
+    skills: [AgentPluginSkill],
+    connectors: [AgentConnector]
+) -> (
+    AgentPluginDetail, AgentPluginSummary, String, [AgentPluginSkill], [AgentConnector], [String], Int32
+) {
+    let detail = AgentPluginDetail(
+        summary: summary,
+        description: "Compiler evidence detail",
+        skills: skills,
+        connectors: connectors,
+        mcpServers: ["compiler-server"],
+        hookCount: 1
+    )
+    return (
+        detail,
+        detail.summary,
+        detail.description_,
+        detail.skills,
+        detail.connectors,
+        detail.mcpServers,
+        detail.hookCount
+    )
+}
+
+func consumeD073AgentPluginInstallResult(
+    authPolicy: AgentPluginAuthPolicy,
+    connectors: [AgentConnector]
+) -> (AgentPluginInstallResult, AgentPluginAuthPolicy, [AgentConnector], String?) {
+    let result = AgentPluginInstallResult(
+        authPolicy: authPolicy,
+        connectorsNeedingAuthentication: connectors,
+        message: "Compiler evidence install"
+    )
+    return (result, result.authPolicy, result.connectorsNeedingAuthentication, result.message)
+}
+
+func consumeD073AgentPluginSummary(
+    reference: AgentPluginReference,
+    installPolicy: AgentPluginInstallPolicy,
+    authPolicy: AgentPluginAuthPolicy
+) -> (
+    AgentPluginSummary, AgentPluginReference, String, String, Bool, Bool,
+    AgentPluginInstallPolicy, AgentPluginAuthPolicy, Bool, [String], String?, String?, String?, String?
+) {
+    let summary = AgentPluginSummary(
+        reference: reference,
+        displayName: "Compiler Plugin",
+        description: "Compiler evidence plugin",
+        isInstalled: true,
+        isEnabled: false,
+        installPolicy: installPolicy,
+        authPolicy: authPolicy,
+        isAvailable: true,
+        capabilities: ["skill", "connector"],
+        brandColor: "#123456",
+        privacyPolicyUrl: "https://example.com/privacy",
+        termsOfServiceUrl: "https://example.com/terms",
+        websiteUrl: "https://example.com"
+    )
+    return (
+        summary,
+        summary.reference,
+        summary.displayName,
+        summary.description_,
+        summary.isInstalled,
+        summary.isEnabled,
+        summary.installPolicy,
+        summary.authPolicy,
+        summary.isAvailable,
+        summary.capabilities,
+        summary.brandColor,
+        summary.privacyPolicyUrl,
+        summary.termsOfServiceUrl,
+        summary.websiteUrl
+    )
+}
+
+func consumeD073AgentSkill(
+    scope: AgentSkillScope,
+    origin: AgentResourceOrigin
+) -> (
+    AgentSkill, String, String, String, String, AgentSkillScope, Bool, String?, [String], Bool,
+    AgentResourceOrigin
+) {
+    let skill = AgentSkill(
+        name: "compiler-skill",
+        displayName: "Compiler Skill",
+        description: "Compiler evidence skill",
+        path: "/compiler/skill",
+        scope: scope,
+        isEnabled: true,
+        brandColor: "#654321",
+        dependencies: ["git"],
+        canUninstall: true,
+        origin: origin
+    )
+    return (
+        skill,
+        skill.name,
+        skill.displayName,
+        skill.description_,
+        skill.path,
+        skill.scope,
+        skill.isEnabled,
+        skill.brandColor,
+        skill.dependencies,
+        skill.canUninstall,
+        skill.origin
+    )
+}
+
+func consumeD073AgentSkillCatalog(
+    skills: [AgentSkill]
+) -> (AgentSkillCatalog, [AgentSkill], [String]) {
+    let catalog = AgentSkillCatalog(skills: skills, errors: ["compiler evidence warning"])
+    return (catalog, catalog.skills, catalog.errors)
+}
+
+func consumeD073CodexPathWorkspaceSelection() -> (CodexPathWorkspaceSelection, String) {
+    let selection = CodexPathWorkspaceSelection(path: "/compiler/workspace")
+    return (selection, selection.path)
+}
+
+func consumeD073CodexWorkspaceResolutionAvailable(
+    workspace: CodexWorkspace
+) -> (CodexWorkspaceResolutionAvailable, CodexWorkspace) {
+    let resolution = CodexWorkspaceResolutionAvailable(workspace: workspace)
+    return (resolution, resolution.workspace)
+}
+
+func consumeD073CodexWorkspaceResolutionSelectionRequired(
+    reason: CodexWorkspaceSelectionReason
+) -> (CodexWorkspaceResolutionSelectionRequired, CodexWorkspaceSelectionReason, String) {
+    let resolution = CodexWorkspaceResolutionSelectionRequired(
+        reason: reason,
+        message: "Compiler evidence selection required"
+    )
+    return (resolution, resolution.reason, resolution.message)
+}
