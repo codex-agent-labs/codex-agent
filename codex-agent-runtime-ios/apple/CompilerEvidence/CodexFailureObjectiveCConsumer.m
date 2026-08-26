@@ -10,6 +10,12 @@ static BOOL consumeCodexFailure(void) {
         failure.isRecoverable;
 }
 
+static BOOL consumeConversationId(void) {
+    CodexAgentConversationId *conversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"compiler_evidence"];
+    return [conversationId.value isEqualToString:@"compiler_evidence"];
+}
+
 static BOOL consumeAgentApprovalDecisions(void) {
     CodexAgentAgentApprovalDecision *accept = [CodexAgentAgentApprovalDecision accept];
     CodexAgentAgentApprovalDecision *decline = [CodexAgentAgentApprovalDecision decline];

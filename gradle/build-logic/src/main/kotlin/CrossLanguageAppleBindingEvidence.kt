@@ -29,6 +29,8 @@ private const val appleFailureConstructorUsr =
 private const val appleFailureCodeUsr = "$APPLE_CODEX_FAILURE_OWNER_USR(py)code"
 private const val appleFailureRecoverableUsr = "$APPLE_CODEX_FAILURE_OWNER_USR(py)isRecoverable"
 private const val appleFailureMessageUsr = "$APPLE_CODEX_FAILURE_OWNER_USR(py)message"
+private const val appleConversationIdConstructorUsr = "$APPLE_CONVERSATION_ID_OWNER_USR(im)initWithValue:"
+private const val appleConversationIdValueUsr = "$APPLE_CONVERSATION_ID_OWNER_USR(py)value"
 private const val appleApprovalAcceptUsr = "$APPLE_APPROVAL_DECISION_OWNER_USR(cpy)accept"
 private const val appleApprovalDeclineUsr = "$APPLE_APPROVAL_DECISION_OWNER_USR(cpy)decline"
 private const val appleCollaborationDefaultUsr = "$APPLE_COLLABORATION_MODE_OWNER_USR(cpy)default_"
@@ -106,7 +108,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
     canonical.canonical.coverageReceiptSha256.appleSha256("canonical coverage receipt")
     canonical.targetSha256.getValue("native").appleSha256("canonical native target")
     val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-    check(capabilities.size == 14) { "Apple binding capability count changed" }
+    check(capabilities.size == 16) { "Apple binding capability count changed" }
     val usrByCapability = capabilities.associateWith(::appleBindingUsr)
 
     compilerEvidence.appleKeys(
@@ -201,7 +203,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
 
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
-    check(missing.size == 542) { "Apple partial binding gap count changed: ${missing.size}" }
+    check(missing.size == 540) { "Apple partial binding gap count changed: ${missing.size}" }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()
@@ -308,10 +310,11 @@ private fun appleLanguageEvidence(
     behaviorTest: String,
     missing: List<String>,
 ) = buildJsonObject {
-    check(publicSymbols.size == 20 && referencedSymbols.size == 14 &&
+    check(publicSymbols.size == 23 && referencedSymbols.size == 16 &&
         referencedSymbols.toSet() == publicSymbols.toSet() -
             setOf(
                 APPLE_CODEX_FAILURE_OWNER_USR,
+                APPLE_CONVERSATION_ID_OWNER_USR,
                 APPLE_APPROVAL_DECISION_OWNER_USR,
                 APPLE_COLLABORATION_MODE_OWNER_USR,
                 APPLE_MESSAGE_ROLE_OWNER_USR,
@@ -338,7 +341,12 @@ private fun appleLanguageEvidence(
 }
 
 private fun appleBindingUsr(capability: String): String = when {
-    "|kind=constructor|" in capability -> appleFailureConstructorUsr
+    "|owner=io.github.codex_agent_labs.codexmobile.agent/CodexFailure|kind=constructor|" in capability ->
+        appleFailureConstructorUsr
+    "|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=constructor|" in capability ->
+        appleConversationIdConstructorUsr
+    "|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=property|" in capability &&
+        "|{}value[0]|" in capability -> appleConversationIdValueUsr
     "|{}code[0]|" in capability -> appleFailureCodeUsr
     "|{}isRecoverable[0]|" in capability -> appleFailureRecoverableUsr
     "|{}message[0]|" in capability -> appleFailureMessageUsr
@@ -379,6 +387,19 @@ private fun expectedSwiftAppleBindingSurface(): List<AppleCompilerSymbol> = list
     AppleCompilerSymbol(
         appleFailureMessageUsr, "swift", "swift.property", listOf("CodexFailure", "message"),
         "message", "open", "var message: String { get }", listOf("s:SS"), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        APPLE_CONVERSATION_ID_OWNER_USR, "swift", "swift.class", listOf("ConversationId"),
+        "ConversationId", "public", "class ConversationId", emptyList(), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleConversationIdConstructorUsr, "swift", "swift.init", listOf("ConversationId", "init(value:)"),
+        "init(value:)", "public", "init(value: String)", listOf("s:SS"),
+        listOf("value" to "value: String"), null,
+    ),
+    AppleCompilerSymbol(
+        appleConversationIdValueUsr, "swift", "swift.property", listOf("ConversationId", "value"),
+        "value", "open", "var value: String { get }", listOf("s:SS"), emptyList(), null,
     ),
     AppleCompilerSymbol(
         APPLE_APPROVAL_DECISION_OWNER_USR, "swift", "swift.class", listOf("AgentApprovalDecision"),
@@ -492,6 +513,23 @@ private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> =
         listOf("c:objc(cs)NSString"), emptyList(), null,
     ),
     AppleCompilerSymbol(
+        APPLE_CONVERSATION_ID_OWNER_USR, "objective-c", "objective-c.class",
+        listOf("CodexAgentConversationId"), "CodexAgentConversationId", "public",
+        "@interface CodexAgentConversationId : CodexAgentBase",
+        listOf("c:objc(cs)CodexAgentBase"), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
+        appleConversationIdConstructorUsr, "objective-c", "objective-c.method",
+        listOf("CodexAgentConversationId", "initWithValue:"), "initWithValue:", "public",
+        "- (instancetype) initWithValue:(NSString *) value;", listOf("c:objc(cs)NSString"),
+        listOf("value" to "(NSString *) value"), "instancetype",
+    ),
+    AppleCompilerSymbol(
+        appleConversationIdValueUsr, "objective-c", "objective-c.property",
+        listOf("CodexAgentConversationId", "value"), "value", "public",
+        "@property (readonly) NSString * value;", listOf("c:objc(cs)NSString"), emptyList(), null,
+    ),
+    AppleCompilerSymbol(
         APPLE_APPROVAL_DECISION_OWNER_USR, "objective-c", "objective-c.class",
         listOf("CodexAgentAgentApprovalDecision"), "CodexAgentAgentApprovalDecision", "public",
         "@interface CodexAgentAgentApprovalDecision : CodexAgentKotlinEnum",
@@ -594,6 +632,11 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     ),
     AppleCompilerReference(appleFailureMessageUsr, "member_ref_expr", "message", null, "\$sSSD", emptyList()),
     AppleCompilerReference(
+        appleConversationIdConstructorUsr, "declref_expr", "init", null,
+        "\$sySo24CodexAgentConversationIdCSS_tcABmcD", emptyList(),
+    ),
+    AppleCompilerReference(appleConversationIdValueUsr, "member_ref_expr", "value", null, "\$sSSD", emptyList()),
+    AppleCompilerReference(
         appleApprovalAcceptUsr, "member_ref_expr", "accept", null,
         "\$sSo010CodexAgentB16ApprovalDecisionCD", emptyList(),
     ),
@@ -650,6 +693,14 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     ),
     AppleCompilerReference(
         appleFailureMessageUsr, "ObjCPropertyRefExpr", "message", "CodexAgentCodexFailure *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        appleConversationIdConstructorUsr, "ObjCMessageExpr", "initWithValue:",
+        "CodexAgentConversationId", "CodexAgentConversationId *", listOf("NSString *"),
+    ),
+    AppleCompilerReference(
+        appleConversationIdValueUsr, "ObjCPropertyRefExpr", "value", "CodexAgentConversationId *",
         "<pseudo-object type>", emptyList(),
     ),
     AppleCompilerReference(

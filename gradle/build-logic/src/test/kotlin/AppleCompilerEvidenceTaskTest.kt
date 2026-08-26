@@ -71,7 +71,7 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `canonical selection derives exactly fourteen complete Apple binding capabilities`() {
+    fun `canonical selection derives exactly sixteen complete Apple binding capabilities`() {
         val keys = listOf(
             canonicalConstructor(),
             canonicalProperty("code", "kotlin/String!!"),
@@ -87,9 +87,11 @@ class AppleCompilerEvidenceTaskTest {
             canonicalInstallationScope("Workspace"),
             canonicalMcpEnvironmentSource("LOCAL"),
             canonicalMcpEnvironmentSource("REMOTE"),
+            canonicalConversationIdConstructor(),
+            canonicalProperty("value", "kotlin/String!!", owner = "ConversationId"),
             canonicalProperty("value", "kotlin/String!!", owner = "Other"),
         )
-        val expected = keys.take(14)
+        val expected = keys.take(16)
         assertEquals(expected.sorted(), appleBindingCapabilityKeys(keys))
         assertFailsWith<IllegalStateException> { appleBindingCapabilityKeys(expected.drop(1)) }
         assertFailsWith<IllegalStateException> {
@@ -168,17 +170,43 @@ class AppleCompilerEvidenceTaskTest {
                 appleBindingCapabilityKeys(expected.map { if (it == keys[12]) replacement else it })
             }
         }
+        listOf(
+            canonicalConversationIdConstructor().replace("kotlin.String", "kotlin.Int"),
+            canonicalConversationIdConstructor().replace("default=false", "default=true"),
+            canonicalConversationIdConstructor().replace("suspend=false", "suspend=true"),
+            canonicalConversationIdConstructor().replace(
+                "return=$CONVERSATION_ID_CANONICAL_OWNER",
+                "return=kotlin/String!!",
+            ),
+        ).forEach { replacement ->
+            assertFailsWith<IllegalStateException> {
+                appleBindingCapabilityKeys(expected.map { if (it == keys[14]) replacement else it })
+            }
+        }
+        listOf(
+            canonicalProperty("value", "kotlin/String?", owner = "ConversationId"),
+            canonicalProperty("value", "kotlin/String!!", owner = "ConversationId")
+                .replace("propertyKind=VAL", "propertyKind=VAR"),
+            canonicalProperty("value", "kotlin/String!!", owner = "ConversationId")
+                .replace(".value|{}value[0]", ".changed|{}value[0]"),
+        ).forEach { replacement ->
+            assertFailsWith<IllegalStateException> {
+                appleBindingCapabilityKeys(expected.map { if (it == keys[15]) replacement else it })
+            }
+        }
     }
 
     @Test
-    fun `real compiler shapes normalize to one exact fourteen-member contract per language`() {
+    fun `real compiler shapes normalize to one exact sixteen-member contract per language`() {
         val swift = parseSwiftAppleBindingSurface(swiftSurfaceJson())
         val objectiveC = parseObjectiveCAppleBindingSurface(objectiveCSurfaceJson())
-        assertEquals(20, swift.size)
-        assertEquals(20, objectiveC.size)
+        assertEquals(23, swift.size)
+        assertEquals(23, objectiveC.size)
         assertEquals(swift.map(AppleCompilerSymbol::precise), objectiveC.map(AppleCompilerSymbol::precise))
         assertEquals("swift.init", swift.single { "initWithCode" in it.precise }.kind)
         assertEquals("objective-c.method", objectiveC.single { "initWithCode" in it.precise }.kind)
+        assertEquals("swift.init", swift.single { "initWithValue" in it.precise }.kind)
+        assertEquals("objective-c.method", objectiveC.single { "initWithValue" in it.precise }.kind)
         assertTrue(swift.none { it.path.first() == "CDXFailure" })
         assertTrue(objectiveC.none { it.path.first() == "CDXFailure" })
 
@@ -201,13 +229,13 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `compiled AST references bind fourteen exact USRs and reject drift`() {
+    fun `compiled AST references bind sixteen exact USRs and reject drift`() {
         val swift = parseSwiftAppleBindingReferences(swiftReferencesJson())
         val objectiveC = parseObjectiveCAppleBindingReferences(objectiveCReferencesJson())
-        assertEquals(14, swift.size)
-        assertEquals(14, objectiveC.size)
+        assertEquals(16, swift.size)
+        assertEquals(16, objectiveC.size)
         assertEquals(swift.map(AppleCompilerReference::precise), objectiveC.map(AppleCompilerReference::precise))
-        assertEquals(14, swift.map(AppleCompilerReference::precise).distinct().size)
+        assertEquals(16, swift.map(AppleCompilerReference::precise).distinct().size)
 
         assertFailsWith<IllegalStateException> {
             parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(py)message", "(py)removed"))
@@ -218,6 +246,14 @@ class AppleCompilerEvidenceTaskTest {
         assertFailsWith<IllegalStateException> {
             parseObjectiveCAppleBindingReferences(
                 objectiveCReferencesJson().replace("CodexAgentCodexFailure *", "CDXFailure *"),
+            )
+        }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(py)value", "(py)removed"))
+        }
+        assertFailsWith<IllegalStateException> {
+            parseObjectiveCAppleBindingReferences(
+                objectiveCReferencesJson().replaceFirst("CodexAgentConversationId *", "CDXConversationId *"),
             )
         }
         assertFailsWith<IllegalStateException> {
@@ -294,6 +330,12 @@ class AppleCompilerEvidenceTaskTest {
             "REGULAR:kotlin/String!!:default=false:vararg=false," +
             "REGULAR:kotlin/Boolean!!:default=false:vararg=false]"
 
+    private fun canonicalConversationIdConstructor(): String =
+        "common|owner=$CONVERSATION_ID_CANONICAL_OWNER|kind=constructor|" +
+            "abi=$CONVERSATION_ID_CANONICAL_OWNER.<init>|<init>(kotlin.String){}[0]|" +
+            "return=$CONVERSATION_ID_CANONICAL_OWNER|suspend=false|" +
+            "parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]"
+
     private fun canonicalProperty(name: String, type: String, owner: String = "CodexFailure"): String {
         val canonicalOwner = "io.github.codex_agent_labs.codexmobile.agent/$owner"
         return "common|owner=$canonicalOwner|kind=property|abi=$canonicalOwner.$name|{}$name[0]|" +
@@ -344,6 +386,28 @@ class AppleCompilerEvidenceTaskTest {
             swiftProperty(CODE, "code", "String", "s:SS"),
             swiftProperty(RECOVERABLE, "isRecoverable", "Bool", "s:Sb"),
             swiftProperty(MESSAGE, "message", "String", "s:SS"),
+            symbol(
+                CONVERSATION_ID_OWNER, "swift", "swift.class", listOf("ConversationId"),
+                "ConversationId", "public",
+                fragments(keyword("class"), text(" "), identifier("ConversationId")),
+            ),
+            symbol(
+                CONVERSATION_ID_CONSTRUCTOR, "swift", "swift.init",
+                listOf("ConversationId", "init(value:)"), "init(value:)", "public",
+                fragments(
+                    keyword("init"), text("("), external("value"), text(": "),
+                    type("String", "s:SS"), text(")"),
+                ),
+                listOf(parameter("value", fragments(identifier("value"), text(": "), type("String", "s:SS")))),
+            ),
+            symbol(
+                CONVERSATION_ID_VALUE, "swift", "swift.property", listOf("ConversationId", "value"),
+                "value", "open",
+                fragments(
+                    keyword("var"), text(" "), identifier("value"), text(": "), type("String", "s:SS"),
+                    text(" { "), keyword("get"), text(" }"),
+                ),
+            ),
             symbol(
                 APPROVAL_OWNER, "swift", "swift.class", listOf("AgentApprovalDecision"),
                 "AgentApprovalDecision", "public",
@@ -424,6 +488,37 @@ class AppleCompilerEvidenceTaskTest {
             objectiveCProperty(RECOVERABLE, "isRecoverable", "BOOL", "c:@T@BOOL", pointer = false),
             objectiveCProperty(MESSAGE, "message", "NSString", "c:objc(cs)NSString", pointer = true),
             symbol(
+                CONVERSATION_ID_OWNER, "objective-c", "objective-c.class",
+                listOf("CodexAgentConversationId"), "CodexAgentConversationId", "public",
+                fragments(
+                    keyword("@interface"), text(" "), identifier("CodexAgentConversationId"), text(" : "),
+                    type("CodexAgentBase", "c:objc(cs)CodexAgentBase"),
+                ),
+            ),
+            symbol(
+                CONVERSATION_ID_CONSTRUCTOR, "objective-c", "objective-c.method",
+                listOf("CodexAgentConversationId", "initWithValue:"), "initWithValue:", "public",
+                fragments(
+                    text("- ("), keyword("instancetype"), text(") "), identifier("initWithValue:"), text("("),
+                    type("NSString", "c:objc(cs)NSString"), text(" *) "), internal("value"), text(";"),
+                ),
+                listOf(
+                    parameter(
+                        "value",
+                        fragments(text("("), type("NSString", "c:objc(cs)NSString"), text(" *) "), internal("value")),
+                    ),
+                ),
+                fragments(keyword("instancetype")),
+            ),
+            symbol(
+                CONVERSATION_ID_VALUE, "objective-c", "objective-c.property",
+                listOf("CodexAgentConversationId", "value"), "value", "public",
+                fragments(
+                    keyword("@property"), text(" ("), keyword("readonly"), text(") "),
+                    type("NSString", "c:objc(cs)NSString"), text(" * "), identifier("value"), text(";"),
+                ),
+            ),
+            symbol(
                 APPROVAL_OWNER, "objective-c", "objective-c.class", listOf("CodexAgentAgentApprovalDecision"),
                 "CodexAgentAgentApprovalDecision", "public",
                 fragments(
@@ -499,6 +594,9 @@ class AppleCompilerEvidenceTaskTest {
         put("relationships", buildJsonArray {
             listOf(CONSTRUCTOR, CODE, RECOVERABLE).forEach { add(relationship(it)) }
             if (includeMessageRelationship) add(relationship(MESSAGE))
+            listOf(CONVERSATION_ID_CONSTRUCTOR, CONVERSATION_ID_VALUE).forEach {
+                add(relationship(it, CONVERSATION_ID_OWNER))
+            }
             listOf(ACCEPT, DECLINE).forEach { add(relationship(it, APPROVAL_OWNER)) }
             listOf(DEFAULT, PLAN).forEach { add(relationship(it, COLLABORATION_OWNER)) }
             listOf(USER, ASSISTANT).forEach { add(relationship(it, MESSAGE_ROLE_OWNER)) }
@@ -601,6 +699,10 @@ class AppleCompilerEvidenceTaskTest {
             add(swiftReference("member_ref_expr", "code", CODE, "\$sSSD"))
             add(swiftReference("member_ref_expr", "isRecoverable", RECOVERABLE, "\$sSbD"))
             add(swiftReference("member_ref_expr", "message", MESSAGE, "\$sSSD"))
+            add(swiftReference(
+                "declref_expr", "init", CONVERSATION_ID_CONSTRUCTOR, CONVERSATION_ID_SWIFT_CONSTRUCTOR_TYPE,
+            ))
+            add(swiftReference("member_ref_expr", "value", CONVERSATION_ID_VALUE, "\$sSSD"))
             add(swiftReference("member_ref_expr", "accept", ACCEPT, APPROVAL_SWIFT_TYPE))
             add(swiftReference("member_ref_expr", "decline", DECLINE, APPROVAL_SWIFT_TYPE))
             add(swiftReference("member_ref_expr", "default_", DEFAULT, COLLABORATION_SWIFT_TYPE))
@@ -647,6 +749,16 @@ class AppleCompilerEvidenceTaskTest {
             add(objectiveCPropertyReference("code"))
             add(objectiveCPropertyReference("isRecoverable"))
             add(objectiveCPropertyReference("message"))
+            add(buildJsonObject {
+                put("kind", JsonPrimitive("ObjCMessageExpr"))
+                put("selector", JsonPrimitive("initWithValue:"))
+                put("type", qualifiedType("CodexAgentConversationId *"))
+                put("inner", buildJsonArray {
+                    add(buildJsonObject { put("classType", qualifiedType("CodexAgentConversationId")) })
+                    add(buildJsonObject { put("type", qualifiedType("NSString *")) })
+                })
+            })
+            add(objectiveCConversationIdValueReference())
             add(objectiveCDecisionReference("accept"))
             add(objectiveCDecisionReference("decline"))
             add(objectiveCCollaborationReference("default_"))
@@ -666,6 +778,15 @@ class AppleCompilerEvidenceTaskTest {
         put("isMessagingGetter", JsonPrimitive(true))
         put("inner", buildJsonArray {
             add(buildJsonObject { put("type", qualifiedType("CodexAgentCodexFailure *")) })
+        })
+    }
+
+    private fun objectiveCConversationIdValueReference() = buildJsonObject {
+        put("kind", JsonPrimitive("ObjCPropertyRefExpr")); put("type", qualifiedType("<pseudo-object type>"))
+        put("property", buildJsonObject { put("name", JsonPrimitive("value")) })
+        put("isMessagingGetter", JsonPrimitive(true))
+        put("inner", buildJsonArray {
+            add(buildJsonObject { put("type", qualifiedType("CodexAgentConversationId *")) })
         })
     }
 
@@ -713,6 +834,13 @@ class AppleCompilerEvidenceTaskTest {
         const val CODE = "$OWNER(py)code"
         const val RECOVERABLE = "$OWNER(py)isRecoverable"
         const val MESSAGE = "$OWNER(py)message"
+        const val CONVERSATION_ID_CANONICAL_OWNER =
+            "io.github.codex_agent_labs.codexmobile.agent/ConversationId"
+        const val CONVERSATION_ID_OWNER = "c:objc(cs)CodexAgentConversationId"
+        const val CONVERSATION_ID_CONSTRUCTOR = "$CONVERSATION_ID_OWNER(im)initWithValue:"
+        const val CONVERSATION_ID_VALUE = "$CONVERSATION_ID_OWNER(py)value"
+        const val CONVERSATION_ID_SWIFT_CONSTRUCTOR_TYPE =
+            "\$sySo24CodexAgentConversationIdCSS_tcABmcD"
         const val APPROVAL_CANONICAL_OWNER =
             "io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision"
         const val APPROVAL_OWNER = "c:objc(cs)CodexAgentAgentApprovalDecision"

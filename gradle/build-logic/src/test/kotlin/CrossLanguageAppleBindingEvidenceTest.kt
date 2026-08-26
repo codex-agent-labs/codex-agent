@@ -17,7 +17,7 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageAppleBindingEvidenceTest {
     @Test
-    fun `observes fourteen independent claims and 542 explicit gaps per Apple language`() {
+    fun `observes sixteen independent claims and 540 explicit gaps per Apple language`() {
         val fixture = fixture()
         val report = fixture.derive()
 
@@ -29,11 +29,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         val languages = report.releaseArray("languages").map { it as JsonObject }
         assertEquals(listOf("objective-c", "swift"), languages.map { it.releaseString("language") })
         languages.forEach { language ->
-            assertEquals(20, language.releaseArray("publicSymbols").size)
-            assertEquals(14, language.releaseArray("referencedSymbols").size)
-            assertEquals(14, language.releaseArray("claims").size)
+            assertEquals(23, language.releaseArray("publicSymbols").size)
+            assertEquals(16, language.releaseArray("referencedSymbols").size)
+            assertEquals(16, language.releaseArray("claims").size)
             assertTrue(language.releaseArray("exclusions").isEmpty())
-            assertEquals(542, language.releaseArray("missingCapabilityKeys").size)
+            assertEquals(540, language.releaseArray("missingCapabilityKeys").size)
             assertEquals(
                 fixture.capabilities,
                 language.releaseArray("claims").map { (it as JsonObject).releaseString("canonicalKey") },
@@ -180,6 +180,34 @@ class CrossLanguageAppleBindingEvidenceTest {
                 "objectiveCSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
             ))
         })
+        val conversationIdConstructorTypeDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("swift").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == CONVERSATION_ID_CONSTRUCTOR_USR) {
+                    JsonObject(reference + ("valueType" to JsonPrimitive("\$sSSD")))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "swift" to changed,
+                "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
+        val conversationIdReceiverDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("objectiveC").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == CONVERSATION_ID_VALUE_USR) {
+                    JsonObject(reference + ("receiverType" to JsonPrimitive("CodexAgentCodexFailure *")))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "objectiveC" to changed,
+                "objectiveCSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
         val qualifierDrift = compiler.withObject("references", run {
             val changed = JsonArray(references.releaseArray("objectiveC").map { value ->
                 val reference = value as JsonObject
@@ -259,12 +287,17 @@ class CrossLanguageAppleBindingEvidenceTest {
         val futureMcpEnvironmentSource = fixture.canonical.copy(
             memberKeys = (fixture.canonical.memberKeys.dropLast(1) + canonicalMcpEnvironmentSource("FUTURE")).sorted(),
         )
+        val changedConversationId = fixture.canonical.copy(
+            memberKeys = (fixture.canonical.memberKeys.dropLast(1) +
+                canonicalConversationIdConstructor().replace("kotlin.String", "kotlin.Int")).sorted(),
+        )
 
         listOf(
             surfaceDrift, signatureDrift, typeDrift, readonlyDrift, selectorDrift, missingSurface,
             duplicateSurface, referenceDrift, swiftReferenceTypeDrift, collaborationReferenceTypeDrift,
             messageRoleReferenceTypeDrift, installationScopeReferenceTypeDrift,
             mcpEnvironmentSourceReferenceTypeDrift, mcpEnvironmentSourceReceiverDrift, qualifierDrift,
+            conversationIdConstructorTypeDrift, conversationIdReceiverDrift,
             swappedClaim, missingClaim, duplicateClaim, wrongOwnerClaim, cdx, wrongArtifact, duplicateTarget,
         ).forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(compiler = drift) }
@@ -274,7 +307,7 @@ class CrossLanguageAppleBindingEvidenceTest {
         }
         listOf(
             futureCanonical, overloadedCanonical, futureDecision, futureCollaboration, futureMessageRole,
-            futureInstallationScope, futureMcpEnvironmentSource,
+            futureInstallationScope, futureMcpEnvironmentSource, changedConversationId,
         )
             .forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(canonical = drift) }
@@ -360,7 +393,9 @@ class CrossLanguageAppleBindingEvidenceTest {
             canonicalInstallationScope("Workspace"),
             canonicalMcpEnvironmentSource("LOCAL"),
             canonicalMcpEnvironmentSource("REMOTE"),
-        ) + (0 until 542).map { index ->
+            canonicalConversationIdConstructor(),
+            canonicalProperty("value", "kotlin/String!!", owner = "ConversationId"),
+        ) + (0 until 540).map { index ->
             "common|owner=sample/Owner${index.toString().padStart(3, '0')}|kind=property|" +
                 "abi=sample/Owner$index.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!"
         }).sorted()
@@ -473,6 +508,13 @@ class CrossLanguageAppleBindingEvidenceTest {
             "isRecoverable", "open", "var isRecoverable: Bool { get }", listOf("s:Sb")),
         symbol(MESSAGE_USR, "swift", "swift.property", listOf("CodexFailure", "message"), "message", "open",
             "var message: String { get }", listOf("s:SS")),
+        symbol(CONVERSATION_ID_OWNER, "swift", "swift.class", listOf("ConversationId"),
+            "ConversationId", "public", "class ConversationId"),
+        symbol(CONVERSATION_ID_CONSTRUCTOR_USR, "swift", "swift.init",
+            listOf("ConversationId", "init(value:)"), "init(value:)", "public",
+            "init(value: String)", listOf("s:SS"), listOf("value" to "value: String")),
+        symbol(CONVERSATION_ID_VALUE_USR, "swift", "swift.property", listOf("ConversationId", "value"),
+            "value", "open", "var value: String { get }", listOf("s:SS")),
         symbol(APPROVAL_OWNER, "swift", "swift.class", listOf("AgentApprovalDecision"),
             "AgentApprovalDecision", "public", "class AgentApprovalDecision"),
         symbol(ACCEPT_USR, "swift", "swift.type.property", listOf("AgentApprovalDecision", "accept"),
@@ -532,6 +574,16 @@ class CrossLanguageAppleBindingEvidenceTest {
             "@property (readonly) BOOL isRecoverable;", listOf("c:@T@BOOL")),
         symbol(MESSAGE_USR, "objective-c", "objective-c.property", listOf("CodexAgentCodexFailure", "message"),
             "message", "public", "@property (readonly) NSString * message;", listOf("c:objc(cs)NSString")),
+        symbol(CONVERSATION_ID_OWNER, "objective-c", "objective-c.class", listOf("CodexAgentConversationId"),
+            "CodexAgentConversationId", "public", "@interface CodexAgentConversationId : CodexAgentBase",
+            listOf("c:objc(cs)CodexAgentBase")),
+        symbol(CONVERSATION_ID_CONSTRUCTOR_USR, "objective-c", "objective-c.method",
+            listOf("CodexAgentConversationId", "initWithValue:"), "initWithValue:", "public",
+            "- (instancetype) initWithValue:(NSString *) value;", listOf("c:objc(cs)NSString"),
+            listOf("value" to "(NSString *) value"), "instancetype"),
+        symbol(CONVERSATION_ID_VALUE_USR, "objective-c", "objective-c.property",
+            listOf("CodexAgentConversationId", "value"), "value", "public",
+            "@property (readonly) NSString * value;", listOf("c:objc(cs)NSString")),
         symbol(APPROVAL_OWNER, "objective-c", "objective-c.class", listOf("CodexAgentAgentApprovalDecision"),
             "CodexAgentAgentApprovalDecision", "public",
             "@interface CodexAgentAgentApprovalDecision : CodexAgentKotlinEnum",
@@ -595,6 +647,9 @@ class CrossLanguageAppleBindingEvidenceTest {
         reference(CODE_USR, "member_ref_expr", "code", null, "\$sSSD"),
         reference(RECOVERABLE_USR, "member_ref_expr", "isRecoverable", null, "\$sSbD"),
         reference(MESSAGE_USR, "member_ref_expr", "message", null, "\$sSSD"),
+        reference(CONVERSATION_ID_CONSTRUCTOR_USR, "declref_expr", "init", null,
+            CONVERSATION_ID_SWIFT_CONSTRUCTOR_TYPE),
+        reference(CONVERSATION_ID_VALUE_USR, "member_ref_expr", "value", null, "\$sSSD"),
         reference(ACCEPT_USR, "member_ref_expr", "accept", null, APPROVAL_SWIFT_TYPE),
         reference(DECLINE_USR, "member_ref_expr", "decline", null, APPROVAL_SWIFT_TYPE),
         reference(DEFAULT_USR, "member_ref_expr", "default_", null, COLLABORATION_SWIFT_TYPE),
@@ -618,6 +673,10 @@ class CrossLanguageAppleBindingEvidenceTest {
         reference(RECOVERABLE_USR, "ObjCPropertyRefExpr", "isRecoverable", "CodexAgentCodexFailure *",
             "<pseudo-object type>"),
         reference(MESSAGE_USR, "ObjCPropertyRefExpr", "message", "CodexAgentCodexFailure *", "<pseudo-object type>"),
+        reference(CONVERSATION_ID_CONSTRUCTOR_USR, "ObjCMessageExpr", "initWithValue:",
+            "CodexAgentConversationId", "CodexAgentConversationId *", listOf("NSString *")),
+        reference(CONVERSATION_ID_VALUE_USR, "ObjCPropertyRefExpr", "value", "CodexAgentConversationId *",
+            "<pseudo-object type>"),
         reference(ACCEPT_USR, "ObjCMessageExpr", "accept", "CodexAgentAgentApprovalDecision",
             "CodexAgentAgentApprovalDecision * _Nonnull"),
         reference(DECLINE_USR, "ObjCMessageExpr", "decline", "CodexAgentAgentApprovalDecision",
@@ -685,7 +744,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         }
 
     private fun usr(capability: String) = when {
-        "|kind=constructor|" in capability -> CONSTRUCTOR
+        "|owner=$CANONICAL_OWNER|kind=constructor|" in capability -> CONSTRUCTOR
+        "|owner=$CONVERSATION_ID_CANONICAL_OWNER|kind=constructor|" in capability ->
+            CONVERSATION_ID_CONSTRUCTOR_USR
+        "|owner=$CONVERSATION_ID_CANONICAL_OWNER|kind=property|" in capability &&
+            "|{}value[0]|" in capability -> CONVERSATION_ID_VALUE_USR
         "|{}code[0]|" in capability -> CODE_USR
         "|{}isRecoverable[0]|" in capability -> RECOVERABLE_USR
         "|{}message[0]|" in capability -> MESSAGE_USR
@@ -709,9 +772,17 @@ class CrossLanguageAppleBindingEvidenceTest {
             "REGULAR:kotlin/String!!:default=false:vararg=false," +
             "REGULAR:kotlin/Boolean!!:default=false:vararg=false]"
 
-    private fun canonicalProperty(name: String, type: String): String =
-        "common|owner=$CANONICAL_OWNER|kind=property|abi=$CANONICAL_OWNER.$name|{}$name[0]|" +
+    private fun canonicalProperty(name: String, type: String, owner: String = "CodexFailure"): String {
+        val canonicalOwner = "io.github.codex_agent_labs.codexmobile.agent/$owner"
+        return "common|owner=$canonicalOwner|kind=property|abi=$canonicalOwner.$name|{}$name[0]|" +
             "propertyKind=VAL|type=$type"
+    }
+
+    private fun canonicalConversationIdConstructor(): String =
+        "common|owner=$CONVERSATION_ID_CANONICAL_OWNER|kind=constructor|" +
+            "abi=$CONVERSATION_ID_CANONICAL_OWNER.<init>|<init>(kotlin.String){}[0]|" +
+            "return=$CONVERSATION_ID_CANONICAL_OWNER|suspend=false|" +
+            "parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]"
 
     private fun canonicalApprovalDecision(name: String): String =
         "common|owner=$APPROVAL_CANONICAL_OWNER|kind=enum-entry|" +
@@ -769,6 +840,13 @@ class CrossLanguageAppleBindingEvidenceTest {
         const val CODE_USR = "$OWNER(py)code"
         const val RECOVERABLE_USR = "$OWNER(py)isRecoverable"
         const val MESSAGE_USR = "$OWNER(py)message"
+        const val CONVERSATION_ID_CANONICAL_OWNER =
+            "io.github.codex_agent_labs.codexmobile.agent/ConversationId"
+        const val CONVERSATION_ID_OWNER = "c:objc(cs)CodexAgentConversationId"
+        const val CONVERSATION_ID_CONSTRUCTOR_USR = "$CONVERSATION_ID_OWNER(im)initWithValue:"
+        const val CONVERSATION_ID_VALUE_USR = "$CONVERSATION_ID_OWNER(py)value"
+        const val CONVERSATION_ID_SWIFT_CONSTRUCTOR_TYPE =
+            "\$sySo24CodexAgentConversationIdCSS_tcABmcD"
         const val APPROVAL_CANONICAL_OWNER =
             "io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision"
         const val APPROVAL_OWNER = "c:objc(cs)CodexAgentAgentApprovalDecision"

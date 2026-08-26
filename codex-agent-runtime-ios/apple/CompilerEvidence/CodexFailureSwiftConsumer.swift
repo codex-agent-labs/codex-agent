@@ -9,6 +9,10 @@ func consumeCodexFailure() -> (String, String, Bool) {
     return (failure.code, failure.message, failure.isRecoverable)
 }
 
+func consumeConversationId() -> String {
+    ConversationId(value: "compiler_evidence").value
+}
+
 func consumeAgentApprovalDecisions() -> (AgentApprovalDecision, AgentApprovalDecision) {
     (AgentApprovalDecision.accept, AgentApprovalDecision.decline)
 }

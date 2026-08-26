@@ -47,6 +47,9 @@ final class CodexAgentObservationTests: XCTestCase {
     }
 
     func testCodexOperationErrorsExposeStructuredFailure() {
+        let conversationId = ConversationId(value: "conversation-1")
+        XCTAssertEqual(conversationId.value, "conversation-1")
+
         let accept = AgentApprovalDecision.accept
         let decline = AgentApprovalDecision.decline
         XCTAssertEqual(accept.name, "ACCEPT")

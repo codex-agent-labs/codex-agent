@@ -25,6 +25,7 @@ import org.gradle.work.DisableCachingByDefault
 
 internal const val APPLE_COMPILER_EVIDENCE_PROTOCOL = "codex-agent-apple-compiler-evidence-v1"
 internal const val APPLE_CODEX_FAILURE_OWNER_USR = "c:objc(cs)CodexAgentCodexFailure"
+internal const val APPLE_CONVERSATION_ID_OWNER_USR = "c:objc(cs)CodexAgentConversationId"
 internal const val APPLE_APPROVAL_DECISION_OWNER_USR = "c:objc(cs)CodexAgentAgentApprovalDecision"
 internal const val APPLE_COLLABORATION_MODE_OWNER_USR = "c:objc(cs)CodexAgentAgentCollaborationMode"
 internal const val APPLE_MESSAGE_ROLE_OWNER_USR = "c:objc(cs)CodexAgentAgentMessageRole"
@@ -32,6 +33,8 @@ internal const val APPLE_INSTALLATION_SCOPE_OWNER_USR = "c:objc(cs)CodexAgentAge
 internal const val APPLE_MCP_ENVIRONMENT_SOURCE_OWNER_USR = "c:objc(cs)CodexAgentAgentMcpEnvironmentSource"
 private const val APPLE_CODEX_FAILURE_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/CodexFailure"
+private const val APPLE_CONVERSATION_ID_CANONICAL_OWNER =
+    "io.github.codex_agent_labs.codexmobile.agent/ConversationId"
 private const val APPLE_APPROVAL_DECISION_CANONICAL_OWNER =
     "io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision"
 private const val APPLE_COLLABORATION_MODE_CANONICAL_OWNER =
@@ -59,6 +62,18 @@ private val appleCodexFailureCoverageTokens = mapOf(
         "api-v1:CodexFailure#property:isRecoverable#sha256:8973cb954621824ea55abdabe7aa39d7b8db93b56057971121255b2e7bd0cfa6",
     "property:message" to
         "api-v1:CodexFailure#property:message#sha256:8bc0e280b734d05df8b06e7f8f5544ba9323faa14cd59b35531b05ea3023ddad",
+)
+
+private val appleConversationIdMembers = linkedMapOf(
+    "conversation-id:constructor:<init>" to "$APPLE_CONVERSATION_ID_OWNER_USR(im)initWithValue:",
+    "conversation-id:property:value" to "$APPLE_CONVERSATION_ID_OWNER_USR(py)value",
+)
+
+private val appleConversationIdCoverageTokens = mapOf(
+    "conversation-id:constructor:<init>" to
+        "api-v1:ConversationId#constructor:<init>#sha256:9d99d061ecf0a53892277568e9139bd83e1f5cc70b1a9725943f892e99723bd3",
+    "conversation-id:property:value" to
+        "api-v1:ConversationId#property:value#sha256:d0c5dcf6402ad6595ff8b063d896bbb1d2c818322353860f18edfb17c84e1dfa",
 )
 
 private val appleApprovalDecisionMembers = linkedMapOf(
@@ -122,11 +137,13 @@ private val appleMcpEnvironmentSourceCoverageTokens = mapOf(
 )
 
 private val appleBindingMembers =
-    appleCodexFailureMembers + appleApprovalDecisionMembers + appleCollaborationModeMembers + appleMessageRoleMembers +
-        appleInstallationScopeMembers + appleMcpEnvironmentSourceMembers
+    appleCodexFailureMembers + appleConversationIdMembers + appleApprovalDecisionMembers +
+        appleCollaborationModeMembers + appleMessageRoleMembers + appleInstallationScopeMembers +
+        appleMcpEnvironmentSourceMembers
 private val appleBindingCoverageTokens =
-    appleCodexFailureCoverageTokens + appleApprovalDecisionCoverageTokens + appleCollaborationModeCoverageTokens +
-        appleMessageRoleCoverageTokens + appleInstallationScopeCoverageTokens + appleMcpEnvironmentSourceCoverageTokens
+    appleCodexFailureCoverageTokens + appleConversationIdCoverageTokens + appleApprovalDecisionCoverageTokens +
+        appleCollaborationModeCoverageTokens + appleMessageRoleCoverageTokens + appleInstallationScopeCoverageTokens +
+        appleMcpEnvironmentSourceCoverageTokens
 
 private fun appleBindingShape(capability: String): String {
     val token = crossLanguageApiCoverageToken(capability)
@@ -209,6 +226,18 @@ private val expectedSwiftAppleBindingSymbols = linkedMapOf(
     appleCodexFailureMembers.getValue("property:message") to ExpectedAppleCompilerSymbol(
         "swift.property", listOf("CodexFailure", "message"), "message", "open",
         "var message: String { get }", listOf("s:SS"),
+    ),
+    APPLE_CONVERSATION_ID_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("ConversationId"), "ConversationId", "public",
+        "class ConversationId", emptyList(),
+    ),
+    appleConversationIdMembers.getValue("conversation-id:constructor:<init>") to ExpectedAppleCompilerSymbol(
+        "swift.init", listOf("ConversationId", "init(value:)"), "init(value:)", "public",
+        "init(value: String)", listOf("s:SS"), listOf("value" to "value: String"),
+    ),
+    appleConversationIdMembers.getValue("conversation-id:property:value") to ExpectedAppleCompilerSymbol(
+        "swift.property", listOf("ConversationId", "value"), "value", "open",
+        "var value: String { get }", listOf("s:SS"),
     ),
     APPLE_APPROVAL_DECISION_OWNER_USR to ExpectedAppleCompilerSymbol(
         "swift.class", listOf("AgentApprovalDecision"), "AgentApprovalDecision", "public",
@@ -302,6 +331,19 @@ private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
         "objective-c.property", listOf("CodexAgentCodexFailure", "message"), "message", "public",
         "@property (readonly) NSString * message;", listOf("c:objc(cs)NSString"),
     ),
+    APPLE_CONVERSATION_ID_OWNER_USR to ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentConversationId"), "CodexAgentConversationId", "public",
+        "@interface CodexAgentConversationId : CodexAgentBase", listOf("c:objc(cs)CodexAgentBase"),
+    ),
+    appleConversationIdMembers.getValue("conversation-id:constructor:<init>") to ExpectedAppleCompilerSymbol(
+        "objective-c.method", listOf("CodexAgentConversationId", "initWithValue:"),
+        "initWithValue:", "public", "- (instancetype) initWithValue:(NSString *) value;",
+        listOf("c:objc(cs)NSString"), listOf("value" to "(NSString *) value"), "instancetype",
+    ),
+    appleConversationIdMembers.getValue("conversation-id:property:value") to ExpectedAppleCompilerSymbol(
+        "objective-c.property", listOf("CodexAgentConversationId", "value"), "value", "public",
+        "@property (readonly) NSString * value;", listOf("c:objc(cs)NSString"),
+    ),
     APPLE_APPROVAL_DECISION_OWNER_USR to ExpectedAppleCompilerSymbol(
         "objective-c.class", listOf("CodexAgentAgentApprovalDecision"), "CodexAgentAgentApprovalDecision", "public",
         "@interface CodexAgentAgentApprovalDecision : CodexAgentKotlinEnum",
@@ -386,6 +428,7 @@ private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
 internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> {
     val ownerPrefixes = setOf(
         "common|owner=$APPLE_CODEX_FAILURE_CANONICAL_OWNER|",
+        "common|owner=$APPLE_CONVERSATION_ID_CANONICAL_OWNER|",
         "common|owner=$APPLE_APPROVAL_DECISION_CANONICAL_OWNER|",
         "common|owner=$APPLE_COLLABORATION_MODE_CANONICAL_OWNER|",
         "common|owner=$APPLE_MESSAGE_ROLE_CANONICAL_OWNER|",
@@ -480,6 +523,7 @@ private fun parseAppleBindingSurface(
         }
     }
     val memberOwners = appleCodexFailureMembers.values.associateWith { APPLE_CODEX_FAILURE_OWNER_USR } +
+        appleConversationIdMembers.values.associateWith { APPLE_CONVERSATION_ID_OWNER_USR } +
         appleApprovalDecisionMembers.values.associateWith { APPLE_APPROVAL_DECISION_OWNER_USR } +
         appleCollaborationModeMembers.values.associateWith { APPLE_COLLABORATION_MODE_OWNER_USR } +
         appleMessageRoleMembers.values.associateWith { APPLE_MESSAGE_ROLE_OWNER_USR } +
@@ -545,6 +589,8 @@ internal fun parseSwiftAppleBindingReferences(json: String): List<AppleCompilerR
         appleCodexFailureMembers.getValue("property:code") to ("member_ref_expr" to "code"),
         appleCodexFailureMembers.getValue("property:isRecoverable") to ("member_ref_expr" to "isRecoverable"),
         appleCodexFailureMembers.getValue("property:message") to ("member_ref_expr" to "message"),
+        appleConversationIdMembers.getValue("conversation-id:constructor:<init>") to ("declref_expr" to "init"),
+        appleConversationIdMembers.getValue("conversation-id:property:value") to ("member_ref_expr" to "value"),
         appleApprovalDecisionMembers.getValue("enum-entry:ACCEPT") to ("member_ref_expr" to "accept"),
         appleApprovalDecisionMembers.getValue("enum-entry:DECLINE") to ("member_ref_expr" to "decline"),
         appleCollaborationModeMembers.getValue("enum-entry:DEFAULT") to ("member_ref_expr" to "default_"),
@@ -608,6 +654,43 @@ internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleComp
         )
     }.sortedBy(AppleCompilerReference::precise)
     check(properties == expectedProperties) { "Objective-C CodexFailure property references changed" }
+    val conversationConstructor = nodes.filter { node ->
+        node.appleStringOrNull("kind") == "ObjCMessageExpr" &&
+            node.appleStringOrNull("selector") == "initWithValue:"
+    }.map { node ->
+        val inner = node.appleArray("inner")
+        val receiver = inner.first().appleObject("Objective-C ConversationId constructor receiver")
+        AppleCompilerReference(
+            appleConversationIdMembers.getValue("conversation-id:constructor:<init>"), "ObjCMessageExpr",
+            node.appleString("selector"), receiver.appleObject("classType").appleString("qualType"),
+            node.appleObject("type").appleString("qualType"),
+            inner.drop(1).map { it.appleObject("Objective-C ConversationId constructor argument")
+                .appleObject("type").appleString("qualType") },
+        )
+    }.distinct()
+    check(conversationConstructor == listOf(AppleCompilerReference(
+        appleConversationIdMembers.getValue("conversation-id:constructor:<init>"), "ObjCMessageExpr",
+        "initWithValue:", "CodexAgentConversationId", "CodexAgentConversationId *", listOf("NSString *"),
+    ))) { "Objective-C ConversationId constructor reference changed" }
+    val conversationValue = nodes.filter { node ->
+        node.appleStringOrNull("kind") == "ObjCPropertyRefExpr" &&
+            (node["property"] as? JsonObject)?.appleStringOrNull("name") == "value" &&
+            node.appleArray("inner").first().appleObject("Objective-C ConversationId property receiver")
+                .appleObject("type").appleString("qualType") == "CodexAgentConversationId *"
+    }.map { node ->
+        AppleCompilerReference(
+            appleConversationIdMembers.getValue("conversation-id:property:value"), "ObjCPropertyRefExpr", "value",
+            "CodexAgentConversationId *", node.appleObject("type").appleString("qualType"), emptyList(),
+        ).also {
+            check(node.appleBoolean("isMessagingGetter")) {
+                "Objective-C ConversationId value is not a getter"
+            }
+        }
+    }.distinct()
+    check(conversationValue == listOf(AppleCompilerReference(
+        appleConversationIdMembers.getValue("conversation-id:property:value"), "ObjCPropertyRefExpr", "value",
+        "CodexAgentConversationId *", "<pseudo-object type>", emptyList(),
+    ))) { "Objective-C ConversationId property reference changed" }
     val decisions = listOf("accept", "decline").map { name ->
         val node = nodes.singleOrNull { candidate ->
             candidate.appleStringOrNull("kind") == "ObjCMessageExpr" &&
@@ -734,8 +817,8 @@ internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleComp
     check(environmentSources == expectedEnvironmentSources) {
         "Objective-C AgentMcpEnvironmentSource references changed"
     }
-    return (constructor + properties + decisions + collaborationModes + messageRoles + installationScopes +
-        environmentSources)
+    return (constructor + properties + conversationConstructor + conversationValue + decisions + collaborationModes +
+        messageRoles + installationScopes + environmentSources)
         .sortedBy(AppleCompilerReference::precise)
 }
 

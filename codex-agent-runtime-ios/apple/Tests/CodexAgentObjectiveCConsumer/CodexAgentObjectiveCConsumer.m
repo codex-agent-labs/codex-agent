@@ -49,6 +49,12 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 
 - (void)run {
     self.keepAlive = self;
+    CodexAgentConversationId *conversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"conversation-1"];
+    if (![conversationId.value isEqualToString:@"conversation-1"]) {
+        [self finishWithFailure:@"Objective-C conversation ID changed"];
+        return;
+    }
     CodexAgentAgentApprovalDecision *accept = [CodexAgentAgentApprovalDecision accept];
     CodexAgentAgentApprovalDecision *decline = [CodexAgentAgentApprovalDecision decline];
     if (![accept.name isEqualToString:@"ACCEPT"] || accept.ordinal != 0 ||
