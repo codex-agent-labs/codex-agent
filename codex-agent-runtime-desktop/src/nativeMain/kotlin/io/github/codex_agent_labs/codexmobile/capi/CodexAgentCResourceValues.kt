@@ -22,15 +22,15 @@ import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.value
 
-private data class CodexAgentCPluginReferenceSnapshot(
+internal data class CodexAgentCPluginReferenceSnapshot(
     val value: AgentPluginReference,
 ) : CodexAgentCSnapshot
 
-private data class CodexAgentCPluginSkillSnapshot(
+internal data class CodexAgentCPluginSkillSnapshot(
     val value: AgentPluginSkill,
 ) : CodexAgentCSnapshot
 
-private data class CodexAgentCServiceTierSnapshot(
+internal data class CodexAgentCServiceTierSnapshot(
     val value: AgentServiceTier,
 ) : CodexAgentCSnapshot
 
