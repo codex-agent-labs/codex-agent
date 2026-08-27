@@ -2184,6 +2184,383 @@ final class CodexAgentObservationTests: XCTestCase {
             XCTAssertTrue(failure.isRecoverable)
         }
 
+        let d087InitialAuthenticationState = try XCTUnwrap(
+            authentication.state.value as? AgentAuthenticationState
+        )
+        XCTAssertTrue(d087InitialAuthenticationState.status === AgentAuthenticationStatus.signedOut)
+        XCTAssertNil(d087InitialAuthenticationState.pendingSignInUrl)
+        XCTAssertNil(d087InitialAuthenticationState.deviceVerificationUrl)
+        XCTAssertNil(d087InitialAuthenticationState.deviceUserCode)
+        XCTAssertNil(d087InitialAuthenticationState.failure)
+        XCTAssertFalse(
+            try XCTUnwrap(authentication.isAuthenticated.value as? NSNumber).boolValue
+        )
+        XCTAssertFalse(
+            try XCTUnwrap(authentication.isAuthenticating.value as? NSNumber).boolValue
+        )
+
+        let d087RawStateInitial = expectation(description: "D087 raw authentication SignedOut")
+        d087RawStateInitial.assertForOverFulfill = true
+        let d087RawStateAuthenticating = expectation(
+            description: "D087 raw authentication Authenticating"
+        )
+        d087RawStateAuthenticating.assertForOverFulfill = false
+        let d087RawStatePendingSignInUrl = expectation(
+            description: "D087 raw authentication pending sign-in URL"
+        )
+        d087RawStatePendingSignInUrl.assertForOverFulfill = true
+        let d087RawStateCanceled = expectation(
+            description: "D087 raw authentication canceled SignedOut"
+        )
+        d087RawStateCanceled.assertForOverFulfill = true
+
+        let d087AuthenticatedInitialFalse = expectation(
+            description: "D087 isAuthenticated initial false"
+        )
+        d087AuthenticatedInitialFalse.assertForOverFulfill = true
+        let d087AuthenticatedTrue = expectation(description: "D087 isAuthenticated true")
+        d087AuthenticatedTrue.assertForOverFulfill = true
+        let d087AuthenticatedCanceledFalse = expectation(
+            description: "D087 isAuthenticated canceled false"
+        )
+        d087AuthenticatedCanceledFalse.assertForOverFulfill = true
+
+        let d087AuthenticatingInitialFalse = expectation(
+            description: "D087 isAuthenticating initial false"
+        )
+        d087AuthenticatingInitialFalse.assertForOverFulfill = true
+        let d087AuthenticatingTrue = expectation(description: "D087 isAuthenticating true")
+        d087AuthenticatingTrue.assertForOverFulfill = true
+        let d087AuthenticatingCanceledFalse = expectation(
+            description: "D087 isAuthenticating canceled false"
+        )
+        d087AuthenticatingCanceledFalse.assertForOverFulfill = true
+
+        let d087TypedStateInitial = expectation(description: "D087 typed authentication SignedOut")
+        d087TypedStateInitial.assertForOverFulfill = true
+        let d087TypedStateAuthenticating = expectation(
+            description: "D087 typed authentication Authenticating"
+        )
+        d087TypedStateAuthenticating.assertForOverFulfill = true
+        let d087TypedStateCanceled = expectation(
+            description: "D087 typed authentication canceled SignedOut"
+        )
+        d087TypedStateCanceled.assertForOverFulfill = true
+
+        let d087TypedAuthenticationReceipt = Task { () -> [String] in
+            var receipt: [String] = []
+            for await state in authentication.states {
+                if state.status === AgentAuthenticationStatus.signedOut && state.failure == nil {
+                    XCTAssertNil(state.pendingSignInUrl)
+                    XCTAssertNil(state.deviceVerificationUrl)
+                    XCTAssertNil(state.deviceUserCode)
+                    receipt.append("SignedOut")
+                    d087TypedStateInitial.fulfill()
+                } else if state.status === AgentAuthenticationStatus.authenticating {
+                    XCTAssertNil(state.deviceVerificationUrl)
+                    XCTAssertNil(state.deviceUserCode)
+                    XCTAssertNil(state.failure)
+                    if let url = state.pendingSignInUrl {
+                        XCTAssertTrue(url.purpose === CodexAuthorizationPurpose.chatGpt)
+                    }
+                    if receipt.last != "Authenticating" {
+                        receipt.append("Authenticating")
+                        d087TypedStateAuthenticating.fulfill()
+                    }
+                } else if state.status === AgentAuthenticationStatus.signedOut,
+                          let failure = state.failure {
+                    XCTAssertNil(state.pendingSignInUrl)
+                    XCTAssertNil(state.deviceVerificationUrl)
+                    XCTAssertNil(state.deviceUserCode)
+                    XCTAssertEqual(failure.code, "authentication_failed")
+                    XCTAssertEqual(failure.message, "Authentication was canceled.")
+                    XCTAssertTrue(failure.isRecoverable)
+                    receipt.append("Canceled")
+                    d087TypedStateCanceled.fulfill()
+                } else {
+                    XCTFail("D087 typed authentication stream delivered an unexpected state")
+                }
+                if receipt.count == 3 { return receipt }
+            }
+            return receipt
+        }
+
+        let d087RawStateObservation = CodexStateObservation(state: authentication.state) { value in
+            guard let state = value as? AgentAuthenticationState else {
+                XCTFail("D087 raw authentication state lost its payload type")
+                return
+            }
+            if state.status === AgentAuthenticationStatus.signedOut && state.failure == nil {
+                XCTAssertNil(state.pendingSignInUrl)
+                XCTAssertNil(state.deviceVerificationUrl)
+                XCTAssertNil(state.deviceUserCode)
+                d087RawStateInitial.fulfill()
+            } else if state.status === AgentAuthenticationStatus.authenticating {
+                if let url = state.pendingSignInUrl {
+                    XCTAssertTrue(url.purpose === CodexAuthorizationPurpose.chatGpt)
+                    XCTAssertFalse(url.value.isEmpty)
+                    XCTAssertNil(state.deviceVerificationUrl)
+                    XCTAssertNil(state.deviceUserCode)
+                    d087RawStatePendingSignInUrl.fulfill()
+                }
+                XCTAssertNil(state.failure)
+                d087RawStateAuthenticating.fulfill()
+            } else if state.status === AgentAuthenticationStatus.signedOut,
+                      let failure = state.failure {
+                XCTAssertNil(state.pendingSignInUrl)
+                XCTAssertNil(state.deviceVerificationUrl)
+                XCTAssertNil(state.deviceUserCode)
+                XCTAssertEqual(failure.code, "authentication_failed")
+                XCTAssertEqual(failure.message, "Authentication was canceled.")
+                XCTAssertTrue(failure.isRecoverable)
+                d087RawStateCanceled.fulfill()
+            } else {
+                XCTFail("D087 raw authentication observation delivered an unexpected state")
+            }
+        }
+        let d087AuthenticatedObservation = CodexStateObservation(
+            state: authentication.isAuthenticated
+        ) { value in
+            guard let scalar = value as? NSNumber else {
+                XCTFail("D087 isAuthenticated lost its Boolean payload")
+                return
+            }
+            if scalar.boolValue {
+                d087AuthenticatedTrue.fulfill()
+            } else if let state = authentication.state.value as? AgentAuthenticationState,
+                      state.failure != nil {
+                XCTAssertTrue(state.status === AgentAuthenticationStatus.signedOut)
+                d087AuthenticatedCanceledFalse.fulfill()
+            } else {
+                XCTAssertTrue(
+                    (authentication.state.value as? AgentAuthenticationState)?.status ===
+                        AgentAuthenticationStatus.signedOut
+                )
+                d087AuthenticatedInitialFalse.fulfill()
+            }
+        }
+        let d087AuthenticatingObservation = CodexStateObservation(
+            state: authentication.isAuthenticating
+        ) { value in
+            guard let scalar = value as? NSNumber else {
+                XCTFail("D087 isAuthenticating lost its Boolean payload")
+                return
+            }
+            if scalar.boolValue {
+                d087AuthenticatingTrue.fulfill()
+            } else if let state = authentication.state.value as? AgentAuthenticationState,
+                      state.status === AgentAuthenticationStatus.signedOut,
+                      state.failure != nil {
+                d087AuthenticatingCanceledFalse.fulfill()
+            } else {
+                XCTAssertTrue(
+                    (authentication.state.value as? AgentAuthenticationState)?.status ===
+                        AgentAuthenticationStatus.signedOut
+                )
+                d087AuthenticatingInitialFalse.fulfill()
+            }
+        }
+        defer {
+            d087TypedAuthenticationReceipt.cancel()
+            d087RawStateObservation.close()
+            d087AuthenticatedObservation.close()
+            d087AuthenticatingObservation.close()
+        }
+
+        await fulfillment(
+            of: [
+                d087RawStateInitial,
+                d087AuthenticatedInitialFalse,
+                d087AuthenticatingInitialFalse,
+                d087TypedStateInitial,
+            ],
+            timeout: 30
+        )
+
+        try await authentication.signOut()
+        let d087SignedOutState = try XCTUnwrap(authentication.state.value as? AgentAuthenticationState)
+        XCTAssertTrue(d087SignedOutState.status === AgentAuthenticationStatus.signedOut)
+        XCTAssertNil(d087SignedOutState.failure)
+        XCTAssertFalse(
+            try XCTUnwrap(authentication.isAuthenticated.value as? NSNumber).boolValue
+        )
+        XCTAssertFalse(
+            try XCTUnwrap(authentication.isAuthenticating.value as? NSNumber).boolValue
+        )
+
+        let d087ApiKey = CodexAuthenticationMethodApiKey(value: "d087-api-key")
+        let d087BrowserAuthentication = Task {
+            try await authentication.authenticate(
+                method: CodexAuthenticationMethodChatGptBrowser.shared
+            )
+        }
+        defer { d087BrowserAuthentication.cancel() }
+        await fulfillment(
+            of: [
+                d087RawStateAuthenticating,
+                d087RawStatePendingSignInUrl,
+                d087AuthenticatingTrue,
+                d087TypedStateAuthenticating,
+            ],
+            timeout: 30
+        )
+        try await d087BrowserAuthentication.value
+        let d087AuthenticatingState = try XCTUnwrap(
+            authentication.state.value as? AgentAuthenticationState
+        )
+        XCTAssertTrue(d087AuthenticatingState.status === AgentAuthenticationStatus.authenticating)
+        let d087PendingSignInUrl = try XCTUnwrap(d087AuthenticatingState.pendingSignInUrl)
+        XCTAssertTrue(d087PendingSignInUrl.purpose === CodexAuthorizationPurpose.chatGpt)
+        XCTAssertFalse(d087PendingSignInUrl.value.isEmpty)
+        XCTAssertNil(d087AuthenticatingState.deviceVerificationUrl)
+        XCTAssertNil(d087AuthenticatingState.deviceUserCode)
+        XCTAssertNil(d087AuthenticatingState.failure)
+
+        try await authentication.cancel()
+        await fulfillment(
+            of: [
+                d087RawStateCanceled,
+                d087AuthenticatingCanceledFalse,
+                d087TypedStateCanceled,
+            ],
+            timeout: 30
+        )
+        d087RawStateObservation.close()
+        d087AuthenticatingObservation.close()
+        let d087TypedAuthenticationStates = await d087TypedAuthenticationReceipt.value
+        XCTAssertEqual(d087TypedAuthenticationStates, ["SignedOut", "Authenticating", "Canceled"])
+
+        try await authentication.authenticate(method: d087ApiKey)
+        await fulfillment(of: [d087AuthenticatedTrue], timeout: 30)
+        let d087AuthenticatedState = try XCTUnwrap(
+            authentication.state.value as? AgentAuthenticationState
+        )
+        XCTAssertTrue(d087AuthenticatedState.status === AgentAuthenticationStatus.authenticated)
+        XCTAssertNil(d087AuthenticatedState.failure)
+        XCTAssertTrue(
+            try XCTUnwrap(authentication.isAuthenticated.value as? NSNumber).boolValue
+        )
+        XCTAssertFalse(
+            try XCTUnwrap(authentication.isAuthenticating.value as? NSNumber).boolValue
+        )
+
+        try await authentication.cancel()
+        await fulfillment(
+            of: [d087AuthenticatedCanceledFalse],
+            timeout: 30
+        )
+        let d087CanceledState = try XCTUnwrap(
+            authentication.state.value as? AgentAuthenticationState
+        )
+        XCTAssertTrue(d087CanceledState.status === AgentAuthenticationStatus.signedOut)
+        XCTAssertNil(d087CanceledState.pendingSignInUrl)
+        XCTAssertNil(d087CanceledState.deviceVerificationUrl)
+        XCTAssertNil(d087CanceledState.deviceUserCode)
+        XCTAssertEqual(d087CanceledState.failure?.code, "authentication_failed")
+        XCTAssertEqual(d087CanceledState.failure?.message, "Authentication was canceled.")
+        XCTAssertTrue(d087CanceledState.failure?.isRecoverable == true)
+        XCTAssertFalse(
+            try XCTUnwrap(authentication.isAuthenticated.value as? NSNumber).boolValue
+        )
+        XCTAssertFalse(
+            try XCTUnwrap(authentication.isAuthenticating.value as? NSNumber).boolValue
+        )
+
+        d087AuthenticatedObservation.close()
+        try await authentication.signOut()
+        let d087SignedOutAfterAuthentication = try XCTUnwrap(
+            authentication.state.value as? AgentAuthenticationState
+        )
+        XCTAssertTrue(
+            d087SignedOutAfterAuthentication.status === AgentAuthenticationStatus.signedOut
+        )
+        XCTAssertNil(d087SignedOutAfterAuthentication.failure)
+
+        let d087Connector = AgentConnector(
+            id: "d087-connector",
+            name: "D087 Connector",
+            description: "D087 connector",
+            installUrl: nil,
+            isAccessible: true,
+            isEnabled: true,
+            pluginNames: []
+        )
+        let d087Integration = AgentIntegrationConnector(connector: d087Connector)
+        do {
+            try await integrationAuthorization.authorize(target: d087Integration)
+            XCTFail("D087 integration authorization should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature CONNECTORS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+        try await integrationAuthorization.cancel()
+
+        let d087ConversationId = ConversationId(value: "d087-conversation")
+        let d087Approval = AgentPendingApproval(
+            requestId: "d087-approval",
+            conversationId: d087ConversationId,
+            title: "D087 approval",
+            details: "D087 approval details"
+        )
+        let d087Elicitation = AgentElicitation(
+            requestId: "d087-elicitation",
+            serverName: "d087-server",
+            conversationId: d087ConversationId,
+            message: "D087 elicitation",
+            form: nil,
+            url: "https://example.com/d087-elicitation"
+        )
+        let d087PendingElicitation = AgentPendingElicitation(elicitation: d087Elicitation)
+        let d087ElicitationResponse = AgentElicitationResponse(action: .decline, content: [:])
+
+        do {
+            try await interactions.openUrl(elicitation: d087PendingElicitation)
+            XCTFail("D087 interactions.openUrl should reject a nonpending elicitation")
+        } catch {
+            XCTAssertNil(error.codexFailure)
+            let exception = try XCTUnwrap(
+                (error as NSError).kotlinException as? KotlinIllegalStateException
+            )
+            XCTAssertEqual(exception.message, "URL elicitation is no longer pending")
+        }
+
+        do {
+            try await interactions.resolve(approval: d087Approval, decision: .decline)
+            XCTFail("D087 approval resolve should reject a nonpending approval")
+        } catch {
+            XCTAssertNil(error.codexFailure)
+            let exception = try XCTUnwrap(
+                (error as NSError).kotlinException as? KotlinIllegalStateException
+            )
+            XCTAssertEqual(exception.message, "Interaction is no longer pending")
+        }
+
+        do {
+            try await interactions.resolve(
+                elicitation: d087PendingElicitation,
+                response: d087ElicitationResponse
+            )
+            XCTFail("D087 elicitation resolve should reject a nonpending elicitation")
+        } catch {
+            XCTAssertNil(error.codexFailure)
+            let exception = try XCTUnwrap(
+                (error as NSError).kotlinException as? KotlinIllegalStateException
+            )
+            XCTAssertEqual(exception.message, "Elicitation is no longer pending")
+        }
+
+        do {
+            try await conversations.rename(id: d087ConversationId, name: "   ")
+            XCTFail("D087 conversations.rename should reject a blank name")
+        } catch {
+            XCTAssertNil(error.codexFailure)
+            let exception = try XCTUnwrap((error as NSError).kotlinException as? KotlinThrowable)
+            XCTAssertFalse(exception is CodexOperationException)
+            XCTAssertEqual(exception.message, "Conversation name must not be blank")
+        }
+
         try await host.close()
         await fulfillment(of: [closedObserved], timeout: 30)
         _ = try XCTUnwrap(host.lifecycleState.value as? CodexHostStateClosed)

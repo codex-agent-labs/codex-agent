@@ -615,6 +615,59 @@ static BOOL consumeD086ControllerFunctions(
     return YES;
 }
 
+static BOOL consumeD087GatewayFunctions(
+    CodexAgentCodexAgent *agent,
+    id<CodexAgentCodexAuthenticationMethod> authenticationMethod,
+    id<CodexAgentAgentIntegration> integration,
+    CodexAgentAgentPendingApproval *approval,
+    CodexAgentAgentApprovalDecision *decision,
+    CodexAgentAgentPendingElicitation *elicitation,
+    CodexAgentAgentElicitationResponse *response,
+    CodexAgentConversationId *conversationId
+) {
+    CodexAgentCodexAuthentication *authentication = agent.authentication;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> authenticationState = authentication.state;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> isAuthenticated =
+        authentication.isAuthenticated;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> isAuthenticating =
+        authentication.isAuthenticating;
+    [authentication authenticateMethod:authenticationMethod completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [authentication cancelWithCompletionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [authentication signOutWithCompletionHandler:^(NSError *error) {
+        (void)error;
+    }];
+
+    [agent.integrationAuthorization authorizeTarget:integration completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [agent.integrationAuthorization cancelWithCompletionHandler:^(NSError *error) {
+        (void)error;
+    }];
+
+    [agent.interactions openUrlElicitation:elicitation completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [agent.interactions resolveApproval:approval
+                               decision:decision
+                      completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [agent.interactions resolveElicitation:elicitation
+                                  response:response
+                         completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+
+    [agent.conversations renameId:conversationId name:@"Compiler" completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    return authenticationState != nil && isAuthenticated != nil && isAuthenticating != nil;
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

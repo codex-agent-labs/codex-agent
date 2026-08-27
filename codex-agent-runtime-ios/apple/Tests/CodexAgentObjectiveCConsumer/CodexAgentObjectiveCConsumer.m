@@ -1984,6 +1984,8 @@ static const NSTimeInterval CDXCleanupTimeoutSeconds = 5.0;
 static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 
 @interface CDXD084AuthorizationBrowser : NSObject <CodexAgentCodexAuthorizationBrowser>
+@property(atomic, strong) CodexAgentCodexAuthorizationUrl *lastUrl;
+@property(atomic) NSUInteger openCount;
 @end
 
 @implementation CDXD084AuthorizationBrowser
@@ -1991,8 +1993,9 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 - (id<CodexAgentCodexAuthorizationPresentation> _Nullable)openUrl:
     (CodexAgentCodexAuthorizationUrl *)url
     error:(NSError * _Nullable * _Nullable)error {
-    (void)url;
     (void)error;
+    self.lastUrl = url;
+    self.openCount += 1;
     return [CodexAgentCodexAuthorizationPresentationCompanion companion].None;
 }
 
@@ -2006,6 +2009,7 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 @property(nonatomic, strong) NSURL *canonicalWorkspaceURL;
 @property(nonatomic, strong) CodexAgentCodexHost *canonicalHost;
 @property(nonatomic, strong) CodexAgentCodexStateObservation *canonicalHostObservation;
+@property(nonatomic, strong) CDXD084AuthorizationBrowser *canonicalD084AuthorizationBrowser;
 @property(nonatomic, strong) CodexAgentCodexAgent *canonicalD086Agent;
 @property(nonatomic, strong) CodexAgentAgentHook *canonicalD086Hook;
 @property(nonatomic, strong) CodexAgentAgentMcpServerConfiguration *canonicalD086McpConfiguration;
@@ -2016,6 +2020,33 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 @property(nonatomic, strong) CodexAgentAgentModel *canonicalD086ModelWithoutTiers;
 @property(nonatomic, strong) CodexAgentAgentSkill *canonicalD086UnownedSkill;
 @property(nonatomic, copy) NSString *canonicalD086FirstModelId;
+@property(nonatomic, strong) CodexAgentCodexStateObservation *canonicalD087AuthenticationStateObservation;
+@property(nonatomic, strong) CodexAgentCodexStateObservation *canonicalD087IsAuthenticatedObservation;
+@property(nonatomic, strong) CodexAgentCodexStateObservation *canonicalD087IsAuthenticatingObservation;
+@property(nonatomic, strong) CodexAgentAgentIntegrationMcpServer *canonicalD087Integration;
+@property(nonatomic, strong) CodexAgentAgentPendingApproval *canonicalD087Approval;
+@property(nonatomic, strong) CodexAgentAgentPendingElicitation *canonicalD087Elicitation;
+@property(nonatomic, strong) CodexAgentConversationId *canonicalD087ConversationId;
+@property(nonatomic) BOOL canonicalD087ObservedSignedOut;
+@property(nonatomic) BOOL canonicalD087ObservedAuthenticating;
+@property(nonatomic) BOOL canonicalD087ObservedAuthenticated;
+@property(nonatomic) BOOL canonicalD087ObservedAuthenticatedFalse;
+@property(nonatomic) BOOL canonicalD087ObservedAuthenticatedTrue;
+@property(nonatomic) BOOL canonicalD087ObservedAuthenticatingFalse;
+@property(nonatomic) BOOL canonicalD087ObservedAuthenticatingTrue;
+@property(nonatomic) BOOL canonicalD087ObservedBrowserUrl;
+@property(nonatomic) BOOL canonicalD087BrowserAuthenticationCompleted;
+@property(nonatomic) BOOL canonicalD087BrowserAuthenticationAdvanced;
+@property(nonatomic) BOOL canonicalD087ObservedBrowserCancelledSignedOut;
+@property(nonatomic) BOOL canonicalD087ObservedBrowserCancelledAuthenticatingFalse;
+@property(nonatomic) BOOL canonicalD087BrowserCancelCompleted;
+@property(nonatomic) BOOL canonicalD087BrowserCancelAdvanced;
+@property(nonatomic) BOOL canonicalD087AuthenticationCompleted;
+@property(nonatomic) BOOL canonicalD087AuthenticationAdvanced;
+@property(nonatomic) BOOL canonicalD087ObservedCancelledSignedOut;
+@property(nonatomic) BOOL canonicalD087ObservedCancelledAuthenticationFalse;
+@property(nonatomic) BOOL canonicalD087CancelCompleted;
+@property(nonatomic) BOOL canonicalD087CancelAdvanced;
 @property(nonatomic, strong) CDXHost *host;
 @property(nonatomic, strong) CDXAgent *agent;
 @property(nonatomic, strong) CDXConversation *conversation;
@@ -2050,6 +2081,12 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 - (void)run;
 - (void)beginD086ControllerFunctions:(CodexAgentCodexAgent *)agent;
 - (void)advanceD086ControllerFunctionsAtStep:(NSUInteger)step;
+- (void)beginD087GatewayFunctions;
+- (void)advanceD087GatewayFunctionsAtStep:(NSUInteger)step;
+- (void)continueD087BrowserAuthenticationIfReady;
+- (void)continueD087BrowserCancelIfReady;
+- (void)continueD087AuthenticationIfReady;
+- (void)continueD087CancelIfReady;
 
 @end
 
@@ -2225,11 +2262,11 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     NSString *canonicalRoot = self.canonicalWorkspaceURL.URLByDeletingLastPathComponent.path;
     NSString *codexHome = [canonicalRoot
         stringByAppendingPathComponent:@"Library/Application Support/CodexAgent"];
-    CDXD084AuthorizationBrowser *browser = [[CDXD084AuthorizationBrowser alloc] init];
+    self.canonicalD084AuthorizationBrowser = [[CDXD084AuthorizationBrowser alloc] init];
     CodexAgentIosCodexPlatform *platform = [[CodexAgentIosCodexPlatform alloc]
         initWithSandboxRootPath:canonicalRoot
           credentialProtection:[CodexAgentIosCodexCredentialProtection whileOpen]
-          authorizationBrowser:browser
+          authorizationBrowser:self.canonicalD084AuthorizationBrowser
                  codexHomePath:codexHome
                   storageRoots:nil];
     CodexAgentCodexClientInfo *clientInfo = [[CodexAgentCodexClientInfo alloc]
@@ -3052,10 +3089,559 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
             break;
         }
         case 21:
-            [self closeCanonicalHost];
+            [self beginD087GatewayFunctions];
             break;
         default:
             [self finishWithFailure:@"Objective-C D086 controller sequence advanced past its end"];
+            break;
+    }
+}
+
+- (void)beginD087GatewayFunctions {
+    CodexAgentCodexAuthentication *authentication = self.canonicalD086Agent.authentication;
+    id stateValue = authentication.state.value;
+    id authenticatedValue = authentication.isAuthenticated.value;
+    id authenticatingValue = authentication.isAuthenticating.value;
+    if (![stateValue isKindOfClass:[CodexAgentAgentAuthenticationState class]] ||
+        ((CodexAgentAgentAuthenticationState *)stateValue).status !=
+            [CodexAgentAgentAuthenticationStatus signedOut] ||
+        ((CodexAgentAgentAuthenticationState *)stateValue).pendingSignInUrl != nil ||
+        ((CodexAgentAgentAuthenticationState *)stateValue).deviceVerificationUrl != nil ||
+        ((CodexAgentAgentAuthenticationState *)stateValue).deviceUserCode != nil ||
+        ((CodexAgentAgentAuthenticationState *)stateValue).failure != nil ||
+        ![authenticatedValue isKindOfClass:[CodexAgentBoolean class]] ||
+        [(CodexAgentBoolean *)authenticatedValue boolValue] ||
+        ![authenticatingValue isKindOfClass:[CodexAgentBoolean class]] ||
+        [(CodexAgentBoolean *)authenticatingValue boolValue]) {
+        [self finishWithFailure:@"Objective-C D087 authentication current values changed"];
+        return;
+    }
+
+    __weak CDXObjectiveCConsumerRun *weakSelf = self;
+    self.canonicalD087AuthenticationStateObservation = [[CodexAgentCodexStateObservation alloc]
+        initWithState:authentication.state
+              onValue:^(id _Nullable value) {
+        CDXObjectiveCConsumerRun *run = weakSelf;
+        if (run == nil || run.finishing) return;
+        if (![NSThread isMainThread]) {
+            [run finishWithFailure:@"Objective-C D087 authentication state changed off the main queue"];
+            return;
+        }
+        if (![value isKindOfClass:[CodexAgentAgentAuthenticationState class]]) {
+            [run finishWithFailure:@"Objective-C D087 authentication state lost its type"];
+            return;
+        }
+        CodexAgentAgentAuthenticationState *state = value;
+        if (state.status == [CodexAgentAgentAuthenticationStatus signedOut]) {
+            run.canonicalD087ObservedSignedOut = YES;
+            if (run.canonicalD087BrowserAuthenticationAdvanced &&
+                !run.canonicalD087BrowserCancelAdvanced) {
+                run.canonicalD087ObservedBrowserCancelledSignedOut = YES;
+            }
+            if (run.canonicalD087AuthenticationAdvanced) {
+                run.canonicalD087ObservedCancelledSignedOut = YES;
+            }
+        } else if (state.status == [CodexAgentAgentAuthenticationStatus authenticating]) {
+            if (state.deviceVerificationUrl != nil || state.deviceUserCode != nil ||
+                state.failure != nil) {
+                [run finishWithFailure:
+                    @"Objective-C D087 Authenticating state payload changed"];
+                return;
+            }
+            if (state.pendingSignInUrl != nil) {
+                if (state.pendingSignInUrl.purpose != [CodexAgentCodexAuthorizationPurpose chatGpt] ||
+                    state.pendingSignInUrl.value.length == 0) {
+                    [run finishWithFailure:
+                        @"Objective-C D087 browser URL payload changed"];
+                    return;
+                }
+                run.canonicalD087ObservedBrowserUrl = YES;
+            }
+            run.canonicalD087ObservedAuthenticating = YES;
+        } else if (state.status == [CodexAgentAgentAuthenticationStatus authenticated]) {
+            run.canonicalD087ObservedAuthenticated = YES;
+        } else {
+            [run finishWithFailure:@"Objective-C D087 authentication exposed an unknown status"];
+            return;
+        }
+        [run continueD087BrowserAuthenticationIfReady];
+        [run continueD087BrowserCancelIfReady];
+        [run continueD087AuthenticationIfReady];
+        [run continueD087CancelIfReady];
+    }];
+    self.canonicalD087IsAuthenticatedObservation = [[CodexAgentCodexStateObservation alloc]
+        initWithState:authentication.isAuthenticated
+              onValue:^(id _Nullable value) {
+        CDXObjectiveCConsumerRun *run = weakSelf;
+        if (run == nil || run.finishing) return;
+        if (![NSThread isMainThread] || ![value isKindOfClass:[CodexAgentBoolean class]]) {
+            [run finishWithFailure:
+                @"Objective-C D087 isAuthenticated callback changed queue or type"];
+            return;
+        }
+        if ([(CodexAgentBoolean *)value boolValue]) {
+            run.canonicalD087ObservedAuthenticatedTrue = YES;
+        } else {
+            run.canonicalD087ObservedAuthenticatedFalse = YES;
+            if (run.canonicalD087AuthenticationAdvanced) {
+                run.canonicalD087ObservedCancelledAuthenticationFalse = YES;
+            }
+        }
+        [run continueD087BrowserAuthenticationIfReady];
+        [run continueD087BrowserCancelIfReady];
+        [run continueD087AuthenticationIfReady];
+        [run continueD087CancelIfReady];
+    }];
+    self.canonicalD087IsAuthenticatingObservation = [[CodexAgentCodexStateObservation alloc]
+        initWithState:authentication.isAuthenticating
+              onValue:^(id _Nullable value) {
+        CDXObjectiveCConsumerRun *run = weakSelf;
+        if (run == nil || run.finishing) return;
+        if (![NSThread isMainThread] || ![value isKindOfClass:[CodexAgentBoolean class]]) {
+            [run finishWithFailure:
+                @"Objective-C D087 isAuthenticating callback changed queue or type"];
+            return;
+        }
+        if ([(CodexAgentBoolean *)value boolValue]) {
+            run.canonicalD087ObservedAuthenticatingTrue = YES;
+        } else {
+            run.canonicalD087ObservedAuthenticatingFalse = YES;
+            if (run.canonicalD087BrowserAuthenticationAdvanced &&
+                !run.canonicalD087BrowserCancelAdvanced) {
+                run.canonicalD087ObservedBrowserCancelledAuthenticatingFalse = YES;
+            }
+        }
+        [run continueD087BrowserAuthenticationIfReady];
+        [run continueD087BrowserCancelIfReady];
+        [run continueD087AuthenticationIfReady];
+    }];
+    if (!self.canonicalD087ObservedSignedOut ||
+        !self.canonicalD087ObservedAuthenticatedFalse ||
+        !self.canonicalD087ObservedAuthenticatingFalse) {
+        [self finishWithFailure:@"Objective-C D087 observations omitted current values"];
+        return;
+    }
+
+    self.canonicalD087Integration = [[CodexAgentAgentIntegrationMcpServer alloc]
+        initWithServer:self.canonicalD086McpServer];
+    self.canonicalD087ConversationId = [[CodexAgentConversationId alloc]
+        initWithValue:@"d087-conversation"];
+    self.canonicalD087Approval = [[CodexAgentAgentPendingApproval alloc]
+        initWithRequestId:@"d087-approval"
+        conversationId:self.canonicalD087ConversationId
+        title:@"D087 approval"
+        details:@"Not pending"];
+    CodexAgentAgentElicitation *elicitation = [[CodexAgentAgentElicitation alloc]
+        initWithRequestId:@"d087-elicitation"
+        serverName:@"d087-server"
+        conversationId:self.canonicalD087ConversationId
+        message:@"D087 URL"
+        form:nil
+        url:@"https://example.com/d087"];
+    self.canonicalD087Elicitation = [[CodexAgentAgentPendingElicitation alloc]
+        initWithElicitation:elicitation];
+    [self advanceD087GatewayFunctionsAtStep:0];
+}
+
+- (void)continueD087BrowserAuthenticationIfReady {
+    if (!self.canonicalD087BrowserAuthenticationCompleted ||
+        !self.canonicalD087ObservedAuthenticating ||
+        !self.canonicalD087ObservedAuthenticatingTrue ||
+        !self.canonicalD087ObservedBrowserUrl ||
+        self.canonicalD087BrowserAuthenticationAdvanced || self.finishing) return;
+    CodexAgentCodexAuthentication *authentication = self.canonicalD086Agent.authentication;
+    CodexAgentAgentAuthenticationState *state =
+        (CodexAgentAgentAuthenticationState *)authentication.state.value;
+    CodexAgentBoolean *authenticated =
+        (CodexAgentBoolean *)authentication.isAuthenticated.value;
+    CodexAgentBoolean *authenticating =
+        (CodexAgentBoolean *)authentication.isAuthenticating.value;
+    CodexAgentCodexAuthorizationUrl *browserUrl =
+        self.canonicalD084AuthorizationBrowser.lastUrl;
+    if (![state isKindOfClass:[CodexAgentAgentAuthenticationState class]] ||
+        state.status != [CodexAgentAgentAuthenticationStatus authenticating] ||
+        state.pendingSignInUrl == nil || state.pendingSignInUrl != browserUrl ||
+        state.pendingSignInUrl.purpose != [CodexAgentCodexAuthorizationPurpose chatGpt] ||
+        state.pendingSignInUrl.value.length == 0 ||
+        state.deviceVerificationUrl != nil || state.deviceUserCode != nil || state.failure != nil ||
+        self.canonicalD084AuthorizationBrowser.openCount != 1 ||
+        ![authenticated isKindOfClass:[CodexAgentBoolean class]] || authenticated.boolValue ||
+        ![authenticating isKindOfClass:[CodexAgentBoolean class]] || !authenticating.boolValue) {
+        [self finishWithFailure:@"Objective-C D087 browser authentication state changed"];
+        return;
+    }
+    self.canonicalD087BrowserAuthenticationAdvanced = YES;
+    [self advanceD087GatewayFunctionsAtStep:2];
+}
+
+- (void)continueD087BrowserCancelIfReady {
+    if (!self.canonicalD087BrowserCancelCompleted ||
+        !self.canonicalD087ObservedBrowserCancelledSignedOut ||
+        !self.canonicalD087ObservedBrowserCancelledAuthenticatingFalse ||
+        self.canonicalD087BrowserCancelAdvanced || self.finishing) return;
+    CodexAgentCodexAuthentication *authentication = self.canonicalD086Agent.authentication;
+    CodexAgentAgentAuthenticationState *state =
+        (CodexAgentAgentAuthenticationState *)authentication.state.value;
+    CodexAgentBoolean *authenticated =
+        (CodexAgentBoolean *)authentication.isAuthenticated.value;
+    CodexAgentBoolean *authenticating =
+        (CodexAgentBoolean *)authentication.isAuthenticating.value;
+    if (![state isKindOfClass:[CodexAgentAgentAuthenticationState class]] ||
+        state.status != [CodexAgentAgentAuthenticationStatus signedOut] ||
+        state.pendingSignInUrl != nil || state.deviceVerificationUrl != nil ||
+        state.deviceUserCode != nil ||
+        ![state.failure.code isEqualToString:@"authentication_failed"] ||
+        ![state.failure.message isEqualToString:@"Authentication was canceled."] ||
+        !state.failure.isRecoverable ||
+        ![authenticated isKindOfClass:[CodexAgentBoolean class]] || authenticated.boolValue ||
+        ![authenticating isKindOfClass:[CodexAgentBoolean class]] || authenticating.boolValue) {
+        [self finishWithFailure:@"Objective-C D087 browser cancel state changed"];
+        return;
+    }
+    self.canonicalD087BrowserCancelAdvanced = YES;
+    [self advanceD087GatewayFunctionsAtStep:3];
+}
+
+- (void)continueD087AuthenticationIfReady {
+    if (!self.canonicalD087AuthenticationCompleted ||
+        !self.canonicalD087ObservedAuthenticated ||
+        !self.canonicalD087ObservedAuthenticatedTrue ||
+        self.canonicalD087AuthenticationAdvanced || self.finishing) return;
+    CodexAgentCodexAuthentication *authentication = self.canonicalD086Agent.authentication;
+    CodexAgentAgentAuthenticationState *state =
+        (CodexAgentAgentAuthenticationState *)authentication.state.value;
+    CodexAgentBoolean *authenticated =
+        (CodexAgentBoolean *)authentication.isAuthenticated.value;
+    CodexAgentBoolean *authenticating =
+        (CodexAgentBoolean *)authentication.isAuthenticating.value;
+    if (![state isKindOfClass:[CodexAgentAgentAuthenticationState class]] ||
+        ![authenticated isKindOfClass:[CodexAgentBoolean class]] ||
+        ![authenticating isKindOfClass:[CodexAgentBoolean class]]) {
+        [self finishWithFailure:@"Objective-C D087 API-key authentication values lost their types"];
+        return;
+    }
+    if (state.status != [CodexAgentAgentAuthenticationStatus authenticated] ||
+        !authenticated.boolValue || authenticating.boolValue) return;
+    if (state.pendingSignInUrl != nil || state.deviceVerificationUrl != nil ||
+        state.deviceUserCode != nil || state.failure != nil) {
+        [self finishWithFailure:@"Objective-C D087 API-key authentication state changed"];
+        return;
+    }
+    self.canonicalD087AuthenticationAdvanced = YES;
+    [self advanceD087GatewayFunctionsAtStep:4];
+}
+
+- (void)continueD087CancelIfReady {
+    if (!self.canonicalD087CancelCompleted ||
+        !self.canonicalD087ObservedCancelledSignedOut ||
+        !self.canonicalD087ObservedCancelledAuthenticationFalse ||
+        self.canonicalD087CancelAdvanced || self.finishing) return;
+    CodexAgentCodexAuthentication *authentication = self.canonicalD086Agent.authentication;
+    CodexAgentAgentAuthenticationState *state =
+        (CodexAgentAgentAuthenticationState *)authentication.state.value;
+    CodexAgentBoolean *authenticated =
+        (CodexAgentBoolean *)authentication.isAuthenticated.value;
+    CodexAgentBoolean *authenticating =
+        (CodexAgentBoolean *)authentication.isAuthenticating.value;
+    if (![state isKindOfClass:[CodexAgentAgentAuthenticationState class]] ||
+        state.status != [CodexAgentAgentAuthenticationStatus signedOut] ||
+        state.pendingSignInUrl != nil || state.deviceVerificationUrl != nil ||
+        state.deviceUserCode != nil ||
+        ![state.failure.code isEqualToString:@"authentication_failed"] ||
+        ![state.failure.message isEqualToString:@"Authentication was canceled."] ||
+        !state.failure.isRecoverable ||
+        ![authenticated isKindOfClass:[CodexAgentBoolean class]] || authenticated.boolValue ||
+        ![authenticating isKindOfClass:[CodexAgentBoolean class]] || authenticating.boolValue) {
+        [self finishWithFailure:@"Objective-C D087 authentication cancel state changed"];
+        return;
+    }
+    self.canonicalD087CancelAdvanced = YES;
+    [self advanceD087GatewayFunctionsAtStep:5];
+}
+
+- (void)advanceD087GatewayFunctionsAtStep:(NSUInteger)step {
+    if (self.finishing) return;
+    __weak CDXObjectiveCConsumerRun *weakSelf = self;
+    switch (step) {
+        case 0: {
+            [self.canonicalD086Agent.authentication signOutWithCompletionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexAuthentication *authentication =
+                        run.canonicalD086Agent.authentication;
+                    CodexAgentAgentAuthenticationState *state =
+                        (CodexAgentAgentAuthenticationState *)authentication.state.value;
+                    CodexAgentBoolean *authenticated =
+                        (CodexAgentBoolean *)authentication.isAuthenticated.value;
+                    CodexAgentBoolean *authenticating =
+                        (CodexAgentBoolean *)authentication.isAuthenticating.value;
+                    if (error != nil ||
+                        ![state isKindOfClass:[CodexAgentAgentAuthenticationState class]] ||
+                        state.status != [CodexAgentAgentAuthenticationStatus signedOut] ||
+                        state.failure != nil ||
+                        ![authenticated isKindOfClass:[CodexAgentBoolean class]] ||
+                        authenticated.boolValue ||
+                        ![authenticating isKindOfClass:[CodexAgentBoolean class]] ||
+                        authenticating.boolValue) {
+                        [run finishWithFailure:@"Objective-C D087 authentication signOut changed state"];
+                        return;
+                    }
+                    [run advanceD087GatewayFunctionsAtStep:1];
+                });
+            }];
+            break;
+        }
+        case 1: {
+            [self.canonicalD086Agent.authentication
+                authenticateMethod:[CodexAgentCodexAuthenticationMethodChatGptBrowser shared]
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil) {
+                        [run finishWithFailure:
+                            [@"Objective-C D087 browser authentication failed: "
+                                stringByAppendingString:error.localizedDescription]];
+                        return;
+                    }
+                    run.canonicalD087BrowserAuthenticationCompleted = YES;
+                    [run continueD087BrowserAuthenticationIfReady];
+                });
+            }];
+            break;
+        }
+        case 2: {
+            [self.canonicalD086Agent.authentication cancelWithCompletionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil) {
+                        [run finishWithFailure:
+                            [@"Objective-C D087 browser authentication cancel failed: "
+                                stringByAppendingString:error.localizedDescription]];
+                        return;
+                    }
+                    run.canonicalD087BrowserCancelCompleted = YES;
+                    [run continueD087BrowserCancelIfReady];
+                });
+            }];
+            break;
+        }
+        case 3: {
+            CodexAgentCodexAuthenticationMethodApiKey *method =
+                [[CodexAgentCodexAuthenticationMethodApiKey alloc]
+                    initWithValue:@"sk-d087-objective-c"];
+            [self.canonicalD086Agent.authentication
+                authenticateMethod:method
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil) {
+                        [run finishWithFailure:
+                            [@"Objective-C D087 API-key authentication failed: "
+                                stringByAppendingString:error.localizedDescription]];
+                        return;
+                    }
+                    run.canonicalD087AuthenticationCompleted = YES;
+                    [run continueD087AuthenticationIfReady];
+                });
+            }];
+            break;
+        }
+        case 4: {
+            [self.canonicalD086Agent.authentication cancelWithCompletionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil) {
+                        [run finishWithFailure:
+                            [@"Objective-C D087 API-key authentication cancel failed: "
+                                stringByAppendingString:error.localizedDescription]];
+                        return;
+                    }
+                    run.canonicalD087CancelCompleted = YES;
+                    [run continueD087CancelIfReady];
+                });
+            }];
+            break;
+        }
+        case 5: {
+            [self.canonicalD086Agent.authentication signOutWithCompletionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexAuthentication *authentication =
+                        run.canonicalD086Agent.authentication;
+                    CodexAgentAgentAuthenticationState *state =
+                        (CodexAgentAgentAuthenticationState *)authentication.state.value;
+                    CodexAgentBoolean *authenticated =
+                        (CodexAgentBoolean *)authentication.isAuthenticated.value;
+                    CodexAgentBoolean *authenticating =
+                        (CodexAgentBoolean *)authentication.isAuthenticating.value;
+                    if (error != nil ||
+                        ![state isKindOfClass:[CodexAgentAgentAuthenticationState class]] ||
+                        state.status != [CodexAgentAgentAuthenticationStatus signedOut] ||
+                        state.pendingSignInUrl != nil || state.deviceVerificationUrl != nil ||
+                        state.deviceUserCode != nil || state.failure != nil ||
+                        ![authenticated isKindOfClass:[CodexAgentBoolean class]] ||
+                        authenticated.boolValue ||
+                        ![authenticating isKindOfClass:[CodexAgentBoolean class]] ||
+                        authenticating.boolValue) {
+                        [run finishWithFailure:
+                            @"Objective-C D087 final signOut did not reset authentication state"];
+                        return;
+                    }
+                    [run advanceD087GatewayFunctionsAtStep:6];
+                });
+            }];
+            break;
+        }
+        case 6: {
+            [self.canonicalD086Agent.integrationAuthorization
+                authorizeTarget:self.canonicalD087Integration
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature MCP_SERVERS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D087 integration authorize exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD087GatewayFunctionsAtStep:7];
+                });
+            }];
+            break;
+        }
+        case 7: {
+            [self.canonicalD086Agent.integrationAuthorization
+                cancelWithCompletionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil) {
+                        [run finishWithFailure:
+                            @"Objective-C D087 idle integration cancel did not succeed"];
+                        return;
+                    }
+                    [run advanceD087GatewayFunctionsAtStep:8];
+                });
+            }];
+            break;
+        }
+        case 8: {
+            [self.canonicalD086Agent.interactions
+                openUrlElicitation:self.canonicalD087Elicitation
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentKotlinThrowable *exception =
+                        (CodexAgentKotlinThrowable *)error.kotlinException;
+                    if (error == nil ||
+                        ![exception isKindOfClass:[CodexAgentKotlinIllegalStateException class]] ||
+                        [exception isKindOfClass:[CodexAgentCodexOperationException class]] ||
+                        ![exception.message isEqualToString:@"URL elicitation is no longer pending"]) {
+                        [run finishWithFailure:
+                            @"Objective-C D087 interactions.openUrl exposed the wrong local error"];
+                        return;
+                    }
+                    [run advanceD087GatewayFunctionsAtStep:9];
+                });
+            }];
+            break;
+        }
+        case 9: {
+            [self.canonicalD086Agent.interactions
+                resolveApproval:self.canonicalD087Approval
+                decision:[CodexAgentAgentApprovalDecision accept]
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentKotlinThrowable *exception =
+                        (CodexAgentKotlinThrowable *)error.kotlinException;
+                    if (error == nil ||
+                        ![exception isKindOfClass:[CodexAgentKotlinIllegalStateException class]] ||
+                        [exception isKindOfClass:[CodexAgentCodexOperationException class]] ||
+                        ![exception.message isEqualToString:@"Interaction is no longer pending"]) {
+                        [run finishWithFailure:
+                            @"Objective-C D087 approval resolve exposed the wrong local error"];
+                        return;
+                    }
+                    [run advanceD087GatewayFunctionsAtStep:10];
+                });
+            }];
+            break;
+        }
+        case 10: {
+            [self.canonicalD086Agent.interactions
+                resolveElicitation:self.canonicalD087Elicitation
+                response:[[CodexAgentAgentElicitationResponse companion] decline]
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentKotlinThrowable *exception =
+                        (CodexAgentKotlinThrowable *)error.kotlinException;
+                    if (error == nil ||
+                        ![exception isKindOfClass:[CodexAgentKotlinIllegalStateException class]] ||
+                        [exception isKindOfClass:[CodexAgentCodexOperationException class]] ||
+                        ![exception.message isEqualToString:@"Elicitation is no longer pending"]) {
+                        [run finishWithFailure:
+                            @"Objective-C D087 elicitation resolve exposed the wrong local error"];
+                        return;
+                    }
+                    [run advanceD087GatewayFunctionsAtStep:11];
+                });
+            }];
+            break;
+        }
+        case 11: {
+            [self.canonicalD086Agent.conversations
+                renameId:self.canonicalD087ConversationId
+                name:@"   "
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentKotlinThrowable *exception =
+                        (CodexAgentKotlinThrowable *)error.kotlinException;
+                    if (error == nil || exception == nil ||
+                        [exception isKindOfClass:[CodexAgentCodexOperationException class]] ||
+                        ![exception.message isEqualToString:@"Conversation name must not be blank"]) {
+                        [run finishWithFailure:
+                            @"Objective-C D087 conversations.rename exposed the wrong local error"];
+                        return;
+                    }
+                    [run advanceD087GatewayFunctionsAtStep:12];
+                });
+            }];
+            break;
+        }
+        case 12:
+            [self.canonicalD087AuthenticationStateObservation close];
+            [self.canonicalD087IsAuthenticatedObservation close];
+            [self.canonicalD087IsAuthenticatingObservation close];
+            self.canonicalD087AuthenticationStateObservation = nil;
+            self.canonicalD087IsAuthenticatedObservation = nil;
+            self.canonicalD087IsAuthenticatingObservation = nil;
+            [self closeCanonicalHost];
+            break;
+        default:
+            [self finishWithFailure:@"Objective-C D087 gateway sequence advanced past its end"];
             break;
     }
 }
@@ -3387,6 +3973,12 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     [self.conversationObservation dispose];
     [self.canonicalHostObservation close];
     self.canonicalHostObservation = nil;
+    [self.canonicalD087AuthenticationStateObservation close];
+    [self.canonicalD087IsAuthenticatedObservation close];
+    [self.canonicalD087IsAuthenticatingObservation close];
+    self.canonicalD087AuthenticationStateObservation = nil;
+    self.canonicalD087IsAuthenticatedObservation = nil;
+    self.canonicalD087IsAuthenticatingObservation = nil;
 
     __weak CDXObjectiveCConsumerRun *weakSelf = self;
     dispatch_after(
@@ -3447,6 +4039,9 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
     self.activeConversationObservation = nil;
     self.conversationObservation = nil;
     self.canonicalHostObservation = nil;
+    self.canonicalD087AuthenticationStateObservation = nil;
+    self.canonicalD087IsAuthenticatedObservation = nil;
+    self.canonicalD087IsAuthenticatingObservation = nil;
     self.workspaceURL = nil;
     self.canonicalWorkspaceURL = nil;
     self.canonicalHost = nil;

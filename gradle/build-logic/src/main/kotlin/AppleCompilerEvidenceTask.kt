@@ -2329,6 +2329,103 @@ private val d086Capabilities = listOf(
 private val d086CapabilitiesByKey = d086Capabilities.associateBy { it.canonicalKey }
 private val d086SwiftAsyncMemberUsrs = d086Capabilities.mapTo(linkedSetOf(), AppleOrdinaryCapability::usr)
 
+private val d087Capabilities = listOf(
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthentication|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthentication.authenticate|" +
+            "authenticate($appleCanonicalAbiPackage.CodexAuthenticationMethod){}[0]|" +
+            "return=kotlin/Unit|suspend=true|parameters=[REGULAR:" +
+            "$appleCanonicalPackage/CodexAuthenticationMethod!!:default=true:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)authenticateMethod:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthentication|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthentication.cancel|cancel(){}[0]|" +
+            "return=kotlin/Unit|suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)cancelWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthentication|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthentication.signOut|signOut(){}[0]|" +
+            "return=kotlin/Unit|suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)signOutWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthentication|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthentication.isAuthenticated|{}isAuthenticated[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticated",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthentication|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthentication.isAuthenticating|{}isAuthenticating[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticating",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexAuthentication|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexAuthentication.state|{}state[0]|propertyKind=VAL|" +
+            "type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "$appleCanonicalPackage/AgentAuthenticationState!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)state",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexIntegrationAuthorization|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexIntegrationAuthorization.authorize|" +
+            "authorize(0:0){0§<$appleCanonicalAbiPackage.AgentIntegration>}[0]|return=kotlin/Unit|" +
+            "suspend=true|parameters=[REGULAR:^A1:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)authorizeTarget:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexIntegrationAuthorization|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexIntegrationAuthorization.cancel|cancel(){}[0]|" +
+            "return=kotlin/Unit|suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)cancelWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexInteractions|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexInteractions.openUrl|" +
+            "openUrl($appleCanonicalAbiPackage.AgentPendingElicitation){}[0]|return=kotlin/Unit|" +
+            "suspend=true|parameters=[REGULAR:$appleCanonicalPackage/AgentPendingElicitation!!:" +
+            "default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)openUrlElicitation:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexInteractions|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexInteractions.resolve|" +
+            "resolve($appleCanonicalAbiPackage.AgentPendingApproval;" +
+            "$appleCanonicalAbiPackage.AgentApprovalDecision){}[0]|return=kotlin/Unit|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentPendingApproval!!:default=false:vararg=false," +
+            "REGULAR:$appleCanonicalPackage/AgentApprovalDecision!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveApproval:decision:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexInteractions|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexInteractions.resolve|" +
+            "resolve($appleCanonicalAbiPackage.AgentPendingElicitation;" +
+            "$appleCanonicalAbiPackage.AgentElicitationResponse){}[0]|return=kotlin/Unit|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentPendingElicitation!!:" +
+            "default=false:vararg=false,REGULAR:$appleCanonicalPackage/AgentElicitationResponse!!:" +
+            "default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveElicitation:response:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversations|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversations.rename|" +
+            "rename($appleCanonicalAbiPackage.ConversationId;kotlin.String){}[0]|return=kotlin/Unit|" +
+            "suspend=true|parameters=[REGULAR:$appleCanonicalPackage/ConversationId!!:" +
+            "default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)renameId:name:completionHandler:",
+    ),
+).also { capabilities ->
+    check(capabilities.size == 12 && capabilities.map { it.canonicalKey }.distinct().size == 12 &&
+        capabilities.map { it.usr }.distinct().size == 12
+    ) { "D087 Apple executable controller/state capability inventory changed" }
+}
+private val d087CapabilitiesByKey = d087Capabilities.associateBy { it.canonicalKey }
+private val d087SwiftAsyncMemberUsrs = d087Capabilities.filter { "|kind=function|" in it.canonicalKey }
+    .mapTo(linkedSetOf(), AppleOrdinaryCapability::usr)
+
 internal val appleCompilerFixtureD065Capabilities: List<AppleOrdinaryCapability>
     get() = d065OrdinaryCapabilities
 
@@ -2470,6 +2567,18 @@ internal fun appleCompilerFixtureD086SwiftCallbackSymbols(): Map<String, Expecte
 internal fun appleCompilerFixtureD086ObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
     d086ExpectedObjectiveCSymbols()
 
+internal val appleCompilerFixtureD087Capabilities: List<AppleOrdinaryCapability>
+    get() = d087Capabilities
+
+internal fun appleCompilerFixtureD087SwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
+    d087ExpectedSwiftSymbols()
+
+internal fun appleCompilerFixtureD087SwiftCallbackSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
+    d087ExpectedSwiftCallbackSymbols()
+
+internal fun appleCompilerFixtureD087ObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
+    d087ExpectedObjectiveCSymbols()
+
 internal fun appleCompilerFixtureSwiftReferences(): List<AppleCompilerReference> =
     expectedSwiftAppleBindingReferences()
 
@@ -2509,6 +2618,8 @@ private val appleBindingMembers =
             "d085:${it.canonicalKey}" to it.usr
         } + d086Capabilities.associate {
             "d086:${it.canonicalKey}" to it.usr
+        } + d087Capabilities.associate {
+            "d087:${it.canonicalKey}" to it.usr
         }
 private val appleBindingCoverageTokens =
     appleCodexFailureCoverageTokens + appleConversationIdCoverageTokens + appleApprovalDecisionCoverageTokens +
@@ -2533,6 +2644,7 @@ private fun appleBindingShape(capability: String): String {
         ?: d084CapabilitiesByKey[capability]?.let { "d084:${it.canonicalKey}" }
         ?: d085CapabilitiesByKey[capability]?.let { "d085:${it.canonicalKey}" }
         ?: d086CapabilitiesByKey[capability]?.let { "d086:${it.canonicalKey}" }
+        ?: d087CapabilitiesByKey[capability]?.let { "d087:${it.canonicalKey}" }
         ?: error("Unexpected canonical Apple binding capability: $capability")
 }
 
@@ -3482,6 +3594,232 @@ private fun d086ExpectedSwiftCallbackSymbols(): Map<String, ExpectedAppleCompile
         ),
 )
 
+private fun d087ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)authenticateMethod:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexAuthentication", "authenticate(method:)"),
+            "authenticate(method:)", "open",
+            "func authenticate(method: any CodexAuthenticationMethod) async throws",
+            listOf("c:objc(pl)CodexAgentCodexAuthenticationMethod"),
+            listOf("method" to "method: any CodexAuthenticationMethod"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)cancelWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexAuthentication", "cancel()"), "cancel()", "open",
+            "func cancel() async throws", emptyList(), emptyList(), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)signOutWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexAuthentication", "signOut()"), "signOut()", "open",
+            "func signOut() async throws", emptyList(), emptyList(), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticated" to
+        ExpectedAppleCompilerSymbol(
+            "swift.property", listOf("CodexAuthentication", "isAuthenticated"),
+            "isAuthenticated", "open",
+            "var isAuthenticated: any Kotlinx_coroutines_coreStateFlow { get }",
+            listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticating" to
+        ExpectedAppleCompilerSymbol(
+            "swift.property", listOf("CodexAuthentication", "isAuthenticating"),
+            "isAuthenticating", "open",
+            "var isAuthenticating: any Kotlinx_coroutines_coreStateFlow { get }",
+            listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)state" to
+        ExpectedAppleCompilerSymbol(
+            "swift.property", listOf("CodexAuthentication", "state"), "state", "open",
+            "var state: any Kotlinx_coroutines_coreStateFlow { get }",
+            listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)authorizeTarget:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexIntegrationAuthorization", "authorize(target:)"),
+            "authorize(target:)", "open",
+            "func authorize(target: any AgentIntegration) async throws",
+            listOf("c:objc(pl)CodexAgentAgentIntegration"),
+            listOf("target" to "target: any AgentIntegration"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)cancelWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexIntegrationAuthorization", "cancel()"), "cancel()", "open",
+            "func cancel() async throws", emptyList(), emptyList(), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)openUrlElicitation:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexInteractions", "openUrl(elicitation:)"),
+            "openUrl(elicitation:)", "open",
+            "func openUrl(elicitation: AgentPendingElicitation) async throws",
+            listOf("c:objc(cs)CodexAgentAgentPendingElicitation"),
+            listOf("elicitation" to "elicitation: AgentPendingElicitation"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveApproval:decision:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexInteractions", "resolve(approval:decision:)"),
+            "resolve(approval:decision:)", "open",
+            "func resolve(approval: AgentPendingApproval, decision: AgentApprovalDecision) async throws",
+            listOf(
+                "c:objc(cs)CodexAgentAgentPendingApproval",
+                "c:objc(cs)CodexAgentAgentApprovalDecision",
+            ),
+            listOf(
+                "approval" to "approval: AgentPendingApproval",
+                "decision" to "decision: AgentApprovalDecision",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveElicitation:response:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexInteractions", "resolve(elicitation:response:)"),
+            "resolve(elicitation:response:)", "open",
+            "func resolve(elicitation: AgentPendingElicitation, response: AgentElicitationResponse) " +
+                "async throws",
+            listOf(
+                "c:objc(cs)CodexAgentAgentPendingElicitation",
+                "c:objc(cs)CodexAgentAgentElicitationResponse",
+            ),
+            listOf(
+                "elicitation" to "elicitation: AgentPendingElicitation",
+                "response" to "response: AgentElicitationResponse",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexConversations")}(im)renameId:name:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConversations", "rename(id:name:)"),
+            "rename(id:name:)", "open",
+            "func rename(id: ConversationId, name: String) async throws",
+            listOf("c:objc(cs)CodexAgentConversationId", "s:SS"),
+            listOf("id" to "id: ConversationId", "name" to "name: String"), "Void",
+        ),
+)
+
+private fun d087ExpectedSwiftCallbackSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)authenticateMethod:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexAuthentication", "authenticate(method:completionHandler:)"),
+            "authenticate(method:completionHandler:)", "open",
+            "func authenticate(method: any CodexAuthenticationMethod, completionHandler: @escaping " +
+                "@Sendable ((any Error)?) -> Void)",
+            listOf(
+                "c:objc(pl)CodexAgentCodexAuthenticationMethod", "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "method" to "method: any CodexAuthenticationMethod",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)cancelWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexAuthentication", "cancel(completionHandler:)"),
+            "cancel(completionHandler:)", "open",
+            "func cancel(completionHandler: @escaping @Sendable ((any Error)?) -> Void)",
+            listOf("s:s5ErrorP", "s:s4Voida"),
+            listOf("completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)signOutWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexAuthentication", "signOut(completionHandler:)"),
+            "signOut(completionHandler:)", "open",
+            "func signOut(completionHandler: @escaping @Sendable ((any Error)?) -> Void)",
+            listOf("s:s5ErrorP", "s:s4Voida"),
+            listOf("completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)authorizeTarget:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf(
+                "CodexIntegrationAuthorization", "authorize(target:completionHandler:)",
+            ),
+            "authorize(target:completionHandler:)", "open",
+            "func authorize(target: any AgentIntegration, completionHandler: @escaping @Sendable " +
+                "((any Error)?) -> Void)",
+            listOf("c:objc(pl)CodexAgentAgentIntegration", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "target" to "target: any AgentIntegration",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)cancelWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexIntegrationAuthorization", "cancel(completionHandler:)"),
+            "cancel(completionHandler:)", "open",
+            "func cancel(completionHandler: @escaping @Sendable ((any Error)?) -> Void)",
+            listOf("s:s5ErrorP", "s:s4Voida"),
+            listOf("completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)openUrlElicitation:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexInteractions", "openUrl(elicitation:completionHandler:)"),
+            "openUrl(elicitation:completionHandler:)", "open",
+            "func openUrl(elicitation: AgentPendingElicitation, completionHandler: @escaping @Sendable " +
+                "((any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentAgentPendingElicitation", "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "elicitation" to "elicitation: AgentPendingElicitation",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveApproval:decision:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf(
+                "CodexInteractions", "resolve(approval:decision:completionHandler:)",
+            ),
+            "resolve(approval:decision:completionHandler:)", "open",
+            "func resolve(approval: AgentPendingApproval, decision: AgentApprovalDecision, " +
+                "completionHandler: @escaping @Sendable ((any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentAgentPendingApproval", "c:objc(cs)CodexAgentAgentApprovalDecision",
+                "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "approval" to "approval: AgentPendingApproval",
+                "decision" to "decision: AgentApprovalDecision",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveElicitation:response:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf(
+                "CodexInteractions", "resolve(elicitation:response:completionHandler:)",
+            ),
+            "resolve(elicitation:response:completionHandler:)", "open",
+            "func resolve(elicitation: AgentPendingElicitation, response: AgentElicitationResponse, " +
+                "completionHandler: @escaping @Sendable ((any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentAgentPendingElicitation",
+                "c:objc(cs)CodexAgentAgentElicitationResponse", "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "elicitation" to "elicitation: AgentPendingElicitation",
+                "response" to "response: AgentElicitationResponse",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexConversations")}(im)renameId:name:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConversations", "rename(id:name:completionHandler:)"),
+            "rename(id:name:completionHandler:)", "open",
+            "func rename(id: ConversationId, name: String, completionHandler: @escaping @Sendable " +
+                "((any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentConversationId", "s:SS", "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "id" to "id: ConversationId", "name" to "name: String",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+)
+
 private fun objectiveCConstructorDeclaration(owner: AppleOrdinaryValue): String {
     val parameters = owner.parameters.mapIndexed { index, parameter ->
         val selector = if (index == 0) {
@@ -4307,6 +4645,156 @@ private val appleCompilerSlices = listOf(
     AppleCompilerSlice("ios-arm64-simulator", "iphonesimulator", "arm64-apple-ios15.0-simulator"),
 )
 
+private fun d087ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)authenticateMethod:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexAuthentication", "authenticateMethod:completionHandler:"),
+            "authenticateMethod:completionHandler:", "public",
+            "- (void) authenticateMethod:(id<CodexAgentCodexAuthenticationMethod>) method " +
+                "completionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:Qoobjc(pl)CodexAgentCodexAuthenticationMethod", "c:v", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "method" to "(id<CodexAgentCodexAuthenticationMethod>) method",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)cancelWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexAuthentication", "cancelWithCompletionHandler:"),
+            "cancelWithCompletionHandler:", "public",
+            "- (void) cancelWithCompletionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:v", "c:objc(cs)NSError"),
+            listOf("completionHandler" to "(void (^)(NSError *)) completionHandler"), "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)signOutWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexAuthentication", "signOutWithCompletionHandler:"),
+            "signOutWithCompletionHandler:", "public",
+            "- (void) signOutWithCompletionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:v", "c:objc(cs)NSError"),
+            listOf("completionHandler" to "(void (^)(NSError *)) completionHandler"), "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticated" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.property", listOf("CodexAgentCodexAuthentication", "isAuthenticated"),
+            "isAuthenticated", "public",
+            "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> isAuthenticated;",
+            listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticating" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.property", listOf("CodexAgentCodexAuthentication", "isAuthenticating"),
+            "isAuthenticating", "public",
+            "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> isAuthenticating;",
+            listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)state" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.property", listOf("CodexAgentCodexAuthentication", "state"),
+            "state", "public",
+            "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> state;",
+            listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)authorizeTarget:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexIntegrationAuthorization", "authorizeTarget:completionHandler:"),
+            "authorizeTarget:completionHandler:", "public",
+            "- (void) authorizeTarget:(id<CodexAgentAgentIntegration>) target " +
+                "completionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:Qoobjc(pl)CodexAgentAgentIntegration", "c:v", "c:objc(cs)NSError"),
+            listOf(
+                "target" to "(id<CodexAgentAgentIntegration>) target",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)cancelWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexIntegrationAuthorization", "cancelWithCompletionHandler:"),
+            "cancelWithCompletionHandler:", "public",
+            "- (void) cancelWithCompletionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:v", "c:objc(cs)NSError"),
+            listOf("completionHandler" to "(void (^)(NSError *)) completionHandler"), "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)openUrlElicitation:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexInteractions", "openUrlElicitation:completionHandler:"),
+            "openUrlElicitation:completionHandler:", "public",
+            "- (void) openUrlElicitation:(CodexAgentAgentPendingElicitation *) elicitation " +
+                "completionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentAgentPendingElicitation", "c:v", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "elicitation" to "(CodexAgentAgentPendingElicitation *) elicitation",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveApproval:decision:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexInteractions", "resolveApproval:decision:completionHandler:"),
+            "resolveApproval:decision:completionHandler:", "public",
+            "- (void) resolveApproval:(CodexAgentAgentPendingApproval *) approval " +
+                "decision:(CodexAgentAgentApprovalDecision *) decision " +
+                "completionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentAgentPendingApproval",
+                "c:objc(cs)CodexAgentAgentApprovalDecision", "c:v", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "approval" to "(CodexAgentAgentPendingApproval *) approval",
+                "decision" to "(CodexAgentAgentApprovalDecision *) decision",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveElicitation:response:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexInteractions", "resolveElicitation:response:completionHandler:"),
+            "resolveElicitation:response:completionHandler:", "public",
+            "- (void) resolveElicitation:(CodexAgentAgentPendingElicitation *) elicitation " +
+                "response:(CodexAgentAgentElicitationResponse *) response " +
+                "completionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentAgentPendingElicitation",
+                "c:objc(cs)CodexAgentAgentElicitationResponse", "c:v", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "elicitation" to "(CodexAgentAgentPendingElicitation *) elicitation",
+                "response" to "(CodexAgentAgentElicitationResponse *) response",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexConversations")}(im)renameId:name:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexConversations", "renameId:name:completionHandler:"),
+            "renameId:name:completionHandler:", "public",
+            "- (void) renameId:(CodexAgentConversationId *) id name:(NSString *) name " +
+                "completionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentConversationId", "c:objc(cs)NSString", "c:v",
+                "c:objc(cs)NSError",
+            ),
+            listOf(
+                "id" to "(CodexAgentConversationId *) id", "name" to "(NSString *) name",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+)
+
 private val expectedSwiftAppleBindingSymbols = linkedMapOf(
     APPLE_CODEX_FAILURE_OWNER_USR to ExpectedAppleCompilerSymbol(
         "swift.class", listOf("CodexFailure"), "CodexFailure", "public", "class CodexFailure", emptyList(),
@@ -4405,7 +4893,8 @@ private val expectedSwiftAppleBindingSymbols = linkedMapOf(
     d075ExpectedSwiftSymbols() + d076ExpectedSwiftSymbols() + d077ExpectedSwiftSymbols() +
     d078ExpectedSwiftSymbols() + d079ExpectedSwiftSymbols() + d080ExpectedSwiftSymbols() +
     d081ExpectedSwiftSymbols() + d082ExpectedSwiftSymbols() + d083ExpectedSwiftSymbols() +
-    d084ExpectedSwiftSymbols() + d085ExpectedSwiftSymbols() + d086ExpectedSwiftSymbols()
+    d084ExpectedSwiftSymbols() + d085ExpectedSwiftSymbols() + d086ExpectedSwiftSymbols() +
+    d087ExpectedSwiftSymbols()
 
 private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
     APPLE_CODEX_FAILURE_OWNER_USR to ExpectedAppleCompilerSymbol(
@@ -4533,7 +5022,8 @@ private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
     d075ExpectedObjectiveCSymbols() + d076ExpectedObjectiveCSymbols() + d077ExpectedObjectiveCSymbols() +
     d078ExpectedObjectiveCSymbols() + d079ExpectedObjectiveCSymbols() + d080ExpectedObjectiveCSymbols() +
     d081ExpectedObjectiveCSymbols() + d082ExpectedObjectiveCSymbols() + d083ExpectedObjectiveCSymbols() +
-    d084ExpectedObjectiveCSymbols() + d085ExpectedObjectiveCSymbols() + d086ExpectedObjectiveCSymbols()
+    d084ExpectedObjectiveCSymbols() + d085ExpectedObjectiveCSymbols() + d086ExpectedObjectiveCSymbols() +
+    d087ExpectedObjectiveCSymbols()
 
 internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> {
     val ownerPrefixes = setOf(
@@ -4553,7 +5043,8 @@ internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> 
             !it.startsWith("d075:") && !it.startsWith("d076:") && !it.startsWith("d077:") &&
             !it.startsWith("d078:") && !it.startsWith("d079:") && !it.startsWith("d080:") &&
             !it.startsWith("d081:") && !it.startsWith("d082:") && !it.startsWith("d083:") &&
-            !it.startsWith("d084:") && !it.startsWith("d085:") && !it.startsWith("d086:")
+            !it.startsWith("d084:") && !it.startsWith("d085:") && !it.startsWith("d086:") &&
+            !it.startsWith("d087:")
     }
     check(byShape.keys == priorMembers.keys) {
         "Canonical Apple binding capability set changed: ${byShape.keys.sorted()}"
@@ -4589,11 +5080,13 @@ internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> 
     check(d085Keys.all(memberKeys::contains)) { "Canonical D085 Apple binding capability set changed" }
     val d086Keys = d086Capabilities.map { it.canonicalKey }
     check(d086Keys.all(memberKeys::contains)) { "Canonical D086 Apple binding capability set changed" }
+    val d087Keys = d087Capabilities.map { it.canonicalKey }
+    check(d087Keys.all(memberKeys::contains)) { "Canonical D087 Apple binding capability set changed" }
     return (byShape.values.map { it.single() } + d065Keys + d073Keys + d074Keys + d075Keys + d076Keys +
         d077Keys + d078Keys + d079Keys + d080Keys + d081Keys + d082Keys + d083Keys + d084Keys + d085Keys +
-        d086Keys)
+        d086Keys + d087Keys)
         .sorted().also { capabilities ->
-        check(capabilities.size == 519 && capabilities.distinct().size == 519) {
+        check(capabilities.size == 531 && capabilities.distinct().size == 531) {
             "Canonical Apple binding capability count changed"
         }
     }
@@ -4670,8 +5163,9 @@ private fun parseAppleBindingSurface(
             actual.typeIdentifiers == contract.typeIdentifiers && actual.parameters == contract.parameters &&
             actual.returns == contract.returns
     if (language == "swift") {
-        val callbacks = d084ExpectedSwiftCallbackSymbols() + d086ExpectedSwiftCallbackSymbols()
-        val asyncMemberUsrs = d084SwiftAsyncMemberUsrs + d086SwiftAsyncMemberUsrs
+        val callbacks = d084ExpectedSwiftCallbackSymbols() + d086ExpectedSwiftCallbackSymbols() +
+            d087ExpectedSwiftCallbackSymbols()
+        val asyncMemberUsrs = d084SwiftAsyncMemberUsrs + d086SwiftAsyncMemberUsrs + d087SwiftAsyncMemberUsrs
         asyncMemberUsrs.forEach { precise ->
             val variants = rawSymbols.filter { it.precise == precise }
             check(variants.size == 2 && variants.all { it.interfaceLanguage == "swift" } &&
@@ -4680,7 +5174,7 @@ private fun parseAppleBindingSurface(
             ) { "Swift Apple async/callback surface changed: $precise" }
         }
     }
-    val swiftAsyncMemberUsrs = d084SwiftAsyncMemberUsrs + d086SwiftAsyncMemberUsrs
+    val swiftAsyncMemberUsrs = d084SwiftAsyncMemberUsrs + d086SwiftAsyncMemberUsrs + d087SwiftAsyncMemberUsrs
     val symbols = rawSymbols.filter { actual ->
         language != "swift" || actual.precise !in swiftAsyncMemberUsrs ||
             matches(actual, expected.getValue(actual.precise))
@@ -4762,11 +5256,15 @@ private fun parseAppleBindingSurface(
     check(d086MemberUsrs.size == 20 && d086MemberUsrs.distinct().size == 20) {
         "D086 Apple member inventory changed"
     }
+    val d087MemberUsrs = d087Capabilities.map(AppleOrdinaryCapability::usr)
+    check(d087MemberUsrs.size == 12 && d087MemberUsrs.distinct().size == 12) {
+        "D087 Apple member inventory changed"
+    }
     val selectedMemberUsrs = establishedMemberUsrs + ordinaryMemberUsrs + d073MemberUsrs + d074MemberUsrs +
         d075MemberUsrs + d076MemberUsrs + d077MemberUsrs + d078MemberUsrs + d079MemberUsrs +
         d080MemberUsrs + d081MemberUsrs + d082MemberUsrs + d083MemberUsrs + d084MemberUsrs + d085MemberUsrs +
-        d086MemberUsrs
-    check(selectedMemberUsrs.size == 519 && selectedMemberUsrs.distinct().size == 519) {
+        d086MemberUsrs + d087MemberUsrs
+    check(selectedMemberUsrs.size == 531 && selectedMemberUsrs.distinct().size == 531) {
         "Selected Apple member inventory changed"
     }
     val memberOwners = selectedMemberUsrs.associateWith(::appleMemberOwnerUsr)
@@ -4783,7 +5281,7 @@ private fun parseAppleBindingSurface(
             )
         }
     val relationshipsBySource = relationships.groupBy { it.second }
-    val swiftAsyncUsrs = d084SwiftAsyncMemberUsrs + d086SwiftAsyncMemberUsrs
+    val swiftAsyncUsrs = d084SwiftAsyncMemberUsrs + d086SwiftAsyncMemberUsrs + d087SwiftAsyncMemberUsrs
     check(relationships.map { it.second }.toSet() == memberOwners.keys &&
         relationshipsBySource.all { (source, values) ->
             values.size == if (language == "swift" && source in swiftAsyncUsrs) 2 else 1
@@ -5254,6 +5752,141 @@ private fun d086ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerRe
     ),
 )
 
+private fun d087ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)authenticateMethod:completionHandler:",
+        "declref_expr", "authenticate", null,
+        "\$syySo010CodexAgentA20AuthenticationMethod_p_tYaKcSo0abaC0CcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)cancelWithCompletionHandler:",
+        "declref_expr", "cancel", null, "\$syyyYaKcSo010CodexAgentA14AuthenticationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)signOutWithCompletionHandler:",
+        "declref_expr", "signOut", null, "\$syyyYaKcSo010CodexAgentA14AuthenticationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticated",
+        "member_ref_expr", "isAuthenticated", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticating",
+        "member_ref_expr", "isAuthenticating", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)state",
+        "member_ref_expr", "state", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)authorizeTarget:completionHandler:",
+        "declref_expr", "authorize", null,
+        "\$syySo010CodexAgentB11Integration_p_tYaKcSo0abaC13AuthorizationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)cancelWithCompletionHandler:",
+        "declref_expr", "cancel", null,
+        "\$syyyYaKcSo010CodexAgentA24IntegrationAuthorizationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)openUrlElicitation:completionHandler:",
+        "declref_expr", "openUrl", null,
+        "\$syySo010CodexAgentB18PendingElicitationC_tYaKcSo0abA12InteractionsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveApproval:decision:completionHandler:",
+        "declref_expr", "resolve", null,
+        "\$syySo010CodexAgentB15PendingApprovalC_So0abbD8DecisionCtYaKcSo0abA12InteractionsCcD",
+        emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveElicitation:response:completionHandler:",
+        "declref_expr", "resolve", null,
+        "\$syySo010CodexAgentB18PendingElicitationC_So0abbD8ResponseCtYaKcSo0abA12InteractionsCcD",
+        emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)renameId:name:completionHandler:",
+        "declref_expr", "rename", null,
+        "\$syySo24CodexAgentConversationIdC_SStYaKcSo0abA13ConversationsCcD", emptyList(),
+    ),
+)
+
+private fun d087ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)authenticateMethod:completionHandler:",
+        "ObjCMessageExpr", "authenticateMethod:completionHandler:", "CodexAgentCodexAuthentication *", "void",
+        listOf("id<CodexAgentCodexAuthenticationMethod>", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)cancelWithCompletionHandler:",
+        "ObjCMessageExpr", "cancelWithCompletionHandler:", "CodexAgentCodexAuthentication *", "void",
+        listOf("void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)signOutWithCompletionHandler:",
+        "ObjCMessageExpr", "signOutWithCompletionHandler:", "CodexAgentCodexAuthentication *", "void",
+        listOf("void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticated",
+        "ObjCPropertyRefExpr", "isAuthenticated", "CodexAgentCodexAuthentication *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)isAuthenticating",
+        "ObjCPropertyRefExpr", "isAuthenticating", "CodexAgentCodexAuthentication *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexAuthentication")}(py)state",
+        "ObjCPropertyRefExpr", "state", "CodexAgentCodexAuthentication *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)authorizeTarget:completionHandler:",
+        "ObjCMessageExpr", "authorizeTarget:completionHandler:",
+        "CodexAgentCodexIntegrationAuthorization *", "void",
+        listOf("id<CodexAgentAgentIntegration>", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(im)cancelWithCompletionHandler:",
+        "ObjCMessageExpr", "cancelWithCompletionHandler:", "CodexAgentCodexIntegrationAuthorization *", "void",
+        listOf("void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)openUrlElicitation:completionHandler:",
+        "ObjCMessageExpr", "openUrlElicitation:completionHandler:", "CodexAgentCodexInteractions *", "void",
+        listOf("CodexAgentAgentPendingElicitation *", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveApproval:decision:completionHandler:",
+        "ObjCMessageExpr", "resolveApproval:decision:completionHandler:",
+        "CodexAgentCodexInteractions *", "void",
+        listOf(
+            "CodexAgentAgentPendingApproval *", "CodexAgentAgentApprovalDecision *",
+            "void (^)(NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(im)resolveElicitation:response:completionHandler:",
+        "ObjCMessageExpr", "resolveElicitation:response:completionHandler:",
+        "CodexAgentCodexInteractions *", "void",
+        listOf(
+            "CodexAgentAgentPendingElicitation *", "CodexAgentAgentElicitationResponse *",
+            "void (^)(NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)renameId:name:completionHandler:",
+        "ObjCMessageExpr", "renameId:name:completionHandler:", "CodexAgentCodexConversations *", "void",
+        listOf("CodexAgentConversationId *", "NSString *", "void (^)(NSError *)"),
+    ),
+)
+
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = buildList {
     add(AppleCompilerReference(
         appleCodexFailureMembers.getValue("constructor:<init>"), "declref_expr", "init", null,
@@ -5388,6 +6021,7 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     addAll(d084ExpectedSwiftAppleBindingReferences())
     addAll(d085ExpectedSwiftAppleBindingReferences())
     addAll(d086ExpectedSwiftAppleBindingReferences())
+    addAll(d087ExpectedSwiftAppleBindingReferences())
     add(AppleCompilerReference(
         "$APPLE_AUTHORIZATION_URL_COMPANION_OWNER_USR(im)chatGptValue:",
         "declref_expr", "chatGpt", null,
@@ -5549,6 +6183,7 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     addAll(d084ExpectedObjectiveCAppleBindingReferences())
     addAll(d085ExpectedObjectiveCAppleBindingReferences())
     addAll(d086ExpectedObjectiveCAppleBindingReferences())
+    addAll(d087ExpectedObjectiveCAppleBindingReferences())
     listOf("chatGptValue:", "externalValue:").forEach { selector ->
         add(AppleCompilerReference(
             "$APPLE_AUTHORIZATION_URL_COMPANION_OWNER_USR(im)$selector", "ObjCMessageExpr", selector,
@@ -5590,7 +6225,8 @@ internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleComp
         .associateBy { it.receiverType to it.name }
     val finiteInstanceMethodUsrs =
         (d076AuthorizationUrlCapabilities + d080InteractionMethods + d082ElicitationCapabilities +
-            d084ExceptionalHostCapabilities.filter { "|kind=function|" in it.canonicalKey } + d086Capabilities)
+            d084ExceptionalHostCapabilities.filter { "|kind=function|" in it.canonicalKey } + d086Capabilities +
+            d087Capabilities.filter { "|kind=function|" in it.canonicalKey })
         .mapTo(mutableSetOf(), AppleOrdinaryCapability::usr)
     val expectedFiniteInstanceMessages = expected.filter {
         it.kind == "ObjCMessageExpr" && it.precise in finiteInstanceMethodUsrs

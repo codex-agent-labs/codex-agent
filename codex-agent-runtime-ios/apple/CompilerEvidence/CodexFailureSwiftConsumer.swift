@@ -1231,3 +1231,33 @@ func consumeD086ControllerFunctions(
     _ = try await skills.read(path: "/compiler/skill/SKILL.md", offset: 0)
     try await skills.uninstall(skill: skill)
 }
+
+func consumeD087AuthenticationAndControllerFunctions(
+    authentication: CodexAuthentication,
+    integrationAuthorization: CodexIntegrationAuthorization,
+    interactions: CodexInteractions,
+    conversations: CodexConversations,
+    method: any CodexAuthenticationMethod,
+    integration: any AgentIntegration,
+    approval: AgentPendingApproval,
+    decision: AgentApprovalDecision,
+    elicitation: AgentPendingElicitation,
+    response: AgentElicitationResponse,
+    conversationId: ConversationId
+) async throws {
+    _ = authentication.state
+    _ = authentication.isAuthenticated
+    _ = authentication.isAuthenticating
+    try await authentication.authenticate(method: method)
+    try await authentication.cancel()
+    try await authentication.signOut()
+
+    try await integrationAuthorization.authorize(target: integration)
+    try await integrationAuthorization.cancel()
+
+    try await interactions.openUrl(elicitation: elicitation)
+    try await interactions.resolve(approval: approval, decision: decision)
+    try await interactions.resolve(elicitation: elicitation, response: response)
+
+    try await conversations.rename(id: conversationId, name: "compiler-name")
+}
