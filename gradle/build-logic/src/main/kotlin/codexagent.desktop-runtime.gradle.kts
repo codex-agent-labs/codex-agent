@@ -2,6 +2,7 @@ import java.io.File
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.bundling.Zip
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
@@ -139,13 +140,34 @@ extensions.configure<KotlinMultiplatformExtension> {
     }
     desktopTargets.forEach { target ->
         target.binaries.sharedLib {
+            val exportPolicyFile = layout.projectDirectory.file(
+                when {
+                    target.name.startsWith("macos") -> "native/c-api/exports/macos.exports"
+                    target.name.startsWith("linux") -> "native/c-api/exports/linux.map"
+                    target.name == "mingwX64" -> "native/c-api/exports/windows.def"
+                    else -> error("Unsupported Desktop C ABI target ${target.name}")
+                },
+            )
+            linkTaskProvider.configure {
+                inputs.file(exportPolicyFile)
+                    .withPropertyName("codexAgentCAbiExportPolicy")
+                    .withPathSensitivity(PathSensitivity.RELATIVE)
+            }
             baseName = "codex_agent"
-            if (target.name.startsWith("macos")) {
-                linkerOpts(
-                    "-Wl,-exported_symbols_list,${layout.projectDirectory.file("native/c-api/exports/macos.exports").asFile}",
+            when {
+                target.name.startsWith("macos") -> linkerOpts(
+                    "-Wl,-exported_symbols_list,${exportPolicyFile.asFile}",
                     "-Wl,-install_name,@rpath/libcodex_agent.dylib",
                     "-Wl,-compatibility_version,1.0.0",
                     "-Wl,-current_version,1.0.0",
+                )
+                target.name.startsWith("linux") -> linkerOpts(
+                    "-Wl,--version-script,${exportPolicyFile.asFile}",
+                    "-Wl,-soname,libcodex_agent.so.1",
+                )
+                target.name == "mingwX64" -> linkerOpts(
+                    "-Wl,--exclude-all-symbols",
+                    exportPolicyFile.asFile.absolutePath,
                 )
             }
         }

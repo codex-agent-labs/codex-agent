@@ -37,7 +37,22 @@ class CodexAgentCAbiTest {
 
         slot.value = null
         assertEquals(CODEX_AGENT_STATUS_OK, codexAgentContextCreate(slot.ptr))
-        assertNotNull(slot.value)
+        val context = assertNotNull(slot.value)
+        val entry = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.SNAPSHOT,
+            "lease",
+        )
+        assertEquals(CODEX_AGENT_STATUS_OK, entry.status)
+        val lease = handleRegistry.acquire(
+            context,
+            assertNotNull(entry.value),
+            CodexAgentCHandleKind.SNAPSHOT,
+        )
+        assertEquals(CODEX_AGENT_STATUS_OK, lease.status)
+        assertEquals(CODEX_AGENT_STATUS_BUSY, codexAgentContextDestroy(slot.ptr))
+        assertEquals(context, slot.value)
+        assertEquals(CODEX_AGENT_STATUS_OK, assertNotNull(lease.value).close())
         assertEquals(CODEX_AGENT_STATUS_OK, codexAgentContextDestroy(slot.ptr))
         assertEquals(null, slot.value)
         assertEquals(CODEX_AGENT_STATUS_OK, codexAgentContextDestroy(slot.ptr))

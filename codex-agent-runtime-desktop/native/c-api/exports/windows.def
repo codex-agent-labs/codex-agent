@@ -1,0 +1,6 @@
+LIBRARY codex_agent.dll
+EXPORTS
+    codex_agent_abi_is_compatible
+    codex_agent_abi_version
+    codex_agent_context_create
+    codex_agent_context_destroy
