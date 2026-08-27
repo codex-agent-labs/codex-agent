@@ -159,7 +159,7 @@ extensions.configure<KotlinMultiplatformExtension> {
                     "-Wl,-exported_symbols_list,${exportPolicyFile.asFile}",
                     "-Wl,-install_name,@rpath/libcodex_agent.dylib",
                     "-Wl,-compatibility_version,1.0.0",
-                    "-Wl,-current_version,1.2.0",
+                    "-Wl,-current_version,1.3.0",
                 )
                 target.name.startsWith("linux") -> linkerOpts(
                     "-Wl,--version-script,${exportPolicyFile.asFile}",
@@ -241,6 +241,15 @@ tasks.register<GenerateCAbiBootstrapEvidenceTask>("generateCodexAgentCAbiBootstr
     )
     resourceValuesCConsumer.set(
         layout.projectDirectory.file("native/c-api/consumer/codex_agent_resource_values_compile.c"),
+    )
+    ordinaryEnumsCConsumer.set(
+        layout.projectDirectory.file("native/c-api/consumer/codex_agent_ordinary_enums_compile.c"),
+    )
+    formHookValuesCConsumer.set(
+        layout.projectDirectory.file("native/c-api/consumer/codex_agent_form_hook_values_compile.c"),
+    )
+    invocationAuthValuesCConsumer.set(
+        layout.projectDirectory.file("native/c-api/consumer/codex_agent_invocation_auth_values_compile.c"),
     )
     releaseLibrary.set(layout.buildDirectory.file("bin/macosArm64/releaseShared/libcodex_agent.dylib"))
     generatedHeader.set(layout.buildDirectory.file("bin/macosArm64/releaseShared/libcodex_agent_api.h"))

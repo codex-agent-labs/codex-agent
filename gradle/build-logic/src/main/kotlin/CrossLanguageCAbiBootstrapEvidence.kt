@@ -20,31 +20,37 @@ import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
 
 internal const val C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"
-internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 127
+internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 226
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
-    "123dc28b9c2aff443d1e4ac18e5874c2fdb4f59c0686abff198b013c6416198b"
+    "4b7fb8eccccbae6e146715b65e0d3605bb322df18739b3e6ea869e5ed587cb16"
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
-    "98d3c96d92abdcc3de8a1490a90423baa72921720de855a386e5a869211fa70d"
+    "24ad98177e05994ff11dc71690d3d7da7e1395732942846b7dd6939b0bc62d70"
 private const val C_ABI_CINTEROP_SHA256 =
     "4a132bc83e0f69251cc9f432bb7530b4eaafe2f4d7ea1c2985ed860bedafb1c8"
 private const val C_ABI_MACOS_EXPORTS_SHA256 =
-    "ee60df667a979f9d408e323780655b53ca421b064e532f066fdf6c8959815af5"
+    "016e7552e3e7c5cce071d7fe2a2e9cf83523d974b7b79c7a930da8d73ff00396"
 private const val C_ABI_FOUNDATION_C_SHA256 =
-    "e50040801c7455a9b8a56465369ba942e55b8639d3b09da2ef6d96c7de3960ab"
+    "8729ef3619cb780132a208e57e434bd3455dd3a845113fd6b3173772b7a823e5"
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
-    "5763e6a5d288e39e3fec9b3fc8d70f981b44f9bb23cf4a5ee746d772d0d7abf7"
+    "582bce68df16d2a16fd90184b40c677952e317887386c11f260c4f485fc41167"
 private const val C_ABI_LIFECYCLE_C_SHA256 =
-    "52e2c2534106eb8096467678dc99ca502a5a0234b200721d9c86e7c3a7158caf"
+    "51aa32ea33c6c6bed3396a5ebdfc6df189b5dd006cab7c6d930900aed98b2d50"
 private const val C_ABI_LIFECYCLE_CPP_SHA256 =
-    "f6072587a6ab22e7b2f71dd14e66783348ed7871f7b1ea1650c1b07eccd0a642"
+    "031a7b227c278bd3715c54c11d516374707d34ac67c0554ec081f4b16bdd90ae"
 private const val C_ABI_CONVERSATION_VALUES_C_SHA256 =
     "9bd1c7284344c037426a903fa08f5997f4c4746a597b4072ec5aa2d6911256c5"
 private const val C_ABI_CONFIGURATION_VALUES_C_SHA256 =
     "09f4d7b50e35bba8db3cb3272eddf81a0961dcca98932a41cea14de36039a24a"
 private const val C_ABI_RESOURCE_VALUES_C_SHA256 =
     "3bf242135135ae85650c87b1c2b09b696a4f2481082b404ba0064dcffee686f3"
+private const val C_ABI_ORDINARY_ENUMS_C_SHA256 =
+    "9063464636e559c714e5fc5a9bf86bc82a5e82f6fd0cf5d93fc7d21b8a097e45"
+private const val C_ABI_FORM_HOOK_VALUES_C_SHA256 =
+    "88b60e85f2c04c9708b5211da5c40b1317117598be602df1891e9a9417d5f865"
+private const val C_ABI_INVOCATION_AUTH_VALUES_C_SHA256 =
+    "6815c11c3f730a92ef9e53cc14092177369812a9fe95b369d0bab3b3c9f93f55"
 
 private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent/"
 private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi."
@@ -107,6 +113,27 @@ private const val C_RESOURCE_VALUES_TEST =
 private const val C_RESOURCE_ENUM_VALUES_TEST =
     C_API_TEST_PACKAGE +
         "CodexAgentCResourceValuesTest#capabilityAndSkillScopeEntriesProjectCanonicalLabels[macosArm64]"
+private const val C_FORM_HOOK_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCFormHookValuesTest#projectsBooleanNumberAndTextFormValuesExactly[macosArm64]"
+private const val C_FORM_HOOK_VARIANTS_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCFormHookValuesTest#projectsEveryHookHandlerVariantExactly[macosArm64]"
+private const val C_FORM_HOOK_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCFormHookValuesTest#rejectsInvalidViewsFlagsAndOutputSlots[macosArm64]"
+private const val C_FORM_HOOK_HANDLE_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCFormHookValuesTest#rejectsWrongContextPayloadAndStaleHandles[macosArm64]"
+private const val C_INVOCATION_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCInvocationAuthValuesTest#invocationLeavesCopyInputsAndProjectCanonicalKeys[macosArm64]"
+private const val C_PENDING_APPROVAL_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCInvocationAuthValuesTest#pendingApprovalOwnsIndependentConversationIdSnapshots[macosArm64]"
+private const val C_AUTHENTICATION_METHOD_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCInvocationAuthValuesTest#authenticationMethodLeavesValidateSecretsAndOwnDistinctHandles[macosArm64]"
 
 internal data class CAbiBootstrapClaimSpec(
     val owner: String,
@@ -379,6 +406,18 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             publicSymbols = symbols,
             nativeTestIds = listOf(test),
         ))
+    }
+
+    fun ordinaryEnum(
+        owner: String,
+        validator: String,
+        testMethod: String,
+        entries: List<Pair<String, String>>,
+    ) {
+        val test = C_API_TEST_PACKAGE + "CodexAgentCOrdinaryEnumsTest#$testMethod[macosArm64]"
+        entries.forEach { (entry, macro) ->
+            enumEntry(owner, entry, macro, listOf(validator), test)
+        }
     }
 
     ordinary(
@@ -773,6 +812,427 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             listOf("codex_agent_skill_scope_display_name_copy"), C_RESOURCE_ENUM_VALUES_TEST,
         )
     }
+
+    ordinaryEnum(
+        "AgentApprovalDecision",
+        "codex_agent_approval_decision_validate",
+        "validatesAgentApprovalDecision",
+        listOf(
+            "ACCEPT" to "CODEX_AGENT_APPROVAL_DECISION_ACCEPT",
+            "DECLINE" to "CODEX_AGENT_APPROVAL_DECISION_DECLINE",
+        ),
+    )
+    ordinaryEnum(
+        "AgentAuthenticationStatus",
+        "codex_agent_authentication_status_validate",
+        "validatesAgentAuthenticationStatus",
+        listOf(
+            "AUTHENTICATED" to "CODEX_AGENT_AUTHENTICATION_STATUS_AUTHENTICATED",
+            "AUTHENTICATING" to "CODEX_AGENT_AUTHENTICATION_STATUS_AUTHENTICATING",
+            "SIGNED_OUT" to "CODEX_AGENT_AUTHENTICATION_STATUS_SIGNED_OUT",
+        ),
+    )
+    ordinaryEnum(
+        "AgentCatalogFreshness",
+        "codex_agent_catalog_freshness_validate",
+        "validatesAgentCatalogFreshness",
+        listOf(
+            "FRESH_CACHE" to "CODEX_AGENT_CATALOG_FRESHNESS_FRESH_CACHE",
+            "LIVE" to "CODEX_AGENT_CATALOG_FRESHNESS_LIVE",
+            "STALE_CACHE" to "CODEX_AGENT_CATALOG_FRESHNESS_STALE_CACHE",
+        ),
+    )
+    ordinaryEnum(
+        "AgentCollaborationMode",
+        "codex_agent_collaboration_mode_validate",
+        "validatesAgentCollaborationMode",
+        listOf(
+            "DEFAULT" to "CODEX_AGENT_COLLABORATION_MODE_DEFAULT",
+            "PLAN" to "CODEX_AGENT_COLLABORATION_MODE_PLAN",
+        ),
+    )
+    ordinaryEnum(
+        "AgentElicitationAction",
+        "codex_agent_elicitation_action_validate",
+        "validatesAgentElicitationAction",
+        listOf(
+            "ACCEPT" to "CODEX_AGENT_ELICITATION_ACTION_ACCEPT",
+            "CANCEL" to "CODEX_AGENT_ELICITATION_ACTION_CANCEL",
+            "DECLINE" to "CODEX_AGENT_ELICITATION_ACTION_DECLINE",
+        ),
+    )
+    ordinaryEnum(
+        "AgentFormFieldType",
+        "codex_agent_form_field_type_validate",
+        "validatesAgentFormFieldType",
+        listOf(
+            "BOOLEAN" to "CODEX_AGENT_FORM_FIELD_TYPE_BOOLEAN",
+            "INTEGER" to "CODEX_AGENT_FORM_FIELD_TYPE_INTEGER",
+            "MULTI_SELECT" to "CODEX_AGENT_FORM_FIELD_TYPE_MULTI_SELECT",
+            "NUMBER" to "CODEX_AGENT_FORM_FIELD_TYPE_NUMBER",
+            "SINGLE_SELECT" to "CODEX_AGENT_FORM_FIELD_TYPE_SINGLE_SELECT",
+            "STRING" to "CODEX_AGENT_FORM_FIELD_TYPE_STRING",
+        ),
+    )
+    ordinaryEnum(
+        "AgentFormStringFormat",
+        "codex_agent_form_string_format_validate",
+        "validatesAgentFormStringFormat",
+        listOf(
+            "DATE" to "CODEX_AGENT_FORM_STRING_FORMAT_DATE",
+            "DATE_TIME" to "CODEX_AGENT_FORM_STRING_FORMAT_DATE_TIME",
+            "EMAIL" to "CODEX_AGENT_FORM_STRING_FORMAT_EMAIL",
+            "URI" to "CODEX_AGENT_FORM_STRING_FORMAT_URI",
+        ),
+    )
+    ordinaryEnum(
+        "AgentHookRunStatus",
+        "codex_agent_hook_run_status_validate",
+        "validatesAgentHookRunStatus",
+        listOf(
+            "BLOCKED" to "CODEX_AGENT_HOOK_RUN_STATUS_BLOCKED",
+            "COMPLETED" to "CODEX_AGENT_HOOK_RUN_STATUS_COMPLETED",
+            "FAILED" to "CODEX_AGENT_HOOK_RUN_STATUS_FAILED",
+            "RUNNING" to "CODEX_AGENT_HOOK_RUN_STATUS_RUNNING",
+            "STOPPED" to "CODEX_AGENT_HOOK_RUN_STATUS_STOPPED",
+        ),
+    )
+    ordinaryEnum(
+        "AgentHookTrustStatus",
+        "codex_agent_hook_trust_status_validate",
+        "validatesAgentHookTrustStatus",
+        listOf(
+            "MANAGED" to "CODEX_AGENT_HOOK_TRUST_STATUS_MANAGED",
+            "MODIFIED" to "CODEX_AGENT_HOOK_TRUST_STATUS_MODIFIED",
+            "TRUSTED" to "CODEX_AGENT_HOOK_TRUST_STATUS_TRUSTED",
+            "UNTRUSTED" to "CODEX_AGENT_HOOK_TRUST_STATUS_UNTRUSTED",
+        ),
+    )
+    ordinaryEnum(
+        "AgentInstallationScope",
+        "codex_agent_installation_scope_validate",
+        "validatesAgentInstallationScope",
+        listOf(
+            "User" to "CODEX_AGENT_INSTALLATION_SCOPE_USER",
+            "Workspace" to "CODEX_AGENT_INSTALLATION_SCOPE_WORKSPACE",
+        ),
+    )
+    ordinaryEnum(
+        "AgentIntegrationAuthorizationStatus",
+        "codex_agent_integration_authorization_status_validate",
+        "validatesAgentIntegrationAuthorizationStatus",
+        listOf(
+            "AUTHORIZED" to "CODEX_AGENT_INTEGRATION_AUTHORIZATION_STATUS_AUTHORIZED",
+            "AWAITING_COMPLETION" to "CODEX_AGENT_INTEGRATION_AUTHORIZATION_STATUS_AWAITING_COMPLETION",
+            "FAILED" to "CODEX_AGENT_INTEGRATION_AUTHORIZATION_STATUS_FAILED",
+            "IDLE" to "CODEX_AGENT_INTEGRATION_AUTHORIZATION_STATUS_IDLE",
+            "STARTING" to "CODEX_AGENT_INTEGRATION_AUTHORIZATION_STATUS_STARTING",
+        ),
+    )
+    ordinaryEnum(
+        "AgentMcpAuthStatus",
+        "codex_agent_mcp_auth_status_validate",
+        "validatesAgentMcpAuthStatus",
+        listOf(
+            "BEARER_TOKEN" to "CODEX_AGENT_MCP_AUTH_STATUS_BEARER_TOKEN",
+            "NOT_LOGGED_IN" to "CODEX_AGENT_MCP_AUTH_STATUS_NOT_LOGGED_IN",
+            "OAUTH" to "CODEX_AGENT_MCP_AUTH_STATUS_OAUTH",
+            "UNKNOWN" to "CODEX_AGENT_MCP_AUTH_STATUS_UNKNOWN",
+            "UNSUPPORTED" to "CODEX_AGENT_MCP_AUTH_STATUS_UNSUPPORTED",
+        ),
+    )
+    ordinaryEnum(
+        "AgentMcpAuthentication",
+        "codex_agent_mcp_authentication_validate",
+        "validatesAgentMcpAuthentication",
+        listOf(
+            "CHAT_GPT" to "CODEX_AGENT_MCP_AUTHENTICATION_CHAT_GPT",
+            "OAUTH" to "CODEX_AGENT_MCP_AUTHENTICATION_OAUTH",
+        ),
+    )
+    ordinaryEnum(
+        "AgentMcpToolExposureSurface",
+        "codex_agent_mcp_tool_exposure_surface_validate",
+        "validatesAgentMcpToolExposureSurface",
+        listOf(
+            "CODE_MODE" to "CODEX_AGENT_MCP_TOOL_EXPOSURE_SURFACE_CODE_MODE",
+            "DEFERRED" to "CODEX_AGENT_MCP_TOOL_EXPOSURE_SURFACE_DEFERRED",
+            "DIRECT" to "CODEX_AGENT_MCP_TOOL_EXPOSURE_SURFACE_DIRECT",
+        ),
+    )
+    ordinaryEnum(
+        "AgentMessageRole",
+        "codex_agent_message_role_validate",
+        "validatesAgentMessageRole",
+        listOf(
+            "ASSISTANT" to "CODEX_AGENT_MESSAGE_ROLE_ASSISTANT",
+            "USER" to "CODEX_AGENT_MESSAGE_ROLE_USER",
+        ),
+    )
+    ordinaryEnum(
+        "AgentPluginAuthPolicy",
+        "codex_agent_plugin_auth_policy_validate",
+        "validatesAgentPluginAuthPolicy",
+        listOf(
+            "ON_INSTALL" to "CODEX_AGENT_PLUGIN_AUTH_POLICY_ON_INSTALL",
+            "ON_USE" to "CODEX_AGENT_PLUGIN_AUTH_POLICY_ON_USE",
+        ),
+    )
+    ordinaryEnum(
+        "AgentPluginInstallPolicy",
+        "codex_agent_plugin_install_policy_validate",
+        "validatesAgentPluginInstallPolicy",
+        listOf(
+            "AVAILABLE" to "CODEX_AGENT_PLUGIN_INSTALL_POLICY_AVAILABLE",
+            "INSTALLED_BY_DEFAULT" to "CODEX_AGENT_PLUGIN_INSTALL_POLICY_INSTALLED_BY_DEFAULT",
+            "NOT_AVAILABLE" to "CODEX_AGENT_PLUGIN_INSTALL_POLICY_NOT_AVAILABLE",
+        ),
+    )
+    ordinaryEnum(
+        "AgentResolution",
+        "codex_agent_resolution_validate",
+        "validatesAgentResolution",
+        listOf(
+            "Default" to "CODEX_AGENT_RESOLUTION_DEFAULT",
+            "First" to "CODEX_AGENT_RESOLUTION_FIRST",
+            "Preferred" to "CODEX_AGENT_RESOLUTION_PREFERRED",
+        ),
+    )
+    ordinaryEnum(
+        "AgentResourceOrigin",
+        "codex_agent_resource_origin_validate",
+        "validatesAgentResourceOrigin",
+        listOf(
+            "MANAGED" to "CODEX_AGENT_RESOURCE_ORIGIN_MANAGED",
+            "PLUGIN" to "CODEX_AGENT_RESOURCE_ORIGIN_PLUGIN",
+            "UNKNOWN" to "CODEX_AGENT_RESOURCE_ORIGIN_UNKNOWN",
+            "USER" to "CODEX_AGENT_RESOURCE_ORIGIN_USER",
+            "WORKSPACE" to "CODEX_AGENT_RESOURCE_ORIGIN_WORKSPACE",
+        ),
+    )
+    ordinaryEnum(
+        "AgentWorkActivity",
+        "codex_agent_work_activity_validate",
+        "validatesAgentWorkActivity",
+        listOf(
+            "RUNNING_COMMAND" to "CODEX_AGENT_WORK_ACTIVITY_RUNNING_COMMAND",
+            "WRITING_FILES" to "CODEX_AGENT_WORK_ACTIVITY_WRITING_FILES",
+        ),
+    )
+    ordinaryEnum(
+        "CodexAuthorizationPurpose",
+        "codex_agent_authorization_purpose_validate",
+        "validatesCodexAuthorizationPurpose",
+        listOf(
+            "CHAT_GPT" to "CODEX_AGENT_AUTHORIZATION_PURPOSE_CHAT_GPT",
+            "EXTERNAL" to "CODEX_AGENT_AUTHORIZATION_PURPOSE_EXTERNAL",
+        ),
+    )
+
+    ordinary(
+        "AgentFormValue.BooleanValue",
+        "constructor",
+        "<init>",
+        listOf("codex_agent_form_boolean_value_create", "codex_agent_form_boolean_value_destroy"),
+        listOf(C_FORM_HOOK_VALUES_TEST, C_FORM_HOOK_VALIDATION_TEST),
+        "<init>(kotlin.Boolean){}[0]",
+    )
+    ordinary(
+        "AgentFormValue.BooleanValue",
+        "property",
+        "value",
+        listOf("codex_agent_form_boolean_value_value"),
+        listOf(C_FORM_HOOK_VALUES_TEST, C_FORM_HOOK_HANDLE_TEST),
+    )
+    ordinary(
+        "AgentFormValue.Number",
+        "constructor",
+        "<init>",
+        listOf("codex_agent_form_number_value_create", "codex_agent_form_number_value_destroy"),
+        listOf(C_FORM_HOOK_VALUES_TEST, C_FORM_HOOK_VALIDATION_TEST),
+        "<init>(kotlin.Double){}[0]",
+    )
+    ordinary(
+        "AgentFormValue.Number",
+        "property",
+        "value",
+        listOf("codex_agent_form_number_value_value"),
+        listOf(C_FORM_HOOK_VALUES_TEST, C_FORM_HOOK_HANDLE_TEST),
+    )
+    ordinary(
+        "AgentFormValue.Text",
+        "constructor",
+        "<init>",
+        listOf("codex_agent_form_text_value_create", "codex_agent_form_text_value_destroy"),
+        listOf(C_FORM_HOOK_VALUES_TEST, C_FORM_HOOK_VALIDATION_TEST),
+        "<init>(kotlin.String){}[0]",
+    )
+    ordinary(
+        "AgentFormValue.Text",
+        "property",
+        "value",
+        listOf("codex_agent_form_text_value_value_copy"),
+        listOf(C_FORM_HOOK_VALUES_TEST, C_FORM_HOOK_HANDLE_TEST),
+    )
+    add(claim(
+        "AgentHookHandler.Agent",
+        "object",
+        "AgentHookHandler.Agent",
+        listOf("codex_agent_hook_handler_agent_acquire", "codex_agent_hook_handler_agent_destroy"),
+        publicSymbols = listOf(
+            "codex_agent_hook_handler_agent_acquire",
+            "codex_agent_hook_handler_agent_destroy",
+        ),
+        nativeTestIds = listOf(C_FORM_HOOK_VARIANTS_TEST, C_FORM_HOOK_HANDLE_TEST),
+    ))
+    ordinary(
+        "AgentHookHandler.Command",
+        "constructor",
+        "<init>",
+        listOf("codex_agent_hook_handler_command_create", "codex_agent_hook_handler_command_destroy"),
+        listOf(C_FORM_HOOK_VARIANTS_TEST, C_FORM_HOOK_VALIDATION_TEST),
+        "<init>(kotlin.String;kotlin.Boolean){}[0]",
+    )
+    ordinary(
+        "AgentHookHandler.Command",
+        "property",
+        "command",
+        listOf("codex_agent_hook_handler_command_command_copy"),
+        listOf(C_FORM_HOOK_VARIANTS_TEST, C_FORM_HOOK_HANDLE_TEST),
+    )
+    ordinary(
+        "AgentHookHandler.Command",
+        "property",
+        "isAsync",
+        listOf("codex_agent_hook_handler_command_is_async"),
+        listOf(C_FORM_HOOK_VARIANTS_TEST, C_FORM_HOOK_HANDLE_TEST),
+    )
+    ordinary(
+        "AgentHookHandler.McpTool",
+        "constructor",
+        "<init>",
+        listOf("codex_agent_hook_handler_mcp_tool_create", "codex_agent_hook_handler_mcp_tool_destroy"),
+        listOf(C_FORM_HOOK_VARIANTS_TEST, C_FORM_HOOK_VALIDATION_TEST),
+        "<init>(kotlin.String;kotlin.String){}[0]",
+    )
+    ordinary(
+        "AgentHookHandler.McpTool",
+        "property",
+        "server",
+        listOf("codex_agent_hook_handler_mcp_tool_server_copy"),
+        listOf(C_FORM_HOOK_VARIANTS_TEST, C_FORM_HOOK_HANDLE_TEST),
+    )
+    ordinary(
+        "AgentHookHandler.McpTool",
+        "property",
+        "tool",
+        listOf("codex_agent_hook_handler_mcp_tool_tool_copy"),
+        listOf(C_FORM_HOOK_VARIANTS_TEST, C_FORM_HOOK_HANDLE_TEST),
+    )
+    add(claim(
+        "AgentHookHandler.Prompt",
+        "object",
+        "AgentHookHandler.Prompt",
+        listOf("codex_agent_hook_handler_prompt_acquire", "codex_agent_hook_handler_prompt_destroy"),
+        publicSymbols = listOf(
+            "codex_agent_hook_handler_prompt_acquire",
+            "codex_agent_hook_handler_prompt_destroy",
+        ),
+        nativeTestIds = listOf(C_FORM_HOOK_VARIANTS_TEST, C_FORM_HOOK_HANDLE_TEST),
+    ))
+
+    ordinary(
+        "AgentInvocation.Plugin",
+        "constructor",
+        "<init>",
+        listOf("codex_agent_invocation_plugin_create", "codex_agent_invocation_plugin_destroy"),
+        listOf(C_INVOCATION_VALUES_TEST),
+        "<init>(kotlin.String;kotlin.String){}[0]",
+    )
+    listOf(
+        "key" to "codex_agent_invocation_plugin_key_copy",
+        "name" to "codex_agent_invocation_plugin_name_copy",
+        "uri" to "codex_agent_invocation_plugin_uri_copy",
+    ).forEach { (property, symbol) ->
+        ordinary("AgentInvocation.Plugin", "property", property, listOf(symbol), listOf(C_INVOCATION_VALUES_TEST))
+    }
+    ordinary(
+        "AgentInvocation.Skill",
+        "constructor",
+        "<init>",
+        listOf("codex_agent_invocation_skill_create", "codex_agent_invocation_skill_destroy"),
+        listOf(C_INVOCATION_VALUES_TEST),
+        "<init>(kotlin.String;kotlin.String){}[0]",
+    )
+    listOf(
+        "key" to "codex_agent_invocation_skill_key_copy",
+        "name" to "codex_agent_invocation_skill_name_copy",
+        "path" to "codex_agent_invocation_skill_path_copy",
+    ).forEach { (property, symbol) ->
+        ordinary("AgentInvocation.Skill", "property", property, listOf(symbol), listOf(C_INVOCATION_VALUES_TEST))
+    }
+    ordinary(
+        "AgentPendingApproval",
+        "constructor",
+        "<init>",
+        listOf("codex_agent_pending_approval_create", "codex_agent_pending_approval_destroy"),
+        listOf(C_PENDING_APPROVAL_VALUES_TEST),
+        "<init>(kotlin.String;io.github.codex_agent_labs.codexmobile.agent.ConversationId;kotlin.String;kotlin.String){}[0]",
+    )
+    listOf(
+        "conversationId" to "codex_agent_pending_approval_conversation_id",
+        "details" to "codex_agent_pending_approval_details_copy",
+        "requestId" to "codex_agent_pending_approval_request_id_copy",
+        "title" to "codex_agent_pending_approval_title_copy",
+    ).forEach { (property, symbol) ->
+        ordinary("AgentPendingApproval", "property", property, listOf(symbol), listOf(C_PENDING_APPROVAL_VALUES_TEST))
+    }
+    ordinary(
+        "CodexAuthenticationMethod.ApiKey",
+        "constructor",
+        "<init>",
+        listOf(
+            "codex_agent_authentication_method_api_key_create",
+            "codex_agent_authentication_method_api_key_destroy",
+        ),
+        listOf(C_AUTHENTICATION_METHOD_VALUES_TEST),
+        "<init>(kotlin.String){}[0]",
+    )
+    ordinary(
+        "CodexAuthenticationMethod.ApiKey",
+        "property",
+        "value",
+        listOf("codex_agent_authentication_method_api_key_value_copy"),
+        listOf(C_AUTHENTICATION_METHOD_VALUES_TEST),
+    )
+    add(claim(
+        "CodexAuthenticationMethod.ChatGptBrowser",
+        "object",
+        "CodexAuthenticationMethod.ChatGptBrowser",
+        listOf(
+            "codex_agent_authentication_method_chat_gpt_browser_create",
+            "codex_agent_authentication_method_chat_gpt_browser_destroy",
+        ),
+        publicSymbols = listOf(
+            "codex_agent_authentication_method_chat_gpt_browser_create",
+            "codex_agent_authentication_method_chat_gpt_browser_destroy",
+        ),
+        nativeTestIds = listOf(C_AUTHENTICATION_METHOD_VALUES_TEST),
+    ))
+    add(claim(
+        "CodexAuthenticationMethod.ChatGptDeviceCode",
+        "object",
+        "CodexAuthenticationMethod.ChatGptDeviceCode",
+        listOf(
+            "codex_agent_authentication_method_chat_gpt_device_code_create",
+            "codex_agent_authentication_method_chat_gpt_device_code_destroy",
+        ),
+        publicSymbols = listOf(
+            "codex_agent_authentication_method_chat_gpt_device_code_create",
+            "codex_agent_authentication_method_chat_gpt_device_code_destroy",
+        ),
+        nativeTestIds = listOf(C_AUTHENTICATION_METHOD_VALUES_TEST),
+    ))
 }.sortedWith(compareBy(CAbiBootstrapClaimSpec::owner, CAbiBootstrapClaimSpec::kind, CAbiBootstrapClaimSpec::abi))
 
 internal fun deriveCAbiBootstrapClaims(
@@ -865,9 +1325,9 @@ private fun List<String>.sortedNewlineSha256(): String = MessageDigest.getInstan
 private fun exactExportPolicy(file: File): Set<String> {
     check(file.releaseDigest() == C_ABI_MACOS_EXPORTS_SHA256) { "Reviewed macOS C ABI export policy drift" }
     val rows = file.readLines().filter(String::isNotBlank)
-    check(rows.size == 130 && rows == rows.sorted() && rows.size == rows.distinct().size &&
+    check(rows.size == 195 && rows == rows.sorted() && rows.size == rows.distinct().size &&
         rows.all { it.startsWith("_codex_agent_") }) {
-        "macOS C ABI export policy must contain the exact sorted 130-symbol inventory"
+        "macOS C ABI export policy must contain the exact sorted 195-symbol inventory"
     }
     return rows.mapTo(sortedSetOf()) { it.removePrefix("_") }
 }
@@ -926,6 +1386,15 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val resourceValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val ordinaryEnumsCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val formHookValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val invocationAuthValuesCConsumer: RegularFileProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val releaseLibrary: RegularFileProperty
@@ -997,6 +1466,21 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "Reviewed C resource-values consumer drift"
             }
         }
+        val ordinaryEnumsC = ordinaryEnumsCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_ORDINARY_ENUMS_C_SHA256) {
+                "Reviewed C ordinary-enums consumer drift"
+            }
+        }
+        val formHookValuesC = formHookValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_FORM_HOOK_VALUES_C_SHA256) {
+                "Reviewed C form-hook-values consumer drift"
+            }
+        }
+        val invocationAuthValuesC = invocationAuthValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_INVOCATION_AUTH_VALUES_C_SHA256) {
+                "Reviewed C invocation-auth-values consumer drift"
+            }
+        }
         val library = releaseLibrary.get().asFile
         val generated = generatedHeader.get().asFile
         val nativeExecutable = nativeTestExecutable.get().asFile
@@ -1052,6 +1536,18 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "c11-resource-values", clang, "c11", resourceValuesC,
                 work, include, library, rpath, sdk, true,
             ),
+            compileConsumer(
+                "c11-ordinary-enums", clang, "c11", ordinaryEnumsC,
+                work, include, library, rpath, sdk, true,
+            ),
+            compileConsumer(
+                "c11-form-hook-values", clang, "c11", formHookValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
+            compileConsumer(
+                "c11-invocation-auth-values", clang, "c11", invocationAuthValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
         )
 
         val defined = normalizedCodexSymbols(
@@ -1085,14 +1581,22 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
-            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.2.0)") {
+            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.3.0)") {
             "Unexpected C ABI dylib loader versions: $linkedIdentity"
         }
 
         val claims = deriveCAbiBootstrapClaims(
             canonical.memberKeys,
             header.readText(),
-            listOf(lifecycleC, conversationValuesC, configurationValuesC, resourceValuesC)
+            listOf(
+                lifecycleC,
+                conversationValuesC,
+                configurationValuesC,
+                resourceValuesC,
+                ordinaryEnumsC,
+                formHookValuesC,
+                invocationAuthValuesC,
+            )
                 .joinToString("\n") { it.readText() },
             exports,
             passedTests,
@@ -1109,7 +1613,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             put("schemaVersion", JsonPrimitive(1))
             put("protocol", JsonPrimitive(C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL))
             put("result", JsonPrimitive("observed"))
-            put("milestone", JsonPrimitive("D094"))
+            put("milestone", JsonPrimitive("D095"))
             put("language", JsonPrimitive("c-abi"))
             put("canonical", buildJsonObject {
                 put("apiReportSha256", JsonPrimitive(canonical.canonical.apiReportSha256))

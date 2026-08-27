@@ -7,7 +7,7 @@ using AbiVersionFunction = uint32_t (CODEX_AGENT_CALL *)(void);
 using AbiCompatibilityFunction = int32_t (CODEX_AGENT_CALL *)(uint32_t);
 using ContextFunction = codex_agent_status_t (CODEX_AGENT_CALL *)(codex_agent_context_t **);
 
-static_assert(CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x01020000));
+static_assert(CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x01030000));
 static_assert(CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE == UINT32_C(0x01000000));
 static_assert(std::is_same_v<codex_agent_status_t, int32_t>);
 static_assert(std::is_same_v<decltype(&codex_agent_abi_version), AbiVersionFunction>);

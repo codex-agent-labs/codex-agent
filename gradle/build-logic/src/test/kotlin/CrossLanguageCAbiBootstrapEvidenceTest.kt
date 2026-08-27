@@ -11,7 +11,7 @@ import org.gradle.testkit.runner.TaskOutcome
 
 class CrossLanguageCAbiBootstrapEvidenceTest {
     @Test
-    fun `derives the exact reviewed 127 capability bootstrap slice`() {
+    fun `derives the exact reviewed 226 capability bootstrap slice`() {
         val inputs = validInputs()
         val claims = inputs.derive()
         val keys = claims.map(CAbiBootstrapClaim::capabilityKey)
@@ -29,12 +29,19 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             "888cedac1e8a2c82aa4235aa0c14bd8059b3db9022f79d07af3886a4e437684f",
             D094_SELECTED_CAPABILITY_KEYS.sortedNewlineSha256(),
         )
-        assertEquals(127, keys.size)
+        assertEquals(99, D095_SELECTED_CAPABILITY_KEYS.size)
+        assertEquals(D095_SELECTED_CAPABILITY_KEYS.sorted(), D095_SELECTED_CAPABILITY_KEYS)
+        assertEquals(D095_SELECTED_CAPABILITY_KEYS.size, D095_SELECTED_CAPABILITY_KEYS.distinct().size)
+        assertEquals(
+            "e87f5192c05027d72b1e4ffc02dc5b606fc017963b093a5e7ff65e6e88589916",
+            D095_SELECTED_CAPABILITY_KEYS.sortedNewlineSha256(),
+        )
+        assertEquals(226, keys.size)
         assertEquals(keys.sorted(), keys)
         assertEquals(keys.size, keys.distinct().size)
         assertEquals(SELECTED_CAPABILITY_KEYS.sorted(), keys)
         assertEquals(C_ABI_BOOTSTRAP_CAPABILITY_SHA256, keys.sortedNewlineSha256())
-        assertEquals(429, complement.size)
+        assertEquals(330, complement.size)
         assertEquals((DUMMY_CAPABILITY_KEYS + ABSENT_FACTORY_AND_CLIENT_INFO_KEYS).sorted(), complement)
         ABSENT_FACTORY_AND_CLIENT_INFO_KEYS.forEach { key ->
             assertFalse(key in keys, key)
@@ -234,6 +241,9 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "native/c-api/consumer/codex_agent_conversation_values_compile.c",
                 "native/c-api/consumer/codex_agent_configuration_values_compile.c",
                 "native/c-api/consumer/codex_agent_resource_values_compile.c",
+                "native/c-api/consumer/codex_agent_ordinary_enums_compile.c",
+                "native/c-api/consumer/codex_agent_form_hook_values_compile.c",
+                "native/c-api/consumer/codex_agent_invocation_auth_values_compile.c",
                 "bin/macosArm64/releaseShared/libcodex_agent.dylib",
                 "bin/macosArm64/releaseShared/libcodex_agent_api.h",
                 "bin/macosArm64/debugTest/test.kexe",
@@ -242,6 +252,23 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "evidenceFile.set(cAbiBootstrapEvidenceFile)",
             ).forEach { contract ->
                 assertTrue(contract in generator, "Missing C bootstrap generator contract: $contract")
+            }
+            listOf(
+                "ordinaryEnumsCConsumer" to "codex_agent_ordinary_enums_compile.c",
+                "formHookValuesCConsumer" to "codex_agent_form_hook_values_compile.c",
+                "invocationAuthValuesCConsumer" to "codex_agent_invocation_auth_values_compile.c",
+            ).forEach { (property, fixture) ->
+                val assignment = generator.substringAfter("$property.set(").substringBefore("\n    )")
+                assertTrue(fixture in assignment, "C bootstrap $property is not wired to $fixture")
+            }
+            val producer = File("src/main/kotlin/CrossLanguageCAbiBootstrapEvidence.kt").readText()
+            listOf(
+                "\"c11-ordinary-enums\"",
+                "\"c11-form-hook-values\"",
+                "\"c11-invocation-auth-values\"",
+                "put(\"milestone\", JsonPrimitive(\"D095\"))",
+            ).forEach { contract ->
+                assertTrue(contract in producer, "Missing D095 C bootstrap producer contract: $contract")
             }
             val coreWiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
             assertTrue("\"invalidateCodexAgentCAbiBootstrapEvidence\"" in coreWiring)
@@ -431,9 +458,112 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             common|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/ConversationId.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!
         """.trimIndent().lineSequence().filter(String::isNotBlank).toList()
 
-        val SELECTED_CAPABILITY_KEYS = D093_SELECTED_CAPABILITY_KEYS + D094_SELECTED_CAPABILITY_KEYS
+        val D095_SELECTED_CAPABILITY_KEYS = """
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision.ACCEPT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision.DECLINE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationStatus.AUTHENTICATED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationStatus.AUTHENTICATING|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationStatus.SIGNED_OUT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentCatalogFreshness|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentCatalogFreshness.FRESH_CACHE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentCatalogFreshness|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentCatalogFreshness.LIVE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentCatalogFreshness|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentCatalogFreshness.STALE_CACHE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode.DEFAULT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode.PLAN|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationAction|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationAction.ACCEPT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationAction|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationAction.CANCEL|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationAction|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationAction.DECLINE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType.BOOLEAN|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType.INTEGER|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType.MULTI_SELECT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType.NUMBER|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType.SINGLE_SELECT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormFieldType.STRING|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormStringFormat|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormStringFormat.DATE_TIME|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormStringFormat|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormStringFormat.DATE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormStringFormat|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormStringFormat.EMAIL|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormStringFormat|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormStringFormat.URI|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.BooleanValue|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.BooleanValue.<init>|<init>(kotlin.Boolean){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.BooleanValue|suspend=false|parameters=[REGULAR:kotlin/Boolean!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.BooleanValue|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.BooleanValue.value|{}value[0]|propertyKind=VAL|type=kotlin/Boolean!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Number|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Number.<init>|<init>(kotlin.Double){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Number|suspend=false|parameters=[REGULAR:kotlin/Double!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Number|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Number.value|{}value[0]|propertyKind=VAL|type=kotlin/Double!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Text|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Text.<init>|<init>(kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Text|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Text|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormValue.Text.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Agent|kind=object|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Agent|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Command|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Command.<init>|<init>(kotlin.String;kotlin.Boolean){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Command|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/Boolean!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Command|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Command.command|{}command[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Command|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Command.isAsync|{}isAsync[0]|propertyKind=VAL|type=kotlin/Boolean!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.McpTool|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.McpTool.<init>|<init>(kotlin.String;kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.McpTool|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.McpTool|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.McpTool.server|{}server[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.McpTool|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.McpTool.tool|{}tool[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Prompt|kind=object|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookHandler.Prompt|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus.BLOCKED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus.COMPLETED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus.FAILED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus.RUNNING|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookRunStatus.STOPPED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookTrustStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookTrustStatus.MANAGED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookTrustStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookTrustStatus.MODIFIED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookTrustStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookTrustStatus.TRUSTED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentHookTrustStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentHookTrustStatus.UNTRUSTED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope.User|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope.Workspace|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus.AUTHORIZED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus.AWAITING_COMPLETION|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus.FAILED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus.IDLE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationStatus.STARTING|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Plugin|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Plugin.<init>|<init>(kotlin.String;kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Plugin|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Plugin|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Plugin.key|{}key[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Plugin|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Plugin.name|{}name[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Plugin|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Plugin.uri|{}uri[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Skill|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Skill.<init>|<init>(kotlin.String;kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Skill|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Skill|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Skill.key|{}key[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Skill|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Skill.name|{}name[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Skill|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.Skill.path|{}path[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus.BEARER_TOKEN|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus.NOT_LOGGED_IN|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus.OAUTH|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus.UNKNOWN|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus.UNSUPPORTED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthentication|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthentication.CHAT_GPT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthentication|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthentication.OAUTH|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolExposureSurface|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolExposureSurface.CODE_MODE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolExposureSurface|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolExposureSurface.DEFERRED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolExposureSurface|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolExposureSurface.DIRECT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMessageRole|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMessageRole.ASSISTANT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMessageRole|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMessageRole.USER|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval.<init>|<init>(kotlin.String;io.github.codex_agent_labs.codexmobile.agent.ConversationId;kotlin.String;kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/ConversationId!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval.conversationId|{}conversationId[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/ConversationId!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval.details|{}details[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval.requestId|{}requestId[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval.title|{}title[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPluginAuthPolicy|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPluginAuthPolicy.ON_INSTALL|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPluginAuthPolicy|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPluginAuthPolicy.ON_USE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPluginInstallPolicy|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPluginInstallPolicy.AVAILABLE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPluginInstallPolicy|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPluginInstallPolicy.INSTALLED_BY_DEFAULT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPluginInstallPolicy|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPluginInstallPolicy.NOT_AVAILABLE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentResolution|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentResolution.Default|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentResolution|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentResolution.First|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentResolution|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentResolution.Preferred|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin.MANAGED|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin.PLUGIN|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin.UNKNOWN|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin.USER|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin.WORKSPACE|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentWorkActivity|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentWorkActivity.RUNNING_COMMAND|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentWorkActivity|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/AgentWorkActivity.WRITING_FILES|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthenticationMethod.ApiKey|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthenticationMethod.ApiKey.<init>|<init>(kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/CodexAuthenticationMethod.ApiKey|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthenticationMethod.ApiKey|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthenticationMethod.ApiKey.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthenticationMethod.ChatGptBrowser|kind=object|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthenticationMethod.ChatGptBrowser|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthenticationMethod.ChatGptDeviceCode|kind=object|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthenticationMethod.ChatGptDeviceCode|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationPurpose|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationPurpose.CHAT_GPT|null[0]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationPurpose|kind=enum-entry|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationPurpose.EXTERNAL|null[0]
+        """.trimIndent().lineSequence().filter(String::isNotBlank).toList()
 
-        val DUMMY_CAPABILITY_KEYS = (0 until 424).map(::dummyCapabilityKey)
+        val SELECTED_CAPABILITY_KEYS =
+            D093_SELECTED_CAPABILITY_KEYS + D094_SELECTED_CAPABILITY_KEYS + D095_SELECTED_CAPABILITY_KEYS
+
+        val DUMMY_CAPABILITY_KEYS = (0 until 325).map(::dummyCapabilityKey)
 
         val ABSENT_FACTORY_AND_CLIENT_INFO_KEYS = listOf(
             "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.<init>|<init>(kotlin.String;kotlin.String;kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]",

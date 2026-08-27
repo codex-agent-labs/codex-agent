@@ -6,12 +6,24 @@ EXPORTS
     codex_agent_agent_conversations
     codex_agent_agent_release
     codex_agent_agent_retain
+    codex_agent_approval_decision_validate
     codex_agent_approval_preset_display_name_copy
+    codex_agent_authentication_method_api_key_create
+    codex_agent_authentication_method_api_key_destroy
+    codex_agent_authentication_method_api_key_value_copy
+    codex_agent_authentication_method_chat_gpt_browser_create
+    codex_agent_authentication_method_chat_gpt_browser_destroy
+    codex_agent_authentication_method_chat_gpt_device_code_create
+    codex_agent_authentication_method_chat_gpt_device_code_destroy
+    codex_agent_authentication_status_validate
+    codex_agent_authorization_purpose_validate
     codex_agent_capability_display_label_copy
     codex_agent_capability_has_icon
     codex_agent_capability_icon_copy
     codex_agent_capability_id_copy
     codex_agent_capability_prompt_label_copy
+    codex_agent_catalog_freshness_validate
+    codex_agent_collaboration_mode_validate
     codex_agent_context_create
     codex_agent_context_destroy
     codex_agent_conversation_cancel_turn
@@ -37,6 +49,7 @@ EXPORTS
     codex_agent_conversations_open
     codex_agent_conversations_release
     codex_agent_conversations_retain
+    codex_agent_elicitation_action_validate
     codex_agent_elicitation_validation_issue_create
     codex_agent_elicitation_validation_issue_destroy
     codex_agent_elicitation_validation_issue_field_name_copy
@@ -47,12 +60,37 @@ EXPORTS
     codex_agent_failure_message_copy
     codex_agent_failure_release
     codex_agent_failure_retain
+    codex_agent_form_boolean_value_create
+    codex_agent_form_boolean_value_destroy
+    codex_agent_form_boolean_value_value
+    codex_agent_form_field_type_validate
+    codex_agent_form_number_value_create
+    codex_agent_form_number_value_destroy
+    codex_agent_form_number_value_value
     codex_agent_form_option_create
     codex_agent_form_option_description_copy
     codex_agent_form_option_destroy
     codex_agent_form_option_has_description
     codex_agent_form_option_title_copy
     codex_agent_form_option_value_copy
+    codex_agent_form_string_format_validate
+    codex_agent_form_text_value_create
+    codex_agent_form_text_value_destroy
+    codex_agent_form_text_value_value_copy
+    codex_agent_hook_handler_agent_acquire
+    codex_agent_hook_handler_agent_destroy
+    codex_agent_hook_handler_command_command_copy
+    codex_agent_hook_handler_command_create
+    codex_agent_hook_handler_command_destroy
+    codex_agent_hook_handler_command_is_async
+    codex_agent_hook_handler_mcp_tool_create
+    codex_agent_hook_handler_mcp_tool_destroy
+    codex_agent_hook_handler_mcp_tool_server_copy
+    codex_agent_hook_handler_mcp_tool_tool_copy
+    codex_agent_hook_handler_prompt_acquire
+    codex_agent_hook_handler_prompt_destroy
+    codex_agent_hook_run_status_validate
+    codex_agent_hook_trust_status_validate
     codex_agent_host_close
     codex_agent_host_create
     codex_agent_host_release
@@ -68,6 +106,20 @@ EXPORTS
     codex_agent_host_state_subscribe
     codex_agent_host_state_workspace_display_name_copy
     codex_agent_host_state_workspace_path_copy
+    codex_agent_installation_scope_validate
+    codex_agent_integration_authorization_status_validate
+    codex_agent_invocation_plugin_create
+    codex_agent_invocation_plugin_destroy
+    codex_agent_invocation_plugin_key_copy
+    codex_agent_invocation_plugin_name_copy
+    codex_agent_invocation_plugin_uri_copy
+    codex_agent_invocation_skill_create
+    codex_agent_invocation_skill_destroy
+    codex_agent_invocation_skill_key_copy
+    codex_agent_invocation_skill_name_copy
+    codex_agent_invocation_skill_path_copy
+    codex_agent_mcp_auth_status_validate
+    codex_agent_mcp_authentication_validate
     codex_agent_mcp_environment_variable_create
     codex_agent_mcp_environment_variable_destroy
     codex_agent_mcp_environment_variable_name_copy
@@ -80,15 +132,25 @@ EXPORTS
     codex_agent_mcp_tool_configuration_approval
     codex_agent_mcp_tool_configuration_create
     codex_agent_mcp_tool_configuration_destroy
+    codex_agent_mcp_tool_exposure_surface_validate
+    codex_agent_message_role_validate
     codex_agent_operation_cancel
     codex_agent_operation_conversation
     codex_agent_operation_destroy
     codex_agent_operation_failure
     codex_agent_operation_result
+    codex_agent_pending_approval_conversation_id
+    codex_agent_pending_approval_create
+    codex_agent_pending_approval_destroy
+    codex_agent_pending_approval_details_copy
+    codex_agent_pending_approval_request_id_copy
+    codex_agent_pending_approval_title_copy
     codex_agent_plan_step_create
     codex_agent_plan_step_destroy
     codex_agent_plan_step_status
     codex_agent_plan_step_text_copy
+    codex_agent_plugin_auth_policy_validate
+    codex_agent_plugin_install_policy_validate
     codex_agent_plugin_reference_create
     codex_agent_plugin_reference_destroy
     codex_agent_plugin_reference_has_marketplace_path
@@ -106,6 +168,8 @@ EXPORTS
     codex_agent_plugin_skill_is_enabled
     codex_agent_plugin_skill_name_copy
     codex_agent_plugin_skill_path_copy
+    codex_agent_resolution_validate
+    codex_agent_resource_origin_validate
     codex_agent_service_tier_create
     codex_agent_service_tier_description_copy
     codex_agent_service_tier_destroy
@@ -119,6 +183,7 @@ EXPORTS
     codex_agent_skill_scope_display_name_copy
     codex_agent_snapshot_destroy
     codex_agent_subscription_destroy
+    codex_agent_work_activity_validate
     codex_agent_workspace_create
     codex_agent_workspace_destroy
     codex_agent_workspace_display_name_copy
