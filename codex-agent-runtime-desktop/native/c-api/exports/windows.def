@@ -6,10 +6,19 @@ EXPORTS
     codex_agent_agent_conversations
     codex_agent_agent_release
     codex_agent_agent_retain
+    codex_agent_approval_preset_display_name_copy
+    codex_agent_capability_display_label_copy
+    codex_agent_capability_has_icon
+    codex_agent_capability_icon_copy
+    codex_agent_capability_id_copy
+    codex_agent_capability_prompt_label_copy
     codex_agent_context_create
     codex_agent_context_destroy
     codex_agent_conversation_cancel_turn
     codex_agent_conversation_close
+    codex_agent_conversation_id_create
+    codex_agent_conversation_id_destroy
+    codex_agent_conversation_id_value_copy
     codex_agent_conversation_is_same
     codex_agent_conversation_release
     codex_agent_conversation_retain
@@ -18,16 +27,32 @@ EXPORTS
     codex_agent_conversation_state_get
     codex_agent_conversation_state_status
     codex_agent_conversation_state_subscribe
+    codex_agent_conversation_summary_conversation_id
+    codex_agent_conversation_summary_create
+    codex_agent_conversation_summary_destroy
+    codex_agent_conversation_summary_title_copy
+    codex_agent_conversation_summary_updated_at_epoch_seconds
     codex_agent_conversations_active_get
     codex_agent_conversations_active_subscribe
     codex_agent_conversations_open
     codex_agent_conversations_release
     codex_agent_conversations_retain
+    codex_agent_elicitation_validation_issue_create
+    codex_agent_elicitation_validation_issue_destroy
+    codex_agent_elicitation_validation_issue_field_name_copy
+    codex_agent_elicitation_validation_issue_reason
     codex_agent_failure_code_copy
+    codex_agent_failure_create
     codex_agent_failure_is_recoverable
     codex_agent_failure_message_copy
     codex_agent_failure_release
     codex_agent_failure_retain
+    codex_agent_form_option_create
+    codex_agent_form_option_description_copy
+    codex_agent_form_option_destroy
+    codex_agent_form_option_has_description
+    codex_agent_form_option_title_copy
+    codex_agent_form_option_value_copy
     codex_agent_host_close
     codex_agent_host_create
     codex_agent_host_release
@@ -43,10 +68,65 @@ EXPORTS
     codex_agent_host_state_subscribe
     codex_agent_host_state_workspace_display_name_copy
     codex_agent_host_state_workspace_path_copy
+    codex_agent_mcp_environment_variable_create
+    codex_agent_mcp_environment_variable_destroy
+    codex_agent_mcp_environment_variable_name_copy
+    codex_agent_mcp_environment_variable_source
+    codex_agent_mcp_oauth_configuration_callback_port
+    codex_agent_mcp_oauth_configuration_client_id_copy
+    codex_agent_mcp_oauth_configuration_create
+    codex_agent_mcp_oauth_configuration_destroy
+    codex_agent_mcp_oauth_configuration_has_client_id
+    codex_agent_mcp_tool_configuration_approval
+    codex_agent_mcp_tool_configuration_create
+    codex_agent_mcp_tool_configuration_destroy
     codex_agent_operation_cancel
     codex_agent_operation_conversation
     codex_agent_operation_destroy
     codex_agent_operation_failure
     codex_agent_operation_result
+    codex_agent_plan_step_create
+    codex_agent_plan_step_destroy
+    codex_agent_plan_step_status
+    codex_agent_plan_step_text_copy
+    codex_agent_plugin_reference_create
+    codex_agent_plugin_reference_destroy
+    codex_agent_plugin_reference_has_marketplace_path
+    codex_agent_plugin_reference_has_remote_plugin_id
+    codex_agent_plugin_reference_id_copy
+    codex_agent_plugin_reference_marketplace_name_copy
+    codex_agent_plugin_reference_marketplace_path_copy
+    codex_agent_plugin_reference_name_copy
+    codex_agent_plugin_reference_remote_plugin_id_copy
+    codex_agent_plugin_reference_uri_copy
+    codex_agent_plugin_skill_create
+    codex_agent_plugin_skill_description_copy
+    codex_agent_plugin_skill_destroy
+    codex_agent_plugin_skill_has_path
+    codex_agent_plugin_skill_is_enabled
+    codex_agent_plugin_skill_name_copy
+    codex_agent_plugin_skill_path_copy
+    codex_agent_service_tier_create
+    codex_agent_service_tier_description_copy
+    codex_agent_service_tier_destroy
+    codex_agent_service_tier_id_copy
+    codex_agent_service_tier_name_copy
+    codex_agent_skill_chunk_content_copy
+    codex_agent_skill_chunk_create
+    codex_agent_skill_chunk_destroy
+    codex_agent_skill_chunk_next_offset
+    codex_agent_skill_chunk_total_bytes
+    codex_agent_skill_scope_display_name_copy
     codex_agent_snapshot_destroy
     codex_agent_subscription_destroy
+    codex_agent_workspace_create
+    codex_agent_workspace_destroy
+    codex_agent_workspace_display_name_copy
+    codex_agent_workspace_path_copy
+    codex_agent_workspace_resolution_available_create
+    codex_agent_workspace_resolution_available_destroy
+    codex_agent_workspace_resolution_available_workspace
+    codex_agent_workspace_selection_required_create
+    codex_agent_workspace_selection_required_destroy
+    codex_agent_workspace_selection_required_message_copy
+    codex_agent_workspace_selection_required_reason

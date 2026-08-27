@@ -13,10 +13,10 @@
 #define OBSERVE(variable) ((void)(variable))
 
 _Static_assert(CODEX_AGENT_ABI_VERSION_MAJOR == UINT32_C(1), "ABI major");
-_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(1), "ABI minor");
+_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(2), "ABI minor");
 _Static_assert(CODEX_AGENT_ABI_VERSION_PATCH == UINT32_C(0), "ABI patch");
 _Static_assert(
-    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x01010000),
+    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x01020000),
     "ABI current");
 _Static_assert(
     CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE == UINT32_C(0x01000000),
@@ -611,7 +611,7 @@ int main(void) {
         INT32_C(1));
     CHECK(codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_CURRENT) == INT32_C(1));
     CHECK(
-        codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_ENCODE(1, 2, 0)) ==
+        codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_ENCODE(1, 3, 0)) ==
         INT32_C(0));
     CHECK(codex_agent_context_create(&context) == CODEX_AGENT_STATUS_OK);
     CHECK(context != NULL);

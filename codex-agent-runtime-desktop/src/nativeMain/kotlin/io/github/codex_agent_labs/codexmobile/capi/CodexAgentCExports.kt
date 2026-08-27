@@ -753,7 +753,12 @@ public fun codexAgentHostStateRequirementReason(
     ) {
         val required = it.state as? CodexHostState.WorkspaceRequired
             ?: return@withPayload CODEX_AGENT_STATUS_WRONG_HANDLE_TYPE
-        outReason.pointed.value = required.requirement.reason.ordinal
+        outReason.pointed.value = when (required.requirement.reason) {
+            io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelectionReason.NOT_SELECTED -> 0
+            io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelectionReason.NOT_FOUND -> 1
+            io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelectionReason.ACCESS_REVOKED -> 2
+            io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelectionReason.INVALID_SELECTION -> 3
+        }
         CODEX_AGENT_STATUS_OK
     }
 }

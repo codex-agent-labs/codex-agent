@@ -286,8 +286,13 @@ internal fun parseOpenOptions(
         require(options.approval_preset == 0)
         AgentConversationSettings().approvalPreset
     } else {
-        AgentApprovalPreset.entries.getOrNull(options.approval_preset)
-            ?: throw IllegalArgumentException("Unknown approval preset")
+        when (options.approval_preset) {
+            0 -> AgentApprovalPreset.NEVER
+            1 -> AgentApprovalPreset.AUTO_REVIEW
+            2 -> AgentApprovalPreset.ASK_ME
+            3 -> AgentApprovalPreset.STRICT
+            else -> throw IllegalArgumentException("Unknown approval preset")
+        }
     }
     return CodexAgentCOpenOptions(
         conversationId = if (options.has_conversation_id == 0) {
