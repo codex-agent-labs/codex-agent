@@ -2047,6 +2047,10 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 @property(nonatomic) BOOL canonicalD087ObservedCancelledAuthenticationFalse;
 @property(nonatomic) BOOL canonicalD087CancelCompleted;
 @property(nonatomic) BOOL canonicalD087CancelAdvanced;
+@property(nonatomic, strong) CodexAgentCodexConversation *canonicalD088Conversation;
+@property(nonatomic, strong) CodexAgentConversationId *canonicalD088ConversationId;
+@property(nonatomic, strong) CodexAgentAgentConversationSettings *canonicalD088Settings;
+@property(nonatomic, strong) CodexAgentAgentTurnRequest *canonicalD088Request;
 @property(nonatomic, strong) CDXHost *host;
 @property(nonatomic, strong) CDXAgent *agent;
 @property(nonatomic, strong) CDXConversation *conversation;
@@ -2087,6 +2091,8 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 - (void)continueD087BrowserCancelIfReady;
 - (void)continueD087AuthenticationIfReady;
 - (void)continueD087CancelIfReady;
+- (void)beginD088ConversationFunctions;
+- (void)advanceD088ConversationFunctionsAtStep:(NSUInteger)step;
 
 @end
 
@@ -3638,10 +3644,436 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
             self.canonicalD087AuthenticationStateObservation = nil;
             self.canonicalD087IsAuthenticatedObservation = nil;
             self.canonicalD087IsAuthenticatingObservation = nil;
-            [self closeCanonicalHost];
+            [self beginD088ConversationFunctions];
             break;
         default:
             [self finishWithFailure:@"Objective-C D087 gateway sequence advanced past its end"];
+            break;
+    }
+}
+
+- (void)beginD088ConversationFunctions {
+    CodexAgentCodexConversations *conversations = self.canonicalD086Agent.conversations;
+    if (conversations.active.value != nil) {
+        [self finishWithFailure:@"Objective-C D088 conversations.active did not start nil"];
+        return;
+    }
+    self.canonicalD088Settings = [[CodexAgentAgentConversationSettings alloc]
+        initWithApprovalPreset:[CodexAgentAgentApprovalPreset autoReview]
+                   serviceTier:nil];
+    [self advanceD088ConversationFunctionsAtStep:0];
+}
+
+- (void)advanceD088ConversationFunctionsAtStep:(NSUInteger)step {
+    if (self.finishing) return;
+    __weak CDXObjectiveCConsumerRun *weakSelf = self;
+    CodexAgentCodexConversations *conversations = self.canonicalD086Agent.conversations;
+    switch (step) {
+        case 0: {
+            [conversations openConversationId:nil
+                                     settings:self.canonicalD088Settings
+                           completionHandler:^(CodexAgentCodexConversation *conversation,
+                                               NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil || conversation == nil) {
+                        [run finishWithFailure:[@"Objective-C D088 conversations.open failed: "
+                            stringByAppendingString:error.localizedDescription ?: @"missing value"]];
+                        return;
+                    }
+                    run.canonicalD088Conversation = conversation;
+                    [run advanceD088ConversationFunctionsAtStep:1];
+                });
+            }];
+            break;
+        }
+        case 1: {
+            CodexAgentCodexConversation *conversation = self.canonicalD088Conversation;
+            CodexAgentAgentConversationState *state =
+                (CodexAgentAgentConversationState *)conversation.state.value;
+            NSArray<CodexAgentAgentMessage *> *messages =
+                (NSArray<CodexAgentAgentMessage *> *)conversation.currentMessages.value;
+            CodexAgentBoolean *canStart = (CodexAgentBoolean *)conversation.canStartTurn.value;
+            CodexAgentBoolean *canReload = (CodexAgentBoolean *)conversation.canReload.value;
+            CodexAgentBoolean *canCancel = (CodexAgentBoolean *)conversation.canCancelTurn.value;
+            CodexAgentBoolean *canRunShell =
+                (CodexAgentBoolean *)conversation.canRunShellCommand.value;
+            CodexAgentBoolean *turnActive = (CodexAgentBoolean *)conversation.isTurnActive.value;
+            if (conversations.active.value != conversation ||
+                ![state isKindOfClass:[CodexAgentAgentConversationState class]] ||
+                state.status != [CodexAgentAgentConversationStatus ready] ||
+                state.conversationId.value.length == 0 || state.failure != nil ||
+                ![messages isKindOfClass:[NSArray class]] || messages.count != 0 ||
+                conversation.activeTurnProgress.value != nil ||
+                ![canStart isKindOfClass:[CodexAgentBoolean class]] || !canStart.boolValue ||
+                ![canReload isKindOfClass:[CodexAgentBoolean class]] || !canReload.boolValue ||
+                ![canCancel isKindOfClass:[CodexAgentBoolean class]] || canCancel.boolValue ||
+                ![canRunShell isKindOfClass:[CodexAgentBoolean class]] || canRunShell.boolValue ||
+                ![turnActive isKindOfClass:[CodexAgentBoolean class]] || turnActive.boolValue) {
+                [self finishWithFailure:@"Objective-C D088 initial conversation values changed"];
+                return;
+            }
+            self.canonicalD088ConversationId = state.conversationId;
+            [conversation cancelTurnWithCompletionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentKotlinThrowable *exception =
+                        (CodexAgentKotlinThrowable *)error.kotlinException;
+                    if (error == nil ||
+                        ![exception isKindOfClass:[CodexAgentKotlinIllegalStateException class]] ||
+                        [exception isKindOfClass:[CodexAgentCodexOperationException class]] ||
+                        ![exception.message isEqualToString:
+                            @"Conversation does not have an active turn"]) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 idle cancelTurn exposed the wrong local error"];
+                        return;
+                    }
+                    [run.canonicalD086Agent.conversations
+                        renameId:run.canonicalD088ConversationId
+                        name:@"D088 materialized"
+                        completionHandler:^(NSError *renameError) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            CDXObjectiveCConsumerRun *renamedRun = weakSelf;
+                            if (renamedRun == nil || renamedRun.finishing) return;
+                            if (renameError != nil) {
+                                [renamedRun finishWithFailure:
+                                    @"Objective-C D088 conversation materialization failed"];
+                                return;
+                            }
+                            [renamedRun advanceD088ConversationFunctionsAtStep:2];
+                        });
+                    }];
+                });
+            }];
+            break;
+        }
+        case 2: {
+            CodexAgentAgentConversationState *state =
+                (CodexAgentAgentConversationState *)self.canonicalD088Conversation.state.value;
+            if (state.status != [CodexAgentAgentConversationStatus ready] || state.failure != nil) {
+                [self finishWithFailure:@"Objective-C D088 idle cancelTurn changed state"];
+                return;
+            }
+            [self.canonicalD088Conversation
+                runShellCommandCommand:@"echo d088"
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature SHELL_COMMANDS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 runShellCommand exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD088ConversationFunctionsAtStep:3];
+                });
+            }];
+            break;
+        }
+        case 3: {
+            [self.canonicalD088Conversation sendPrompt:@"" completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    CodexAgentCodexConversation *conversation = run.canonicalD088Conversation;
+                    CodexAgentAgentConversationState *state =
+                        (CodexAgentAgentConversationState *)conversation.state.value;
+                    NSArray<CodexAgentAgentMessage *> *messages =
+                        (NSArray<CodexAgentAgentMessage *> *)conversation.currentMessages.value;
+                    CodexAgentAgentMessage *message = messages.firstObject;
+                    CodexAgentBoolean *canStart =
+                        (CodexAgentBoolean *)conversation.canStartTurn.value;
+                    CodexAgentBoolean *canReload =
+                        (CodexAgentBoolean *)conversation.canReload.value;
+                    CodexAgentBoolean *canCancel =
+                        (CodexAgentBoolean *)conversation.canCancelTurn.value;
+                    CodexAgentBoolean *canRunShell =
+                        (CodexAgentBoolean *)conversation.canRunShellCommand.value;
+                    CodexAgentBoolean *turnActive =
+                        (CodexAgentBoolean *)conversation.isTurnActive.value;
+                    if (error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"turn_start_failed"] ||
+                        ![failure.message isEqualToString:@"Could not start turn"] ||
+                        !failure.isRecoverable ||
+                        state.status != [CodexAgentAgentConversationStatus failed] ||
+                        ![state.failure.code isEqualToString:@"turn_start_failed"] ||
+                        ![state.failure.message isEqualToString:@"Could not start turn"] ||
+                        !state.failure.isRecoverable || messages.count != 1 ||
+                        message.role != [CodexAgentAgentMessageRole user] ||
+                        ![message.text isEqualToString:@""] ||
+                        conversation.activeTurnProgress.value != nil ||
+                        ![canStart isKindOfClass:[CodexAgentBoolean class]] ||
+                        ![canReload isKindOfClass:[CodexAgentBoolean class]] ||
+                        ![canCancel isKindOfClass:[CodexAgentBoolean class]] ||
+                        ![canRunShell isKindOfClass:[CodexAgentBoolean class]] ||
+                        ![turnActive isKindOfClass:[CodexAgentBoolean class]] ||
+                        !canStart.boolValue || !canReload.boolValue || canCancel.boolValue ||
+                        canRunShell.boolValue || turnActive.boolValue) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 send(String) exposed the wrong final failure"];
+                        return;
+                    }
+                    [run advanceD088ConversationFunctionsAtStep:4];
+                });
+            }];
+            break;
+        }
+        case 4: {
+            [self.canonicalD088Conversation reloadWithCompletionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexConversation *conversation = run.canonicalD088Conversation;
+                    CodexAgentAgentConversationState *state =
+                        (CodexAgentAgentConversationState *)conversation.state.value;
+                    NSArray *messages = (NSArray *)conversation.currentMessages.value;
+                    if (error != nil || state.status != [CodexAgentAgentConversationStatus ready] ||
+                        state.failure != nil || state.conversation == nil || messages.count != 0 ||
+                        conversation.activeTurnProgress.value != nil) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 reload did not restore canonical Ready state"];
+                        return;
+                    }
+                    run.canonicalD088Request = [[CodexAgentAgentTurnRequest alloc]
+                        initWithPrompt:@""
+                        clientMessageId:@"d088-objective-c-request"
+                        model:@"d088-model"
+                        effort:@"medium"
+                        serviceTier:@"fast"
+                        approvalPreset:[CodexAgentAgentApprovalPreset strict]
+                        capabilities:[NSSet set]
+                        invocations:@[]
+                        collaborationMode:[CodexAgentAgentCollaborationMode default_]];
+                    [run advanceD088ConversationFunctionsAtStep:5];
+                });
+            }];
+            break;
+        }
+        case 5: {
+            [self.canonicalD088Conversation
+                sendRequest:self.canonicalD088Request
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    CodexAgentCodexConversation *conversation = run.canonicalD088Conversation;
+                    CodexAgentAgentConversationState *state =
+                        (CodexAgentAgentConversationState *)conversation.state.value;
+                    NSArray<CodexAgentAgentMessage *> *messages =
+                        (NSArray<CodexAgentAgentMessage *> *)conversation.currentMessages.value;
+                    CodexAgentAgentMessage *message = messages.firstObject;
+                    CodexAgentBoolean *canStart =
+                        (CodexAgentBoolean *)conversation.canStartTurn.value;
+                    CodexAgentBoolean *canReload =
+                        (CodexAgentBoolean *)conversation.canReload.value;
+                    CodexAgentBoolean *canCancel =
+                        (CodexAgentBoolean *)conversation.canCancelTurn.value;
+                    CodexAgentBoolean *canRunShell =
+                        (CodexAgentBoolean *)conversation.canRunShellCommand.value;
+                    CodexAgentBoolean *turnActive =
+                        (CodexAgentBoolean *)conversation.isTurnActive.value;
+                    if (error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"turn_start_failed"] ||
+                        ![failure.message isEqualToString:@"Could not start turn"] ||
+                        !failure.isRecoverable ||
+                        state.status != [CodexAgentAgentConversationStatus failed] ||
+                        ![state.failure.code isEqualToString:@"turn_start_failed"] ||
+                        ![state.failure.message isEqualToString:@"Could not start turn"] ||
+                        !state.failure.isRecoverable || messages.count != 1 ||
+                        ![message.clientMessageId isEqualToString:@"d088-objective-c-request"] ||
+                        message.role != [CodexAgentAgentMessageRole user] ||
+                        ![message.text isEqualToString:@""] ||
+                        conversation.activeTurnProgress.value != nil ||
+                        ![canStart isKindOfClass:[CodexAgentBoolean class]] ||
+                        ![canReload isKindOfClass:[CodexAgentBoolean class]] ||
+                        ![canCancel isKindOfClass:[CodexAgentBoolean class]] ||
+                        ![canRunShell isKindOfClass:[CodexAgentBoolean class]] ||
+                        ![turnActive isKindOfClass:[CodexAgentBoolean class]] ||
+                        !canStart.boolValue || !canReload.boolValue || canCancel.boolValue ||
+                        canRunShell.boolValue || turnActive.boolValue) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 send(AgentTurnRequest) exposed the wrong final failure"];
+                        return;
+                    }
+                    [run advanceD088ConversationFunctionsAtStep:6];
+                });
+            }];
+            break;
+        }
+        case 6: {
+            [self.canonicalD088Conversation reloadWithCompletionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexConversation *conversation = run.canonicalD088Conversation;
+                    CodexAgentAgentConversationState *state =
+                        (CodexAgentAgentConversationState *)conversation.state.value;
+                    if (error != nil || state.status != [CodexAgentAgentConversationStatus ready] ||
+                        state.failure != nil ||
+                        [(NSArray *)conversation.currentMessages.value count] != 0) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 second reload did not restore Ready state"];
+                        return;
+                    }
+                    [run advanceD088ConversationFunctionsAtStep:7];
+                });
+            }];
+            break;
+        }
+        case 7: {
+            [self.canonicalD088Conversation closeWithCompletionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentAgentConversationState *state =
+                        (CodexAgentAgentConversationState *)run.canonicalD088Conversation.state.value;
+                    if (error != nil || state.status != [CodexAgentAgentConversationStatus closed] ||
+                        run.canonicalD086Agent.conversations.active.value != nil) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 explicit close did not release the active conversation"];
+                        return;
+                    }
+                    [run advanceD088ConversationFunctionsAtStep:8];
+                });
+            }];
+            break;
+        }
+        case 8: {
+            [conversations openConversationId:self.canonicalD088ConversationId
+                                     settings:self.canonicalD088Settings
+                           completionHandler:^(CodexAgentCodexConversation *conversation,
+                                               NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentAgentConversationState *state =
+                        (CodexAgentAgentConversationState *)conversation.state.value;
+                    if (error != nil || conversation == nil ||
+                        state.status != [CodexAgentAgentConversationStatus ready] ||
+                        ![state.conversationId.value
+                            isEqualToString:run.canonicalD088ConversationId.value] ||
+                        run.canonicalD086Agent.conversations.active.value != conversation) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 reopen did not preserve exact conversation ID"];
+                        return;
+                    }
+                    run.canonicalD088Conversation = conversation;
+                    [run advanceD088ConversationFunctionsAtStep:9];
+                });
+            }];
+            break;
+        }
+        case 9: {
+            [conversations listWithCompletionHandler:^(
+                NSArray<CodexAgentAgentConversationSummary *> *summaries,
+                NSError *error
+            ) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    NSUInteger matches = 0;
+                    for (CodexAgentAgentConversationSummary *summary in summaries) {
+                        if ([summary.conversationId.value
+                            isEqualToString:run.canonicalD088ConversationId.value]) {
+                            matches += 1;
+                        }
+                    }
+                    if (error != nil || summaries == nil || matches != 0) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 conversations.list retained the zero-user-turn conversation"];
+                        return;
+                    }
+                    [run advanceD088ConversationFunctionsAtStep:10];
+                });
+            }];
+            break;
+        }
+        case 10: {
+            [conversations readId:self.canonicalD088ConversationId
+                completionHandler:^(CodexAgentAgentConversation *value, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil || value == nil ||
+                        ![value.summary.conversationId.value
+                            isEqualToString:run.canonicalD088ConversationId.value]) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 conversations.read lost the exact reopened ID"];
+                        return;
+                    }
+                    [run advanceD088ConversationFunctionsAtStep:11];
+                });
+            }];
+            break;
+        }
+        case 11: {
+            [conversations deleteId:self.canonicalD088ConversationId
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentAgentConversationState *state =
+                        (CodexAgentAgentConversationState *)run.canonicalD088Conversation.state.value;
+                    if (error != nil || state.status != [CodexAgentAgentConversationStatus closed] ||
+                        run.canonicalD086Agent.conversations.active.value != nil) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 active delete did not close and release ownership"];
+                        return;
+                    }
+                    [run advanceD088ConversationFunctionsAtStep:12];
+                });
+            }];
+            break;
+        }
+        case 12: {
+            [conversations listWithCompletionHandler:^(
+                NSArray<CodexAgentAgentConversationSummary *> *summaries,
+                NSError *error
+            ) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    BOOL containsDeleted = NO;
+                    for (CodexAgentAgentConversationSummary *summary in summaries) {
+                        containsDeleted |= [summary.conversationId.value
+                            isEqualToString:run.canonicalD088ConversationId.value];
+                    }
+                    if (error != nil || summaries == nil || containsDeleted) {
+                        [run finishWithFailure:
+                            @"Objective-C D088 final list retained the deleted conversation"];
+                        return;
+                    }
+                    [run closeCanonicalHost];
+                });
+            }];
+            break;
+        }
+        default:
+            [self finishWithFailure:@"Objective-C D088 conversation sequence advanced past its end"];
             break;
     }
 }

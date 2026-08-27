@@ -668,6 +668,70 @@ static BOOL consumeD087GatewayFunctions(
     return authenticationState != nil && isAuthenticated != nil && isAuthenticating != nil;
 }
 
+static BOOL consumeD088ConversationGateway(
+    CodexAgentCodexAgent *agent,
+    CodexAgentCodexConversation *conversation,
+    CodexAgentConversationId *conversationId,
+    CodexAgentAgentConversationSettings *settings,
+    CodexAgentAgentTurnRequest *request
+) {
+    CodexAgentCodexConversations *conversations = agent.conversations;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> active = conversations.active;
+    [conversations openConversationId:conversationId
+                             settings:settings
+                   completionHandler:^(CodexAgentCodexConversation *opened, NSError *error) {
+        (void)opened;
+        (void)error;
+    }];
+    [conversations listWithCompletionHandler:^(
+        NSArray<CodexAgentAgentConversationSummary *> *summaries,
+        NSError *error
+    ) {
+        (void)summaries;
+        (void)error;
+    }];
+    [conversations readId:conversationId
+        completionHandler:^(CodexAgentAgentConversation *value, NSError *error) {
+        (void)value;
+        (void)error;
+    }];
+    [conversations deleteId:conversationId completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> state = conversation.state;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> currentMessages = conversation.currentMessages;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> activeTurnProgress =
+        conversation.activeTurnProgress;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> canStartTurn = conversation.canStartTurn;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> canReload = conversation.canReload;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> canCancelTurn = conversation.canCancelTurn;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> canRunShellCommand =
+        conversation.canRunShellCommand;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> isTurnActive = conversation.isTurnActive;
+    [conversation cancelTurnWithCompletionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [conversation runShellCommandCommand:@"echo compiler" completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [conversation sendPrompt:@"Compiler" completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [conversation sendRequest:request completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [conversation reloadWithCompletionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [conversation closeWithCompletionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    return active != nil && state != nil && currentMessages != nil &&
+        activeTurnProgress != nil && canStartTurn != nil && canReload != nil &&
+        canCancelTurn != nil && canRunShellCommand != nil && isTurnActive != nil;
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

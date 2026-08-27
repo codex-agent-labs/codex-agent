@@ -2262,6 +2262,148 @@ private val d087Capabilities = listOf(
 }
 private val d087CapabilitiesByKey = d087Capabilities.associateBy { it.canonicalKey }
 
+private val d088Capabilities = listOf(
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversations|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversations.delete|" +
+            "delete($appleCanonicalAbiPackage.ConversationId){}[0]|return=kotlin/Unit|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/ConversationId!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)deleteId:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversations|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversations.list|list(){}[0]|" +
+            "return=kotlin.collections/List<INVARIANT:" +
+            "$appleCanonicalPackage/AgentConversationSummary!!>!!|suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)listWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversations|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversations.open|" +
+            "open($appleCanonicalAbiPackage.ConversationId?;" +
+            "$appleCanonicalAbiPackage.AgentConversationSettings){}[0]|" +
+            "return=$appleCanonicalPackage/CodexConversation!!|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/ConversationId?:default=true:vararg=false," +
+            "REGULAR:$appleCanonicalPackage/AgentConversationSettings!!:default=true:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexConversations")}" +
+            "(im)openConversationId:settings:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversations|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversations.read|" +
+            "read($appleCanonicalAbiPackage.ConversationId){}[0]|" +
+            "return=$appleCanonicalPackage/AgentConversation!!|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/ConversationId!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)readId:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversations|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversations.active|{}active[0]|propertyKind=VAL|" +
+            "type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "$appleCanonicalPackage/CodexConversation?>!!",
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(py)active",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.cancelTurn|cancelTurn(){}[0]|" +
+            "return=kotlin/Unit|suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)cancelTurnWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.close|close(){}[0]|" +
+            "return=kotlin/Unit|suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)closeWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.reload|reload(){}[0]|" +
+            "return=kotlin/Unit|suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)reloadWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.runShellCommand|" +
+            "runShellCommand(kotlin.String){}[0]|return=kotlin/Unit|suspend=true|" +
+            "parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}" +
+            "(im)runShellCommandCommand:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.send|" +
+            "send($appleCanonicalAbiPackage.AgentTurnRequest){}[0]|return=kotlin/Unit|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentTurnRequest!!:" +
+            "default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)sendRequest:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.send|send(kotlin.String){}[0]|" +
+            "return=kotlin/Unit|suspend=true|" +
+            "parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)sendPrompt:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.activeTurnProgress|" +
+            "{}activeTurnProgress[0]|propertyKind=VAL|" +
+            "type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "$appleCanonicalPackage/AgentTurnProgress?>!!",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)activeTurnProgress",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.canCancelTurn|{}canCancelTurn[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)canCancelTurn",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.canReload|{}canReload[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)canReload",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.canRunShellCommand|" +
+            "{}canRunShellCommand[0]|propertyKind=VAL|" +
+            "type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)canRunShellCommand",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.canStartTurn|{}canStartTurn[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)canStartTurn",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.currentMessages|{}currentMessages[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "kotlin.collections/List<INVARIANT:$appleCanonicalPackage/AgentMessage!!>!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)currentMessages",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.isTurnActive|{}isTurnActive[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)isTurnActive",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConversation|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexConversation.state|{}state[0]|propertyKind=VAL|" +
+            "type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "$appleCanonicalPackage/AgentConversationState!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)state",
+    ),
+).also { capabilities ->
+    check(capabilities.size == 19 && capabilities.map { it.canonicalKey }.distinct().size == 19 &&
+        capabilities.map { it.usr }.distinct().size == 19
+    ) { "D088 Apple conversation capability inventory changed" }
+}
+private val d088CapabilitiesByKey = d088Capabilities.associateBy { it.canonicalKey }
+
 private fun d087ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
     "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)authenticateMethod:completionHandler:" to
         ExpectedAppleCompilerSymbol(
@@ -2510,8 +2652,200 @@ private fun d087ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSy
                 "completionHandler" to "(void (^)(NSError *)) completionHandler",
             ),
             "void",
-        ),
+    ),
 )
+
+private fun d088ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = buildMap {
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}(im)deleteId:completionHandler:",
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConversations", "delete(id:)"), "delete(id:)", "open",
+            "func delete(id: ConversationId) async throws", listOf("c:objc(cs)CodexAgentConversationId"),
+            listOf("id" to "id: ConversationId"), "Void",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}(im)listWithCompletionHandler:",
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConversations", "list()"), "list()", "open",
+            "func list() async throws -> [AgentConversationSummary]",
+            listOf("c:objc(cs)CodexAgentAgentConversationSummary"), emptyList(),
+            "[AgentConversationSummary]",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}" +
+        "(im)openConversationId:settings:completionHandler:", ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConversations", "open(conversationId:settings:)"),
+            "open(conversationId:settings:)", "open",
+            "func open(conversationId: ConversationId?, settings: AgentConversationSettings) " +
+                "async throws -> CodexConversation",
+            listOf(
+                "c:objc(cs)CodexAgentConversationId", "c:objc(cs)CodexAgentAgentConversationSettings",
+                "c:objc(cs)CodexAgentCodexConversation",
+            ),
+            listOf(
+                "conversationId" to "conversationId: ConversationId?",
+                "settings" to "settings: AgentConversationSettings",
+            ), "CodexConversation",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}(im)readId:completionHandler:",
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConversations", "read(id:)"), "read(id:)", "open",
+            "func read(id: ConversationId) async throws -> AgentConversation",
+            listOf("c:objc(cs)CodexAgentConversationId", "c:objc(cs)CodexAgentAgentConversation"),
+            listOf("id" to "id: ConversationId"), "AgentConversation",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}(py)active", ExpectedAppleCompilerSymbol(
+        "swift.property", listOf("CodexConversations", "active"), "active", "open",
+        "var active: any Kotlinx_coroutines_coreStateFlow { get }",
+        listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+    ))
+    put(appleOwnerUsr("CodexAgentCodexConversation"), ExpectedAppleCompilerSymbol(
+        "swift.class", listOf("CodexConversation"), "CodexConversation", "public",
+        "class CodexConversation", emptyList(),
+    ))
+    listOf("cancelTurn", "close", "reload").forEach { name ->
+        put("${appleOwnerUsr("CodexAgentCodexConversation")}(im)${name}WithCompletionHandler:",
+            ExpectedAppleCompilerSymbol(
+                "swift.method", listOf("CodexConversation", "$name()"), "$name()", "open",
+                "func $name() async throws", emptyList(), emptyList(), "Void",
+            ))
+    }
+    put("${appleOwnerUsr("CodexAgentCodexConversation")}" +
+        "(im)runShellCommandCommand:completionHandler:", ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConversation", "runShellCommand(command:)"),
+            "runShellCommand(command:)", "open", "func runShellCommand(command: String) async throws",
+            listOf("s:SS"), listOf("command" to "command: String"), "Void",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversation")}(im)sendRequest:completionHandler:",
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConversation", "send(request:)"), "send(request:)", "open",
+            "func send(request: AgentTurnRequest) async throws",
+            listOf("c:objc(cs)CodexAgentAgentTurnRequest"),
+            listOf("request" to "request: AgentTurnRequest"), "Void",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversation")}(im)sendPrompt:completionHandler:",
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConversation", "send(prompt:)"), "send(prompt:)", "open",
+            "func send(prompt: String) async throws", listOf("s:SS"),
+            listOf("prompt" to "prompt: String"), "Void",
+        ))
+    listOf(
+        "activeTurnProgress", "canCancelTurn", "canReload", "canRunShellCommand", "canStartTurn",
+        "currentMessages", "isTurnActive", "state",
+    ).forEach { name ->
+        put("${appleOwnerUsr("CodexAgentCodexConversation")}(py)$name", ExpectedAppleCompilerSymbol(
+            "swift.property", listOf("CodexConversation", name), name, "open",
+            "var $name: any Kotlinx_coroutines_coreStateFlow { get }",
+            listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ))
+    }
+}
+
+private fun d088ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = buildMap {
+    put(appleOwnerUsr("CodexAgentCodexConversation"), ExpectedAppleCompilerSymbol(
+        "objective-c.class", listOf("CodexAgentCodexConversation"),
+        "CodexAgentCodexConversation", "public",
+        "@interface CodexAgentCodexConversation : CodexAgentBase",
+        listOf("c:objc(cs)CodexAgentBase"),
+    ))
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}(im)deleteId:completionHandler:",
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexConversations", "deleteId:completionHandler:"),
+            "deleteId:completionHandler:", "public",
+            "- (void) deleteId:(CodexAgentConversationId *) id " +
+                "completionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:objc(cs)CodexAgentConversationId", "c:v", "c:objc(cs)NSError"),
+            listOf(
+                "id" to "(CodexAgentConversationId *) id",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ), "void",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}(im)listWithCompletionHandler:",
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexConversations", "listWithCompletionHandler:"),
+            "listWithCompletionHandler:", "public",
+            "- (void) listWithCompletionHandler:" +
+                "(void (^)(NSArray<CodexAgentAgentConversationSummary *> *, NSError *)) completionHandler;",
+            listOf("c:v", "c:v", "c:Q\$objc(cs)NSArray", "c:objc(cs)NSError"),
+            listOf("completionHandler" to
+                "(void (^)(NSArray<CodexAgentAgentConversationSummary *> *, NSError *)) completionHandler"),
+            "void",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}" +
+        "(im)openConversationId:settings:completionHandler:", ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexConversations", "openConversationId:settings:completionHandler:"),
+            "openConversationId:settings:completionHandler:", "public",
+            "- (void) openConversationId:(CodexAgentConversationId *) conversationId " +
+                "settings:(CodexAgentAgentConversationSettings *) settings " +
+                "completionHandler:(void (^)(CodexAgentCodexConversation *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentConversationId",
+                "c:objc(cs)CodexAgentAgentConversationSettings", "c:v",
+                "c:objc(cs)CodexAgentCodexConversation", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "conversationId" to "(CodexAgentConversationId *) conversationId",
+                "settings" to "(CodexAgentAgentConversationSettings *) settings",
+                "completionHandler" to
+                    "(void (^)(CodexAgentCodexConversation *, NSError *)) completionHandler",
+            ), "void",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}(im)readId:completionHandler:",
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexConversations", "readId:completionHandler:"),
+            "readId:completionHandler:", "public",
+            "- (void) readId:(CodexAgentConversationId *) id " +
+                "completionHandler:(void (^)(CodexAgentAgentConversation *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentConversationId", "c:v",
+                "c:objc(cs)CodexAgentAgentConversation", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "id" to "(CodexAgentConversationId *) id",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentConversation *, NSError *)) completionHandler",
+            ), "void",
+        ))
+    put("${appleOwnerUsr("CodexAgentCodexConversations")}(py)active", ExpectedAppleCompilerSymbol(
+        "objective-c.property", listOf("CodexAgentCodexConversations", "active"), "active", "public",
+        "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> active;",
+        listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+    ))
+    listOf("cancelTurn", "close", "reload").forEach { name ->
+        put("${appleOwnerUsr("CodexAgentCodexConversation")}(im)${name}WithCompletionHandler:",
+            ExpectedAppleCompilerSymbol(
+                "objective-c.method", listOf("CodexAgentCodexConversation", "${name}WithCompletionHandler:"),
+                "${name}WithCompletionHandler:", "public",
+                "- (void) ${name}WithCompletionHandler:(void (^)(NSError *)) completionHandler;",
+                listOf("c:v", "c:v", "c:objc(cs)NSError"),
+                listOf("completionHandler" to "(void (^)(NSError *)) completionHandler"), "void",
+            ))
+    }
+    listOf(
+        Triple("runShellCommandCommand:completionHandler:", "command", "NSString"),
+        Triple("sendRequest:completionHandler:", "request", "CodexAgentAgentTurnRequest"),
+        Triple("sendPrompt:completionHandler:", "prompt", "NSString"),
+    ).forEach { (selector, parameter, type) ->
+        put("${appleOwnerUsr("CodexAgentCodexConversation")}(im)$selector", ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexConversation", selector), selector, "public",
+            "- (void) ${selector.substringBefore(':')}:($type *) $parameter " +
+                "completionHandler:(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:objc(cs)$type", "c:v", "c:objc(cs)NSError"),
+            listOf(
+                parameter to "($type *) $parameter",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ), "void",
+        ))
+    }
+    listOf(
+        "activeTurnProgress", "canCancelTurn", "canReload", "canRunShellCommand", "canStartTurn",
+        "currentMessages", "isTurnActive", "state",
+    ).forEach { name ->
+        put("${appleOwnerUsr("CodexAgentCodexConversation")}(py)$name", ExpectedAppleCompilerSymbol(
+            "objective-c.property", listOf("CodexAgentCodexConversation", name), name, "public",
+            "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> $name;",
+            listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ))
+    }
+}
 
 
 private fun d086ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
@@ -3984,7 +4318,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
     canonical.canonical.coverageReceiptSha256.appleSha256("canonical coverage receipt")
     canonical.targetSha256.getValue("native").appleSha256("canonical native target")
     val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-    check(capabilities.size == 531) { "Apple binding capability count changed" }
+    check(capabilities.size == 550) { "Apple binding capability count changed" }
     val usrByCapability = capabilities.associateWith(::appleBindingUsr)
 
     compilerEvidence.appleKeys(
@@ -4079,7 +4413,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
 
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
-    check(missing.size == 25) { "Apple partial binding gap count changed: ${missing.size}" }
+    check(missing.size == 6) { "Apple partial binding gap count changed: ${missing.size}" }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()
@@ -4190,7 +4524,7 @@ private fun appleLanguageEvidence(
         .filter { it.kind == "swift.class" || it.precise in d083ProtocolOwnerUsrs }
         .map(AppleCompilerSymbol::precise)
         .toSet()
-    check(publicSymbols.size == 645 && referencedSymbols.size == 531 && ownerUsrs.size == 114 &&
+    check(publicSymbols.size == 665 && referencedSymbols.size == 550 && ownerUsrs.size == 115 &&
         referencedSymbols.toSet() == publicSymbols.toSet() - ownerUsrs
     ) { "$language Apple binding symbol/reference inventory changed" }
     put("language", JsonPrimitive(language))
@@ -4227,7 +4561,8 @@ private fun appleBindingUsr(capability: String): String =
         ?: d084CapabilitiesByKey[capability]?.usr
         ?: d085CapabilitiesByKey[capability]?.usr
         ?: d086CapabilitiesByKey[capability]?.usr
-        ?: d087CapabilitiesByKey[capability]?.usr ?: when {
+        ?: d087CapabilitiesByKey[capability]?.usr
+        ?: d088CapabilitiesByKey[capability]?.usr ?: when {
     "|owner=io.github.codex_agent_labs.codexmobile.agent/CodexFailure|kind=constructor|" in capability ->
         appleFailureConstructorUsr
     "|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=constructor|" in capability ->
@@ -4378,7 +4713,8 @@ private fun expectedSwiftAppleBindingSurface(): List<AppleCompilerSymbol> = list
     .plus(d084ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d085ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d086ExpectedSwiftSymbols().appleSymbols("swift"))
-    .plus(d087ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
+    .plus(d087ExpectedSwiftSymbols().appleSymbols("swift"))
+    .plus(d088ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
 
 private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> = listOf(
     AppleCompilerSymbol(
@@ -4537,6 +4873,7 @@ private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> =
     .plus(d085ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d086ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d087ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
+    .plus(d088ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .sortedBy(AppleCompilerSymbol::precise)
 
 private fun d065ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = buildList {
@@ -5404,6 +5741,144 @@ private fun d087ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerRe
     ),
 )
 
+private fun d088ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)deleteId:completionHandler:",
+        "declref_expr", "delete", null,
+        "\$syySo24CodexAgentConversationIdC_tYaKcSo0abA13ConversationsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)listWithCompletionHandler:",
+        "declref_expr", "list", null,
+        "\$sySaySo010CodexAgentB19ConversationSummaryCGyYaKcSo0abA13ConversationsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}" +
+            "(im)openConversationId:settings:completionHandler:",
+        "declref_expr", "open", null,
+        "\$sySo010CodexAgentA12ConversationCSo0abC2IdCSg_So0abbC8SettingsCtYaKcSo0abA13ConversationsCcD",
+        emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)readId:completionHandler:",
+        "declref_expr", "read", null,
+        "\$sySo010CodexAgentB12ConversationCSo0abC2IdC_tYaKcSo0abA13ConversationsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(py)active",
+        "member_ref_expr", "active", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)cancelTurnWithCompletionHandler:",
+        "declref_expr", "cancelTurn", null, "\$syyyYaKcSo010CodexAgentA12ConversationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)closeWithCompletionHandler:",
+        "declref_expr", "close", null, "\$syyyYaKcSo010CodexAgentA12ConversationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)reloadWithCompletionHandler:",
+        "declref_expr", "reload", null, "\$syyyYaKcSo010CodexAgentA12ConversationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}" +
+            "(im)runShellCommandCommand:completionHandler:",
+        "declref_expr", "runShellCommand", null,
+        "\$syySS_tYaKcSo010CodexAgentA12ConversationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)sendRequest:completionHandler:",
+        "declref_expr", "send", null,
+        "\$syySo010CodexAgentB11TurnRequestC_tYaKcSo0abA12ConversationCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)sendPrompt:completionHandler:",
+        "declref_expr", "send", null,
+        "\$syySS_tYaKcSo010CodexAgentA12ConversationCcD", emptyList(),
+    ),
+) + listOf(
+    "activeTurnProgress", "canCancelTurn", "canReload", "canRunShellCommand", "canStartTurn",
+    "currentMessages", "isTurnActive", "state",
+).map { name ->
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)$name", "member_ref_expr", name, null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    )
+}
+
+private fun d088ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)deleteId:completionHandler:",
+        "ObjCMessageExpr", "deleteId:completionHandler:", "CodexAgentCodexConversations *", "void",
+        listOf("CodexAgentConversationId *", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)listWithCompletionHandler:",
+        "ObjCMessageExpr", "listWithCompletionHandler:", "CodexAgentCodexConversations *", "void",
+        listOf("void (^)(NSArray<CodexAgentAgentConversationSummary *> *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}" +
+            "(im)openConversationId:settings:completionHandler:",
+        "ObjCMessageExpr", "openConversationId:settings:completionHandler:",
+        "CodexAgentCodexConversations *", "void",
+        listOf(
+            "CodexAgentConversationId *", "CodexAgentAgentConversationSettings *",
+            "void (^)(CodexAgentCodexConversation *, NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(im)readId:completionHandler:",
+        "ObjCMessageExpr", "readId:completionHandler:", "CodexAgentCodexConversations *", "void",
+        listOf("CodexAgentConversationId *", "void (^)(CodexAgentAgentConversation *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversations")}(py)active",
+        "ObjCPropertyRefExpr", "active", "CodexAgentCodexConversations *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)cancelTurnWithCompletionHandler:",
+        "ObjCMessageExpr", "cancelTurnWithCompletionHandler:", "CodexAgentCodexConversation *", "void",
+        listOf("void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)closeWithCompletionHandler:",
+        "ObjCMessageExpr", "closeWithCompletionHandler:", "CodexAgentCodexConversation *", "void",
+        listOf("void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)reloadWithCompletionHandler:",
+        "ObjCMessageExpr", "reloadWithCompletionHandler:", "CodexAgentCodexConversation *", "void",
+        listOf("void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}" +
+            "(im)runShellCommandCommand:completionHandler:",
+        "ObjCMessageExpr", "runShellCommandCommand:completionHandler:",
+        "CodexAgentCodexConversation *", "void", listOf("NSString *", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)sendRequest:completionHandler:",
+        "ObjCMessageExpr", "sendRequest:completionHandler:", "CodexAgentCodexConversation *", "void",
+        listOf("CodexAgentAgentTurnRequest *", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(im)sendPrompt:completionHandler:",
+        "ObjCMessageExpr", "sendPrompt:completionHandler:", "CodexAgentCodexConversation *", "void",
+        listOf("NSString *", "void (^)(NSError *)"),
+    ),
+) + listOf(
+    "activeTurnProgress", "canCancelTurn", "canReload", "canRunShellCommand", "canStartTurn",
+    "currentMessages", "isTurnActive", "state",
+).map { name ->
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConversation")}(py)$name",
+        "ObjCPropertyRefExpr", name, "CodexAgentCodexConversation *", "<pseudo-object type>", emptyList(),
+    )
+}
+
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
         appleFailureConstructorUsr, "declref_expr", "init", null,
@@ -5474,7 +5949,8 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     .plus(d084ExpectedSwiftAppleBindingReferences())
     .plus(d085ExpectedSwiftAppleBindingReferences())
     .plus(d086ExpectedSwiftAppleBindingReferences())
-    .plus(d087ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d087ExpectedSwiftAppleBindingReferences())
+    .plus(d088ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
@@ -5556,7 +6032,8 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     .plus(d084ExpectedObjectiveCAppleBindingReferences())
     .plus(d085ExpectedObjectiveCAppleBindingReferences())
     .plus(d086ExpectedObjectiveCAppleBindingReferences())
-    .plus(d087ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d087ExpectedObjectiveCAppleBindingReferences())
+    .plus(d088ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun JsonElement.appleSymbol(): AppleCompilerSymbol {
     val symbol = appleObject("Apple compiler symbol").also {

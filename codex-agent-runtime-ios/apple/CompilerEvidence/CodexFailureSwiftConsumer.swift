@@ -1261,3 +1261,32 @@ func consumeD087AuthenticationAndControllerFunctions(
 
     try await conversations.rename(id: conversationId, name: "compiler-name")
 }
+
+func consumeD088ConversationFunctions(
+    conversations: CodexConversations,
+    conversation: CodexConversation,
+    conversationId: ConversationId,
+    settings: AgentConversationSettings,
+    request: AgentTurnRequest
+) async throws {
+    _ = conversations.active
+    try await conversations.delete(id: conversationId)
+    _ = try await conversations.list()
+    _ = try await conversations.open(conversationId: conversationId, settings: settings)
+    _ = try await conversations.read(id: conversationId)
+
+    _ = conversation.activeTurnProgress
+    _ = conversation.canCancelTurn
+    _ = conversation.canReload
+    _ = conversation.canRunShellCommand
+    _ = conversation.canStartTurn
+    _ = conversation.currentMessages
+    _ = conversation.isTurnActive
+    _ = conversation.state
+    try await conversation.cancelTurn()
+    try await conversation.close()
+    try await conversation.reload()
+    try await conversation.runShellCommand(command: "compiler-command")
+    try await conversation.send(request: request)
+    try await conversation.send(prompt: "compiler-prompt")
+}

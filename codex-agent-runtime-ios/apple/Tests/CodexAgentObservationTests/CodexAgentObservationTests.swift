@@ -2561,6 +2561,313 @@ final class CodexAgentObservationTests: XCTestCase {
             XCTAssertEqual(exception.message, "Conversation name must not be blank")
         }
 
+        XCTAssertNil(conversations.active.value)
+        let d088InitialActiveObserved = expectation(
+            description: "D088 initial active conversation nil"
+        )
+        let d088OpenedActiveObserved = expectation(
+            description: "D088 opened active conversation"
+        )
+        let d088ClosedActiveObserved = expectation(
+            description: "D088 closed active conversation nil"
+        )
+        let d088ReopenedActiveObserved = expectation(
+            description: "D088 reopened active conversation"
+        )
+        let d088DeletedActiveObserved = expectation(
+            description: "D088 deleted active conversation nil"
+        )
+        var d088ObservedActiveConversations: [CodexConversation] = []
+        var d088ObservedNilCount = 0
+        let d088ActiveObservation = CodexStateObservation(state: conversations.active) { value in
+            if value == nil {
+                d088ObservedNilCount += 1
+                switch d088ObservedNilCount {
+                case 1: d088InitialActiveObserved.fulfill()
+                case 2: d088ClosedActiveObserved.fulfill()
+                case 3: d088DeletedActiveObserved.fulfill()
+                default: XCTFail("D088 active conversation emitted an extra nil value")
+                }
+                return
+            }
+            guard let conversation = value as? CodexConversation else {
+                XCTFail("D088 active conversation lost its payload type")
+                return
+            }
+            d088ObservedActiveConversations.append(conversation)
+            switch d088ObservedActiveConversations.count {
+            case 1: d088OpenedActiveObserved.fulfill()
+            case 2: d088ReopenedActiveObserved.fulfill()
+            default: XCTFail("D088 active conversation emitted an extra child")
+            }
+        }
+        defer { d088ActiveObservation.close() }
+        await fulfillment(of: [d088InitialActiveObserved], timeout: 30)
+
+        let d088Settings = AgentConversationSettings(
+            approvalPreset: .autoReview,
+            serviceTier: nil
+        )
+        var d088ConversationForCleanup: CodexConversation?
+        do {
+            let d088Conversation = try await conversations.open(
+                conversationId: nil,
+                settings: d088Settings
+            )
+            d088ConversationForCleanup = d088Conversation
+            await fulfillment(of: [d088OpenedActiveObserved], timeout: 30)
+            XCTAssertTrue(
+                try XCTUnwrap(conversations.active.value as? CodexConversation) === d088Conversation
+            )
+            XCTAssertEqual(d088ObservedActiveConversations.count, 1)
+            XCTAssertTrue(d088ObservedActiveConversations[0] === d088Conversation)
+
+            let d088ReadyState = try XCTUnwrap(
+                d088Conversation.state.value as? AgentConversationState
+            )
+            XCTAssertTrue(d088ReadyState.status === AgentConversationStatus.ready)
+            let d088ConversationId = try XCTUnwrap(d088ReadyState.conversationId)
+            try await conversations.rename(
+                id: d088ConversationId,
+                name: "D088 materialized"
+            )
+            XCTAssertNil(d088ReadyState.conversation)
+            XCTAssertNil(d088ReadyState.failure)
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.currentMessages.value as? [AgentMessage]).isEmpty
+            )
+            XCTAssertNil(d088Conversation.activeTurnProgress.value)
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.canStartTurn.value as? NSNumber).boolValue
+            )
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.canReload.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canCancelTurn.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canRunShellCommand.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.isTurnActive.value as? NSNumber).boolValue
+            )
+
+            do {
+                try await d088Conversation.cancelTurn()
+                XCTFail("D088 idle cancel should reject a conversation without an active turn")
+            } catch {
+                XCTAssertNil(error.codexFailure)
+                let exception = try XCTUnwrap(
+                    (error as NSError).kotlinException as? KotlinIllegalStateException
+                )
+                XCTAssertEqual(exception.message, "Conversation does not have an active turn")
+            }
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.state.value as? AgentConversationState).status ===
+                    AgentConversationStatus.ready
+            )
+
+            do {
+                try await d088Conversation.runShellCommand(command: "echo d088")
+                XCTFail("D088 shell command should reject the unsupported iOS feature")
+            } catch {
+                let failure = try XCTUnwrap(error.codexFailure)
+                XCTAssertEqual(failure.code, "unsupported_feature")
+                XCTAssertEqual(
+                    failure.message,
+                    "Runtime feature SHELL_COMMANDS is not supported"
+                )
+                XCTAssertFalse(failure.isRecoverable)
+            }
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.state.value as? AgentConversationState).status ===
+                    AgentConversationStatus.ready
+            )
+
+            do {
+                try await d088Conversation.send(prompt: "   ")
+                XCTFail("D088 blank String send should fail")
+            } catch {
+                let failure = try XCTUnwrap(error.codexFailure)
+                XCTAssertEqual(failure.code, "turn_start_failed")
+                XCTAssertEqual(failure.message, "Could not start turn")
+                XCTAssertTrue(failure.isRecoverable)
+            }
+            let d088BlankStringState = try XCTUnwrap(
+                d088Conversation.state.value as? AgentConversationState
+            )
+            XCTAssertTrue(d088BlankStringState.status === AgentConversationStatus.failed)
+            XCTAssertEqual(d088BlankStringState.conversationId?.value, d088ConversationId.value)
+            XCTAssertEqual(d088BlankStringState.failure?.code, "turn_start_failed")
+            XCTAssertEqual(d088BlankStringState.failure?.message, "Could not start turn")
+            XCTAssertTrue(d088BlankStringState.failure?.isRecoverable == true)
+            let d088BlankStringMessages = try XCTUnwrap(
+                d088Conversation.currentMessages.value as? [AgentMessage]
+            )
+            XCTAssertEqual(d088BlankStringMessages.count, 1)
+            XCTAssertEqual(d088BlankStringMessages[0].text, "   ")
+            XCTAssertNil(d088BlankStringMessages[0].clientMessageId)
+            XCTAssertTrue(d088BlankStringMessages[0].role === AgentMessageRole.user)
+            XCTAssertNil(d088Conversation.activeTurnProgress.value)
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.canStartTurn.value as? NSNumber).boolValue
+            )
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.canReload.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canCancelTurn.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canRunShellCommand.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.isTurnActive.value as? NSNumber).boolValue
+            )
+
+            let d088BlankRequest = AgentTurnRequest(
+                prompt: " \n ",
+                clientMessageId: "d088-blank-request",
+                model: nil,
+                effort: nil,
+                serviceTier: nil,
+                approvalPreset: .autoReview,
+                capabilities: [],
+                invocations: [],
+                collaborationMode: .default_
+            )
+            do {
+                try await d088Conversation.send(request: d088BlankRequest)
+                XCTFail("D088 blank AgentTurnRequest send should fail")
+            } catch {
+                let failure = try XCTUnwrap(error.codexFailure)
+                XCTAssertEqual(failure.code, "turn_start_failed")
+                XCTAssertEqual(failure.message, "Could not start turn")
+                XCTAssertTrue(failure.isRecoverable)
+            }
+            let d088BlankRequestState = try XCTUnwrap(
+                d088Conversation.state.value as? AgentConversationState
+            )
+            XCTAssertTrue(d088BlankRequestState.status === AgentConversationStatus.failed)
+            XCTAssertEqual(d088BlankRequestState.conversationId?.value, d088ConversationId.value)
+            XCTAssertEqual(d088BlankRequestState.failure?.code, "turn_start_failed")
+            XCTAssertEqual(d088BlankRequestState.failure?.message, "Could not start turn")
+            XCTAssertTrue(d088BlankRequestState.failure?.isRecoverable == true)
+            let d088BlankRequestMessages = try XCTUnwrap(
+                d088Conversation.currentMessages.value as? [AgentMessage]
+            )
+            XCTAssertEqual(d088BlankRequestMessages.count, 1)
+            XCTAssertEqual(d088BlankRequestMessages[0].id, "d088-blank-request")
+            XCTAssertEqual(d088BlankRequestMessages[0].clientMessageId, "d088-blank-request")
+            XCTAssertEqual(d088BlankRequestMessages[0].text, " \n ")
+            XCTAssertTrue(d088BlankRequestMessages[0].role === AgentMessageRole.user)
+            XCTAssertNil(d088Conversation.activeTurnProgress.value)
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.canStartTurn.value as? NSNumber).boolValue
+            )
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.canReload.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canCancelTurn.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canRunShellCommand.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.isTurnActive.value as? NSNumber).boolValue
+            )
+
+            try await d088Conversation.reload()
+            let d088ReloadedState = try XCTUnwrap(
+                d088Conversation.state.value as? AgentConversationState
+            )
+            XCTAssertTrue(d088ReloadedState.status === AgentConversationStatus.ready)
+            XCTAssertEqual(d088ReloadedState.conversationId?.value, d088ConversationId.value)
+            XCTAssertNotNil(d088ReloadedState.conversation)
+            XCTAssertNil(d088ReloadedState.failure)
+            XCTAssertTrue(
+                try XCTUnwrap(d088Conversation.currentMessages.value as? [AgentMessage]).isEmpty
+            )
+            XCTAssertNil(d088Conversation.activeTurnProgress.value)
+
+            try await d088Conversation.close()
+            d088ConversationForCleanup = nil
+            await fulfillment(of: [d088ClosedActiveObserved], timeout: 30)
+            XCTAssertNil(conversations.active.value)
+            let d088ClosedState = try XCTUnwrap(
+                d088Conversation.state.value as? AgentConversationState
+            )
+            XCTAssertTrue(d088ClosedState.status === AgentConversationStatus.closed)
+            XCTAssertEqual(d088ClosedState.conversationId?.value, d088ConversationId.value)
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canStartTurn.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canReload.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canCancelTurn.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.canRunShellCommand.value as? NSNumber).boolValue
+            )
+            XCTAssertFalse(
+                try XCTUnwrap(d088Conversation.isTurnActive.value as? NSNumber).boolValue
+            )
+
+            let d088ReopenedConversation = try await conversations.open(
+                conversationId: d088ConversationId,
+                settings: d088Settings
+            )
+            d088ConversationForCleanup = d088ReopenedConversation
+            await fulfillment(of: [d088ReopenedActiveObserved], timeout: 30)
+            XCTAssertTrue(
+                try XCTUnwrap(conversations.active.value as? CodexConversation) ===
+                    d088ReopenedConversation
+            )
+            XCTAssertEqual(d088ObservedActiveConversations.count, 2)
+            XCTAssertTrue(d088ObservedActiveConversations[1] === d088ReopenedConversation)
+            let d088ReopenedState = try XCTUnwrap(
+                d088ReopenedConversation.state.value as? AgentConversationState
+            )
+            XCTAssertTrue(d088ReopenedState.status === AgentConversationStatus.ready)
+            XCTAssertEqual(d088ReopenedState.conversationId?.value, d088ConversationId.value)
+
+            let d088Summaries = try await conversations.list()
+            XCTAssertFalse(d088Summaries.contains {
+                $0.conversationId.value == d088ConversationId.value
+            })
+            let d088ReadConversation = try await conversations.read(id: d088ConversationId)
+            XCTAssertEqual(
+                d088ReadConversation.summary.conversationId.value,
+                d088ConversationId.value
+            )
+            XCTAssertTrue(d088ReadConversation.messages.isEmpty)
+
+            try await conversations.delete(id: d088ConversationId)
+            d088ConversationForCleanup = nil
+            await fulfillment(of: [d088DeletedActiveObserved], timeout: 30)
+            XCTAssertNil(conversations.active.value)
+            let d088DeletedState = try XCTUnwrap(
+                d088ReopenedConversation.state.value as? AgentConversationState
+            )
+            XCTAssertTrue(d088DeletedState.status === AgentConversationStatus.closed)
+            XCTAssertEqual(d088DeletedState.conversationId?.value, d088ConversationId.value)
+            let d088FinalSummaries = try await conversations.list()
+            XCTAssertFalse(d088FinalSummaries.contains {
+                $0.conversationId.value == d088ConversationId.value
+            })
+        } catch {
+            if let conversation = d088ConversationForCleanup {
+                try? await conversation.close()
+            }
+            try? await host.close()
+            throw error
+        }
+        d088ActiveObservation.close()
+
         try await host.close()
         await fulfillment(of: [closedObserved], timeout: 30)
         _ = try XCTUnwrap(host.lifecycleState.value as? CodexHostStateClosed)
