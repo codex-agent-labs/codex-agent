@@ -159,7 +159,7 @@ extensions.configure<KotlinMultiplatformExtension> {
                     "-Wl,-exported_symbols_list,${exportPolicyFile.asFile}",
                     "-Wl,-install_name,@rpath/libcodex_agent.dylib",
                     "-Wl,-compatibility_version,1.0.0",
-                    "-Wl,-current_version,1.0.0",
+                    "-Wl,-current_version,1.1.0",
                 )
                 target.name.startsWith("linux") -> linkerOpts(
                     "-Wl,--version-script,${exportPolicyFile.asFile}",
@@ -175,8 +175,76 @@ extensions.configure<KotlinMultiplatformExtension> {
             defFile(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_desktop.def"))
             includeDirs(layout.projectDirectory.dir("native/include"))
         }
+        target.compilations.getByName("main").cinterops.create("codexAgentC") {
+            defFile(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_agent_c.def"))
+            includeDirs(layout.projectDirectory.dir("native/c-api/include"))
+        }
     }
     sourceSets.getByName("commonMain").kotlin.srcDir(generateDesktopDistributionSource)
+}
+
+val cAbiBootstrapEvidenceFile =
+    layout.buildDirectory.file("reports/cross-language-api/c-abi/bootstrap-evidence.json")
+val cAbiBootstrapConsumerOutput = layout.buildDirectory.dir("c-abi-bootstrap/consumers")
+val invalidateCAbiBootstrapEvidence = tasks.register<Delete>(
+    "invalidateCodexAgentCAbiBootstrapEvidence",
+) {
+    group = "verification"
+    description = "Deletes stale observed C ABI bootstrap evidence before prerequisites execute."
+    delete(cAbiBootstrapEvidenceFile, cAbiBootstrapConsumerOutput)
+}
+tasks.configureEach {
+    if (name !in setOf(
+            invalidateCAbiBootstrapEvidence.name,
+            "invalidateJavaScriptTypeScriptBindingParityOutput",
+        )
+    ) {
+        mustRunAfter(invalidateCAbiBootstrapEvidence)
+    }
+}
+rootProject.findProject(":codex-agent-core")?.tasks?.matching {
+    it.name == "invalidateCrossLanguageBindingParityOutputs"
+}?.configureEach {
+    dependsOn(invalidateCAbiBootstrapEvidence)
+}
+tasks.register<GenerateCAbiBootstrapEvidenceTask>("generateCodexAgentCAbiBootstrapEvidence") {
+    group = "verification"
+    description = "Emits observed macOS Arm64 evidence for the finite C ABI bootstrap slice."
+    dependsOn(
+        invalidateCAbiBootstrapEvidence,
+        ":codex-agent-core:verifyCrossLanguageApiCoverage",
+        "linkReleaseSharedMacosArm64",
+        "macosArm64Test",
+    )
+    canonicalApiReport.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
+    ))
+    canonicalCoverageReceipt.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json",
+    ))
+    reviewedHeader.set(layout.projectDirectory.file("native/c-api/include/codex_agent.h"))
+    cinteropDefinition.set(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_agent_c.def"))
+    exportPolicy.set(layout.projectDirectory.file("native/c-api/exports/macos.exports"))
+    foundationCConsumer.set(layout.projectDirectory.file("native/c-api/consumer/codex_agent_abi_smoke.c"))
+    foundationCppConsumer.set(layout.projectDirectory.file("native/c-api/consumer/codex_agent_header_smoke.cpp"))
+    lifecycleCConsumer.set(
+        layout.projectDirectory.file("native/c-api/consumer/codex_agent_lifecycle_compile.c"),
+    )
+    lifecycleCppConsumer.set(
+        layout.projectDirectory.file("native/c-api/consumer/codex_agent_lifecycle_compile.cpp"),
+    )
+    releaseLibrary.set(layout.buildDirectory.file("bin/macosArm64/releaseShared/libcodex_agent.dylib"))
+    generatedHeader.set(layout.buildDirectory.file("bin/macosArm64/releaseShared/libcodex_agent_api.h"))
+    nativeTestExecutable.set(layout.buildDirectory.file("bin/macosArm64/debugTest/test.kexe"))
+    nativeTestResults.set(layout.buildDirectory.dir("test-results/macosArm64Test"))
+    nativeMainSources.set(layout.projectDirectory.dir(
+        "src/nativeMain/kotlin/io/github/codex_agent_labs/codexmobile/capi",
+    ))
+    nativeTestSources.set(layout.projectDirectory.dir(
+        "src/nativeTest/kotlin/io/github/codex_agent_labs/codexmobile/capi",
+    ))
+    consumerOutputDirectory.set(cAbiBootstrapConsumerOutput)
+    evidenceFile.set(cAbiBootstrapEvidenceFile)
 }
 
 val nodeRuntimeEvidenceRunnerArchive = layout.file(

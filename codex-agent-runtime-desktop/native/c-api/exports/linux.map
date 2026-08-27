@@ -4,6 +4,56 @@ CODEX_AGENT_1.0 {
         codex_agent_abi_version;
         codex_agent_context_create;
         codex_agent_context_destroy;
+};
+
+CODEX_AGENT_1.1 {
+    global:
+        codex_agent_active_conversation;
+        codex_agent_agent_conversations;
+        codex_agent_agent_release;
+        codex_agent_agent_retain;
+        codex_agent_conversation_cancel_turn;
+        codex_agent_conversation_close;
+        codex_agent_conversation_is_same;
+        codex_agent_conversation_release;
+        codex_agent_conversation_retain;
+        codex_agent_conversation_send;
+        codex_agent_conversation_state_failure;
+        codex_agent_conversation_state_get;
+        codex_agent_conversation_state_status;
+        codex_agent_conversation_state_subscribe;
+        codex_agent_conversations_active_get;
+        codex_agent_conversations_active_subscribe;
+        codex_agent_conversations_open;
+        codex_agent_conversations_release;
+        codex_agent_conversations_retain;
+        codex_agent_failure_code_copy;
+        codex_agent_failure_is_recoverable;
+        codex_agent_failure_message_copy;
+        codex_agent_failure_release;
+        codex_agent_failure_retain;
+        codex_agent_host_close;
+        codex_agent_host_create;
+        codex_agent_host_release;
+        codex_agent_host_retain;
+        codex_agent_host_select_workspace;
+        codex_agent_host_state_agent;
+        codex_agent_host_state_failure;
+        codex_agent_host_state_get;
+        codex_agent_host_state_has_workspace;
+        codex_agent_host_state_kind;
+        codex_agent_host_state_requirement_message_copy;
+        codex_agent_host_state_requirement_reason;
+        codex_agent_host_state_subscribe;
+        codex_agent_host_state_workspace_display_name_copy;
+        codex_agent_host_state_workspace_path_copy;
+        codex_agent_operation_cancel;
+        codex_agent_operation_conversation;
+        codex_agent_operation_destroy;
+        codex_agent_operation_failure;
+        codex_agent_operation_result;
+        codex_agent_snapshot_destroy;
+        codex_agent_subscription_destroy;
     local:
         *;
-};
+} CODEX_AGENT_1.0;

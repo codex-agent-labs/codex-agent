@@ -3,10 +3,10 @@
 #include <stdlib.h>
 
 _Static_assert(CODEX_AGENT_ABI_VERSION_MAJOR == UINT32_C(1), "ABI major changed");
-_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(0), "ABI minor changed");
+_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(1), "ABI minor changed");
 _Static_assert(CODEX_AGENT_ABI_VERSION_PATCH == UINT32_C(0), "ABI patch changed");
 _Static_assert(
-    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x01000000),
+    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x01010000),
     "current ABI encoding changed");
 _Static_assert(
     CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE == UINT32_C(0x01000000),
@@ -27,6 +27,7 @@ _Static_assert(CODEX_AGENT_STATUS_UNSUPPORTED_ABI == INT32_C(10), "unsupported-A
 _Static_assert(CODEX_AGENT_STATUS_CLOSED == INT32_C(11), "closed status changed");
 _Static_assert(CODEX_AGENT_STATUS_WOULD_DEADLOCK == INT32_C(12), "would-deadlock status changed");
 _Static_assert(CODEX_AGENT_STATUS_NOT_READY == INT32_C(13), "not-ready status changed");
+_Static_assert(CODEX_AGENT_STATUS_OPERATION_FAILED == INT32_C(14), "operation-failed status changed");
 
 #define CHECK(condition) do { if (!(condition)) abort(); } while (0)
 

@@ -3,6 +3,7 @@ codex-agent-runtime-desktop/codex-app-server-distributions.json
 codex-agent-runtime-desktop/native/**
 codex-agent-runtime-desktop/src/commonMain/**
 codex-agent-runtime-desktop/src/nativeMain/**
+codex-agent-runtime-desktop/src/nativeInterop/**
 codex-agent-runtime-desktop/src/macosMain/**
 codex-agent-core/build.gradle.kts
 codex-agent-core/src/commonMain/**

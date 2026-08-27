@@ -24,10 +24,12 @@ internal const val CODEX_AGENT_STATUS_CLOSED: Int = 11
 internal enum class CodexAgentCHandleKind {
     HOST,
     AGENT,
+    CONVERSATIONS,
     CONVERSATION,
     OPERATION,
     SUBSCRIPTION,
     SNAPSHOT,
+    FAILURE,
 }
 
 internal data class CodexAgentCRegistryResult<out T : Any>(
@@ -49,34 +51,43 @@ internal class CodexAgentCHandleRegistry(
 ) {
     private val state = AtomicReference(RegistryState())
 
-    fun createContext(): CodexAgentCRegistryResult<COpaquePointer> = allocateAndInstall { marker ->
-        mutate { current ->
-            if (marker in current.contexts || marker in current.tokens ||
-                current.nextContextId == ULong.MAX_VALUE
-            ) {
-                return@mutate unchanged(current, failure(CODEX_AGENT_STATUS_INTERNAL_ERROR))
+    fun createContext(payload: Any? = null): CodexAgentCRegistryResult<COpaquePointer> =
+        allocateAndInstall { marker ->
+            mutate { current ->
+                if (marker in current.contexts || marker in current.tokens ||
+                    current.nextContextId == ULong.MAX_VALUE
+                ) {
+                    return@mutate unchanged(current, failure(CODEX_AGENT_STATUS_INTERNAL_ERROR))
+                }
+                val id = current.nextContextId
+                val context = ContextRecord(id = id, payload = payload)
+                val updated = current.copy(
+                    nextContextId = id + 1uL,
+                    contexts = current.contexts + (marker to context),
+                )
+                changed(updated, success(marker))
             }
-            val id = current.nextContextId
-            val context = ContextRecord(id = id)
-            val updated = current.copy(
-                nextContextId = id + 1uL,
-                contexts = current.contexts + (marker to context),
-            )
-            changed(updated, success(marker))
         }
-    }
 
-    fun destroyContext(context: COpaquePointer?): Int {
-        if (context == null) return CODEX_AGENT_STATUS_INVALID_ARGUMENT
-        return guardedStatus {
+    fun destroyContext(context: COpaquePointer?): Int = destroyContextWithPayload(context).status
+
+    fun destroyContextWithPayload(context: COpaquePointer?): CodexAgentCContextDestruction {
+        if (context == null) return CodexAgentCContextDestruction(CODEX_AGENT_STATUS_INVALID_ARGUMENT)
+        return guardedContextDestruction {
             mutate { current ->
                 if (context !in current.contexts) {
-                    return@mutate unchanged(current, CODEX_AGENT_STATUS_STALE_HANDLE)
+                    return@mutate unchanged(
+                        current,
+                        CodexAgentCContextDestruction(CODEX_AGENT_STATUS_STALE_HANDLE),
+                    )
                 }
                 val helped = finalizeCompletedCloses(current, context)
                 val record = checkNotNull(helped.contexts[context])
                 if (hasNonterminalSemanticEntry(helped, record)) {
-                    return@mutate Mutation(helped, CODEX_AGENT_STATUS_BUSY)
+                    return@mutate Mutation(
+                        helped,
+                        CodexAgentCContextDestruction(CODEX_AGENT_STATUS_BUSY),
+                    )
                 }
                 if (record.leases != 0) {
                     val updated = if (record.phase == ContextPhase.LIVE) {
@@ -88,7 +99,10 @@ internal class CodexAgentCHandleRegistry(
                     } else {
                         helped
                     }
-                    return@mutate Mutation(updated, CODEX_AGENT_STATUS_BUSY)
+                    return@mutate Mutation(
+                        updated,
+                        CodexAgentCContextDestruction(CODEX_AGENT_STATUS_BUSY),
+                    )
                 }
                 val tearingDown = if (record.phase == ContextPhase.LIVE) {
                     helped.copy(
@@ -100,7 +114,37 @@ internal class CodexAgentCHandleRegistry(
                     helped
                 }
                 val reclaimed = reclaimContext(tearingDown, context)
-                changed(reclaimed.state, CODEX_AGENT_STATUS_OK, reclaimed.markers)
+                changed(
+                    reclaimed.state,
+                    CodexAgentCContextDestruction(CODEX_AGENT_STATUS_OK, reclaimed.payload),
+                    reclaimed.markers,
+                )
+            }
+        }
+    }
+
+    fun acquireContext(context: COpaquePointer?): CodexAgentCRegistryResult<CodexAgentCContextLease> {
+        if (context == null) return failure(CODEX_AGENT_STATUS_INVALID_ARGUMENT)
+        return guardedResult {
+            mutate { current ->
+                val record = current.contexts[context]
+                    ?.takeIf { it.phase == ContextPhase.LIVE }
+                    ?: return@mutate unchanged(current, failure(CODEX_AGENT_STATUS_STALE_HANDLE))
+                if (record.leases == Int.MAX_VALUE) {
+                    return@mutate unchanged(current, failure(CODEX_AGENT_STATUS_BUSY))
+                }
+                changed(
+                    current.copy(
+                        contexts = current.contexts + (
+                            context to record.copy(leases = record.leases + 1)
+                        ),
+                    ),
+                    success(
+                        CodexAgentCContextLease(record.payload) {
+                            releaseContextLease(context, record.id)
+                        },
+                    ),
+                )
             }
         }
     }
@@ -111,6 +155,7 @@ internal class CodexAgentCHandleRegistry(
         payload: Any,
         parent: COpaquePointer? = null,
         parentKind: CodexAgentCHandleKind? = null,
+        allowLeasedTransitionParent: Boolean = false,
     ): CodexAgentCRegistryResult<COpaquePointer> {
         if (context == null || (parent == null) != (parentKind == null)) {
             return failure(CODEX_AGENT_STATUS_INVALID_ARGUMENT)
@@ -133,9 +178,20 @@ internal class CodexAgentCHandleRegistry(
                     if (resolved.status != CODEX_AGENT_STATUS_OK) {
                         return@mutate unchanged(current, failure(resolved.status))
                     }
+                    val parentEntry = checkNotNull(resolved.entry)
+                    val transitionEdge =
+                        (parentKind == CodexAgentCHandleKind.HOST &&
+                            kind == CodexAgentCHandleKind.AGENT) ||
+                            (parentKind == CodexAgentCHandleKind.CONVERSATIONS &&
+                                kind == CodexAgentCHandleKind.CONVERSATION)
+                    if (transitionEdge && parentEntry.leases > 1 &&
+                        !allowLeasedTransitionParent
+                    ) {
+                        return@mutate unchanged(current, failure(CODEX_AGENT_STATUS_BUSY))
+                    }
                     ParentStamp(
                         checkNotNull(resolved.entryKey),
-                        checkNotNull(resolved.entry).generation,
+                        parentEntry.generation,
                     )
                 }
                 if (marker in current.contexts || marker in current.tokens ||
@@ -170,6 +226,14 @@ internal class CodexAgentCHandleRegistry(
         context: COpaquePointer?,
         handle: COpaquePointer?,
         expectedKind: CodexAgentCHandleKind,
+    ): CodexAgentCRegistryResult<COpaquePointer> =
+        retain(context, handle, expectedKind, checkLifecycle = true)
+
+    private fun retain(
+        context: COpaquePointer?,
+        handle: COpaquePointer?,
+        expectedKind: CodexAgentCHandleKind,
+        checkLifecycle: Boolean,
     ): CodexAgentCRegistryResult<COpaquePointer> {
         if (context == null || handle == null) {
             return failure(CODEX_AGENT_STATUS_INVALID_ARGUMENT)
@@ -181,7 +245,7 @@ internal class CodexAgentCHandleRegistry(
                     context,
                     handle,
                     expectedKind,
-                    checkLifecycle = true,
+                    checkLifecycle = checkLifecycle,
                 )
                 if (resolved.status != CODEX_AGENT_STATUS_OK) {
                     return@mutate unchanged(current, failure(resolved.status))
@@ -236,7 +300,7 @@ internal class CodexAgentCHandleRegistry(
                     return@mutate unchanged(current, CODEX_AGENT_STATUS_INTERNAL_ERROR)
                 }
                 if (entry.aliases == 1 &&
-                    entry.kind != CodexAgentCHandleKind.SNAPSHOT &&
+                    !entry.kind.isImmutableValue &&
                     entry.lifecycle == EntryLifecycle.OPEN &&
                     hasCurrentAncestors(current, entry)
                 ) {
@@ -248,7 +312,7 @@ internal class CodexAgentCHandleRegistry(
                     payload = entry.payload.takeUnless {
                         entry.leases == 0 && aliases == 0 &&
                             (entry.lifecycle == EntryLifecycle.CLOSED ||
-                                entry.kind == CodexAgentCHandleKind.SNAPSHOT)
+                                entry.kind.isImmutableValue)
                     },
                 )
                 val updated = current.copy(
@@ -260,10 +324,67 @@ internal class CodexAgentCHandleRegistry(
         }
     }
 
+    /** Removes an entry whose asynchronous owner could not be started. */
+    fun abandonOpenEntry(
+        context: COpaquePointer?,
+        handle: COpaquePointer?,
+        expectedKind: CodexAgentCHandleKind,
+    ): Int {
+        if (context == null || handle == null) return CODEX_AGENT_STATUS_INVALID_ARGUMENT
+        return guardedStatus {
+            mutate { current ->
+                val resolved = resolve(
+                    current,
+                    context,
+                    handle,
+                    expectedKind,
+                    checkLifecycle = true,
+                )
+                if (resolved.status != CODEX_AGENT_STATUS_OK) {
+                    return@mutate unchanged(current, resolved.status)
+                }
+                val record = checkNotNull(resolved.context)
+                val key = checkNotNull(resolved.entryKey)
+                val entry = checkNotNull(resolved.entry)
+                val token = checkNotNull(current.tokens[handle])
+                if (entry.aliases != 1 || entry.leases != 0 ||
+                    current.entries.values.any { it.parent?.entry == key }
+                ) {
+                    return@mutate unchanged(current, CODEX_AGENT_STATUS_BUSY)
+                }
+                changed(
+                    current.copy(
+                        contexts = current.contexts + (
+                            context to record.copy(entries = record.entries - key)
+                        ),
+                        tokens = current.tokens + (handle to token.copy(phase = TokenPhase.RELEASED)),
+                        entries = current.entries - key,
+                    ),
+                    CODEX_AGENT_STATUS_OK,
+                )
+            }
+        }
+    }
+
     fun acquire(
         context: COpaquePointer?,
         handle: COpaquePointer?,
         expectedKind: CodexAgentCHandleKind,
+    ): CodexAgentCRegistryResult<CodexAgentCHandleLease> =
+        acquire(context, handle, expectedKind, checkLifecycle = true)
+
+    fun acquireIncludingClosed(
+        context: COpaquePointer?,
+        handle: COpaquePointer?,
+        expectedKind: CodexAgentCHandleKind,
+    ): CodexAgentCRegistryResult<CodexAgentCHandleLease> =
+        acquire(context, handle, expectedKind, checkLifecycle = false)
+
+    private fun acquire(
+        context: COpaquePointer?,
+        handle: COpaquePointer?,
+        expectedKind: CodexAgentCHandleKind,
+        checkLifecycle: Boolean,
     ): CodexAgentCRegistryResult<CodexAgentCHandleLease> {
         if (context == null || handle == null) {
             return failure(CODEX_AGENT_STATUS_INVALID_ARGUMENT)
@@ -275,7 +396,7 @@ internal class CodexAgentCHandleRegistry(
                     context,
                     handle,
                     expectedKind,
-                    checkLifecycle = true,
+                    checkLifecycle = checkLifecycle,
                 )
                 if (resolved.status != CODEX_AGENT_STATUS_OK) {
                     return@mutate unchanged(current, failure(resolved.status))
@@ -296,7 +417,11 @@ internal class CodexAgentCHandleRegistry(
                 )
                 changed(
                     updated,
-                    success(CodexAgentCHandleLease(payload) { releaseLease(context, key) }),
+                    success(
+                        CodexAgentCHandleLease(payload, context, handle, key) {
+                            releaseLease(context, key)
+                        },
+                    ),
                 )
             }
         }
@@ -340,22 +465,96 @@ internal class CodexAgentCHandleRegistry(
         }
     }
 
+    fun acquireAndInvalidateChildren(
+        context: COpaquePointer?,
+        parent: COpaquePointer?,
+        expectedKind: CodexAgentCHandleKind,
+    ): CodexAgentCRegistryResult<CodexAgentCHandleLease> {
+        if (context == null || parent == null) return failure(CODEX_AGENT_STATUS_INVALID_ARGUMENT)
+        return guardedResult {
+            mutate { current ->
+                val resolved = resolve(
+                    current,
+                    context,
+                    parent,
+                    expectedKind,
+                    checkLifecycle = true,
+                )
+                if (resolved.status != CODEX_AGENT_STATUS_OK) {
+                    return@mutate unchanged(current, failure(resolved.status))
+                }
+                val contextRecord = checkNotNull(resolved.context)
+                val key = checkNotNull(resolved.entryKey)
+                val entry = checkNotNull(resolved.entry)
+                val payload = entry.payload
+                    ?: return@mutate unchanged(current, failure(CODEX_AGENT_STATUS_INTERNAL_ERROR))
+                if (entry.generation == ULong.MAX_VALUE || entry.leases != 0 ||
+                    contextRecord.leases == Int.MAX_VALUE || entry.leases == Int.MAX_VALUE ||
+                    hasLeasedDescendants(current, key)
+                ) {
+                    return@mutate unchanged(current, failure(CODEX_AGENT_STATUS_BUSY))
+                }
+                changed(
+                    current.copy(
+                        contexts = current.contexts + (
+                            context to contextRecord.copy(leases = contextRecord.leases + 1)
+                        ),
+                        entries = current.entries + (
+                            key to entry.copy(
+                                generation = entry.generation + 1uL,
+                                leases = entry.leases + 1,
+                            )
+                        ),
+                    ),
+                    success(
+                        CodexAgentCHandleLease(payload, context, parent, key) {
+                            releaseLease(context, key)
+                        },
+                    ),
+                )
+            }
+        }
+    }
+
     suspend fun semanticClose(
         context: COpaquePointer?,
         handle: COpaquePointer?,
         expectedKind: CodexAgentCHandleKind,
+        closeTarget: CodexAgentCHandleLease? = null,
         close: suspend (Any) -> Int,
     ): Int {
         if (context == null || handle == null) return CODEX_AGENT_STATUS_INVALID_ARGUMENT
         val started = guardedCloseStart {
             mutate { current ->
-                val resolved = resolve(
-                    current,
-                    context,
-                    handle,
-                    expectedKind,
-                    checkLifecycle = false,
-                )
+                val resolved = if (closeTarget == null) {
+                    resolve(
+                        current,
+                        context,
+                        handle,
+                        expectedKind,
+                        checkLifecycle = false,
+                    )
+                } else {
+                    val contextRecord = current.contexts[context]
+                        ?.takeIf { it.phase == ContextPhase.LIVE }
+                        ?: return@mutate unchanged(
+                            current,
+                            CloseStart(CODEX_AGENT_STATUS_STALE_HANDLE),
+                        )
+                    val key = closeTarget.entry
+                    val entry = key?.let(current.entries::get)
+                    when {
+                        closeTarget.context != context || closeTarget.handle != handle ->
+                            Resolution(CODEX_AGENT_STATUS_WRONG_CONTEXT)
+                        key == null || entry == null ->
+                            Resolution(CODEX_AGENT_STATUS_STALE_HANDLE)
+                        entry.kind != expectedKind || key.contextId != contextRecord.id ->
+                            Resolution(CODEX_AGENT_STATUS_WRONG_HANDLE_TYPE)
+                        !hasCurrentAncestors(current, entry) || entry.leases <= 0 ->
+                            Resolution(CODEX_AGENT_STATUS_STALE_HANDLE)
+                        else -> Resolution(CODEX_AGENT_STATUS_OK, contextRecord, key, entry)
+                    }
+                }
                 if (resolved.status != CODEX_AGENT_STATUS_OK) {
                     return@mutate unchanged(current, CloseStart(resolved.status))
                 }
@@ -399,8 +598,13 @@ internal class CodexAgentCHandleRegistry(
                                 CloseStart(CODEX_AGENT_STATUS_INTERNAL_ERROR),
                             )
                         }
-                        if (hasLeasedSubtree(current, key) ||
-                            contextRecord.leases == Int.MAX_VALUE
+                        val leasedSubtreeBusy = if (closeTarget == null) {
+                            hasLeasedSubtree(current, key)
+                        } else {
+                            entry.leases != 1 || hasLeasedDescendants(current, key)
+                        }
+                        if (leasedSubtreeBusy || contextRecord.leases == Int.MAX_VALUE ||
+                            entry.leases == Int.MAX_VALUE
                         ) {
                             return@mutate unchanged(current, CloseStart(CODEX_AGENT_STATUS_BUSY))
                         }
@@ -463,7 +667,7 @@ internal class CodexAgentCHandleRegistry(
                 payload = entry.payload.takeUnless {
                     entryLeases == 0 && entry.aliases == 0 &&
                         (entry.lifecycle == EntryLifecycle.CLOSED ||
-                            entry.kind == CodexAgentCHandleKind.SNAPSHOT)
+                            entry.kind.isImmutableValue)
                 },
             )
             val updatedContext = contextRecord.copy(leases = contextRecord.leases - 1)
@@ -471,6 +675,24 @@ internal class CodexAgentCHandleRegistry(
                 current.copy(
                     contexts = current.contexts + (context to updatedContext),
                     entries = current.entries + (key to updatedEntry),
+                ),
+                CODEX_AGENT_STATUS_OK,
+            )
+        }
+    }
+
+    private fun releaseContextLease(context: COpaquePointer, contextId: ULong): Int = guardedStatus {
+        mutate { current ->
+            val record = current.contexts[context]
+                ?: return@mutate unchanged(current, CODEX_AGENT_STATUS_INTERNAL_ERROR)
+            if (record.id != contextId || record.leases <= 0) {
+                return@mutate unchanged(current, CODEX_AGENT_STATUS_INTERNAL_ERROR)
+            }
+            changed(
+                current.copy(
+                    contexts = current.contexts + (
+                        context to record.copy(leases = record.leases - 1)
+                    ),
                 ),
                 CODEX_AGENT_STATUS_OK,
             )
@@ -553,7 +775,7 @@ internal class CodexAgentCHandleRegistry(
             lifecycle = EntryLifecycle.CLOSED,
             closeStatus = closeStatus,
             leases = entryLeases,
-            payload = if (entryLeases == 0) null else entry.payload,
+            payload = if (entryLeases == 0 && entry.aliases == 0) null else entry.payload,
         )
         return current.copy(
             contexts = current.contexts + (
@@ -568,7 +790,7 @@ internal class CodexAgentCHandleRegistry(
         context: ContextRecord,
     ): Boolean = context.entries.any { key ->
         val entry = current.entries[key] ?: return@any true
-        entry.kind != CodexAgentCHandleKind.SNAPSHOT &&
+        !entry.kind.isImmutableValue &&
             entry.lifecycle != EntryLifecycle.CLOSED &&
             hasCurrentAncestors(current, entry)
     }
@@ -576,6 +798,11 @@ internal class CodexAgentCHandleRegistry(
     private fun hasLeasedSubtree(current: RegistryState, root: EntryKey): Boolean =
         current.entries.any { (key, entry) ->
             entry.leases > 0 && isSameOrDescendant(current, key, root)
+        }
+
+    private fun hasLeasedDescendants(current: RegistryState, root: EntryKey): Boolean =
+        current.entries.any { (key, entry) ->
+            key != root && entry.leases > 0 && isSameOrDescendant(current, key, root)
         }
 
     private fun isSameOrDescendant(
@@ -657,6 +884,7 @@ internal class CodexAgentCHandleRegistry(
                 entries = current.entries - context.entries,
             ),
             markers = listOf(contextPointer) + context.tokens,
+            payload = context.payload,
         )
     }
 
@@ -721,15 +949,49 @@ internal class CodexAgentCHandleRegistry(
     } catch (_: Throwable) {
         CloseStart(CODEX_AGENT_STATUS_INTERNAL_ERROR)
     }
+
+    private fun guardedContextDestruction(
+        block: () -> CodexAgentCContextDestruction,
+    ): CodexAgentCContextDestruction = try {
+        block()
+    } catch (_: OutOfMemoryError) {
+        CodexAgentCContextDestruction(CODEX_AGENT_STATUS_OUT_OF_MEMORY)
+    } catch (_: Throwable) {
+        CodexAgentCContextDestruction(CODEX_AGENT_STATUS_INTERNAL_ERROR)
+    }
 }
 
-internal class CodexAgentCHandleLease internal constructor(
-    val payload: Any,
+internal data class CodexAgentCContextDestruction(
+    val status: Int,
+    val payload: Any? = null,
+)
+
+internal class CodexAgentCContextLease internal constructor(
+    val payload: Any?,
     private val release: () -> Int,
 ) {
     private val phase = AtomicReference(LeaseReleasePhase.OPEN)
 
-    fun close(): Int {
+    fun close(): Int = closeLease(phase, release)
+}
+
+internal class CodexAgentCHandleLease internal constructor(
+    val payload: Any,
+    internal val context: COpaquePointer? = null,
+    internal val handle: COpaquePointer? = null,
+    internal val entry: EntryKey? = null,
+    private val release: () -> Int,
+) {
+    private val phase = AtomicReference(LeaseReleasePhase.OPEN)
+
+    fun close(): Int = closeLease(phase, release)
+
+}
+
+private fun closeLease(
+    phase: AtomicReference<LeaseReleasePhase>,
+    release: () -> Int,
+): Int {
         while (true) {
             when (val current = phase.load()) {
                 LeaseReleasePhase.RELEASED -> return CODEX_AGENT_STATUS_OK
@@ -755,7 +1017,6 @@ internal class CodexAgentCHandleLease internal constructor(
             },
         )
         return status
-    }
 }
 
 private class NativeMarker
@@ -775,6 +1036,9 @@ private enum class EntryLifecycle { OPEN, CLOSING, CLOSED }
 
 private enum class LeaseReleasePhase { OPEN, RELEASING, RELEASED }
 
+private val CodexAgentCHandleKind.isImmutableValue: Boolean
+    get() = this == CodexAgentCHandleKind.SNAPSHOT || this == CodexAgentCHandleKind.FAILURE
+
 private const val CLOSE_PENDING: Int = Int.MIN_VALUE
 
 private class CloseCompletion {
@@ -793,6 +1057,7 @@ private data class ParentStamp(
 
 private data class ContextRecord(
     val id: ULong,
+    val payload: Any? = null,
     val phase: ContextPhase = ContextPhase.LIVE,
     val leases: Int = 0,
     val tokens: Set<COpaquePointer> = emptySet(),
@@ -848,6 +1113,7 @@ private data class CloseStart(
 private data class Reclamation(
     val state: RegistryState,
     val markers: List<COpaquePointer>,
+    val payload: Any?,
 )
 
 private data class Mutation<T>(

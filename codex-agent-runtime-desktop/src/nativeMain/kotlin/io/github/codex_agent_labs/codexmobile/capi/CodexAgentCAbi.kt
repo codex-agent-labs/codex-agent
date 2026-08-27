@@ -10,13 +10,17 @@ import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.value
 
-private const val ABI_VERSION_CURRENT: UInt = 0x01000000u
+private const val ABI_VERSION_CURRENT: UInt = 0x01010000u
 private const val ABI_VERSION_MINIMUM_COMPATIBLE: UInt = 0x01000000u
 
 internal const val CODEX_AGENT_STATUS_OK: Int = 0
 internal const val CODEX_AGENT_STATUS_INVALID_ARGUMENT: Int = 1
 internal const val CODEX_AGENT_STATUS_OUT_OF_MEMORY: Int = 2
 internal const val CODEX_AGENT_STATUS_INTERNAL_ERROR: Int = 8
+internal const val CODEX_AGENT_STATUS_BUFFER_TOO_SMALL: Int = 9
+internal const val CODEX_AGENT_STATUS_WOULD_DEADLOCK: Int = 12
+internal const val CODEX_AGENT_STATUS_NOT_READY: Int = 13
+internal const val CODEX_AGENT_STATUS_OPERATION_FAILED: Int = 14
 
 internal val handleRegistry = CodexAgentCHandleRegistry()
 
@@ -30,9 +34,12 @@ public fun codexAgentAbiIsCompatible(requestedVersion: UInt): Int =
 @CName("codex_agent_context_create")
 public fun codexAgentContextCreate(outContext: CPointer<COpaquePointerVar>?): Int = abiStatus {
     if (outContext == null || outContext.pointed.value != null) return@abiStatus CODEX_AGENT_STATUS_INVALID_ARGUMENT
-    val created = handleRegistry.createContext()
+    val runtime = CodexAgentCContextRuntime()
+    val created = handleRegistry.createContext(runtime)
     if (created.status == CODEX_AGENT_STATUS_OK) {
         outContext.pointed.value = checkNotNull(created.value)
+    } else {
+        runtime.cancel()
     }
     created.status
 }
@@ -41,15 +48,20 @@ public fun codexAgentContextCreate(outContext: CPointer<COpaquePointerVar>?): In
 public fun codexAgentContextDestroy(context: CPointer<COpaquePointerVar>?): Int = abiStatus {
     if (context == null) return@abiStatus CODEX_AGENT_STATUS_INVALID_ARGUMENT
     val pointer = context.pointed.value ?: return@abiStatus CODEX_AGENT_STATUS_OK
-    val status = handleRegistry.destroyContext(pointer)
-    if (status == CODEX_AGENT_STATUS_OK) context.pointed.value = null
-    status
+    val destroyed = handleRegistry.destroyContextWithPayload(pointer)
+    if (destroyed.status == CODEX_AGENT_STATUS_OK) {
+        (destroyed.payload as? CodexAgentCContextRuntime)?.cancel()
+        context.pointed.value = null
+    }
+    destroyed.status
 }
 
-private inline fun abiStatus(block: () -> Int): Int = try {
+internal inline fun abiStatus(block: () -> Int): Int = try {
     block()
 } catch (_: OutOfMemoryError) {
     CODEX_AGENT_STATUS_OUT_OF_MEMORY
+} catch (_: IllegalArgumentException) {
+    CODEX_AGENT_STATUS_INVALID_ARGUMENT
 } catch (_: Throwable) {
     CODEX_AGENT_STATUS_INTERNAL_ERROR
 }

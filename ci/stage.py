@@ -52,6 +52,7 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("test", "codex-agent-runtime-desktop/build/reports/jvm-runtime-evidence/jvm-runtime-macosArm64.json", "jvm-runtime-evidence"),
         ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-runtime-macosArm64.json", "node-runtime-evidence"),
         ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-wasm-runtime-macosArm64.json", "node-wasm-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json", "cross-language-c-abi-bootstrap-evidence"),
     ),
     "desktop-macos-x64": (
         ("build", "codex-agent-runtime-desktop/build/distributions/*-app-server-macos-x64.zip", "classifier"),

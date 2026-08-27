@@ -12,9 +12,15 @@ class RepositoryVerificationTasksTest {
             ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity" in
                 repositoryVerificationTaskPaths,
         )
+        assertTrue(":codex-agent-runtime-desktop:macosArm64Test" in repositoryVerificationTaskPaths)
+        assertFalse(
+            ":codex-agent-runtime-desktop:generateCodexAgentCAbiBootstrapEvidence" in
+                repositoryVerificationTaskPaths,
+        )
         assertFalse(":codex-agent-core:auditCrossLanguageBindingParity" in repositoryVerificationTaskPaths)
         val source = File("src/main/kotlin/RepositoryVerificationTasks.kt").readText()
         assertTrue("gradle.includedBuild(\"build-logic\").task(\":test\")" in source)
+        assertTrue("dependsOn(\n            repositoryVerificationTaskPaths" in source)
         assertTrue(":codex-agent-runtime-ios:verifyIosRuntime" in source)
         assertTrue(":codex-agent-core:auditCrossLanguageBindingParity" in source)
     }

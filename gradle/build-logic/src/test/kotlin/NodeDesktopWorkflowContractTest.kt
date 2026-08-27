@@ -64,6 +64,24 @@ class NodeDesktopWorkflowContractTest {
     }
 
     @Test
+    fun `macOS Arm64 runs C bootstrap evidence in its existing native invocation only`() {
+        val macosArm64 = driver.substringAfter("  desktop-macos-arm64)")
+            .substringBefore("  desktop-macos-x64)")
+        val otherDesktop = driver.substringAfter("  desktop-macos-x64)")
+            .substringBefore("  ios-native-tests)")
+        val runDesktop = driver.substringAfter("run_desktop() {").substringBefore("\n}\n\ncase ")
+        val task = ":codex-agent-runtime-desktop:generateCodexAgentCAbiBootstrapEvidence"
+        val append = "native_tasks+=(\"${'$'}evidence_task\")"
+        val invocation = "./gradlew \"${'$'}{native_tasks[@]}\""
+
+        assertEquals(1, Regex(Regex.escape(task)).findAll(driver).count())
+        assertEquals(1, Regex(Regex.escape(task)).findAll(macosArm64).count())
+        assertFalse(task in otherDesktop)
+        assertEquals(1, Regex(Regex.escape(append)).findAll(runDesktop).count())
+        assertTrue(runDesktop.indexOf(append) < runDesktop.indexOf(invocation))
+    }
+
+    @Test
     fun `Linux ARM stages and executes one strict bundle`() {
         val desktop = workflows.getValue("desktop-runtime-evidence.yml")
         val combined = desktop + driver

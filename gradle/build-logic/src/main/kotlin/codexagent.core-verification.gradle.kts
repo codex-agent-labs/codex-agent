@@ -97,6 +97,7 @@ val crossLanguageInvalidationTaskNames = setOf(
     invalidateCrossLanguageBindingParityOutputs.name,
     "invalidateJavaScriptTypeScriptBindingParityOutput",
     "invalidateCodexAgentAppleBindingEvidence",
+    "invalidateCodexAgentCAbiBootstrapEvidence",
 )
 rootProject.allprojects {
     tasks.configureEach {

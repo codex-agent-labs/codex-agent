@@ -6,9 +6,17 @@ codex-agent-runtime-desktop/src/jvmTest/**
 codex-agent-runtime-desktop/src/webMain/**
 codex-agent-runtime-desktop/src/jsMain/**
 codex-agent-runtime-desktop/src/wasmJsMain/**
+codex-agent-core/src/commonTest/**
+codex-agent-core/src/jvmAndAndroidMain/**
+codex-agent-core/src/jvmTest/**
 codex-agent-core/src/jvmMain/**
 codex-agent-core/src/jsMain/**
 codex-agent-core/src/wasmJsMain/**
+gradle/build-logic/src/main/kotlin/CrossLanguageApi*.kt
+gradle/build-logic/src/main/kotlin/CrossLanguageBindingReceipt.kt
+gradle/build-logic/src/main/kotlin/CrossLanguageCAbiBootstrapEvidence.kt
+gradle/build-logic/src/main/kotlin/codexagent.core-verification.gradle.kts
+gradle/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts
 gradle/build-logic/src/main/kotlin/JvmRuntimeEvidence*.kt
 gradle/build-logic/src/main/kotlin/NodeRuntimeEvidence*.kt
 gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt

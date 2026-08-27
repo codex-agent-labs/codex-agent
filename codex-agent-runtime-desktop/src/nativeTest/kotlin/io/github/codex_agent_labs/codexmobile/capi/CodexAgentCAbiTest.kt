@@ -15,11 +15,14 @@ import kotlinx.cinterop.value
 class CodexAgentCAbiTest {
     @Test
     fun reportsExactCompatibleAbiVersion() {
-        val current = 0x01000000u
+        val minimum = 0x01000000u
+        val current = 0x01010000u
 
         assertEquals(current, codexAgentAbiVersion())
+        assertEquals(1, codexAgentAbiIsCompatible(minimum))
         assertEquals(1, codexAgentAbiIsCompatible(current))
-        assertEquals(0, codexAgentAbiIsCompatible(current - 1u))
+        assertEquals(1, codexAgentAbiIsCompatible(current - 1u))
+        assertEquals(0, codexAgentAbiIsCompatible(minimum - 1u))
         assertEquals(0, codexAgentAbiIsCompatible(current + 1u))
         assertEquals(0, codexAgentAbiIsCompatible(0x02000000u))
     }

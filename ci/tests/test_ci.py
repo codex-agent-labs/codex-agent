@@ -630,6 +630,51 @@ class ImpactPlanTest(GitFixture):
 
 
 class RealImpactPlanTest(unittest.TestCase):
+    def test_c_abi_bootstrap_inputs_have_exact_desktop_owners(self) -> None:
+        root = CI_ROOT.parent
+
+        def matching_lanes(path: str, category: str) -> set[str]:
+            return {
+                lane
+                for lane in LANES
+                if any(
+                    fnmatch.fnmatchcase(path, spec)
+                    for spec in effective_pathspecs(root, lane, category)
+                )
+            }
+
+        for path in (
+            "codex-agent-core/src/commonTest/kotlin/io/github/codex_agent_labs/"
+            "codexmobile/agent/CrossLanguageDomainValueContractTest.kt",
+            "codex-agent-core/src/jvmAndAndroidMain/kotlin/io/github/codex_agent_labs/"
+            "codexmobile/agent/CodexJava.kt",
+            "codex-agent-core/src/jvmTest/kotlin/io/github/codex_agent_labs/"
+            "codexmobile/agent/CodexPublicApiAdoptionTest.kt",
+            "gradle/build-logic/src/main/kotlin/CrossLanguageApiCoverage.kt",
+            "gradle/build-logic/src/main/kotlin/CrossLanguageBindingReceipt.kt",
+            "gradle/build-logic/src/main/kotlin/CrossLanguageCAbiBootstrapEvidence.kt",
+            "gradle/build-logic/src/main/kotlin/codexagent.core-verification.gradle.kts",
+            "gradle/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    {"desktop-macos-arm64"},
+                    {
+                        lane
+                        for lane in matching_lanes(path, "test")
+                        if lane.startswith("desktop-")
+                    },
+                )
+
+        native_interop = "codex-agent-runtime-desktop/src/nativeInterop/cinterop/codex_agent_c.def"
+        self.assertEqual(
+            {
+                "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
+                "desktop-linux-x64", "desktop-windows-x64", "consumer-desktop",
+            },
+            matching_lanes(native_interop, "production"),
+        )
+
     def test_objective_c_consumer_has_exact_existing_apple_lane_owners(self) -> None:
         root = CI_ROOT.parent
         consumers = (
@@ -782,7 +827,10 @@ class RealImpactPlanTest(unittest.TestCase):
             },
             matching_lanes("production", codex_java_source),
         )
-        self.assertEqual({"contracts", "ios-swift-tests"}, matching_lanes("test", codex_java_source))
+        self.assertEqual(
+            {"contracts", "desktop-macos-arm64", "ios-swift-tests"},
+            matching_lanes("test", codex_java_source),
+        )
         self.assertEqual(
             {"contracts", "portable", "consumer-desktop"},
             matching_lanes(
@@ -841,7 +889,15 @@ class RealImpactPlanTest(unittest.TestCase):
                     matching_lanes("production", path),
                 )
                 self.assertEqual(
-                    {"contracts", "node-js", "ios-swift-tests"},
+                    {"contracts", "node-js", "ios-swift-tests"} | (
+                        {"desktop-macos-arm64"}
+                        if path in {
+                            prefix + "CrossLanguageApiCoverage.kt",
+                            prefix + "CrossLanguageBindingReceipt.kt",
+                            prefix + "codexagent.core-verification.gradle.kts",
+                        }
+                        else set()
+                    ),
                     matching_lanes("test", path),
                 )
 
@@ -850,10 +906,11 @@ class RealImpactPlanTest(unittest.TestCase):
                 "contracts", "node-js", "ios-swift-tests",
             },
             "codex-agent-core/src/commonTest/kotlin/sample/CanonicalTest.kt": {
-                "contracts", "node-js", "ios-kotlin-tests", "ios-swift-tests",
+                "contracts", "node-js", "desktop-macos-arm64",
+                "ios-kotlin-tests", "ios-swift-tests",
             },
             "codex-agent-core/src/jvmTest/kotlin/sample/CanonicalJvmTest.kt": {
-                "contracts", "node-js", "ios-swift-tests",
+                "contracts", "node-js", "desktop-macos-arm64", "ios-swift-tests",
             },
         }
         for path, test_lanes in canonical_behavior_inputs.items():
@@ -1062,6 +1119,24 @@ class RealImpactPlanTest(unittest.TestCase):
 
 
 class StageArchiveTest(unittest.TestCase):
+    def test_macos_arm64_stages_exact_c_abi_bootstrap_evidence(self) -> None:
+        observed = (
+            "test",
+            "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json",
+            "cross-language-c-abi-bootstrap-evidence",
+        )
+        self.assertEqual(1, OUTPUTS["desktop-macos-arm64"].count(observed))
+        self.assertFalse(any(
+            observed in outputs
+            for lane, outputs in OUTPUTS.items()
+            if lane != "desktop-macos-arm64"
+        ))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(ValueError, "Required lane output did not match"):
+                copy_matches(root, root / "staged", observed[1])
+
     def test_contracts_stages_the_exact_binding_parity_prerequisites(self) -> None:
         self.assertEqual((
             ("build", "gradle/build-logic/build/libs/codex-agent-release-tooling.jar", "release-tooling"),
