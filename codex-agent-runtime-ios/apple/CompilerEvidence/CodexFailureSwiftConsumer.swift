@@ -1252,9 +1252,15 @@ func consumeD087AuthenticationAndControllerFunctions(
     try await authentication.cancel()
     try await authentication.signOut()
 
+    _ = integrationAuthorization.active
+    _ = integrationAuthorization.isAuthorizing
+    _ = integrationAuthorization.state
     try await integrationAuthorization.authorize(target: integration)
     try await integrationAuthorization.cancel()
 
+    _ = interactions.approvals
+    _ = interactions.elicitations
+    _ = interactions.state
     try await interactions.openUrl(elicitation: elicitation)
     try await interactions.resolve(approval: approval, decision: decision)
     try await interactions.resolve(elicitation: elicitation, response: response)

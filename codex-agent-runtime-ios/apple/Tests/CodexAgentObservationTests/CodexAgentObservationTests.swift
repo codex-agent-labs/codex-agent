@@ -2486,6 +2486,18 @@ final class CodexAgentObservationTests: XCTestCase {
             pluginNames: []
         )
         let d087Integration = AgentIntegrationConnector(connector: d087Connector)
+        let d089InitialIntegrationState = try XCTUnwrap(
+            integrationAuthorization.state.value as? AgentIntegrationAuthorizationState
+        )
+        XCTAssertTrue(
+            d089InitialIntegrationState.status === AgentIntegrationAuthorizationStatus.idle
+        )
+        XCTAssertNil(d089InitialIntegrationState.target)
+        XCTAssertNil(d089InitialIntegrationState.failure)
+        XCTAssertNil(integrationAuthorization.active.value)
+        XCTAssertFalse(
+            try XCTUnwrap(integrationAuthorization.isAuthorizing.value as? NSNumber).boolValue
+        )
         do {
             try await integrationAuthorization.authorize(target: d087Integration)
             XCTFail("D087 integration authorization should reject an unsupported iOS feature")
@@ -2495,7 +2507,31 @@ final class CodexAgentObservationTests: XCTestCase {
             XCTAssertEqual(failure.message, "Runtime feature CONNECTORS is not supported")
             XCTAssertFalse(failure.isRecoverable)
         }
+        let d089RejectedIntegrationState = try XCTUnwrap(
+            integrationAuthorization.state.value as? AgentIntegrationAuthorizationState
+        )
+        XCTAssertTrue(
+            d089RejectedIntegrationState.status === AgentIntegrationAuthorizationStatus.idle
+        )
+        XCTAssertNil(d089RejectedIntegrationState.target)
+        XCTAssertNil(d089RejectedIntegrationState.failure)
+        XCTAssertNil(integrationAuthorization.active.value)
+        XCTAssertFalse(
+            try XCTUnwrap(integrationAuthorization.isAuthorizing.value as? NSNumber).boolValue
+        )
         try await integrationAuthorization.cancel()
+        let d089CanceledIntegrationState = try XCTUnwrap(
+            integrationAuthorization.state.value as? AgentIntegrationAuthorizationState
+        )
+        XCTAssertTrue(
+            d089CanceledIntegrationState.status === AgentIntegrationAuthorizationStatus.idle
+        )
+        XCTAssertNil(d089CanceledIntegrationState.target)
+        XCTAssertNil(d089CanceledIntegrationState.failure)
+        XCTAssertNil(integrationAuthorization.active.value)
+        XCTAssertFalse(
+            try XCTUnwrap(integrationAuthorization.isAuthorizing.value as? NSNumber).boolValue
+        )
 
         let d087ConversationId = ConversationId(value: "d087-conversation")
         let d087Approval = AgentPendingApproval(
@@ -2515,6 +2551,18 @@ final class CodexAgentObservationTests: XCTestCase {
         let d087PendingElicitation = AgentPendingElicitation(elicitation: d087Elicitation)
         let d087ElicitationResponse = AgentElicitationResponse(action: .decline, content: [:])
 
+        let d089InitialInteractionState = try XCTUnwrap(
+            interactions.state.value as? AgentInteractionState
+        )
+        XCTAssertTrue(d089InitialInteractionState.pending.isEmpty)
+        XCTAssertTrue(d089InitialInteractionState.resolvingRequestIds.isEmpty)
+        XCTAssertNil(d089InitialInteractionState.failure)
+        XCTAssertTrue(
+            try XCTUnwrap(interactions.approvals.value as? [AgentPendingApproval]).isEmpty
+        )
+        XCTAssertTrue(
+            try XCTUnwrap(interactions.elicitations.value as? [AgentPendingElicitation]).isEmpty
+        )
         do {
             try await interactions.openUrl(elicitation: d087PendingElicitation)
             XCTFail("D087 interactions.openUrl should reject a nonpending elicitation")
@@ -2525,7 +2573,6 @@ final class CodexAgentObservationTests: XCTestCase {
             )
             XCTAssertEqual(exception.message, "URL elicitation is no longer pending")
         }
-
         do {
             try await interactions.resolve(approval: d087Approval, decision: .decline)
             XCTFail("D087 approval resolve should reject a nonpending approval")
@@ -2536,7 +2583,6 @@ final class CodexAgentObservationTests: XCTestCase {
             )
             XCTAssertEqual(exception.message, "Interaction is no longer pending")
         }
-
         do {
             try await interactions.resolve(
                 elicitation: d087PendingElicitation,
@@ -2550,6 +2596,18 @@ final class CodexAgentObservationTests: XCTestCase {
             )
             XCTAssertEqual(exception.message, "Elicitation is no longer pending")
         }
+        let d089FinalInteractionState = try XCTUnwrap(
+            interactions.state.value as? AgentInteractionState
+        )
+        XCTAssertTrue(d089FinalInteractionState.pending.isEmpty)
+        XCTAssertTrue(d089FinalInteractionState.resolvingRequestIds.isEmpty)
+        XCTAssertNil(d089FinalInteractionState.failure)
+        XCTAssertTrue(
+            try XCTUnwrap(interactions.approvals.value as? [AgentPendingApproval]).isEmpty
+        )
+        XCTAssertTrue(
+            try XCTUnwrap(interactions.elicitations.value as? [AgentPendingElicitation]).isEmpty
+        )
 
         do {
             try await conversations.rename(id: d087ConversationId, name: "   ")

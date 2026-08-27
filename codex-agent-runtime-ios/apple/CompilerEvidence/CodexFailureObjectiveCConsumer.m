@@ -631,6 +631,20 @@ static BOOL consumeD087GatewayFunctions(
         authentication.isAuthenticated;
     id<CodexAgentKotlinx_coroutines_coreStateFlow> isAuthenticating =
         authentication.isAuthenticating;
+    CodexAgentCodexIntegrationAuthorization *integrationAuthorization =
+        agent.integrationAuthorization;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> integrationAuthorizationActive =
+        integrationAuthorization.active;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> integrationAuthorizationIsAuthorizing =
+        integrationAuthorization.isAuthorizing;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> integrationAuthorizationState =
+        integrationAuthorization.state;
+    CodexAgentCodexInteractions *interactions = agent.interactions;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> interactionApprovals =
+        interactions.approvals;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> interactionElicitations =
+        interactions.elicitations;
+    id<CodexAgentKotlinx_coroutines_coreStateFlow> interactionState = interactions.state;
     [authentication authenticateMethod:authenticationMethod completionHandler:^(NSError *error) {
         (void)error;
     }];
@@ -665,7 +679,10 @@ static BOOL consumeD087GatewayFunctions(
     [agent.conversations renameId:conversationId name:@"Compiler" completionHandler:^(NSError *error) {
         (void)error;
     }];
-    return authenticationState != nil && isAuthenticated != nil && isAuthenticating != nil;
+    return authenticationState != nil && isAuthenticated != nil && isAuthenticating != nil &&
+        integrationAuthorizationActive != nil && integrationAuthorizationIsAuthorizing != nil &&
+        integrationAuthorizationState != nil && interactionApprovals != nil &&
+        interactionElicitations != nil && interactionState != nil;
 }
 
 static BOOL consumeD088ConversationGateway(

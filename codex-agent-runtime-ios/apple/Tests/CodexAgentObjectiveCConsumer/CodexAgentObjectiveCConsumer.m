@@ -3505,6 +3505,22 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
             break;
         }
         case 6: {
+            CodexAgentCodexIntegrationAuthorization *integrationAuthorization =
+                self.canonicalD086Agent.integrationAuthorization;
+            CodexAgentAgentIntegrationAuthorizationState *state =
+                (CodexAgentAgentIntegrationAuthorizationState *)integrationAuthorization.state.value;
+            id active = integrationAuthorization.active.value;
+            CodexAgentBoolean *isAuthorizing =
+                (CodexAgentBoolean *)integrationAuthorization.isAuthorizing.value;
+            if (![state isKindOfClass:[CodexAgentAgentIntegrationAuthorizationState class]] ||
+                state.status != [CodexAgentAgentIntegrationAuthorizationStatus idle] ||
+                state.target != nil || state.failure != nil || active != nil ||
+                ![isAuthorizing isKindOfClass:[CodexAgentBoolean class]] ||
+                isAuthorizing.boolValue) {
+                [self finishWithFailure:
+                    @"Objective-C D089 integration authorization did not start idle"];
+                return;
+            }
             [self.canonicalD086Agent.integrationAuthorization
                 authorizeTarget:self.canonicalD087Integration
                 completionHandler:^(NSError *error) {
@@ -3526,6 +3542,24 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
                             @"Objective-C D087 integration authorize exposed the wrong failure"];
                         return;
                     }
+                    CodexAgentCodexIntegrationAuthorization *integrationAuthorization =
+                        run.canonicalD086Agent.integrationAuthorization;
+                    CodexAgentAgentIntegrationAuthorizationState *state =
+                        (CodexAgentAgentIntegrationAuthorizationState *)
+                            integrationAuthorization.state.value;
+                    id active = integrationAuthorization.active.value;
+                    CodexAgentBoolean *isAuthorizing =
+                        (CodexAgentBoolean *)integrationAuthorization.isAuthorizing.value;
+                    if (![state isKindOfClass:
+                            [CodexAgentAgentIntegrationAuthorizationState class]] ||
+                        state.status != [CodexAgentAgentIntegrationAuthorizationStatus idle] ||
+                        state.target != nil || state.failure != nil || active != nil ||
+                        ![isAuthorizing isKindOfClass:[CodexAgentBoolean class]] ||
+                        isAuthorizing.boolValue) {
+                        [run finishWithFailure:
+                            @"Objective-C D089 failed integration authorization changed current values"];
+                        return;
+                    }
                     [run advanceD087GatewayFunctionsAtStep:7];
                 });
             }];
@@ -3542,12 +3576,45 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
                             @"Objective-C D087 idle integration cancel did not succeed"];
                         return;
                     }
+                    CodexAgentCodexIntegrationAuthorization *integrationAuthorization =
+                        run.canonicalD086Agent.integrationAuthorization;
+                    CodexAgentAgentIntegrationAuthorizationState *state =
+                        (CodexAgentAgentIntegrationAuthorizationState *)
+                            integrationAuthorization.state.value;
+                    id active = integrationAuthorization.active.value;
+                    CodexAgentBoolean *isAuthorizing =
+                        (CodexAgentBoolean *)integrationAuthorization.isAuthorizing.value;
+                    if (![state isKindOfClass:
+                            [CodexAgentAgentIntegrationAuthorizationState class]] ||
+                        state.status != [CodexAgentAgentIntegrationAuthorizationStatus idle] ||
+                        state.target != nil || state.failure != nil || active != nil ||
+                        ![isAuthorizing isKindOfClass:[CodexAgentBoolean class]] ||
+                        isAuthorizing.boolValue) {
+                        [run finishWithFailure:
+                            @"Objective-C D089 idle integration cancel changed current values"];
+                        return;
+                    }
                     [run advanceD087GatewayFunctionsAtStep:8];
                 });
             }];
             break;
         }
         case 8: {
+            CodexAgentCodexInteractions *interactions = self.canonicalD086Agent.interactions;
+            CodexAgentAgentInteractionState *state =
+                (CodexAgentAgentInteractionState *)interactions.state.value;
+            NSArray<CodexAgentAgentPendingApproval *> *approvals =
+                (NSArray<CodexAgentAgentPendingApproval *> *)interactions.approvals.value;
+            NSArray<CodexAgentAgentPendingElicitation *> *elicitations =
+                (NSArray<CodexAgentAgentPendingElicitation *> *)interactions.elicitations.value;
+            if (![state isKindOfClass:[CodexAgentAgentInteractionState class]] ||
+                state.pending.count != 0 || state.resolvingRequestIds.count != 0 ||
+                state.failure != nil || ![(id)approvals isKindOfClass:[NSArray class]] ||
+                approvals.count != 0 || ![(id)elicitations isKindOfClass:[NSArray class]] ||
+                elicitations.count != 0) {
+                [self finishWithFailure:@"Objective-C D089 interactions did not start empty"];
+                return;
+            }
             [self.canonicalD086Agent.interactions
                 openUrlElicitation:self.canonicalD087Elicitation
                 completionHandler:^(NSError *error) {
@@ -3608,6 +3675,25 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
                         ![exception.message isEqualToString:@"Elicitation is no longer pending"]) {
                         [run finishWithFailure:
                             @"Objective-C D087 elicitation resolve exposed the wrong local error"];
+                        return;
+                    }
+                    CodexAgentCodexInteractions *interactions =
+                        run.canonicalD086Agent.interactions;
+                    CodexAgentAgentInteractionState *state =
+                        (CodexAgentAgentInteractionState *)interactions.state.value;
+                    NSArray<CodexAgentAgentPendingApproval *> *approvals =
+                        (NSArray<CodexAgentAgentPendingApproval *> *)interactions.approvals.value;
+                    NSArray<CodexAgentAgentPendingElicitation *> *elicitations =
+                        (NSArray<CodexAgentAgentPendingElicitation *> *)
+                            interactions.elicitations.value;
+                    if (![state isKindOfClass:[CodexAgentAgentInteractionState class]] ||
+                        state.pending.count != 0 || state.resolvingRequestIds.count != 0 ||
+                        state.failure != nil ||
+                        ![(id)approvals isKindOfClass:[NSArray class]] || approvals.count != 0 ||
+                        ![(id)elicitations isKindOfClass:[NSArray class]] ||
+                        elicitations.count != 0) {
+                        [run finishWithFailure:
+                            @"Objective-C D089 detached interaction failures changed current values"];
                         return;
                     }
                     [run advanceD087GatewayFunctionsAtStep:11];

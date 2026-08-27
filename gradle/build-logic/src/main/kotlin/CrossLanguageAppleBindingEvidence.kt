@@ -2404,6 +2404,56 @@ private val d088Capabilities = listOf(
 }
 private val d088CapabilitiesByKey = d088Capabilities.associateBy { it.canonicalKey }
 
+private val d089Capabilities = listOf(
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexIntegrationAuthorization|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexIntegrationAuthorization.active|{}active[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "$appleCanonicalPackage/AgentIntegration?>!!",
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)active",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexIntegrationAuthorization|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexIntegrationAuthorization.isAuthorizing|" +
+            "{}isAuthorizing[0]|propertyKind=VAL|" +
+            "type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)isAuthorizing",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexIntegrationAuthorization|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexIntegrationAuthorization.state|{}state[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "$appleCanonicalPackage/AgentIntegrationAuthorizationState!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)state",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexInteractions|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexInteractions.approvals|{}approvals[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "kotlin.collections/List<INVARIANT:$appleCanonicalPackage/AgentPendingApproval!!>!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)approvals",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexInteractions|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexInteractions.elicitations|{}elicitations[0]|" +
+            "propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "kotlin.collections/List<INVARIANT:$appleCanonicalPackage/AgentPendingElicitation!!>!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)elicitations",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexInteractions|kind=property|" +
+            "abi=$appleCanonicalAbiPackage/CodexInteractions.state|{}state[0]|propertyKind=VAL|" +
+            "type=kotlinx.coroutines.flow/StateFlow<INVARIANT:" +
+            "$appleCanonicalPackage/AgentInteractionState!!>!!",
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)state",
+    ),
+).also { capabilities ->
+    check(capabilities.size == 6 && capabilities.map { it.canonicalKey }.distinct().size == 6 &&
+        capabilities.map { it.usr }.distinct().size == 6
+    ) { "D089 Apple controller-StateFlow capability inventory changed" }
+}
+private val d089CapabilitiesByKey = d089Capabilities.associateBy { it.canonicalKey }
+
 private fun d087ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
     "${appleOwnerUsr("CodexAgentCodexAuthentication")}(im)authenticateMethod:completionHandler:" to
         ExpectedAppleCompilerSymbol(
@@ -2846,6 +2896,87 @@ private fun d088ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSy
         ))
     }
 }
+
+private fun d089ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)active" to
+        ExpectedAppleCompilerSymbol(
+            "swift.property", listOf("CodexIntegrationAuthorization", "active"), "active", "open",
+            "var active: any Kotlinx_coroutines_coreStateFlow { get }",
+            listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)isAuthorizing" to
+        ExpectedAppleCompilerSymbol(
+            "swift.property", listOf("CodexIntegrationAuthorization", "isAuthorizing"),
+            "isAuthorizing", "open",
+            "var isAuthorizing: any Kotlinx_coroutines_coreStateFlow { get }",
+            listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)state" to
+        ExpectedAppleCompilerSymbol(
+            "swift.property", listOf("CodexIntegrationAuthorization", "state"), "state", "open",
+            "var state: any Kotlinx_coroutines_coreStateFlow { get }",
+            listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)approvals" to ExpectedAppleCompilerSymbol(
+        "swift.property", listOf("CodexInteractions", "approvals"), "approvals", "open",
+        "var approvals: any Kotlinx_coroutines_coreStateFlow { get }",
+        listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+    ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)elicitations" to
+        ExpectedAppleCompilerSymbol(
+            "swift.property", listOf("CodexInteractions", "elicitations"), "elicitations", "open",
+            "var elicitations: any Kotlinx_coroutines_coreStateFlow { get }",
+            listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)state" to ExpectedAppleCompilerSymbol(
+        "swift.property", listOf("CodexInteractions", "state"), "state", "open",
+        "var state: any Kotlinx_coroutines_coreStateFlow { get }",
+        listOf("c:objc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+    ),
+)
+
+private fun d089ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)active" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.property", listOf("CodexAgentCodexIntegrationAuthorization", "active"),
+            "active", "public",
+            "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> active;",
+            listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)isAuthorizing" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.property",
+            listOf("CodexAgentCodexIntegrationAuthorization", "isAuthorizing"),
+            "isAuthorizing", "public",
+            "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> isAuthorizing;",
+            listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)state" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.property", listOf("CodexAgentCodexIntegrationAuthorization", "state"),
+            "state", "public",
+            "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> state;",
+            listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)approvals" to ExpectedAppleCompilerSymbol(
+        "objective-c.property", listOf("CodexAgentCodexInteractions", "approvals"),
+        "approvals", "public",
+        "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> approvals;",
+        listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+    ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)elicitations" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.property", listOf("CodexAgentCodexInteractions", "elicitations"),
+            "elicitations", "public",
+            "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> elicitations;",
+            listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+        ),
+    "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)state" to ExpectedAppleCompilerSymbol(
+        "objective-c.property", listOf("CodexAgentCodexInteractions", "state"), "state", "public",
+        "@property (readonly) id<CodexAgentKotlinx_coroutines_coreStateFlow> state;",
+        listOf("c:Qoobjc(pl)CodexAgentKotlinx_coroutines_coreStateFlow"),
+    ),
+)
 
 
 private fun d086ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
@@ -4318,7 +4449,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
     canonical.canonical.coverageReceiptSha256.appleSha256("canonical coverage receipt")
     canonical.targetSha256.getValue("native").appleSha256("canonical native target")
     val capabilities = appleBindingCapabilityKeys(canonical.memberKeys)
-    check(capabilities.size == 550) { "Apple binding capability count changed" }
+    check(capabilities.size == 556) { "Apple binding capability count changed" }
     val usrByCapability = capabilities.associateWith(::appleBindingUsr)
 
     compilerEvidence.appleKeys(
@@ -4413,7 +4544,7 @@ internal fun deriveCrossLanguageAppleBindingEvidence(
 
     validateAppleXCTestEvidence(xctestEvidence, digests.xcresultSha256)
     val missing = (canonical.memberKeys.toSet() - capabilities.toSet()).sorted()
-    check(missing.size == 6) { "Apple partial binding gap count changed: ${missing.size}" }
+    check(missing.isEmpty()) { "Apple binding gap count changed: ${missing.size}" }
     val swiftSymbols = swiftSurface.map(AppleCompilerSymbol::precise).sorted()
     val objectiveCSymbols = objectiveCSurface.map(AppleCompilerSymbol::precise).sorted()
     val swiftReferenced = swiftReferences.map(AppleCompilerReference::precise).sorted()
@@ -4524,7 +4655,7 @@ private fun appleLanguageEvidence(
         .filter { it.kind == "swift.class" || it.precise in d083ProtocolOwnerUsrs }
         .map(AppleCompilerSymbol::precise)
         .toSet()
-    check(publicSymbols.size == 665 && referencedSymbols.size == 550 && ownerUsrs.size == 115 &&
+    check(publicSymbols.size == 671 && referencedSymbols.size == 556 && ownerUsrs.size == 115 &&
         referencedSymbols.toSet() == publicSymbols.toSet() - ownerUsrs
     ) { "$language Apple binding symbol/reference inventory changed" }
     put("language", JsonPrimitive(language))
@@ -4562,7 +4693,8 @@ private fun appleBindingUsr(capability: String): String =
         ?: d085CapabilitiesByKey[capability]?.usr
         ?: d086CapabilitiesByKey[capability]?.usr
         ?: d087CapabilitiesByKey[capability]?.usr
-        ?: d088CapabilitiesByKey[capability]?.usr ?: when {
+        ?: d088CapabilitiesByKey[capability]?.usr
+        ?: d089CapabilitiesByKey[capability]?.usr ?: when {
     "|owner=io.github.codex_agent_labs.codexmobile.agent/CodexFailure|kind=constructor|" in capability ->
         appleFailureConstructorUsr
     "|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=constructor|" in capability ->
@@ -4714,7 +4846,8 @@ private fun expectedSwiftAppleBindingSurface(): List<AppleCompilerSymbol> = list
     .plus(d085ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d086ExpectedSwiftSymbols().appleSymbols("swift"))
     .plus(d087ExpectedSwiftSymbols().appleSymbols("swift"))
-    .plus(d088ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
+    .plus(d088ExpectedSwiftSymbols().appleSymbols("swift"))
+    .plus(d089ExpectedSwiftSymbols().appleSymbols("swift")).sortedBy(AppleCompilerSymbol::precise)
 
 private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> = listOf(
     AppleCompilerSymbol(
@@ -4874,6 +5007,7 @@ private fun expectedObjectiveCAppleBindingSurface(): List<AppleCompilerSymbol> =
     .plus(d086ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d087ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .plus(d088ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
+    .plus(d089ExpectedObjectiveCSymbols().appleSymbols("objective-c"))
     .sortedBy(AppleCompilerSymbol::precise)
 
 private fun d065ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = buildList {
@@ -5879,6 +6013,72 @@ private fun d088ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerRe
     )
 }
 
+private fun d089ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)active",
+        "member_ref_expr", "active", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)isAuthorizing",
+        "member_ref_expr", "isAuthorizing", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)state",
+        "member_ref_expr", "state", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)approvals",
+        "member_ref_expr", "approvals", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)elicitations",
+        "member_ref_expr", "elicitations", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)state",
+        "member_ref_expr", "state", null,
+        "\$sSo42CodexAgentKotlinx_coroutines_coreStateFlow_pD", emptyList(),
+    ),
+)
+
+private fun d089ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)active",
+        "ObjCPropertyRefExpr", "active", "CodexAgentCodexIntegrationAuthorization *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)isAuthorizing",
+        "ObjCPropertyRefExpr", "isAuthorizing", "CodexAgentCodexIntegrationAuthorization *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexIntegrationAuthorization")}(py)state",
+        "ObjCPropertyRefExpr", "state", "CodexAgentCodexIntegrationAuthorization *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)approvals",
+        "ObjCPropertyRefExpr", "approvals", "CodexAgentCodexInteractions *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)elicitations",
+        "ObjCPropertyRefExpr", "elicitations", "CodexAgentCodexInteractions *",
+        "<pseudo-object type>", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexInteractions")}(py)state",
+        "ObjCPropertyRefExpr", "state", "CodexAgentCodexInteractions *",
+        "<pseudo-object type>", emptyList(),
+    ),
+)
+
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
         appleFailureConstructorUsr, "declref_expr", "init", null,
@@ -5950,7 +6150,8 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     .plus(d085ExpectedSwiftAppleBindingReferences())
     .plus(d086ExpectedSwiftAppleBindingReferences())
     .plus(d087ExpectedSwiftAppleBindingReferences())
-    .plus(d088ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d088ExpectedSwiftAppleBindingReferences())
+    .plus(d089ExpectedSwiftAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
     AppleCompilerReference(
@@ -6033,7 +6234,8 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     .plus(d085ExpectedObjectiveCAppleBindingReferences())
     .plus(d086ExpectedObjectiveCAppleBindingReferences())
     .plus(d087ExpectedObjectiveCAppleBindingReferences())
-    .plus(d088ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
+    .plus(d088ExpectedObjectiveCAppleBindingReferences())
+    .plus(d089ExpectedObjectiveCAppleBindingReferences()).sortedBy(AppleCompilerReference::precise)
 
 private fun JsonElement.appleSymbol(): AppleCompilerSymbol {
     val symbol = appleObject("Apple compiler symbol").also {
