@@ -32,6 +32,14 @@ abstract class AuditCrossLanguageBindingParityTask : DefaultTask() {
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val javaScriptTypeScriptReceipt: RegularFileProperty
 
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val swiftReceipt: RegularFileProperty
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val objectiveCReceipt: RegularFileProperty
+
     @get:OutputFile
     abstract val auditFile: RegularFileProperty
 
@@ -40,7 +48,9 @@ abstract class AuditCrossLanguageBindingParityTask : DefaultTask() {
         val kotlinReceiptFile = kotlinReceipt.get().asFile
         val javaReceiptFile = javaReceipt.get().asFile
         val javaScriptTypeScriptReceiptFile = javaScriptTypeScriptReceipt.get().asFile
-        writeCrossLanguageBindingAudit(
+        val swiftReceiptFile = swiftReceipt.get().asFile
+        val objectiveCReceiptFile = objectiveCReceipt.get().asFile
+        val audit = writeCrossLanguageBindingAudit(
             phase = CrossLanguageBindingPhase.M7_5,
             apiReport = apiReport.get().asFile,
             canonicalCoverageReceipt = canonicalCoverageReceipt.get().asFile,
@@ -48,9 +58,14 @@ abstract class AuditCrossLanguageBindingParityTask : DefaultTask() {
                 CrossLanguageBinding.KOTLIN to kotlinReceiptFile,
                 CrossLanguageBinding.JAVA to javaReceiptFile,
                 CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT to javaScriptTypeScriptReceiptFile,
+                CrossLanguageBinding.SWIFT to swiftReceiptFile,
+                CrossLanguageBinding.OBJECTIVE_C to objectiveCReceiptFile,
             ),
             auditFile = auditFile.get().asFile,
         )
+        check(audit.result == "complete" && audit.errors.isEmpty()) {
+            audit.errors.joinToString("\n").ifEmpty { "Cross-language binding audit did not complete" }
+        }
     }
 }
 

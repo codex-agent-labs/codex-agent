@@ -51,6 +51,10 @@ private const val swiftFailureTest =
     "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()"
 private const val objectiveCFailureTest =
     "CodexAgentObservationTests/testObjectiveCConsumerExposesStructuredFailure()"
+private const val swiftBufferingTest =
+    "CodexAgentObservationTests/testBufferingCancellationAndDroppedStreamReleaseTheObservation()"
+private const val swiftBrowserTest =
+    "CodexAuthorizationBrowserTests/testGenericBrowserOpensTypedExternalURLAndCancelsPresentation()"
 
 
 private const val appleCanonicalPackage = "io.github.codex_agent_labs.codexmobile.agent"
@@ -3298,11 +3302,32 @@ private fun d086ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSy
 
 
 private val expectedAppleTests = listOf(
-    "CodexAgentObservationTests/testBufferingCancellationAndDroppedStreamReleaseTheObservation()",
+    swiftBufferingTest,
     swiftFailureTest,
     objectiveCFailureTest,
-    "CodexAuthorizationBrowserTests/testGenericBrowserOpensTypedExternalURLAndCancelsPresentation()",
+    swiftBrowserTest,
 ).sorted()
+
+internal val swiftAppleBindingScenarioTests = mapOf(
+    CrossLanguageBindingScenario.ASYNC_SUCCESS to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.ASYNC_FAILURE to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.CANCELLATION to listOf(swiftFailureTest, swiftBrowserTest),
+    CrossLanguageBindingScenario.STATE_CURRENT_VALUE to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.SUBSCRIPTION_CANCELLATION to listOf(swiftBufferingTest),
+    CrossLanguageBindingScenario.TERMINAL_DELIVERY to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.STRUCTURED_FAILURE to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.IDENTITY to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.REPEATED_CLOSE_DISPOSE to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.NULLABILITY to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.COLLECTION_IMMUTABILITY_ORDERING to listOf(swiftFailureTest),
+    CrossLanguageBindingScenario.VALUE_CONVERSION to listOf(swiftFailureTest),
+)
+
+internal val objectiveCAppleBindingScenarioTests = CrossLanguageBindingScenario.entries.associateWith {
+    listOf(objectiveCFailureTest)
+}
 
 internal data class AppleBindingTargetDigests(
     val frameworkSha256: String,
@@ -3318,6 +3343,7 @@ internal data class AppleBindingInputDigests(
     val objectiveCConsumerSha256: String,
     val xctestEvidenceSha256: String,
     val xcresultSha256: String,
+    val xctestPackageSha256: String,
     val targets: Map<String, AppleBindingTargetDigests>,
 )
 
@@ -4674,6 +4700,248 @@ private fun appleLanguageEvidence(
     })
     put("exclusions", buildJsonArray {})
     put("missingCapabilityKeys", missing.appleJsonStrings())
+}
+
+private fun appleBindingClaimScenarios(
+    capabilityKeys: List<String>,
+    usrByCapability: Map<String, String>,
+): Map<String, CrossLanguageBindingScenario> = buildMap {
+    fun add(
+        capabilities: Iterable<AppleOrdinaryCapability>,
+        scenario: CrossLanguageBindingScenario,
+    ) = capabilities.forEach { capability ->
+        check(put(capability.canonicalKey, scenario) == null) {
+            "Duplicate Apple binding claim scenario: ${capability.canonicalKey}"
+        }
+    }
+    fun addIndices(
+        capabilities: List<AppleOrdinaryCapability>,
+        indices: Iterable<Int>,
+        scenario: CrossLanguageBindingScenario,
+    ) = add(indices.map(capabilities::get), scenario)
+
+    val bootstrapUsrs = setOf(
+        appleFailureConstructorUsr,
+        appleFailureCodeUsr,
+        appleFailureRecoverableUsr,
+        appleFailureMessageUsr,
+        appleConversationIdConstructorUsr,
+        appleConversationIdValueUsr,
+        appleApprovalAcceptUsr,
+        appleApprovalDeclineUsr,
+        appleCollaborationDefaultUsr,
+        appleCollaborationPlanUsr,
+        appleMessageRoleUserUsr,
+        appleMessageRoleAssistantUsr,
+        appleInstallationScopeUserUsr,
+        appleInstallationScopeWorkspaceUsr,
+        appleMcpEnvironmentLocalUsr,
+        appleMcpEnvironmentRemoteUsr,
+    )
+    val bootstrap = usrByCapability.filterValues { it in bootstrapUsrs }.map { (key, usr) ->
+        AppleOrdinaryCapability(key, usr)
+    }
+    check(bootstrap.size == 16 && bootstrap.map(AppleOrdinaryCapability::usr).toSet() == bootstrapUsrs) {
+        "Apple bootstrap binding claim scenario inventory changed"
+    }
+    add(bootstrap, CrossLanguageBindingScenario.VALUE_CONVERSION)
+    add(
+        d065OrdinaryCapabilities + d073OrdinaryCapabilities + d074OrdinaryCapabilities +
+            d075OrdinaryCapabilities + d076AuthorizationUrlCapabilities + d077OrdinaryCapabilities +
+            d078OrdinaryCapabilities + d079OrdinaryCapabilities + d080Capabilities + d081Capabilities +
+            d082ElicitationCapabilities + d083ProtocolCapabilities,
+        CrossLanguageBindingScenario.VALUE_CONVERSION,
+    )
+    addIndices(d084Capabilities, 1..9, CrossLanguageBindingScenario.VALUE_CONVERSION)
+    addIndices(d084Capabilities, listOf(0), CrossLanguageBindingScenario.IDENTITY)
+    addIndices(d084Capabilities, listOf(10), CrossLanguageBindingScenario.TERMINAL_DELIVERY)
+    addIndices(d084Capabilities, listOf(11, 13), CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE)
+    addIndices(d084Capabilities, listOf(12), CrossLanguageBindingScenario.ASYNC_SUCCESS)
+
+    addIndices(d085Capabilities, 0..10, CrossLanguageBindingScenario.IDENTITY)
+    addIndices(d085Capabilities, 11..15, CrossLanguageBindingScenario.STATE_CURRENT_VALUE)
+    addIndices(
+        d086Capabilities,
+        (0..7) + (12..16) + (18..19),
+        CrossLanguageBindingScenario.STRUCTURED_FAILURE,
+    )
+    addIndices(d086Capabilities, (8..11) + listOf(17), CrossLanguageBindingScenario.ASYNC_SUCCESS)
+    addIndices(d087Capabilities, listOf(0, 2), CrossLanguageBindingScenario.ASYNC_SUCCESS)
+    addIndices(d087Capabilities, listOf(1, 7), CrossLanguageBindingScenario.CANCELLATION)
+    addIndices(d087Capabilities, 3..5, CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE)
+    addIndices(d087Capabilities, listOf(6), CrossLanguageBindingScenario.STRUCTURED_FAILURE)
+    addIndices(d087Capabilities, 8..11, CrossLanguageBindingScenario.ASYNC_FAILURE)
+    addIndices(d088Capabilities, listOf(0, 2, 4), CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP)
+    addIndices(d088Capabilities, listOf(1, 3, 7), CrossLanguageBindingScenario.ASYNC_SUCCESS)
+    addIndices(d088Capabilities, listOf(5), CrossLanguageBindingScenario.ASYNC_FAILURE)
+    addIndices(d088Capabilities, listOf(6), CrossLanguageBindingScenario.TERMINAL_DELIVERY)
+    addIndices(d088Capabilities, 8..10, CrossLanguageBindingScenario.STRUCTURED_FAILURE)
+    addIndices(d088Capabilities, 11..18, CrossLanguageBindingScenario.STATE_CURRENT_VALUE)
+    add(d089Capabilities, CrossLanguageBindingScenario.STATE_CURRENT_VALUE)
+
+    check(keys == capabilityKeys.toSet() && size == APPLE_BINDING_CANONICAL_CAPABILITY_COUNT) {
+        "Apple binding claim scenario mapping is missing or stale: " +
+            "missing=${(capabilityKeys.toSet() - keys).sorted()} stale=${(keys - capabilityKeys.toSet()).sorted()}"
+    }
+    val counts = values.groupingBy { it }.eachCount()
+    check(counts == mapOf(
+        CrossLanguageBindingScenario.VALUE_CONVERSION to 478,
+        CrossLanguageBindingScenario.IDENTITY to 12,
+        CrossLanguageBindingScenario.TERMINAL_DELIVERY to 2,
+        CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE to 5,
+        CrossLanguageBindingScenario.ASYNC_SUCCESS to 11,
+        CrossLanguageBindingScenario.STATE_CURRENT_VALUE to 19,
+        CrossLanguageBindingScenario.STRUCTURED_FAILURE to 19,
+        CrossLanguageBindingScenario.CANCELLATION to 2,
+        CrossLanguageBindingScenario.ASYNC_FAILURE to 5,
+        CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP to 3,
+    )) { "Apple binding claim scenario counts changed: $counts" }
+}
+
+internal fun buildAppleBindingParityReceipt(
+    report: JsonObject,
+    language: CrossLanguageBinding,
+    digests: AppleBindingInputDigests,
+    bindingEvidenceSha256: String,
+    scenarioTests: Map<CrossLanguageBindingScenario, List<String>> = when (language) {
+        CrossLanguageBinding.SWIFT -> swiftAppleBindingScenarioTests
+        CrossLanguageBinding.OBJECTIVE_C -> objectiveCAppleBindingScenarioTests
+        else -> error("Unsupported Apple binding receipt language: ${language.id}")
+    },
+): CrossLanguageBindingReceipt {
+    check(language == CrossLanguageBinding.SWIFT || language == CrossLanguageBinding.OBJECTIVE_C) {
+        "Unsupported Apple binding receipt language: ${language.id}"
+    }
+    bindingEvidenceSha256.appleSha256("Apple binding evidence")
+    digests.xctestPackageSha256.appleSha256("Apple XCTest package")
+    report.appleKeys(
+        "Apple binding evidence",
+        "schemaVersion", "protocol", "result", "canonical", "artifacts", "languages",
+    )
+    check(report.appleInt("schemaVersion") == 1 &&
+        report.appleString("protocol") == APPLE_BINDING_EVIDENCE_PROTOCOL &&
+        report.appleString("result") == "observed"
+    ) { "Apple binding evidence identity changed" }
+
+    val canonical = report.appleObject("canonical").also {
+        it.appleKeys(
+            "Apple binding canonical identity",
+            "apiReportSha256", "coverageReceiptSha256", "nativeTargetSha256", "capabilityCount",
+        )
+    }
+    check(canonical.appleInt("capabilityCount") == APPLE_BINDING_CANONICAL_CAPABILITY_COUNT) {
+        "Apple binding canonical capability count changed"
+    }
+    canonical.appleSha256("nativeTargetSha256")
+    val artifacts = report.appleObject("artifacts").also {
+        it.appleKeys(
+            "Apple binding artifacts",
+            "compilerEvidenceSha256", "xcframeworkSha256", "swiftConsumerSha256",
+            "objectiveCConsumerSha256", "xctestEvidenceSha256", "xcresultSha256",
+        )
+    }
+    check(artifacts.appleSha256("compilerEvidenceSha256") == digests.compilerEvidenceSha256 &&
+        artifacts.appleSha256("xcframeworkSha256") == digests.xcframeworkSha256 &&
+        artifacts.appleSha256("swiftConsumerSha256") == digests.swiftConsumerSha256 &&
+        artifacts.appleSha256("objectiveCConsumerSha256") == digests.objectiveCConsumerSha256 &&
+        artifacts.appleSha256("xctestEvidenceSha256") == digests.xctestEvidenceSha256 &&
+        artifacts.appleSha256("xcresultSha256") == digests.xcresultSha256
+    ) { "Apple binding receipt artifact identity changed" }
+
+    val expectedLanguageId = language.id
+    val languageRows = report.appleArray("languages").map { value ->
+        value.appleObject("Apple binding language").also {
+            it.appleKeys(
+                "Apple binding language", "language", "publicSymbols", "referencedSymbols", "claims",
+                "exclusions", "missingCapabilityKeys",
+            )
+        }
+    }
+    check(languageRows.map { it.appleString("language") } == listOf("objective-c", "swift")) {
+        "Apple binding language inventory changed"
+    }
+    val row = languageRows.single { it.appleString("language") == expectedLanguageId }
+    val publicSymbols = row.appleStrings("publicSymbols")
+    val referencedSymbols = row.appleStrings("referencedSymbols")
+    check(publicSymbols.size == 671 && referencedSymbols.size == 556 &&
+        referencedSymbols.toSet().subtract(publicSymbols.toSet()).isEmpty() &&
+        row.appleArray("exclusions").isEmpty() && row.appleArray("missingCapabilityKeys").isEmpty()
+    ) { "$expectedLanguageId Apple binding receipt inventory changed" }
+
+    data class Claim(val capabilityKey: String, val publicSymbol: String, val behaviorTest: String)
+    val claims = row.appleArray("claims").map { value ->
+        val claim = value.appleObject("Apple binding claim").also {
+            it.appleKeys(
+                "Apple binding claim", "canonicalKey", "publicSymbol", "compilerReference", "behaviorTest",
+            )
+        }
+        val publicSymbol = claim.appleString("publicSymbol")
+        check(claim.appleString("compilerReference") == publicSymbol) {
+            "$expectedLanguageId Apple binding claim lost its exact compiler reference"
+        }
+        Claim(claim.appleString("canonicalKey"), publicSymbol, claim.appleString("behaviorTest"))
+    }
+    val capabilityKeys = claims.map(Claim::capabilityKey)
+    check(claims.size == APPLE_BINDING_CANONICAL_CAPABILITY_COUNT &&
+        capabilityKeys == capabilityKeys.distinct().sorted() &&
+        claims.map(Claim::publicSymbol).distinct().size == APPLE_BINDING_CANONICAL_CAPABILITY_COUNT
+    ) { "$expectedLanguageId Apple binding receipt claim inventory changed" }
+
+    val expectedScenarioTests = when (language) {
+        CrossLanguageBinding.SWIFT -> swiftAppleBindingScenarioTests
+        CrossLanguageBinding.OBJECTIVE_C -> objectiveCAppleBindingScenarioTests
+        else -> error("Unsupported Apple binding receipt language: ${language.id}")
+    }
+    check(scenarioTests == expectedScenarioTests) {
+        "$expectedLanguageId Apple binding scenario-to-test ownership changed"
+    }
+    val expectedTests = expectedScenarioTests.values.flatten().toSet()
+    val scenarioEvidence = CrossLanguageBindingScenario.entries.map { scenario ->
+        CrossLanguageScenarioEvidence(language, scenario, scenarioTests.getValue(scenario).sorted())
+    }
+
+    val usrByCapability = claims.associate { it.capabilityKey to it.publicSymbol }
+    val claimScenarios = appleBindingClaimScenarios(capabilityKeys, usrByCapability)
+    check(claims.all { claim -> claim.publicSymbol == appleBindingUsr(claim.capabilityKey) } &&
+        claims.map(Claim::publicSymbol).toSet() == referencedSymbols.toSet()
+    ) { "$expectedLanguageId Apple binding claims do not match exact compiler references" }
+    val projectionClaims = claims.map { claim ->
+        val scenarios = listOf(claimScenarios.getValue(claim.capabilityKey))
+        check(claim.behaviorTest in scenarioTests.getValue(scenarios.single())) {
+            "$expectedLanguageId Apple binding claim has no executed shared scenario: ${claim.capabilityKey}"
+        }
+        CrossLanguageProjectionClaim(
+            capabilityKey = claim.capabilityKey,
+            language = language,
+            publicSymbols = listOf(claim.publicSymbol),
+            executedTests = listOf(claim.behaviorTest),
+            sharedScenarios = scenarios,
+        )
+    }
+
+    return CrossLanguageBindingReceipt(
+        phase = CrossLanguageBindingPhase.M7_5,
+        language = language,
+        canonical = CrossLanguageBindingCanonicalIdentity(
+            canonical.appleSha256("apiReportSha256"),
+            canonical.appleSha256("coverageReceiptSha256"),
+        ),
+        artifacts = listOf(
+            CrossLanguageBindingArtifactIdentity("apple-binding-evidence", bindingEvidenceSha256),
+            CrossLanguageBindingArtifactIdentity("apple-compiler-evidence", digests.compilerEvidenceSha256),
+            CrossLanguageBindingArtifactIdentity("apple-xctest-evidence", digests.xctestEvidenceSha256),
+            CrossLanguageBindingArtifactIdentity("codex-agent-xcframework", digests.xcframeworkSha256),
+        ),
+        testProgramSha256 = digests.xctestPackageSha256,
+        testResultsSha256 = digests.xcresultSha256,
+        publicSymbols = publicSymbols,
+        bindingTests = expectedTests.sorted().map { testId ->
+            CrossLanguageBindingTestEvidence(language, testId, CrossLanguageBindingTestStatus.PASSED)
+        },
+        scenarioEvidence = scenarioEvidence,
+        projectionClaims = projectionClaims,
+        applicabilityExclusions = emptyList(),
+    )
 }
 
 private fun appleBindingUsr(capability: String): String =
@@ -6379,16 +6647,35 @@ abstract class GenerateAppleBindingEvidenceTask : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val xctestEvidence: RegularFileProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val xcresultDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val xctestPackageDirectory: DirectoryProperty
     @get:OutputFile abstract val evidenceFile: RegularFileProperty
+    @get:OutputFile abstract val swiftReceiptFile: RegularFileProperty
+    @get:OutputFile abstract val objectiveCReceiptFile: RegularFileProperty
 
     @TaskAction
     fun generate() {
         val output = evidenceFile.get().asFile
-        Files.deleteIfExists(output.toPath())
+        val receiptOutputs = mapOf(
+            CrossLanguageBinding.SWIFT to swiftReceiptFile.get().asFile,
+            CrossLanguageBinding.OBJECTIVE_C to objectiveCReceiptFile.get().asFile,
+        )
+        (listOf(output) + receiptOutputs.values).forEach { Files.deleteIfExists(it.toPath()) }
         val compilerFile = compilerEvidence.get().asFile
         val xctestFile = xctestEvidence.get().asFile
         val xcframework = xcframeworkDirectory.get().asFile
         val xcresult = xcresultDirectory.get().asFile
+        val xctestPackage = xctestPackageDirectory.get().asFile
+        val digests = AppleBindingInputDigests(
+            compilerFile.releaseDigest(),
+            xcframework.crossLanguageTreeDigest(),
+            appleBindingFileDigest(swiftConsumer.get().asFile, "Swift compiler consumer"),
+            appleBindingFileDigest(objectiveCConsumer.get().asFile, "Objective-C compiler consumer"),
+            xctestFile.releaseDigest(),
+            xcresult.crossLanguageTreeDigest(),
+            xctestPackage.crossLanguageTreeDigest(),
+            appleBindingTargetDigests(xcframework),
+        )
         val report = deriveCrossLanguageAppleBindingEvidence(
             readCrossLanguageCanonicalApiEvidence(
                 canonicalApiReport.get().asFile,
@@ -6396,19 +6683,25 @@ abstract class GenerateAppleBindingEvidenceTask : DefaultTask() {
             ),
             readCanonicalAppleBindingObject(compilerFile, "Apple compiler evidence"),
             readCanonicalAppleBindingObject(xctestFile, "Apple XCTest evidence"),
-            AppleBindingInputDigests(
-                compilerFile.releaseDigest(),
-                xcframework.crossLanguageTreeDigest(),
-                appleBindingFileDigest(swiftConsumer.get().asFile, "Swift compiler consumer"),
-                appleBindingFileDigest(objectiveCConsumer.get().asFile, "Objective-C compiler consumer"),
-                xctestFile.releaseDigest(),
-                xcresult.crossLanguageTreeDigest(),
-                appleBindingTargetDigests(xcframework),
-            ),
+            digests,
         )
         output.atomicWriteJson(report)
-        check(readCanonicalAppleBindingObject(output, "Apple binding evidence") == report) {
+        val observed = readCanonicalAppleBindingObject(output, "Apple binding evidence")
+        check(observed == report) {
             "Apple binding evidence does not match freshly derived observations"
+        }
+        val bindingEvidenceSha256 = output.releaseDigest()
+        receiptOutputs.forEach { (language, receiptFile) ->
+            val receipt = buildAppleBindingParityReceipt(
+                observed,
+                language,
+                digests,
+                bindingEvidenceSha256,
+            )
+            writeCrossLanguageBindingReceipt(receiptFile, receipt)
+            check(readCrossLanguageBindingReceipt(receiptFile).toJson() == receipt.toJson()) {
+                "${language.id} Apple binding receipt does not match freshly derived evidence"
+            }
         }
     }
 }

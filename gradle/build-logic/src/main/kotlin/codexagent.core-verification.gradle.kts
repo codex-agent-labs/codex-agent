@@ -75,6 +75,12 @@ val javaScriptTypeScriptBindingParityReceiptFile = rootProject.layout.projectDir
     "codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/" +
         "javascript-typescript-parity.json",
 )
+val swiftBindingParityReceiptFile = rootProject.layout.projectDirectory.file(
+    "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/swift-parity.json",
+)
+val objectiveCBindingParityReceiptFile = rootProject.layout.projectDirectory.file(
+    "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/objective-c-parity.json",
+)
 val invalidateCrossLanguageBindingParityOutputs = tasks.register<Delete>(
     "invalidateCrossLanguageBindingParityOutputs",
 ) {
@@ -87,9 +93,16 @@ val invalidateCrossLanguageBindingParityOutputs = tasks.register<Delete>(
         javaBindingParityReceiptFile,
     )
 }
-tasks.configureEach {
-    if (name != invalidateCrossLanguageBindingParityOutputs.name) {
-        mustRunAfter(invalidateCrossLanguageBindingParityOutputs)
+val crossLanguageInvalidationTaskNames = setOf(
+    invalidateCrossLanguageBindingParityOutputs.name,
+    "invalidateJavaScriptTypeScriptBindingParityOutput",
+    "invalidateCodexAgentAppleBindingEvidence",
+)
+rootProject.allprojects {
+    tasks.configureEach {
+        if (name !in crossLanguageInvalidationTaskNames) {
+            mustRunAfter(invalidateCrossLanguageBindingParityOutputs)
+        }
     }
 }
 verifyCrossLanguageApiCoverage.configure {
@@ -152,6 +165,7 @@ val auditCrossLanguageBindingParity = tasks.register<AuditCrossLanguageBindingPa
         verifyKotlinBindingParity,
         verifyJavaBindingParity,
         ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity",
+        ":codex-agent-runtime-ios:generateCodexAgentAppleBindingEvidence",
     )
     apiReport.set(discoverCrossLanguageApi.flatMap(DiscoverCrossLanguageApiTask::reportFile))
     canonicalCoverageReceipt.set(
@@ -160,6 +174,8 @@ val auditCrossLanguageBindingParity = tasks.register<AuditCrossLanguageBindingPa
     kotlinReceipt.set(verifyKotlinBindingParity.flatMap(VerifyKotlinBindingParityTask::receiptFile))
     javaReceipt.set(verifyJavaBindingParity.flatMap(VerifyJavaBindingParityTask::receiptFile))
     javaScriptTypeScriptReceipt.set(javaScriptTypeScriptBindingParityReceiptFile)
+    swiftReceipt.set(swiftBindingParityReceiptFile)
+    objectiveCReceipt.set(objectiveCBindingParityReceiptFile)
     auditFile.set(crossLanguageBindingAuditFile)
 }
 
@@ -184,5 +200,10 @@ tasks.register("updateProtocol") {
 }
 
 tasks.named("check").configure {
-    dependsOn(verifyProtocolSource, auditCrossLanguageBindingParity)
+    dependsOn(
+        verifyProtocolSource,
+        verifyKotlinBindingParity,
+        verifyJavaBindingParity,
+        ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity",
+    )
 }

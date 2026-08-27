@@ -281,9 +281,12 @@ The core tasks write exact-tree evidence under
   core language receipts.
 - `codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/javascript-typescript-parity.json`
   is the verified JavaScript/TypeScript receipt.
-- `binding-obligations-m7_5.json` is the partial all-language obligation audit;
-  it consumes the Kotlin, Java, and JavaScript/TypeScript receipts and remains
-  incomplete until the Apple receipts exist.
+- `codex-agent-runtime-ios/build/reports/cross-language-api/bindings/swift-parity.json`
+  and `codex-agent-runtime-ios/build/reports/cross-language-api/bindings/objective-c-parity.json`
+  are the verified Apple receipts.
+- `binding-obligations-m7_5.json` is the complete five-language obligation
+  audit over the Kotlin, Java, JavaScript/TypeScript, Swift, and Objective-C
+  receipts.
 
 For a binding, add the smallest idiomatic public artifact projection and a real
 consumer test. Extend that language's evidence derivation so each exact
@@ -294,12 +297,19 @@ report. The current focused gates are:
 ```shell
 ./gradlew :codex-agent-core:verifyKotlinBindingParity \
   :codex-agent-core:verifyJavaBindingParity \
-  :codex-agent-core:auditCrossLanguageBindingParity
-./gradlew :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity
+  :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity
+./gradlew verifyRepository
+# macOS only
+./gradlew verifyIosRuntime
+./gradlew :codex-agent-core:auditCrossLanguageBindingParity
 ```
 
-The core audit runs the strict JavaScript/TypeScript gate transitively; invoke
-the desktop task directly only for a focused JavaScript/TypeScript check.
+The portable root `verifyRepository` task and core `check` produce the Kotlin,
+Java, and JavaScript/TypeScript receipts without running Xcode or the aggregate;
+invoke a producer directly for a focused language check. On macOS, root
+`verifyIosRuntime` runs the iOS verification and the direct complete aggregate;
+invoke `:codex-agent-core:auditCrossLanguageBindingParity` directly for only
+that five-language aggregate.
 An active pair without verified projection evidence is `missing`. A future
 phase pair remains applicable but `pending`: at M7.5 Kotlin, Java, Swift,
 Objective-C, and JavaScript/TypeScript are active; M8 activates C ABI; the

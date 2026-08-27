@@ -64,7 +64,10 @@ run_desktop() {
 case "$lane" in
   contracts)
     if [ "$build" = true ] || [ "$test_lane" = true ]; then
-      contract_tasks=(:codex-agent-core:auditCrossLanguageBindingParity)
+      contract_tasks=(
+        :codex-agent-core:verifyKotlinBindingParity
+        :codex-agent-core:verifyJavaBindingParity
+      )
       [ "$build" != true ] || contract_tasks=(:codex-agent-core:verifyProtocolSource "${contract_tasks[@]}")
       ./gradlew "${contract_tasks[@]}" "${args[@]}"
     fi
@@ -160,8 +163,7 @@ case "$lane" in
     ;;
   ios-swift-tests)
     [ "$test_lane" != true ] || ./gradlew \
-      :codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests \
-      :codex-agent-runtime-ios:generateCodexAgentAppleCompilerEvidence "${args[@]}"
+      :codex-agent-runtime-ios:generateCodexAgentAppleBindingEvidence "${args[@]}"
     ;;
   ios-package)
     tasks=()

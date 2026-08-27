@@ -96,6 +96,9 @@ SUPPORT_DEPENDENCIES = {
         ("ios-framework-device", "build"),
         ("ios-framework-simulator", "build"),
         ("ios-swift-build", "build"),
+        ("contracts", "build"),
+        ("contracts", "test"),
+        ("node-js", "test"),
     ),
     "ios-package": (("ios-framework-device", "build"), ("ios-framework-simulator", "build")),
     "ios-privacy-metrics": (

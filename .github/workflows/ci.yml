@@ -61,6 +61,7 @@ jobs:
       lane_desktop_linux_arm64_build: ${{ steps.impact.outputs.lane_desktop_linux_arm64_build }}
       lane_desktop_linux_arm64_test: ${{ steps.impact.outputs.lane_desktop_linux_arm64_test }}
       lane_desktop_linux_arm64_metadata: ${{ steps.impact.outputs.lane_desktop_linux_arm64_metadata }}
+      lane_ios_swift_tests_test: ${{ steps.impact.outputs.lane_ios_swift_tests_test }}
       validation_reused: ${{ steps.validation-reuse.outputs.reused }}
       validation_source_run_id: ${{ steps.validation-reuse.outputs.source_run_id }}
     steps:
@@ -286,6 +287,29 @@ jobs:
             python3 ci/receipt.py aggregate --plan build/ci/plan/impact-plan.json \
               --receipts build/ci/receipts --output build/ci/validation-receipt.json
           fi
+      - name: Require complete five-language binding parity
+        if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_ios_swift_tests_test == 'true'
+        shell: bash
+        run: |
+          one_file() {
+            mapfile -t matches < <(find build/ci/receipts -type f -name "$1" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          binding_root=build/ci/cross-language-bindings
+          mkdir -p "$binding_root/receipts"
+          release_tool=$(one_file codex-agent-release-tooling.jar)
+          api_report=$(one_file canonical-api.json)
+          coverage_receipt=$(one_file canonical-coverage.json)
+          for receipt in kotlin-parity.json java-parity.json javascript-typescript-parity.json swift-parity.json objective-c-parity.json; do
+            cp "$(one_file "$receipt")" "$binding_root/receipts/$receipt"
+          done
+          java -jar "$release_tool" audit-cross-language-bindings \
+            --phase M7_5 \
+            --api-report "$api_report" \
+            --coverage-receipt "$coverage_receipt" \
+            --receipts "$binding_root/receipts" \
+            --output "$binding_root/binding-obligations-m7_5.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error

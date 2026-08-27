@@ -2,6 +2,7 @@ import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -48,6 +49,149 @@ class CrossLanguageAppleBindingEvidenceTest {
                 claim.releaseString("behaviorTest") == behaviorTest &&
                     claim.releaseString("publicSymbol") == claim.releaseString("compilerReference")
             })
+        }
+    }
+
+    @Test
+    fun `builds independent schema 3 Apple receipts with exact scenarios and finite claim classification`() =
+        withRoot { root ->
+            val fixture = fixture()
+            val report = fixture.derive()
+            val expectedClaimScenarios = mapOf(
+                CrossLanguageBindingScenario.VALUE_CONVERSION to 478,
+                CrossLanguageBindingScenario.IDENTITY to 12,
+                CrossLanguageBindingScenario.TERMINAL_DELIVERY to 2,
+                CrossLanguageBindingScenario.STATE_SUBSEQUENT_VALUE to 5,
+                CrossLanguageBindingScenario.ASYNC_SUCCESS to 11,
+                CrossLanguageBindingScenario.STATE_CURRENT_VALUE to 19,
+                CrossLanguageBindingScenario.STRUCTURED_FAILURE to 19,
+                CrossLanguageBindingScenario.CANCELLATION to 2,
+                CrossLanguageBindingScenario.ASYNC_FAILURE to 5,
+                CrossLanguageBindingScenario.PARENT_CHILD_OWNERSHIP to 3,
+            )
+            listOf(CrossLanguageBinding.SWIFT, CrossLanguageBinding.OBJECTIVE_C).forEach { language ->
+                val receipt = buildAppleBindingParityReceipt(report, language, fixture.digests, SHA_A)
+                val file = root.resolve("${language.id}-parity.json")
+                writeCrossLanguageBindingReceipt(file, receipt)
+                val actual = readCrossLanguageBindingReceipt(file)
+
+                assertEquals(CrossLanguageBindingPhase.M7_5, actual.phase)
+                assertEquals(language, actual.language)
+                assertEquals(671, actual.publicSymbols.size)
+                assertEquals(556, actual.projectionClaims.size)
+                assertEquals(14, actual.scenarioEvidence.size)
+                assertEquals(expectedClaimScenarios, actual.projectionClaims
+                    .groupingBy { it.sharedScenarios.single() }.eachCount())
+                assertEquals(fixture.digests.xctestPackageSha256, actual.testProgramSha256)
+                assertEquals(fixture.digests.xcresultSha256, actual.testResultsSha256)
+                assertEquals(
+                    listOf(
+                        "apple-binding-evidence",
+                        "apple-compiler-evidence",
+                        "apple-xctest-evidence",
+                        "codex-agent-xcframework",
+                    ),
+                    actual.artifacts.map(CrossLanguageBindingArtifactIdentity::id),
+                )
+                assertTrue(actual.bindingTests.all {
+                    it.status == CrossLanguageBindingTestStatus.PASSED && it.language == language
+                })
+                assertTrue(actual.projectionClaims.all { claim ->
+                    claim.publicSymbols.size == 1 && claim.executedTests.size == 1 &&
+                        claim.sharedScenarios.size == 1 &&
+                        actual.scenarioEvidence.single {
+                            it.scenario == claim.sharedScenarios.single()
+                        }.testIds.contains(claim.executedTests.single())
+                })
+                assertTrue(actual.applicabilityExclusions.isEmpty())
+            }
+        }
+
+    @Test
+    fun `rejects incomplete stale or cross-language Apple receipt inputs`() {
+        val fixture = fixture()
+        val report = fixture.derive()
+        val missingScenario = swiftAppleBindingScenarioTests - CrossLanguageBindingScenario.ASYNC_SUCCESS
+        val duplicateScenarioTest = swiftAppleBindingScenarioTests + (
+            CrossLanguageBindingScenario.ASYNC_SUCCESS to listOf(SWIFT_FAILURE_TEST, SWIFT_FAILURE_TEST)
+        )
+        val staleScenarioTest = swiftAppleBindingScenarioTests + (
+            CrossLanguageBindingScenario.ASYNC_SUCCESS to listOf("stale/Test()")
+        )
+        val browserTest = swiftAppleBindingScenarioTests
+            .getValue(CrossLanguageBindingScenario.CANCELLATION)
+            .single { it != SWIFT_FAILURE_TEST }
+        val reassignedScenarioTest = swiftAppleBindingScenarioTests +
+            (CrossLanguageBindingScenario.CANCELLATION to listOf(SWIFT_FAILURE_TEST)) +
+            (CrossLanguageBindingScenario.NULLABILITY to listOf(SWIFT_FAILURE_TEST, browserTest))
+        listOf(
+            missingScenario,
+            duplicateScenarioTest,
+            staleScenarioTest,
+            reassignedScenarioTest,
+        ).forEach { mapping ->
+            assertFailsWith<IllegalStateException> {
+                buildAppleBindingParityReceipt(
+                    report, CrossLanguageBinding.SWIFT, fixture.digests, SHA_A, mapping,
+                )
+            }
+        }
+
+        val languages = report.releaseArray("languages")
+        val changedSwift = JsonArray(languages.map { value ->
+            val language = value as JsonObject
+            if (language.releaseString("language") != "swift") language else {
+                val claims = language.releaseArray("claims")
+                val first = claims.first() as JsonObject
+                JsonObject(language + ("claims" to JsonArray(
+                    listOf(JsonObject(first + ("publicSymbol" to JsonPrimitive("swift-only-drift")))) +
+                        claims.drop(1),
+                )))
+            }
+        })
+        val drift = JsonObject(report + ("languages" to changedSwift))
+        assertFailsWith<IllegalStateException> {
+            buildAppleBindingParityReceipt(drift, CrossLanguageBinding.SWIFT, fixture.digests, SHA_A)
+        }
+        assertEquals(
+            556,
+            buildAppleBindingParityReceipt(
+                drift, CrossLanguageBinding.OBJECTIVE_C, fixture.digests, SHA_A,
+            ).projectionClaims.size,
+        )
+        val swappedSwift = JsonArray(languages.map { value ->
+            val language = value as JsonObject
+            if (language.releaseString("language") != "swift") language else {
+                val swappedClaims = language.releaseArray("claims").map { claimValue ->
+                    val claim = claimValue as JsonObject
+                    val swappedUsr = when (claim.releaseString("publicSymbol")) {
+                        D065_ENUM_USR -> D065_PROPERTY_USR
+                        D065_PROPERTY_USR -> D065_ENUM_USR
+                        else -> null
+                    }
+                    if (swappedUsr == null) claim else JsonObject(claim + mapOf(
+                        "publicSymbol" to JsonPrimitive(swappedUsr),
+                        "compilerReference" to JsonPrimitive(swappedUsr),
+                    ))
+                }
+                JsonObject(language + ("claims" to JsonArray(swappedClaims)))
+            }
+        })
+        assertFailsWith<IllegalStateException> {
+            buildAppleBindingParityReceipt(
+                JsonObject(report + ("languages" to swappedSwift)),
+                CrossLanguageBinding.SWIFT,
+                fixture.digests,
+                SHA_A,
+            )
+        }
+        assertFailsWith<IllegalStateException> {
+            buildAppleBindingParityReceipt(
+                report,
+                CrossLanguageBinding.SWIFT,
+                fixture.digests.copy(xctestPackageSha256 = "bad"),
+                SHA_A,
+            )
         }
     }
 
@@ -1203,16 +1347,23 @@ class CrossLanguageAppleBindingEvidenceTest {
         task.objectiveCConsumer.set(missing.resolve("consumer.m"))
         task.xctestEvidence.set(missing.resolve("xctest.json"))
         task.xcresultDirectory.set(missing.resolve("tests.xcresult"))
+        task.xctestPackageDirectory.set(missing.resolve("CodexAgentPackage"))
         val output = root.resolve("binding-evidence.json").apply { writeText("stale observed evidence") }
+        val swiftReceipt = root.resolve("swift-parity.json").apply { writeText("stale passed receipt") }
+        val objectiveCReceipt = root.resolve("objective-c-parity.json").apply { writeText("stale passed receipt") }
         task.evidenceFile.set(output)
+        task.swiftReceiptFile.set(swiftReceipt)
+        task.objectiveCReceiptFile.set(objectiveCReceipt)
 
         assertTrue(GenerateAppleBindingEvidenceTask::class.java.isAnnotationPresent(CacheableTask::class.java))
-        assertFailsWith<IllegalStateException> { task.generate() }
+        assertFails { task.generate() }
         assertFalse(output.exists())
+        assertFalse(swiftReceipt.exists())
+        assertFalse(objectiveCReceipt.exists())
     }
 
     @Test
-    fun `iOS plugin registers only observed Apple evidence with stale invalidation`() {
+    fun `iOS plugin registers observed Apple evidence and both receipts with stale invalidation`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { it.resolve("build.gradle.kts").isFile && it.resolve("codex-agent-runtime-ios").isDirectory }
         val registration = repository.resolve(
@@ -1227,9 +1378,13 @@ class CrossLanguageAppleBindingEvidenceTest {
             "appleCompilerEvidence.flatMap(AppleCompilerEvidenceTask::evidenceFile)",
             "VerifySwiftAuthenticationTestsTask::summaryFile",
             "VerifySwiftAuthenticationTestsTask::resultBundleDirectory",
+            "VerifySwiftAuthenticationTestsTask::packageDirectory",
+            "reports/cross-language-api/bindings/swift-parity.json",
+            "reports/cross-language-api/bindings/objective-c-parity.json",
+            "swiftReceiptFile.set(swiftBindingReceiptFile)",
+            "objectiveCReceiptFile.set(objectiveCBindingReceiptFile)",
+            "dependsOn(appleBindingEvidence)",
         ).forEach { expected -> assertTrue(expected in registration) }
-        assertFalse("swift-parity.json" in registration)
-        assertFalse("objective-c-parity.json" in registration)
     }
 
     private data class Fixture(
@@ -1374,7 +1529,7 @@ class CrossLanguageAppleBindingEvidenceTest {
             canonical,
             compiler,
             xctest,
-            AppleBindingInputDigests(SHA_E, SHA_A, SHA_B, SHA_C, SHA_F, SHA_D, targetDigests),
+            AppleBindingInputDigests(SHA_E, SHA_A, SHA_B, SHA_C, SHA_F, SHA_D, SHA_E, targetDigests),
         )
     }
 

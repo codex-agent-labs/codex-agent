@@ -4,6 +4,7 @@ import hashlib
 import fnmatch
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -45,13 +46,13 @@ from validation_reuse import (  # noqa: E402
 
 
 class RunLaneContractTest(unittest.TestCase):
-    def test_contracts_build_runs_the_transitive_binding_gates(self) -> None:
+    def test_contracts_run_the_exact_portable_binding_receipt_gates(self) -> None:
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
         contracts = driver.split("  contracts)", 1)[1].split("  portable)", 1)[0]
         self.assertIn('if [ "$build" = true ] || [ "$test_lane" = true ]; then', contracts)
-        self.assertEqual(1, contracts.count(":codex-agent-core:auditCrossLanguageBindingParity"))
-        self.assertNotIn(":codex-agent-core:verifyKotlinBindingParity", contracts)
-        self.assertNotIn(":codex-agent-core:verifyJavaBindingParity", contracts)
+        self.assertEqual(1, contracts.count(":codex-agent-core:verifyKotlinBindingParity"))
+        self.assertEqual(1, contracts.count(":codex-agent-core:verifyJavaBindingParity"))
+        self.assertNotIn(":codex-agent-core:auditCrossLanguageBindingParity", contracts)
         self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", contracts)
 
     def test_node_js_runs_one_strict_binding_gate_for_build_or_test(self) -> None:
@@ -64,11 +65,28 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertNotIn(":codex-agent-runtime-desktop:verifyPackedNpmConsumers", node_js)
         self.assertNotIn(":codex-agent-runtime-desktop:jsNodeTest", node_js)
 
-    def test_swift_tests_run_exact_apple_compiler_observation(self) -> None:
+    def test_swift_tests_run_the_single_transitive_apple_binding_receipt_gate(self) -> None:
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
         swift_tests = driver.split("  ios-swift-tests)", 1)[1].split("  ios-package)", 1)[0]
-        self.assertEqual(1, swift_tests.count(":codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests"))
-        self.assertEqual(1, swift_tests.count(":codex-agent-runtime-ios:generateCodexAgentAppleCompilerEvidence"))
+        self.assertEqual(1, swift_tests.count(":codex-agent-runtime-ios:generateCodexAgentAppleBindingEvidence"))
+        self.assertNotIn(":codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests", swift_tests)
+        self.assertNotIn(":codex-agent-runtime-ios:generateCodexAgentAppleCompilerEvidence", swift_tests)
+
+    def test_merge_gate_runs_the_packaged_m7_5_audit_over_exactly_five_receipts(self) -> None:
+        workflow = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        merge_gate = workflow.split("\n  merge-gate:", 1)[1]
+        command = 'java -jar "$release_tool" audit-cross-language-bindings'
+
+        self.assertEqual(1, merge_gate.count(command))
+        self.assertIn("--phase M7_5", merge_gate)
+        self.assertLess(merge_gate.index("lane_ios_swift_tests_test"), merge_gate.index(command))
+        self.assertEqual({
+            "kotlin-parity.json",
+            "java-parity.json",
+            "javascript-typescript-parity.json",
+            "swift-parity.json",
+            "objective-c-parity.json",
+        }, set(re.findall(r"[a-z]+(?:-[a-z]+)*-parity\.json", merge_gate)))
 
 
 class GitFixture(unittest.TestCase):
@@ -95,7 +113,9 @@ class GitFixture(unittest.TestCase):
                 "codex-agent-core/src/jvmMain/**\nconfigured/portable.txt\n"
             ),
             "contracts.production": "configured/contracts.txt\n",
+            "contracts.test": "binding-contract-tests/**\n",
             "contracts.metadata": "Package.swift\n",
+            "node-js.test": "binding-node-tests/**\n",
             "consumer-common.production": (
                 "codex-agent-core/src/jvmMain/**\nconfigured/consumer-common.txt\n"
             ),
@@ -105,7 +125,28 @@ class GitFixture(unittest.TestCase):
             "ios-package.metadata": "Package.swift\n",
             "ios-privacy-metrics.metadata": "privacy-policy/**\n",
             "ios-kotlin-tests.test": "ios-sim-tests/**\n",
-            "ios-swift-tests.test": "ios-swift-auth-tests/**\n",
+            "ios-swift-tests.test": (
+                "ios-swift-auth-tests/**\n"
+                "gradle/build-logic/src/main/kotlin/CrossLanguage*.kt\n"
+                "gradle/build-logic/src/main/kotlin/ReleaseToolingCli.kt\n"
+                "gradle/build-logic/src/main/kotlin/codexagent.core-verification.gradle.kts\n"
+                "gradle/build-logic/src/test/kotlin/CrossLanguage*.kt\n"
+                "codex-agent-core/build.gradle.kts\n"
+                "codex-agent-core/src/commonMain/**\n"
+                "codex-agent-core/src/commonTest/**\n"
+                "codex-agent-core/src/jvmAndAndroidMain/**\n"
+                "codex-agent-core/src/jvmTest/**\n"
+                "codex-agent-runtime-desktop/build.gradle.kts\n"
+                "codex-agent-runtime-desktop/npm/**\n"
+                "codex-agent-runtime-desktop/src/commonMain/**\n"
+                "codex-agent-runtime-desktop/src/commonTest/**\n"
+                "codex-agent-runtime-desktop/src/webMain/**\n"
+                "codex-agent-runtime-desktop/src/webTest/**\n"
+                "codex-agent-runtime-desktop/src/jsMain/**\n"
+                "codex-agent-runtime-desktop/src/jsTest/**\n"
+                "codex-agent-runtime-ios/apple/CompilerEvidence/**\n"
+                "codex-agent-runtime-ios/apple/Tests/**\n"
+            ),
             "ios-package.production": (
                 "configured/ios-package.txt\n"
                 "codex-agent-runtime-ios/apple/Sources/**\n"
@@ -172,6 +213,28 @@ class GitFixture(unittest.TestCase):
 
 
 class ImpactPlanTest(GitFixture):
+    def test_binding_inputs_require_all_five_language_receipt_owners(self) -> None:
+        base = self.base
+        inputs = (
+            "codex-agent-core/src/commonMain/kotlin/sample/Canonical.kt",
+            "codex-agent-core/src/jvmAndAndroidMain/kotlin/sample/CodexJava.kt",
+            "codex-agent-runtime-desktop/src/jsMain/kotlin/sample/CodexNode.kt",
+            "codex-agent-runtime-ios/apple/CompilerEvidence/CodexFailureSwiftConsumer.swift",
+            "codex-agent-runtime-ios/apple/CompilerEvidence/CodexFailureObjectiveCConsumer.m",
+            "codex-agent-runtime-ios/apple/Tests/CodexAgentObservationTests/CodexAgentObservationTests.swift",
+            "gradle/build-logic/src/main/kotlin/ReleaseToolingCli.kt",
+        )
+        for relative in inputs:
+            with self.subTest(relative=relative):
+                result, _, target = self.make_plan(relative, base=base)
+                base = target
+                self.assertTrue(result["lanes"]["contracts"]["build"])
+                self.assertTrue(result["lanes"]["contracts"]["test"])
+                self.assertTrue(result["lanes"]["node-js"]["test"])
+                self.assertTrue(result["lanes"]["ios-swift-tests"]["test"])
+                self.assertIn("required-by:ios-swift-tests", result["lanes"]["contracts"]["reasons"])
+                self.assertIn("required-by:ios-swift-tests", result["lanes"]["node-js"]["reasons"])
+
     def test_rename_is_classified_by_its_destination(self) -> None:
         base = self.commit("desktop-runtime/old.txt", "old\n")
         (self.root / "js").mkdir()
@@ -359,7 +422,10 @@ class ImpactPlanTest(GitFixture):
                 {"contracts", "node-js", "consumer-node-js"},
                 {lane for lane in LANES if matches(lane, "production", npm)},
             )
-            self.assertFalse(any(matches(lane, "test", npm) for lane in LANES))
+            self.assertEqual(
+                {"ios-swift-tests"},
+                {lane for lane in LANES if matches(lane, "test", npm)},
+            )
             self.assertFalse(any(matches(lane, "metadata", npm) for lane in LANES))
         for lane in (name for name in LANES if name.startswith("desktop-")):
             self.assertFalse(matches(lane, "production", js))
@@ -623,6 +689,10 @@ class RealImpactPlanTest(unittest.TestCase):
             with self.subTest(filename=filename):
                 self.assertEqual({"contracts"}, matching_lanes("production", prefix + filename))
 
+        cli = prefix + "ReleaseToolingCli.kt"
+        self.assertEqual({"ios-swift-tests"}, matching_lanes("test", cli))
+        self.assertEqual(set(), matching_lanes("metadata", cli))
+
         self.assertEqual(
             {
                 "contracts", "ios-rust-device", "ios-rust-simulator",
@@ -658,6 +728,7 @@ class RealImpactPlanTest(unittest.TestCase):
                 "contracts", "portable", "node-js", "node-wasm",
                 "desktop-macos-arm64", "desktop-macos-x64",
                 "desktop-linux-arm64", "desktop-linux-x64", "desktop-windows-x64",
+                "ios-swift-tests",
             },
             matching_lanes("test", common_desktop_test),
         )
@@ -687,7 +758,7 @@ class RealImpactPlanTest(unittest.TestCase):
             "io/github/codex_agent_labs/codexmobile/appserver/runtime/NodeHostFilesSecurityTest.kt"
         )
         self.assertEqual(
-            {"contracts", "portable", "node-js", "node-wasm"},
+            {"contracts", "portable", "node-js", "node-wasm", "ios-swift-tests"},
             matching_lanes("test", web_host_files_test),
         )
         for test_path in (shared_host_policy_test, desktop_host_files_test, web_host_files_test):
@@ -711,7 +782,7 @@ class RealImpactPlanTest(unittest.TestCase):
             },
             matching_lanes("production", codex_java_source),
         )
-        self.assertEqual({"contracts"}, matching_lanes("test", codex_java_source))
+        self.assertEqual({"contracts", "ios-swift-tests"}, matching_lanes("test", codex_java_source))
         self.assertEqual(
             {"contracts", "portable", "consumer-desktop"},
             matching_lanes(
@@ -770,19 +841,19 @@ class RealImpactPlanTest(unittest.TestCase):
                     matching_lanes("production", path),
                 )
                 self.assertEqual(
-                    {"contracts", "node-js"},
+                    {"contracts", "node-js", "ios-swift-tests"},
                     matching_lanes("test", path),
                 )
 
         canonical_behavior_inputs = {
             "codex-agent-core/src/commonMain/kotlin/sample/Canonical.kt": {
-                "contracts", "node-js",
+                "contracts", "node-js", "ios-swift-tests",
             },
             "codex-agent-core/src/commonTest/kotlin/sample/CanonicalTest.kt": {
-                "contracts", "node-js", "ios-kotlin-tests",
+                "contracts", "node-js", "ios-kotlin-tests", "ios-swift-tests",
             },
             "codex-agent-core/src/jvmTest/kotlin/sample/CanonicalJvmTest.kt": {
-                "contracts", "node-js",
+                "contracts", "node-js", "ios-swift-tests",
             },
         }
         for path, test_lanes in canonical_behavior_inputs.items():
@@ -1020,22 +1091,43 @@ class StageArchiveTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Required lane output did not match"):
                         copy_matches(root, root / "staged", pattern)
 
-    def test_swift_tests_stage_exact_compiler_observation_and_reject_missing_output(self) -> None:
+    def test_swift_tests_stage_exact_apple_binding_evidence_and_reject_missing_outputs(self) -> None:
         compiler_evidence = (
             "test",
             "codex-agent-runtime-ios/build/reports/cross-language-api/apple/compiler-evidence.json",
             "apple-compiler-evidence",
         )
+        binding_outputs = (
+            (
+                "test",
+                "codex-agent-runtime-ios/build/reports/cross-language-api/apple/binding-evidence.json",
+                "apple-binding-evidence",
+            ),
+            (
+                "test",
+                "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/swift-parity.json",
+                "cross-language-swift-binding-receipt-evidence",
+            ),
+            (
+                "test",
+                "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/objective-c-parity.json",
+                "cross-language-objective-c-binding-receipt-evidence",
+            ),
+        )
         self.assertEqual((
             ("test", "codex-agent-runtime-ios/build/swift-authentication-tests-summary.json", "xctest-summary"),
             ("test", "codex-agent-runtime-ios/build/swift-authentication-tests.xcresult/**/*", "xctest-result"),
             compiler_evidence,
+            *binding_outputs,
         ), OUTPUTS["ios-swift-tests"])
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaisesRegex(ValueError, "Required lane output did not match"):
-                copy_matches(root, root / "staged", compiler_evidence[1])
+            for _, pattern, _ in binding_outputs:
+                with self.subTest(pattern=pattern), self.assertRaisesRegex(
+                    ValueError, "Required lane output did not match",
+                ):
+                    copy_matches(root, root / "staged", pattern)
 
     def test_recursive_output_globs_are_python_312_compatible(self) -> None:
         self.assertFalse([

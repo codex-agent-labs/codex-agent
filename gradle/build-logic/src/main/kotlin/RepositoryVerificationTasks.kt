@@ -3,7 +3,9 @@ import org.gradle.kotlin.dsl.register
 
 internal val repositoryVerificationTaskPaths = listOf(
     ":codex-agent-core:jvmTest",
-    ":codex-agent-core:auditCrossLanguageBindingParity",
+    ":codex-agent-core:verifyKotlinBindingParity",
+    ":codex-agent-core:verifyJavaBindingParity",
+    ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity",
     ":codex-agent-core:compileAndroidMain",
     ":codex-agent-core:compileKotlinJs",
     ":codex-agent-core:compileKotlinWasmJs",
@@ -38,7 +40,10 @@ fun Project.registerRepositoryVerificationTasks() {
     }
     tasks.register("verifyIosRuntime") {
         group = "verification"
-        description = "Runs the embedded iOS runtime, XCFramework, and Swift consumer gates on macOS."
-        dependsOn(":codex-agent-runtime-ios:verifyIosRuntime")
+        description = "Runs iOS runtime and complete Kotlin, Java, JS, Swift, and Objective-C parity on macOS."
+        dependsOn(
+            ":codex-agent-runtime-ios:verifyIosRuntime",
+            ":codex-agent-core:auditCrossLanguageBindingParity",
+        )
     }
 }

@@ -106,6 +106,17 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("test", "codex-agent-runtime-ios/build/swift-authentication-tests-summary.json", "xctest-summary"),
         ("test", "codex-agent-runtime-ios/build/swift-authentication-tests.xcresult/**/*", "xctest-result"),
         ("test", "codex-agent-runtime-ios/build/reports/cross-language-api/apple/compiler-evidence.json", "apple-compiler-evidence"),
+        ("test", "codex-agent-runtime-ios/build/reports/cross-language-api/apple/binding-evidence.json", "apple-binding-evidence"),
+        (
+            "test",
+            "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/swift-parity.json",
+            "cross-language-swift-binding-receipt-evidence",
+        ),
+        (
+            "test",
+            "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/objective-c-parity.json",
+            "cross-language-objective-c-binding-receipt-evidence",
+        ),
     ),
     "ios-package": (
         ("build", "codex-agent-runtime-ios/build/distributions/CodexAgent-*.xcframework.zip", "swift-package-binary"),

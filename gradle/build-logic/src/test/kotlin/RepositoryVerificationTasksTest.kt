@@ -5,10 +5,18 @@ import kotlin.test.assertTrue
 
 class RepositoryVerificationTasksTest {
     @Test
-    fun `repository verification requires compiler derived API coverage`() {
-        assertTrue(":codex-agent-core:auditCrossLanguageBindingParity" in repositoryVerificationTaskPaths)
+    fun `repository verification keeps portable binding producers and macOS owns the complete audit`() {
+        assertTrue(":codex-agent-core:verifyKotlinBindingParity" in repositoryVerificationTaskPaths)
+        assertTrue(":codex-agent-core:verifyJavaBindingParity" in repositoryVerificationTaskPaths)
+        assertTrue(
+            ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity" in
+                repositoryVerificationTaskPaths,
+        )
+        assertFalse(":codex-agent-core:auditCrossLanguageBindingParity" in repositoryVerificationTaskPaths)
         val source = File("src/main/kotlin/RepositoryVerificationTasks.kt").readText()
         assertTrue("gradle.includedBuild(\"build-logic\").task(\":test\")" in source)
+        assertTrue(":codex-agent-runtime-ios:verifyIosRuntime" in source)
+        assertTrue(":codex-agent-core:auditCrossLanguageBindingParity" in source)
     }
 
     @Test

@@ -170,10 +170,24 @@ val appleDistributionTasks = registerIosAppleDistributionTasks(
 val appleCompilerMinimumIosVersion = minimumIosVersion
 val appleBindingEvidenceFile =
     layout.buildDirectory.file("reports/cross-language-api/apple/binding-evidence.json")
+val swiftBindingReceiptFile =
+    layout.buildDirectory.file("reports/cross-language-api/bindings/swift-parity.json")
+val objectiveCBindingReceiptFile =
+    layout.buildDirectory.file("reports/cross-language-api/bindings/objective-c-parity.json")
 val invalidateAppleBindingEvidence = tasks.register<Delete>("invalidateCodexAgentAppleBindingEvidence") {
     group = "verification"
-    description = "Deletes partial Apple binding evidence before its compiler and XCTest prerequisites run."
-    delete(appleBindingEvidenceFile)
+    description = "Deletes partial Apple binding evidence and receipts before their prerequisites run."
+    delete(appleBindingEvidenceFile, swiftBindingReceiptFile, objectiveCBindingReceiptFile)
+}
+tasks.configureEach {
+    if (name != invalidateAppleBindingEvidence.name) {
+        mustRunAfter(invalidateAppleBindingEvidence)
+    }
+}
+project(":codex-agent-core").tasks.matching {
+    it.name == "invalidateCrossLanguageBindingParityOutputs"
+}.configureEach {
+    dependsOn(invalidateAppleBindingEvidence)
 }
 val appleCompilerEvidence = tasks.register<AppleCompilerEvidenceTask>("generateCodexAgentAppleCompilerEvidence") {
     group = "verification"
@@ -202,9 +216,11 @@ val appleCompilerEvidence = tasks.register<AppleCompilerEvidenceTask>("generateC
 appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests.configure {
     dependsOn(invalidateAppleBindingEvidence)
 }
-tasks.register<GenerateAppleBindingEvidenceTask>("generateCodexAgentAppleBindingEvidence") {
+val appleBindingEvidence = tasks.register<GenerateAppleBindingEvidenceTask>(
+    "generateCodexAgentAppleBindingEvidence",
+) {
     group = "verification"
-    description = "Matches the observed CodexFailure Swift and Objective-C binding slice without issuing receipts."
+    description = "Matches Apple bindings and emits independently verified Swift and Objective-C receipts."
     dependsOn(
         invalidateAppleBindingEvidence,
         appleCompilerEvidence,
@@ -231,7 +247,14 @@ tasks.register<GenerateAppleBindingEvidenceTask>("generateCodexAgentAppleBinding
             VerifySwiftAuthenticationTestsTask::resultBundleDirectory,
         ),
     )
+    xctestPackageDirectory.set(
+        appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests.flatMap(
+            VerifySwiftAuthenticationTestsTask::packageDirectory,
+        ),
+    )
     evidenceFile.set(appleBindingEvidenceFile)
+    swiftReceiptFile.set(swiftBindingReceiptFile)
+    objectiveCReceiptFile.set(objectiveCBindingReceiptFile)
 }
 val appleReleaseTasks = registerIosAppleReleaseVerificationTasks(
     appleDistributionTasks,
@@ -247,7 +270,7 @@ private val verifiedDistributionTasks = registerIosVerifiedDistributionTasks(
 tasks.register("verifyIosRuntime") {
     group = "verification"
     description = "Builds and tests the embedded iOS runtime and clean Swift Package consumer."
-    dependsOn(appleCompilerEvidence)
+    dependsOn(appleBindingEvidence)
     val imported = verifiedDistributionTasks.validateImported
     if (imported != null) dependsOn(imported) else {
         if (!providers.gradleProperty("codexAgent.iosNativeEvidenceDirectory").isPresent) {
