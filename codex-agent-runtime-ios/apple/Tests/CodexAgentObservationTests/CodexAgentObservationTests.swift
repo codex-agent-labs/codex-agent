@@ -1901,6 +1901,289 @@ final class CodexAgentObservationTests: XCTestCase {
         XCTAssertFalse(plugins.isAvailable)
         XCTAssertTrue(skills.isAvailable)
 
+        let d086Hook = AgentHook(
+            key: "d086-hook",
+            currentHash: "d086-hash",
+            isEnabled: true,
+            eventName: "afterTurn",
+            handler: AgentHookHandlerAgent.shared,
+            isManaged: false,
+            source: "USER",
+            sourcePath: sandbox.appendingPathComponent("hooks.json").path,
+            timeoutSeconds: 86,
+            trustStatus: .untrusted,
+            matcher: nil,
+            pluginId: nil,
+            statusMessage: nil,
+            origin: .user,
+            canUninstall: false
+        )
+        let d086McpTransport = AgentMcpTransportHttp(
+            url: "https://example.com/d086-mcp",
+            bearerTokenEnvironmentVariable: nil,
+            headers: nil,
+            environmentHeaders: nil,
+            headersHelper: nil
+        )
+        let d086McpConfiguration = AgentMcpServerConfiguration(
+            name: "d086-server",
+            transport: d086McpTransport,
+            authentication: nil,
+            environmentId: "local",
+            isEnabled: true,
+            isRequired: false,
+            supportsParallelToolCalls: false,
+            omitToolsFrom: nil,
+            startupTimeoutSeconds: nil,
+            toolTimeoutSeconds: nil,
+            defaultToolApproval: nil,
+            enabledTools: nil,
+            disabledTools: nil,
+            scopes: nil,
+            oauth: nil,
+            oauthResource: nil,
+            tools: [:]
+        )
+        let d086McpServer = AgentMcpServer(
+            name: "d086-server",
+            displayName: "D086 Server",
+            authStatus: .unknown,
+            configuration: d086McpConfiguration,
+            origin: .workspace,
+            canRemove: false
+        )
+        let d086Plugin = AgentPluginReference(
+            id: "d086-plugin",
+            name: "d086-plugin",
+            marketplaceName: "d086-marketplace",
+            marketplacePath: nil,
+            remotePluginId: nil
+        )
+
+        do {
+            _ = try await connectors.list(forceReload: false)
+            XCTFail("D086 connectors.list should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature CONNECTORS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            _ = try await hooks.install(
+                directory: sandbox.appendingPathComponent("missing-hook").path,
+                scope: .workspace
+            )
+            XCTFail("D086 hooks.install should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature HOOKS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            _ = try await hooks.list()
+            XCTFail("D086 hooks.list should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature HOOKS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            try await hooks.trust(hook: d086Hook)
+            XCTFail("D086 hooks.trust should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature HOOKS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            try await hooks.uninstall(hook: d086Hook)
+            XCTFail("D086 hooks.uninstall should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature HOOKS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            _ = try await mcpServers.add(configuration: d086McpConfiguration)
+            XCTFail("D086 mcpServers.add should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature MCP_SERVERS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            _ = try await mcpServers.list()
+            XCTFail("D086 mcpServers.list should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature MCP_SERVERS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            try await mcpServers.remove(server: d086McpServer)
+            XCTFail("D086 mcpServers.remove should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature MCP_SERVERS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        let d086Models = try await models.list()
+        let d086FirstModel = try XCTUnwrap(d086Models.first)
+        XCTAssertFalse(d086FirstModel.id.isEmpty)
+
+        let d086ResolvedFirst = try await models.resolve(resolution: .first)
+        XCTAssertEqual(d086ResolvedFirst.id, d086FirstModel.id)
+
+        let d086FirstTier = AgentServiceTier(
+            id: "d086-first-tier",
+            name: "D086 First Tier",
+            description: "D086 first service tier"
+        )
+        let d086Model = AgentModel(
+            id: "d086-model",
+            displayName: "D086 Model",
+            description: "D086 model",
+            supportedEfforts: ["low", "medium"],
+            defaultEffort: "medium",
+            isDefault: true,
+            serviceTiers: [d086FirstTier],
+            defaultServiceTier: "d086-first-tier"
+        )
+        let d086Effort = try await models.resolveEffort(model: d086Model, resolution: .default_)
+        XCTAssertEqual(d086Effort, "medium")
+
+        let d086ResolvedTier = try await models.resolveServiceTier(
+            model: d086Model,
+            resolution: .first
+        )
+        XCTAssertTrue(d086ResolvedTier === d086FirstTier)
+        let d086ModelWithoutTiers = AgentModel(
+            id: "d086-model-without-tiers",
+            displayName: "D086 Model Without Tiers",
+            description: "D086 model without service tiers",
+            supportedEfforts: ["medium"],
+            defaultEffort: "medium",
+            isDefault: false,
+            serviceTiers: [],
+            defaultServiceTier: nil
+        )
+        let d086MissingTier = try await models.resolveServiceTier(
+            model: d086ModelWithoutTiers,
+            resolution: .first
+        )
+        XCTAssertNil(d086MissingTier)
+
+        do {
+            _ = try await plugins.install(plugin: d086Plugin)
+            XCTFail("D086 plugins.install should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature PLUGINS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            _ = try await plugins.list(forceReload: false)
+            XCTFail("D086 plugins.list should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature PLUGINS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            _ = try await plugins.read(plugin: d086Plugin)
+            XCTFail("D086 plugins.read should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature PLUGINS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        do {
+            try await plugins.uninstall(plugin: d086Plugin)
+            XCTFail("D086 plugins.uninstall should reject an unsupported iOS feature")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "unsupported_feature")
+            XCTAssertEqual(failure.message, "Runtime feature PLUGINS is not supported")
+            XCTAssertFalse(failure.isRecoverable)
+        }
+
+        let d086SkillCatalog: AgentSkillCatalog = try await skills.list(forceReload: true)
+        XCTAssertTrue(d086SkillCatalog.errors.isEmpty)
+
+        let d086UnknownSkillPath = sandbox
+            .appendingPathComponent("never-listed", isDirectory: true)
+            .appendingPathComponent("SKILL.md")
+            .path
+        do {
+            _ = try await skills.read(path: d086UnknownSkillPath, offset: 0)
+            XCTFail("D086 skills.read should reject a path absent from skills.list")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "skill_read_failed")
+            XCTAssertEqual(failure.message, "Could not read skill")
+            XCTAssertTrue(failure.isRecoverable)
+        }
+
+        do {
+            _ = try await skills.install(
+                directory: sandbox.appendingPathComponent("missing-skill", isDirectory: true).path,
+                scope: .user
+            )
+            XCTFail("D086 skills.install should reject a missing source directory")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "skill_install_failed")
+            XCTAssertEqual(failure.message, "Could not install skill")
+            XCTAssertTrue(failure.isRecoverable)
+        }
+
+        let d086UnownedSkill = AgentSkill(
+            name: "d086-unowned",
+            displayName: "D086 Unowned Skill",
+            description: "D086 unowned skill",
+            path: sandbox
+                .appendingPathComponent("unowned-skill", isDirectory: true)
+                .appendingPathComponent("SKILL.md")
+                .path,
+            scope: .user,
+            isEnabled: true,
+            brandColor: nil,
+            dependencies: [],
+            canUninstall: true,
+            origin: .user
+        )
+        do {
+            try await skills.uninstall(skill: d086UnownedSkill)
+            XCTFail("D086 skills.uninstall should reject a skill without an ownership marker")
+        } catch {
+            let failure = try XCTUnwrap(error.codexFailure)
+            XCTAssertEqual(failure.code, "skill_uninstall_failed")
+            XCTAssertEqual(failure.message, "Could not uninstall skill")
+            XCTAssertTrue(failure.isRecoverable)
+        }
+
         try await host.close()
         await fulfillment(of: [closedObserved], timeout: 30)
         _ = try XCTUnwrap(host.lifecycleState.value as? CodexHostStateClosed)

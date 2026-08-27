@@ -2006,6 +2006,16 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 @property(nonatomic, strong) NSURL *canonicalWorkspaceURL;
 @property(nonatomic, strong) CodexAgentCodexHost *canonicalHost;
 @property(nonatomic, strong) CodexAgentCodexStateObservation *canonicalHostObservation;
+@property(nonatomic, strong) CodexAgentCodexAgent *canonicalD086Agent;
+@property(nonatomic, strong) CodexAgentAgentHook *canonicalD086Hook;
+@property(nonatomic, strong) CodexAgentAgentMcpServerConfiguration *canonicalD086McpConfiguration;
+@property(nonatomic, strong) CodexAgentAgentMcpServer *canonicalD086McpServer;
+@property(nonatomic, strong) CodexAgentAgentPluginReference *canonicalD086Plugin;
+@property(nonatomic, strong) CodexAgentAgentServiceTier *canonicalD086FirstTier;
+@property(nonatomic, strong) CodexAgentAgentModel *canonicalD086Model;
+@property(nonatomic, strong) CodexAgentAgentModel *canonicalD086ModelWithoutTiers;
+@property(nonatomic, strong) CodexAgentAgentSkill *canonicalD086UnownedSkill;
+@property(nonatomic, copy) NSString *canonicalD086FirstModelId;
 @property(nonatomic, strong) CDXHost *host;
 @property(nonatomic, strong) CDXAgent *agent;
 @property(nonatomic, strong) CDXConversation *conversation;
@@ -2038,6 +2048,8 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
 
 - (instancetype)initWithCompletion:(CDXObjectiveCConsumerCompletion)completion;
 - (void)run;
+- (void)beginD086ControllerFunctions:(CodexAgentCodexAgent *)agent;
+- (void)advanceD086ControllerFunctionsAtStep:(NSUInteger)step;
 
 @end
 
@@ -2414,7 +2426,638 @@ static const NSTimeInterval CDXUnsubscribeProofDelaySeconds = 0.1;
         [self finishWithFailure:@"Objective-C canonical plugins availability changed"];
         return;
     }
-    [self closeCanonicalHost];
+    [self beginD086ControllerFunctions:ready.agent];
+}
+
+- (void)beginD086ControllerFunctions:(CodexAgentCodexAgent *)agent {
+    self.canonicalD086Agent = agent;
+    self.canonicalD086Hook = [[CodexAgentAgentHook alloc]
+        initWithKey:@"d086-hook"
+        currentHash:@"d086-hash"
+        isEnabled:YES
+        eventName:@"afterTurn"
+        handler:[CodexAgentAgentHookHandlerAgent shared]
+        isManaged:NO
+        source:@"USER"
+        sourcePath:[self.sandboxRoot stringByAppendingPathComponent:@"hooks.json"]
+        timeoutSeconds:86
+        trustStatus:[CodexAgentAgentHookTrustStatus untrusted]
+        matcher:nil
+        pluginId:nil
+        statusMessage:nil
+        origin:[CodexAgentAgentResourceOrigin user]
+        canUninstall:NO];
+    CodexAgentAgentMcpTransportHttp *transport = [[CodexAgentAgentMcpTransportHttp alloc]
+        initWithUrl:@"https://example.com/d086-mcp"
+        bearerTokenEnvironmentVariable:nil
+        headers:nil
+        environmentHeaders:nil
+        headersHelper:nil];
+    self.canonicalD086McpConfiguration = [[CodexAgentAgentMcpServerConfiguration alloc]
+        initWithName:@"d086-server"
+        transport:transport
+        authentication:nil
+        environmentId:@"local"
+        isEnabled:YES
+        isRequired:NO
+        supportsParallelToolCalls:NO
+        omitToolsFrom:nil
+        startupTimeoutSeconds:nil
+        toolTimeoutSeconds:nil
+        defaultToolApproval:nil
+        enabledTools:nil
+        disabledTools:nil
+        scopes:nil
+        oauth:nil
+        oauthResource:nil
+        tools:@{}];
+    self.canonicalD086McpServer = [[CodexAgentAgentMcpServer alloc]
+        initWithName:@"d086-server"
+        displayName:@"D086 Server"
+        authStatus:[CodexAgentAgentMcpAuthStatus unknown]
+        configuration:self.canonicalD086McpConfiguration
+        origin:[CodexAgentAgentResourceOrigin workspace]
+        canRemove:NO];
+    self.canonicalD086Plugin = [[CodexAgentAgentPluginReference alloc]
+        initWithId:@"d086-plugin"
+        name:@"d086-plugin"
+        marketplaceName:@"d086-marketplace"
+        marketplacePath:nil
+        remotePluginId:nil];
+    self.canonicalD086FirstTier = [[CodexAgentAgentServiceTier alloc]
+        initWithId:@"d086-first-tier"
+        name:@"D086 First Tier"
+        description:@"D086 first service tier"];
+    self.canonicalD086Model = [[CodexAgentAgentModel alloc]
+        initWithId:@"d086-model"
+        displayName:@"D086 Model"
+        description:@"D086 model"
+        supportedEfforts:@[@"low", @"medium"]
+        defaultEffort:@"medium"
+        isDefault:YES
+        serviceTiers:@[self.canonicalD086FirstTier]
+        defaultServiceTier:@"d086-first-tier"];
+    self.canonicalD086ModelWithoutTiers = [[CodexAgentAgentModel alloc]
+        initWithId:@"d086-model-without-tiers"
+        displayName:@"D086 Model Without Tiers"
+        description:@"D086 model without service tiers"
+        supportedEfforts:@[@"medium"]
+        defaultEffort:@"medium"
+        isDefault:NO
+        serviceTiers:@[]
+        defaultServiceTier:nil];
+    NSString *unownedSkillPath = [[self.sandboxRoot
+        stringByAppendingPathComponent:@"unowned-skill"]
+        stringByAppendingPathComponent:@"SKILL.md"];
+    self.canonicalD086UnownedSkill = [[CodexAgentAgentSkill alloc]
+        initWithName:@"d086-unowned"
+        displayName:@"D086 Unowned Skill"
+        description:@"D086 unowned skill"
+        path:unownedSkillPath
+        scope:[CodexAgentAgentSkillScope user]
+        isEnabled:YES
+        brandColor:nil
+        dependencies:@[]
+        canUninstall:YES
+        origin:[CodexAgentAgentResourceOrigin user]];
+    [self advanceD086ControllerFunctionsAtStep:0];
+}
+
+- (void)advanceD086ControllerFunctionsAtStep:(NSUInteger)step {
+    if (self.finishing) return;
+    __weak CDXObjectiveCConsumerRun *weakSelf = self;
+    switch (step) {
+        case 0: {
+            [self.canonicalD086Agent.connectors
+                listForceReload:NO
+                completionHandler:^(NSArray<CodexAgentAgentConnector *> *connectors,
+                                    NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (connectors != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature CONNECTORS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 connectors.list exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:1];
+                });
+            }];
+            break;
+        }
+        case 1: {
+            [self.canonicalD086Agent.hooks
+                installDirectory:[self.sandboxRoot stringByAppendingPathComponent:@"missing-hook"]
+                scope:[CodexAgentAgentInstallationScope workspace]
+                completionHandler:^(CodexAgentAgentHook *hook, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (hook != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature HOOKS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 hooks.install exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:2];
+                });
+            }];
+            break;
+        }
+        case 2: {
+            [self.canonicalD086Agent.hooks
+                listWithCompletionHandler:^(CodexAgentAgentHookCatalog *catalog,
+                                            NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (catalog != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature HOOKS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 hooks.list exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:3];
+                });
+            }];
+            break;
+        }
+        case 3: {
+            [self.canonicalD086Agent.hooks
+                trustHook:self.canonicalD086Hook
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature HOOKS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 hooks.trust exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:4];
+                });
+            }];
+            break;
+        }
+        case 4: {
+            [self.canonicalD086Agent.hooks
+                uninstallHook:self.canonicalD086Hook
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature HOOKS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 hooks.uninstall exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:5];
+                });
+            }];
+            break;
+        }
+        case 5: {
+            [self.canonicalD086Agent.mcpServers
+                addConfiguration:self.canonicalD086McpConfiguration
+                completionHandler:^(CodexAgentAgentMcpServer *server, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (server != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature MCP_SERVERS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 mcpServers.add exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:6];
+                });
+            }];
+            break;
+        }
+        case 6: {
+            [self.canonicalD086Agent.mcpServers
+                listWithCompletionHandler:^(NSArray<CodexAgentAgentMcpServer *> *servers,
+                                            NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (servers != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature MCP_SERVERS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 mcpServers.list exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:7];
+                });
+            }];
+            break;
+        }
+        case 7: {
+            [self.canonicalD086Agent.mcpServers
+                removeServer:self.canonicalD086McpServer
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature MCP_SERVERS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 mcpServers.remove exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:8];
+                });
+            }];
+            break;
+        }
+        case 8: {
+            [self.canonicalD086Agent.models
+                listWithCompletionHandler:^(NSArray<CodexAgentAgentModel *> *models,
+                                            NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentAgentModel *first = models.firstObject;
+                    if (error != nil || models.count == 0 ||
+                        ![first isKindOfClass:[CodexAgentAgentModel class]] ||
+                        first.id.length == 0) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 models.list did not expose a nonempty typed list"];
+                        return;
+                    }
+                    run.canonicalD086FirstModelId = first.id;
+                    [run advanceD086ControllerFunctionsAtStep:9];
+                });
+            }];
+            break;
+        }
+        case 9: {
+            [self.canonicalD086Agent.models
+                resolveResolution:[CodexAgentAgentResolution first]
+                completionHandler:^(CodexAgentAgentModel *model, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil || model == nil ||
+                        ![model.id isEqualToString:run.canonicalD086FirstModelId]) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 models.resolve First changed the first model"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:10];
+                });
+            }];
+            break;
+        }
+        case 10: {
+            [self.canonicalD086Agent.models
+                resolveEffortModel:self.canonicalD086Model
+                resolution:[CodexAgentAgentResolution default_]
+                completionHandler:^(NSString *effort, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil ||
+                        ![effort isEqualToString:run.canonicalD086Model.defaultEffort]) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 models.resolveEffort Default changed metadata"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:11];
+                });
+            }];
+            break;
+        }
+        case 11: {
+            [self.canonicalD086Agent.models
+                resolveServiceTierModel:self.canonicalD086Model
+                resolution:[CodexAgentAgentResolution first]
+                completionHandler:^(CodexAgentAgentServiceTier *tier, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil || tier != run.canonicalD086FirstTier) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 models.resolveServiceTier First changed identity"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:12];
+                });
+            }];
+            break;
+        }
+        case 12: {
+            [self.canonicalD086Agent.models
+                resolveServiceTierModel:self.canonicalD086ModelWithoutTiers
+                resolution:[CodexAgentAgentResolution first]
+                completionHandler:^(CodexAgentAgentServiceTier *tier, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil || tier != nil) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 models.resolveServiceTier lost nullable absence"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:13];
+                });
+            }];
+            break;
+        }
+        case 13: {
+            [self.canonicalD086Agent.plugins
+                installPlugin:self.canonicalD086Plugin
+                completionHandler:^(CodexAgentAgentPluginInstallResult *result,
+                                    NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (result != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature PLUGINS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 plugins.install exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:14];
+                });
+            }];
+            break;
+        }
+        case 14: {
+            [self.canonicalD086Agent.plugins
+                listForceReload:NO
+                completionHandler:^(CodexAgentAgentPluginCatalog *catalog, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (catalog != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature PLUGINS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 plugins.list exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:15];
+                });
+            }];
+            break;
+        }
+        case 15: {
+            [self.canonicalD086Agent.plugins
+                readPlugin:self.canonicalD086Plugin
+                completionHandler:^(CodexAgentAgentPluginDetail *detail, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (detail != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature PLUGINS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 plugins.read exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:16];
+                });
+            }];
+            break;
+        }
+        case 16: {
+            [self.canonicalD086Agent.plugins
+                uninstallPlugin:self.canonicalD086Plugin
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"unsupported_feature"] ||
+                        ![failure.message isEqualToString:
+                            @"Runtime feature PLUGINS is not supported"] ||
+                        failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 plugins.uninstall exposed the wrong failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:17];
+                });
+            }];
+            break;
+        }
+        case 17: {
+            [self.canonicalD086Agent.skills
+                listForceReload:YES
+                completionHandler:^(CodexAgentAgentSkillCatalog *catalog, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    if (error != nil || catalog == nil ||
+                        ![catalog isKindOfClass:[CodexAgentAgentSkillCatalog class]] ||
+                        catalog.errors.count != 0) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 skills.list did not expose a typed clean catalog"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:18];
+                });
+            }];
+            break;
+        }
+        case 18: {
+            NSString *unknownPath = [[self.sandboxRoot
+                stringByAppendingPathComponent:@"never-listed"]
+                stringByAppendingPathComponent:@"SKILL.md"];
+            [self.canonicalD086Agent.skills
+                readPath:unknownPath
+                offset:0
+                completionHandler:^(CodexAgentAgentSkillChunk *chunk, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (chunk != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"skill_read_failed"] ||
+                        ![failure.message isEqualToString:@"Could not read skill"] ||
+                        !failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 skills.read exposed the wrong local failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:19];
+                });
+            }];
+            break;
+        }
+        case 19: {
+            [self.canonicalD086Agent.skills
+                installDirectory:[self.sandboxRoot
+                    stringByAppendingPathComponent:@"missing-skill"]
+                scope:[CodexAgentAgentInstallationScope user]
+                completionHandler:^(CodexAgentAgentSkill *skill, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (skill != nil || error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"skill_install_failed"] ||
+                        ![failure.message isEqualToString:@"Could not install skill"] ||
+                        !failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 skills.install exposed the wrong local failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:20];
+                });
+            }];
+            break;
+        }
+        case 20: {
+            [self.canonicalD086Agent.skills
+                uninstallSkill:self.canonicalD086UnownedSkill
+                completionHandler:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    CDXObjectiveCConsumerRun *run = weakSelf;
+                    if (run == nil || run.finishing) return;
+                    CodexAgentCodexOperationException *exception =
+                        [error.kotlinException
+                            isKindOfClass:[CodexAgentCodexOperationException class]]
+                            ? error.kotlinException
+                            : nil;
+                    CodexAgentCodexFailure *failure = exception.failure;
+                    if (error == nil || failure == nil ||
+                        ![failure.code isEqualToString:@"skill_uninstall_failed"] ||
+                        ![failure.message isEqualToString:@"Could not uninstall skill"] ||
+                        !failure.isRecoverable) {
+                        [run finishWithFailure:
+                            @"Objective-C D086 skills.uninstall exposed the wrong local failure"];
+                        return;
+                    }
+                    [run advanceD086ControllerFunctionsAtStep:21];
+                });
+            }];
+            break;
+        }
+        case 21:
+            [self closeCanonicalHost];
+            break;
+        default:
+            [self finishWithFailure:@"Objective-C D086 controller sequence advanced past its end"];
+            break;
+    }
 }
 
 - (void)closeCanonicalHost {

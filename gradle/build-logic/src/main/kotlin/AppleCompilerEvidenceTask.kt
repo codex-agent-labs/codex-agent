@@ -2167,6 +2167,168 @@ private val d085Capabilities: List<AppleOrdinaryCapability> = buildList {
 }
 private val d085CapabilitiesByKey = d085Capabilities.associateBy { it.canonicalKey }
 
+private val d086Capabilities = listOf(
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexConnectors|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexConnectors.list|list(kotlin.Boolean){}[0]|" +
+            "return=kotlin.collections/List<INVARIANT:$appleCanonicalPackage/AgentConnector!!>!!|" +
+            "suspend=true|parameters=[REGULAR:kotlin/Boolean!!:default=true:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexConnectors")}(im)listForceReload:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexHooks|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexHooks.install|install(kotlin.String;" +
+            "$appleCanonicalAbiPackage.AgentInstallationScope){}[0]|return=$appleCanonicalPackage/AgentHook!!|" +
+            "suspend=true|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false," +
+            "REGULAR:$appleCanonicalPackage/AgentInstallationScope!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)installDirectory:scope:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexHooks|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexHooks.list|list(){}[0]|" +
+            "return=$appleCanonicalPackage/AgentHookCatalog!!|suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)listWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexHooks|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexHooks.trust|trust($appleCanonicalAbiPackage.AgentHook){}[0]|" +
+            "return=kotlin/Unit|suspend=true|parameters=[REGULAR:$appleCanonicalPackage/AgentHook!!:" +
+            "default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)trustHook:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexHooks|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexHooks.uninstall|" +
+            "uninstall($appleCanonicalAbiPackage.AgentHook){}[0]|return=kotlin/Unit|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentHook!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)uninstallHook:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexMcpServers|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexMcpServers.add|" +
+            "add($appleCanonicalAbiPackage.AgentMcpServerConfiguration){}[0]|" +
+            "return=$appleCanonicalPackage/AgentMcpServer!!|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentMcpServerConfiguration!!:" +
+            "default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)addConfiguration:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexMcpServers|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexMcpServers.list|list(){}[0]|" +
+            "return=kotlin.collections/List<INVARIANT:$appleCanonicalPackage/AgentMcpServer!!>!!|" +
+            "suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)listWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexMcpServers|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexMcpServers.remove|" +
+            "remove($appleCanonicalAbiPackage.AgentMcpServer){}[0]|return=kotlin/Unit|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentMcpServer!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)removeServer:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexModels|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexModels.list|list(){}[0]|" +
+            "return=kotlin.collections/List<INVARIANT:$appleCanonicalPackage/AgentModel!!>!!|" +
+            "suspend=true|parameters=[]",
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)listWithCompletionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexModels|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexModels.resolveEffort|" +
+            "resolveEffort($appleCanonicalAbiPackage.AgentModel;$appleCanonicalAbiPackage.AgentResolution){}[0]|" +
+            "return=kotlin/String!!|suspend=true|parameters=[REGULAR:$appleCanonicalPackage/AgentModel!!:" +
+            "default=false:vararg=false,REGULAR:$appleCanonicalPackage/AgentResolution!!:" +
+            "default=true:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveEffortModel:resolution:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexModels|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexModels.resolveServiceTier|" +
+            "resolveServiceTier($appleCanonicalAbiPackage.AgentModel;" +
+            "$appleCanonicalAbiPackage.AgentResolution){}[0]|" +
+            "return=$appleCanonicalPackage/AgentServiceTier?|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentModel!!:default=false:vararg=false," +
+            "REGULAR:$appleCanonicalPackage/AgentResolution!!:default=true:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveServiceTierModel:resolution:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexModels|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexModels.resolve|" +
+            "resolve($appleCanonicalAbiPackage.AgentResolution){}[0]|" +
+            "return=$appleCanonicalPackage/AgentModel!!|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentResolution!!:default=true:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveResolution:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexPlugins|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexPlugins.install|" +
+            "install($appleCanonicalAbiPackage.AgentPluginReference){}[0]|" +
+            "return=$appleCanonicalPackage/AgentPluginInstallResult!!|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentPluginReference!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)installPlugin:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexPlugins|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexPlugins.list|list(kotlin.Boolean){}[0]|" +
+            "return=$appleCanonicalPackage/AgentPluginCatalog!!|suspend=true|" +
+            "parameters=[REGULAR:kotlin/Boolean!!:default=true:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)listForceReload:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexPlugins|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexPlugins.read|" +
+            "read($appleCanonicalAbiPackage.AgentPluginReference){}[0]|" +
+            "return=$appleCanonicalPackage/AgentPluginDetail!!|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentPluginReference!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)readPlugin:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexPlugins|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexPlugins.uninstall|" +
+            "uninstall($appleCanonicalAbiPackage.AgentPluginReference){}[0]|return=kotlin/Unit|" +
+            "suspend=true|parameters=[REGULAR:$appleCanonicalPackage/AgentPluginReference!!:" +
+            "default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)uninstallPlugin:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexSkills|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexSkills.install|install(kotlin.String;" +
+            "$appleCanonicalAbiPackage.AgentInstallationScope){}[0]|return=$appleCanonicalPackage/AgentSkill!!|" +
+            "suspend=true|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false," +
+            "REGULAR:$appleCanonicalPackage/AgentInstallationScope!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)installDirectory:scope:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexSkills|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexSkills.list|list(kotlin.Boolean){}[0]|" +
+            "return=$appleCanonicalPackage/AgentSkillCatalog!!|suspend=true|" +
+            "parameters=[REGULAR:kotlin/Boolean!!:default=true:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)listForceReload:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexSkills|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexSkills.read|read(kotlin.String;kotlin.Long){}[0]|" +
+            "return=$appleCanonicalPackage/AgentSkillChunk!!|suspend=true|" +
+            "parameters=[REGULAR:kotlin/String!!:default=false:vararg=false," +
+            "REGULAR:kotlin/Long!!:default=true:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)readPath:offset:completionHandler:",
+    ),
+    AppleOrdinaryCapability(
+        "common|owner=$appleCanonicalPackage/CodexSkills|kind=function|" +
+            "abi=$appleCanonicalAbiPackage/CodexSkills.uninstall|" +
+            "uninstall($appleCanonicalAbiPackage.AgentSkill){}[0]|return=kotlin/Unit|suspend=true|" +
+            "parameters=[REGULAR:$appleCanonicalPackage/AgentSkill!!:default=false:vararg=false]",
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)uninstallSkill:completionHandler:",
+    ),
+).also { capabilities ->
+    check(capabilities.size == 20 && capabilities.map { it.canonicalKey }.distinct().size == 20 &&
+        capabilities.map { it.usr }.distinct().size == 20
+    ) { "D086 Apple controller-function capability inventory changed" }
+}
+private val d086CapabilitiesByKey = d086Capabilities.associateBy { it.canonicalKey }
+private val d086SwiftAsyncMemberUsrs = d086Capabilities.mapTo(linkedSetOf(), AppleOrdinaryCapability::usr)
+
 internal val appleCompilerFixtureD065Capabilities: List<AppleOrdinaryCapability>
     get() = d065OrdinaryCapabilities
 
@@ -2296,6 +2458,18 @@ internal fun appleCompilerFixtureD085SwiftSymbols(): Map<String, ExpectedAppleCo
 internal fun appleCompilerFixtureD085ObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
     d085ExpectedObjectiveCSymbols()
 
+internal val appleCompilerFixtureD086Capabilities: List<AppleOrdinaryCapability>
+    get() = d086Capabilities
+
+internal fun appleCompilerFixtureD086SwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
+    d086ExpectedSwiftSymbols()
+
+internal fun appleCompilerFixtureD086SwiftCallbackSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
+    d086ExpectedSwiftCallbackSymbols()
+
+internal fun appleCompilerFixtureD086ObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> =
+    d086ExpectedObjectiveCSymbols()
+
 internal fun appleCompilerFixtureSwiftReferences(): List<AppleCompilerReference> =
     expectedSwiftAppleBindingReferences()
 
@@ -2333,6 +2507,8 @@ private val appleBindingMembers =
             "d084:${it.canonicalKey}" to it.usr
         } + d085Capabilities.associate {
             "d085:${it.canonicalKey}" to it.usr
+        } + d086Capabilities.associate {
+            "d086:${it.canonicalKey}" to it.usr
         }
 private val appleBindingCoverageTokens =
     appleCodexFailureCoverageTokens + appleConversationIdCoverageTokens + appleApprovalDecisionCoverageTokens +
@@ -2356,6 +2532,7 @@ private fun appleBindingShape(capability: String): String {
         ?: d083ProtocolCapabilitiesByKey[capability]?.let { "d083:${it.canonicalKey}" }
         ?: d084CapabilitiesByKey[capability]?.let { "d084:${it.canonicalKey}" }
         ?: d085CapabilitiesByKey[capability]?.let { "d085:${it.canonicalKey}" }
+        ?: d086CapabilitiesByKey[capability]?.let { "d086:${it.canonicalKey}" }
         ?: error("Unexpected canonical Apple binding capability: $capability")
 }
 
@@ -2854,6 +3031,457 @@ private fun d085ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol>
     }
 }
 
+private fun d086ExpectedSwiftSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    "${appleOwnerUsr("CodexAgentCodexConnectors")}(im)listForceReload:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConnectors", "list(forceReload:)"), "list(forceReload:)", "open",
+            "func list(forceReload: Bool) async throws -> [AgentConnector]",
+            listOf("s:Sb", "c:objc(cs)CodexAgentAgentConnector"),
+            listOf("forceReload" to "forceReload: Bool"), "[AgentConnector]",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)installDirectory:scope:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexHooks", "install(directory:scope:)"),
+            "install(directory:scope:)", "open",
+            "func install(directory: String, scope: AgentInstallationScope) async throws -> AgentHook",
+            listOf("s:SS", "c:objc(cs)CodexAgentAgentInstallationScope", "c:objc(cs)CodexAgentAgentHook"),
+            listOf("directory" to "directory: String", "scope" to "scope: AgentInstallationScope"),
+            "AgentHook",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)listWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexHooks", "list()"), "list()", "open",
+            "func list() async throws -> AgentHookCatalog",
+            listOf("c:objc(cs)CodexAgentAgentHookCatalog"), emptyList(), "AgentHookCatalog",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)trustHook:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexHooks", "trust(hook:)"), "trust(hook:)", "open",
+            "func trust(hook: AgentHook) async throws", listOf("c:objc(cs)CodexAgentAgentHook"),
+            listOf("hook" to "hook: AgentHook"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)uninstallHook:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexHooks", "uninstall(hook:)"), "uninstall(hook:)", "open",
+            "func uninstall(hook: AgentHook) async throws", listOf("c:objc(cs)CodexAgentAgentHook"),
+            listOf("hook" to "hook: AgentHook"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)addConfiguration:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexMcpServers", "add(configuration:)"), "add(configuration:)", "open",
+            "func add(configuration: AgentMcpServerConfiguration) async throws -> AgentMcpServer",
+            listOf(
+                "c:objc(cs)CodexAgentAgentMcpServerConfiguration",
+                "c:objc(cs)CodexAgentAgentMcpServer",
+            ),
+            listOf("configuration" to "configuration: AgentMcpServerConfiguration"), "AgentMcpServer",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)listWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexMcpServers", "list()"), "list()", "open",
+            "func list() async throws -> [AgentMcpServer]",
+            listOf("c:objc(cs)CodexAgentAgentMcpServer"), emptyList(), "[AgentMcpServer]",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)removeServer:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexMcpServers", "remove(server:)"), "remove(server:)", "open",
+            "func remove(server: AgentMcpServer) async throws",
+            listOf("c:objc(cs)CodexAgentAgentMcpServer"),
+            listOf("server" to "server: AgentMcpServer"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)listWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexModels", "list()"), "list()", "open",
+            "func list() async throws -> [AgentModel]", listOf("c:objc(cs)CodexAgentAgentModel"),
+            emptyList(), "[AgentModel]",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveEffortModel:resolution:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexModels", "resolveEffort(model:resolution:)"),
+            "resolveEffort(model:resolution:)", "open",
+            "func resolveEffort(model: AgentModel, resolution: AgentResolution) async throws -> String",
+            listOf("c:objc(cs)CodexAgentAgentModel", "c:objc(cs)CodexAgentAgentResolution", "s:SS"),
+            listOf(
+                "model" to "model: AgentModel",
+                "resolution" to "resolution: AgentResolution",
+            ),
+            "String",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveServiceTierModel:resolution:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexModels", "resolveServiceTier(model:resolution:)"),
+            "resolveServiceTier(model:resolution:)", "open",
+            "func resolveServiceTier(model: AgentModel, resolution: AgentResolution) async throws -> " +
+                "AgentServiceTier?",
+            listOf(
+                "c:objc(cs)CodexAgentAgentModel", "c:objc(cs)CodexAgentAgentResolution",
+                "c:objc(cs)CodexAgentAgentServiceTier",
+            ),
+            listOf(
+                "model" to "model: AgentModel",
+                "resolution" to "resolution: AgentResolution",
+            ),
+            "AgentServiceTier?",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveResolution:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexModels", "resolve(resolution:)"), "resolve(resolution:)", "open",
+            "func resolve(resolution: AgentResolution) async throws -> AgentModel",
+            listOf("c:objc(cs)CodexAgentAgentResolution", "c:objc(cs)CodexAgentAgentModel"),
+            listOf("resolution" to "resolution: AgentResolution"), "AgentModel",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)installPlugin:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexPlugins", "install(plugin:)"), "install(plugin:)", "open",
+            "func install(plugin: AgentPluginReference) async throws -> AgentPluginInstallResult",
+            listOf(
+                "c:objc(cs)CodexAgentAgentPluginReference",
+                "c:objc(cs)CodexAgentAgentPluginInstallResult",
+            ),
+            listOf("plugin" to "plugin: AgentPluginReference"), "AgentPluginInstallResult",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)listForceReload:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexPlugins", "list(forceReload:)"), "list(forceReload:)", "open",
+            "func list(forceReload: Bool) async throws -> AgentPluginCatalog",
+            listOf("s:Sb", "c:objc(cs)CodexAgentAgentPluginCatalog"),
+            listOf("forceReload" to "forceReload: Bool"), "AgentPluginCatalog",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)readPlugin:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexPlugins", "read(plugin:)"), "read(plugin:)", "open",
+            "func read(plugin: AgentPluginReference) async throws -> AgentPluginDetail",
+            listOf("c:objc(cs)CodexAgentAgentPluginReference", "c:objc(cs)CodexAgentAgentPluginDetail"),
+            listOf("plugin" to "plugin: AgentPluginReference"), "AgentPluginDetail",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)uninstallPlugin:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexPlugins", "uninstall(plugin:)"), "uninstall(plugin:)", "open",
+            "func uninstall(plugin: AgentPluginReference) async throws",
+            listOf("c:objc(cs)CodexAgentAgentPluginReference"),
+            listOf("plugin" to "plugin: AgentPluginReference"), "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)installDirectory:scope:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexSkills", "install(directory:scope:)"),
+            "install(directory:scope:)", "open",
+            "func install(directory: String, scope: AgentInstallationScope) async throws -> AgentSkill",
+            listOf("s:SS", "c:objc(cs)CodexAgentAgentInstallationScope", "c:objc(cs)CodexAgentAgentSkill"),
+            listOf("directory" to "directory: String", "scope" to "scope: AgentInstallationScope"),
+            "AgentSkill",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)listForceReload:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexSkills", "list(forceReload:)"), "list(forceReload:)", "open",
+            "func list(forceReload: Bool) async throws -> AgentSkillCatalog",
+            listOf("s:Sb", "c:objc(cs)CodexAgentAgentSkillCatalog"),
+            listOf("forceReload" to "forceReload: Bool"), "AgentSkillCatalog",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)readPath:offset:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexSkills", "read(path:offset:)"), "read(path:offset:)", "open",
+            "func read(path: String, offset: Int64) async throws -> AgentSkillChunk",
+            listOf("s:SS", "s:s5Int64V", "c:objc(cs)CodexAgentAgentSkillChunk"),
+            listOf("path" to "path: String", "offset" to "offset: Int64"), "AgentSkillChunk",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)uninstallSkill:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexSkills", "uninstall(skill:)"), "uninstall(skill:)", "open",
+            "func uninstall(skill: AgentSkill) async throws", listOf("c:objc(cs)CodexAgentAgentSkill"),
+            listOf("skill" to "skill: AgentSkill"), "Void",
+        ),
+)
+
+private fun d086ExpectedSwiftCallbackSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    "${appleOwnerUsr("CodexAgentCodexConnectors")}(im)listForceReload:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexConnectors", "list(forceReload:completionHandler:)"),
+            "list(forceReload:completionHandler:)", "open",
+            "func list(forceReload: Bool, completionHandler: @escaping @Sendable " +
+                "([AgentConnector]?, (any Error)?) -> Void)",
+            listOf("s:Sb", "c:objc(cs)CodexAgentAgentConnector", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "forceReload" to "forceReload: Bool",
+                "completionHandler" to "completionHandler: @Sendable ([AgentConnector]?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)installDirectory:scope:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexHooks", "install(directory:scope:completionHandler:)"),
+            "install(directory:scope:completionHandler:)", "open",
+            "func install(directory: String, scope: AgentInstallationScope, " +
+                "completionHandler: @escaping @Sendable (AgentHook?, (any Error)?) -> Void)",
+            listOf(
+                "s:SS", "c:objc(cs)CodexAgentAgentInstallationScope", "c:objc(cs)CodexAgentAgentHook",
+                "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "directory" to "directory: String", "scope" to "scope: AgentInstallationScope",
+                "completionHandler" to "completionHandler: @Sendable (AgentHook?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)listWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexHooks", "list(completionHandler:)"),
+            "list(completionHandler:)", "open",
+            "func list(completionHandler: @escaping @Sendable (AgentHookCatalog?, (any Error)?) -> Void)",
+            listOf("c:objc(cs)CodexAgentAgentHookCatalog", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "completionHandler" to
+                    "completionHandler: @Sendable (AgentHookCatalog?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)trustHook:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexHooks", "trust(hook:completionHandler:)"),
+            "trust(hook:completionHandler:)", "open",
+            "func trust(hook: AgentHook, completionHandler: @escaping @Sendable ((any Error)?) -> Void)",
+            listOf("c:objc(cs)CodexAgentAgentHook", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "hook" to "hook: AgentHook",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)uninstallHook:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexHooks", "uninstall(hook:completionHandler:)"),
+            "uninstall(hook:completionHandler:)", "open",
+            "func uninstall(hook: AgentHook, completionHandler: @escaping @Sendable ((any Error)?) -> Void)",
+            listOf("c:objc(cs)CodexAgentAgentHook", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "hook" to "hook: AgentHook",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)addConfiguration:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexMcpServers", "add(configuration:completionHandler:)"),
+            "add(configuration:completionHandler:)", "open",
+            "func add(configuration: AgentMcpServerConfiguration, completionHandler: @escaping @Sendable " +
+                "(AgentMcpServer?, (any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentAgentMcpServerConfiguration", "c:objc(cs)CodexAgentAgentMcpServer",
+                "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "configuration" to "configuration: AgentMcpServerConfiguration",
+                "completionHandler" to
+                    "completionHandler: @Sendable (AgentMcpServer?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)listWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexMcpServers", "list(completionHandler:)"),
+            "list(completionHandler:)", "open",
+            "func list(completionHandler: @escaping @Sendable ([AgentMcpServer]?, (any Error)?) -> Void)",
+            listOf("c:objc(cs)CodexAgentAgentMcpServer", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "completionHandler" to
+                    "completionHandler: @Sendable ([AgentMcpServer]?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)removeServer:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexMcpServers", "remove(server:completionHandler:)"),
+            "remove(server:completionHandler:)", "open",
+            "func remove(server: AgentMcpServer, completionHandler: @escaping @Sendable ((any Error)?) -> Void)",
+            listOf("c:objc(cs)CodexAgentAgentMcpServer", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "server" to "server: AgentMcpServer",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)listWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexModels", "list(completionHandler:)"),
+            "list(completionHandler:)", "open",
+            "func list(completionHandler: @escaping @Sendable ([AgentModel]?, (any Error)?) -> Void)",
+            listOf("c:objc(cs)CodexAgentAgentModel", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "completionHandler" to "completionHandler: @Sendable ([AgentModel]?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveEffortModel:resolution:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexModels", "resolveEffort(model:resolution:completionHandler:)"),
+            "resolveEffort(model:resolution:completionHandler:)", "open",
+            "func resolveEffort(model: AgentModel, resolution: AgentResolution, " +
+                "completionHandler: @escaping @Sendable (String?, (any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentAgentModel", "c:objc(cs)CodexAgentAgentResolution", "s:SS",
+                "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "model" to "model: AgentModel", "resolution" to "resolution: AgentResolution",
+                "completionHandler" to "completionHandler: @Sendable (String?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveServiceTierModel:resolution:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method",
+            listOf("CodexModels", "resolveServiceTier(model:resolution:completionHandler:)"),
+            "resolveServiceTier(model:resolution:completionHandler:)", "open",
+            "func resolveServiceTier(model: AgentModel, resolution: AgentResolution, " +
+                "completionHandler: @escaping @Sendable (AgentServiceTier?, (any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentAgentModel", "c:objc(cs)CodexAgentAgentResolution",
+                "c:objc(cs)CodexAgentAgentServiceTier", "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "model" to "model: AgentModel", "resolution" to "resolution: AgentResolution",
+                "completionHandler" to
+                    "completionHandler: @Sendable (AgentServiceTier?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveResolution:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexModels", "resolve(resolution:completionHandler:)"),
+            "resolve(resolution:completionHandler:)", "open",
+            "func resolve(resolution: AgentResolution, completionHandler: @escaping @Sendable " +
+                "(AgentModel?, (any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentAgentResolution", "c:objc(cs)CodexAgentAgentModel",
+                "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "resolution" to "resolution: AgentResolution",
+                "completionHandler" to "completionHandler: @Sendable (AgentModel?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)installPlugin:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexPlugins", "install(plugin:completionHandler:)"),
+            "install(plugin:completionHandler:)", "open",
+            "func install(plugin: AgentPluginReference, completionHandler: @escaping @Sendable " +
+                "(AgentPluginInstallResult?, (any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentAgentPluginReference", "c:objc(cs)CodexAgentAgentPluginInstallResult",
+                "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "plugin" to "plugin: AgentPluginReference",
+                "completionHandler" to
+                    "completionHandler: @Sendable (AgentPluginInstallResult?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)listForceReload:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexPlugins", "list(forceReload:completionHandler:)"),
+            "list(forceReload:completionHandler:)", "open",
+            "func list(forceReload: Bool, completionHandler: @escaping @Sendable " +
+                "(AgentPluginCatalog?, (any Error)?) -> Void)",
+            listOf("s:Sb", "c:objc(cs)CodexAgentAgentPluginCatalog", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "forceReload" to "forceReload: Bool",
+                "completionHandler" to
+                    "completionHandler: @Sendable (AgentPluginCatalog?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)readPlugin:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexPlugins", "read(plugin:completionHandler:)"),
+            "read(plugin:completionHandler:)", "open",
+            "func read(plugin: AgentPluginReference, completionHandler: @escaping @Sendable " +
+                "(AgentPluginDetail?, (any Error)?) -> Void)",
+            listOf(
+                "c:objc(cs)CodexAgentAgentPluginReference", "c:objc(cs)CodexAgentAgentPluginDetail",
+                "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "plugin" to "plugin: AgentPluginReference",
+                "completionHandler" to
+                    "completionHandler: @Sendable (AgentPluginDetail?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)uninstallPlugin:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexPlugins", "uninstall(plugin:completionHandler:)"),
+            "uninstall(plugin:completionHandler:)", "open",
+            "func uninstall(plugin: AgentPluginReference, completionHandler: @escaping @Sendable " +
+                "((any Error)?) -> Void)",
+            listOf("c:objc(cs)CodexAgentAgentPluginReference", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "plugin" to "plugin: AgentPluginReference",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)installDirectory:scope:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexSkills", "install(directory:scope:completionHandler:)"),
+            "install(directory:scope:completionHandler:)", "open",
+            "func install(directory: String, scope: AgentInstallationScope, " +
+                "completionHandler: @escaping @Sendable (AgentSkill?, (any Error)?) -> Void)",
+            listOf(
+                "s:SS", "c:objc(cs)CodexAgentAgentInstallationScope", "c:objc(cs)CodexAgentAgentSkill",
+                "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "directory" to "directory: String", "scope" to "scope: AgentInstallationScope",
+                "completionHandler" to "completionHandler: @Sendable (AgentSkill?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)listForceReload:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexSkills", "list(forceReload:completionHandler:)"),
+            "list(forceReload:completionHandler:)", "open",
+            "func list(forceReload: Bool, completionHandler: @escaping @Sendable " +
+                "(AgentSkillCatalog?, (any Error)?) -> Void)",
+            listOf("s:Sb", "c:objc(cs)CodexAgentAgentSkillCatalog", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "forceReload" to "forceReload: Bool",
+                "completionHandler" to
+                    "completionHandler: @Sendable (AgentSkillCatalog?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)readPath:offset:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexSkills", "read(path:offset:completionHandler:)"),
+            "read(path:offset:completionHandler:)", "open",
+            "func read(path: String, offset: Int64, completionHandler: @escaping @Sendable " +
+                "(AgentSkillChunk?, (any Error)?) -> Void)",
+            listOf(
+                "s:SS", "s:s5Int64V", "c:objc(cs)CodexAgentAgentSkillChunk",
+                "s:s5ErrorP", "s:s4Voida",
+            ),
+            listOf(
+                "path" to "path: String", "offset" to "offset: Int64",
+                "completionHandler" to
+                    "completionHandler: @Sendable (AgentSkillChunk?, (any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)uninstallSkill:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "swift.method", listOf("CodexSkills", "uninstall(skill:completionHandler:)"),
+            "uninstall(skill:completionHandler:)", "open",
+            "func uninstall(skill: AgentSkill, completionHandler: @escaping @Sendable ((any Error)?) -> Void)",
+            listOf("c:objc(cs)CodexAgentAgentSkill", "s:s5ErrorP", "s:s4Voida"),
+            listOf(
+                "skill" to "skill: AgentSkill",
+                "completionHandler" to "completionHandler: @Sendable ((any Error)?) -> Void",
+            ),
+            "Void",
+        ),
+)
+
 private fun objectiveCConstructorDeclaration(owner: AppleOrdinaryValue): String {
     val parameters = owner.parameters.mapIndexed { index, parameter ->
         val selector = if (index == 0) {
@@ -3341,6 +3969,323 @@ private fun d085ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSy
     }
 }
 
+private fun d086ExpectedObjectiveCSymbols(): Map<String, ExpectedAppleCompilerSymbol> = linkedMapOf(
+    "${appleOwnerUsr("CodexAgentCodexConnectors")}(im)listForceReload:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexConnectors", "listForceReload:completionHandler:"),
+            "listForceReload:completionHandler:", "public",
+            "- (void) listForceReload:(BOOL) forceReload completionHandler:" +
+                "(void (^)(NSArray<CodexAgentAgentConnector *> *, NSError *)) completionHandler;",
+            listOf("c:v", "c:@T@BOOL", "c:v", "c:Q\$objc(cs)NSArray", "c:objc(cs)NSError"),
+            listOf(
+                "forceReload" to "(BOOL) forceReload",
+                "completionHandler" to
+                    "(void (^)(NSArray<CodexAgentAgentConnector *> *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)installDirectory:scope:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexHooks", "installDirectory:scope:completionHandler:"),
+            "installDirectory:scope:completionHandler:", "public",
+            "- (void) installDirectory:(NSString *) directory scope:(CodexAgentAgentInstallationScope *) scope " +
+                "completionHandler:(void (^)(CodexAgentAgentHook *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)NSString", "c:objc(cs)CodexAgentAgentInstallationScope", "c:v",
+                "c:objc(cs)CodexAgentAgentHook", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "directory" to "(NSString *) directory",
+                "scope" to "(CodexAgentAgentInstallationScope *) scope",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentHook *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)listWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexHooks", "listWithCompletionHandler:"),
+            "listWithCompletionHandler:", "public",
+            "- (void) listWithCompletionHandler:(void (^)(CodexAgentAgentHookCatalog *, NSError *)) " +
+                "completionHandler;",
+            listOf("c:v", "c:v", "c:objc(cs)CodexAgentAgentHookCatalog", "c:objc(cs)NSError"),
+            listOf(
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentHookCatalog *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)trustHook:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexHooks", "trustHook:completionHandler:"),
+            "trustHook:completionHandler:", "public",
+            "- (void) trustHook:(CodexAgentAgentHook *) hook completionHandler:" +
+                "(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:objc(cs)CodexAgentAgentHook", "c:v", "c:objc(cs)NSError"),
+            listOf(
+                "hook" to "(CodexAgentAgentHook *) hook",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexHooks")}(im)uninstallHook:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexHooks", "uninstallHook:completionHandler:"),
+            "uninstallHook:completionHandler:", "public",
+            "- (void) uninstallHook:(CodexAgentAgentHook *) hook completionHandler:" +
+                "(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:objc(cs)CodexAgentAgentHook", "c:v", "c:objc(cs)NSError"),
+            listOf(
+                "hook" to "(CodexAgentAgentHook *) hook",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)addConfiguration:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexMcpServers", "addConfiguration:completionHandler:"),
+            "addConfiguration:completionHandler:", "public",
+            "- (void) addConfiguration:(CodexAgentAgentMcpServerConfiguration *) configuration " +
+                "completionHandler:(void (^)(CodexAgentAgentMcpServer *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentAgentMcpServerConfiguration", "c:v",
+                "c:objc(cs)CodexAgentAgentMcpServer", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "configuration" to "(CodexAgentAgentMcpServerConfiguration *) configuration",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentMcpServer *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)listWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexMcpServers", "listWithCompletionHandler:"),
+            "listWithCompletionHandler:", "public",
+            "- (void) listWithCompletionHandler:(void (^)(NSArray<CodexAgentAgentMcpServer *> *, NSError *)) " +
+                "completionHandler;",
+            listOf("c:v", "c:v", "c:Q\$objc(cs)NSArray", "c:objc(cs)NSError"),
+            listOf(
+                "completionHandler" to
+                    "(void (^)(NSArray<CodexAgentAgentMcpServer *> *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)removeServer:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexMcpServers", "removeServer:completionHandler:"),
+            "removeServer:completionHandler:", "public",
+            "- (void) removeServer:(CodexAgentAgentMcpServer *) server completionHandler:" +
+                "(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:objc(cs)CodexAgentAgentMcpServer", "c:v", "c:objc(cs)NSError"),
+            listOf(
+                "server" to "(CodexAgentAgentMcpServer *) server",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)listWithCompletionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexModels", "listWithCompletionHandler:"),
+            "listWithCompletionHandler:", "public",
+            "- (void) listWithCompletionHandler:(void (^)(NSArray<CodexAgentAgentModel *> *, NSError *)) " +
+                "completionHandler;",
+            listOf("c:v", "c:v", "c:Q\$objc(cs)NSArray", "c:objc(cs)NSError"),
+            listOf(
+                "completionHandler" to
+                    "(void (^)(NSArray<CodexAgentAgentModel *> *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveEffortModel:resolution:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexModels", "resolveEffortModel:resolution:completionHandler:"),
+            "resolveEffortModel:resolution:completionHandler:", "public",
+            "- (void) resolveEffortModel:(CodexAgentAgentModel *) model " +
+                "resolution:(CodexAgentAgentResolution *) resolution " +
+                "completionHandler:(void (^)(NSString *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentAgentModel", "c:objc(cs)CodexAgentAgentResolution", "c:v",
+                "c:objc(cs)NSString", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "model" to "(CodexAgentAgentModel *) model",
+                "resolution" to "(CodexAgentAgentResolution *) resolution",
+                "completionHandler" to "(void (^)(NSString *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveServiceTierModel:resolution:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexModels", "resolveServiceTierModel:resolution:completionHandler:"),
+            "resolveServiceTierModel:resolution:completionHandler:", "public",
+            "- (void) resolveServiceTierModel:(CodexAgentAgentModel *) model " +
+                "resolution:(CodexAgentAgentResolution *) resolution " +
+                "completionHandler:(void (^)(CodexAgentAgentServiceTier *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentAgentModel", "c:objc(cs)CodexAgentAgentResolution", "c:v",
+                "c:objc(cs)CodexAgentAgentServiceTier", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "model" to "(CodexAgentAgentModel *) model",
+                "resolution" to "(CodexAgentAgentResolution *) resolution",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentServiceTier *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveResolution:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexModels", "resolveResolution:completionHandler:"),
+            "resolveResolution:completionHandler:", "public",
+            "- (void) resolveResolution:(CodexAgentAgentResolution *) resolution " +
+                "completionHandler:(void (^)(CodexAgentAgentModel *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentAgentResolution", "c:v",
+                "c:objc(cs)CodexAgentAgentModel", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "resolution" to "(CodexAgentAgentResolution *) resolution",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentModel *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)installPlugin:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexPlugins", "installPlugin:completionHandler:"),
+            "installPlugin:completionHandler:", "public",
+            "- (void) installPlugin:(CodexAgentAgentPluginReference *) plugin completionHandler:" +
+                "(void (^)(CodexAgentAgentPluginInstallResult *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentAgentPluginReference", "c:v",
+                "c:objc(cs)CodexAgentAgentPluginInstallResult", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "plugin" to "(CodexAgentAgentPluginReference *) plugin",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentPluginInstallResult *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)listForceReload:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexPlugins", "listForceReload:completionHandler:"),
+            "listForceReload:completionHandler:", "public",
+            "- (void) listForceReload:(BOOL) forceReload completionHandler:" +
+                "(void (^)(CodexAgentAgentPluginCatalog *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:@T@BOOL", "c:v", "c:objc(cs)CodexAgentAgentPluginCatalog",
+                "c:objc(cs)NSError",
+            ),
+            listOf(
+                "forceReload" to "(BOOL) forceReload",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentPluginCatalog *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)readPlugin:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexPlugins", "readPlugin:completionHandler:"),
+            "readPlugin:completionHandler:", "public",
+            "- (void) readPlugin:(CodexAgentAgentPluginReference *) plugin completionHandler:" +
+                "(void (^)(CodexAgentAgentPluginDetail *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)CodexAgentAgentPluginReference", "c:v",
+                "c:objc(cs)CodexAgentAgentPluginDetail", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "plugin" to "(CodexAgentAgentPluginReference *) plugin",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentPluginDetail *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)uninstallPlugin:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexPlugins", "uninstallPlugin:completionHandler:"),
+            "uninstallPlugin:completionHandler:", "public",
+            "- (void) uninstallPlugin:(CodexAgentAgentPluginReference *) plugin completionHandler:" +
+                "(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:objc(cs)CodexAgentAgentPluginReference", "c:v", "c:objc(cs)NSError"),
+            listOf(
+                "plugin" to "(CodexAgentAgentPluginReference *) plugin",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)installDirectory:scope:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method",
+            listOf("CodexAgentCodexSkills", "installDirectory:scope:completionHandler:"),
+            "installDirectory:scope:completionHandler:", "public",
+            "- (void) installDirectory:(NSString *) directory scope:(CodexAgentAgentInstallationScope *) scope " +
+                "completionHandler:(void (^)(CodexAgentAgentSkill *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)NSString", "c:objc(cs)CodexAgentAgentInstallationScope", "c:v",
+                "c:objc(cs)CodexAgentAgentSkill", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "directory" to "(NSString *) directory",
+                "scope" to "(CodexAgentAgentInstallationScope *) scope",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentSkill *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)listForceReload:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexSkills", "listForceReload:completionHandler:"),
+            "listForceReload:completionHandler:", "public",
+            "- (void) listForceReload:(BOOL) forceReload completionHandler:" +
+                "(void (^)(CodexAgentAgentSkillCatalog *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:@T@BOOL", "c:v", "c:objc(cs)CodexAgentAgentSkillCatalog",
+                "c:objc(cs)NSError",
+            ),
+            listOf(
+                "forceReload" to "(BOOL) forceReload",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentSkillCatalog *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)readPath:offset:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexSkills", "readPath:offset:completionHandler:"),
+            "readPath:offset:completionHandler:", "public",
+            "- (void) readPath:(NSString *) path offset:(int64_t) offset completionHandler:" +
+                "(void (^)(CodexAgentAgentSkillChunk *, NSError *)) completionHandler;",
+            listOf(
+                "c:v", "c:objc(cs)NSString", "c:@T@int64_t", "c:v",
+                "c:objc(cs)CodexAgentAgentSkillChunk", "c:objc(cs)NSError",
+            ),
+            listOf(
+                "path" to "(NSString *) path", "offset" to "(int64_t) offset",
+                "completionHandler" to
+                    "(void (^)(CodexAgentAgentSkillChunk *, NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+    "${appleOwnerUsr("CodexAgentCodexSkills")}(im)uninstallSkill:completionHandler:" to
+        ExpectedAppleCompilerSymbol(
+            "objective-c.method", listOf("CodexAgentCodexSkills", "uninstallSkill:completionHandler:"),
+            "uninstallSkill:completionHandler:", "public",
+            "- (void) uninstallSkill:(CodexAgentAgentSkill *) skill completionHandler:" +
+                "(void (^)(NSError *)) completionHandler;",
+            listOf("c:v", "c:objc(cs)CodexAgentAgentSkill", "c:v", "c:objc(cs)NSError"),
+            listOf(
+                "skill" to "(CodexAgentAgentSkill *) skill",
+                "completionHandler" to "(void (^)(NSError *)) completionHandler",
+            ),
+            "void",
+        ),
+)
+
 private data class AppleCompilerSlice(
     val name: String,
     val sdkName: String,
@@ -3460,7 +4405,7 @@ private val expectedSwiftAppleBindingSymbols = linkedMapOf(
     d075ExpectedSwiftSymbols() + d076ExpectedSwiftSymbols() + d077ExpectedSwiftSymbols() +
     d078ExpectedSwiftSymbols() + d079ExpectedSwiftSymbols() + d080ExpectedSwiftSymbols() +
     d081ExpectedSwiftSymbols() + d082ExpectedSwiftSymbols() + d083ExpectedSwiftSymbols() +
-    d084ExpectedSwiftSymbols() + d085ExpectedSwiftSymbols()
+    d084ExpectedSwiftSymbols() + d085ExpectedSwiftSymbols() + d086ExpectedSwiftSymbols()
 
 private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
     APPLE_CODEX_FAILURE_OWNER_USR to ExpectedAppleCompilerSymbol(
@@ -3588,7 +4533,7 @@ private val expectedObjectiveCAppleBindingSymbols = linkedMapOf(
     d075ExpectedObjectiveCSymbols() + d076ExpectedObjectiveCSymbols() + d077ExpectedObjectiveCSymbols() +
     d078ExpectedObjectiveCSymbols() + d079ExpectedObjectiveCSymbols() + d080ExpectedObjectiveCSymbols() +
     d081ExpectedObjectiveCSymbols() + d082ExpectedObjectiveCSymbols() + d083ExpectedObjectiveCSymbols() +
-    d084ExpectedObjectiveCSymbols() + d085ExpectedObjectiveCSymbols()
+    d084ExpectedObjectiveCSymbols() + d085ExpectedObjectiveCSymbols() + d086ExpectedObjectiveCSymbols()
 
 internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> {
     val ownerPrefixes = setOf(
@@ -3608,7 +4553,7 @@ internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> 
             !it.startsWith("d075:") && !it.startsWith("d076:") && !it.startsWith("d077:") &&
             !it.startsWith("d078:") && !it.startsWith("d079:") && !it.startsWith("d080:") &&
             !it.startsWith("d081:") && !it.startsWith("d082:") && !it.startsWith("d083:") &&
-            !it.startsWith("d084:") && !it.startsWith("d085:")
+            !it.startsWith("d084:") && !it.startsWith("d085:") && !it.startsWith("d086:")
     }
     check(byShape.keys == priorMembers.keys) {
         "Canonical Apple binding capability set changed: ${byShape.keys.sorted()}"
@@ -3642,10 +4587,13 @@ internal fun appleBindingCapabilityKeys(memberKeys: List<String>): List<String> 
     check(d084Keys.all(memberKeys::contains)) { "Canonical D084 Apple binding capability set changed" }
     val d085Keys = d085Capabilities.map { it.canonicalKey }
     check(d085Keys.all(memberKeys::contains)) { "Canonical D085 Apple binding capability set changed" }
+    val d086Keys = d086Capabilities.map { it.canonicalKey }
+    check(d086Keys.all(memberKeys::contains)) { "Canonical D086 Apple binding capability set changed" }
     return (byShape.values.map { it.single() } + d065Keys + d073Keys + d074Keys + d075Keys + d076Keys +
-        d077Keys + d078Keys + d079Keys + d080Keys + d081Keys + d082Keys + d083Keys + d084Keys + d085Keys)
+        d077Keys + d078Keys + d079Keys + d080Keys + d081Keys + d082Keys + d083Keys + d084Keys + d085Keys +
+        d086Keys)
         .sorted().also { capabilities ->
-        check(capabilities.size == 499 && capabilities.distinct().size == 499) {
+        check(capabilities.size == 519 && capabilities.distinct().size == 519) {
             "Canonical Apple binding capability count changed"
         }
     }
@@ -3722,17 +4670,19 @@ private fun parseAppleBindingSurface(
             actual.typeIdentifiers == contract.typeIdentifiers && actual.parameters == contract.parameters &&
             actual.returns == contract.returns
     if (language == "swift") {
-        val callbacks = d084ExpectedSwiftCallbackSymbols()
-        d084SwiftAsyncMemberUsrs.forEach { precise ->
+        val callbacks = d084ExpectedSwiftCallbackSymbols() + d086ExpectedSwiftCallbackSymbols()
+        val asyncMemberUsrs = d084SwiftAsyncMemberUsrs + d086SwiftAsyncMemberUsrs
+        asyncMemberUsrs.forEach { precise ->
             val variants = rawSymbols.filter { it.precise == precise }
             check(variants.size == 2 && variants.all { it.interfaceLanguage == "swift" } &&
                 variants.count { matches(it, expected.getValue(precise)) } == 1 &&
                 variants.count { matches(it, callbacks.getValue(precise)) } == 1
-            ) { "Swift D084 async/callback surface changed: $precise" }
+            ) { "Swift Apple async/callback surface changed: $precise" }
         }
     }
+    val swiftAsyncMemberUsrs = d084SwiftAsyncMemberUsrs + d086SwiftAsyncMemberUsrs
     val symbols = rawSymbols.filter { actual ->
-        language != "swift" || actual.precise !in d084SwiftAsyncMemberUsrs ||
+        language != "swift" || actual.precise !in swiftAsyncMemberUsrs ||
             matches(actual, expected.getValue(actual.precise))
     }
     check(symbols.map(AppleCompilerSymbol::precise).toSet() == expected.keys && symbols.size == expected.size) {
@@ -3808,10 +4758,15 @@ private fun parseAppleBindingSurface(
     check(d085MemberUsrs.size == 16 && d085MemberUsrs.distinct().size == 16) {
         "D085 Apple member inventory changed"
     }
+    val d086MemberUsrs = d086Capabilities.map(AppleOrdinaryCapability::usr)
+    check(d086MemberUsrs.size == 20 && d086MemberUsrs.distinct().size == 20) {
+        "D086 Apple member inventory changed"
+    }
     val selectedMemberUsrs = establishedMemberUsrs + ordinaryMemberUsrs + d073MemberUsrs + d074MemberUsrs +
         d075MemberUsrs + d076MemberUsrs + d077MemberUsrs + d078MemberUsrs + d079MemberUsrs +
-        d080MemberUsrs + d081MemberUsrs + d082MemberUsrs + d083MemberUsrs + d084MemberUsrs + d085MemberUsrs
-    check(selectedMemberUsrs.size == 499 && selectedMemberUsrs.distinct().size == 499) {
+        d080MemberUsrs + d081MemberUsrs + d082MemberUsrs + d083MemberUsrs + d084MemberUsrs + d085MemberUsrs +
+        d086MemberUsrs
+    check(selectedMemberUsrs.size == 519 && selectedMemberUsrs.distinct().size == 519) {
         "Selected Apple member inventory changed"
     }
     val memberOwners = selectedMemberUsrs.associateWith(::appleMemberOwnerUsr)
@@ -3828,9 +4783,10 @@ private fun parseAppleBindingSurface(
             )
         }
     val relationshipsBySource = relationships.groupBy { it.second }
+    val swiftAsyncUsrs = d084SwiftAsyncMemberUsrs + d086SwiftAsyncMemberUsrs
     check(relationships.map { it.second }.toSet() == memberOwners.keys &&
         relationshipsBySource.all { (source, values) ->
-            values.size == if (language == "swift" && source in d084SwiftAsyncMemberUsrs) 2 else 1
+            values.size == if (language == "swift" && source in swiftAsyncUsrs) 2 else 1
         } && relationships.all { (kind, source, target) ->
             kind == (if (language == "swift" && source in d083MemberUsrs) "requirementOf" else "memberOf") &&
                 target == memberOwners.getValue(source)
@@ -4090,6 +5046,214 @@ private fun d085ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerRe
     }
 }
 
+private fun d086ExpectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConnectors")}(im)listForceReload:completionHandler:",
+        "declref_expr", "list", null, "\$sySaySo010CodexAgentB9ConnectorCGSb_tYaKcSo0abA10ConnectorsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)installDirectory:scope:completionHandler:",
+        "declref_expr", "install", null, "\$sySo010CodexAgentB4HookCSS_So0abB17InstallationScopeCtYaKcSo0abA5HooksCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)listWithCompletionHandler:",
+        "declref_expr", "list", null, "\$sySo010CodexAgentB11HookCatalogCyYaKcSo0abA5HooksCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)trustHook:completionHandler:",
+        "declref_expr", "trust", null, "\$syySo010CodexAgentB4HookC_tYaKcSo0abA5HooksCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)uninstallHook:completionHandler:",
+        "declref_expr", "uninstall", null, "\$syySo010CodexAgentB4HookC_tYaKcSo0abA5HooksCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)addConfiguration:completionHandler:",
+        "declref_expr", "add", null, "\$sySo010CodexAgentB9McpServerCSo0abbcD13ConfigurationC_tYaKcSo0abaC7ServersCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)listWithCompletionHandler:",
+        "declref_expr", "list", null, "\$sySaySo010CodexAgentB9McpServerCGyYaKcSo0abaC7ServersCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)removeServer:completionHandler:",
+        "declref_expr", "remove", null, "\$syySo010CodexAgentB9McpServerC_tYaKcSo0abaC7ServersCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)listWithCompletionHandler:",
+        "declref_expr", "list", null, "\$sySaySo010CodexAgentB5ModelCGyYaKcSo0abA6ModelsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveEffortModel:resolution:completionHandler:",
+        "declref_expr", "resolveEffort", null, "\$sySSSo010CodexAgentB5ModelC_So0abB10ResolutionCtYaKcSo0abA6ModelsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveServiceTierModel:resolution:completionHandler:",
+        "declref_expr", "resolveServiceTier", null, "\$sySo010CodexAgentB11ServiceTierCSgSo0abB5ModelC_So0abB10ResolutionCtYaKcSo0abA6ModelsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveResolution:completionHandler:",
+        "declref_expr", "resolve", null, "\$sySo010CodexAgentB5ModelCSo0abB10ResolutionC_tYaKcSo0abA6ModelsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)installPlugin:completionHandler:",
+        "declref_expr", "install", null, "\$sySo010CodexAgentB19PluginInstallResultCSo0abbC9ReferenceC_tYaKcSo0abA7PluginsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)listForceReload:completionHandler:",
+        "declref_expr", "list", null, "\$sySo010CodexAgentB13PluginCatalogCSb_tYaKcSo0abA7PluginsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)readPlugin:completionHandler:",
+        "declref_expr", "read", null, "\$sySo010CodexAgentB12PluginDetailCSo0abbC9ReferenceC_tYaKcSo0abA7PluginsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)uninstallPlugin:completionHandler:",
+        "declref_expr", "uninstall", null, "\$syySo010CodexAgentB15PluginReferenceC_tYaKcSo0abA7PluginsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)installDirectory:scope:completionHandler:",
+        "declref_expr", "install", null, "\$sySo010CodexAgentB5SkillCSS_So0abB17InstallationScopeCtYaKcSo0abA6SkillsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)listForceReload:completionHandler:",
+        "declref_expr", "list", null, "\$sySo010CodexAgentB12SkillCatalogCSb_tYaKcSo0abA6SkillsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)readPath:offset:completionHandler:",
+        "declref_expr", "read", null, "\$sySo010CodexAgentB10SkillChunkCSS_s5Int64VtYaKcSo0abA6SkillsCcD", emptyList(),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)uninstallSkill:completionHandler:",
+        "declref_expr", "uninstall", null, "\$syySo010CodexAgentB5SkillC_tYaKcSo0abA6SkillsCcD", emptyList(),
+    ),
+)
+
+private fun d086ExpectedObjectiveCAppleBindingReferences(): List<AppleCompilerReference> = listOf(
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexConnectors")}(im)listForceReload:completionHandler:",
+        "ObjCMessageExpr", "listForceReload:completionHandler:", "CodexAgentCodexConnectors *", "void",
+        listOf("BOOL", "void (^)(NSArray<CodexAgentAgentConnector *> *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)installDirectory:scope:completionHandler:",
+        "ObjCMessageExpr", "installDirectory:scope:completionHandler:", "CodexAgentCodexHooks *", "void",
+        listOf(
+            "NSString *", "CodexAgentAgentInstallationScope * _Nonnull",
+            "void (^)(CodexAgentAgentHook *, NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)listWithCompletionHandler:",
+        "ObjCMessageExpr", "listWithCompletionHandler:", "CodexAgentCodexHooks *", "void",
+        listOf("void (^)(CodexAgentAgentHookCatalog *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)trustHook:completionHandler:",
+        "ObjCMessageExpr", "trustHook:completionHandler:", "CodexAgentCodexHooks *", "void",
+        listOf("CodexAgentAgentHook *", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexHooks")}(im)uninstallHook:completionHandler:",
+        "ObjCMessageExpr", "uninstallHook:completionHandler:", "CodexAgentCodexHooks *", "void",
+        listOf("CodexAgentAgentHook *", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)addConfiguration:completionHandler:",
+        "ObjCMessageExpr", "addConfiguration:completionHandler:", "CodexAgentCodexMcpServers *", "void",
+        listOf(
+            "CodexAgentAgentMcpServerConfiguration *",
+            "void (^)(CodexAgentAgentMcpServer *, NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)listWithCompletionHandler:",
+        "ObjCMessageExpr", "listWithCompletionHandler:", "CodexAgentCodexMcpServers *", "void",
+        listOf("void (^)(NSArray<CodexAgentAgentMcpServer *> *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexMcpServers")}(im)removeServer:completionHandler:",
+        "ObjCMessageExpr", "removeServer:completionHandler:", "CodexAgentCodexMcpServers *", "void",
+        listOf("CodexAgentAgentMcpServer *", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)listWithCompletionHandler:",
+        "ObjCMessageExpr", "listWithCompletionHandler:", "CodexAgentCodexModels *", "void",
+        listOf("void (^)(NSArray<CodexAgentAgentModel *> *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveEffortModel:resolution:completionHandler:",
+        "ObjCMessageExpr", "resolveEffortModel:resolution:completionHandler:",
+        "CodexAgentCodexModels *", "void",
+        listOf(
+            "CodexAgentAgentModel *", "CodexAgentAgentResolution * _Nonnull",
+            "void (^)(NSString *, NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveServiceTierModel:resolution:completionHandler:",
+        "ObjCMessageExpr", "resolveServiceTierModel:resolution:completionHandler:",
+        "CodexAgentCodexModels *", "void",
+        listOf(
+            "CodexAgentAgentModel *", "CodexAgentAgentResolution * _Nonnull",
+            "void (^)(CodexAgentAgentServiceTier *, NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexModels")}(im)resolveResolution:completionHandler:",
+        "ObjCMessageExpr", "resolveResolution:completionHandler:", "CodexAgentCodexModels *", "void",
+        listOf("CodexAgentAgentResolution * _Nonnull", "void (^)(CodexAgentAgentModel *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)installPlugin:completionHandler:",
+        "ObjCMessageExpr", "installPlugin:completionHandler:", "CodexAgentCodexPlugins *", "void",
+        listOf(
+            "CodexAgentAgentPluginReference *",
+            "void (^)(CodexAgentAgentPluginInstallResult *, NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)listForceReload:completionHandler:",
+        "ObjCMessageExpr", "listForceReload:completionHandler:", "CodexAgentCodexPlugins *", "void",
+        listOf("BOOL", "void (^)(CodexAgentAgentPluginCatalog *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)readPlugin:completionHandler:",
+        "ObjCMessageExpr", "readPlugin:completionHandler:", "CodexAgentCodexPlugins *", "void",
+        listOf("CodexAgentAgentPluginReference *", "void (^)(CodexAgentAgentPluginDetail *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexPlugins")}(im)uninstallPlugin:completionHandler:",
+        "ObjCMessageExpr", "uninstallPlugin:completionHandler:", "CodexAgentCodexPlugins *", "void",
+        listOf("CodexAgentAgentPluginReference *", "void (^)(NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)installDirectory:scope:completionHandler:",
+        "ObjCMessageExpr", "installDirectory:scope:completionHandler:", "CodexAgentCodexSkills *", "void",
+        listOf(
+            "NSString *", "CodexAgentAgentInstallationScope * _Nonnull",
+            "void (^)(CodexAgentAgentSkill *, NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)listForceReload:completionHandler:",
+        "ObjCMessageExpr", "listForceReload:completionHandler:", "CodexAgentCodexSkills *", "void",
+        listOf("BOOL", "void (^)(CodexAgentAgentSkillCatalog *, NSError *)"),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)readPath:offset:completionHandler:",
+        "ObjCMessageExpr", "readPath:offset:completionHandler:", "CodexAgentCodexSkills *", "void",
+        listOf(
+            "NSString *", "int64_t", "void (^)(CodexAgentAgentSkillChunk *, NSError *)",
+        ),
+    ),
+    AppleCompilerReference(
+        "${appleOwnerUsr("CodexAgentCodexSkills")}(im)uninstallSkill:completionHandler:",
+        "ObjCMessageExpr", "uninstallSkill:completionHandler:", "CodexAgentCodexSkills *", "void",
+        listOf("CodexAgentAgentSkill *", "void (^)(NSError *)"),
+    ),
+)
+
 private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> = buildList {
     add(AppleCompilerReference(
         appleCodexFailureMembers.getValue("constructor:<init>"), "declref_expr", "init", null,
@@ -4223,6 +5387,7 @@ private fun expectedSwiftAppleBindingReferences(): List<AppleCompilerReference> 
     addAll(d083ExpectedSwiftAppleBindingReferences())
     addAll(d084ExpectedSwiftAppleBindingReferences())
     addAll(d085ExpectedSwiftAppleBindingReferences())
+    addAll(d086ExpectedSwiftAppleBindingReferences())
     add(AppleCompilerReference(
         "$APPLE_AUTHORIZATION_URL_COMPANION_OWNER_USR(im)chatGptValue:",
         "declref_expr", "chatGpt", null,
@@ -4383,6 +5548,7 @@ private fun expectedObjectiveCAppleBindingReferences(): List<AppleCompilerRefere
     addAll(d083ExpectedObjectiveCAppleBindingReferences())
     addAll(d084ExpectedObjectiveCAppleBindingReferences())
     addAll(d085ExpectedObjectiveCAppleBindingReferences())
+    addAll(d086ExpectedObjectiveCAppleBindingReferences())
     listOf("chatGptValue:", "externalValue:").forEach { selector ->
         add(AppleCompilerReference(
             "$APPLE_AUTHORIZATION_URL_COMPANION_OWNER_USR(im)$selector", "ObjCMessageExpr", selector,
@@ -4424,7 +5590,7 @@ internal fun parseObjectiveCAppleBindingReferences(json: String): List<AppleComp
         .associateBy { it.receiverType to it.name }
     val finiteInstanceMethodUsrs =
         (d076AuthorizationUrlCapabilities + d080InteractionMethods + d082ElicitationCapabilities +
-            d084ExceptionalHostCapabilities.filter { "|kind=function|" in it.canonicalKey })
+            d084ExceptionalHostCapabilities.filter { "|kind=function|" in it.canonicalKey } + d086Capabilities)
         .mapTo(mutableSetOf(), AppleOrdinaryCapability::usr)
     val expectedFiniteInstanceMessages = expected.filter {
         it.kind == "ObjCMessageExpr" && it.precise in finiteInstanceMethodUsrs

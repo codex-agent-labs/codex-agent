@@ -503,6 +503,118 @@ static BOOL consumeD085AgentControllers(CodexAgentCodexAgent *agent) {
         (skillsAvailable || !skillsAvailable);
 }
 
+static BOOL consumeD086ControllerFunctions(
+    CodexAgentCodexAgent *agent,
+    CodexAgentAgentHook *hook,
+    CodexAgentAgentMcpServerConfiguration *mcpConfiguration,
+    CodexAgentAgentMcpServer *mcpServer,
+    CodexAgentAgentModel *model,
+    CodexAgentAgentPluginReference *plugin,
+    CodexAgentAgentSkill *skill
+) {
+    [agent.connectors listForceReload:NO
+                   completionHandler:^(NSArray<CodexAgentAgentConnector *> *connectors,
+                                       NSError *error) {
+        (void)connectors;
+        (void)error;
+    }];
+
+    [agent.hooks installDirectory:@"/compiler/hook"
+                            scope:[CodexAgentAgentInstallationScope workspace]
+                completionHandler:^(CodexAgentAgentHook *installedHook, NSError *error) {
+        (void)installedHook;
+        (void)error;
+    }];
+    [agent.hooks listWithCompletionHandler:^(CodexAgentAgentHookCatalog *catalog, NSError *error) {
+        (void)catalog;
+        (void)error;
+    }];
+    [agent.hooks trustHook:hook completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    [agent.hooks uninstallHook:hook completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+
+    [agent.mcpServers addConfiguration:mcpConfiguration
+                     completionHandler:^(CodexAgentAgentMcpServer *server, NSError *error) {
+        (void)server;
+        (void)error;
+    }];
+    [agent.mcpServers listWithCompletionHandler:^(NSArray<CodexAgentAgentMcpServer *> *servers,
+                                                  NSError *error) {
+        (void)servers;
+        (void)error;
+    }];
+    [agent.mcpServers removeServer:mcpServer completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+
+    [agent.models listWithCompletionHandler:^(NSArray<CodexAgentAgentModel *> *models,
+                                               NSError *error) {
+        (void)models;
+        (void)error;
+    }];
+    [agent.models resolveEffortModel:model
+                          resolution:[CodexAgentAgentResolution default_]
+                   completionHandler:^(NSString *effort, NSError *error) {
+        (void)effort;
+        (void)error;
+    }];
+    [agent.models resolveServiceTierModel:model
+                               resolution:[CodexAgentAgentResolution first]
+                        completionHandler:^(CodexAgentAgentServiceTier *tier, NSError *error) {
+        (void)tier;
+        (void)error;
+    }];
+    [agent.models resolveResolution:[CodexAgentAgentResolution first]
+                  completionHandler:^(CodexAgentAgentModel *resolvedModel, NSError *error) {
+        (void)resolvedModel;
+        (void)error;
+    }];
+
+    [agent.plugins installPlugin:plugin
+               completionHandler:^(CodexAgentAgentPluginInstallResult *result, NSError *error) {
+        (void)result;
+        (void)error;
+    }];
+    [agent.plugins listForceReload:NO
+                completionHandler:^(CodexAgentAgentPluginCatalog *catalog, NSError *error) {
+        (void)catalog;
+        (void)error;
+    }];
+    [agent.plugins readPlugin:plugin
+            completionHandler:^(CodexAgentAgentPluginDetail *detail, NSError *error) {
+        (void)detail;
+        (void)error;
+    }];
+    [agent.plugins uninstallPlugin:plugin completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+
+    [agent.skills installDirectory:@"/compiler/skill"
+                             scope:[CodexAgentAgentInstallationScope user]
+                 completionHandler:^(CodexAgentAgentSkill *installedSkill, NSError *error) {
+        (void)installedSkill;
+        (void)error;
+    }];
+    [agent.skills listForceReload:YES
+               completionHandler:^(CodexAgentAgentSkillCatalog *catalog, NSError *error) {
+        (void)catalog;
+        (void)error;
+    }];
+    [agent.skills readPath:@"/compiler/skill/SKILL.md"
+                    offset:0
+         completionHandler:^(CodexAgentAgentSkillChunk *chunk, NSError *error) {
+        (void)chunk;
+        (void)error;
+    }];
+    [agent.skills uninstallSkill:skill completionHandler:^(NSError *error) {
+        (void)error;
+    }];
+    return YES;
+}
+
 static BOOL consumeD065AppleValues(void) {
     CodexAgentAgentApprovalPreset *approvalAutoReview =
         [CodexAgentAgentApprovalPreset autoReview];

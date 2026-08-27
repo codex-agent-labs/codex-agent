@@ -71,7 +71,7 @@ class AppleCompilerEvidenceTaskTest {
     }
 
     @Test
-    fun `canonical selection derives exactly 499 complete Apple binding capabilities`() {
+    fun `canonical selection derives exactly 519 complete Apple binding capabilities`() {
         val keys = listOf(
             canonicalConstructor(),
             canonicalProperty("code", "kotlin/String!!"),
@@ -105,7 +105,8 @@ class AppleCompilerEvidenceTaskTest {
             appleCompilerFixtureD082Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
             appleCompilerFixtureD083Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
             appleCompilerFixtureD084Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
-            appleCompilerFixtureD085Capabilities.map(AppleOrdinaryCapability::canonicalKey)
+            appleCompilerFixtureD085Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
+            appleCompilerFixtureD086Capabilities.map(AppleOrdinaryCapability::canonicalKey)
         assertEquals(expected.sorted(), appleBindingCapabilityKeys(expected + keys.last()))
         assertFailsWith<IllegalStateException> { appleBindingCapabilityKeys(expected.drop(1)) }
         assertFailsWith<IllegalStateException> {
@@ -353,10 +354,18 @@ class AppleCompilerEvidenceTaskTest {
                 if (it == d085Availability) it.replace("kotlin/Boolean!!", "kotlin/String!!") else it
             })
         }
+        val d086NullableTier = appleCompilerFixtureD086Capabilities.single {
+            "/CodexModels.resolveServiceTier|" in it.canonicalKey
+        }.canonicalKey
+        assertFailsWith<IllegalStateException> {
+            appleBindingCapabilityKeys(expected.map {
+                if (it == d086NullableTier) it.replace("AgentServiceTier?", "AgentServiceTier!!") else it
+            })
+        }
     }
 
     @Test
-    fun `real compiler shapes normalize to one exact 499-member contract per language`() {
+    fun `real compiler shapes normalize to one exact 519-member contract per language`() {
         assertEquals(
             "c:objc(cs)CodexAgentAgentApprovalPreset",
             appleCompilerFixtureMemberOwnerUsr("c:objc(cs)CodexAgentAgentApprovalPreset(cpy)never"),
@@ -378,8 +387,8 @@ class AppleCompilerEvidenceTaskTest {
         }
         val swift = parseSwiftAppleBindingSurface(swiftSurfaceJson())
         val objectiveC = parseObjectiveCAppleBindingSurface(objectiveCSurfaceJson())
-        assertEquals(613, swift.size)
-        assertEquals(613, objectiveC.size)
+        assertEquals(633, swift.size)
+        assertEquals(633, objectiveC.size)
         assertEquals(swift.map(AppleCompilerSymbol::precise), objectiveC.map(AppleCompilerSymbol::precise))
         assertEquals("swift.init", swift.single { it.precise == CONSTRUCTOR }.kind)
         assertEquals("objective-c.method", objectiveC.single { it.precise == CONSTRUCTOR }.kind)
@@ -640,16 +649,50 @@ class AppleCompilerEvidenceTaskTest {
                 ),
             )
         }
+        val d086ResolveTierUsr = appleCompilerFixtureD086Capabilities.single {
+            "/CodexModels.resolveServiceTier|" in it.canonicalKey
+        }.usr
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingSurface(swiftSurfaceJson(missingD084Callback = d086ResolveTierUsr))
+        }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingSurface(
+                swiftSurfaceJson(wrongD084CallbackLanguage = d086ResolveTierUsr),
+            )
+        }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingSurface(
+                swiftSurfaceJson(missingD084CallbackRelationship = d086ResolveTierUsr),
+            )
+        }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingSurface(
+                swiftSurfaceJson().replaceFirst(
+                    "func resolveServiceTier(model: AgentModel, resolution: AgentResolution) async throws -> " +
+                        "AgentServiceTier?",
+                    "func resolveServiceTier(model: AgentModel, resolution: AgentResolution) async throws -> " +
+                        "AgentModel?",
+                ),
+            )
+        }
+        assertFailsWith<IllegalStateException> {
+            parseObjectiveCAppleBindingSurface(
+                objectiveCSurfaceJson().replaceFirst(
+                    "completionHandler:(void (^)(CodexAgentAgentServiceTier *, NSError *))",
+                    "completionHandler:(void (^)(CodexAgentAgentModel *, NSError *))",
+                ),
+            )
+        }
     }
 
     @Test
-    fun `compiled AST references bind 499 exact USRs and reject drift`() {
+    fun `compiled AST references bind 519 exact USRs and reject drift`() {
         val swift = parseSwiftAppleBindingReferences(swiftReferencesJson())
         val objectiveC = parseObjectiveCAppleBindingReferences(objectiveCReferencesJson())
-        assertEquals(499, swift.size)
-        assertEquals(499, objectiveC.size)
+        assertEquals(519, swift.size)
+        assertEquals(519, objectiveC.size)
         assertEquals(swift.map(AppleCompilerReference::precise), objectiveC.map(AppleCompilerReference::precise))
-        assertEquals(499, swift.map(AppleCompilerReference::precise).distinct().size)
+        assertEquals(519, swift.map(AppleCompilerReference::precise).distinct().size)
 
         assertFailsWith<IllegalStateException> {
             parseSwiftAppleBindingReferences(swiftReferencesJson().replace("(py)message", "(py)removed"))
@@ -913,6 +956,22 @@ class AppleCompilerEvidenceTaskTest {
                 ),
             )
         }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftAppleBindingReferences(
+                swiftReferencesJson().replaceFirst(
+                    "c:objc(cs)CodexAgentCodexModels(im)resolveServiceTierModel:resolution:completionHandler:",
+                    "c:objc(cs)CodexAgentCodexModels(im)removed:",
+                ),
+            )
+        }
+        assertFailsWith<IllegalStateException> {
+            parseObjectiveCAppleBindingReferences(
+                objectiveCReferencesJson().replaceFirst(
+                    "void (^)(CodexAgentAgentServiceTier *, NSError *)",
+                    "void (^)(CodexAgentAgentModel *, NSError *)",
+                ),
+            )
+        }
     }
 
     @Test
@@ -1121,6 +1180,16 @@ class AppleCompilerEvidenceTaskTest {
                 )
         } + appleCompilerFixtureD085SwiftSymbols().map { (precise, expected) ->
             expectedRawSymbol(precise, "swift", expected)
+        } + appleCompilerFixtureD086SwiftSymbols().map { (precise, expected) ->
+            expectedRawSymbol(precise, "swift", expected)
+        } + appleCompilerFixtureD086SwiftCallbackSymbols()
+            .filterKeys { it != missingD084Callback }
+            .map { (precise, expected) ->
+                expectedRawSymbol(
+                    precise,
+                    if (precise == wrongD084CallbackLanguage) "objective-c" else "swift",
+                    expected,
+                )
         },
         includeMessageRelationship = includeMessageRelationship,
         missingD065Relationship = missingD065Relationship,
@@ -1282,6 +1351,8 @@ class AppleCompilerEvidenceTaskTest {
         } + appleCompilerFixtureD084ObjectiveCSymbols().map { (precise, expected) ->
             expectedRawSymbol(precise, "objective-c", expected)
         } + appleCompilerFixtureD085ObjectiveCSymbols().map { (precise, expected) ->
+            expectedRawSymbol(precise, "objective-c", expected)
+        } + appleCompilerFixtureD086ObjectiveCSymbols().map { (precise, expected) ->
             expectedRawSymbol(precise, "objective-c", expected)
         },
         includeMessageRelationship = includeMessageRelationship,
@@ -1510,6 +1581,23 @@ class AppleCompilerEvidenceTaskTest {
                     ))
                 }
             }
+            val d086Symbols = if (language == "swift") {
+                appleCompilerFixtureD086SwiftSymbols()
+            } else {
+                appleCompilerFixtureD086ObjectiveCSymbols()
+            }
+            val d086MemberUsrs = appleCompilerFixtureD086Capabilities.mapTo(mutableSetOf()) { it.usr }
+            d086Symbols.keys.filter(d086MemberUsrs::contains).forEach { precise ->
+                if (precise != missingD065Relationship) {
+                    add(relationship(
+                        precise,
+                        if (precise == wrongD065Relationship) OWNER else appleOwnerUsr(precise),
+                    ))
+                    if (language == "swift" && precise != missingD084CallbackRelationship) {
+                        add(relationship(precise, appleOwnerUsr(precise)))
+                    }
+                }
+            }
         })
     })
 
@@ -1658,7 +1746,8 @@ class AppleCompilerEvidenceTaskTest {
                     appleCompilerFixtureD078Capabilities + appleCompilerFixtureD079Capabilities +
                     appleCompilerFixtureD080Capabilities + appleCompilerFixtureD081Capabilities +
                     appleCompilerFixtureD082Capabilities + appleCompilerFixtureD083Capabilities +
-                    appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities)
+                    appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities +
+                    appleCompilerFixtureD086Capabilities)
                     .mapTo(mutableSetOf(), AppleOrdinaryCapability::usr)
             appleCompilerFixtureSwiftReferences().filter { it.precise in ordinaryUsrs }.forEach { reference ->
                 add(swiftReference(reference.kind, reference.name, reference.precise, reference.valueType))
@@ -1718,7 +1807,8 @@ class AppleCompilerEvidenceTaskTest {
                     appleCompilerFixtureD078Capabilities + appleCompilerFixtureD079Capabilities +
                     appleCompilerFixtureD080Capabilities + appleCompilerFixtureD081Capabilities +
                     appleCompilerFixtureD082Capabilities + appleCompilerFixtureD083Capabilities +
-                    appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities)
+                    appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities +
+                    appleCompilerFixtureD086Capabilities)
                     .mapTo(mutableSetOf(), AppleOrdinaryCapability::usr)
             appleCompilerFixtureObjectiveCReferences().filter { it.precise in ordinaryUsrs }.forEach { reference ->
                 add(objectiveCReference(reference))
@@ -1732,7 +1822,8 @@ class AppleCompilerEvidenceTaskTest {
             put("selector", JsonPrimitive(reference.name))
             put("type", qualifiedType(reference.valueType))
             val finiteInstanceUsrs = (appleCompilerFixtureD082Capabilities +
-                appleCompilerFixtureD084Capabilities.filter { "|kind=function|" in it.canonicalKey })
+                appleCompilerFixtureD084Capabilities.filter { "|kind=function|" in it.canonicalKey } +
+                appleCompilerFixtureD086Capabilities)
                 .mapTo(mutableSetOf()) { it.usr }
             if (reference.argumentTypes.isEmpty() && reference.precise !in finiteInstanceUsrs) {
                 put("receiverKind", JsonPrimitive("class"))
@@ -1746,7 +1837,7 @@ class AppleCompilerEvidenceTaskTest {
                             } + appleCompilerFixtureD082Capabilities +
                                 appleCompilerFixtureD084Capabilities.filter {
                                     "|kind=function|" in it.canonicalKey
-                                }).map { capability -> capability.usr }
+                                } + appleCompilerFixtureD086Capabilities).map { capability -> capability.usr }
                         ) {
                             put("type", qualifiedType(requireNotNull(reference.receiverType)))
                         } else {

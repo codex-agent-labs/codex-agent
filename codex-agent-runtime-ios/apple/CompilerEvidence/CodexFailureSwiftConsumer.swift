@@ -1188,3 +1188,46 @@ func consumeD085AgentGateway(agent: CodexAgent) {
     _ = plugins.isAvailable
     _ = skills.isAvailable
 }
+
+func consumeD086ControllerFunctions(
+    agent: CodexAgent,
+    hook: AgentHook,
+    mcpConfiguration: AgentMcpServerConfiguration,
+    mcpServer: AgentMcpServer,
+    model: AgentModel,
+    plugin: AgentPluginReference,
+    skill: AgentSkill
+) async throws {
+    let connectors = agent.connectors
+    let hooks = agent.hooks
+    let mcpServers = agent.mcpServers
+    let models = agent.models
+    let plugins = agent.plugins
+    let skills = agent.skills
+
+    _ = try await connectors.list(forceReload: false)
+
+    _ = try await hooks.install(directory: "/compiler/hook", scope: .workspace)
+    _ = try await hooks.list()
+    try await hooks.trust(hook: hook)
+    try await hooks.uninstall(hook: hook)
+
+    _ = try await mcpServers.add(configuration: mcpConfiguration)
+    _ = try await mcpServers.list()
+    try await mcpServers.remove(server: mcpServer)
+
+    _ = try await models.list()
+    _ = try await models.resolveEffort(model: model, resolution: .default_)
+    _ = try await models.resolveServiceTier(model: model, resolution: .first)
+    _ = try await models.resolve(resolution: .first)
+
+    _ = try await plugins.install(plugin: plugin)
+    _ = try await plugins.list(forceReload: false)
+    _ = try await plugins.read(plugin: plugin)
+    try await plugins.uninstall(plugin: plugin)
+
+    _ = try await skills.install(directory: "/compiler/skill", scope: .user)
+    _ = try await skills.list(forceReload: true)
+    _ = try await skills.read(path: "/compiler/skill/SKILL.md", offset: 0)
+    try await skills.uninstall(skill: skill)
+}

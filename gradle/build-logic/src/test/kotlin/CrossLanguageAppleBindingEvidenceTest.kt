@@ -17,7 +17,7 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CrossLanguageAppleBindingEvidenceTest {
     @Test
-    fun `observes 499 independent claims and 57 explicit gaps per Apple language`() {
+    fun `observes 519 independent claims and 37 explicit gaps per Apple language`() {
         val fixture = fixture()
         val report = fixture.derive()
 
@@ -29,11 +29,11 @@ class CrossLanguageAppleBindingEvidenceTest {
         val languages = report.releaseArray("languages").map { it as JsonObject }
         assertEquals(listOf("objective-c", "swift"), languages.map { it.releaseString("language") })
         languages.forEach { language ->
-            assertEquals(613, language.releaseArray("publicSymbols").size)
-            assertEquals(499, language.releaseArray("referencedSymbols").size)
-            assertEquals(499, language.releaseArray("claims").size)
+            assertEquals(633, language.releaseArray("publicSymbols").size)
+            assertEquals(519, language.releaseArray("referencedSymbols").size)
+            assertEquals(519, language.releaseArray("claims").size)
             assertTrue(language.releaseArray("exclusions").isEmpty())
-            assertEquals(57, language.releaseArray("missingCapabilityKeys").size)
+            assertEquals(37, language.releaseArray("missingCapabilityKeys").size)
             assertEquals(
                 fixture.capabilities,
                 language.releaseArray("claims").map { (it as JsonObject).releaseString("canonicalKey") },
@@ -226,6 +226,20 @@ class CrossLanguageAppleBindingEvidenceTest {
         val d085AvailabilitySurfaceDrift = compiler.surfaceDrift(
             "objectiveC", surfaceIndex("objectiveC", d085SkillsAvailabilityUsr),
             "declaration", JsonPrimitive("@property (readonly) NSInteger isAvailable;"),
+        )
+        val d086ConnectorsListUsr = appleCompilerFixtureD086Capabilities.single {
+            "/CodexConnectors.list|" in it.canonicalKey
+        }.usr
+        val d086ResolveServiceTierUsr = appleCompilerFixtureD086Capabilities.single {
+            "/CodexModels.resolveServiceTier|" in it.canonicalKey
+        }.usr
+        val d086SwiftSurfaceDrift = compiler.surfaceDrift(
+            "swift", surfaceIndex("swift", d086ResolveServiceTierUsr),
+            "returns", JsonPrimitive("AgentServiceTier"),
+        )
+        val d086ObjectiveCSurfaceDrift = compiler.surfaceDrift(
+            "objectiveC", surfaceIndex("objectiveC", d086ConnectorsListUsr),
+            "parameters", buildJsonArray {},
         )
         val missingSurface = compiler.withObject("surface", run {
             val reduced = JsonArray(swift.dropLast(1))
@@ -696,6 +710,34 @@ class CrossLanguageAppleBindingEvidenceTest {
                 "objectiveCSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
             ))
         })
+        val d086SwiftReferenceDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("swift").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == d086ResolveServiceTierUsr) {
+                    JsonObject(reference + ("valueType" to JsonPrimitive("\$sSbD")))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "swift" to changed,
+                "swiftSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
+        val d086ObjectiveCReferenceDrift = compiler.withObject("references", run {
+            val changed = JsonArray(references.releaseArray("objectiveC").map { value ->
+                val reference = value as JsonObject
+                if (reference.releaseString("precise") == d086ConnectorsListUsr) {
+                    JsonObject(reference + ("argumentTypes" to strings(listOf("BOOL"))))
+                } else {
+                    reference
+                }
+            })
+            JsonObject(references + mapOf(
+                "objectiveC" to changed,
+                "objectiveCSha256" to JsonPrimitive(appleCompilerJsonDigest(changed)),
+            ))
+        })
         val claims = compiler.releaseArray("claims")
         val first = claims.first() as JsonObject
         val swappedClaim = compiler.withArray("claims", JsonArray(listOf(
@@ -709,6 +751,16 @@ class CrossLanguageAppleBindingEvidenceTest {
         val d085WrongClaim = compiler.withArray("claims", JsonArray(claims.mapIndexed { index, value ->
             if (index == d085ClaimIndex) {
                 JsonObject((value as JsonObject) + ("swiftUsr" to JsonPrimitive(d085WorkspaceUsr)))
+            } else {
+                value
+            }
+        }))
+        val d086ClaimIndex = claims.indexOfFirst {
+            (it as JsonObject).releaseString("canonicalKey").contains("/CodexModels.resolveServiceTier|")
+        }.also { check(it >= 0) }
+        val d086WrongClaim = compiler.withArray("claims", JsonArray(claims.mapIndexed { index, value ->
+            if (index == d086ClaimIndex) {
+                JsonObject((value as JsonObject) + ("swiftUsr" to JsonPrimitive(d086ConnectorsListUsr)))
             } else {
                 value
             }
@@ -870,6 +922,15 @@ class CrossLanguageAppleBindingEvidenceTest {
                 }
             }.sorted(),
         )
+        val changedD086ServiceTier = fixture.canonical.copy(
+            memberKeys = fixture.canonical.memberKeys.map { key ->
+                if ("/CodexModels.resolveServiceTier|" in key) {
+                    key.replace("AgentServiceTier?", "AgentServiceTier!!")
+                } else {
+                    key
+                }
+            }.sorted(),
+        )
 
         listOf(
             surfaceDrift, signatureDrift, typeDrift, readonlyDrift, selectorDrift, missingSurface,
@@ -881,6 +942,7 @@ class CrossLanguageAppleBindingEvidenceTest {
             d081SharedSurfaceDrift, d082SurfaceDrift, d083SurfaceDrift,
             d084AsyncSurfaceDrift, d084NullableSurfaceDrift,
             d085WorkspaceSurfaceDrift, d085AvailabilitySurfaceDrift,
+            d086SwiftSurfaceDrift, d086ObjectiveCSurfaceDrift,
             duplicateSurface, referenceDrift, swiftReferenceTypeDrift, collaborationReferenceTypeDrift,
             messageRoleReferenceTypeDrift, installationScopeReferenceTypeDrift,
             mcpEnvironmentSourceReferenceTypeDrift, mcpEnvironmentSourceReceiverDrift, qualifierDrift,
@@ -895,8 +957,9 @@ class CrossLanguageAppleBindingEvidenceTest {
             d084SwiftReferenceDrift, d084ObjectiveCReferenceDrift,
             d084ObjectiveCConstructorReferenceDrift,
             d085SwiftReferenceDrift, d085ObjectiveCReferenceDrift,
+            d086SwiftReferenceDrift, d086ObjectiveCReferenceDrift,
             conversationIdConstructorTypeDrift, conversationIdReceiverDrift,
-            swappedClaim, missingClaim, duplicateClaim, d085WrongClaim, wrongOwnerClaim,
+            swappedClaim, missingClaim, duplicateClaim, d085WrongClaim, d086WrongClaim, wrongOwnerClaim,
             cdx, wrongArtifact, duplicateTarget,
         ).forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(compiler = drift) }
@@ -909,7 +972,7 @@ class CrossLanguageAppleBindingEvidenceTest {
             futureInstallationScope, futureMcpEnvironmentSource, changedConversationId,
             changedAuthorizationFactory, changedD077Constructor, changedD078Constructor, changedD079Constructor,
             changedD080Constructor, changedD080Method, changedD081Object, changedD082Method,
-            changedD083Property, changedD084HostStart, changedD085Availability,
+            changedD083Property, changedD084HostStart, changedD085Availability, changedD086ServiceTier,
         )
             .forEach { drift ->
             assertFailsWith<IllegalStateException> { fixture.derive(canonical = drift) }
@@ -1011,7 +1074,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             appleCompilerFixtureD083Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
             appleCompilerFixtureD084Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
             appleCompilerFixtureD085Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
-            (0 until 57).map { index ->
+            appleCompilerFixtureD086Capabilities.map(AppleOrdinaryCapability::canonicalKey) +
+            (0 until 37).map { index ->
                 "common|owner=sample/Owner${index.toString().padStart(3, '0')}|kind=property|" +
                     "abi=sample/Owner$index.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!"
             }).sorted()
@@ -1194,6 +1258,8 @@ class CrossLanguageAppleBindingEvidenceTest {
         expectedSymbol(precise, "swift", expected)
     } + appleCompilerFixtureD085SwiftSymbols().map { (precise, expected) ->
         expectedSymbol(precise, "swift", expected)
+    } + appleCompilerFixtureD086SwiftSymbols().map { (precise, expected) ->
+        expectedSymbol(precise, "swift", expected)
     }).sortedBy { it.releaseString("precise") })
 
     private fun objectiveCSurface() = JsonArray((listOf(
@@ -1312,6 +1378,8 @@ class CrossLanguageAppleBindingEvidenceTest {
         expectedSymbol(precise, "objective-c", expected)
     } + appleCompilerFixtureD085ObjectiveCSymbols().map { (precise, expected) ->
         expectedSymbol(precise, "objective-c", expected)
+    } + appleCompilerFixtureD086ObjectiveCSymbols().map { (precise, expected) ->
+        expectedSymbol(precise, "objective-c", expected)
     }).sortedBy { it.releaseString("precise") })
 
     private fun swiftReferences() = JsonArray((listOf(
@@ -1343,7 +1411,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             appleCompilerFixtureD078Capabilities + appleCompilerFixtureD079Capabilities +
             appleCompilerFixtureD080Capabilities + appleCompilerFixtureD081Capabilities +
             appleCompilerFixtureD082Capabilities + appleCompilerFixtureD083Capabilities +
-            appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities)
+            appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities +
+            appleCompilerFixtureD086Capabilities)
             .map(AppleOrdinaryCapability::usr) }
         .map(::expectedReference)
     ).sortedBy { it.releaseString("precise") })
@@ -1386,7 +1455,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             appleCompilerFixtureD078Capabilities + appleCompilerFixtureD079Capabilities +
             appleCompilerFixtureD080Capabilities + appleCompilerFixtureD081Capabilities +
             appleCompilerFixtureD082Capabilities + appleCompilerFixtureD083Capabilities +
-            appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities)
+            appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities +
+            appleCompilerFixtureD086Capabilities)
             .map(AppleOrdinaryCapability::usr) }
         .map(::expectedReference)
     ).sortedBy { it.releaseString("precise") })
@@ -1468,7 +1538,8 @@ class CrossLanguageAppleBindingEvidenceTest {
             appleCompilerFixtureD078Capabilities + appleCompilerFixtureD079Capabilities +
             appleCompilerFixtureD080Capabilities + appleCompilerFixtureD081Capabilities +
             appleCompilerFixtureD082Capabilities + appleCompilerFixtureD083Capabilities +
-            appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities)
+            appleCompilerFixtureD084Capabilities + appleCompilerFixtureD085Capabilities +
+            appleCompilerFixtureD086Capabilities)
             .singleOrNull { it.canonicalKey == capability }?.usr ?: when {
         "|owner=$CANONICAL_OWNER|kind=constructor|" in capability -> CONSTRUCTOR
         "|owner=$CONVERSATION_ID_CANONICAL_OWNER|kind=constructor|" in capability ->
