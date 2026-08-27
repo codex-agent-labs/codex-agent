@@ -138,6 +138,17 @@ extensions.configure<KotlinMultiplatformExtension> {
         getByName("nativeTest").dependsOn(getByName("desktopTest"))
     }
     desktopTargets.forEach { target ->
+        target.binaries.sharedLib {
+            baseName = "codex_agent"
+            if (target.name.startsWith("macos")) {
+                linkerOpts(
+                    "-Wl,-exported_symbols_list,${layout.projectDirectory.file("native/c-api/exports/macos.exports").asFile}",
+                    "-Wl,-install_name,@rpath/libcodex_agent.dylib",
+                    "-Wl,-compatibility_version,1.0.0",
+                    "-Wl,-current_version,1.0.0",
+                )
+            }
+        }
         target.compilations.getByName("main").cinterops.create("codexDesktop") {
             defFile(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_desktop.def"))
             includeDirs(layout.projectDirectory.dir("native/include"))
