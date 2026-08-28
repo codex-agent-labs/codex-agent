@@ -342,8 +342,43 @@ class DesktopCAbiExportPolicyTest {
             "codex_agent_turn_progress_text_copy",
             "codex_agent_turn_progress_work_activity",
         )
+        val abi15 = listOf(
+            "codex_agent_integration_connector_connector",
+            "codex_agent_integration_connector_create",
+            "codex_agent_integration_connector_destroy",
+            "codex_agent_integration_connector_display_name_copy",
+            "codex_agent_integration_connector_id_copy",
+            "codex_agent_mcp_transport_http_bearer_token_environment_variable_copy",
+            "codex_agent_mcp_transport_http_create",
+            "codex_agent_mcp_transport_http_destroy",
+            "codex_agent_mcp_transport_http_environment_headers_count",
+            "codex_agent_mcp_transport_http_environment_headers_key_copy_at",
+            "codex_agent_mcp_transport_http_environment_headers_value_copy_at",
+            "codex_agent_mcp_transport_http_has_bearer_token_environment_variable",
+            "codex_agent_mcp_transport_http_has_environment_headers",
+            "codex_agent_mcp_transport_http_has_headers",
+            "codex_agent_mcp_transport_http_has_headers_helper",
+            "codex_agent_mcp_transport_http_headers_count",
+            "codex_agent_mcp_transport_http_headers_helper_copy",
+            "codex_agent_mcp_transport_http_headers_key_copy_at",
+            "codex_agent_mcp_transport_http_headers_value_copy_at",
+            "codex_agent_mcp_transport_http_url_copy",
+            "codex_agent_mcp_transport_stdio_argument_copy_at",
+            "codex_agent_mcp_transport_stdio_arguments_count",
+            "codex_agent_mcp_transport_stdio_command_copy",
+            "codex_agent_mcp_transport_stdio_create",
+            "codex_agent_mcp_transport_stdio_destroy",
+            "codex_agent_mcp_transport_stdio_environment_count",
+            "codex_agent_mcp_transport_stdio_environment_key_copy_at",
+            "codex_agent_mcp_transport_stdio_environment_value_copy_at",
+            "codex_agent_mcp_transport_stdio_forwarded_environment_at",
+            "codex_agent_mcp_transport_stdio_forwarded_environment_count",
+            "codex_agent_mcp_transport_stdio_has_environment",
+            "codex_agent_mcp_transport_stdio_has_working_directory",
+            "codex_agent_mcp_transport_stdio_working_directory_copy",
+        )
         val exports = repository.resolve("codex-agent-runtime-desktop/native/c-api/exports")
-        val all = (abi10 + abi11 + abi12 + abi13 + abi14).sorted()
+        val all = (abi10 + abi11 + abi12 + abi13 + abi14 + abi15).sorted()
         assertEquals(
             all.map { "_$it" },
             exports.resolve("macos.exports").readLines(),
@@ -353,7 +388,8 @@ class DesktopCAbiExportPolicyTest {
                 linuxVersion("1.1", abi11, "CODEX_AGENT_1.0") + "\n" +
                 linuxVersion("1.2", abi12, "CODEX_AGENT_1.1") + "\n" +
                 linuxVersion("1.3", abi13, "CODEX_AGENT_1.2") + "\n" +
-                linuxVersion("1.4", abi14, "CODEX_AGENT_1.3"),
+                linuxVersion("1.4", abi14, "CODEX_AGENT_1.3") + "\n" +
+                linuxVersion("1.5", abi15, "CODEX_AGENT_1.4"),
             exports.resolve("linux.map").readText(),
         )
         assertEquals(
@@ -370,7 +406,7 @@ class DesktopCAbiExportPolicyTest {
             "-Wl,-exported_symbols_list,",
             "-Wl,-install_name,@rpath/libcodex_agent.dylib",
             "-Wl,-compatibility_version,1.0.0",
-            "-Wl,-current_version,1.4.0",
+            "-Wl,-current_version,1.5.0",
             "target.name.startsWith(\"linux\")",
             "-Wl,--version-script,",
             "-Wl,-soname,libcodex_agent.so.1",

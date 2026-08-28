@@ -20,25 +20,25 @@ import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
 
 internal const val C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"
-internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 312
+internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 328
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
-    "4655731b655b5d27cafede8d596bbefb83509fad0e4806bc78484cc7c8c78beb"
+    "10fce358e8bf2031be34ec7dd9c20a6b9333d264c92c9d4c5d34ed43b2763033"
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
-    "899e1410d052f87aa79c6e36812c6d72693092274fbb1072e9c842fb39acd16c"
+    "c6ceaef7075a7ec3f8d1dcb517d2216ddeccba74d6082d220fc1e1433791a14e"
 private const val C_ABI_CINTEROP_SHA256 =
     "4a132bc83e0f69251cc9f432bb7530b4eaafe2f4d7ea1c2985ed860bedafb1c8"
 private const val C_ABI_MACOS_EXPORTS_SHA256 =
-    "ed1d577f98752e7d38a03797652b345eca319dcd44acfcf386407582cde75bf5"
+    "7ce6358657a6d9060d94755631c752d4124ea710c94e40b1f93c652d2f123808"
 private const val C_ABI_FOUNDATION_C_SHA256 =
-    "824ff6cd728641b10bff28034a2d866c7b5631cc5724cf536376a4918081a1f1"
+    "60a5a9b175ce44b7df16f11eab4c97eca3aa637c94b441bce2d51dd23c2e1b27"
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
-    "5de6cd7ce3102da418dd4715b4e75c2245d7eadc842c1540f92901ef7798b4f8"
+    "019049f7c6c0e2696f75946df724b313b1385c1171f48268b9ae71f6a4c909ba"
 private const val C_ABI_LIFECYCLE_C_SHA256 =
-    "5d35289fa1536d4981d45bb0f39700d967078d09a318759803b5e9bcd84a5226"
+    "ab1879a12e2ee413e8122e548ec8d7b26522b34545d8553582ae24e94591576a"
 private const val C_ABI_LIFECYCLE_CPP_SHA256 =
-    "b29e8410aa32146d6a92e2c3fc5d38c279dedd10e50343ff46a9f7995fb609d5"
+    "6fe728c04b300f44713324176ea59c8d89c8963515c9e7960d4201f16cf7f2f4"
 private const val C_ABI_CONVERSATION_VALUES_C_SHA256 =
     "9bd1c7284344c037426a903fa08f5997f4c4746a597b4072ec5aa2d6911256c5"
 private const val C_ABI_CONFIGURATION_VALUES_C_SHA256 =
@@ -57,6 +57,10 @@ private const val C_ABI_RESOURCE_LIST_VALUES_C_SHA256 =
     "b3ad64bd5a0c066f9f3f543162ab01d0a16e2ed2ef682a4531b4119a5e3bcc11"
 private const val C_ABI_LIST_LEAF_VALUES_C_SHA256 =
     "486382fe97d4ba7278599f9b45dc3142f5a36a2223f3265a54416b26a8b86ed5"
+private const val C_ABI_MCP_TRANSPORT_VALUES_C_SHA256 =
+    "d53e0f688939cdbe3395a8f62cae972f5f2b0f7b388bee84f108860b28c64962"
+private const val C_ABI_INTEGRATION_VALUES_C_SHA256 =
+    "ecb2399220aa2fe9bd4b6cfffb00522aff09978108fe01f4c0120555c14bfa92"
 
 private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent/"
 private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi."
@@ -182,6 +186,36 @@ private const val C_ELICITATION_VALIDATION_LIST_VALUES_TEST =
 private const val C_ELICITATION_VALIDATION_LIST_VALIDATION_TEST =
     C_API_TEST_PACKAGE +
         "CodexAgentCListLeafValuesTest#validationRejectsArrayOutputContextTypeAndStaleHandleFailures[macosArm64]"
+private const val C_MCP_TRANSPORT_HTTP_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCMcpTransportValuesTest#httpConstructorAndPropertiesPreserveNullableOrderedMaps[macosArm64]"
+private const val C_MCP_TRANSPORT_STDIO_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCMcpTransportValuesTest#stdioConstructorAndPropertiesPreserveMapListsAndOwnedChildren[macosArm64]"
+private const val C_MCP_TRANSPORT_CONSTRUCTOR_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCMcpTransportValuesTest#constructorsRejectDuplicateKeysMalformedInputsAndPreserveOutputs[macosArm64]"
+private const val C_MCP_TRANSPORT_GETTER_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCMcpTransportValuesTest#gettersRejectWrongContextTypeStaleAndBoundsWithoutChangingOutputs[macosArm64]"
+private const val C_MCP_TRANSPORT_CONTEXT_TEARDOWN_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCMcpTransportValuesTest#contextTeardownReclaimsOutstandingTransportValues[macosArm64]"
+private const val C_INTEGRATION_CONNECTOR_CONSTRUCTOR_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCIntegrationValuesTest#connectorIntegrationConstructorCopiesItsConnectorDependency[macosArm64]"
+private const val C_INTEGRATION_CONNECTOR_CHILD_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCIntegrationValuesTest#connectorIntegrationConnectorReturnsFreshIndependentlyOwnedSnapshots[macosArm64]"
+private const val C_INTEGRATION_CONNECTOR_ID_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCIntegrationValuesTest#connectorIntegrationIdProjectsTheCanonicalConnectorId[macosArm64]"
+private const val C_INTEGRATION_CONNECTOR_DISPLAY_NAME_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCIntegrationValuesTest#connectorIntegrationDisplayNameProjectsTheCanonicalConnectorName[macosArm64]"
+private const val C_INTEGRATION_CONNECTOR_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCIntegrationValuesTest#connectorIntegrationRejectsInvalidContextTypeStaleAndOutputBoundaries[macosArm64]"
 
 internal data class CAbiBootstrapClaimSpec(
     val owner: String,
@@ -1308,6 +1342,103 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
     }
 
     ordinary(
+        "AgentIntegration.Connector", "constructor", "<init>",
+        listOf("codex_agent_integration_connector_create", "codex_agent_integration_connector_destroy"),
+        listOf(C_INTEGRATION_CONNECTOR_CONSTRUCTOR_TEST, C_INTEGRATION_CONNECTOR_VALIDATION_TEST),
+        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentConnector){}[0]",
+    )
+    ordinary(
+        "AgentIntegration.Connector", "property", "connector",
+        listOf("codex_agent_integration_connector_connector"),
+        listOf(C_INTEGRATION_CONNECTOR_CHILD_TEST, C_INTEGRATION_CONNECTOR_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentIntegration.Connector", "property", "displayName",
+        listOf("codex_agent_integration_connector_display_name_copy"),
+        listOf(C_INTEGRATION_CONNECTOR_DISPLAY_NAME_TEST, C_INTEGRATION_CONNECTOR_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentIntegration.Connector", "property", "id",
+        listOf("codex_agent_integration_connector_id_copy"),
+        listOf(C_INTEGRATION_CONNECTOR_ID_TEST, C_INTEGRATION_CONNECTOR_VALIDATION_TEST),
+    )
+
+    ordinary(
+        "AgentMcpTransport.Http", "constructor", "<init>",
+        listOf("codex_agent_mcp_transport_http_create", "codex_agent_mcp_transport_http_destroy"),
+        listOf(
+            C_MCP_TRANSPORT_HTTP_VALUES_TEST,
+            C_MCP_TRANSPORT_CONSTRUCTOR_VALIDATION_TEST,
+            C_MCP_TRANSPORT_CONTEXT_TEARDOWN_TEST,
+        ),
+        "<init>(kotlin.String;kotlin.String?;kotlin.collections.Map<kotlin.String,kotlin.String>?;" +
+            "kotlin.collections.Map<kotlin.String,kotlin.String>?;kotlin.String?){}[0]",
+    )
+    listOf(
+        "bearerTokenEnvironmentVariable" to listOf(
+            "codex_agent_mcp_transport_http_has_bearer_token_environment_variable",
+            "codex_agent_mcp_transport_http_bearer_token_environment_variable_copy",
+        ),
+        "environmentHeaders" to listOf(
+            "codex_agent_mcp_transport_http_has_environment_headers",
+            "codex_agent_mcp_transport_http_environment_headers_count",
+            "codex_agent_mcp_transport_http_environment_headers_key_copy_at",
+            "codex_agent_mcp_transport_http_environment_headers_value_copy_at",
+        ),
+        "headers" to listOf(
+            "codex_agent_mcp_transport_http_has_headers",
+            "codex_agent_mcp_transport_http_headers_count",
+            "codex_agent_mcp_transport_http_headers_key_copy_at",
+            "codex_agent_mcp_transport_http_headers_value_copy_at",
+        ),
+        "headersHelper" to listOf(
+            "codex_agent_mcp_transport_http_has_headers_helper",
+            "codex_agent_mcp_transport_http_headers_helper_copy",
+        ),
+        "url" to listOf("codex_agent_mcp_transport_http_url_copy"),
+    ).forEach { (property, symbols) ->
+        ordinary(
+            "AgentMcpTransport.Http", "property", property, symbols,
+            listOf(C_MCP_TRANSPORT_HTTP_VALUES_TEST, C_MCP_TRANSPORT_GETTER_VALIDATION_TEST),
+        )
+    }
+
+    ordinary(
+        "AgentMcpTransport.Stdio", "constructor", "<init>",
+        listOf("codex_agent_mcp_transport_stdio_create", "codex_agent_mcp_transport_stdio_destroy"),
+        listOf(C_MCP_TRANSPORT_STDIO_VALUES_TEST, C_MCP_TRANSPORT_CONSTRUCTOR_VALIDATION_TEST),
+        "<init>(kotlin.String;kotlin.collections.List<kotlin.String>;kotlin.String?;" +
+            "kotlin.collections.Map<kotlin.String,kotlin.String>?;kotlin.collections.List<" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable>){}[0]",
+    )
+    listOf(
+        "arguments" to listOf(
+            "codex_agent_mcp_transport_stdio_arguments_count",
+            "codex_agent_mcp_transport_stdio_argument_copy_at",
+        ),
+        "command" to listOf("codex_agent_mcp_transport_stdio_command_copy"),
+        "environment" to listOf(
+            "codex_agent_mcp_transport_stdio_has_environment",
+            "codex_agent_mcp_transport_stdio_environment_count",
+            "codex_agent_mcp_transport_stdio_environment_key_copy_at",
+            "codex_agent_mcp_transport_stdio_environment_value_copy_at",
+        ),
+        "forwardedEnvironment" to listOf(
+            "codex_agent_mcp_transport_stdio_forwarded_environment_count",
+            "codex_agent_mcp_transport_stdio_forwarded_environment_at",
+        ),
+        "workingDirectory" to listOf(
+            "codex_agent_mcp_transport_stdio_has_working_directory",
+            "codex_agent_mcp_transport_stdio_working_directory_copy",
+        ),
+    ).forEach { (property, symbols) ->
+        ordinary(
+            "AgentMcpTransport.Stdio", "property", property, symbols,
+            listOf(C_MCP_TRANSPORT_STDIO_VALUES_TEST, C_MCP_TRANSPORT_GETTER_VALIDATION_TEST),
+        )
+    }
+
+    ordinary(
         "AgentElicitationValidation", "constructor", "<init>",
         listOf("codex_agent_elicitation_validation_create", "codex_agent_elicitation_validation_destroy"),
         listOf(C_ELICITATION_VALIDATION_LIST_VALUES_TEST, C_ELICITATION_VALIDATION_LIST_VALIDATION_TEST),
@@ -1701,9 +1832,9 @@ private fun List<String>.sortedNewlineSha256(): String = MessageDigest.getInstan
 private fun exactExportPolicy(file: File): Set<String> {
     check(file.releaseDigest() == C_ABI_MACOS_EXPORTS_SHA256) { "Reviewed macOS C ABI export policy drift" }
     val rows = file.readLines().filter(String::isNotBlank)
-    check(rows.size == 323 && rows == rows.sorted() && rows.size == rows.distinct().size &&
+    check(rows.size == 356 && rows == rows.sorted() && rows.size == rows.distinct().size &&
         rows.all { it.startsWith("_codex_agent_") }) {
-        "macOS C ABI export policy must contain the exact sorted 323-symbol inventory"
+        "macOS C ABI export policy must contain the exact sorted 356-symbol inventory"
     }
     return rows.mapTo(sortedSetOf()) { it.removePrefix("_") }
 }
@@ -1780,6 +1911,12 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val listLeafValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val mcpTransportValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val integrationValuesCConsumer: RegularFileProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val releaseLibrary: RegularFileProperty
@@ -1881,6 +2018,16 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "Reviewed C list-leaf-values consumer drift"
             }
         }
+        val mcpTransportValuesC = mcpTransportValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_MCP_TRANSPORT_VALUES_C_SHA256) {
+                "Reviewed C MCP-transport-values consumer drift"
+            }
+        }
+        val integrationValuesC = integrationValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_INTEGRATION_VALUES_C_SHA256) {
+                "Reviewed C integration-values consumer drift"
+            }
+        }
         val library = releaseLibrary.get().asFile
         val generated = generatedHeader.get().asFile
         val nativeExecutable = nativeTestExecutable.get().asFile
@@ -1960,6 +2107,14 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "c11-list-leaf-values", clang, "c11", listLeafValuesC,
                 work, include, library, rpath, sdk, true,
             ),
+            compileConsumer(
+                "c11-mcp-transport-values", clang, "c11", mcpTransportValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
+            compileConsumer(
+                "c11-integration-values", clang, "c11", integrationValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
         )
 
         val defined = normalizedCodexSymbols(
@@ -1993,7 +2148,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
-            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.4.0)") {
+            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.5.0)") {
             "Unexpected C ABI dylib loader versions: $linkedIdentity"
         }
 
@@ -2011,6 +2166,8 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 progressListValuesC,
                 resourceListValuesC,
                 listLeafValuesC,
+                mcpTransportValuesC,
+                integrationValuesC,
             )
                 .joinToString("\n") { it.readText() },
             exports,
@@ -2028,7 +2185,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             put("schemaVersion", JsonPrimitive(1))
             put("protocol", JsonPrimitive(C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL))
             put("result", JsonPrimitive("observed"))
-            put("milestone", JsonPrimitive("D096"))
+            put("milestone", JsonPrimitive("D097"))
             put("language", JsonPrimitive("c-abi"))
             put("canonical", buildJsonObject {
                 put("apiReportSha256", JsonPrimitive(canonical.canonical.apiReportSha256))

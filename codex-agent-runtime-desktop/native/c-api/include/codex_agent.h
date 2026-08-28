@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C(1)
-#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(4)
+#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(5)
 #define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C(0)
 #define CODEX_AGENT_ABI_VERSION_ENCODE(major, minor, patch) \
     ((((uint32_t)(major) & UINT32_C(0xff)) << 24) | \
@@ -71,6 +71,8 @@ typedef struct codex_agent_form_option codex_agent_form_option_t;
 typedef struct codex_agent_mcp_environment_variable codex_agent_mcp_environment_variable_t;
 typedef struct codex_agent_mcp_oauth_configuration codex_agent_mcp_oauth_configuration_t;
 typedef struct codex_agent_mcp_tool_configuration codex_agent_mcp_tool_configuration_t;
+typedef struct codex_agent_mcp_transport_http codex_agent_mcp_transport_http_t;
+typedef struct codex_agent_mcp_transport_stdio codex_agent_mcp_transport_stdio_t;
 typedef struct codex_agent_elicitation_validation_issue codex_agent_elicitation_validation_issue_t;
 typedef struct codex_agent_plan_step codex_agent_plan_step_t;
 typedef struct codex_agent_plugin_reference codex_agent_plugin_reference_t;
@@ -83,6 +85,7 @@ typedef struct codex_agent_form_text_value codex_agent_form_text_value_t;
 typedef struct codex_agent_form_text_list_value codex_agent_form_text_list_value_t;
 typedef struct codex_agent_elicitation_validation codex_agent_elicitation_validation_t;
 typedef struct codex_agent_connector codex_agent_connector_t;
+typedef struct codex_agent_integration_connector codex_agent_integration_connector_t;
 typedef struct codex_agent_skill codex_agent_skill_t;
 typedef struct codex_agent_skill_catalog codex_agent_skill_catalog_t;
 typedef struct codex_agent_plugin_summary codex_agent_plugin_summary_t;
@@ -892,6 +895,191 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_tool_confi
     int32_t *out_has_approval,
     codex_agent_mcp_tool_approval_t *out_approval);
 
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_transport_http_create(
+    codex_agent_context_t *context,
+    const codex_agent_string_view_t *url,
+    int32_t has_bearer_token_environment_variable,
+    const codex_agent_string_view_t *bearer_token_environment_variable,
+    int32_t has_headers,
+    const codex_agent_string_view_t *header_keys,
+    const codex_agent_string_view_t *header_values,
+    size_t header_count,
+    int32_t has_environment_headers,
+    const codex_agent_string_view_t *environment_header_keys,
+    const codex_agent_string_view_t *environment_header_values,
+    size_t environment_header_count,
+    int32_t has_headers_helper,
+    const codex_agent_string_view_t *headers_helper,
+    codex_agent_mcp_transport_http_t **out_transport);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_transport_http_destroy(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t **transport);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_transport_http_url_copy(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_has_bearer_token_environment_variable(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    int32_t *out_has_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_bearer_token_environment_variable_copy(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_transport_http_has_headers(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    int32_t *out_has_headers);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_transport_http_headers_count(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_headers_key_copy_at(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_headers_value_copy_at(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_has_environment_headers(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    int32_t *out_has_environment_headers);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_environment_headers_count(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_environment_headers_key_copy_at(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_environment_headers_value_copy_at(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_has_headers_helper(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    int32_t *out_has_headers_helper);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_http_headers_helper_copy(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_http_t *transport,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_transport_stdio_create(
+    codex_agent_context_t *context,
+    const codex_agent_string_view_t *command,
+    const codex_agent_string_view_t *arguments,
+    size_t argument_count,
+    int32_t has_working_directory,
+    const codex_agent_string_view_t *working_directory,
+    int32_t has_environment,
+    const codex_agent_string_view_t *environment_keys,
+    const codex_agent_string_view_t *environment_values,
+    size_t environment_count,
+    codex_agent_mcp_environment_variable_t *const *forwarded_environment,
+    size_t forwarded_environment_count,
+    codex_agent_mcp_transport_stdio_t **out_transport);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_transport_stdio_destroy(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t **transport);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_transport_stdio_command_copy(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_transport_stdio_arguments_count(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_stdio_argument_copy_at(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_stdio_has_working_directory(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    int32_t *out_has_working_directory);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_stdio_working_directory_copy(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_stdio_has_environment(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    int32_t *out_has_environment);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_stdio_environment_count(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_stdio_environment_key_copy_at(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_stdio_environment_value_copy_at(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_stdio_forwarded_environment_count(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_mcp_transport_stdio_forwarded_environment_at(
+    codex_agent_context_t *context,
+    codex_agent_mcp_transport_stdio_t *transport,
+    size_t index,
+    codex_agent_mcp_environment_variable_t **out_variable);
+
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_validation_issue_create(
     codex_agent_context_t *context,
     const codex_agent_string_view_t *field_name,
@@ -1407,6 +1595,31 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_connector_plug
     codex_agent_context_t *context,
     codex_agent_connector_t *connector,
     size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_integration_connector_create(
+    codex_agent_context_t *context,
+    codex_agent_connector_t *connector,
+    codex_agent_integration_connector_t **out_integration);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_integration_connector_destroy(
+    codex_agent_context_t *context,
+    codex_agent_integration_connector_t **integration);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_integration_connector_connector(
+    codex_agent_context_t *context,
+    codex_agent_integration_connector_t *integration,
+    codex_agent_connector_t **out_connector);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_integration_connector_id_copy(
+    codex_agent_context_t *context,
+    codex_agent_integration_connector_t *integration,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_connector_display_name_copy(
+    codex_agent_context_t *context,
+    codex_agent_integration_connector_t *integration,
     uint8_t *buffer,
     size_t capacity,
     size_t *out_required);

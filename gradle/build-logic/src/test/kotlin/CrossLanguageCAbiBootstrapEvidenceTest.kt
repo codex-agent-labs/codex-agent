@@ -11,7 +11,7 @@ import org.gradle.testkit.runner.TaskOutcome
 
 class CrossLanguageCAbiBootstrapEvidenceTest {
     @Test
-    fun `derives the exact reviewed 312 capability bootstrap slice`() {
+    fun `derives the exact reviewed 328 capability bootstrap slice`() {
         val inputs = validInputs()
         val claims = inputs.derive()
         val keys = claims.map(CAbiBootstrapClaim::capabilityKey)
@@ -43,12 +43,19 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             "49d9c0aaba65280b04c86891a5250f9d14b460474138f22bbf1a68ea3f99a524",
             D096_SELECTED_CAPABILITY_KEYS.sortedNewlineSha256(),
         )
-        assertEquals(312, keys.size)
+        assertEquals(16, D097_SELECTED_CAPABILITY_KEYS.size)
+        assertEquals(D097_SELECTED_CAPABILITY_KEYS.sorted(), D097_SELECTED_CAPABILITY_KEYS)
+        assertEquals(D097_SELECTED_CAPABILITY_KEYS.size, D097_SELECTED_CAPABILITY_KEYS.distinct().size)
+        assertEquals(
+            "9c7ee7cc01795927def9c7963481c30688daa9c752ef88bb1df0cb47897dc2c8",
+            D097_SELECTED_CAPABILITY_KEYS.sortedNewlineSha256(),
+        )
+        assertEquals(328, keys.size)
         assertEquals(keys.sorted(), keys)
         assertEquals(keys.size, keys.distinct().size)
         assertEquals(SELECTED_CAPABILITY_KEYS.sorted(), keys)
         assertEquals(C_ABI_BOOTSTRAP_CAPABILITY_SHA256, keys.sortedNewlineSha256())
-        assertEquals(244, complement.size)
+        assertEquals(228, complement.size)
         assertEquals((DUMMY_CAPABILITY_KEYS + ABSENT_FACTORY_AND_CLIENT_INFO_KEYS).sorted(), complement)
         ABSENT_FACTORY_AND_CLIENT_INFO_KEYS.forEach { key ->
             assertFalse(key in keys, key)
@@ -254,6 +261,8 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "native/c-api/consumer/codex_agent_progress_list_values_compile.c",
                 "native/c-api/consumer/codex_agent_resource_list_values_compile.c",
                 "native/c-api/consumer/codex_agent_list_leaf_values_compile.c",
+                "native/c-api/consumer/codex_agent_mcp_transport_values_compile.c",
+                "native/c-api/consumer/codex_agent_integration_values_compile.c",
                 "bin/macosArm64/releaseShared/libcodex_agent.dylib",
                 "bin/macosArm64/releaseShared/libcodex_agent_api.h",
                 "bin/macosArm64/debugTest/test.kexe",
@@ -270,6 +279,8 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "progressListValuesCConsumer" to "codex_agent_progress_list_values_compile.c",
                 "resourceListValuesCConsumer" to "codex_agent_resource_list_values_compile.c",
                 "listLeafValuesCConsumer" to "codex_agent_list_leaf_values_compile.c",
+                "mcpTransportValuesCConsumer" to "codex_agent_mcp_transport_values_compile.c",
+                "integrationValuesCConsumer" to "codex_agent_integration_values_compile.c",
             ).forEach { (property, fixture) ->
                 val assignment = generator.substringAfter("$property.set(").substringBefore("\n    )")
                 assertTrue(fixture in assignment, "C bootstrap $property is not wired to $fixture")
@@ -282,10 +293,12 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "\"c11-progress-list-values\"",
                 "\"c11-resource-list-values\"",
                 "\"c11-list-leaf-values\"",
-                "rows.size == 323",
-                "put(\"milestone\", JsonPrimitive(\"D096\"))",
+                "\"c11-mcp-transport-values\"",
+                "\"c11-integration-values\"",
+                "rows.size == 356",
+                "put(\"milestone\", JsonPrimitive(\"D097\"))",
             ).forEach { contract ->
-                assertTrue(contract in producer, "Missing D096 C bootstrap producer contract: $contract")
+                assertTrue(contract in producer, "Missing D097 C bootstrap producer contract: $contract")
             }
             val coreWiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
             assertTrue("\"invalidateCodexAgentCAbiBootstrapEvidence\"" in coreWiring)
@@ -666,11 +679,30 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentTurnProgress|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentTurnProgress.workActivity|{}workActivity[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentWorkActivity?
         """.trimIndent().lineSequence().filter(String::isNotBlank).toList()
 
+        val D097_SELECTED_CAPABILITY_KEYS = """
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.Connector|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.Connector.<init>|<init>(io.github.codex_agent_labs.codexmobile.agent.AgentConnector){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.Connector|suspend=false|parameters=[REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentConnector!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.Connector|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.Connector.connector|{}connector[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentConnector!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.Connector|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.Connector.displayName|{}displayName[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.Connector|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.Connector.id|{}id[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http.<init>|<init>(kotlin.String;kotlin.String?;kotlin.collections.Map<kotlin.String,kotlin.String>?;kotlin.collections.Map<kotlin.String,kotlin.String>?;kotlin.String?){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String?:default=true:vararg=false,REGULAR:kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?:default=true:vararg=false,REGULAR:kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?:default=true:vararg=false,REGULAR:kotlin/String?:default=true:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http.bearerTokenEnvironmentVariable|{}bearerTokenEnvironmentVariable[0]|propertyKind=VAL|type=kotlin/String?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http.environmentHeaders|{}environmentHeaders[0]|propertyKind=VAL|type=kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http.headersHelper|{}headersHelper[0]|propertyKind=VAL|type=kotlin/String?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http.headers|{}headers[0]|propertyKind=VAL|type=kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Http.url|{}url[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio.<init>|<init>(kotlin.String;kotlin.collections.List<kotlin.String>;kotlin.String?;kotlin.collections.Map<kotlin.String,kotlin.String>?;kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable>){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin.collections/List<INVARIANT:kotlin/String!!>!!:default=true:vararg=false,REGULAR:kotlin/String?:default=true:vararg=false,REGULAR:kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?:default=true:vararg=false,REGULAR:kotlin.collections/List<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentMcpEnvironmentVariable!!>!!:default=true:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio.arguments|{}arguments[0]|propertyKind=VAL|type=kotlin.collections/List<INVARIANT:kotlin/String!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio.command|{}command[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio.environment|{}environment[0]|propertyKind=VAL|type=kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:kotlin/String!!>?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio.forwardedEnvironment|{}forwardedEnvironment[0]|propertyKind=VAL|type=kotlin.collections/List<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentMcpEnvironmentVariable!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio.workingDirectory|{}workingDirectory[0]|propertyKind=VAL|type=kotlin/String?
+        """.trimIndent().lineSequence().filter(String::isNotBlank).toList()
+
         val SELECTED_CAPABILITY_KEYS =
             D093_SELECTED_CAPABILITY_KEYS + D094_SELECTED_CAPABILITY_KEYS + D095_SELECTED_CAPABILITY_KEYS +
-                D096_SELECTED_CAPABILITY_KEYS
+                D096_SELECTED_CAPABILITY_KEYS + D097_SELECTED_CAPABILITY_KEYS
 
-        val DUMMY_CAPABILITY_KEYS = (0 until 239).map(::dummyCapabilityKey)
+        val DUMMY_CAPABILITY_KEYS = (0 until 223).map(::dummyCapabilityKey)
 
         val ABSENT_FACTORY_AND_CLIENT_INFO_KEYS = listOf(
             "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.<init>|<init>(kotlin.String;kotlin.String;kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]",

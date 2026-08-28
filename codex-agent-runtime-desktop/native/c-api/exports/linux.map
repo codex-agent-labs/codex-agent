@@ -348,3 +348,42 @@ CODEX_AGENT_1.4 {
     local:
         *;
 } CODEX_AGENT_1.3;
+
+CODEX_AGENT_1.5 {
+    global:
+        codex_agent_integration_connector_connector;
+        codex_agent_integration_connector_create;
+        codex_agent_integration_connector_destroy;
+        codex_agent_integration_connector_display_name_copy;
+        codex_agent_integration_connector_id_copy;
+        codex_agent_mcp_transport_http_bearer_token_environment_variable_copy;
+        codex_agent_mcp_transport_http_create;
+        codex_agent_mcp_transport_http_destroy;
+        codex_agent_mcp_transport_http_environment_headers_count;
+        codex_agent_mcp_transport_http_environment_headers_key_copy_at;
+        codex_agent_mcp_transport_http_environment_headers_value_copy_at;
+        codex_agent_mcp_transport_http_has_bearer_token_environment_variable;
+        codex_agent_mcp_transport_http_has_environment_headers;
+        codex_agent_mcp_transport_http_has_headers;
+        codex_agent_mcp_transport_http_has_headers_helper;
+        codex_agent_mcp_transport_http_headers_count;
+        codex_agent_mcp_transport_http_headers_helper_copy;
+        codex_agent_mcp_transport_http_headers_key_copy_at;
+        codex_agent_mcp_transport_http_headers_value_copy_at;
+        codex_agent_mcp_transport_http_url_copy;
+        codex_agent_mcp_transport_stdio_argument_copy_at;
+        codex_agent_mcp_transport_stdio_arguments_count;
+        codex_agent_mcp_transport_stdio_command_copy;
+        codex_agent_mcp_transport_stdio_create;
+        codex_agent_mcp_transport_stdio_destroy;
+        codex_agent_mcp_transport_stdio_environment_count;
+        codex_agent_mcp_transport_stdio_environment_key_copy_at;
+        codex_agent_mcp_transport_stdio_environment_value_copy_at;
+        codex_agent_mcp_transport_stdio_forwarded_environment_at;
+        codex_agent_mcp_transport_stdio_forwarded_environment_count;
+        codex_agent_mcp_transport_stdio_has_environment;
+        codex_agent_mcp_transport_stdio_has_working_directory;
+        codex_agent_mcp_transport_stdio_working_directory_copy;
+    local:
+        *;
+} CODEX_AGENT_1.4;
