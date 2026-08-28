@@ -20,25 +20,25 @@ import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
 
 internal const val C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"
-internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 358
+internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 453
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
-    "5503152a8052c956ad64e4594975f80293d6a944be318f87b2dd53d76e2faf9f"
+    "017f1b23b81544fa2e7fd216e058130f7d0ee14bf854e062e1e60d6c0eac18a4"
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
-    "ed55f4d401a62dea7fa75e2f9bf15cd61823089b64424a34e0d44fb3553b6165"
+    "3dc9b88a6dbe1ede13a29e21661c0ff240adc6f0cc37c5df32238d91972c2f90"
 private const val C_ABI_CINTEROP_SHA256 =
     "4a132bc83e0f69251cc9f432bb7530b4eaafe2f4d7ea1c2985ed860bedafb1c8"
 private const val C_ABI_MACOS_EXPORTS_SHA256 =
-    "7e5ddb65c8ef2cc082aac101f2c0926f671cc95ef354bef350d8cb6244a10ed5"
+    "21159a36be04d452f573e2b82622c0075b09e8d4923d7cdbe97368fa9b21c1d1"
 private const val C_ABI_FOUNDATION_C_SHA256 =
-    "de05da3d1105bc8eb34af080511f7c6cc0fae525f4bbb1a05355fdd0f9bf79aa"
+    "7dbc461fe0caa86be1756547b3cfe1bbe2645bef79b85ed732615df911b97cd0"
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
-    "15270da6eb3ed53d1e71b981e619301d5c6fca8f20262686651750ae5e2084d3"
+    "cca1aa71779298ab61894d0ffff4ce6b0c88895dc0d7103386990e08896308c1"
 private const val C_ABI_LIFECYCLE_C_SHA256 =
-    "49209bd7cdc5cc6e50c4633656094a3ea150a04d65fa66eb2abd329354cf0415"
+    "5a78a15bf15d7b06ba75570fc97a4c8762fa00327e4ced693edf054f5b491bed"
 private const val C_ABI_LIFECYCLE_CPP_SHA256 =
-    "82fa64d361b411f5474420d3861fefe48ab3e47088d2a375e15e421840254ee1"
+    "13cade229e6950dee60b88a89f4a48c9912f91d9c74eb529c8bbdc99743a1f57"
 private const val C_ABI_CONVERSATION_VALUES_C_SHA256 =
     "9bd1c7284344c037426a903fa08f5997f4c4746a597b4072ec5aa2d6911256c5"
 private const val C_ABI_CONFIGURATION_VALUES_C_SHA256 =
@@ -67,6 +67,14 @@ private const val C_ABI_MCP_SERVER_CONFIGURATION_VALUES_C_SHA256 =
     "cd673fe126adf497289f18bbe187eea63bca7e648d2943e2038cfe89c18b0bd2"
 private const val C_ABI_INTEGRATION_MCP_VALUES_C_SHA256 =
     "9ebf586b50ee6d875a1f86065c073e8ba44d92c9ffe7f35d1c659a3169192641"
+private const val C_ABI_CONVERSATION_AGGREGATE_VALUES_C_SHA256 =
+    "2d36af8d0e9cad4b1224eb1b0c349d911cb5d272b2c6c05bc57cb78da5b2786e"
+private const val C_ABI_ELICITATION_INTERACTION_VALUES_C_SHA256 =
+    "5f67ed4555ed13becbf9e52ba3163208d2cfc479eb2414442da9950d8e4a8944"
+private const val C_ABI_HOOK_CATALOG_VALUES_C_SHA256 =
+    "2c80b989b924a5ef751b99d0359845f4b5f862fe88cf341995901cfae00fed94"
+private const val C_ABI_INTEGRATION_STATE_VALUES_C_SHA256 =
+    "f39c8bc177a44a83fb877f3b6ae4842ccbda365a855ffed079318b5f08e1d0a3"
 
 private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent/"
 private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi."
@@ -267,6 +275,48 @@ private const val C_INTEGRATION_MCP_DISPLAY_NAME_TEST =
 private const val C_INTEGRATION_MCP_VALIDATION_TEST =
     C_API_TEST_PACKAGE +
         "CodexAgentCIntegrationMcpValuesTest#mcpServerIntegrationRejectsInvalidContextTypeStaleAndOutputBoundaries[macosArm64]"
+private const val C_CONVERSATION_AGGREGATE_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCConversationAggregateValuesTest#projectsAgentConversationAndMessagesWithExactOrderedSnapshots[macosArm64]"
+private const val C_TURN_REQUEST_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCConversationAggregateValuesTest#projectsAgentTurnRequestAndInvocationCarrierExactly[macosArm64]"
+private const val C_CONVERSATION_STATE_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCConversationAggregateValuesTest#projectsAgentConversationStateTruthTableAndNullableValuesExactly[macosArm64]"
+private const val C_CONVERSATION_AGGREGATE_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCConversationAggregateValuesTest#rejectsConversationAggregateBoundaryViolationsAndReclaimsSnapshots[macosArm64]"
+private const val C_FORM_VALUE_CARRIER_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationInteractionValuesTest#formValueCarrierIsTaggedOwnedAndFailClosed[macosArm64]"
+private const val C_FORM_FIELD_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationInteractionValuesTest#formFieldsProjectEveryScalarNullableEnumOptionAndOwnedDefault[macosArm64]"
+private const val C_ELICITATION_RESPONSE_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationInteractionValuesTest#elicitationAndResponseProjectEveryFieldAndOwnedCollection[macosArm64]"
+private const val C_INTERACTION_STATE_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationInteractionValuesTest#pendingElicitationAndInteractionStateProjectEveryFieldAndOwnedChild[macosArm64]"
+private const val C_ELICITATION_INTERACTION_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationInteractionValuesTest#rejectsMalformedContextTypeIndexEnumFlagUtf8AndOutputBoundaries[macosArm64]"
+private const val C_HOOK_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCHookCatalogValuesTest#projectsEveryHookFieldHandlerTrustAndOriginExactly[macosArm64]"
+private const val C_HOOK_CATALOG_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCHookCatalogValuesTest#projectsOrderedDuplicateCatalogAndFreshChildrenExactly[macosArm64]"
+private const val C_HOOK_CATALOG_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCHookCatalogValuesTest#rejectsInvalidHookCatalogInputsAndHandleMisuseExactly[macosArm64]"
+private const val C_INTEGRATION_STATE_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCIntegrationStateValuesTest#authorizationStateProjectsStatusTargetAndNullableFailure[macosArm64]"
+private const val C_INTEGRATION_STATE_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCIntegrationStateValuesTest#integrationStateRejectsContextTypeStaleAndOutputBoundaries[macosArm64]"
 
 internal data class CAbiBootstrapClaimSpec(
     val owner: String,
@@ -1984,6 +2034,441 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
     ).forEach { (property, symbols) ->
         ordinary("AgentTurnProgress", "property", property, symbols, listOf(C_TURN_PROGRESS_LIST_VALUES_TEST))
     }
+
+    val invocationCarrierSymbols = listOf(
+        "codex_agent_invocation_from_plugin",
+        "codex_agent_invocation_from_skill",
+        "codex_agent_invocation_destroy",
+        "codex_agent_invocation_kind",
+        "codex_agent_invocation_plugin",
+        "codex_agent_invocation_skill",
+    )
+    val formValueCarrierSymbols = listOf(
+        "codex_agent_form_value_from_boolean",
+        "codex_agent_form_value_from_number",
+        "codex_agent_form_value_from_text",
+        "codex_agent_form_value_from_text_list",
+        "codex_agent_form_value_destroy",
+        "codex_agent_form_value_kind",
+        "codex_agent_form_value_boolean",
+        "codex_agent_form_value_number",
+        "codex_agent_form_value_text",
+        "codex_agent_form_value_text_list",
+    )
+    val pendingInteractionCarrierSymbols = listOf(
+        "codex_agent_pending_interaction_from_approval",
+        "codex_agent_pending_interaction_from_elicitation",
+        "codex_agent_pending_interaction_destroy",
+        "codex_agent_pending_interaction_kind",
+        "codex_agent_pending_interaction_approval",
+        "codex_agent_pending_interaction_elicitation",
+    )
+    val hookHandlerCarrierSymbols = listOf(
+        "codex_agent_hook_handler_from_agent",
+        "codex_agent_hook_handler_from_command",
+        "codex_agent_hook_handler_from_mcp_tool",
+        "codex_agent_hook_handler_from_prompt",
+        "codex_agent_hook_handler_destroy",
+        "codex_agent_hook_handler_kind",
+        "codex_agent_hook_handler_agent",
+        "codex_agent_hook_handler_command",
+        "codex_agent_hook_handler_mcp_tool",
+        "codex_agent_hook_handler_prompt",
+    )
+    val integrationCarrierSymbols = listOf(
+        "codex_agent_integration_from_connector",
+        "codex_agent_integration_from_mcp_server",
+        "codex_agent_integration_destroy",
+        "codex_agent_integration_kind",
+        "codex_agent_integration_connector",
+        "codex_agent_integration_mcp_server",
+    )
+
+    ordinary(
+        "AgentMessage", "constructor", "<init>",
+        listOf("codex_agent_message_create", "codex_agent_message_destroy"),
+        listOf(C_CONVERSATION_AGGREGATE_VALUES_TEST, C_CONVERSATION_AGGREGATE_VALIDATION_TEST),
+        "<init>(kotlin.String;kotlin.String?;io.github.codex_agent_labs.codexmobile.agent.AgentMessageRole;" +
+            "kotlin.String;io.github.codex_agent_labs.codexmobile.agent.AgentCollaborationMode;kotlin.String?;" +
+            "kotlin.String?;kotlin.String?;kotlin.Int?;kotlin.collections.Set<io.github.codex_agent_labs." +
+            "codexmobile.agent.AgentCapability>;kotlin.collections.List<io.github.codex_agent_labs." +
+            "codexmobile.agent.AgentInvocation>){}[0]",
+    )
+    listOf(
+        "capabilities" to listOf(
+            "codex_agent_message_capabilities_count",
+            "codex_agent_message_has_capability",
+        ),
+        "clientMessageId" to listOf(
+            "codex_agent_message_has_client_message_id",
+            "codex_agent_message_client_message_id_copy",
+        ),
+        "collaborationMode" to listOf("codex_agent_message_collaboration_mode"),
+        "exitCode" to listOf("codex_agent_message_exit_code"),
+        "id" to listOf("codex_agent_message_id_copy"),
+        "plan" to listOf("codex_agent_message_has_plan", "codex_agent_message_plan_copy"),
+        "reasoning" to listOf(
+            "codex_agent_message_has_reasoning",
+            "codex_agent_message_reasoning_copy",
+        ),
+        "role" to listOf("codex_agent_message_role"),
+        "shellCommand" to listOf(
+            "codex_agent_message_has_shell_command",
+            "codex_agent_message_shell_command_copy",
+        ),
+        "text" to listOf("codex_agent_message_text_copy"),
+    ).forEach { (property, symbols) ->
+        ordinary(
+            "AgentMessage", "property", property, symbols,
+            listOf(C_CONVERSATION_AGGREGATE_VALUES_TEST),
+        )
+    }
+    ordinary(
+        "AgentMessage", "property", "invocations",
+        listOf(
+            "codex_agent_message_invocations_count",
+            "codex_agent_message_invocation_at",
+        ) + invocationCarrierSymbols,
+        listOf(C_CONVERSATION_AGGREGATE_VALUES_TEST, C_TURN_REQUEST_VALUES_TEST),
+    )
+
+    ordinary(
+        "AgentConversation", "constructor", "<init>",
+        listOf("codex_agent_conversation_value_create", "codex_agent_conversation_value_destroy"),
+        listOf(C_CONVERSATION_AGGREGATE_VALUES_TEST, C_CONVERSATION_AGGREGATE_VALIDATION_TEST),
+        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentConversationSummary;" +
+            "kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentMessage>){}[0]",
+    )
+    ordinary(
+        "AgentConversation", "property", "messages",
+        listOf(
+            "codex_agent_conversation_value_messages_count",
+            "codex_agent_conversation_value_message_at",
+        ),
+        listOf(C_CONVERSATION_AGGREGATE_VALUES_TEST),
+    )
+    ordinary(
+        "AgentConversation", "property", "summary",
+        listOf("codex_agent_conversation_value_summary"),
+        listOf(C_CONVERSATION_AGGREGATE_VALUES_TEST),
+    )
+
+    ordinary(
+        "AgentTurnRequest", "constructor", "<init>",
+        listOf("codex_agent_turn_request_create", "codex_agent_turn_request_destroy"),
+        listOf(C_TURN_REQUEST_VALUES_TEST, C_CONVERSATION_AGGREGATE_VALIDATION_TEST),
+        "<init>(kotlin.String;kotlin.String?;kotlin.String?;kotlin.String?;kotlin.String?;" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset;kotlin.collections.Set<" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentCapability>;kotlin.collections.List<" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentInvocation>;io.github.codex_agent_labs." +
+            "codexmobile.agent.AgentCollaborationMode){}[0]",
+    )
+    listOf(
+        "approvalPreset" to listOf("codex_agent_turn_request_approval_preset"),
+        "capabilities" to listOf(
+            "codex_agent_turn_request_capabilities_count",
+            "codex_agent_turn_request_has_capability",
+        ),
+        "clientMessageId" to listOf(
+            "codex_agent_turn_request_has_client_message_id",
+            "codex_agent_turn_request_client_message_id_copy",
+        ),
+        "collaborationMode" to listOf("codex_agent_turn_request_collaboration_mode"),
+        "effort" to listOf(
+            "codex_agent_turn_request_has_effort",
+            "codex_agent_turn_request_effort_copy",
+        ),
+        "model" to listOf(
+            "codex_agent_turn_request_has_model",
+            "codex_agent_turn_request_model_copy",
+        ),
+        "prompt" to listOf("codex_agent_turn_request_prompt_copy"),
+        "serviceTier" to listOf(
+            "codex_agent_turn_request_has_service_tier",
+            "codex_agent_turn_request_service_tier_copy",
+        ),
+    ).forEach { (property, symbols) ->
+        ordinary("AgentTurnRequest", "property", property, symbols, listOf(C_TURN_REQUEST_VALUES_TEST))
+    }
+    ordinary(
+        "AgentTurnRequest", "property", "invocations",
+        listOf(
+            "codex_agent_turn_request_invocations_count",
+            "codex_agent_turn_request_invocation_at",
+        ) + invocationCarrierSymbols,
+        listOf(C_CONVERSATION_AGGREGATE_VALUES_TEST, C_TURN_REQUEST_VALUES_TEST),
+    )
+
+    ordinary(
+        "AgentConversationState", "constructor", "<init>",
+        listOf("codex_agent_conversation_state_create", "codex_agent_snapshot_destroy"),
+        listOf(C_CONVERSATION_STATE_VALUES_TEST, C_CONVERSATION_AGGREGATE_VALIDATION_TEST),
+        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentConversationStatus;" +
+            "io.github.codex_agent_labs.codexmobile.agent.ConversationId?;io.github.codex_agent_labs." +
+            "codexmobile.agent.AgentConversation?;io.github.codex_agent_labs.codexmobile.agent." +
+            "AgentTurnProgress;kotlin.String?;kotlin.String?;kotlin.String?;" +
+            "io.github.codex_agent_labs.codexmobile.agent.CodexFailure?){}[0]",
+    )
+    listOf(
+        "canCancelTurn" to listOf("codex_agent_conversation_state_can_cancel_turn"),
+        "canReload" to listOf("codex_agent_conversation_state_can_reload"),
+        "canStartTurn" to listOf("codex_agent_conversation_state_can_start_turn"),
+        "conversation" to listOf(
+            "codex_agent_conversation_state_has_conversation",
+            "codex_agent_conversation_state_conversation",
+        ),
+        "conversationId" to listOf(
+            "codex_agent_conversation_state_has_conversation_id",
+            "codex_agent_conversation_state_conversation_id",
+        ),
+        "effort" to listOf(
+            "codex_agent_conversation_state_has_effort",
+            "codex_agent_conversation_state_effort_copy",
+        ),
+        "model" to listOf(
+            "codex_agent_conversation_state_has_model",
+            "codex_agent_conversation_state_model_copy",
+        ),
+        "serviceTier" to listOf(
+            "codex_agent_conversation_state_has_service_tier",
+            "codex_agent_conversation_state_service_tier_copy",
+        ),
+        "turnProgress" to listOf("codex_agent_conversation_state_turn_progress"),
+    ).forEach { (property, symbols) ->
+        ordinary(
+            "AgentConversationState", "property", property, symbols,
+            listOf(C_CONVERSATION_STATE_VALUES_TEST),
+        )
+    }
+
+    ordinary(
+        "AgentFormField", "constructor", "<init>",
+        listOf("codex_agent_form_field_create", "codex_agent_form_field_destroy"),
+        listOf(C_FORM_FIELD_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
+        "<init>(kotlin.String;kotlin.String;kotlin.String?;kotlin.Boolean;" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentFormFieldType;kotlin.collections.List<" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentFormOption>;io.github.codex_agent_labs." +
+            "codexmobile.agent.AgentFormValue?;kotlin.Double?;kotlin.Double?;io.github.codex_agent_labs." +
+            "codexmobile.agent.AgentFormStringFormat?;kotlin.Long?;kotlin.Long?;kotlin.Long?;kotlin.Long?;" +
+            "kotlin.Boolean;kotlin.Boolean){}[0]",
+    )
+    listOf(
+        "allowsOther" to listOf("codex_agent_form_field_allows_other"),
+        "description" to listOf(
+            "codex_agent_form_field_has_description",
+            "codex_agent_form_field_description_copy",
+        ),
+        "format" to listOf("codex_agent_form_field_format"),
+        "isRequired" to listOf("codex_agent_form_field_is_required"),
+        "isSecret" to listOf("codex_agent_form_field_is_secret"),
+        "maximum" to listOf("codex_agent_form_field_maximum"),
+        "maximumLength" to listOf("codex_agent_form_field_maximum_length"),
+        "maximumSelections" to listOf("codex_agent_form_field_maximum_selections"),
+        "minimum" to listOf("codex_agent_form_field_minimum"),
+        "minimumLength" to listOf("codex_agent_form_field_minimum_length"),
+        "minimumSelections" to listOf("codex_agent_form_field_minimum_selections"),
+        "name" to listOf("codex_agent_form_field_name_copy"),
+        "options" to listOf(
+            "codex_agent_form_field_options_count",
+            "codex_agent_form_field_option_at",
+        ),
+        "title" to listOf("codex_agent_form_field_title_copy"),
+        "type" to listOf("codex_agent_form_field_type"),
+    ).forEach { (property, symbols) ->
+        ordinary("AgentFormField", "property", property, symbols, listOf(C_FORM_FIELD_VALUES_TEST))
+    }
+    ordinary(
+        "AgentFormField", "property", "defaultValue",
+        listOf(
+            "codex_agent_form_field_has_default_value",
+            "codex_agent_form_field_default_value",
+        ) + formValueCarrierSymbols,
+        listOf(C_FORM_VALUE_CARRIER_TEST, C_FORM_FIELD_VALUES_TEST),
+    )
+
+    ordinary(
+        "AgentElicitation", "constructor", "<init>",
+        listOf("codex_agent_elicitation_create", "codex_agent_elicitation_destroy"),
+        listOf(C_ELICITATION_RESPONSE_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
+        "<init>(kotlin.String;kotlin.String;io.github.codex_agent_labs.codexmobile.agent.ConversationId;" +
+            "kotlin.String;kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent." +
+            "AgentFormField>?;kotlin.String?){}[0]",
+    )
+    listOf(
+        "conversationId" to listOf("codex_agent_elicitation_conversation_id"),
+        "form" to listOf(
+            "codex_agent_elicitation_has_form",
+            "codex_agent_elicitation_form_count",
+            "codex_agent_elicitation_form_at",
+        ),
+        "message" to listOf("codex_agent_elicitation_message_copy"),
+        "requestId" to listOf("codex_agent_elicitation_request_id_copy"),
+        "serverName" to listOf("codex_agent_elicitation_server_name_copy"),
+        "url" to listOf("codex_agent_elicitation_has_url", "codex_agent_elicitation_url_copy"),
+    ).forEach { (property, symbols) ->
+        ordinary(
+            "AgentElicitation", "property", property, symbols,
+            listOf(C_ELICITATION_RESPONSE_VALUES_TEST),
+        )
+    }
+
+    ordinary(
+        "AgentElicitationResponse", "constructor", "<init>",
+        listOf("codex_agent_elicitation_response_create", "codex_agent_elicitation_response_destroy"),
+        listOf(C_ELICITATION_RESPONSE_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
+        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentElicitationAction;" +
+            "kotlin.collections.Map<kotlin.String,io.github.codex_agent_labs.codexmobile.agent." +
+            "AgentFormValue>){}[0]",
+    )
+    ordinary(
+        "AgentElicitationResponse", "property", "action",
+        listOf("codex_agent_elicitation_response_action"),
+        listOf(C_ELICITATION_RESPONSE_VALUES_TEST),
+    )
+    ordinary(
+        "AgentElicitationResponse", "property", "content",
+        listOf(
+            "codex_agent_elicitation_response_content_count",
+            "codex_agent_elicitation_response_content_value",
+        ) + formValueCarrierSymbols,
+        listOf(C_FORM_VALUE_CARRIER_TEST, C_ELICITATION_RESPONSE_VALUES_TEST),
+    )
+
+    ordinary(
+        "AgentPendingElicitation", "constructor", "<init>",
+        listOf("codex_agent_pending_elicitation_create", "codex_agent_pending_elicitation_destroy"),
+        listOf(C_INTERACTION_STATE_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
+        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentElicitation){}[0]",
+    )
+    listOf(
+        "conversationId" to listOf("codex_agent_pending_elicitation_conversation_id"),
+        "elicitation" to listOf("codex_agent_pending_elicitation_elicitation"),
+        "requestId" to listOf("codex_agent_pending_elicitation_request_id_copy"),
+    ).forEach { (property, symbols) ->
+        ordinary(
+            "AgentPendingElicitation", "property", property, symbols,
+            listOf(C_INTERACTION_STATE_VALUES_TEST),
+        )
+    }
+
+    ordinary(
+        "AgentInteractionState", "constructor", "<init>",
+        listOf("codex_agent_interaction_state_create", "codex_agent_interaction_state_destroy"),
+        listOf(C_INTERACTION_STATE_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
+        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent." +
+            "AgentPendingInteraction>;kotlin.collections.Set<kotlin.String>;" +
+            "io.github.codex_agent_labs.codexmobile.agent.CodexFailure?){}[0]",
+    )
+    ordinary(
+        "AgentInteractionState", "property", "failure",
+        listOf("codex_agent_interaction_state_has_failure", "codex_agent_interaction_state_failure"),
+        listOf(C_INTERACTION_STATE_VALUES_TEST),
+    )
+    ordinary(
+        "AgentInteractionState", "property", "pending",
+        listOf(
+            "codex_agent_interaction_state_pending_count",
+            "codex_agent_interaction_state_pending_at",
+        ) + pendingInteractionCarrierSymbols,
+        listOf(C_INTERACTION_STATE_VALUES_TEST),
+    )
+    ordinary(
+        "AgentInteractionState", "property", "resolvingRequestIds",
+        listOf(
+            "codex_agent_interaction_state_resolving_request_ids_count",
+            "codex_agent_interaction_state_resolving_request_ids_contains",
+        ),
+        listOf(C_INTERACTION_STATE_VALUES_TEST),
+    )
+
+    ordinary(
+        "AgentHook", "constructor", "<init>",
+        listOf("codex_agent_hook_create", "codex_agent_hook_destroy"),
+        listOf(C_HOOK_VALUES_TEST, C_HOOK_CATALOG_VALIDATION_TEST),
+        "<init>(kotlin.String;kotlin.String;kotlin.Boolean;kotlin.String;" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentHookHandler;kotlin.Boolean;kotlin.String;" +
+            "kotlin.String;kotlin.Long;io.github.codex_agent_labs.codexmobile.agent.AgentHookTrustStatus;" +
+            "kotlin.String?;kotlin.String?;kotlin.String?;io.github.codex_agent_labs.codexmobile.agent." +
+            "AgentResourceOrigin;kotlin.Boolean){}[0]",
+    )
+    listOf(
+        "canTrust" to listOf("codex_agent_hook_can_trust"),
+        "canUninstall" to listOf("codex_agent_hook_can_uninstall"),
+        "currentHash" to listOf("codex_agent_hook_current_hash_copy"),
+        "eventName" to listOf("codex_agent_hook_event_name_copy"),
+        "isEnabled" to listOf("codex_agent_hook_is_enabled"),
+        "isManaged" to listOf("codex_agent_hook_is_managed"),
+        "key" to listOf("codex_agent_hook_key_copy"),
+        "matcher" to listOf("codex_agent_hook_has_matcher", "codex_agent_hook_matcher_copy"),
+        "origin" to listOf("codex_agent_hook_origin"),
+        "pluginId" to listOf("codex_agent_hook_has_plugin_id", "codex_agent_hook_plugin_id_copy"),
+        "source" to listOf("codex_agent_hook_source_copy"),
+        "sourcePath" to listOf("codex_agent_hook_source_path_copy"),
+        "statusMessage" to listOf(
+            "codex_agent_hook_has_status_message",
+            "codex_agent_hook_status_message_copy",
+        ),
+        "timeoutSeconds" to listOf("codex_agent_hook_timeout_seconds"),
+        "trustStatus" to listOf("codex_agent_hook_trust_status"),
+    ).forEach { (property, symbols) ->
+        ordinary("AgentHook", "property", property, symbols, listOf(C_HOOK_VALUES_TEST))
+    }
+    ordinary(
+        "AgentHook", "property", "handler",
+        listOf("codex_agent_hook_handler") + hookHandlerCarrierSymbols,
+        listOf(C_HOOK_VALUES_TEST),
+    )
+
+    ordinary(
+        "AgentHookCatalog", "constructor", "<init>",
+        listOf("codex_agent_hook_catalog_create", "codex_agent_hook_catalog_destroy"),
+        listOf(C_HOOK_CATALOG_VALUES_TEST, C_HOOK_CATALOG_VALIDATION_TEST),
+        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentHook>;" +
+            "kotlin.collections.List<kotlin.String>;kotlin.collections.List<kotlin.String>){}[0]",
+    )
+    listOf(
+        "errors" to listOf(
+            "codex_agent_hook_catalog_errors_count",
+            "codex_agent_hook_catalog_errors_copy_at",
+        ),
+        "hooks" to listOf(
+            "codex_agent_hook_catalog_hooks_count",
+            "codex_agent_hook_catalog_hooks_at",
+        ),
+        "warnings" to listOf(
+            "codex_agent_hook_catalog_warnings_count",
+            "codex_agent_hook_catalog_warnings_copy_at",
+        ),
+    ).forEach { (property, symbols) ->
+        ordinary("AgentHookCatalog", "property", property, symbols, listOf(C_HOOK_CATALOG_VALUES_TEST))
+    }
+
+    ordinary(
+        "AgentIntegrationAuthorizationState", "constructor", "<init>",
+        listOf(
+            "codex_agent_integration_authorization_state_create",
+            "codex_agent_integration_authorization_state_destroy",
+        ),
+        listOf(C_INTEGRATION_STATE_VALUES_TEST, C_INTEGRATION_STATE_VALIDATION_TEST),
+        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentIntegrationAuthorizationStatus;" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentIntegration?;" +
+            "io.github.codex_agent_labs.codexmobile.agent.CodexFailure?){}[0]",
+    )
+    ordinary(
+        "AgentIntegrationAuthorizationState", "property", "failure",
+        listOf("codex_agent_integration_authorization_state_failure"),
+        listOf(C_INTEGRATION_STATE_VALUES_TEST),
+    )
+    ordinary(
+        "AgentIntegrationAuthorizationState", "property", "status",
+        listOf("codex_agent_integration_authorization_state_status"),
+        listOf(C_INTEGRATION_STATE_VALUES_TEST),
+    )
+    ordinary(
+        "AgentIntegrationAuthorizationState", "property", "target",
+        listOf("codex_agent_integration_authorization_state_target") + integrationCarrierSymbols,
+        listOf(C_INTEGRATION_STATE_VALUES_TEST),
+    )
 }.sortedWith(compareBy(CAbiBootstrapClaimSpec::owner, CAbiBootstrapClaimSpec::kind, CAbiBootstrapClaimSpec::abi))
 
 internal fun deriveCAbiBootstrapClaims(
@@ -2076,9 +2561,9 @@ private fun List<String>.sortedNewlineSha256(): String = MessageDigest.getInstan
 private fun exactExportPolicy(file: File): Set<String> {
     check(file.releaseDigest() == C_ABI_MACOS_EXPORTS_SHA256) { "Reviewed macOS C ABI export policy drift" }
     val rows = file.readLines().filter(String::isNotBlank)
-    check(rows.size == 408 && rows == rows.sorted() && rows.size == rows.distinct().size &&
+    check(rows.size == 586 && rows == rows.sorted() && rows.size == rows.distinct().size &&
         rows.all { it.startsWith("_codex_agent_") }) {
-        "macOS C ABI export policy must contain the exact sorted 408-symbol inventory"
+        "macOS C ABI export policy must contain the exact sorted 586-symbol inventory"
     }
     return rows.mapTo(sortedSetOf()) { it.removePrefix("_") }
 }
@@ -2170,6 +2655,18 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val integrationMcpValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val conversationAggregateValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val elicitationInteractionValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val hookCatalogValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val integrationStateValuesCConsumer: RegularFileProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val releaseLibrary: RegularFileProperty
@@ -2296,6 +2793,26 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "Reviewed C integration-MCP-values consumer drift"
             }
         }
+        val conversationAggregateValuesC = conversationAggregateValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_CONVERSATION_AGGREGATE_VALUES_C_SHA256) {
+                "Reviewed C conversation-aggregate-values consumer drift"
+            }
+        }
+        val elicitationInteractionValuesC = elicitationInteractionValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_ELICITATION_INTERACTION_VALUES_C_SHA256) {
+                "Reviewed C elicitation-interaction-values consumer drift"
+            }
+        }
+        val hookCatalogValuesC = hookCatalogValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_HOOK_CATALOG_VALUES_C_SHA256) {
+                "Reviewed C hook-catalog-values consumer drift"
+            }
+        }
+        val integrationStateValuesC = integrationStateValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_INTEGRATION_STATE_VALUES_C_SHA256) {
+                "Reviewed C integration-state-values consumer drift"
+            }
+        }
         val library = releaseLibrary.get().asFile
         val generated = generatedHeader.get().asFile
         val nativeExecutable = nativeTestExecutable.get().asFile
@@ -2395,6 +2912,22 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "c11-integration-mcp-values", clang, "c11", integrationMcpValuesC,
                 work, include, library, rpath, sdk, true,
             ),
+            compileConsumer(
+                "c11-conversation-aggregate-values", clang, "c11", conversationAggregateValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
+            compileConsumer(
+                "c11-elicitation-interaction-values", clang, "c11", elicitationInteractionValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
+            compileConsumer(
+                "c11-hook-catalog-values", clang, "c11", hookCatalogValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
+            compileConsumer(
+                "c11-integration-state-values", clang, "c11", integrationStateValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
         )
 
         val defined = normalizedCodexSymbols(
@@ -2428,7 +2961,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
-            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.6.0)") {
+            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.7.0)") {
             "Unexpected C ABI dylib loader versions: $linkedIdentity"
         }
 
@@ -2451,6 +2984,10 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 mcpServerValuesC,
                 mcpServerConfigurationValuesC,
                 integrationMcpValuesC,
+                conversationAggregateValuesC,
+                elicitationInteractionValuesC,
+                hookCatalogValuesC,
+                integrationStateValuesC,
             )
                 .joinToString("\n") { it.readText() },
             exports,
@@ -2468,7 +3005,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             put("schemaVersion", JsonPrimitive(1))
             put("protocol", JsonPrimitive(C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL))
             put("result", JsonPrimitive("observed"))
-            put("milestone", JsonPrimitive("D098"))
+            put("milestone", JsonPrimitive("D099"))
             put("language", JsonPrimitive("c-abi"))
             put("canonical", buildJsonObject {
                 put("apiReportSha256", JsonPrimitive(canonical.canonical.apiReportSha256))

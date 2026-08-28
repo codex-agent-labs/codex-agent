@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C(1)
-#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(6)
+#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(7)
 #define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C(0)
 #define CODEX_AGENT_ABI_VERSION_ENCODE(major, minor, patch) \
     ((((uint32_t)(major) & UINT32_C(0xff)) << 24) | \
@@ -107,6 +107,22 @@ typedef struct codex_agent_hook_handler_prompt codex_agent_hook_handler_prompt_t
 typedef struct codex_agent_invocation_plugin codex_agent_invocation_plugin_t;
 typedef struct codex_agent_invocation_skill codex_agent_invocation_skill_t;
 typedef struct codex_agent_pending_approval codex_agent_pending_approval_t;
+typedef struct codex_agent_invocation codex_agent_invocation_t;
+typedef struct codex_agent_message codex_agent_message_t;
+typedef struct codex_agent_conversation_value codex_agent_conversation_value_t;
+typedef struct codex_agent_turn_request codex_agent_turn_request_t;
+typedef struct codex_agent_form_value codex_agent_form_value_t;
+typedef struct codex_agent_form_field codex_agent_form_field_t;
+typedef struct codex_agent_elicitation codex_agent_elicitation_t;
+typedef struct codex_agent_elicitation_response codex_agent_elicitation_response_t;
+typedef struct codex_agent_pending_elicitation codex_agent_pending_elicitation_t;
+typedef struct codex_agent_pending_interaction codex_agent_pending_interaction_t;
+typedef struct codex_agent_interaction_state codex_agent_interaction_state_t;
+typedef struct codex_agent_hook_handler codex_agent_hook_handler_t;
+typedef struct codex_agent_hook codex_agent_hook_t;
+typedef struct codex_agent_hook_catalog codex_agent_hook_catalog_t;
+typedef struct codex_agent_integration codex_agent_integration_t;
+typedef struct codex_agent_integration_authorization_state codex_agent_integration_authorization_state_t;
 typedef struct codex_agent_authentication_method_api_key codex_agent_authentication_method_api_key_t;
 typedef struct codex_agent_authentication_method_chat_gpt_browser
     codex_agent_authentication_method_chat_gpt_browser_t;
@@ -199,6 +215,30 @@ typedef int32_t codex_agent_catalog_freshness_t;
 typedef int32_t codex_agent_collaboration_mode_t;
 #define CODEX_AGENT_COLLABORATION_MODE_DEFAULT INT32_C(0)
 #define CODEX_AGENT_COLLABORATION_MODE_PLAN INT32_C(1)
+
+typedef int32_t codex_agent_invocation_kind_t;
+#define CODEX_AGENT_INVOCATION_KIND_PLUGIN INT32_C(0)
+#define CODEX_AGENT_INVOCATION_KIND_SKILL INT32_C(1)
+
+typedef int32_t codex_agent_form_value_kind_t;
+#define CODEX_AGENT_FORM_VALUE_KIND_BOOLEAN INT32_C(0)
+#define CODEX_AGENT_FORM_VALUE_KIND_NUMBER INT32_C(1)
+#define CODEX_AGENT_FORM_VALUE_KIND_TEXT INT32_C(2)
+#define CODEX_AGENT_FORM_VALUE_KIND_TEXT_LIST INT32_C(3)
+
+typedef int32_t codex_agent_pending_interaction_kind_t;
+#define CODEX_AGENT_PENDING_INTERACTION_KIND_APPROVAL INT32_C(0)
+#define CODEX_AGENT_PENDING_INTERACTION_KIND_ELICITATION INT32_C(1)
+
+typedef int32_t codex_agent_hook_handler_kind_t;
+#define CODEX_AGENT_HOOK_HANDLER_KIND_AGENT INT32_C(0)
+#define CODEX_AGENT_HOOK_HANDLER_KIND_COMMAND INT32_C(1)
+#define CODEX_AGENT_HOOK_HANDLER_KIND_MCP_TOOL INT32_C(2)
+#define CODEX_AGENT_HOOK_HANDLER_KIND_PROMPT INT32_C(3)
+
+typedef int32_t codex_agent_integration_kind_t;
+#define CODEX_AGENT_INTEGRATION_KIND_CONNECTOR INT32_C(0)
+#define CODEX_AGENT_INTEGRATION_KIND_MCP_SERVER INT32_C(1)
 
 typedef int32_t codex_agent_elicitation_action_t;
 #define CODEX_AGENT_ELICITATION_ACTION_ACCEPT INT32_C(0)
@@ -2531,6 +2571,977 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_s
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_state_failure(
     codex_agent_context_t *context,
     codex_agent_snapshot_t *snapshot,
+    codex_agent_failure_t **out_failure);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_from_plugin(
+    codex_agent_context_t *context,
+    codex_agent_invocation_plugin_t *plugin,
+    codex_agent_invocation_t **out_invocation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_from_skill(
+    codex_agent_context_t *context,
+    codex_agent_invocation_skill_t *skill,
+    codex_agent_invocation_t **out_invocation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_destroy(
+    codex_agent_context_t *context,
+    codex_agent_invocation_t **invocation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_kind(
+    codex_agent_context_t *context,
+    codex_agent_invocation_t *invocation,
+    codex_agent_invocation_kind_t *out_kind);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_plugin(
+    codex_agent_context_t *context,
+    codex_agent_invocation_t *invocation,
+    codex_agent_invocation_plugin_t **out_plugin);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_skill(
+    codex_agent_context_t *context,
+    codex_agent_invocation_t *invocation,
+    codex_agent_invocation_skill_t **out_skill);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_create(
+    codex_agent_context_t *context,
+    const codex_agent_string_view_t *id,
+    int32_t has_client_message_id,
+    const codex_agent_string_view_t *client_message_id,
+    codex_agent_message_role_t role,
+    const codex_agent_string_view_t *text,
+    codex_agent_collaboration_mode_t collaboration_mode,
+    int32_t has_reasoning,
+    const codex_agent_string_view_t *reasoning,
+    int32_t has_plan,
+    const codex_agent_string_view_t *plan,
+    int32_t has_shell_command,
+    const codex_agent_string_view_t *shell_command,
+    int32_t has_exit_code,
+    int32_t exit_code,
+    const codex_agent_capability_t *capabilities,
+    size_t capability_count,
+    codex_agent_invocation_t *const *invocations,
+    size_t invocation_count,
+    codex_agent_message_t **out_message);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_destroy(
+    codex_agent_context_t *context,
+    codex_agent_message_t **message);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_id_copy(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_has_client_message_id(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    int32_t *out_has_client_message_id);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_client_message_id_copy(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_role(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    codex_agent_message_role_t *out_role);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_text_copy(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_collaboration_mode(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    codex_agent_collaboration_mode_t *out_mode);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_has_reasoning(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    int32_t *out_has_reasoning);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_reasoning_copy(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_has_plan(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    int32_t *out_has_plan);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_plan_copy(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_has_shell_command(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    int32_t *out_has_shell_command);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_shell_command_copy(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_exit_code(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    int32_t *out_has_exit_code,
+    int32_t *out_exit_code);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_capabilities_count(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_has_capability(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    codex_agent_capability_t capability,
+    int32_t *out_has_capability);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_invocations_count(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_message_invocation_at(
+    codex_agent_context_t *context,
+    codex_agent_message_t *message,
+    size_t index,
+    codex_agent_invocation_t **out_invocation);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_value_create(
+    codex_agent_context_t *context,
+    codex_agent_conversation_summary_t *summary,
+    codex_agent_message_t *const *messages,
+    size_t message_count,
+    codex_agent_conversation_value_t **out_conversation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_value_destroy(
+    codex_agent_context_t *context,
+    codex_agent_conversation_value_t **conversation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_value_summary(
+    codex_agent_context_t *context,
+    codex_agent_conversation_value_t *conversation,
+    codex_agent_conversation_summary_t **out_summary);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_value_messages_count(
+    codex_agent_context_t *context,
+    codex_agent_conversation_value_t *conversation,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_value_message_at(
+    codex_agent_context_t *context,
+    codex_agent_conversation_value_t *conversation,
+    size_t index,
+    codex_agent_message_t **out_message);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_turn_request_create(
+    codex_agent_context_t *context,
+    const codex_agent_string_view_t *prompt,
+    int32_t has_client_message_id,
+    const codex_agent_string_view_t *client_message_id,
+    int32_t has_model,
+    const codex_agent_string_view_t *model,
+    int32_t has_effort,
+    const codex_agent_string_view_t *effort,
+    int32_t has_service_tier,
+    const codex_agent_string_view_t *service_tier,
+    codex_agent_approval_preset_t approval_preset,
+    const codex_agent_capability_t *capabilities,
+    size_t capability_count,
+    codex_agent_invocation_t *const *invocations,
+    size_t invocation_count,
+    codex_agent_collaboration_mode_t collaboration_mode,
+    codex_agent_turn_request_t **out_request);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_turn_request_destroy(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t **request);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_turn_request_prompt_copy(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_has_client_message_id(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    int32_t *out_has_client_message_id);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_client_message_id_copy(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_turn_request_has_model(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    int32_t *out_has_model);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_turn_request_model_copy(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_turn_request_has_effort(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    int32_t *out_has_effort);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_turn_request_effort_copy(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_has_service_tier(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    int32_t *out_has_service_tier);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_service_tier_copy(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_approval_preset(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    codex_agent_approval_preset_t *out_preset);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_capabilities_count(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_has_capability(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    codex_agent_capability_t capability,
+    int32_t *out_has_capability);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_invocations_count(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_invocation_at(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    size_t index,
+    codex_agent_invocation_t **out_invocation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_turn_request_collaboration_mode(
+    codex_agent_context_t *context,
+    codex_agent_turn_request_t *request,
+    codex_agent_collaboration_mode_t *out_mode);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_state_create(
+    codex_agent_context_t *context,
+    codex_agent_conversation_status_t status,
+    int32_t has_conversation_id,
+    codex_agent_conversation_id_t *conversation_id,
+    int32_t has_conversation,
+    codex_agent_conversation_value_t *conversation,
+    codex_agent_turn_progress_t *turn_progress,
+    int32_t has_model,
+    const codex_agent_string_view_t *model,
+    int32_t has_effort,
+    const codex_agent_string_view_t *effort,
+    int32_t has_service_tier,
+    const codex_agent_string_view_t *service_tier,
+    int32_t has_failure,
+    codex_agent_failure_t *failure,
+    codex_agent_snapshot_t **out_state);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_state_has_conversation_id(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    int32_t *out_has_conversation_id);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_state_conversation_id(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    codex_agent_conversation_id_t **out_conversation_id);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_state_has_conversation(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    int32_t *out_has_conversation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_state_conversation(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    codex_agent_conversation_value_t **out_conversation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_state_turn_progress(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    codex_agent_turn_progress_t **out_progress);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_state_has_model(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    int32_t *out_has_model);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_state_model_copy(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_state_has_effort(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    int32_t *out_has_effort);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_state_effort_copy(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_state_has_service_tier(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    int32_t *out_has_service_tier);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_state_service_tier_copy(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_state_can_start_turn(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    int32_t *out_can_start);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_state_can_reload(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    int32_t *out_can_reload);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_state_can_cancel_turn(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *state,
+    int32_t *out_can_cancel);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_value_from_boolean(
+    codex_agent_context_t *context,
+    codex_agent_form_boolean_value_t *boolean_value,
+    codex_agent_form_value_t **out_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_value_from_number(
+    codex_agent_context_t *context,
+    codex_agent_form_number_value_t *number_value,
+    codex_agent_form_value_t **out_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_value_from_text(
+    codex_agent_context_t *context,
+    codex_agent_form_text_value_t *text_value,
+    codex_agent_form_value_t **out_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_form_value_from_text_list(
+    codex_agent_context_t *context,
+    codex_agent_form_text_list_value_t *text_list_value,
+    codex_agent_form_value_t **out_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_value_destroy(
+    codex_agent_context_t *context,
+    codex_agent_form_value_t **value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_value_kind(
+    codex_agent_context_t *context,
+    codex_agent_form_value_t *value,
+    codex_agent_form_value_kind_t *out_kind);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_value_boolean(
+    codex_agent_context_t *context,
+    codex_agent_form_value_t *value,
+    codex_agent_form_boolean_value_t **out_boolean_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_value_number(
+    codex_agent_context_t *context,
+    codex_agent_form_value_t *value,
+    codex_agent_form_number_value_t **out_number_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_value_text(
+    codex_agent_context_t *context,
+    codex_agent_form_value_t *value,
+    codex_agent_form_text_value_t **out_text_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_value_text_list(
+    codex_agent_context_t *context,
+    codex_agent_form_value_t *value,
+    codex_agent_form_text_list_value_t **out_text_list_value);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_create(
+    codex_agent_context_t *context,
+    const codex_agent_string_view_t *name,
+    const codex_agent_string_view_t *title,
+    int32_t has_description,
+    const codex_agent_string_view_t *description,
+    int32_t is_required,
+    codex_agent_form_field_type_t type,
+    codex_agent_form_option_t *const *options,
+    size_t option_count,
+    int32_t has_default_value,
+    codex_agent_form_value_t *default_value,
+    int32_t has_minimum,
+    double minimum,
+    int32_t has_maximum,
+    double maximum,
+    int32_t has_format,
+    codex_agent_form_string_format_t format,
+    int32_t has_minimum_length,
+    int64_t minimum_length,
+    int32_t has_maximum_length,
+    int64_t maximum_length,
+    int32_t has_minimum_selections,
+    int64_t minimum_selections,
+    int32_t has_maximum_selections,
+    int64_t maximum_selections,
+    int32_t allows_other,
+    int32_t is_secret,
+    codex_agent_form_field_t **out_field);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_destroy(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t **field);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_name_copy(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_title_copy(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_form_field_has_description(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_has_description);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_description_copy(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_is_required(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_is_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_type(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    codex_agent_form_field_type_t *out_type);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_options_count(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_option_at(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    size_t index,
+    codex_agent_form_option_t **out_option);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_form_field_has_default_value(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_has_default_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_default_value(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    codex_agent_form_value_t **out_default_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_minimum(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_has_minimum,
+    double *out_minimum);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_maximum(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_has_maximum,
+    double *out_maximum);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_format(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_has_format,
+    codex_agent_form_string_format_t *out_format);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_minimum_length(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_has_value,
+    int64_t *out_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_maximum_length(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_has_value,
+    int64_t *out_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_form_field_minimum_selections(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_has_value,
+    int64_t *out_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_form_field_maximum_selections(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_has_value,
+    int64_t *out_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_allows_other(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_allows_other);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_form_field_is_secret(
+    codex_agent_context_t *context,
+    codex_agent_form_field_t *field,
+    int32_t *out_is_secret);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_create(
+    codex_agent_context_t *context,
+    const codex_agent_string_view_t *request_id,
+    const codex_agent_string_view_t *server_name,
+    codex_agent_conversation_id_t *conversation_id,
+    const codex_agent_string_view_t *message,
+    int32_t has_form,
+    codex_agent_form_field_t *const *form,
+    size_t form_count,
+    int32_t has_url,
+    const codex_agent_string_view_t *url,
+    codex_agent_elicitation_t **out_elicitation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_destroy(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t **elicitation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_request_id_copy(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_server_name_copy(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_elicitation_conversation_id(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    codex_agent_conversation_id_t **out_conversation_id);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_message_copy(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_has_form(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    int32_t *out_has_form);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_form_count(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_form_at(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    size_t index,
+    codex_agent_form_field_t **out_field);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_has_url(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    int32_t *out_has_url);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_url_copy(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_elicitation_response_create(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_action_t action,
+    const codex_agent_string_view_t *content_keys,
+    codex_agent_form_value_t *const *content_values,
+    size_t content_count,
+    codex_agent_elicitation_response_t **out_response);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_elicitation_response_destroy(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_response_t **response);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_elicitation_response_action(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_response_t *response,
+    codex_agent_elicitation_action_t *out_action);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_elicitation_response_content_count(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_response_t *response,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_elicitation_response_content_value(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_response_t *response,
+    const codex_agent_string_view_t *key,
+    codex_agent_form_value_t **out_value);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_elicitation_create(
+    codex_agent_context_t *context,
+    codex_agent_elicitation_t *elicitation,
+    codex_agent_pending_elicitation_t **out_pending_elicitation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_elicitation_destroy(
+    codex_agent_context_t *context,
+    codex_agent_pending_elicitation_t **pending_elicitation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_elicitation_elicitation(
+    codex_agent_context_t *context,
+    codex_agent_pending_elicitation_t *pending_elicitation,
+    codex_agent_elicitation_t **out_elicitation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_elicitation_request_id_copy(
+    codex_agent_context_t *context,
+    codex_agent_pending_elicitation_t *pending_elicitation,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_elicitation_conversation_id(
+    codex_agent_context_t *context,
+    codex_agent_pending_elicitation_t *pending_elicitation,
+    codex_agent_conversation_id_t **out_conversation_id);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_interaction_from_approval(
+    codex_agent_context_t *context,
+    codex_agent_pending_approval_t *approval,
+    codex_agent_pending_interaction_t **out_interaction);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_interaction_from_elicitation(
+    codex_agent_context_t *context,
+    codex_agent_pending_elicitation_t *pending_elicitation,
+    codex_agent_pending_interaction_t **out_interaction);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_interaction_destroy(
+    codex_agent_context_t *context,
+    codex_agent_pending_interaction_t **interaction);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_pending_interaction_kind(
+    codex_agent_context_t *context,
+    codex_agent_pending_interaction_t *interaction,
+    codex_agent_pending_interaction_kind_t *out_kind);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_interaction_approval(
+    codex_agent_context_t *context,
+    codex_agent_pending_interaction_t *interaction,
+    codex_agent_pending_approval_t **out_approval);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_pending_interaction_elicitation(
+    codex_agent_context_t *context,
+    codex_agent_pending_interaction_t *interaction,
+    codex_agent_pending_elicitation_t **out_elicitation);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interaction_state_create(
+    codex_agent_context_t *context,
+    codex_agent_pending_interaction_t *const *pending,
+    size_t pending_count,
+    const codex_agent_string_view_t *resolving_request_ids,
+    size_t resolving_request_id_count,
+    int32_t has_failure,
+    codex_agent_failure_t *failure,
+    codex_agent_interaction_state_t **out_state);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interaction_state_destroy(
+    codex_agent_context_t *context,
+    codex_agent_interaction_state_t **state);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interaction_state_pending_count(
+    codex_agent_context_t *context,
+    codex_agent_interaction_state_t *state,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interaction_state_pending_at(
+    codex_agent_context_t *context,
+    codex_agent_interaction_state_t *state,
+    size_t index,
+    codex_agent_pending_interaction_t **out_interaction);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interaction_state_resolving_request_ids_count(
+    codex_agent_context_t *context,
+    codex_agent_interaction_state_t *state,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interaction_state_resolving_request_ids_contains(
+    codex_agent_context_t *context,
+    codex_agent_interaction_state_t *state,
+    const codex_agent_string_view_t *request_id,
+    int32_t *out_contains);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interaction_state_has_failure(
+    codex_agent_context_t *context,
+    codex_agent_interaction_state_t *state,
+    int32_t *out_has_failure);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interaction_state_failure(
+    codex_agent_context_t *context,
+    codex_agent_interaction_state_t *state,
+    codex_agent_failure_t **out_failure);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_hook_handler_from_agent(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_agent_t *agent,
+    codex_agent_hook_handler_t **out_handler);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_hook_handler_from_command(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_command_t *command,
+    codex_agent_hook_handler_t **out_handler);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_hook_handler_from_mcp_tool(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_mcp_tool_t *mcp_tool,
+    codex_agent_hook_handler_t **out_handler);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_hook_handler_from_prompt(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_prompt_t *prompt,
+    codex_agent_hook_handler_t **out_handler);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_handler_destroy(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_t **handler);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_handler_kind(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_t *handler,
+    codex_agent_hook_handler_kind_t *out_kind);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_handler_agent(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_t *handler,
+    codex_agent_hook_handler_agent_t **out_agent);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_handler_command(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_t *handler,
+    codex_agent_hook_handler_command_t **out_command);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_handler_mcp_tool(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_t *handler,
+    codex_agent_hook_handler_mcp_tool_t **out_mcp_tool);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_handler_prompt(
+    codex_agent_context_t *context,
+    codex_agent_hook_handler_t *handler,
+    codex_agent_hook_handler_prompt_t **out_prompt);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_create(
+    codex_agent_context_t *context,
+    const codex_agent_string_view_t *key,
+    const codex_agent_string_view_t *current_hash,
+    int32_t is_enabled,
+    const codex_agent_string_view_t *event_name,
+    codex_agent_hook_handler_t *handler,
+    int32_t is_managed,
+    const codex_agent_string_view_t *source,
+    const codex_agent_string_view_t *source_path,
+    int64_t timeout_seconds,
+    codex_agent_hook_trust_status_t trust_status,
+    int32_t has_matcher,
+    const codex_agent_string_view_t *matcher,
+    int32_t has_plugin_id,
+    const codex_agent_string_view_t *plugin_id,
+    int32_t has_status_message,
+    const codex_agent_string_view_t *status_message,
+    int32_t has_origin,
+    codex_agent_resource_origin_t origin,
+    int32_t can_uninstall,
+    codex_agent_hook_t **out_hook);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_destroy(
+    codex_agent_context_t *context,
+    codex_agent_hook_t **hook);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_key_copy(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_current_hash_copy(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_is_enabled(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    int32_t *out_is_enabled);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_event_name_copy(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_handler(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    codex_agent_hook_handler_t **out_handler);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_is_managed(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    int32_t *out_is_managed);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_source_copy(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_source_path_copy(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_timeout_seconds(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    int64_t *out_timeout_seconds);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_trust_status(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    codex_agent_hook_trust_status_t *out_trust_status);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_has_matcher(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    int32_t *out_has_matcher);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_matcher_copy(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_has_plugin_id(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    int32_t *out_has_plugin_id);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_plugin_id_copy(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_has_status_message(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    int32_t *out_has_status_message);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_status_message_copy(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_origin(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    codex_agent_resource_origin_t *out_origin);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_can_uninstall(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    int32_t *out_can_uninstall);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_can_trust(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *hook,
+    int32_t *out_can_trust);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_catalog_create(
+    codex_agent_context_t *context,
+    codex_agent_hook_t *const *hooks,
+    size_t hook_count,
+    const codex_agent_string_view_t *warnings,
+    size_t warning_count,
+    const codex_agent_string_view_t *errors,
+    size_t error_count,
+    codex_agent_hook_catalog_t **out_catalog);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_catalog_destroy(
+    codex_agent_context_t *context,
+    codex_agent_hook_catalog_t **catalog);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_catalog_hooks_count(
+    codex_agent_context_t *context,
+    codex_agent_hook_catalog_t *catalog,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hook_catalog_hooks_at(
+    codex_agent_context_t *context,
+    codex_agent_hook_catalog_t *catalog,
+    size_t index,
+    codex_agent_hook_t **out_hook);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_hook_catalog_warnings_count(
+    codex_agent_context_t *context,
+    codex_agent_hook_catalog_t *catalog,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_hook_catalog_warnings_copy_at(
+    codex_agent_context_t *context,
+    codex_agent_hook_catalog_t *catalog,
+    size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_hook_catalog_errors_count(
+    codex_agent_context_t *context,
+    codex_agent_hook_catalog_t *catalog,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_hook_catalog_errors_copy_at(
+    codex_agent_context_t *context,
+    codex_agent_hook_catalog_t *catalog,
+    size_t index,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_from_connector(
+    codex_agent_context_t *context,
+    codex_agent_integration_connector_t *connector,
+    codex_agent_integration_t **out_integration);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_from_mcp_server(
+    codex_agent_context_t *context,
+    codex_agent_integration_mcp_server_t *server,
+    codex_agent_integration_t **out_integration);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_integration_destroy(
+    codex_agent_context_t *context,
+    codex_agent_integration_t **integration);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_integration_kind(
+    codex_agent_context_t *context,
+    codex_agent_integration_t *integration,
+    codex_agent_integration_kind_t *out_kind);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_integration_connector(
+    codex_agent_context_t *context,
+    codex_agent_integration_t *integration,
+    codex_agent_integration_connector_t **out_connector);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_integration_mcp_server(
+    codex_agent_context_t *context,
+    codex_agent_integration_t *integration,
+    codex_agent_integration_mcp_server_t **out_server);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_state_create(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_status_t status,
+    codex_agent_integration_t *target,
+    codex_agent_failure_t *failure,
+    codex_agent_integration_authorization_state_t **out_state);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_state_destroy(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_state_t **state);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_state_status(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_state_t *state,
+    codex_agent_integration_authorization_status_t *out_status);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_state_target(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_state_t *state,
+    codex_agent_integration_t **out_target);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_state_failure(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_state_t *state,
     codex_agent_failure_t **out_failure);
 
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_failure_retain(

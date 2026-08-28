@@ -18,15 +18,15 @@ import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.value
 
-private data class CodexAgentCInvocationPluginSnapshot(
+internal data class CodexAgentCInvocationPluginSnapshot(
     val value: AgentInvocation.Plugin,
 ) : CodexAgentCSnapshot
 
-private data class CodexAgentCInvocationSkillSnapshot(
+internal data class CodexAgentCInvocationSkillSnapshot(
     val value: AgentInvocation.Skill,
 ) : CodexAgentCSnapshot
 
-private data class CodexAgentCPendingApprovalSnapshot(
+internal data class CodexAgentCPendingApprovalSnapshot(
     val value: AgentPendingApproval,
 ) : CodexAgentCSnapshot
 
