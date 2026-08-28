@@ -38,6 +38,7 @@ import kotlinx.serialization.json.putJsonObject
 internal class NativeCodexBehaviorFixture(
     private val prepareFailure: Throwable? = null,
     private val features: Set<CodexRuntimeFeature> = emptySet(),
+    private val additionalResponse: suspend (String, JsonObject) -> JsonObject? = { _, _ -> null },
 ) {
     val workspace = CodexWorkspace("/workspace", "Native fixture workspace")
     val clientInfo = CodexClientInfo("native_fixture", "Native Fixture", "test")
@@ -48,6 +49,7 @@ internal class NativeCodexBehaviorFixture(
     val openRequests = mutableListOf<Pair<String, JsonObject>>()
     val turnRequests = mutableListOf<JsonObject>()
     val interruptRequests = mutableListOf<JsonObject>()
+    val additionalRequests = mutableListOf<Pair<String, JsonObject>>()
 
     val turnStartObserved = CompletableDeferred<Unit>()
     val releaseTurnStart = CompletableDeferred<Unit>()
@@ -90,6 +92,8 @@ internal class NativeCodexBehaviorFixture(
     }
 
     fun createHost(): CodexHost = CodexHost(platform, clientInfo)
+
+    suspend fun notify(method: String, params: JsonObject): Unit = runtime.notify(method, params)
 
     private inner class ScriptedRuntime : CodexRuntime {
         val started = AtomicBoolean(false)
@@ -165,6 +169,11 @@ internal class NativeCodexBehaviorFixture(
                     val id = params.getValue("threadId").jsonPrimitive.content
                     respond(request, buildJsonObject { put("thread", thread(id)) })
                 }
+
+                else -> {
+                    additionalRequests += method to params
+                    additionalResponse(method, params)?.let { respond(request, it) }
+                }
             }
         }
 
@@ -178,7 +187,7 @@ internal class NativeCodexBehaviorFixture(
             emit(buildJsonObject { put("id", id); put("result", result) })
         }
 
-        private suspend fun notify(method: String, params: JsonObject) {
+        suspend fun notify(method: String, params: JsonObject) {
             emit(buildJsonObject { put("method", method); put("params", params) })
         }
 

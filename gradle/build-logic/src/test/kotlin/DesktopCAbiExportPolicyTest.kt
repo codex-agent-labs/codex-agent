@@ -699,8 +699,69 @@ class DesktopCAbiExportPolicyTest {
             "codex_agent_skills_release",
             "codex_agent_skills_retain",
         )
+        val abi110 = listOf(
+            "codex_agent_authentication_authenticate_api_key",
+            "codex_agent_authentication_authenticate_chat_gpt_browser",
+            "codex_agent_authentication_authenticate_chat_gpt_device_code",
+            "codex_agent_authentication_cancel",
+            "codex_agent_authentication_sign_out",
+            "codex_agent_connectors_list",
+            "codex_agent_conversation_reload",
+            "codex_agent_conversation_run_shell_command",
+            "codex_agent_conversation_send_request",
+            "codex_agent_conversations_delete",
+            "codex_agent_conversations_list",
+            "codex_agent_conversations_read",
+            "codex_agent_conversations_rename",
+            "codex_agent_hooks_install",
+            "codex_agent_hooks_list",
+            "codex_agent_hooks_trust",
+            "codex_agent_hooks_uninstall",
+            "codex_agent_host_start",
+            "codex_agent_integration_authorization_authorize",
+            "codex_agent_integration_authorization_cancel",
+            "codex_agent_mcp_servers_add",
+            "codex_agent_mcp_servers_list",
+            "codex_agent_mcp_servers_remove",
+            "codex_agent_models_list",
+            "codex_agent_models_resolve",
+            "codex_agent_models_resolve_effort",
+            "codex_agent_models_resolve_service_tier",
+            "codex_agent_operation_connector_at",
+            "codex_agent_operation_connectors_count",
+            "codex_agent_operation_conversation_summaries_count",
+            "codex_agent_operation_conversation_summary_at",
+            "codex_agent_operation_conversation_value",
+            "codex_agent_operation_has_service_tier",
+            "codex_agent_operation_hook",
+            "codex_agent_operation_hook_catalog",
+            "codex_agent_operation_mcp_server",
+            "codex_agent_operation_mcp_server_at",
+            "codex_agent_operation_mcp_servers_count",
+            "codex_agent_operation_model",
+            "codex_agent_operation_model_at",
+            "codex_agent_operation_models_count",
+            "codex_agent_operation_plugin_catalog",
+            "codex_agent_operation_plugin_detail",
+            "codex_agent_operation_plugin_install_result",
+            "codex_agent_operation_service_tier",
+            "codex_agent_operation_skill",
+            "codex_agent_operation_skill_catalog",
+            "codex_agent_operation_skill_chunk",
+            "codex_agent_operation_string_copy",
+            "codex_agent_plugins_install",
+            "codex_agent_plugins_list",
+            "codex_agent_plugins_read",
+            "codex_agent_plugins_uninstall",
+            "codex_agent_skills_install",
+            "codex_agent_skills_list",
+            "codex_agent_skills_read",
+            "codex_agent_skills_uninstall",
+        )
         val exports = repository.resolve("codex-agent-runtime-desktop/native/c-api/exports")
-        val all = (abi10 + abi11 + abi12 + abi13 + abi14 + abi15 + abi16 + abi17 + abi18 + abi19).sorted()
+        val all = (
+            abi10 + abi11 + abi12 + abi13 + abi14 + abi15 + abi16 + abi17 + abi18 + abi19 + abi110
+        ).sorted()
         assertEquals(
             all.map { "_$it" },
             exports.resolve("macos.exports").readLines(),
@@ -715,7 +776,8 @@ class DesktopCAbiExportPolicyTest {
                 linuxVersion("1.6", abi16, "CODEX_AGENT_1.5") + "\n" +
                 linuxVersion("1.7", abi17, "CODEX_AGENT_1.6") + "\n" +
                 linuxVersion("1.8", abi18, "CODEX_AGENT_1.7") + "\n" +
-                linuxVersion("1.9", abi19, "CODEX_AGENT_1.8"),
+                linuxVersion("1.9", abi19, "CODEX_AGENT_1.8") + "\n" +
+                linuxVersion("1.10", abi110, "CODEX_AGENT_1.9"),
             exports.resolve("linux.map").readText(),
         )
         assertEquals(
@@ -732,7 +794,7 @@ class DesktopCAbiExportPolicyTest {
             "-Wl,-exported_symbols_list,",
             "-Wl,-install_name,@rpath/libcodex_agent.dylib",
             "-Wl,-compatibility_version,1.0.0",
-            "-Wl,-current_version,1.9.0",
+            "-Wl,-current_version,1.10.0",
             "target.name.startsWith(\"linux\")",
             "-Wl,--version-script,",
             "-Wl,-soname,libcodex_agent.so.1",

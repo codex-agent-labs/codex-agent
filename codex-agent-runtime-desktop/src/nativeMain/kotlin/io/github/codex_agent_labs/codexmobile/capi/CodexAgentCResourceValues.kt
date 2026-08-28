@@ -34,7 +34,7 @@ internal data class CodexAgentCServiceTierSnapshot(
     val value: AgentServiceTier,
 ) : CodexAgentCSnapshot
 
-private data class CodexAgentCSkillChunkSnapshot(
+internal data class CodexAgentCSkillChunkSnapshot(
     val value: AgentSkillChunk,
 ) : CodexAgentCSnapshot
 

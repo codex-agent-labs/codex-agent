@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C(1)
-#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(9)
+#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(10)
 #define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C(0)
 #define CODEX_AGENT_ABI_VERSION_ENCODE(major, minor, patch) \
     ((((uint32_t)(major) & UINT32_C(0xff)) << 24) | \
@@ -2394,6 +2394,12 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_host_retain(
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_host_release(
     codex_agent_context_t *context,
     codex_agent_host_t **host);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_host_start(
+    codex_agent_context_t *context,
+    codex_agent_host_t *host,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_host_select_workspace(
     codex_agent_context_t *context,
     codex_agent_host_t *host,
@@ -2558,6 +2564,201 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_servers_is
     codex_agent_mcp_servers_t *mcp_servers,
     int32_t *out_is_available);
 
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_authentication_authenticate_api_key(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_authentication_method_api_key_t *method,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_authentication_authenticate_chat_gpt_browser(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_authentication_method_chat_gpt_browser_t *method,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_authentication_authenticate_chat_gpt_device_code(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_authentication_method_chat_gpt_device_code_t *method,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_authentication_cancel(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_authentication_sign_out(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_authorize(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t *authorization,
+    codex_agent_integration_t *target,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_cancel(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t *authorization,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_models_list(
+    codex_agent_context_t *context,
+    codex_agent_models_t *models,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_models_resolve(
+    codex_agent_context_t *context,
+    codex_agent_models_t *models,
+    codex_agent_resolution_t resolution,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_models_resolve_effort(
+    codex_agent_context_t *context,
+    codex_agent_models_t *models,
+    codex_agent_model_t *model,
+    codex_agent_resolution_t resolution,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_models_resolve_service_tier(
+    codex_agent_context_t *context,
+    codex_agent_models_t *models,
+    codex_agent_model_t *model,
+    codex_agent_resolution_t resolution,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_skills_list(
+    codex_agent_context_t *context,
+    codex_agent_skills_t *skills,
+    int32_t force_reload,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_skills_read(
+    codex_agent_context_t *context,
+    codex_agent_skills_t *skills,
+    const codex_agent_string_view_t *path,
+    int64_t offset,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_skills_install(
+    codex_agent_context_t *context,
+    codex_agent_skills_t *skills,
+    const codex_agent_string_view_t *directory,
+    codex_agent_installation_scope_t scope,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_skills_uninstall(
+    codex_agent_context_t *context,
+    codex_agent_skills_t *skills,
+    codex_agent_skill_t *skill,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hooks_list(
+    codex_agent_context_t *context,
+    codex_agent_hooks_t *hooks,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hooks_install(
+    codex_agent_context_t *context,
+    codex_agent_hooks_t *hooks,
+    const codex_agent_string_view_t *directory,
+    codex_agent_installation_scope_t scope,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hooks_uninstall(
+    codex_agent_context_t *context,
+    codex_agent_hooks_t *hooks,
+    codex_agent_hook_t *hook,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hooks_trust(
+    codex_agent_context_t *context,
+    codex_agent_hooks_t *hooks,
+    codex_agent_hook_t *hook,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_plugins_list(
+    codex_agent_context_t *context,
+    codex_agent_plugins_t *plugins,
+    int32_t force_reload,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_plugins_read(
+    codex_agent_context_t *context,
+    codex_agent_plugins_t *plugins,
+    codex_agent_plugin_reference_t *plugin,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_plugins_install(
+    codex_agent_context_t *context,
+    codex_agent_plugins_t *plugins,
+    codex_agent_plugin_reference_t *plugin,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_plugins_uninstall(
+    codex_agent_context_t *context,
+    codex_agent_plugins_t *plugins,
+    codex_agent_plugin_reference_t *plugin,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_connectors_list(
+    codex_agent_context_t *context,
+    codex_agent_connectors_t *connectors,
+    int32_t force_reload,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_servers_list(
+    codex_agent_context_t *context,
+    codex_agent_mcp_servers_t *mcp_servers,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_servers_add(
+    codex_agent_context_t *context,
+    codex_agent_mcp_servers_t *mcp_servers,
+    codex_agent_mcp_server_configuration_t *configuration,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_servers_remove(
+    codex_agent_context_t *context,
+    codex_agent_mcp_servers_t *mcp_servers,
+    codex_agent_mcp_server_t *server,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversations_retain(
     codex_agent_context_t *context,
     codex_agent_conversations_t *conversations,
@@ -2575,6 +2776,34 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversations_
     codex_agent_state_callback_t callback,
     void *user_data,
     codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversations_list(
+    codex_agent_context_t *context,
+    codex_agent_conversations_t *conversations,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversations_read(
+    codex_agent_context_t *context,
+    codex_agent_conversations_t *conversations,
+    codex_agent_conversation_id_t *conversation_id,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversations_rename(
+    codex_agent_context_t *context,
+    codex_agent_conversations_t *conversations,
+    codex_agent_conversation_id_t *conversation_id,
+    const codex_agent_string_view_t *name,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversations_delete(
+    codex_agent_context_t *context,
+    codex_agent_conversations_t *conversations,
+    codex_agent_conversation_id_t *conversation_id,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversations_open(
     codex_agent_context_t *context,
     codex_agent_conversations_t *conversations,
@@ -2599,6 +2828,27 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_s
     codex_agent_context_t *context,
     codex_agent_conversation_t *conversation,
     const codex_agent_string_view_t *prompt,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_send_request(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_turn_request_t *request,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_run_shell_command(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    const codex_agent_string_view_t *command,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_reload(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
     codex_agent_operation_callback_t callback,
     void *user_data,
     codex_agent_operation_t **out_operation);
@@ -2641,6 +2891,103 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_fail
     codex_agent_context_t *context,
     codex_agent_operation_t *operation,
     codex_agent_failure_t **out_failure);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_operation_conversation_summaries_count(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_operation_conversation_summary_at(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    size_t index,
+    codex_agent_conversation_summary_t **out_summary);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_conversation_value(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_conversation_value_t **out_conversation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_models_count(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_model_at(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    size_t index,
+    codex_agent_model_t **out_model);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_model(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_model_t **out_model);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_string_copy(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    uint8_t *buffer,
+    size_t capacity,
+    size_t *out_required);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_has_service_tier(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    int32_t *out_has_service_tier);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_service_tier(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_service_tier_t **out_service_tier);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_skill_catalog(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_skill_catalog_t **out_catalog);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_skill_chunk(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_skill_chunk_t **out_chunk);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_skill(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_skill_t **out_skill);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_hook_catalog(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_hook_catalog_t **out_catalog);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_hook(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_hook_t **out_hook);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_plugin_catalog(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_plugin_catalog_t **out_catalog);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_plugin_detail(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_plugin_detail_t **out_detail);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_operation_plugin_install_result(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_plugin_install_result_t **out_result);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_connectors_count(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_connector_at(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    size_t index,
+    codex_agent_connector_t **out_connector);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_mcp_servers_count(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_mcp_server_at(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    size_t index,
+    codex_agent_mcp_server_t **out_server);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_mcp_server(
+    codex_agent_context_t *context,
+    codex_agent_operation_t *operation,
+    codex_agent_mcp_server_t **out_server);
 /*
  * Destroy requests cancellation and never waits. BUSY preserves the slot and
  * means callbacks and user_data remain live; retry after quiescence. OK writes

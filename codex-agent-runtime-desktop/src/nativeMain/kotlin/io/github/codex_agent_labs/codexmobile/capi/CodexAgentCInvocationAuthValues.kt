@@ -30,15 +30,15 @@ internal data class CodexAgentCPendingApprovalSnapshot(
     val value: AgentPendingApproval,
 ) : CodexAgentCSnapshot
 
-private data class CodexAgentCApiKeyAuthenticationMethodSnapshot(
+internal data class CodexAgentCApiKeyAuthenticationMethodSnapshot(
     val value: CodexAuthenticationMethod.ApiKey,
 ) : CodexAgentCSnapshot
 
-private data class CodexAgentCChatGptBrowserAuthenticationMethodSnapshot(
+internal data class CodexAgentCChatGptBrowserAuthenticationMethodSnapshot(
     val value: CodexAuthenticationMethod.ChatGptBrowser,
 ) : CodexAgentCSnapshot
 
-private data class CodexAgentCChatGptDeviceCodeAuthenticationMethodSnapshot(
+internal data class CodexAgentCChatGptDeviceCodeAuthenticationMethodSnapshot(
     val value: CodexAuthenticationMethod.ChatGptDeviceCode,
 ) : CodexAgentCSnapshot
 

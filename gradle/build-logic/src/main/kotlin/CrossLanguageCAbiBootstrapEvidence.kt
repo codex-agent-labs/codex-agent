@@ -20,25 +20,25 @@ import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
 
 internal const val C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"
-internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 503
+internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 536
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
-    "ec37ceb25d0b7cbccc67282f06af12aa19aa3d12602918fc5899b4c6c9427824"
+    "30801e054fae5992b9717b6c6f80b4b8429bcc4c6acdbed1720d47175f8fed1a"
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
-    "c3be615c15919c7737833eb5ed43d7129931a9b1b07cde55865266fc7e03b900"
+    "d6d31f92e4ae9fe3df73d9eaf9c22c29fe0bfb4118d4408b7cf3c3651e147adc"
 private const val C_ABI_CINTEROP_SHA256 =
     "4a132bc83e0f69251cc9f432bb7530b4eaafe2f4d7ea1c2985ed860bedafb1c8"
 private const val C_ABI_MACOS_EXPORTS_SHA256 =
-    "5b2ec45b99cb2a03ffe63f5009ede6241d18817dd57f08095be8754afba2e84e"
+    "14f3db20f7effa7c607816f51d6ce963192e807ea845dd5393ffb10ed5a3ea66"
 private const val C_ABI_FOUNDATION_C_SHA256 =
-    "9f0b847da87a311a97ba0c4b5e90333762e1c36dc30a84638c4719d4aca17437"
+    "e5bed9885e37819d2efe034e0a08e29483f92c9293c058e0f54f8b362adc8a86"
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
-    "482ce98ec9274c0aa500a76e3f79fe5961282cfdaf1681541c8874deff8beeae"
+    "48b34a1f749d133379da6a1152ebce57dc6cdd6f301dce6346f2e1b2f2ff144d"
 private const val C_ABI_LIFECYCLE_C_SHA256 =
-    "99a202bacd034f42a2fd4a1a9058f01a090fd03403910ca82f619c877e077c1f"
+    "e4b92cd7b97a141de25872eeebeb3255a62efad067cd7963c98e3f3bff891fb2"
 private const val C_ABI_LIFECYCLE_CPP_SHA256 =
-    "6f70e9993616b13cc74f99b8b339d534657f72c1250fdb96079ef687aec212a4"
+    "730d35e43906585ef2b1f1d380dd4a2cced13e2b9f16753cd78839ec88f3e2d6"
 private const val C_ABI_CONVERSATION_VALUES_C_SHA256 =
     "9bd1c7284344c037426a903fa08f5997f4c4746a597b4072ec5aa2d6911256c5"
 private const val C_ABI_CONFIGURATION_VALUES_C_SHA256 =
@@ -78,13 +78,15 @@ private const val C_ABI_INTEGRATION_STATE_VALUES_C_SHA256 =
 private const val C_ABI_AUTHENTICATION_CONFIGURATION_VALUES_C_SHA256 =
     "50180d9ac04350c6b6c82d43ce00b7b5ce633dc4ace0c58fab3d43e9ff287284"
 private const val C_ABI_ELICITATION_BEHAVIOR_VALUES_C_SHA256 =
-    "90b7e53e455bd7ff92d452f81ffb82febafaf9cafbd7bd76adb985dd756697d0"
+    "2cf8bbf4b47992297b96cf175bdf1b935058c06416c9371942014cf6947e0e31"
 private const val C_ABI_SEALED_BASE_PROPERTY_VALUES_C_SHA256 =
     "7a30143f76309f0e8e230ce6fbd5db940fafb262a09af2d758ed58e3a46c975a"
 private const val C_ABI_ROOT_VALUE_ACCESSORS_C_SHA256 =
     "5222fa6e7103aac922f5ff8a75e87056c873682dd7817f2654dff9925bcbde63"
 private const val C_ABI_SERVICE_HANDLES_C_SHA256 =
     "3e8b4840c49757faf02cf2c2cb3cd50fdf9cee6e27ee1bcc56b340899821b6e3"
+private const val C_ABI_SUSPEND_OPERATIONS_C_SHA256 =
+    "ab542e0622a25feafaebb0756acff0be732b411407ebd0015046c0061d06bbb3"
 
 private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent/"
 private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi."
@@ -656,6 +658,9 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             nativeTestIds = tests,
         ))
     }
+
+    fun suspendTest(className: String, method: String): String =
+        C_API_TEST_PACKAGE + "$className#$method[macosArm64]"
 
     fun enumEntry(
         owner: String,
@@ -2784,6 +2789,283 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         publicSymbols = listOf("codex_agent_host_create"),
         nativeTestIds = listOf(C_HOST_FACTORY_CREATE_TEST, C_HOST_FACTORY_INVALID_TEST),
     ))
+
+    ordinary(
+        "CodexHost", "function", "start",
+        listOf("codex_agent_host_start", "codex_agent_operation_result"),
+        listOf(suspendTest(
+            "CodexAgentCSuspendLifecycleOperationsTest",
+            "hostStartCompletesCanonicalOperationAndHoldsTargetThroughCallback",
+        )),
+    )
+    ordinary(
+        "CodexAuthentication", "function", "authenticate",
+        listOf(
+            "codex_agent_authentication_authenticate_api_key",
+            "codex_agent_authentication_authenticate_chat_gpt_browser",
+            "codex_agent_authentication_authenticate_chat_gpt_device_code",
+            "codex_agent_operation_result",
+        ),
+        listOf(suspendTest(
+            "CodexAgentCSuspendLifecycleOperationsTest",
+            "authenticationAuthenticateCopiesAndExecutesEveryMethodVariant",
+        )),
+    )
+    ordinary(
+        "CodexAuthentication", "function", "cancel",
+        listOf("codex_agent_authentication_cancel", "codex_agent_operation_result"),
+        listOf(suspendTest(
+            "CodexAgentCSuspendLifecycleOperationsTest",
+            "authenticationCancelCompletesCanonicalOperation",
+        )),
+    )
+    ordinary(
+        "CodexAuthentication", "function", "signOut",
+        listOf("codex_agent_authentication_sign_out", "codex_agent_operation_result"),
+        listOf(suspendTest(
+            "CodexAgentCSuspendLifecycleOperationsTest",
+            "authenticationSignOutCompletesCanonicalOperation",
+        )),
+    )
+    ordinary(
+        "CodexIntegrationAuthorization", "function", "authorize",
+        listOf("codex_agent_integration_authorization_authorize", "codex_agent_operation_result"),
+        listOf(suspendTest(
+            "CodexAgentCSuspendLifecycleOperationsTest",
+            "integrationAuthorizationAuthorizeCopiesAndExecutesBothTargetVariants",
+        )),
+    )
+    ordinary(
+        "CodexIntegrationAuthorization", "function", "cancel",
+        listOf("codex_agent_integration_authorization_cancel", "codex_agent_operation_result"),
+        listOf(suspendTest(
+            "CodexAgentCSuspendLifecycleOperationsTest",
+            "integrationAuthorizationCancelCompletesCanonicalOperation",
+        )),
+    )
+
+    val conversationCatalogTest = suspendTest(
+        "CodexAgentCSuspendConversationOperationsTest",
+        "catalogOperationsPreserveOrderDuplicatesOwnedResultsAndCopiedInputs",
+    )
+    ordinary(
+        "CodexConversations", "function", "list",
+        listOf(
+            "codex_agent_conversations_list",
+            "codex_agent_operation_result",
+            "codex_agent_operation_conversation_summaries_count",
+            "codex_agent_operation_conversation_summary_at",
+        ),
+        listOf(conversationCatalogTest),
+    )
+    ordinary(
+        "CodexConversations", "function", "read",
+        listOf(
+            "codex_agent_conversations_read",
+            "codex_agent_operation_result",
+            "codex_agent_operation_conversation_value",
+        ),
+        listOf(conversationCatalogTest),
+    )
+    ordinary(
+        "CodexConversations", "function", "rename",
+        listOf("codex_agent_conversations_rename", "codex_agent_operation_result"),
+        listOf(conversationCatalogTest),
+    )
+    ordinary(
+        "CodexConversations", "function", "delete",
+        listOf("codex_agent_conversations_delete", "codex_agent_operation_result"),
+        listOf(conversationCatalogTest),
+    )
+    val conversationOperationsTest = suspendTest(
+        "CodexAgentCSuspendConversationOperationsTest",
+        "conversationOperationsCopyStructuredAndDefaultInputsAndCompleteShellAndReload",
+    )
+    ordinary(
+        "CodexConversation", "function", "send",
+        listOf("codex_agent_conversation_send_request", "codex_agent_operation_result"),
+        listOf(conversationOperationsTest),
+        "send(io.github.codex_agent_labs.codexmobile.agent.AgentTurnRequest){}[0]",
+    )
+    ordinary(
+        "CodexConversation", "function", "runShellCommand",
+        listOf("codex_agent_conversation_run_shell_command", "codex_agent_operation_result"),
+        listOf(conversationOperationsTest),
+    )
+    ordinary(
+        "CodexConversation", "function", "reload",
+        listOf("codex_agent_conversation_reload", "codex_agent_operation_result"),
+        listOf(conversationOperationsTest),
+    )
+
+    fun catalogTest(method: String): List<String> = listOf(suspendTest(
+        "CodexAgentCSuspendCatalogOperationsTest",
+        method,
+    ))
+    ordinary(
+        "CodexModels", "function", "list",
+        listOf(
+            "codex_agent_models_list",
+            "codex_agent_operation_result",
+            "codex_agent_operation_models_count",
+            "codex_agent_operation_model_at",
+        ),
+        catalogTest("modelsListReturnsFreshOrderedDuplicates"),
+    )
+    ordinary(
+        "CodexModels", "function", "resolve",
+        listOf(
+            "codex_agent_models_resolve",
+            "codex_agent_operation_result",
+            "codex_agent_operation_model",
+        ),
+        catalogTest("modelsResolveHonorsExactResolution"),
+    )
+    ordinary(
+        "CodexModels", "function", "resolveEffort",
+        listOf(
+            "codex_agent_models_resolve_effort",
+            "codex_agent_operation_result",
+            "codex_agent_operation_string_copy",
+        ),
+        catalogTest("modelsResolveEffortCopiesModelBeforeLaunch"),
+    )
+    ordinary(
+        "CodexModels", "function", "resolveServiceTier",
+        listOf(
+            "codex_agent_models_resolve_service_tier",
+            "codex_agent_operation_result",
+            "codex_agent_operation_has_service_tier",
+            "codex_agent_operation_service_tier",
+        ),
+        catalogTest("modelsResolveServiceTierDistinguishesPresentAndAbsent"),
+    )
+    ordinary(
+        "CodexSkills", "function", "list",
+        listOf(
+            "codex_agent_skills_list",
+            "codex_agent_operation_result",
+            "codex_agent_operation_skill_catalog",
+        ),
+        catalogTest("skillsListCopiesFlagAndCatalog"),
+    )
+    ordinary(
+        "CodexSkills", "function", "read",
+        listOf(
+            "codex_agent_skills_read",
+            "codex_agent_operation_result",
+            "codex_agent_operation_skill_chunk",
+        ),
+        catalogTest("skillsReadCopiesPathAndOffset"),
+    )
+    ordinary(
+        "CodexSkills", "function", "install",
+        listOf(
+            "codex_agent_skills_install",
+            "codex_agent_operation_result",
+            "codex_agent_operation_skill",
+        ),
+        catalogTest("skillsInstallReturnsFreshOwnedSkill"),
+    )
+    ordinary(
+        "CodexSkills", "function", "uninstall",
+        listOf("codex_agent_skills_uninstall", "codex_agent_operation_result"),
+        catalogTest("skillsUninstallIsUnitAndConsumesCopiedInput"),
+    )
+    ordinary(
+        "CodexHooks", "function", "list",
+        listOf(
+            "codex_agent_hooks_list",
+            "codex_agent_operation_result",
+            "codex_agent_operation_hook_catalog",
+        ),
+        catalogTest("hooksListReturnsFreshCatalog"),
+    )
+    ordinary(
+        "CodexHooks", "function", "install",
+        listOf(
+            "codex_agent_hooks_install",
+            "codex_agent_operation_result",
+            "codex_agent_operation_hook",
+        ),
+        catalogTest("hooksInstallReturnsFreshOwnedHook"),
+    )
+    ordinary(
+        "CodexHooks", "function", "uninstall",
+        listOf("codex_agent_hooks_uninstall", "codex_agent_operation_result"),
+        catalogTest("hooksUninstallIsUnitAndConsumesCopiedInput"),
+    )
+    ordinary(
+        "CodexHooks", "function", "trust",
+        listOf("codex_agent_hooks_trust", "codex_agent_operation_result"),
+        catalogTest("hooksTrustIsUnitAndCopiesHook"),
+    )
+    ordinary(
+        "CodexPlugins", "function", "list",
+        listOf(
+            "codex_agent_plugins_list",
+            "codex_agent_operation_result",
+            "codex_agent_operation_plugin_catalog",
+        ),
+        catalogTest("pluginsListCopiesFlagAndCatalog"),
+    )
+    ordinary(
+        "CodexPlugins", "function", "read",
+        listOf(
+            "codex_agent_plugins_read",
+            "codex_agent_operation_result",
+            "codex_agent_operation_plugin_detail",
+        ),
+        catalogTest("pluginsReadReturnsFreshDetail"),
+    )
+    ordinary(
+        "CodexPlugins", "function", "install",
+        listOf(
+            "codex_agent_plugins_install",
+            "codex_agent_operation_result",
+            "codex_agent_operation_plugin_install_result",
+        ),
+        catalogTest("pluginsInstallReturnsFreshResult"),
+    )
+    ordinary(
+        "CodexPlugins", "function", "uninstall",
+        listOf("codex_agent_plugins_uninstall", "codex_agent_operation_result"),
+        catalogTest("pluginsUninstallIsUnitAndCopiesReference"),
+    )
+    ordinary(
+        "CodexConnectors", "function", "list",
+        listOf(
+            "codex_agent_connectors_list",
+            "codex_agent_operation_result",
+            "codex_agent_operation_connectors_count",
+            "codex_agent_operation_connector_at",
+        ),
+        catalogTest("connectorsListPreservesOrderAndDuplicates"),
+    )
+    ordinary(
+        "CodexMcpServers", "function", "list",
+        listOf(
+            "codex_agent_mcp_servers_list",
+            "codex_agent_operation_result",
+            "codex_agent_operation_mcp_servers_count",
+            "codex_agent_operation_mcp_server_at",
+        ),
+        catalogTest("mcpServersListReturnsFreshOrderedServers"),
+    )
+    ordinary(
+        "CodexMcpServers", "function", "add",
+        listOf(
+            "codex_agent_mcp_servers_add",
+            "codex_agent_operation_result",
+            "codex_agent_operation_mcp_server",
+        ),
+        catalogTest("mcpServersAddCopiesConfigurationAndReturnsServer"),
+    )
+    ordinary(
+        "CodexMcpServers", "function", "remove",
+        listOf("codex_agent_mcp_servers_remove", "codex_agent_operation_result"),
+        catalogTest("mcpServersRemoveIsUnitAndCopiesServer"),
+    )
 }.sortedWith(compareBy(CAbiBootstrapClaimSpec::owner, CAbiBootstrapClaimSpec::kind, CAbiBootstrapClaimSpec::abi))
 
 internal fun deriveCAbiBootstrapClaims(
@@ -2799,7 +3081,7 @@ internal fun deriveCAbiBootstrapClaims(
         "C ABI bootstrap requires the exact sorted 556-capability canonical inventory"
     }
     check(claimSpecs.size == C_ABI_BOOTSTRAP_CAPABILITY_COUNT &&
-        claimSpecs.distinctBy { Triple(it.owner, it.kind, it.abi) }.size ==
+        claimSpecs.distinctBy { listOf(it.owner, it.kind, it.abi, it.canonicalSignatureReference) }.size ==
         C_ABI_BOOTSTRAP_CAPABILITY_COUNT) {
         "C ABI bootstrap claim specifications are missing or duplicated"
     }
@@ -2876,9 +3158,9 @@ private fun List<String>.sortedNewlineSha256(): String = MessageDigest.getInstan
 private fun exactExportPolicy(file: File): Set<String> {
     check(file.releaseDigest() == C_ABI_MACOS_EXPORTS_SHA256) { "Reviewed macOS C ABI export policy drift" }
     val rows = file.readLines().filter(String::isNotBlank)
-    check(rows.size == 670 && rows == rows.sorted() && rows.size == rows.distinct().size &&
+    check(rows.size == 727 && rows == rows.sorted() && rows.size == rows.distinct().size &&
         rows.all { it.startsWith("_codex_agent_") }) {
-        "macOS C ABI export policy must contain the exact sorted 670-symbol inventory"
+        "macOS C ABI export policy must contain the exact sorted 727-symbol inventory"
     }
     return rows.mapTo(sortedSetOf()) { it.removePrefix("_") }
 }
@@ -2997,6 +3279,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val serviceHandlesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val suspendOperationsCConsumer: RegularFileProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val releaseLibrary: RegularFileProperty
@@ -3168,6 +3453,11 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "Reviewed C service-handles consumer drift"
             }
         }
+        val suspendOperationsC = suspendOperationsCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_SUSPEND_OPERATIONS_C_SHA256) {
+                "Reviewed C suspend-operations consumer drift"
+            }
+        }
         val library = releaseLibrary.get().asFile
         val generated = generatedHeader.get().asFile
         val nativeExecutable = nativeTestExecutable.get().asFile
@@ -3309,6 +3599,10 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "c11-service-handles", clang, "c11", serviceHandlesC,
                 work, include, library, rpath, sdk, true,
             ),
+            compileConsumer(
+                "c11-suspend-operations", clang, "c11", suspendOperationsC,
+                work, include, library, rpath, sdk, true,
+            ),
         )
 
         val defined = normalizedCodexSymbols(
@@ -3342,7 +3636,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
-            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.9.0)") {
+            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.10.0)") {
             "Unexpected C ABI dylib loader versions: $linkedIdentity"
         }
 
@@ -3374,6 +3668,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 sealedBasePropertyValuesC,
                 rootValueAccessorsC,
                 serviceHandlesC,
+                suspendOperationsC,
             )
                 .joinToString("\n") { it.readText() },
             exports,
@@ -3391,7 +3686,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             put("schemaVersion", JsonPrimitive(1))
             put("protocol", JsonPrimitive(C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL))
             put("result", JsonPrimitive("observed"))
-            put("milestone", JsonPrimitive("D101"))
+            put("milestone", JsonPrimitive("D102"))
             put("language", JsonPrimitive("c-abi"))
             put("canonical", buildJsonObject {
                 put("apiReportSha256", JsonPrimitive(canonical.canonical.apiReportSha256))

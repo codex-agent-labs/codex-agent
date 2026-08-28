@@ -84,7 +84,30 @@ internal data class CodexAgentCOperationResult(
     val conversation: CodexConversation? = null,
     val conversations: CodexConversations? = null,
     val failure: CodexFailure? = null,
+    val valueKind: CodexAgentCOperationValueKind = CodexAgentCOperationValueKind.NONE,
+    val value: Any? = null,
 )
+
+internal enum class CodexAgentCOperationValueKind {
+    NONE,
+    CONVERSATION_SUMMARIES,
+    CONVERSATION_VALUE,
+    MODELS,
+    MODEL,
+    STRING,
+    SERVICE_TIER,
+    SKILL_CATALOG,
+    SKILL_CHUNK,
+    SKILL,
+    HOOK_CATALOG,
+    HOOK,
+    PLUGIN_CATALOG,
+    PLUGIN_DETAIL,
+    PLUGIN_INSTALL_RESULT,
+    CONNECTORS,
+    MCP_SERVERS,
+    MCP_SERVER,
+}
 
 internal class CodexAgentCOperation(
     val runtime: CodexAgentCContextRuntime,
@@ -156,46 +179,100 @@ internal fun startCodexAgentCOperation(
     targetLease: CodexAgentCHandleLease? = null,
     execute: suspend () -> CodexAgentCOperationResult,
 ): Int {
-    if (outOperation == null || outOperation.pointed.value != null) {
-        targetLease?.close()
-        return CODEX_AGENT_STATUS_INVALID_ARGUMENT
+    var ownedTargetLease = targetLease
+    var ownedContextLease: CodexAgentCContextLease? = null
+    var unstartedHandle: COpaquePointer? = null
+    try {
+        if (outOperation == null || outOperation.pointed.value != null) {
+            return CODEX_AGENT_STATUS_INVALID_ARGUMENT
+        }
+        val acquiredContext = handleRegistry.acquireContext(context)
+        if (acquiredContext.status != CODEX_AGENT_STATUS_OK) return acquiredContext.status
+        val contextLease = checkNotNull(acquiredContext.value)
+        ownedContextLease = contextLease
+        if (!runtime.acceptsLaunches) {
+            ownedTargetLease?.let { if (it.close() == CODEX_AGENT_STATUS_OK) ownedTargetLease = null }
+            val releaseStatus = contextLease.close()
+            if (releaseStatus == CODEX_AGENT_STATUS_OK) ownedContextLease = null
+            return if (releaseStatus == CODEX_AGENT_STATUS_OK) CODEX_AGENT_STATUS_CLOSED else releaseStatus
+        }
+        val contextPointer = checkNotNull(context)
+        val operation = CodexAgentCOperation(runtime, contextPointer, callback, userData)
+        val created = handleRegistry.createEntry(
+            contextPointer,
+            CodexAgentCHandleKind.OPERATION,
+            operation,
+        )
+        if (created.status != CODEX_AGENT_STATUS_OK) {
+            ownedTargetLease?.let { if (it.close() == CODEX_AGENT_STATUS_OK) ownedTargetLease = null }
+            val releaseStatus = contextLease.close()
+            if (releaseStatus == CODEX_AGENT_STATUS_OK) ownedContextLease = null
+            return if (releaseStatus == CODEX_AGENT_STATUS_OK) created.status else releaseStatus
+        }
+        val handle = checkNotNull(created.value)
+        unstartedHandle = handle
+        outOperation.pointed.value = handle
+        val startStatus = operation.start(handle, contextLease, ownedTargetLease, execute)
+        if (startStatus == CODEX_AGENT_STATUS_OK) {
+            unstartedHandle = null
+            ownedTargetLease = null
+            ownedContextLease = null
+            return startStatus
+        }
+        outOperation.pointed.value = null
+        ownedTargetLease?.let { if (it.close() == CODEX_AGENT_STATUS_OK) ownedTargetLease = null }
+        if (contextLease.close() == CODEX_AGENT_STATUS_OK) ownedContextLease = null
+        val abandonStatus = handleRegistry.abandonOpenEntry(
+            contextPointer,
+            handle,
+            CodexAgentCHandleKind.OPERATION,
+        )
+        if (abandonStatus == CODEX_AGENT_STATUS_OK) unstartedHandle = null
+        return if (abandonStatus == CODEX_AGENT_STATUS_OK) startStatus else abandonStatus
+    } finally {
+        unstartedHandle?.let { handle ->
+            if (outOperation?.pointed?.value == handle) outOperation.pointed.value = null
+            handleRegistry.abandonOpenEntry(context, handle, CodexAgentCHandleKind.OPERATION)
+        }
+        ownedTargetLease?.close()
+        ownedContextLease?.close()
     }
-    val acquiredContext = handleRegistry.acquireContext(context)
-    if (acquiredContext.status != CODEX_AGENT_STATUS_OK) {
-        targetLease?.close()
-        return acquiredContext.status
+}
+
+internal inline fun <reified T : Any> startCodexAgentCTargetOperation(
+    context: COpaquePointer?,
+    target: COpaquePointer?,
+    targetKind: CodexAgentCHandleKind,
+    callback: CodexAgentCOperationCallback?,
+    userData: COpaquePointer?,
+    outOperation: CPointer<COpaquePointerVar>?,
+    crossinline runtime: (T) -> CodexAgentCContextRuntime,
+    crossinline execute: suspend (T) -> CodexAgentCOperationResult,
+): Int = abiStatus {
+    if (!validEmptyOutput(outOperation)) return@abiStatus CODEX_AGENT_STATUS_INVALID_ARGUMENT
+    val acquired = handleRegistry.acquire(context, target, targetKind)
+    if (acquired.status != CODEX_AGENT_STATUS_OK) return@abiStatus acquired.status
+    val targetLease = checkNotNull(acquired.value)
+    var ownedTargetLease: CodexAgentCHandleLease? = targetLease
+    try {
+        val wrapper = targetLease.payload as? T
+            ?: return@abiStatus CODEX_AGENT_STATUS_WRONG_HANDLE_TYPE
+        val operationRuntime = runtime(wrapper)
+        val operationExecute: suspend () -> CodexAgentCOperationResult = { execute(wrapper) }
+        val status = startCodexAgentCOperation(
+            context,
+            operationRuntime,
+            callback,
+            userData,
+            outOperation,
+            targetLease,
+            operationExecute,
+        )
+        ownedTargetLease = null
+        status
+    } finally {
+        ownedTargetLease?.close()
     }
-    val contextLease = checkNotNull(acquiredContext.value)
-    if (!runtime.acceptsLaunches) {
-        targetLease?.close()
-        val releaseStatus = contextLease.close()
-        return if (releaseStatus == CODEX_AGENT_STATUS_OK) CODEX_AGENT_STATUS_CLOSED else releaseStatus
-    }
-    val contextPointer = checkNotNull(context)
-    val operation = CodexAgentCOperation(runtime, contextPointer, callback, userData)
-    val created = handleRegistry.createEntry(
-        contextPointer,
-        CodexAgentCHandleKind.OPERATION,
-        operation,
-    )
-    if (created.status != CODEX_AGENT_STATUS_OK) {
-        targetLease?.close()
-        val releaseStatus = contextLease.close()
-        return if (releaseStatus == CODEX_AGENT_STATUS_OK) created.status else releaseStatus
-    }
-    val handle = checkNotNull(created.value)
-    outOperation.pointed.value = handle
-    val startStatus = operation.start(handle, contextLease, targetLease, execute)
-    if (startStatus == CODEX_AGENT_STATUS_OK) return startStatus
-    outOperation.pointed.value = null
-    targetLease?.close()
-    contextLease.close()
-    val abandonStatus = handleRegistry.abandonOpenEntry(
-        contextPointer,
-        handle,
-        CodexAgentCHandleKind.OPERATION,
-    )
-    return if (abandonStatus == CODEX_AGENT_STATUS_OK) startStatus else abandonStatus
 }
 
 internal fun cancelCodexAgentCOperation(context: COpaquePointer?, operation: COpaquePointer?): Int =
