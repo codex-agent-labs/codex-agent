@@ -3,10 +3,10 @@
 #include <stdint.h>
 
 _Static_assert(CODEX_AGENT_ABI_VERSION_MAJOR == UINT32_C(1), "ABI major");
-_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(11), "ABI minor");
+_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(12), "ABI minor");
 _Static_assert(CODEX_AGENT_ABI_VERSION_PATCH == UINT32_C(0), "ABI patch");
 _Static_assert(
-    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x010B0000),
+    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x010C0000),
     "ABI current");
 
 #define CHECK_INVALID(call)                                                    \

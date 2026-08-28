@@ -11,7 +11,7 @@ import org.gradle.testkit.runner.TaskOutcome
 
 class CrossLanguageCAbiBootstrapEvidenceTest {
     @Test
-    fun `derives the exact reviewed 552 capability bootstrap slice`() {
+    fun `derives the exact reviewed 556 capability bootstrap slice`() {
         val inputs = validInputs()
         val claims = inputs.derive()
         val keys = claims.map(CAbiBootstrapClaim::capabilityKey)
@@ -127,17 +127,29 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             "3bac94763a42300c5638e043f8277dad6940b81e37c996793ebca16152546549",
             D103_RESIDUAL_CAPABILITY_KEYS.sortedNewlineSha256(),
         )
-        assertEquals(552, keys.size)
+        assertEquals(4, D104_SELECTED_CAPABILITY_KEYS.size)
+        assertEquals(D104_SELECTED_CAPABILITY_KEYS.sorted(), D104_SELECTED_CAPABILITY_KEYS)
+        assertEquals(D104_SELECTED_CAPABILITY_KEYS.size, D104_SELECTED_CAPABILITY_KEYS.distinct().size)
+        assertEquals(
+            "3bac94763a42300c5638e043f8277dad6940b81e37c996793ebca16152546549",
+            D104_SELECTED_CAPABILITY_KEYS.sortedNewlineSha256(),
+        )
+        assertEquals(0, D104_RESIDUAL_CAPABILITY_KEYS.size)
+        assertEquals(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            D104_RESIDUAL_CAPABILITY_KEYS.sortedNewlineSha256(),
+        )
+        assertEquals(556, keys.size)
         assertEquals(keys.sorted(), keys)
         assertEquals(keys.size, keys.distinct().size)
         assertEquals(SELECTED_CAPABILITY_KEYS.sorted(), keys)
         assertEquals(C_ABI_BOOTSTRAP_CAPABILITY_SHA256, keys.sortedNewlineSha256())
         assertEquals(
-            "11e3b70f338babff5cdedca1933d4998f286c74caebcfcfc68e7e0b0b322b306",
+            "f0b7217e2d302f331829437ce0dd4f54d72ec8503770b6e71f82e68612809651",
             keys.sortedNewlineSha256(),
         )
-        assertEquals(4, complement.size)
-        assertEquals(D103_RESIDUAL_CAPABILITY_KEYS, complement)
+        assertEquals(0, complement.size)
+        assertEquals(D104_RESIDUAL_CAPABILITY_KEYS, complement)
         assertTrue(HOST_CONSTRUCTOR_KEY in keys)
         assertFalse(HOST_CONSTRUCTOR_KEY in complement)
         assertTrue(claims.all { claim ->
@@ -172,7 +184,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             },
             FailureCase("duplicate canonical identity", "exact canonical C ABI capability") { inputs ->
                 inputs.copy(canonicalKeys = inputs.canonicalKeys
-                    .replace(D103_RESIDUAL_CAPABILITY_KEYS.first(), "$selected|duplicate-signature=true"))
+                    .replace(SELECTED_CAPABILITY_KEYS.last(), "$selected|duplicate-signature=true"))
             },
             FailureCase("missing public header reference", "Missing C ABI public header reference") { inputs ->
                 inputs.copy(headerText = inputs.headerText.withoutLine(headerReference))
@@ -394,6 +406,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "serviceHandlesCConsumer" to "codex_agent_service_handles_compile.c",
                 "suspendOperationsCConsumer" to "codex_agent_suspend_operations_compile.c",
                 "stateFlowsCConsumer" to "codex_agent_state_flows_compile.c",
+                "interactionIdentityCConsumer" to "codex_agent_interaction_identity_compile.c",
             ).forEach { (property, fixture) ->
                 val assignment = generator.substringAfter("$property.set(").substringBefore("\n    )")
                 assertTrue(fixture in assignment, "C bootstrap $property is not wired to $fixture")
@@ -422,12 +435,13 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "\"c11-service-handles\"",
                 "\"c11-suspend-operations\"",
                 "\"c11-state-flows\"",
+                "\"c11-interaction-identity\"",
                 "C_ELICITATION_BEHAVIOR_RECLAMATION_TEST in passedTests",
                 "C_HOST_FACTORY_INVALID_TEST in passedTests",
-                "rows.size == 773",
-                "put(\"milestone\", JsonPrimitive(\"D103\"))",
+                "rows.size == 777",
+                "put(\"milestone\", JsonPrimitive(\"D104\"))",
             ).forEach { contract ->
-                assertTrue(contract in producer, "Missing D103 C bootstrap producer contract: $contract")
+                assertTrue(contract in producer, "Missing D104 C bootstrap producer contract: $contract")
             }
             val coreWiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
             assertTrue("\"invalidateCodexAgentCAbiBootstrapEvidence\"" in coreWiring)
@@ -462,7 +476,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
 
     private fun validInputs(): Inputs = Inputs(
         canonicalKeys = (
-            SELECTED_CAPABILITY_KEYS + D103_RESIDUAL_CAPABILITY_KEYS
+            SELECTED_CAPABILITY_KEYS + D104_RESIDUAL_CAPABILITY_KEYS
         ).sorted(),
         headerText = cAbiBootstrapClaimSpecs.flatMap(CAbiBootstrapClaimSpec::headerReferences)
             .distinct().joinToString("\n"),
@@ -1187,11 +1201,16 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
         val D103_RESIDUAL_CAPABILITY_KEYS =
             (D102_RESIDUAL_CAPABILITY_KEYS - D103_SELECTED_CAPABILITY_KEYS.toSet()).sorted()
 
+        val D104_SELECTED_CAPABILITY_KEYS = D103_RESIDUAL_CAPABILITY_KEYS
+
+        val D104_RESIDUAL_CAPABILITY_KEYS =
+            (D103_RESIDUAL_CAPABILITY_KEYS - D104_SELECTED_CAPABILITY_KEYS.toSet()).sorted()
+
         val SELECTED_CAPABILITY_KEYS =
             D093_SELECTED_CAPABILITY_KEYS + D094_SELECTED_CAPABILITY_KEYS + D095_SELECTED_CAPABILITY_KEYS +
                 D096_SELECTED_CAPABILITY_KEYS + D097_SELECTED_CAPABILITY_KEYS + D098_SELECTED_CAPABILITY_KEYS +
                 D099_SELECTED_CAPABILITY_KEYS + D100_SELECTED_CAPABILITY_KEYS + D101_SELECTED_CAPABILITY_KEYS +
-                D102_SELECTED_CAPABILITY_KEYS + D103_SELECTED_CAPABILITY_KEYS
+                D102_SELECTED_CAPABILITY_KEYS + D103_SELECTED_CAPABILITY_KEYS + D104_SELECTED_CAPABILITY_KEYS
 
         const val HOST_CONSTRUCTOR_KEY =
             "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexHost|kind=constructor|" +

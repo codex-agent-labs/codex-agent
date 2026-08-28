@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C(1)
-#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(11)
+#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(12)
 #define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C(0)
 #define CODEX_AGENT_ABI_VERSION_ENCODE(major, minor, patch) \
     ((((uint32_t)(major) & UINT32_C(0xff)) << 24) | \
@@ -3024,6 +3024,32 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_e
     codex_agent_snapshot_t *snapshot,
     size_t index,
     codex_agent_pending_elicitation_t **out_elicitation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interactions_open_url(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_pending_elicitation_t *elicitation,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interactions_resolve_approval(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_pending_approval_t *approval,
+    codex_agent_approval_decision_t decision,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interactions_resolve_elicitation(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_pending_elicitation_t *elicitation,
+    codex_agent_elicitation_response_t *response,
+    codex_agent_operation_callback_t callback,
+    void *user_data,
+    codex_agent_operation_t **out_operation);
 
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
 codex_agent_conversation_current_messages_get(
@@ -4011,6 +4037,12 @@ codex_agent_interaction_state_resolving_request_ids_contains(
     codex_agent_interaction_state_t *state,
     const codex_agent_string_view_t *request_id,
     int32_t *out_contains);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interaction_state_is_resolving(
+    codex_agent_context_t *context,
+    codex_agent_interaction_state_t *state,
+    codex_agent_pending_interaction_t *interaction,
+    int32_t *out_is_resolving);
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
 codex_agent_interaction_state_has_failure(
     codex_agent_context_t *context,

@@ -386,6 +386,7 @@ EXPORTS
     codex_agent_interaction_state_destroy
     codex_agent_interaction_state_failure
     codex_agent_interaction_state_has_failure
+    codex_agent_interaction_state_is_resolving
     codex_agent_interaction_state_pending_at
     codex_agent_interaction_state_pending_count
     codex_agent_interaction_state_pending_for
@@ -399,7 +400,10 @@ EXPORTS
     codex_agent_interactions_elicitations_count
     codex_agent_interactions_elicitations_get
     codex_agent_interactions_elicitations_subscribe
+    codex_agent_interactions_open_url
     codex_agent_interactions_release
+    codex_agent_interactions_resolve_approval
+    codex_agent_interactions_resolve_elicitation
     codex_agent_interactions_retain
     codex_agent_interactions_state_get
     codex_agent_interactions_state_subscribe

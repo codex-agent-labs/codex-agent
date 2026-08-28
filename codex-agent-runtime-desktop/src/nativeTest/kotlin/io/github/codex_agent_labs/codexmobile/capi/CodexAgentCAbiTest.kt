@@ -16,7 +16,7 @@ class CodexAgentCAbiTest {
     @Test
     fun reportsExactCompatibleAbiVersion() {
         val minimum = 0x01000000u
-        val current = 0x010B0000u
+        val current = 0x010C0000u
 
         assertEquals(current, codexAgentAbiVersion())
         assertEquals(1, codexAgentAbiIsCompatible(minimum))

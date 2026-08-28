@@ -840,3 +840,13 @@ CODEX_AGENT_1.11 {
     local:
         *;
 } CODEX_AGENT_1.10;
+
+CODEX_AGENT_1.12 {
+    global:
+        codex_agent_interaction_state_is_resolving;
+        codex_agent_interactions_open_url;
+        codex_agent_interactions_resolve_approval;
+        codex_agent_interactions_resolve_elicitation;
+    local:
+        *;
+} CODEX_AGENT_1.11;

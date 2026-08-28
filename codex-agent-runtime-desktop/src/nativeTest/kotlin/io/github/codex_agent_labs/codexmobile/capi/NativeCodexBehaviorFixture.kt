@@ -38,6 +38,7 @@ import kotlinx.serialization.json.putJsonObject
 internal class NativeCodexBehaviorFixture(
     private val prepareFailure: Throwable? = null,
     private val features: Set<CodexRuntimeFeature> = emptySet(),
+    private val onServerResponse: suspend (JsonObject) -> Unit = {},
     private val additionalResponse: suspend (String, JsonObject) -> JsonObject? = { _, _ -> null },
 ) {
     val workspace = CodexWorkspace("/workspace", "Native fixture workspace")
@@ -50,6 +51,7 @@ internal class NativeCodexBehaviorFixture(
     val turnRequests = mutableListOf<JsonObject>()
     val interruptRequests = mutableListOf<JsonObject>()
     val additionalRequests = mutableListOf<Pair<String, JsonObject>>()
+    val serverResponses = mutableListOf<JsonObject>()
 
     val turnStartObserved = CompletableDeferred<Unit>()
     val releaseTurnStart = CompletableDeferred<Unit>()
@@ -114,7 +116,12 @@ internal class NativeCodexBehaviorFixture(
         override suspend fun send(line: CodexJsonLine) {
             check(started.load() && !closed.load()) { "runtime is not running" }
             val request = Json.parseToJsonElement(line.value).jsonObject
-            val method = request["method"]?.jsonPrimitive?.content ?: return
+            val method = request["method"]?.jsonPrimitive?.content
+            if (method == null) {
+                serverResponses += request
+                onServerResponse(request)
+                return
+            }
             val params = request["params"]?.jsonObject ?: buildJsonObject {}
             when (method) {
                 "initialize" -> respond(

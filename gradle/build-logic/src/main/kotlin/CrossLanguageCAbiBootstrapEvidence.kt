@@ -20,25 +20,25 @@ import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
 
 internal const val C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"
-internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 552
+internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 556
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
-    "11e3b70f338babff5cdedca1933d4998f286c74caebcfcfc68e7e0b0b322b306"
+    "f0b7217e2d302f331829437ce0dd4f54d72ec8503770b6e71f82e68612809651"
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
-    "05408f75a8f75f113103568af33d98c87674b60ca78ae6274f511dca5175b642"
+    "65133d04f8a65ae94b6752237e46650392ffc741d1191d97afa219a81b1c1023"
 private const val C_ABI_CINTEROP_SHA256 =
     "4a132bc83e0f69251cc9f432bb7530b4eaafe2f4d7ea1c2985ed860bedafb1c8"
 private const val C_ABI_MACOS_EXPORTS_SHA256 =
-    "0c5bd7ea50323cb57a2b6a9c3b9daf3180f7f4547d115413be454b71b9c4777f"
+    "cf63234583c0e916e46d960d38042c889c67a21ed71f8196620a8144bd27dce6"
 private const val C_ABI_FOUNDATION_C_SHA256 =
-    "a15362a3a2af515b3d47e2e5123ec605a9a7ca646c688c18b613fbdec395dc61"
+    "ef416640f7204bc98eb4bd0568b7f5c60c051fccabdd7e40b72b45d955ea6768"
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
-    "c0ec250907f2faaa1d3a104ca84c1b49bb2b78cd96116a98b4d78a3a99af1424"
+    "fe7a2a3b31c35c9a2630fe696711d05d3a6b9968362fa47097405717670f232c"
 private const val C_ABI_LIFECYCLE_C_SHA256 =
-    "deea17e2e58e10527abaa27d674a9a9bd8cedce0f82a9576911f2e0994e872d6"
+    "ef35f3b951eab4e447eb8ed6afee5de44b509da87be682e7740a88d698092bb6"
 private const val C_ABI_LIFECYCLE_CPP_SHA256 =
-    "d1598c7f733b413f71143bc4d1ab76422b9e54b85934575e530090bf169ea43a"
+    "373d43817fe426b5ab353dd9e3f4aecdc4d99bff9ea0e809d225ebd566faff0b"
 private const val C_ABI_CONVERSATION_VALUES_C_SHA256 =
     "9bd1c7284344c037426a903fa08f5997f4c4746a597b4072ec5aa2d6911256c5"
 private const val C_ABI_CONFIGURATION_VALUES_C_SHA256 =
@@ -78,7 +78,7 @@ private const val C_ABI_INTEGRATION_STATE_VALUES_C_SHA256 =
 private const val C_ABI_AUTHENTICATION_CONFIGURATION_VALUES_C_SHA256 =
     "50180d9ac04350c6b6c82d43ce00b7b5ce633dc4ace0c58fab3d43e9ff287284"
 private const val C_ABI_ELICITATION_BEHAVIOR_VALUES_C_SHA256 =
-    "1741a892b52d88619f215cb959a3d2800b3799ce16d36e78551ff704577df0b3"
+    "e48844079fc17e2adf7b26e45355b113755c2fe2db5b8b33cbe17f688747c938"
 private const val C_ABI_SEALED_BASE_PROPERTY_VALUES_C_SHA256 =
     "7a30143f76309f0e8e230ce6fbd5db940fafb262a09af2d758ed58e3a46c975a"
 private const val C_ABI_ROOT_VALUE_ACCESSORS_C_SHA256 =
@@ -88,7 +88,9 @@ private const val C_ABI_SERVICE_HANDLES_C_SHA256 =
 private const val C_ABI_SUSPEND_OPERATIONS_C_SHA256 =
     "ab542e0622a25feafaebb0756acff0be732b411407ebd0015046c0061d06bbb3"
 private const val C_ABI_STATE_FLOWS_C_SHA256 =
-    "ba2c47526aaeab4beab95050948bf27a98bd77e956d4277bb6892fb87f4f6f64"
+    "d1f1f511049345664b26ae4e64e51f9e7d3372a055f26f39473712e6a8efd550"
+private const val C_ABI_INTERACTION_IDENTITY_C_SHA256 =
+    "1343065e248a5128adbfa64f345dd2042ef7846e3f18f0485011dd75b2f09637"
 
 private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent/"
 private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi."
@@ -3282,6 +3284,42 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
                 "interactionsElicitationsProjectCurrentChangeOwnedIdentityAndOwnerTerminal[macosArm64]",
         ),
     )
+    ordinary(
+        "AgentInteractionState", "function", "isResolving",
+        listOf("codex_agent_interaction_state_is_resolving"),
+        listOf(suspendTest(
+            "CodexAgentCInteractionOperationsTest",
+            "interactionStateIsResolvingRequiresExactLivePendingIdentity",
+        )),
+    )
+    ordinary(
+        "CodexInteractions", "function", "openUrl",
+        listOf("codex_agent_interactions_open_url", "codex_agent_operation_result"),
+        listOf(suspendTest(
+            "CodexAgentCInteractionOperationsTest",
+            "openUrlUsesExactOwnedPendingIdentityAndOwnsBrowserPresentation",
+        )),
+    )
+    ordinary(
+        "CodexInteractions", "function", "resolve",
+        listOf("codex_agent_interactions_resolve_approval", "codex_agent_operation_result"),
+        listOf(suspendTest(
+            "CodexAgentCInteractionOperationsTest",
+            "resolveApprovalUsesExactOwnedPendingIdentityAndCompletesCancellableOperation",
+        )),
+        "resolve(io.github.codex_agent_labs.codexmobile.agent.AgentPendingApproval;" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentApprovalDecision){}[0]",
+    )
+    ordinary(
+        "CodexInteractions", "function", "resolve",
+        listOf("codex_agent_interactions_resolve_elicitation", "codex_agent_operation_result"),
+        listOf(suspendTest(
+            "CodexAgentCInteractionOperationsTest",
+            "resolveElicitationCopiesResponseAndUsesExactOwnedPendingIdentity",
+        )),
+        "resolve(io.github.codex_agent_labs.codexmobile.agent.AgentPendingElicitation;" +
+            "io.github.codex_agent_labs.codexmobile.agent.AgentElicitationResponse){}[0]",
+    )
 }.sortedWith(compareBy(CAbiBootstrapClaimSpec::owner, CAbiBootstrapClaimSpec::kind, CAbiBootstrapClaimSpec::abi))
 
 internal fun deriveCAbiBootstrapClaims(
@@ -3374,9 +3412,9 @@ private fun List<String>.sortedNewlineSha256(): String = MessageDigest.getInstan
 private fun exactExportPolicy(file: File): Set<String> {
     check(file.releaseDigest() == C_ABI_MACOS_EXPORTS_SHA256) { "Reviewed macOS C ABI export policy drift" }
     val rows = file.readLines().filter(String::isNotBlank)
-    check(rows.size == 773 && rows == rows.sorted() && rows.size == rows.distinct().size &&
+    check(rows.size == 777 && rows == rows.sorted() && rows.size == rows.distinct().size &&
         rows.all { it.startsWith("_codex_agent_") }) {
-        "macOS C ABI export policy must contain the exact sorted 773-symbol inventory"
+        "macOS C ABI export policy must contain the exact sorted 777-symbol inventory"
     }
     return rows.mapTo(sortedSetOf()) { it.removePrefix("_") }
 }
@@ -3501,6 +3539,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val stateFlowsCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val interactionIdentityCConsumer: RegularFileProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val releaseLibrary: RegularFileProperty
@@ -3682,6 +3723,11 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "Reviewed C state-flows consumer drift"
             }
         }
+        val interactionIdentityC = interactionIdentityCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_INTERACTION_IDENTITY_C_SHA256) {
+                "Reviewed C interaction-identity consumer drift"
+            }
+        }
         val library = releaseLibrary.get().asFile
         val generated = generatedHeader.get().asFile
         val nativeExecutable = nativeTestExecutable.get().asFile
@@ -3831,6 +3877,10 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "c11-state-flows", clang, "c11", stateFlowsC,
                 work, include, library, rpath, sdk, true,
             ),
+            compileConsumer(
+                "c11-interaction-identity", clang, "c11", interactionIdentityC,
+                work, include, library, rpath, sdk, true,
+            ),
         )
 
         val defined = normalizedCodexSymbols(
@@ -3864,7 +3914,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
-            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.11.0)") {
+            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.12.0)") {
             "Unexpected C ABI dylib loader versions: $linkedIdentity"
         }
 
@@ -3898,6 +3948,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 serviceHandlesC,
                 suspendOperationsC,
                 stateFlowsC,
+                interactionIdentityC,
             )
                 .joinToString("\n") { it.readText() },
             exports,
@@ -3915,7 +3966,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             put("schemaVersion", JsonPrimitive(1))
             put("protocol", JsonPrimitive(C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL))
             put("result", JsonPrimitive("observed"))
-            put("milestone", JsonPrimitive("D103"))
+            put("milestone", JsonPrimitive("D104"))
             put("language", JsonPrimitive("c-abi"))
             put("canonical", buildJsonObject {
                 put("apiReportSha256", JsonPrimitive(canonical.canonical.apiReportSha256))

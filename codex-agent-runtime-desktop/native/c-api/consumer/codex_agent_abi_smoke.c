@@ -3,10 +3,10 @@
 #include <stdlib.h>
 
 _Static_assert(CODEX_AGENT_ABI_VERSION_MAJOR == UINT32_C(1), "ABI major changed");
-_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(11), "ABI minor changed");
+_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(12), "ABI minor changed");
 _Static_assert(CODEX_AGENT_ABI_VERSION_PATCH == UINT32_C(0), "ABI patch changed");
 _Static_assert(
-    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x010B0000),
+    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x010C0000),
     "current ABI encoding changed");
 _Static_assert(
     CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE == UINT32_C(0x01000000),
