@@ -18,6 +18,7 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentPendingApproval
 import io.github.codex_agent_labs.codexmobile.agent.AgentPendingElicitation
 import io.github.codex_agent_labs.codexmobile.agent.AgentPendingInteraction
 import io.github.codex_agent_labs.codexmobile.agent.CodexFailure
+import io.github.codex_agent_labs.codexmobile.agent.CodexInteractions
 import io.github.codex_agent_labs.codexmobile.agent.ConversationId
 import io.github.codex_agent_labs.codexmobile.capi.headers.codex_agent_string_view
 import kotlinx.cinterop.COpaquePointer
@@ -50,14 +51,17 @@ internal data class CodexAgentCElicitationResponseSnapshot(
 
 internal data class CodexAgentCPendingElicitationSnapshot(
     val value: AgentPendingElicitation,
+    val owner: CodexInteractions? = null,
 ) : CodexAgentCSnapshot
 
 internal data class CodexAgentCPendingInteractionSnapshot(
     val value: AgentPendingInteraction,
+    val owner: CodexInteractions? = null,
 ) : CodexAgentCSnapshot
 
 internal data class CodexAgentCInteractionStateSnapshot(
     val value: AgentInteractionState,
+    val owner: CodexInteractions? = null,
 ) : CodexAgentCSnapshot
 
 private fun AgentFormValue.cAbiElicitationOwnedCopy(): AgentFormValue = when (this) {
@@ -663,7 +667,9 @@ public fun codexAgentPendingElicitationConversationId(
 @CName("codex_agent_pending_interaction_from_approval")
 public fun codexAgentPendingInteractionFromApproval(
     context: COpaquePointer?, approval: COpaquePointer?, outInteraction: CPointer<COpaquePointerVar>?,
-): Int = pendingInteractionFrom<CodexAgentCPendingApprovalSnapshot>(context, approval, outInteraction) { it.value }
+): Int = pendingInteractionFrom<CodexAgentCPendingApprovalSnapshot>(context, approval, outInteraction) {
+    it.value to it.owner
+}
 
 @CName("codex_agent_pending_interaction_from_elicitation")
 public fun codexAgentPendingInteractionFromElicitation(
@@ -672,7 +678,7 @@ public fun codexAgentPendingInteractionFromElicitation(
     context,
     pendingElicitation,
     outInteraction,
-) { it.value }
+) { it.value to it.owner }
 
 @CName("codex_agent_pending_interaction_destroy")
 public fun codexAgentPendingInteractionDestroy(
@@ -692,17 +698,31 @@ public fun codexAgentPendingInteractionKind(
 @CName("codex_agent_pending_interaction_approval")
 public fun codexAgentPendingInteractionApproval(
     context: COpaquePointer?, interaction: COpaquePointer?, outApproval: CPointer<COpaquePointerVar>?,
-): Int = pendingInteractionDowncast(context, interaction, outApproval) {
-    val value = it as? AgentPendingApproval ?: return@pendingInteractionDowncast null
-    CodexAgentCPendingApprovalSnapshot(value.copy(conversationId = ConversationId(value.conversationId.value)))
+): Int = pendingInteractionDowncast(context, interaction, outApproval) { value, owner ->
+    val approval = value as? AgentPendingApproval ?: return@pendingInteractionDowncast null
+    CodexAgentCPendingApprovalSnapshot(
+        if (owner == null) {
+            approval.copy(conversationId = ConversationId(approval.conversationId.value))
+        } else {
+            approval
+        },
+        owner,
+    )
 }
 
 @CName("codex_agent_pending_interaction_elicitation")
 public fun codexAgentPendingInteractionElicitation(
     context: COpaquePointer?, interaction: COpaquePointer?, outElicitation: CPointer<COpaquePointerVar>?,
-): Int = pendingInteractionDowncast(context, interaction, outElicitation) {
-    val value = it as? AgentPendingElicitation ?: return@pendingInteractionDowncast null
-    CodexAgentCPendingElicitationSnapshot(AgentPendingElicitation(value.elicitation.cAbiElicitationOwnedCopy()))
+): Int = pendingInteractionDowncast(context, interaction, outElicitation) { value, owner ->
+    val elicitation = value as? AgentPendingElicitation ?: return@pendingInteractionDowncast null
+    CodexAgentCPendingElicitationSnapshot(
+        if (owner == null) {
+            AgentPendingElicitation(elicitation.elicitation.cAbiElicitationOwnedCopy())
+        } else {
+            elicitation
+        },
+        owner,
+    )
 }
 
 @CName("codex_agent_interaction_state_create")
@@ -757,7 +777,10 @@ public fun codexAgentInteractionStatePendingAt(
     outInteraction: CPointer<COpaquePointerVar>?,
 ): Int = elicitationChild<CodexAgentCInteractionStateSnapshot>(context, state, index, outInteraction) {
     val value = it.value.pending.elicitationItemAt(index) ?: return@elicitationChild null
-    CodexAgentCPendingInteractionSnapshot(value.cAbiElicitationOwnedCopy())
+    CodexAgentCPendingInteractionSnapshot(
+        if (it.owner == null) value.cAbiElicitationOwnedCopy() else value,
+        it.owner,
+    )
 }
 
 @CName("codex_agent_interaction_state_resolving_request_ids_count")
@@ -836,16 +859,20 @@ private inline fun <reified T : CodexAgentCSnapshot> pendingInteractionFrom(
     context: COpaquePointer?,
     concrete: COpaquePointer?,
     output: CPointer<COpaquePointerVar>?,
-    crossinline select: (T) -> AgentPendingInteraction,
+    crossinline select: (T) -> Pair<AgentPendingInteraction, CodexInteractions?>,
 ): Int = abiStatus {
     if (!validEmptyOutput(output)) return@abiStatus CODEX_AGENT_STATUS_INVALID_ARGUMENT
     val contextPointer = context ?: return@abiStatus CODEX_AGENT_STATUS_INVALID_ARGUMENT
     withPayload<T>(contextPointer, concrete, CodexAgentCHandleKind.SNAPSHOT) {
+        val (selected, owner) = select(it)
         installOutput(
             output,
             createSnapshot(
                 contextPointer,
-                CodexAgentCPendingInteractionSnapshot(select(it).cAbiElicitationOwnedCopy()),
+                CodexAgentCPendingInteractionSnapshot(
+                    if (owner == null) selected.cAbiElicitationOwnedCopy() else selected,
+                    owner,
+                ),
             ),
         )
     }
@@ -855,7 +882,7 @@ private fun pendingInteractionDowncast(
     context: COpaquePointer?,
     interaction: COpaquePointer?,
     output: CPointer<COpaquePointerVar>?,
-    snapshot: (AgentPendingInteraction) -> CodexAgentCSnapshot?,
+    snapshot: (AgentPendingInteraction, CodexInteractions?) -> CodexAgentCSnapshot?,
 ): Int = abiStatus {
     if (!validEmptyOutput(output)) return@abiStatus CODEX_AGENT_STATUS_INVALID_ARGUMENT
     val contextPointer = context ?: return@abiStatus CODEX_AGENT_STATUS_INVALID_ARGUMENT
@@ -864,7 +891,8 @@ private fun pendingInteractionDowncast(
         interaction,
         CodexAgentCHandleKind.SNAPSHOT,
     ) {
-        val selected = snapshot(it.value) ?: return@withPayload CODEX_AGENT_STATUS_WRONG_HANDLE_TYPE
+        val selected = snapshot(it.value, it.owner)
+            ?: return@withPayload CODEX_AGENT_STATUS_WRONG_HANDLE_TYPE
         installOutput(output, createSnapshot(contextPointer, selected))
     }
 }

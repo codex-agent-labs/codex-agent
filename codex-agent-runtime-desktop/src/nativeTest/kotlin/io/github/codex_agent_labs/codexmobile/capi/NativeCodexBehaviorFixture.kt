@@ -95,6 +95,9 @@ internal class NativeCodexBehaviorFixture(
 
     suspend fun notify(method: String, params: JsonObject): Unit = runtime.notify(method, params)
 
+    suspend fun request(id: Long, method: String, params: JsonObject): Unit =
+        runtime.request(id, method, params)
+
     private inner class ScriptedRuntime : CodexRuntime {
         val started = AtomicBoolean(false)
         val closed = AtomicBoolean(false)
@@ -167,7 +170,11 @@ internal class NativeCodexBehaviorFixture(
 
                 "thread/read" -> {
                     val id = params.getValue("threadId").jsonPrimitive.content
-                    respond(request, buildJsonObject { put("thread", thread(id)) })
+                    respond(
+                        request,
+                        additionalResponse(method, params)
+                            ?: buildJsonObject { put("thread", thread(id)) },
+                    )
                 }
 
                 else -> {
@@ -189,6 +196,10 @@ internal class NativeCodexBehaviorFixture(
 
         suspend fun notify(method: String, params: JsonObject) {
             emit(buildJsonObject { put("method", method); put("params", params) })
+        }
+
+        suspend fun request(id: Long, method: String, params: JsonObject) {
+            emit(buildJsonObject { put("id", id); put("method", method); put("params", params) })
         }
 
         private suspend fun emit(value: JsonObject) {

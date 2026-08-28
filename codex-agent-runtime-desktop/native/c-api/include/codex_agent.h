@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C(1)
-#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(10)
+#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(11)
 #define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C(0)
 #define CODEX_AGENT_ABI_VERSION_ENCODE(major, minor, patch) \
     ((((uint32_t)(major) & UINT32_C(0xff)) << 24) | \
@@ -2874,6 +2874,256 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_s
     codex_agent_state_callback_t callback,
     void *user_data,
     codex_agent_subscription_t **out_subscription);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_authentication_state_get(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_authentication_state_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_authentication_is_authenticated_get(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_authentication_is_authenticated_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_authentication_is_authenticating_get(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_authentication_is_authenticating_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_authentication_state_value(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    codex_agent_authentication_state_t **out_state);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_state_boolean_value(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    int32_t *out_value);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_state_get(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t *authorization,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_state_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t *authorization,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_active_get(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t *authorization,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_active_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t *authorization,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_is_authorizing_get(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t *authorization,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_is_authorizing_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t *authorization,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_state_value(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    codex_agent_integration_authorization_state_t **out_state);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_active_has_value(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    int32_t *out_has_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_active_value(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    codex_agent_integration_t **out_integration);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_state_get(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_state_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_approvals_get(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interactions_approvals_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_elicitations_get(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_interactions_elicitations_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_state_value(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    codex_agent_interaction_state_t **out_state);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_approvals_count(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_approvals_at(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    size_t index,
+    codex_agent_pending_approval_t **out_approval);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_elicitations_count(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_elicitations_at(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    size_t index,
+    codex_agent_pending_elicitation_t **out_elicitation);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_current_messages_get(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_current_messages_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_active_turn_progress_get(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_active_turn_progress_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_can_start_turn_get(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_can_start_turn_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_can_reload_get(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_can_reload_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_can_cancel_turn_get(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_can_cancel_turn_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_can_run_shell_command_get(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_can_run_shell_command_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_is_turn_active_get(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_snapshot_t **out_snapshot);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_is_turn_active_subscribe(
+    codex_agent_context_t *context,
+    codex_agent_conversation_t *conversation,
+    codex_agent_state_callback_t callback,
+    void *user_data,
+    codex_agent_subscription_t **out_subscription);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_current_messages_count(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    size_t *out_count);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversation_current_messages_at(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    size_t index,
+    codex_agent_message_t **out_message);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_active_turn_progress_has_value(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    int32_t *out_has_value);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_conversation_active_turn_progress_value(
+    codex_agent_context_t *context,
+    codex_agent_snapshot_t *snapshot,
+    codex_agent_turn_progress_t **out_progress);
 
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_operation_cancel(
     codex_agent_context_t *context,

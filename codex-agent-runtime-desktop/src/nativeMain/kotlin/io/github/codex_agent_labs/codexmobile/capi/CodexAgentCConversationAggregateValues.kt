@@ -958,7 +958,7 @@ private fun AgentInvocation.aggregateCopy(): AgentInvocation = when (this) {
     is AgentInvocation.Skill -> copy()
 }
 
-private fun AgentMessage.aggregateCopy(): AgentMessage = copy(
+internal fun AgentMessage.aggregateCopy(): AgentMessage = copy(
     capabilities = capabilities.toSet(),
     invocations = invocations.map { it.aggregateCopy() },
 )
@@ -972,7 +972,7 @@ private fun AgentConversation.aggregateCopy(): AgentConversation = AgentConversa
     messages = messages.map { it.aggregateCopy() },
 )
 
-private fun AgentTurnProgress.aggregateCopy(): AgentTurnProgress = copy(
+internal fun AgentTurnProgress.aggregateCopy(): AgentTurnProgress = copy(
     planProgress = planProgress?.let { it.copy(steps = it.steps.map { step -> step.copy() }) },
     hookActivities = hookActivities.map { it.copy(details = it.details.toList()) },
 )

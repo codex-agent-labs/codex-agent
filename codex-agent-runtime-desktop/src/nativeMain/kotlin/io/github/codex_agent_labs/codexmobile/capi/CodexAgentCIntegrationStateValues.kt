@@ -235,7 +235,7 @@ public fun codexAgentIntegrationAuthorizationStateFailure(
     }
 }
 
-private fun AgentIntegration.integrationStateOwnedCopy(): AgentIntegration = when (this) {
+internal fun AgentIntegration.integrationStateOwnedCopy(): AgentIntegration = when (this) {
     is AgentIntegration.Connector -> integrationStateOwnedCopy()
     is AgentIntegration.McpServer -> integrationStateOwnedCopy()
 }

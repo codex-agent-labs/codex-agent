@@ -11,7 +11,7 @@ import org.gradle.testkit.runner.TaskOutcome
 
 class CrossLanguageCAbiBootstrapEvidenceTest {
     @Test
-    fun `derives the exact reviewed 536 capability bootstrap slice`() {
+    fun `derives the exact reviewed 552 capability bootstrap slice`() {
         val inputs = validInputs()
         val claims = inputs.derive()
         val keys = claims.map(CAbiBootstrapClaim::capabilityKey)
@@ -113,17 +113,31 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             "ccbff2236a8ca8372a7eb1f68e7a4cdc3da2b8b68ced43054bac8d315dd97b37",
             D102_RESIDUAL_CAPABILITY_KEYS.sortedNewlineSha256(),
         )
-        assertEquals(536, keys.size)
+        assertEquals(16, D103_SELECTED_CAPABILITY_KEYS.size)
+        assertEquals(D103_SELECTED_CAPABILITY_KEYS.sorted(), D103_SELECTED_CAPABILITY_KEYS)
+        assertEquals(D103_SELECTED_CAPABILITY_KEYS.size, D103_SELECTED_CAPABILITY_KEYS.distinct().size)
+        assertEquals(
+            "2ee3c3b3f45f6673bd03abb7afd91f5f799a79c05c7d6bb3e98085e9008df276",
+            D103_SELECTED_CAPABILITY_KEYS.sortedNewlineSha256(),
+        )
+        assertEquals(4, D103_RESIDUAL_CAPABILITY_KEYS.size)
+        assertEquals(D103_RESIDUAL_CAPABILITY_KEYS.sorted(), D103_RESIDUAL_CAPABILITY_KEYS)
+        assertEquals(D103_RESIDUAL_CAPABILITY_KEYS.size, D103_RESIDUAL_CAPABILITY_KEYS.distinct().size)
+        assertEquals(
+            "3bac94763a42300c5638e043f8277dad6940b81e37c996793ebca16152546549",
+            D103_RESIDUAL_CAPABILITY_KEYS.sortedNewlineSha256(),
+        )
+        assertEquals(552, keys.size)
         assertEquals(keys.sorted(), keys)
         assertEquals(keys.size, keys.distinct().size)
         assertEquals(SELECTED_CAPABILITY_KEYS.sorted(), keys)
         assertEquals(C_ABI_BOOTSTRAP_CAPABILITY_SHA256, keys.sortedNewlineSha256())
         assertEquals(
-            "30801e054fae5992b9717b6c6f80b4b8429bcc4c6acdbed1720d47175f8fed1a",
+            "11e3b70f338babff5cdedca1933d4998f286c74caebcfcfc68e7e0b0b322b306",
             keys.sortedNewlineSha256(),
         )
-        assertEquals(20, complement.size)
-        assertEquals(D102_RESIDUAL_CAPABILITY_KEYS, complement)
+        assertEquals(4, complement.size)
+        assertEquals(D103_RESIDUAL_CAPABILITY_KEYS, complement)
         assertTrue(HOST_CONSTRUCTOR_KEY in keys)
         assertFalse(HOST_CONSTRUCTOR_KEY in complement)
         assertTrue(claims.all { claim ->
@@ -158,7 +172,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             },
             FailureCase("duplicate canonical identity", "exact canonical C ABI capability") { inputs ->
                 inputs.copy(canonicalKeys = inputs.canonicalKeys
-                    .replace(D102_RESIDUAL_CAPABILITY_KEYS.first(), "$selected|duplicate-signature=true"))
+                    .replace(D103_RESIDUAL_CAPABILITY_KEYS.first(), "$selected|duplicate-signature=true"))
             },
             FailureCase("missing public header reference", "Missing C ABI public header reference") { inputs ->
                 inputs.copy(headerText = inputs.headerText.withoutLine(headerReference))
@@ -341,6 +355,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "native/c-api/consumer/codex_agent_sealed_base_property_values_compile.c",
                 "native/c-api/consumer/codex_agent_root_value_accessors_compile.c",
                 "native/c-api/consumer/codex_agent_suspend_operations_compile.c",
+                "native/c-api/consumer/codex_agent_state_flows_compile.c",
                 "bin/macosArm64/releaseShared/libcodex_agent.dylib",
                 "bin/macosArm64/releaseShared/libcodex_agent_api.h",
                 "bin/macosArm64/debugTest/test.kexe",
@@ -378,6 +393,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "rootValueAccessorsCConsumer" to "codex_agent_root_value_accessors_compile.c",
                 "serviceHandlesCConsumer" to "codex_agent_service_handles_compile.c",
                 "suspendOperationsCConsumer" to "codex_agent_suspend_operations_compile.c",
+                "stateFlowsCConsumer" to "codex_agent_state_flows_compile.c",
             ).forEach { (property, fixture) ->
                 val assignment = generator.substringAfter("$property.set(").substringBefore("\n    )")
                 assertTrue(fixture in assignment, "C bootstrap $property is not wired to $fixture")
@@ -405,12 +421,13 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "\"c11-root-value-accessors\"",
                 "\"c11-service-handles\"",
                 "\"c11-suspend-operations\"",
+                "\"c11-state-flows\"",
                 "C_ELICITATION_BEHAVIOR_RECLAMATION_TEST in passedTests",
                 "C_HOST_FACTORY_INVALID_TEST in passedTests",
-                "rows.size == 727",
-                "put(\"milestone\", JsonPrimitive(\"D102\"))",
+                "rows.size == 773",
+                "put(\"milestone\", JsonPrimitive(\"D103\"))",
             ).forEach { contract ->
-                assertTrue(contract in producer, "Missing D102 C bootstrap producer contract: $contract")
+                assertTrue(contract in producer, "Missing D103 C bootstrap producer contract: $contract")
             }
             val coreWiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
             assertTrue("\"invalidateCodexAgentCAbiBootstrapEvidence\"" in coreWiring)
@@ -445,7 +462,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
 
     private fun validInputs(): Inputs = Inputs(
         canonicalKeys = (
-            SELECTED_CAPABILITY_KEYS + D102_RESIDUAL_CAPABILITY_KEYS
+            SELECTED_CAPABILITY_KEYS + D103_RESIDUAL_CAPABILITY_KEYS
         ).sorted(),
         headerText = cAbiBootstrapClaimSpecs.flatMap(CAbiBootstrapClaimSpec::headerReferences)
             .distinct().joinToString("\n"),
@@ -1148,11 +1165,33 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
         val D102_RESIDUAL_CAPABILITY_KEYS =
             (D101_RESIDUAL_CAPABILITY_KEYS - D102_SELECTED_CAPABILITY_KEYS.toSet()).sorted()
 
+        val D103_SELECTED_CAPABILITY_KEYS = """
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthentication|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthentication.isAuthenticated|{}isAuthenticated[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthentication|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthentication.isAuthenticating|{}isAuthenticating[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthentication|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthentication.state|{}state[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexConversation|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexConversation.activeTurnProgress|{}activeTurnProgress[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentTurnProgress?>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexConversation|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexConversation.canCancelTurn|{}canCancelTurn[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexConversation|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexConversation.canReload|{}canReload[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexConversation|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexConversation.canRunShellCommand|{}canRunShellCommand[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexConversation|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexConversation.canStartTurn|{}canStartTurn[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexConversation|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexConversation.currentMessages|{}currentMessages[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin.collections/List<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentMessage!!>!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexConversation|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexConversation.isTurnActive|{}isTurnActive[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexIntegrationAuthorization|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexIntegrationAuthorization.active|{}active[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentIntegration?>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexIntegrationAuthorization|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexIntegrationAuthorization.isAuthorizing|{}isAuthorizing[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin/Boolean!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexIntegrationAuthorization|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexIntegrationAuthorization.state|{}state[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentIntegrationAuthorizationState!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexInteractions|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexInteractions.approvals|{}approvals[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin.collections/List<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentPendingApproval!!>!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexInteractions|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexInteractions.elicitations|{}elicitations[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:kotlin.collections/List<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentPendingElicitation!!>!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexInteractions|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexInteractions.state|{}state[0]|propertyKind=VAL|type=kotlinx.coroutines.flow/StateFlow<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentInteractionState!!>!!
+        """.trimIndent().lineSequence().filter(String::isNotBlank).toList()
+
+        val D103_RESIDUAL_CAPABILITY_KEYS =
+            (D102_RESIDUAL_CAPABILITY_KEYS - D103_SELECTED_CAPABILITY_KEYS.toSet()).sorted()
+
         val SELECTED_CAPABILITY_KEYS =
             D093_SELECTED_CAPABILITY_KEYS + D094_SELECTED_CAPABILITY_KEYS + D095_SELECTED_CAPABILITY_KEYS +
                 D096_SELECTED_CAPABILITY_KEYS + D097_SELECTED_CAPABILITY_KEYS + D098_SELECTED_CAPABILITY_KEYS +
                 D099_SELECTED_CAPABILITY_KEYS + D100_SELECTED_CAPABILITY_KEYS + D101_SELECTED_CAPABILITY_KEYS +
-                D102_SELECTED_CAPABILITY_KEYS
+                D102_SELECTED_CAPABILITY_KEYS + D103_SELECTED_CAPABILITY_KEYS
 
         const val HOST_CONSTRUCTOR_KEY =
             "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexHost|kind=constructor|" +

@@ -12,6 +12,7 @@ import io.github.codex_agent_labs.codexmobile.agent.AgentPendingApproval
 import io.github.codex_agent_labs.codexmobile.agent.AgentPendingElicitation
 import io.github.codex_agent_labs.codexmobile.agent.AgentPendingInteraction
 import io.github.codex_agent_labs.codexmobile.agent.CodexHostState
+import io.github.codex_agent_labs.codexmobile.agent.CodexInteractions
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceResolution
 import io.github.codex_agent_labs.codexmobile.agent.ConversationId
@@ -24,6 +25,7 @@ import kotlinx.cinterop.value
 
 internal data class CodexAgentCPendingInteractionListSnapshot(
     val values: List<AgentPendingInteraction>,
+    val owner: CodexInteractions? = null,
 ) : CodexAgentCSnapshot
 
 @CName("codex_agent_host_state_failed_workspace")
@@ -116,12 +118,18 @@ public fun codexAgentInteractionStatePendingFor(
             conversationId,
             CodexAgentCHandleKind.SNAPSHOT,
         ) { idSnapshot ->
-            val values = stateSnapshot.value
-                .pendingFor(ConversationId(idSnapshot.value.value))
-                .map(AgentPendingInteraction::rootOwnedCopy)
+            val selected = stateSnapshot.value.pendingFor(ConversationId(idSnapshot.value.value))
+            val values = if (stateSnapshot.owner == null) {
+                selected.map(AgentPendingInteraction::rootOwnedCopy)
+            } else {
+                selected
+            }
             installOutput(
                 outPending,
-                createSnapshot(contextPointer, CodexAgentCPendingInteractionListSnapshot(values)),
+                createSnapshot(
+                    contextPointer,
+                    CodexAgentCPendingInteractionListSnapshot(values, stateSnapshot.owner),
+                ),
             )
         }
     }
@@ -171,7 +179,10 @@ public fun codexAgentPendingInteractionListAt(
             outInteraction,
             createSnapshot(
                 contextPointer,
-                CodexAgentCPendingInteractionSnapshot(interaction.rootOwnedCopy()),
+                CodexAgentCPendingInteractionSnapshot(
+                    if (snapshot.owner == null) interaction.rootOwnedCopy() else interaction,
+                    snapshot.owner,
+                ),
             ),
         )
     }

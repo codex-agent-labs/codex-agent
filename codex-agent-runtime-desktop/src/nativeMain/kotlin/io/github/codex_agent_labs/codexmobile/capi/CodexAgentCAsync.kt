@@ -27,7 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
@@ -336,7 +336,7 @@ internal data class CodexAgentCStateSnapshot(
 internal class CodexAgentCStateSubscription<T>(
     val runtime: CodexAgentCContextRuntime,
     private val context: COpaquePointer,
-    private val states: StateFlow<T>,
+    private val states: Flow<T>,
     private val snapshot: (T) -> CodexAgentCStateSnapshot,
     private val isTerminal: (T) -> Boolean,
     private val callback: CodexAgentCStateCallback,
@@ -420,56 +420,73 @@ internal class CodexAgentCStateSubscription<T>(
 internal fun <T> startCodexAgentCStateSubscription(
     context: COpaquePointer?,
     runtime: CodexAgentCContextRuntime,
-    states: StateFlow<T>,
+    states: Flow<T>,
     snapshot: (T) -> CodexAgentCStateSnapshot,
     isTerminal: (T) -> Boolean,
     callback: CodexAgentCStateCallback,
     userData: COpaquePointer?,
     outSubscription: CPointer<COpaquePointerVar>?,
 ): Int {
-    if (outSubscription == null || outSubscription.pointed.value != null) {
-        return CODEX_AGENT_STATUS_INVALID_ARGUMENT
+    var ownedContextLease: CodexAgentCContextLease? = null
+    var unstartedHandle: COpaquePointer? = null
+    try {
+        if (outSubscription == null || outSubscription.pointed.value != null) {
+            return CODEX_AGENT_STATUS_INVALID_ARGUMENT
+        }
+        val acquiredContext = handleRegistry.acquireContext(context)
+        if (acquiredContext.status != CODEX_AGENT_STATUS_OK) return acquiredContext.status
+        val contextLease = checkNotNull(acquiredContext.value)
+        ownedContextLease = contextLease
+        if (!runtime.acceptsLaunches) {
+            val releaseStatus = contextLease.close()
+            if (releaseStatus == CODEX_AGENT_STATUS_OK) ownedContextLease = null
+            return if (releaseStatus == CODEX_AGENT_STATUS_OK) CODEX_AGENT_STATUS_CLOSED else releaseStatus
+        }
+        val contextPointer = checkNotNull(context)
+        val subscription = CodexAgentCStateSubscription(
+            runtime,
+            contextPointer,
+            states,
+            snapshot,
+            isTerminal,
+            callback,
+            userData,
+        )
+        val created = handleRegistry.createEntry(
+            contextPointer,
+            CodexAgentCHandleKind.SUBSCRIPTION,
+            subscription,
+        )
+        if (created.status != CODEX_AGENT_STATUS_OK) {
+            val releaseStatus = contextLease.close()
+            if (releaseStatus == CODEX_AGENT_STATUS_OK) ownedContextLease = null
+            return if (releaseStatus == CODEX_AGENT_STATUS_OK) created.status else releaseStatus
+        }
+        val handle = checkNotNull(created.value)
+        unstartedHandle = handle
+        outSubscription.pointed.value = handle
+        val startStatus = subscription.start(handle, contextLease)
+        if (startStatus == CODEX_AGENT_STATUS_OK) {
+            unstartedHandle = null
+            ownedContextLease = null
+            return startStatus
+        }
+        outSubscription.pointed.value = null
+        if (contextLease.close() == CODEX_AGENT_STATUS_OK) ownedContextLease = null
+        val abandonStatus = handleRegistry.abandonOpenEntry(
+            contextPointer,
+            handle,
+            CodexAgentCHandleKind.SUBSCRIPTION,
+        )
+        if (abandonStatus == CODEX_AGENT_STATUS_OK) unstartedHandle = null
+        return if (abandonStatus == CODEX_AGENT_STATUS_OK) startStatus else abandonStatus
+    } finally {
+        unstartedHandle?.let { handle ->
+            if (outSubscription?.pointed?.value == handle) outSubscription.pointed.value = null
+            handleRegistry.abandonOpenEntry(context, handle, CodexAgentCHandleKind.SUBSCRIPTION)
+        }
+        ownedContextLease?.close()
     }
-    val acquiredContext = handleRegistry.acquireContext(context)
-    if (acquiredContext.status != CODEX_AGENT_STATUS_OK) {
-        return acquiredContext.status
-    }
-    val contextLease = checkNotNull(acquiredContext.value)
-    if (!runtime.acceptsLaunches) {
-        val releaseStatus = contextLease.close()
-        return if (releaseStatus == CODEX_AGENT_STATUS_OK) CODEX_AGENT_STATUS_CLOSED else releaseStatus
-    }
-    val contextPointer = checkNotNull(context)
-    val subscription = CodexAgentCStateSubscription(
-        runtime,
-        contextPointer,
-        states,
-        snapshot,
-        isTerminal,
-        callback,
-        userData,
-    )
-    val created = handleRegistry.createEntry(
-        contextPointer,
-        CodexAgentCHandleKind.SUBSCRIPTION,
-        subscription,
-    )
-    if (created.status != CODEX_AGENT_STATUS_OK) {
-        val releaseStatus = contextLease.close()
-        return if (releaseStatus == CODEX_AGENT_STATUS_OK) created.status else releaseStatus
-    }
-    val handle = checkNotNull(created.value)
-    outSubscription.pointed.value = handle
-    val startStatus = subscription.start(handle, contextLease)
-    if (startStatus == CODEX_AGENT_STATUS_OK) return startStatus
-    outSubscription.pointed.value = null
-    contextLease.close()
-    val abandonStatus = handleRegistry.abandonOpenEntry(
-        contextPointer,
-        handle,
-        CodexAgentCHandleKind.SUBSCRIPTION,
-    )
-    return if (abandonStatus == CODEX_AGENT_STATUS_OK) startStatus else abandonStatus
 }
 
 internal fun destroyCodexAgentCStateSubscription(

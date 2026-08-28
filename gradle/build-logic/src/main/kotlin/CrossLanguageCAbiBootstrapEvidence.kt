@@ -20,25 +20,25 @@ import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
 
 internal const val C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"
-internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 536
+internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 552
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
-    "30801e054fae5992b9717b6c6f80b4b8429bcc4c6acdbed1720d47175f8fed1a"
+    "11e3b70f338babff5cdedca1933d4998f286c74caebcfcfc68e7e0b0b322b306"
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
-    "d6d31f92e4ae9fe3df73d9eaf9c22c29fe0bfb4118d4408b7cf3c3651e147adc"
+    "05408f75a8f75f113103568af33d98c87674b60ca78ae6274f511dca5175b642"
 private const val C_ABI_CINTEROP_SHA256 =
     "4a132bc83e0f69251cc9f432bb7530b4eaafe2f4d7ea1c2985ed860bedafb1c8"
 private const val C_ABI_MACOS_EXPORTS_SHA256 =
-    "14f3db20f7effa7c607816f51d6ce963192e807ea845dd5393ffb10ed5a3ea66"
+    "0c5bd7ea50323cb57a2b6a9c3b9daf3180f7f4547d115413be454b71b9c4777f"
 private const val C_ABI_FOUNDATION_C_SHA256 =
-    "e5bed9885e37819d2efe034e0a08e29483f92c9293c058e0f54f8b362adc8a86"
+    "a15362a3a2af515b3d47e2e5123ec605a9a7ca646c688c18b613fbdec395dc61"
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
-    "48b34a1f749d133379da6a1152ebce57dc6cdd6f301dce6346f2e1b2f2ff144d"
+    "c0ec250907f2faaa1d3a104ca84c1b49bb2b78cd96116a98b4d78a3a99af1424"
 private const val C_ABI_LIFECYCLE_C_SHA256 =
-    "e4b92cd7b97a141de25872eeebeb3255a62efad067cd7963c98e3f3bff891fb2"
+    "deea17e2e58e10527abaa27d674a9a9bd8cedce0f82a9576911f2e0994e872d6"
 private const val C_ABI_LIFECYCLE_CPP_SHA256 =
-    "730d35e43906585ef2b1f1d380dd4a2cced13e2b9f16753cd78839ec88f3e2d6"
+    "d1598c7f733b413f71143bc4d1ab76422b9e54b85934575e530090bf169ea43a"
 private const val C_ABI_CONVERSATION_VALUES_C_SHA256 =
     "9bd1c7284344c037426a903fa08f5997f4c4746a597b4072ec5aa2d6911256c5"
 private const val C_ABI_CONFIGURATION_VALUES_C_SHA256 =
@@ -78,7 +78,7 @@ private const val C_ABI_INTEGRATION_STATE_VALUES_C_SHA256 =
 private const val C_ABI_AUTHENTICATION_CONFIGURATION_VALUES_C_SHA256 =
     "50180d9ac04350c6b6c82d43ce00b7b5ce633dc4ace0c58fab3d43e9ff287284"
 private const val C_ABI_ELICITATION_BEHAVIOR_VALUES_C_SHA256 =
-    "2cf8bbf4b47992297b96cf175bdf1b935058c06416c9371942014cf6947e0e31"
+    "1741a892b52d88619f215cb959a3d2800b3799ce16d36e78551ff704577df0b3"
 private const val C_ABI_SEALED_BASE_PROPERTY_VALUES_C_SHA256 =
     "7a30143f76309f0e8e230ce6fbd5db940fafb262a09af2d758ed58e3a46c975a"
 private const val C_ABI_ROOT_VALUE_ACCESSORS_C_SHA256 =
@@ -87,6 +87,8 @@ private const val C_ABI_SERVICE_HANDLES_C_SHA256 =
     "3e8b4840c49757faf02cf2c2cb3cd50fdf9cee6e27ee1bcc56b340899821b6e3"
 private const val C_ABI_SUSPEND_OPERATIONS_C_SHA256 =
     "ab542e0622a25feafaebb0756acff0be732b411407ebd0015046c0061d06bbb3"
+private const val C_ABI_STATE_FLOWS_C_SHA256 =
+    "ba2c47526aaeab4beab95050948bf27a98bd77e956d4277bb6892fb87f4f6f64"
 
 private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent/"
 private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi."
@@ -3066,6 +3068,220 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         listOf("codex_agent_mcp_servers_remove", "codex_agent_operation_result"),
         catalogTest("mcpServersRemoveIsUnitAndCopiesServer"),
     )
+
+    ordinary(
+        "CodexAuthentication", "property", "state",
+        listOf(
+            "codex_agent_authentication_state_get",
+            "codex_agent_authentication_state_subscribe",
+            "codex_agent_authentication_state_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCAuthenticationFlowsTest#" +
+                "authenticationStateProjectsCurrentTransitionsAndOwnerTerminal[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexAuthentication", "property", "isAuthenticated",
+        listOf(
+            "codex_agent_authentication_is_authenticated_get",
+            "codex_agent_authentication_is_authenticated_subscribe",
+            "codex_agent_state_boolean_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCAuthenticationFlowsTest#" +
+                "authenticationIsAuthenticatedProjectsCurrentTransitionsAndOwnerTerminal[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexAuthentication", "property", "isAuthenticating",
+        listOf(
+            "codex_agent_authentication_is_authenticating_get",
+            "codex_agent_authentication_is_authenticating_subscribe",
+            "codex_agent_state_boolean_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCAuthenticationFlowsTest#" +
+                "authenticationIsAuthenticatingProjectsCurrentTransitionsAndOwnerTerminal[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexConversation", "property", "currentMessages",
+        listOf(
+            "codex_agent_conversation_current_messages_get",
+            "codex_agent_conversation_current_messages_subscribe",
+            "codex_agent_conversation_current_messages_count",
+            "codex_agent_conversation_current_messages_at",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCConversationDerivedFlowsTest#" +
+                "currentMessagesGetterSubscriptionAndProjectorsPreserveOrderedOwnedTransitions[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexConversation", "property", "activeTurnProgress",
+        listOf(
+            "codex_agent_conversation_active_turn_progress_get",
+            "codex_agent_conversation_active_turn_progress_subscribe",
+            "codex_agent_conversation_active_turn_progress_has_value",
+            "codex_agent_conversation_active_turn_progress_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCConversationDerivedFlowsTest#" +
+                "activeTurnProgressGetterSubscriptionAndProjectorsPreserveNullableOwnedTransitions[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexConversation", "property", "canStartTurn",
+        listOf(
+            "codex_agent_conversation_can_start_turn_get",
+            "codex_agent_conversation_can_start_turn_subscribe",
+            "codex_agent_state_boolean_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCConversationDerivedFlowsTest#" +
+                "canStartTurnGetterAndSubscriptionProjectReadyActiveReadyClosed[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexConversation", "property", "canReload",
+        listOf(
+            "codex_agent_conversation_can_reload_get",
+            "codex_agent_conversation_can_reload_subscribe",
+            "codex_agent_state_boolean_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCConversationDerivedFlowsTest#" +
+                "canReloadGetterAndSubscriptionProjectReadyActiveReadyClosed[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexConversation", "property", "canCancelTurn",
+        listOf(
+            "codex_agent_conversation_can_cancel_turn_get",
+            "codex_agent_conversation_can_cancel_turn_subscribe",
+            "codex_agent_state_boolean_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCConversationDerivedFlowsTest#" +
+                "canCancelTurnGetterAndSubscriptionProjectReadyActiveReadyClosed[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexConversation", "property", "canRunShellCommand",
+        listOf(
+            "codex_agent_conversation_can_run_shell_command_get",
+            "codex_agent_conversation_can_run_shell_command_subscribe",
+            "codex_agent_state_boolean_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCConversationDerivedFlowsTest#" +
+                "canRunShellCommandGetterAndSubscriptionProjectFeatureActiveAndDisabledStates[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexConversation", "property", "isTurnActive",
+        listOf(
+            "codex_agent_conversation_is_turn_active_get",
+            "codex_agent_conversation_is_turn_active_subscribe",
+            "codex_agent_state_boolean_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCConversationDerivedFlowsTest#" +
+                "isTurnActiveGetterAndSubscriptionProjectReadyActiveReadyClosed[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexIntegrationAuthorization", "property", "state",
+        listOf(
+            "codex_agent_integration_authorization_state_get",
+            "codex_agent_integration_authorization_state_subscribe",
+            "codex_agent_integration_authorization_state_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCIntegrationAuthorizationFlowsTest#" +
+                "integrationAuthorizationStateGetAndSubscribeProjectConnectorAndMcpTransitions[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexIntegrationAuthorization", "property", "active",
+        listOf(
+            "codex_agent_integration_authorization_active_get",
+            "codex_agent_integration_authorization_active_subscribe",
+            "codex_agent_integration_authorization_active_has_value",
+            "codex_agent_integration_authorization_active_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCIntegrationAuthorizationFlowsTest#" +
+                "integrationAuthorizationActiveGetAndSubscribeProjectNullConnectorMcpNull[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexIntegrationAuthorization", "property", "isAuthorizing",
+        listOf(
+            "codex_agent_integration_authorization_is_authorizing_get",
+            "codex_agent_integration_authorization_is_authorizing_subscribe",
+            "codex_agent_state_boolean_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCIntegrationAuthorizationFlowsTest#" +
+                "integrationAuthorizationIsAuthorizingGetAndSubscribeProjectFalseTrueFalse[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexInteractions", "property", "state",
+        listOf(
+            "codex_agent_interactions_state_get",
+            "codex_agent_interactions_state_subscribe",
+            "codex_agent_interactions_state_value",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCInteractionFlowsTest#" +
+                "interactionsStateProjectsCurrentOrderedPendingAndOwnerTerminal[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexInteractions", "property", "approvals",
+        listOf(
+            "codex_agent_interactions_approvals_get",
+            "codex_agent_interactions_approvals_subscribe",
+            "codex_agent_interactions_approvals_count",
+            "codex_agent_interactions_approvals_at",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCInteractionFlowsTest#" +
+                "interactionsApprovalsProjectCurrentChangeOwnedIdentityAndOwnerTerminal[macosArm64]",
+        ),
+    )
+    ordinary(
+        "CodexInteractions", "property", "elicitations",
+        listOf(
+            "codex_agent_interactions_elicitations_get",
+            "codex_agent_interactions_elicitations_subscribe",
+            "codex_agent_interactions_elicitations_count",
+            "codex_agent_interactions_elicitations_at",
+        ),
+        listOf(
+            C_API_TEST_PACKAGE +
+                "CodexAgentCInteractionFlowsTest#" +
+                "interactionsElicitationsProjectCurrentChangeOwnedIdentityAndOwnerTerminal[macosArm64]",
+        ),
+    )
 }.sortedWith(compareBy(CAbiBootstrapClaimSpec::owner, CAbiBootstrapClaimSpec::kind, CAbiBootstrapClaimSpec::abi))
 
 internal fun deriveCAbiBootstrapClaims(
@@ -3158,9 +3374,9 @@ private fun List<String>.sortedNewlineSha256(): String = MessageDigest.getInstan
 private fun exactExportPolicy(file: File): Set<String> {
     check(file.releaseDigest() == C_ABI_MACOS_EXPORTS_SHA256) { "Reviewed macOS C ABI export policy drift" }
     val rows = file.readLines().filter(String::isNotBlank)
-    check(rows.size == 727 && rows == rows.sorted() && rows.size == rows.distinct().size &&
+    check(rows.size == 773 && rows == rows.sorted() && rows.size == rows.distinct().size &&
         rows.all { it.startsWith("_codex_agent_") }) {
-        "macOS C ABI export policy must contain the exact sorted 727-symbol inventory"
+        "macOS C ABI export policy must contain the exact sorted 773-symbol inventory"
     }
     return rows.mapTo(sortedSetOf()) { it.removePrefix("_") }
 }
@@ -3282,6 +3498,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val suspendOperationsCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val stateFlowsCConsumer: RegularFileProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val releaseLibrary: RegularFileProperty
@@ -3458,6 +3677,11 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "Reviewed C suspend-operations consumer drift"
             }
         }
+        val stateFlowsC = stateFlowsCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_STATE_FLOWS_C_SHA256) {
+                "Reviewed C state-flows consumer drift"
+            }
+        }
         val library = releaseLibrary.get().asFile
         val generated = generatedHeader.get().asFile
         val nativeExecutable = nativeTestExecutable.get().asFile
@@ -3603,6 +3827,10 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "c11-suspend-operations", clang, "c11", suspendOperationsC,
                 work, include, library, rpath, sdk, true,
             ),
+            compileConsumer(
+                "c11-state-flows", clang, "c11", stateFlowsC,
+                work, include, library, rpath, sdk, true,
+            ),
         )
 
         val defined = normalizedCodexSymbols(
@@ -3636,7 +3864,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
-            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.10.0)") {
+            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.11.0)") {
             "Unexpected C ABI dylib loader versions: $linkedIdentity"
         }
 
@@ -3669,6 +3897,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 rootValueAccessorsC,
                 serviceHandlesC,
                 suspendOperationsC,
+                stateFlowsC,
             )
                 .joinToString("\n") { it.readText() },
             exports,
@@ -3686,7 +3915,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             put("schemaVersion", JsonPrimitive(1))
             put("protocol", JsonPrimitive(C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL))
             put("result", JsonPrimitive("observed"))
-            put("milestone", JsonPrimitive("D102"))
+            put("milestone", JsonPrimitive("D103"))
             put("language", JsonPrimitive("c-abi"))
             put("canonical", buildJsonObject {
                 put("apiReportSha256", JsonPrimitive(canonical.canonical.apiReportSha256))

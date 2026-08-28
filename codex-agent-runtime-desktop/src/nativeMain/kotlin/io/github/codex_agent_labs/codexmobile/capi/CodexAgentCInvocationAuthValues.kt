@@ -8,6 +8,7 @@ package io.github.codex_agent_labs.codexmobile.capi
 import io.github.codex_agent_labs.codexmobile.agent.AgentInvocation
 import io.github.codex_agent_labs.codexmobile.agent.AgentPendingApproval
 import io.github.codex_agent_labs.codexmobile.agent.CodexAuthenticationMethod
+import io.github.codex_agent_labs.codexmobile.agent.CodexInteractions
 import io.github.codex_agent_labs.codexmobile.agent.ConversationId
 import io.github.codex_agent_labs.codexmobile.capi.headers.codex_agent_string_view
 import kotlinx.cinterop.COpaquePointer
@@ -28,6 +29,7 @@ internal data class CodexAgentCInvocationSkillSnapshot(
 
 internal data class CodexAgentCPendingApprovalSnapshot(
     val value: AgentPendingApproval,
+    val owner: CodexInteractions? = null,
 ) : CodexAgentCSnapshot
 
 internal data class CodexAgentCApiKeyAuthenticationMethodSnapshot(
