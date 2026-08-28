@@ -11,7 +11,7 @@ import org.gradle.testkit.runner.TaskOutcome
 
 class CrossLanguageCAbiBootstrapEvidenceTest {
     @Test
-    fun `derives the exact reviewed 328 capability bootstrap slice`() {
+    fun `derives the exact reviewed 358 capability bootstrap slice`() {
         val inputs = validInputs()
         val claims = inputs.derive()
         val keys = claims.map(CAbiBootstrapClaim::capabilityKey)
@@ -50,12 +50,19 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             "9c7ee7cc01795927def9c7963481c30688daa9c752ef88bb1df0cb47897dc2c8",
             D097_SELECTED_CAPABILITY_KEYS.sortedNewlineSha256(),
         )
-        assertEquals(328, keys.size)
+        assertEquals(30, D098_SELECTED_CAPABILITY_KEYS.size)
+        assertEquals(D098_SELECTED_CAPABILITY_KEYS.sorted(), D098_SELECTED_CAPABILITY_KEYS)
+        assertEquals(D098_SELECTED_CAPABILITY_KEYS.size, D098_SELECTED_CAPABILITY_KEYS.distinct().size)
+        assertEquals(
+            "0739cd6fd48e293295fceacb9f430c815e370183fb7756b0802c0e8bb2e09a66",
+            D098_SELECTED_CAPABILITY_KEYS.sortedNewlineSha256(),
+        )
+        assertEquals(358, keys.size)
         assertEquals(keys.sorted(), keys)
         assertEquals(keys.size, keys.distinct().size)
         assertEquals(SELECTED_CAPABILITY_KEYS.sorted(), keys)
         assertEquals(C_ABI_BOOTSTRAP_CAPABILITY_SHA256, keys.sortedNewlineSha256())
-        assertEquals(228, complement.size)
+        assertEquals(198, complement.size)
         assertEquals((DUMMY_CAPABILITY_KEYS + ABSENT_FACTORY_AND_CLIENT_INFO_KEYS).sorted(), complement)
         ABSENT_FACTORY_AND_CLIENT_INFO_KEYS.forEach { key ->
             assertFalse(key in keys, key)
@@ -263,6 +270,9 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "native/c-api/consumer/codex_agent_list_leaf_values_compile.c",
                 "native/c-api/consumer/codex_agent_mcp_transport_values_compile.c",
                 "native/c-api/consumer/codex_agent_integration_values_compile.c",
+                "native/c-api/consumer/codex_agent_mcp_server_values_compile.c",
+                "native/c-api/consumer/codex_agent_mcp_server_configuration_values_compile.c",
+                "native/c-api/consumer/codex_agent_integration_mcp_values_compile.c",
                 "bin/macosArm64/releaseShared/libcodex_agent.dylib",
                 "bin/macosArm64/releaseShared/libcodex_agent_api.h",
                 "bin/macosArm64/debugTest/test.kexe",
@@ -281,6 +291,10 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "listLeafValuesCConsumer" to "codex_agent_list_leaf_values_compile.c",
                 "mcpTransportValuesCConsumer" to "codex_agent_mcp_transport_values_compile.c",
                 "integrationValuesCConsumer" to "codex_agent_integration_values_compile.c",
+                "mcpServerValuesCConsumer" to "codex_agent_mcp_server_values_compile.c",
+                "mcpServerConfigurationValuesCConsumer" to
+                    "codex_agent_mcp_server_configuration_values_compile.c",
+                "integrationMcpValuesCConsumer" to "codex_agent_integration_mcp_values_compile.c",
             ).forEach { (property, fixture) ->
                 val assignment = generator.substringAfter("$property.set(").substringBefore("\n    )")
                 assertTrue(fixture in assignment, "C bootstrap $property is not wired to $fixture")
@@ -295,10 +309,13 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "\"c11-list-leaf-values\"",
                 "\"c11-mcp-transport-values\"",
                 "\"c11-integration-values\"",
-                "rows.size == 356",
-                "put(\"milestone\", JsonPrimitive(\"D097\"))",
+                "\"c11-mcp-server-values\"",
+                "\"c11-mcp-server-configuration-values\"",
+                "\"c11-integration-mcp-values\"",
+                "rows.size == 408",
+                "put(\"milestone\", JsonPrimitive(\"D098\"))",
             ).forEach { contract ->
-                assertTrue(contract in producer, "Missing D097 C bootstrap producer contract: $contract")
+                assertTrue(contract in producer, "Missing D098 C bootstrap producer contract: $contract")
             }
             val coreWiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
             assertTrue("\"invalidateCodexAgentCAbiBootstrapEvidence\"" in coreWiring)
@@ -698,11 +715,44 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport.Stdio.workingDirectory|{}workingDirectory[0]|propertyKind=VAL|type=kotlin/String?
         """.trimIndent().lineSequence().filter(String::isNotBlank).toList()
 
+        val D098_SELECTED_CAPABILITY_KEYS = """
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.McpServer|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.McpServer.<init>|<init>(io.github.codex_agent_labs.codexmobile.agent.AgentMcpServer){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.McpServer|suspend=false|parameters=[REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.McpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.McpServer.displayName|{}displayName[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.McpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.McpServer.id|{}id[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.McpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.McpServer.server|{}server[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.<init>|<init>(kotlin.String;io.github.codex_agent_labs.codexmobile.agent.AgentMcpTransport;io.github.codex_agent_labs.codexmobile.agent.AgentMcpAuthentication?;kotlin.String;kotlin.Boolean;kotlin.Boolean;kotlin.Boolean;kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolExposureSurface>?;kotlin.Double?;kotlin.Double?;io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolApproval?;kotlin.collections.List<kotlin.String>?;kotlin.collections.List<kotlin.String>?;kotlin.collections.List<kotlin.String>?;io.github.codex_agent_labs.codexmobile.agent.AgentMcpOauthConfiguration?;kotlin.String?;kotlin.collections.Map<kotlin.String,io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolConfiguration>){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport!!:default=false:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthentication?:default=true:vararg=false,REGULAR:kotlin/String!!:default=true:vararg=false,REGULAR:kotlin/Boolean!!:default=true:vararg=false,REGULAR:kotlin/Boolean!!:default=true:vararg=false,REGULAR:kotlin/Boolean!!:default=true:vararg=false,REGULAR:kotlin.collections/List<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolExposureSurface!!>?:default=true:vararg=false,REGULAR:kotlin/Double?:default=true:vararg=false,REGULAR:kotlin/Double?:default=true:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolApproval?:default=true:vararg=false,REGULAR:kotlin.collections/List<INVARIANT:kotlin/String!!>?:default=true:vararg=false,REGULAR:kotlin.collections/List<INVARIANT:kotlin/String!!>?:default=true:vararg=false,REGULAR:kotlin.collections/List<INVARIANT:kotlin/String!!>?:default=true:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentMcpOauthConfiguration?:default=true:vararg=false,REGULAR:kotlin/String?:default=true:vararg=false,REGULAR:kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolConfiguration!!>!!:default=true:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.authentication|{}authentication[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthentication?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.defaultToolApproval|{}defaultToolApproval[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolApproval?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.disabledTools|{}disabledTools[0]|propertyKind=VAL|type=kotlin.collections/List<INVARIANT:kotlin/String!!>?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.enabledTools|{}enabledTools[0]|propertyKind=VAL|type=kotlin.collections/List<INVARIANT:kotlin/String!!>?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.environmentId|{}environmentId[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.isEnabled|{}isEnabled[0]|propertyKind=VAL|type=kotlin/Boolean!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.isRequired|{}isRequired[0]|propertyKind=VAL|type=kotlin/Boolean!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.name|{}name[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.oauthResource|{}oauthResource[0]|propertyKind=VAL|type=kotlin/String?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.oauth|{}oauth[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentMcpOauthConfiguration?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.omitToolsFrom|{}omitToolsFrom[0]|propertyKind=VAL|type=kotlin.collections/List<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolExposureSurface!!>?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.scopes|{}scopes[0]|propertyKind=VAL|type=kotlin.collections/List<INVARIANT:kotlin/String!!>?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.startupTimeoutSeconds|{}startupTimeoutSeconds[0]|propertyKind=VAL|type=kotlin/Double?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.supportsParallelToolCalls|{}supportsParallelToolCalls[0]|propertyKind=VAL|type=kotlin/Boolean!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.toolTimeoutSeconds|{}toolTimeoutSeconds[0]|propertyKind=VAL|type=kotlin/Double?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.tools|{}tools[0]|propertyKind=VAL|type=kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentMcpToolConfiguration!!>!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration.transport|{}transport[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentMcpTransport!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer.<init>|<init>(kotlin.String;kotlin.String;io.github.codex_agent_labs.codexmobile.agent.AgentMcpAuthStatus;io.github.codex_agent_labs.codexmobile.agent.AgentMcpServerConfiguration?;io.github.codex_agent_labs.codexmobile.agent.AgentResourceOrigin;kotlin.Boolean){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus!!:default=false:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration?:default=true:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin!!:default=true:vararg=false,REGULAR:kotlin/Boolean!!:default=true:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer.authStatus|{}authStatus[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentMcpAuthStatus!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer.canRemove|{}canRemove[0]|propertyKind=VAL|type=kotlin/Boolean!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer.configuration|{}configuration[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServerConfiguration?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer.displayName|{}displayName[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer.isAuthorized|{}isAuthorized[0]|propertyKind=VAL|type=kotlin/Boolean!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer.name|{}name[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentMcpServer.origin|{}origin[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentResourceOrigin!!
+        """.trimIndent().lineSequence().filter(String::isNotBlank).toList()
+
         val SELECTED_CAPABILITY_KEYS =
             D093_SELECTED_CAPABILITY_KEYS + D094_SELECTED_CAPABILITY_KEYS + D095_SELECTED_CAPABILITY_KEYS +
-                D096_SELECTED_CAPABILITY_KEYS + D097_SELECTED_CAPABILITY_KEYS
+                D096_SELECTED_CAPABILITY_KEYS + D097_SELECTED_CAPABILITY_KEYS + D098_SELECTED_CAPABILITY_KEYS
 
-        val DUMMY_CAPABILITY_KEYS = (0 until 223).map(::dummyCapabilityKey)
+        val DUMMY_CAPABILITY_KEYS = (0 until 193).map(::dummyCapabilityKey)
 
         val ABSENT_FACTORY_AND_CLIENT_INFO_KEYS = listOf(
             "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.<init>|<init>(kotlin.String;kotlin.String;kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]",

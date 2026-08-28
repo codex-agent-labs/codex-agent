@@ -377,8 +377,62 @@ class DesktopCAbiExportPolicyTest {
             "codex_agent_mcp_transport_stdio_has_working_directory",
             "codex_agent_mcp_transport_stdio_working_directory_copy",
         )
+        val abi16 = listOf(
+            "codex_agent_integration_mcp_server_create",
+            "codex_agent_integration_mcp_server_destroy",
+            "codex_agent_integration_mcp_server_display_name_copy",
+            "codex_agent_integration_mcp_server_id_copy",
+            "codex_agent_integration_mcp_server_server",
+            "codex_agent_mcp_server_auth_status",
+            "codex_agent_mcp_server_can_remove",
+            "codex_agent_mcp_server_configuration",
+            "codex_agent_mcp_server_configuration_authentication",
+            "codex_agent_mcp_server_configuration_create",
+            "codex_agent_mcp_server_configuration_default_tool_approval",
+            "codex_agent_mcp_server_configuration_destroy",
+            "codex_agent_mcp_server_configuration_disabled_tool_copy_at",
+            "codex_agent_mcp_server_configuration_disabled_tools_count",
+            "codex_agent_mcp_server_configuration_enabled_tool_copy_at",
+            "codex_agent_mcp_server_configuration_enabled_tools_count",
+            "codex_agent_mcp_server_configuration_environment_id_copy",
+            "codex_agent_mcp_server_configuration_has_disabled_tools",
+            "codex_agent_mcp_server_configuration_has_enabled_tools",
+            "codex_agent_mcp_server_configuration_has_oauth",
+            "codex_agent_mcp_server_configuration_has_oauth_resource",
+            "codex_agent_mcp_server_configuration_has_omit_tools_from",
+            "codex_agent_mcp_server_configuration_has_scopes",
+            "codex_agent_mcp_server_configuration_is_enabled",
+            "codex_agent_mcp_server_configuration_is_required",
+            "codex_agent_mcp_server_configuration_name_copy",
+            "codex_agent_mcp_server_configuration_oauth",
+            "codex_agent_mcp_server_configuration_oauth_resource_copy",
+            "codex_agent_mcp_server_configuration_omit_tools_from_at",
+            "codex_agent_mcp_server_configuration_omit_tools_from_count",
+            "codex_agent_mcp_server_configuration_scope_copy_at",
+            "codex_agent_mcp_server_configuration_scopes_count",
+            "codex_agent_mcp_server_configuration_startup_timeout_seconds",
+            "codex_agent_mcp_server_configuration_supports_parallel_tool_calls",
+            "codex_agent_mcp_server_configuration_tool_timeout_seconds",
+            "codex_agent_mcp_server_configuration_tools_count",
+            "codex_agent_mcp_server_configuration_tools_key_copy_at",
+            "codex_agent_mcp_server_configuration_tools_value_at",
+            "codex_agent_mcp_server_configuration_transport",
+            "codex_agent_mcp_server_create",
+            "codex_agent_mcp_server_destroy",
+            "codex_agent_mcp_server_display_name_copy",
+            "codex_agent_mcp_server_has_configuration",
+            "codex_agent_mcp_server_is_authorized",
+            "codex_agent_mcp_server_name_copy",
+            "codex_agent_mcp_server_origin",
+            "codex_agent_mcp_transport_destroy",
+            "codex_agent_mcp_transport_from_http",
+            "codex_agent_mcp_transport_from_stdio",
+            "codex_agent_mcp_transport_http",
+            "codex_agent_mcp_transport_kind",
+            "codex_agent_mcp_transport_stdio",
+        )
         val exports = repository.resolve("codex-agent-runtime-desktop/native/c-api/exports")
-        val all = (abi10 + abi11 + abi12 + abi13 + abi14 + abi15).sorted()
+        val all = (abi10 + abi11 + abi12 + abi13 + abi14 + abi15 + abi16).sorted()
         assertEquals(
             all.map { "_$it" },
             exports.resolve("macos.exports").readLines(),
@@ -389,7 +443,8 @@ class DesktopCAbiExportPolicyTest {
                 linuxVersion("1.2", abi12, "CODEX_AGENT_1.1") + "\n" +
                 linuxVersion("1.3", abi13, "CODEX_AGENT_1.2") + "\n" +
                 linuxVersion("1.4", abi14, "CODEX_AGENT_1.3") + "\n" +
-                linuxVersion("1.5", abi15, "CODEX_AGENT_1.4"),
+                linuxVersion("1.5", abi15, "CODEX_AGENT_1.4") + "\n" +
+                linuxVersion("1.6", abi16, "CODEX_AGENT_1.5"),
             exports.resolve("linux.map").readText(),
         )
         assertEquals(
@@ -406,7 +461,7 @@ class DesktopCAbiExportPolicyTest {
             "-Wl,-exported_symbols_list,",
             "-Wl,-install_name,@rpath/libcodex_agent.dylib",
             "-Wl,-compatibility_version,1.0.0",
-            "-Wl,-current_version,1.5.0",
+            "-Wl,-current_version,1.6.0",
             "target.name.startsWith(\"linux\")",
             "-Wl,--version-script,",
             "-Wl,-soname,libcodex_agent.so.1",
