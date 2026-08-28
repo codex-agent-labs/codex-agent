@@ -664,8 +664,43 @@ class DesktopCAbiExportPolicyTest {
             "codex_agent_pending_interaction_list_destroy",
             "codex_agent_pending_interaction_request_id_copy",
         )
+        val abi19 = listOf(
+            "codex_agent_agent_authentication",
+            "codex_agent_agent_connectors",
+            "codex_agent_agent_hooks",
+            "codex_agent_agent_integration_authorization",
+            "codex_agent_agent_interactions",
+            "codex_agent_agent_mcp_servers",
+            "codex_agent_agent_models",
+            "codex_agent_agent_plugins",
+            "codex_agent_agent_skills",
+            "codex_agent_agent_workspace",
+            "codex_agent_authentication_release",
+            "codex_agent_authentication_retain",
+            "codex_agent_connectors_is_available",
+            "codex_agent_connectors_release",
+            "codex_agent_connectors_retain",
+            "codex_agent_hooks_is_available",
+            "codex_agent_hooks_release",
+            "codex_agent_hooks_retain",
+            "codex_agent_integration_authorization_release",
+            "codex_agent_integration_authorization_retain",
+            "codex_agent_interactions_release",
+            "codex_agent_interactions_retain",
+            "codex_agent_mcp_servers_is_available",
+            "codex_agent_mcp_servers_release",
+            "codex_agent_mcp_servers_retain",
+            "codex_agent_models_release",
+            "codex_agent_models_retain",
+            "codex_agent_plugins_is_available",
+            "codex_agent_plugins_release",
+            "codex_agent_plugins_retain",
+            "codex_agent_skills_is_available",
+            "codex_agent_skills_release",
+            "codex_agent_skills_retain",
+        )
         val exports = repository.resolve("codex-agent-runtime-desktop/native/c-api/exports")
-        val all = (abi10 + abi11 + abi12 + abi13 + abi14 + abi15 + abi16 + abi17 + abi18).sorted()
+        val all = (abi10 + abi11 + abi12 + abi13 + abi14 + abi15 + abi16 + abi17 + abi18 + abi19).sorted()
         assertEquals(
             all.map { "_$it" },
             exports.resolve("macos.exports").readLines(),
@@ -679,7 +714,8 @@ class DesktopCAbiExportPolicyTest {
                 linuxVersion("1.5", abi15, "CODEX_AGENT_1.4") + "\n" +
                 linuxVersion("1.6", abi16, "CODEX_AGENT_1.5") + "\n" +
                 linuxVersion("1.7", abi17, "CODEX_AGENT_1.6") + "\n" +
-                linuxVersion("1.8", abi18, "CODEX_AGENT_1.7"),
+                linuxVersion("1.8", abi18, "CODEX_AGENT_1.7") + "\n" +
+                linuxVersion("1.9", abi19, "CODEX_AGENT_1.8"),
             exports.resolve("linux.map").readText(),
         )
         assertEquals(
@@ -696,7 +732,7 @@ class DesktopCAbiExportPolicyTest {
             "-Wl,-exported_symbols_list,",
             "-Wl,-install_name,@rpath/libcodex_agent.dylib",
             "-Wl,-compatibility_version,1.0.0",
-            "-Wl,-current_version,1.8.0",
+            "-Wl,-current_version,1.9.0",
             "target.name.startsWith(\"linux\")",
             "-Wl,--version-script,",
             "-Wl,-soname,libcodex_agent.so.1",

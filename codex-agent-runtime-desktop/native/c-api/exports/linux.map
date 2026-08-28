@@ -686,3 +686,42 @@ CODEX_AGENT_1.8 {
     local:
         *;
 } CODEX_AGENT_1.7;
+
+CODEX_AGENT_1.9 {
+    global:
+        codex_agent_agent_authentication;
+        codex_agent_agent_connectors;
+        codex_agent_agent_hooks;
+        codex_agent_agent_integration_authorization;
+        codex_agent_agent_interactions;
+        codex_agent_agent_mcp_servers;
+        codex_agent_agent_models;
+        codex_agent_agent_plugins;
+        codex_agent_agent_skills;
+        codex_agent_agent_workspace;
+        codex_agent_authentication_release;
+        codex_agent_authentication_retain;
+        codex_agent_connectors_is_available;
+        codex_agent_connectors_release;
+        codex_agent_connectors_retain;
+        codex_agent_hooks_is_available;
+        codex_agent_hooks_release;
+        codex_agent_hooks_retain;
+        codex_agent_integration_authorization_release;
+        codex_agent_integration_authorization_retain;
+        codex_agent_interactions_release;
+        codex_agent_interactions_retain;
+        codex_agent_mcp_servers_is_available;
+        codex_agent_mcp_servers_release;
+        codex_agent_mcp_servers_retain;
+        codex_agent_models_release;
+        codex_agent_models_retain;
+        codex_agent_plugins_is_available;
+        codex_agent_plugins_release;
+        codex_agent_plugins_retain;
+        codex_agent_skills_is_available;
+        codex_agent_skills_release;
+        codex_agent_skills_retain;
+    local:
+        *;
+} CODEX_AGENT_1.8;

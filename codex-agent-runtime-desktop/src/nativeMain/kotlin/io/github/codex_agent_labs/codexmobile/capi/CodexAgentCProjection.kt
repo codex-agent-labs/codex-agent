@@ -113,6 +113,15 @@ internal class CodexAgentCAgent(
 ) {
     private val cacheLock = AtomicInt(0)
     private var cachedConversationsHandle: COpaquePointer? = null
+    private var cachedAuthenticationHandle: COpaquePointer? = null
+    private var cachedInteractionsHandle: COpaquePointer? = null
+    private var cachedIntegrationAuthorizationHandle: COpaquePointer? = null
+    private var cachedModelsHandle: COpaquePointer? = null
+    private var cachedSkillsHandle: COpaquePointer? = null
+    private var cachedHooksHandle: COpaquePointer? = null
+    private var cachedPluginsHandle: COpaquePointer? = null
+    private var cachedConnectorsHandle: COpaquePointer? = null
+    private var cachedMcpServersHandle: COpaquePointer? = null
 
     fun projectConversations(
         context: COpaquePointer,
@@ -136,6 +145,222 @@ internal class CodexAgentCAgent(
         val token = created.value ?: return@withSpinLock created
         cachedConversationsHandle = token
         handleRegistry.retain(context, token, CodexAgentCHandleKind.CONVERSATIONS)
+    }
+
+    fun projectAuthentication(
+        context: COpaquePointer,
+        agent: COpaquePointer,
+    ): CodexAgentCRegistryResult<COpaquePointer> = cacheLock.withSpinLock {
+        val existing = cachedAuthenticationHandle
+        if (existing != null) {
+            return@withSpinLock handleRegistry.retain(
+                context,
+                existing,
+                CodexAgentCHandleKind.AUTHENTICATION,
+            )
+        }
+        val created = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.AUTHENTICATION,
+            CodexAgentCAuthentication(core.authentication, core, host),
+            agent,
+            CodexAgentCHandleKind.AGENT,
+        )
+        val token = created.value ?: return@withSpinLock created
+        cachedAuthenticationHandle = token
+        handleRegistry.retain(context, token, CodexAgentCHandleKind.AUTHENTICATION)
+    }
+
+    fun projectInteractions(
+        context: COpaquePointer,
+        agent: COpaquePointer,
+    ): CodexAgentCRegistryResult<COpaquePointer> = cacheLock.withSpinLock {
+        val existing = cachedInteractionsHandle
+        if (existing != null) {
+            return@withSpinLock handleRegistry.retain(
+                context,
+                existing,
+                CodexAgentCHandleKind.INTERACTIONS,
+            )
+        }
+        val created = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.INTERACTIONS,
+            CodexAgentCInteractions(core.interactions, core, host),
+            agent,
+            CodexAgentCHandleKind.AGENT,
+        )
+        val token = created.value ?: return@withSpinLock created
+        cachedInteractionsHandle = token
+        handleRegistry.retain(context, token, CodexAgentCHandleKind.INTERACTIONS)
+    }
+
+    fun projectIntegrationAuthorization(
+        context: COpaquePointer,
+        agent: COpaquePointer,
+    ): CodexAgentCRegistryResult<COpaquePointer> = cacheLock.withSpinLock {
+        val existing = cachedIntegrationAuthorizationHandle
+        if (existing != null) {
+            return@withSpinLock handleRegistry.retain(
+                context,
+                existing,
+                CodexAgentCHandleKind.INTEGRATION_AUTHORIZATION,
+            )
+        }
+        val created = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.INTEGRATION_AUTHORIZATION,
+            CodexAgentCIntegrationAuthorization(core.integrationAuthorization, core, host),
+            agent,
+            CodexAgentCHandleKind.AGENT,
+        )
+        val token = created.value ?: return@withSpinLock created
+        cachedIntegrationAuthorizationHandle = token
+        handleRegistry.retain(context, token, CodexAgentCHandleKind.INTEGRATION_AUTHORIZATION)
+    }
+
+    fun projectModels(
+        context: COpaquePointer,
+        agent: COpaquePointer,
+    ): CodexAgentCRegistryResult<COpaquePointer> = cacheLock.withSpinLock {
+        val existing = cachedModelsHandle
+        if (existing != null) {
+            return@withSpinLock handleRegistry.retain(
+                context,
+                existing,
+                CodexAgentCHandleKind.MODELS,
+            )
+        }
+        val created = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.MODELS,
+            CodexAgentCModels(core.models, core, host),
+            agent,
+            CodexAgentCHandleKind.AGENT,
+        )
+        val token = created.value ?: return@withSpinLock created
+        cachedModelsHandle = token
+        handleRegistry.retain(context, token, CodexAgentCHandleKind.MODELS)
+    }
+
+    fun projectSkills(
+        context: COpaquePointer,
+        agent: COpaquePointer,
+    ): CodexAgentCRegistryResult<COpaquePointer> = cacheLock.withSpinLock {
+        val existing = cachedSkillsHandle
+        if (existing != null) {
+            return@withSpinLock handleRegistry.retain(
+                context,
+                existing,
+                CodexAgentCHandleKind.SKILLS,
+            )
+        }
+        val created = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.SKILLS,
+            CodexAgentCSkills(core.skills, core, host),
+            agent,
+            CodexAgentCHandleKind.AGENT,
+        )
+        val token = created.value ?: return@withSpinLock created
+        cachedSkillsHandle = token
+        handleRegistry.retain(context, token, CodexAgentCHandleKind.SKILLS)
+    }
+
+    fun projectHooks(
+        context: COpaquePointer,
+        agent: COpaquePointer,
+    ): CodexAgentCRegistryResult<COpaquePointer> = cacheLock.withSpinLock {
+        val existing = cachedHooksHandle
+        if (existing != null) {
+            return@withSpinLock handleRegistry.retain(
+                context,
+                existing,
+                CodexAgentCHandleKind.HOOKS,
+            )
+        }
+        val created = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.HOOKS,
+            CodexAgentCHooks(core.hooks, core, host),
+            agent,
+            CodexAgentCHandleKind.AGENT,
+        )
+        val token = created.value ?: return@withSpinLock created
+        cachedHooksHandle = token
+        handleRegistry.retain(context, token, CodexAgentCHandleKind.HOOKS)
+    }
+
+    fun projectPlugins(
+        context: COpaquePointer,
+        agent: COpaquePointer,
+    ): CodexAgentCRegistryResult<COpaquePointer> = cacheLock.withSpinLock {
+        val existing = cachedPluginsHandle
+        if (existing != null) {
+            return@withSpinLock handleRegistry.retain(
+                context,
+                existing,
+                CodexAgentCHandleKind.PLUGINS,
+            )
+        }
+        val created = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.PLUGINS,
+            CodexAgentCPlugins(core.plugins, core, host),
+            agent,
+            CodexAgentCHandleKind.AGENT,
+        )
+        val token = created.value ?: return@withSpinLock created
+        cachedPluginsHandle = token
+        handleRegistry.retain(context, token, CodexAgentCHandleKind.PLUGINS)
+    }
+
+    fun projectConnectors(
+        context: COpaquePointer,
+        agent: COpaquePointer,
+    ): CodexAgentCRegistryResult<COpaquePointer> = cacheLock.withSpinLock {
+        val existing = cachedConnectorsHandle
+        if (existing != null) {
+            return@withSpinLock handleRegistry.retain(
+                context,
+                existing,
+                CodexAgentCHandleKind.CONNECTORS,
+            )
+        }
+        val created = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.CONNECTORS,
+            CodexAgentCConnectors(core.connectors, core, host),
+            agent,
+            CodexAgentCHandleKind.AGENT,
+        )
+        val token = created.value ?: return@withSpinLock created
+        cachedConnectorsHandle = token
+        handleRegistry.retain(context, token, CodexAgentCHandleKind.CONNECTORS)
+    }
+
+    fun projectMcpServers(
+        context: COpaquePointer,
+        agent: COpaquePointer,
+    ): CodexAgentCRegistryResult<COpaquePointer> = cacheLock.withSpinLock {
+        val existing = cachedMcpServersHandle
+        if (existing != null) {
+            return@withSpinLock handleRegistry.retain(
+                context,
+                existing,
+                CodexAgentCHandleKind.MCP_SERVERS,
+            )
+        }
+        val created = handleRegistry.createEntry(
+            context,
+            CodexAgentCHandleKind.MCP_SERVERS,
+            CodexAgentCMcpServers(core.mcpServers, core, host),
+            agent,
+            CodexAgentCHandleKind.AGENT,
+        )
+        val token = created.value ?: return@withSpinLock created
+        cachedMcpServersHandle = token
+        handleRegistry.retain(context, token, CodexAgentCHandleKind.MCP_SERVERS)
     }
 }
 

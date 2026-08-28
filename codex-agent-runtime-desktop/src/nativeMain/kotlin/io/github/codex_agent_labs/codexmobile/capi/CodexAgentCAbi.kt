@@ -10,7 +10,7 @@ import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.value
 
-private const val ABI_VERSION_CURRENT: UInt = 0x01080000u
+private const val ABI_VERSION_CURRENT: UInt = 0x01090000u
 private const val ABI_VERSION_MINIMUM_COMPATIBLE: UInt = 0x01000000u
 
 internal const val CODEX_AGENT_STATUS_OK: Int = 0

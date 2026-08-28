@@ -3,9 +3,19 @@ EXPORTS
     codex_agent_abi_is_compatible
     codex_agent_abi_version
     codex_agent_active_conversation
+    codex_agent_agent_authentication
+    codex_agent_agent_connectors
     codex_agent_agent_conversations
+    codex_agent_agent_hooks
+    codex_agent_agent_integration_authorization
+    codex_agent_agent_interactions
+    codex_agent_agent_mcp_servers
+    codex_agent_agent_models
+    codex_agent_agent_plugins
     codex_agent_agent_release
     codex_agent_agent_retain
+    codex_agent_agent_skills
+    codex_agent_agent_workspace
     codex_agent_approval_decision_validate
     codex_agent_approval_preset_display_name_copy
     codex_agent_authentication_method_api_key_create
@@ -15,6 +25,8 @@ EXPORTS
     codex_agent_authentication_method_chat_gpt_browser_destroy
     codex_agent_authentication_method_chat_gpt_device_code_create
     codex_agent_authentication_method_chat_gpt_device_code_destroy
+    codex_agent_authentication_release
+    codex_agent_authentication_retain
     codex_agent_authentication_state_create
     codex_agent_authentication_state_destroy
     codex_agent_authentication_state_device_user_code_copy
@@ -56,6 +68,9 @@ EXPORTS
     codex_agent_connector_name_copy
     codex_agent_connector_plugin_names_copy_at
     codex_agent_connector_plugin_names_count
+    codex_agent_connectors_is_available
+    codex_agent_connectors_release
+    codex_agent_connectors_retain
     codex_agent_context_create
     codex_agent_context_destroy
     codex_agent_conversation_cancel_turn
@@ -265,6 +280,9 @@ EXPORTS
     codex_agent_hook_timeout_seconds
     codex_agent_hook_trust_status
     codex_agent_hook_trust_status_validate
+    codex_agent_hooks_is_available
+    codex_agent_hooks_release
+    codex_agent_hooks_retain
     codex_agent_host_close
     codex_agent_host_create
     codex_agent_host_release
@@ -284,6 +302,8 @@ EXPORTS
     codex_agent_host_state_workspace_path_copy
     codex_agent_host_state_workspace_required_requirement
     codex_agent_installation_scope_validate
+    codex_agent_integration_authorization_release
+    codex_agent_integration_authorization_retain
     codex_agent_integration_authorization_state_create
     codex_agent_integration_authorization_state_destroy
     codex_agent_integration_authorization_state_failure
@@ -317,6 +337,8 @@ EXPORTS
     codex_agent_interaction_state_pending_for
     codex_agent_interaction_state_resolving_request_ids_contains
     codex_agent_interaction_state_resolving_request_ids_count
+    codex_agent_interactions_release
+    codex_agent_interactions_retain
     codex_agent_invocation_destroy
     codex_agent_invocation_from_plugin
     codex_agent_invocation_from_skill
@@ -387,6 +409,9 @@ EXPORTS
     codex_agent_mcp_server_is_authorized
     codex_agent_mcp_server_name_copy
     codex_agent_mcp_server_origin
+    codex_agent_mcp_servers_is_available
+    codex_agent_mcp_servers_release
+    codex_agent_mcp_servers_retain
     codex_agent_mcp_tool_configuration_approval
     codex_agent_mcp_tool_configuration_create
     codex_agent_mcp_tool_configuration_destroy
@@ -458,6 +483,8 @@ EXPORTS
     codex_agent_model_service_tiers_count
     codex_agent_model_supported_effort_copy_at
     codex_agent_model_supported_efforts_count
+    codex_agent_models_release
+    codex_agent_models_retain
     codex_agent_operation_cancel
     codex_agent_operation_conversation
     codex_agent_operation_destroy
@@ -559,6 +586,9 @@ EXPORTS
     codex_agent_plugin_summary_reference
     codex_agent_plugin_summary_terms_of_service_url_copy
     codex_agent_plugin_summary_website_url_copy
+    codex_agent_plugins_is_available
+    codex_agent_plugins_release
+    codex_agent_plugins_retain
     codex_agent_resolution_validate
     codex_agent_resource_origin_validate
     codex_agent_service_tier_create
@@ -592,6 +622,9 @@ EXPORTS
     codex_agent_skill_path_copy
     codex_agent_skill_scope
     codex_agent_skill_scope_display_name_copy
+    codex_agent_skills_is_available
+    codex_agent_skills_release
+    codex_agent_skills_retain
     codex_agent_snapshot_destroy
     codex_agent_subscription_destroy
     codex_agent_turn_progress_commentary_copy

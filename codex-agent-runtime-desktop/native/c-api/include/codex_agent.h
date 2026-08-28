@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C(1)
-#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(8)
+#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(9)
 #define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C(0)
 #define CODEX_AGENT_ABI_VERSION_ENCODE(major, minor, patch) \
     ((((uint32_t)(major) & UINT32_C(0xff)) << 24) | \
@@ -57,6 +57,15 @@ typedef struct codex_agent_context codex_agent_context_t;
 typedef struct codex_agent_host codex_agent_host_t;
 typedef struct codex_agent_agent codex_agent_agent_t;
 typedef struct codex_agent_conversations codex_agent_conversations_t;
+typedef struct codex_agent_authentication codex_agent_authentication_t;
+typedef struct codex_agent_interactions codex_agent_interactions_t;
+typedef struct codex_agent_integration_authorization codex_agent_integration_authorization_t;
+typedef struct codex_agent_models codex_agent_models_t;
+typedef struct codex_agent_skills codex_agent_skills_t;
+typedef struct codex_agent_hooks codex_agent_hooks_t;
+typedef struct codex_agent_plugins codex_agent_plugins_t;
+typedef struct codex_agent_connectors codex_agent_connectors_t;
+typedef struct codex_agent_mcp_servers codex_agent_mcp_servers_t;
 typedef struct codex_agent_conversation codex_agent_conversation_t;
 typedef struct codex_agent_operation codex_agent_operation_t;
 typedef struct codex_agent_subscription codex_agent_subscription_t;
@@ -2420,6 +2429,134 @@ CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_conversa
     codex_agent_context_t *context,
     codex_agent_agent_t *agent,
     codex_agent_conversations_t **out_conversations);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_authentication(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_authentication_t **out_authentication);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_interactions(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_interactions_t **out_interactions);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_agent_integration_authorization(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_integration_authorization_t **out_authorization);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_models(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_models_t **out_models);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_skills(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_skills_t **out_skills);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_hooks(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_hooks_t **out_hooks);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_plugins(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_plugins_t **out_plugins);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_connectors(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_connectors_t **out_connectors);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_mcp_servers(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_mcp_servers_t **out_mcp_servers);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_agent_workspace(
+    codex_agent_context_t *context,
+    codex_agent_agent_t *agent,
+    codex_agent_workspace_t **out_workspace);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_authentication_retain(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t *authentication,
+    codex_agent_authentication_t **out_authentication);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_authentication_release(
+    codex_agent_context_t *context,
+    codex_agent_authentication_t **authentication);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_retain(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t *interactions,
+    codex_agent_interactions_t **out_interactions);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_interactions_release(
+    codex_agent_context_t *context,
+    codex_agent_interactions_t **interactions);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_retain(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t *authorization,
+    codex_agent_integration_authorization_t **out_authorization);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_integration_authorization_release(
+    codex_agent_context_t *context,
+    codex_agent_integration_authorization_t **authorization);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_models_retain(
+    codex_agent_context_t *context,
+    codex_agent_models_t *models,
+    codex_agent_models_t **out_models);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_models_release(
+    codex_agent_context_t *context,
+    codex_agent_models_t **models);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_skills_retain(
+    codex_agent_context_t *context,
+    codex_agent_skills_t *skills,
+    codex_agent_skills_t **out_skills);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_skills_release(
+    codex_agent_context_t *context,
+    codex_agent_skills_t **skills);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hooks_retain(
+    codex_agent_context_t *context,
+    codex_agent_hooks_t *hooks,
+    codex_agent_hooks_t **out_hooks);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hooks_release(
+    codex_agent_context_t *context,
+    codex_agent_hooks_t **hooks);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_plugins_retain(
+    codex_agent_context_t *context,
+    codex_agent_plugins_t *plugins,
+    codex_agent_plugins_t **out_plugins);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_plugins_release(
+    codex_agent_context_t *context,
+    codex_agent_plugins_t **plugins);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_connectors_retain(
+    codex_agent_context_t *context,
+    codex_agent_connectors_t *connectors,
+    codex_agent_connectors_t **out_connectors);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_connectors_release(
+    codex_agent_context_t *context,
+    codex_agent_connectors_t **connectors);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_servers_retain(
+    codex_agent_context_t *context,
+    codex_agent_mcp_servers_t *mcp_servers,
+    codex_agent_mcp_servers_t **out_mcp_servers);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_servers_release(
+    codex_agent_context_t *context,
+    codex_agent_mcp_servers_t **mcp_servers);
+
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_skills_is_available(
+    codex_agent_context_t *context,
+    codex_agent_skills_t *skills,
+    int32_t *out_is_available);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_hooks_is_available(
+    codex_agent_context_t *context,
+    codex_agent_hooks_t *hooks,
+    int32_t *out_is_available);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_plugins_is_available(
+    codex_agent_context_t *context,
+    codex_agent_plugins_t *plugins,
+    int32_t *out_is_available);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_connectors_is_available(
+    codex_agent_context_t *context,
+    codex_agent_connectors_t *connectors,
+    int32_t *out_is_available);
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_mcp_servers_is_available(
+    codex_agent_context_t *context,
+    codex_agent_mcp_servers_t *mcp_servers,
+    int32_t *out_is_available);
 
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_conversations_retain(
     codex_agent_context_t *context,

@@ -8,6 +8,7 @@ import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo
 import io.github.codex_agent_labs.codexmobile.agent.CodexHost
 import io.github.codex_agent_labs.codexmobile.agent.CodexPathWorkspaceSelection
 import io.github.codex_agent_labs.codexmobile.agent.CodexPlatform
+import io.github.codex_agent_labs.codexmobile.agent.CodexRuntimeFeature
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceResolution
 import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelection
@@ -36,6 +37,7 @@ import kotlinx.serialization.json.putJsonObject
 
 internal class NativeCodexBehaviorFixture(
     private val prepareFailure: Throwable? = null,
+    private val features: Set<CodexRuntimeFeature> = emptySet(),
 ) {
     val workspace = CodexWorkspace("/workspace", "Native fixture workspace")
     val clientInfo = CodexClientInfo("native_fixture", "Native Fixture", "test")
@@ -82,7 +84,7 @@ internal class NativeCodexBehaviorFixture(
             return PreparedCodexRuntime(
                 runtimeFactory = { runtime },
                 workspacePath = workspace.path,
-                features = emptySet(),
+                features = features,
             )
         }
     }

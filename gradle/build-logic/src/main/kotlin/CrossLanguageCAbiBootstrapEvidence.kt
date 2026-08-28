@@ -20,25 +20,25 @@ import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
 
 internal const val C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"
-internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 487
+internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 503
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
-    "3a0bdae74dc60eb4c517d3114a5fe8192feace1196c5092d062bbc72290ca651"
+    "ec37ceb25d0b7cbccc67282f06af12aa19aa3d12602918fc5899b4c6c9427824"
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
-    "a0aade7937855a5922b6add26bde4d1c558630801d83c2344869667c9e840421"
+    "c3be615c15919c7737833eb5ed43d7129931a9b1b07cde55865266fc7e03b900"
 private const val C_ABI_CINTEROP_SHA256 =
     "4a132bc83e0f69251cc9f432bb7530b4eaafe2f4d7ea1c2985ed860bedafb1c8"
 private const val C_ABI_MACOS_EXPORTS_SHA256 =
-    "5eed471645d5e627354652b36dd4ecb49602aab35821b4a8aeacdcd23c2d753e"
+    "5b2ec45b99cb2a03ffe63f5009ede6241d18817dd57f08095be8754afba2e84e"
 private const val C_ABI_FOUNDATION_C_SHA256 =
-    "0a4c6c78ee0b4bc038963f6ce63ae3cd69d1cc11c27e23553103514588f2820a"
+    "9f0b847da87a311a97ba0c4b5e90333762e1c36dc30a84638c4719d4aca17437"
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
-    "819d848c9469963833b4ef2057f4b6fadd1659d2a4fe69fb637fa3dc6d47aa1c"
+    "482ce98ec9274c0aa500a76e3f79fe5961282cfdaf1681541c8874deff8beeae"
 private const val C_ABI_LIFECYCLE_C_SHA256 =
-    "1dd90b2f124b498acfcdcabde7894bedeac809a89628ba357c8751c347f46f46"
+    "99a202bacd034f42a2fd4a1a9058f01a090fd03403910ca82f619c877e077c1f"
 private const val C_ABI_LIFECYCLE_CPP_SHA256 =
-    "bab1705bff7725faddabf2cb2125a435c9e4d87b2e1faa9f8df1b0fb17196878"
+    "6f70e9993616b13cc74f99b8b339d534657f72c1250fdb96079ef687aec212a4"
 private const val C_ABI_CONVERSATION_VALUES_C_SHA256 =
     "9bd1c7284344c037426a903fa08f5997f4c4746a597b4072ec5aa2d6911256c5"
 private const val C_ABI_CONFIGURATION_VALUES_C_SHA256 =
@@ -78,11 +78,13 @@ private const val C_ABI_INTEGRATION_STATE_VALUES_C_SHA256 =
 private const val C_ABI_AUTHENTICATION_CONFIGURATION_VALUES_C_SHA256 =
     "50180d9ac04350c6b6c82d43ce00b7b5ce633dc4ace0c58fab3d43e9ff287284"
 private const val C_ABI_ELICITATION_BEHAVIOR_VALUES_C_SHA256 =
-    "37ccbb29716f4668d3318c97eab3e5b3d50705411c3ecf3c475fa4e13bbd0793"
+    "90b7e53e455bd7ff92d452f81ffb82febafaf9cafbd7bd76adb985dd756697d0"
 private const val C_ABI_SEALED_BASE_PROPERTY_VALUES_C_SHA256 =
     "7a30143f76309f0e8e230ce6fbd5db940fafb262a09af2d758ed58e3a46c975a"
 private const val C_ABI_ROOT_VALUE_ACCESSORS_C_SHA256 =
     "5222fa6e7103aac922f5ff8a75e87056c873682dd7817f2654dff9925bcbde63"
+private const val C_ABI_SERVICE_HANDLES_C_SHA256 =
+    "3e8b4840c49757faf02cf2c2cb3cd50fdf9cee6e27ee1bcc56b340899821b6e3"
 
 private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent/"
 private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi."
@@ -383,6 +385,21 @@ private const val C_ROOT_HOST_VALUES_TEST =
 private const val C_ROOT_PENDING_FOR_TEST =
     C_API_TEST_PACKAGE +
         "CodexAgentCRootValueAccessorsTest#pendingForPreservesOrderDuplicatesOwnershipAndErrors[macosArm64]"
+private const val C_SERVICE_FACADES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCServiceHandlesTest#agentFacadesAreIdentityStableExactAndFailClosed[macosArm64]"
+private const val C_SERVICE_WORKSPACE_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCServiceHandlesTest#agentWorkspaceIsAnOwnedSnapshotAndFailsClosed[macosArm64]"
+private const val C_SERVICE_AVAILABILITY_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCServiceHandlesTest#availabilityReflectsEveryRuntimeFeatureAndPreservesFailureSentinels[macosArm64]"
+private const val C_HOST_FACTORY_CREATE_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCHostFactoryTest#createsCopiedCanonicalHostWithOwnedRetainedAndClosedAliases[macosArm64]"
+private const val C_HOST_FACTORY_INVALID_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCHostFactoryTest#rejectsInvalidFactoryInputsWithoutChangingOutput[macosArm64]"
 
 internal data class CAbiBootstrapClaimSpec(
     val owner: String,
@@ -2727,6 +2744,46 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         ),
         listOf(C_ROOT_PENDING_FOR_TEST),
     )
+
+    listOf(
+        "authentication" to "codex_agent_agent_authentication",
+        "connectors" to "codex_agent_agent_connectors",
+        "hooks" to "codex_agent_agent_hooks",
+        "integrationAuthorization" to "codex_agent_agent_integration_authorization",
+        "interactions" to "codex_agent_agent_interactions",
+        "mcpServers" to "codex_agent_agent_mcp_servers",
+        "models" to "codex_agent_agent_models",
+        "plugins" to "codex_agent_agent_plugins",
+        "skills" to "codex_agent_agent_skills",
+    ).forEach { (property, symbol) ->
+        ordinary("CodexAgent", "property", property, listOf(symbol), listOf(C_SERVICE_FACADES_TEST))
+    }
+    ordinary(
+        "CodexAgent", "property", "workspace",
+        listOf("codex_agent_agent_workspace"),
+        listOf(C_SERVICE_WORKSPACE_TEST),
+    )
+    listOf(
+        "CodexConnectors" to "codex_agent_connectors_is_available",
+        "CodexHooks" to "codex_agent_hooks_is_available",
+        "CodexMcpServers" to "codex_agent_mcp_servers_is_available",
+        "CodexPlugins" to "codex_agent_plugins_is_available",
+        "CodexSkills" to "codex_agent_skills_is_available",
+    ).forEach { (owner, symbol) ->
+        ordinary(owner, "property", "isAvailable", listOf(symbol), listOf(C_SERVICE_AVAILABILITY_TEST))
+    }
+    add(claim(
+        "CodexHost",
+        "constructor",
+        "CodexHost.<init>",
+        listOf("codex_agent_host_options_t", "codex_agent_host_create"),
+        canonicalSignatureReference =
+            "<init>(io.github.codex_agent_labs.codexmobile.agent.CodexPlatform;" +
+                "io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo){}[0]",
+        consumerReferences = listOf("codex_agent_host_options_t", "codex_agent_host_create"),
+        publicSymbols = listOf("codex_agent_host_create"),
+        nativeTestIds = listOf(C_HOST_FACTORY_CREATE_TEST, C_HOST_FACTORY_INVALID_TEST),
+    ))
 }.sortedWith(compareBy(CAbiBootstrapClaimSpec::owner, CAbiBootstrapClaimSpec::kind, CAbiBootstrapClaimSpec::abi))
 
 internal fun deriveCAbiBootstrapClaims(
@@ -2819,9 +2876,9 @@ private fun List<String>.sortedNewlineSha256(): String = MessageDigest.getInstan
 private fun exactExportPolicy(file: File): Set<String> {
     check(file.releaseDigest() == C_ABI_MACOS_EXPORTS_SHA256) { "Reviewed macOS C ABI export policy drift" }
     val rows = file.readLines().filter(String::isNotBlank)
-    check(rows.size == 637 && rows == rows.sorted() && rows.size == rows.distinct().size &&
+    check(rows.size == 670 && rows == rows.sorted() && rows.size == rows.distinct().size &&
         rows.all { it.startsWith("_codex_agent_") }) {
-        "macOS C ABI export policy must contain the exact sorted 637-symbol inventory"
+        "macOS C ABI export policy must contain the exact sorted 670-symbol inventory"
     }
     return rows.mapTo(sortedSetOf()) { it.removePrefix("_") }
 }
@@ -2937,6 +2994,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val rootValueAccessorsCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val serviceHandlesCConsumer: RegularFileProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val releaseLibrary: RegularFileProperty
@@ -3103,6 +3163,11 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "Reviewed C root-value-accessors consumer drift"
             }
         }
+        val serviceHandlesC = serviceHandlesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_SERVICE_HANDLES_C_SHA256) {
+                "Reviewed C service-handles consumer drift"
+            }
+        }
         val library = releaseLibrary.get().asFile
         val generated = generatedHeader.get().asFile
         val nativeExecutable = nativeTestExecutable.get().asFile
@@ -3125,6 +3190,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
         val passedTests = nativeTests.mapTo(sortedSetOf(), CanonicalTestResult::testId)
         check(C_ELICITATION_BEHAVIOR_RECLAMATION_TEST in passedTests) {
             "Missing passed Native C ABI support lifecycle test $C_ELICITATION_BEHAVIOR_RECLAMATION_TEST"
+        }
+        check(C_HOST_FACTORY_INVALID_TEST in passedTests) {
+            "Missing passed Native C ABI support factory test $C_HOST_FACTORY_INVALID_TEST"
         }
 
         val work = consumerOutputDirectory.get().asFile
@@ -3237,6 +3305,10 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "c11-root-value-accessors", clang, "c11", rootValueAccessorsC,
                 work, include, library, rpath, sdk, true,
             ),
+            compileConsumer(
+                "c11-service-handles", clang, "c11", serviceHandlesC,
+                work, include, library, rpath, sdk, true,
+            ),
         )
 
         val defined = normalizedCodexSymbols(
@@ -3270,7 +3342,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
-            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.8.0)") {
+            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.9.0)") {
             "Unexpected C ABI dylib loader versions: $linkedIdentity"
         }
 
@@ -3301,6 +3373,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 elicitationBehaviorValuesC,
                 sealedBasePropertyValuesC,
                 rootValueAccessorsC,
+                serviceHandlesC,
             )
                 .joinToString("\n") { it.readText() },
             exports,
@@ -3318,7 +3391,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             put("schemaVersion", JsonPrimitive(1))
             put("protocol", JsonPrimitive(C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL))
             put("result", JsonPrimitive("observed"))
-            put("milestone", JsonPrimitive("D100"))
+            put("milestone", JsonPrimitive("D101"))
             put("language", JsonPrimitive("c-abi"))
             put("canonical", buildJsonObject {
                 put("apiReportSha256", JsonPrimitive(canonical.canonical.apiReportSha256))
