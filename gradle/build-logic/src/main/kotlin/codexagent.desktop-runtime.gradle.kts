@@ -159,7 +159,7 @@ extensions.configure<KotlinMultiplatformExtension> {
                     "-Wl,-exported_symbols_list,${exportPolicyFile.asFile}",
                     "-Wl,-install_name,@rpath/libcodex_agent.dylib",
                     "-Wl,-compatibility_version,1.0.0",
-                    "-Wl,-current_version,1.7.0",
+                    "-Wl,-current_version,1.8.0",
                 )
                 target.name.startsWith("linux") -> linkerOpts(
                     "-Wl,--version-script,${exportPolicyFile.asFile}",
@@ -292,6 +292,20 @@ tasks.register<GenerateCAbiBootstrapEvidenceTask>("generateCodexAgentCAbiBootstr
     )
     integrationStateValuesCConsumer.set(
         layout.projectDirectory.file("native/c-api/consumer/codex_agent_integration_state_values_compile.c"),
+    )
+    authenticationConfigurationValuesCConsumer.set(
+        layout.projectDirectory.file(
+            "native/c-api/consumer/codex_agent_authentication_configuration_values_compile.c",
+        ),
+    )
+    elicitationBehaviorValuesCConsumer.set(
+        layout.projectDirectory.file("native/c-api/consumer/codex_agent_elicitation_behavior_values_compile.c"),
+    )
+    sealedBasePropertyValuesCConsumer.set(
+        layout.projectDirectory.file("native/c-api/consumer/codex_agent_sealed_base_property_values_compile.c"),
+    )
+    rootValueAccessorsCConsumer.set(
+        layout.projectDirectory.file("native/c-api/consumer/codex_agent_root_value_accessors_compile.c"),
     )
     releaseLibrary.set(layout.buildDirectory.file("bin/macosArm64/releaseShared/libcodex_agent.dylib"))
     generatedHeader.set(layout.buildDirectory.file("bin/macosArm64/releaseShared/libcodex_agent_api.h"))

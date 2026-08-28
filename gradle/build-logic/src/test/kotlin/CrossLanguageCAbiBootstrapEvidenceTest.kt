@@ -11,7 +11,7 @@ import org.gradle.testkit.runner.TaskOutcome
 
 class CrossLanguageCAbiBootstrapEvidenceTest {
     @Test
-    fun `derives the exact reviewed 453 capability bootstrap slice`() {
+    fun `derives the exact reviewed 487 capability bootstrap slice`() {
         val inputs = validInputs()
         val claims = inputs.derive()
         val keys = claims.map(CAbiBootstrapClaim::capabilityKey)
@@ -71,21 +71,33 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             "9e31abc62c8d9467f6c6bbbc968232d4baf0ea235b07c32433c8137d07ddc89b",
             D099_RESIDUAL_CAPABILITY_KEYS.sortedNewlineSha256(),
         )
-        assertEquals(453, keys.size)
+        assertEquals(34, D100_SELECTED_CAPABILITY_KEYS.size)
+        assertEquals(D100_SELECTED_CAPABILITY_KEYS.sorted(), D100_SELECTED_CAPABILITY_KEYS)
+        assertEquals(D100_SELECTED_CAPABILITY_KEYS.size, D100_SELECTED_CAPABILITY_KEYS.distinct().size)
+        assertEquals(
+            "9056436c25104def413ce181993056a7f8556fb99a253dc7cdf7def4fb28c9df",
+            D100_SELECTED_CAPABILITY_KEYS.sortedNewlineSha256(),
+        )
+        assertEquals(69, D100_RESIDUAL_CAPABILITY_KEYS.size)
+        assertEquals(D100_RESIDUAL_CAPABILITY_KEYS.sorted(), D100_RESIDUAL_CAPABILITY_KEYS)
+        assertEquals(D100_RESIDUAL_CAPABILITY_KEYS.size, D100_RESIDUAL_CAPABILITY_KEYS.distinct().size)
+        assertEquals(
+            "d988dd9cbb08608eba9baeed54117339d841e214ff541bab6c55a1aa5745de6e",
+            D100_RESIDUAL_CAPABILITY_KEYS.sortedNewlineSha256(),
+        )
+        assertEquals(487, keys.size)
         assertEquals(keys.sorted(), keys)
         assertEquals(keys.size, keys.distinct().size)
         assertEquals(SELECTED_CAPABILITY_KEYS.sorted(), keys)
         assertEquals(C_ABI_BOOTSTRAP_CAPABILITY_SHA256, keys.sortedNewlineSha256())
         assertEquals(
-            "017f1b23b81544fa2e7fd216e058130f7d0ee14bf854e062e1e60d6c0eac18a4",
+            "3a0bdae74dc60eb4c517d3114a5fe8192feace1196c5092d062bbc72290ca651",
             keys.sortedNewlineSha256(),
         )
-        assertEquals(103, complement.size)
-        assertEquals(D099_RESIDUAL_CAPABILITY_KEYS, complement)
-        ABSENT_FACTORY_AND_CLIENT_INFO_KEYS.forEach { key ->
-            assertFalse(key in keys, key)
-            assertTrue(key in complement, key)
-        }
+        assertEquals(69, complement.size)
+        assertEquals(D100_RESIDUAL_CAPABILITY_KEYS, complement)
+        assertFalse(REMAINING_HOST_CONSTRUCTOR_KEY in keys)
+        assertTrue(REMAINING_HOST_CONSTRUCTOR_KEY in complement)
         assertTrue(claims.all { claim ->
             claim.headerReferences.isNotEmpty() && claim.consumerReferences.isNotEmpty() &&
                 claim.publicSymbols.isNotEmpty() && claim.nativeTestIds.isNotEmpty()
@@ -118,7 +130,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             },
             FailureCase("duplicate canonical identity", "exact canonical C ABI capability") { inputs ->
                 inputs.copy(canonicalKeys = inputs.canonicalKeys
-                    .replace(D099_RESIDUAL_CAPABILITY_KEYS.first(), "$selected|duplicate-signature=true"))
+                    .replace(D100_RESIDUAL_CAPABILITY_KEYS.first(), "$selected|duplicate-signature=true"))
             },
             FailureCase("missing public header reference", "Missing C ABI public header reference") { inputs ->
                 inputs.copy(headerText = inputs.headerText.withoutLine(headerReference))
@@ -296,6 +308,10 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "native/c-api/consumer/codex_agent_elicitation_interaction_values_compile.c",
                 "native/c-api/consumer/codex_agent_hook_catalog_values_compile.c",
                 "native/c-api/consumer/codex_agent_integration_state_values_compile.c",
+                "native/c-api/consumer/codex_agent_authentication_configuration_values_compile.c",
+                "native/c-api/consumer/codex_agent_elicitation_behavior_values_compile.c",
+                "native/c-api/consumer/codex_agent_sealed_base_property_values_compile.c",
+                "native/c-api/consumer/codex_agent_root_value_accessors_compile.c",
                 "bin/macosArm64/releaseShared/libcodex_agent.dylib",
                 "bin/macosArm64/releaseShared/libcodex_agent_api.h",
                 "bin/macosArm64/debugTest/test.kexe",
@@ -324,6 +340,13 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                     "codex_agent_elicitation_interaction_values_compile.c",
                 "hookCatalogValuesCConsumer" to "codex_agent_hook_catalog_values_compile.c",
                 "integrationStateValuesCConsumer" to "codex_agent_integration_state_values_compile.c",
+                "authenticationConfigurationValuesCConsumer" to
+                    "codex_agent_authentication_configuration_values_compile.c",
+                "elicitationBehaviorValuesCConsumer" to
+                    "codex_agent_elicitation_behavior_values_compile.c",
+                "sealedBasePropertyValuesCConsumer" to
+                    "codex_agent_sealed_base_property_values_compile.c",
+                "rootValueAccessorsCConsumer" to "codex_agent_root_value_accessors_compile.c",
             ).forEach { (property, fixture) ->
                 val assignment = generator.substringAfter("$property.set(").substringBefore("\n    )")
                 assertTrue(fixture in assignment, "C bootstrap $property is not wired to $fixture")
@@ -345,10 +368,15 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "\"c11-elicitation-interaction-values\"",
                 "\"c11-hook-catalog-values\"",
                 "\"c11-integration-state-values\"",
-                "rows.size == 586",
-                "put(\"milestone\", JsonPrimitive(\"D099\"))",
+                "\"c11-authentication-configuration-values\"",
+                "\"c11-elicitation-behavior-values\"",
+                "\"c11-sealed-base-property-values\"",
+                "\"c11-root-value-accessors\"",
+                "C_ELICITATION_BEHAVIOR_RECLAMATION_TEST in passedTests",
+                "rows.size == 637",
+                "put(\"milestone\", JsonPrimitive(\"D100\"))",
             ).forEach { contract ->
-                assertTrue(contract in producer, "Missing D099 C bootstrap producer contract: $contract")
+                assertTrue(contract in producer, "Missing D100 C bootstrap producer contract: $contract")
             }
             val coreWiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
             assertTrue("\"invalidateCodexAgentCAbiBootstrapEvidence\"" in coreWiring)
@@ -383,7 +411,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
 
     private fun validInputs(): Inputs = Inputs(
         canonicalKeys = (
-            SELECTED_CAPABILITY_KEYS + D099_RESIDUAL_CAPABILITY_KEYS
+            SELECTED_CAPABILITY_KEYS + D100_RESIDUAL_CAPABILITY_KEYS
         ).sorted(),
         headerText = cAbiBootstrapClaimSpecs.flatMap(CAbiBootstrapClaimSpec::headerReferences)
             .distinct().joinToString("\n"),
@@ -985,18 +1013,60 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexSkills|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexSkills.isAvailable|{}isAvailable[0]|propertyKind=VAL|type=kotlin/Boolean!!
         """.trimIndent().lineSequence().filter(String::isNotBlank).toList()
 
+        val D100_SELECTED_CAPABILITY_KEYS = """
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState.<init>|<init>(io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationStatus;io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl?;io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl?;kotlin.String?;io.github.codex_agent_labs.codexmobile.agent.CodexFailure?){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState|suspend=false|parameters=[REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationStatus!!:default=true:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl?:default=true:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl?:default=true:vararg=false,REGULAR:kotlin/String?:default=true:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/CodexFailure?:default=true:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState.deviceUserCode|{}deviceUserCode[0]|propertyKind=VAL|type=kotlin/String?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState.deviceVerificationUrl|{}deviceVerificationUrl[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState.failure|{}failure[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/CodexFailure?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState.pendingSignInUrl|{}pendingSignInUrl[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationState.status|{}status[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentAuthenticationStatus!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentConversationSettings|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/AgentConversationSettings.<init>|<init>(io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset;kotlin.String?){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentConversationSettings|suspend=false|parameters=[REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentApprovalPreset!!:default=true:vararg=false,REGULAR:kotlin/String?:default=true:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentConversationSettings|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentConversationSettings.approvalPreset|{}approvalPreset[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/AgentApprovalPreset!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentConversationSettings|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentConversationSettings.serviceTier|{}serviceTier[0]|propertyKind=VAL|type=kotlin/String?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationResponse.Companion|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationResponse.Companion.cancel|cancel(){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationResponse!!|suspend=false|parameters=[]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationResponse.Companion|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationResponse.Companion.decline|decline(){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationResponse!!|suspend=false|parameters=[]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentElicitation|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/AgentElicitation.accepts|accepts(io.github.codex_agent_labs.codexmobile.agent.AgentElicitationResponse){}[0]|return=kotlin/Boolean!!|suspend=false|parameters=[REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentElicitationResponse!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentElicitation|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/AgentElicitation.accept|accept(kotlin.collections.Map<kotlin.String,io.github.codex_agent_labs.codexmobile.agent.AgentFormValue>){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationResponse!!|suspend=false|parameters=[REGULAR:kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentFormValue!!>!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentElicitation|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/AgentElicitation.initialValues|initialValues(){}[0]|return=kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentFormValue!!>!!|suspend=false|parameters=[]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentElicitation|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/AgentElicitation.validate|validate(kotlin.collections.Map<kotlin.String,io.github.codex_agent_labs.codexmobile.agent.AgentFormValue>){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/AgentElicitationValidation!!|suspend=false|parameters=[REGULAR:kotlin.collections/Map<INVARIANT:kotlin/String!!,INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentFormValue!!>!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentFormField|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/AgentFormField.accepts|accepts(io.github.codex_agent_labs.codexmobile.agent.AgentFormValue?){}[0]|return=kotlin/Boolean!!|suspend=false|parameters=[REGULAR:io.github.codex_agent_labs.codexmobile.agent/AgentFormValue?:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.displayName|{}displayName[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentIntegration.id|{}id[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInteractionState|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInteractionState.pendingFor|pendingFor(io.github.codex_agent_labs.codexmobile.agent.ConversationId){}[0]|return=kotlin.collections/List<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentPendingInteraction!!>!!|suspend=false|parameters=[REGULAR:io.github.codex_agent_labs.codexmobile.agent/ConversationId!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.key|{}key[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentInvocation.name|{}name[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPendingInteraction|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPendingInteraction.conversationId|{}conversationId[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/ConversationId!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/AgentPendingInteraction|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/AgentPendingInteraction.requestId|{}requestId[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl.Companion|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl.Companion.chatGpt|chatGpt(kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl!!|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl.Companion|kind=function|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl.Companion.external|external(kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl!!|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl.purpose|{}purpose[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationPurpose!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexAuthorizationUrl.value|{}value[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.<init>|<init>(kotlin.String;kotlin.String;kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.name|{}name[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.title|{}title[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.version|{}version[0]|propertyKind=VAL|type=kotlin/String!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexHostState.Failed|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexHostState.Failed.workspace|{}workspace[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/CodexWorkspace?
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexHostState.Preparing|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexHostState.Preparing.workspace|{}workspace[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/CodexWorkspace!!
+            common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexHostState.WorkspaceRequired|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexHostState.WorkspaceRequired.requirement|{}requirement[0]|propertyKind=VAL|type=io.github.codex_agent_labs.codexmobile.agent/CodexWorkspaceResolution.SelectionRequired!!
+        """.trimIndent().lineSequence().filter(String::isNotBlank).toList()
+
+        val D100_RESIDUAL_CAPABILITY_KEYS =
+            (D099_RESIDUAL_CAPABILITY_KEYS - D100_SELECTED_CAPABILITY_KEYS.toSet()).sorted()
+
         val SELECTED_CAPABILITY_KEYS =
             D093_SELECTED_CAPABILITY_KEYS + D094_SELECTED_CAPABILITY_KEYS + D095_SELECTED_CAPABILITY_KEYS +
                 D096_SELECTED_CAPABILITY_KEYS + D097_SELECTED_CAPABILITY_KEYS + D098_SELECTED_CAPABILITY_KEYS +
-                D099_SELECTED_CAPABILITY_KEYS
+                D099_SELECTED_CAPABILITY_KEYS + D100_SELECTED_CAPABILITY_KEYS
 
-        val ABSENT_FACTORY_AND_CLIENT_INFO_KEYS = listOf(
-            "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.<init>|<init>(kotlin.String;kotlin.String;kotlin.String){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|suspend=false|parameters=[REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false,REGULAR:kotlin/String!!:default=false:vararg=false]",
-            "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.name|{}name[0]|propertyKind=VAL|type=kotlin/String!!",
-            "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.title|{}title[0]|propertyKind=VAL|type=kotlin/String!!",
-            "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo|kind=property|abi=io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo.version|{}version[0]|propertyKind=VAL|type=kotlin/String!!",
-            "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexHost|kind=constructor|abi=io.github.codex_agent_labs.codexmobile.agent/CodexHost.<init>|<init>(io.github.codex_agent_labs.codexmobile.agent.CodexPlatform;io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo){}[0]|return=io.github.codex_agent_labs.codexmobile.agent/CodexHost|suspend=false|parameters=[REGULAR:io.github.codex_agent_labs.codexmobile.agent/CodexPlatform!!:default=false:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/CodexClientInfo!!:default=false:vararg=false]",
-        )
+        const val REMAINING_HOST_CONSTRUCTOR_KEY =
+            "common|owner=io.github.codex_agent_labs.codexmobile.agent/CodexHost|kind=constructor|" +
+                "abi=io.github.codex_agent_labs.codexmobile.agent/CodexHost.<init>|" +
+                "<init>(io.github.codex_agent_labs.codexmobile.agent.CodexPlatform;" +
+                "io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo){}[0]|" +
+                "return=io.github.codex_agent_labs.codexmobile.agent/CodexHost|suspend=false|" +
+                "parameters=[REGULAR:io.github.codex_agent_labs.codexmobile.agent/CodexPlatform!!:" +
+                "default=false:vararg=false,REGULAR:io.github.codex_agent_labs.codexmobile.agent/" +
+                "CodexClientInfo!!:default=false:vararg=false]"
 
         fun dummyCapabilityKey(index: Int): String {
             val owner = "test.fixture/DummyCapability${index.toString().padStart(3, '0')}"

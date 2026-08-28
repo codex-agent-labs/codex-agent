@@ -20,25 +20,25 @@ import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
 
 internal const val C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"
-internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 453
+internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 487
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
-    "017f1b23b81544fa2e7fd216e058130f7d0ee14bf854e062e1e60d6c0eac18a4"
+    "3a0bdae74dc60eb4c517d3114a5fe8192feace1196c5092d062bbc72290ca651"
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
-    "3dc9b88a6dbe1ede13a29e21661c0ff240adc6f0cc37c5df32238d91972c2f90"
+    "a0aade7937855a5922b6add26bde4d1c558630801d83c2344869667c9e840421"
 private const val C_ABI_CINTEROP_SHA256 =
     "4a132bc83e0f69251cc9f432bb7530b4eaafe2f4d7ea1c2985ed860bedafb1c8"
 private const val C_ABI_MACOS_EXPORTS_SHA256 =
-    "21159a36be04d452f573e2b82622c0075b09e8d4923d7cdbe97368fa9b21c1d1"
+    "5eed471645d5e627354652b36dd4ecb49602aab35821b4a8aeacdcd23c2d753e"
 private const val C_ABI_FOUNDATION_C_SHA256 =
-    "7dbc461fe0caa86be1756547b3cfe1bbe2645bef79b85ed732615df911b97cd0"
+    "0a4c6c78ee0b4bc038963f6ce63ae3cd69d1cc11c27e23553103514588f2820a"
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
-    "cca1aa71779298ab61894d0ffff4ce6b0c88895dc0d7103386990e08896308c1"
+    "819d848c9469963833b4ef2057f4b6fadd1659d2a4fe69fb637fa3dc6d47aa1c"
 private const val C_ABI_LIFECYCLE_C_SHA256 =
-    "5a78a15bf15d7b06ba75570fc97a4c8762fa00327e4ced693edf054f5b491bed"
+    "1dd90b2f124b498acfcdcabde7894bedeac809a89628ba357c8751c347f46f46"
 private const val C_ABI_LIFECYCLE_CPP_SHA256 =
-    "13cade229e6950dee60b88a89f4a48c9912f91d9c74eb529c8bbdc99743a1f57"
+    "bab1705bff7725faddabf2cb2125a435c9e4d87b2e1faa9f8df1b0fb17196878"
 private const val C_ABI_CONVERSATION_VALUES_C_SHA256 =
     "9bd1c7284344c037426a903fa08f5997f4c4746a597b4072ec5aa2d6911256c5"
 private const val C_ABI_CONFIGURATION_VALUES_C_SHA256 =
@@ -75,6 +75,14 @@ private const val C_ABI_HOOK_CATALOG_VALUES_C_SHA256 =
     "2c80b989b924a5ef751b99d0359845f4b5f862fe88cf341995901cfae00fed94"
 private const val C_ABI_INTEGRATION_STATE_VALUES_C_SHA256 =
     "f39c8bc177a44a83fb877f3b6ae4842ccbda365a855ffed079318b5f08e1d0a3"
+private const val C_ABI_AUTHENTICATION_CONFIGURATION_VALUES_C_SHA256 =
+    "50180d9ac04350c6b6c82d43ce00b7b5ce633dc4ace0c58fab3d43e9ff287284"
+private const val C_ABI_ELICITATION_BEHAVIOR_VALUES_C_SHA256 =
+    "37ccbb29716f4668d3318c97eab3e5b3d50705411c3ecf3c475fa4e13bbd0793"
+private const val C_ABI_SEALED_BASE_PROPERTY_VALUES_C_SHA256 =
+    "7a30143f76309f0e8e230ce6fbd5db940fafb262a09af2d758ed58e3a46c975a"
+private const val C_ABI_ROOT_VALUE_ACCESSORS_C_SHA256 =
+    "5222fa6e7103aac922f5ff8a75e87056c873682dd7817f2654dff9925bcbde63"
 
 private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent/"
 private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi."
@@ -317,6 +325,64 @@ private const val C_INTEGRATION_STATE_VALUES_TEST =
 private const val C_INTEGRATION_STATE_VALIDATION_TEST =
     C_API_TEST_PACKAGE +
         "CodexAgentCIntegrationStateValuesTest#integrationStateRejectsContextTypeStaleAndOutputBoundaries[macosArm64]"
+private const val C_AUTHENTICATION_CONFIGURATION_DEFAULTS_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCAuthenticationConfigurationValuesTest#" +
+        "authenticationStateAndConversationSettingsProjectDefaultsNullabilityAndEveryEnum[macosArm64]"
+private const val C_AUTHENTICATION_CONFIGURATION_OWNERSHIP_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCAuthenticationConfigurationValuesTest#" +
+        "authenticationStateOwnsFreshNestedUrlsFailureAndCopiedCode[macosArm64]"
+private const val C_AUTHENTICATION_CONFIGURATION_URL_CLIENT_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCAuthenticationConfigurationValuesTest#" +
+        "authorizationUrlsAndClientInfoPreserveValuesAndRejectCanonicalInvalidInputs[macosArm64]"
+private const val C_AUTHENTICATION_CONFIGURATION_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCAuthenticationConfigurationValuesTest#" +
+        "authenticationConfigurationHandlesFailClosedAcrossTypeContextStaleAndTeardown[macosArm64]"
+private const val C_FORM_FIELD_ACCEPTS_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationBehaviorValuesTest#" +
+        "formFieldAcceptsEveryTypeBoundFormatAndSelectionRule[macosArm64]"
+private const val C_ELICITATION_BEHAVIOR_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationBehaviorValuesTest#" +
+        "elicitationInitialValidateAndAcceptUseExactOwnedMapSemantics[macosArm64]"
+private const val C_ELICITATION_BEHAVIOR_RESPONSE_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationBehaviorValuesTest#" +
+        "responseFactoriesAndElicitationAcceptsImplementExactTruthTable[macosArm64]"
+private const val C_ELICITATION_BEHAVIOR_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationBehaviorValuesTest#" +
+        "behaviorSurfaceRejectsInvalidBoundariesAndContextTeardownReclaimsSnapshots[macosArm64]"
+private const val C_ELICITATION_BEHAVIOR_RECLAMATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCElicitationBehaviorValuesTest#" +
+        "contextTeardownReclaimsOutstandingBehaviorSnapshots[macosArm64]"
+private const val C_SEALED_INVOCATION_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCSealedBasePropertyValuesTest#" +
+        "invocationBasePropertiesProjectBothConcreteVariants[macosArm64]"
+private const val C_SEALED_PENDING_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCSealedBasePropertyValuesTest#" +
+        "pendingInteractionBasePropertiesProjectBothVariantsAndFreshConversationIds[macosArm64]"
+private const val C_SEALED_INTEGRATION_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCSealedBasePropertyValuesTest#" +
+        "integrationBasePropertiesProjectBothConcreteVariants[macosArm64]"
+private const val C_SEALED_BASE_VALIDATION_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCSealedBasePropertyValuesTest#" +
+        "sealedBaseAccessorsFailClosedAndContextReclaimsSnapshots[macosArm64]"
+private const val C_ROOT_HOST_VALUES_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCRootValueAccessorsTest#hostSubtypePayloadsAreExactFreshAndFailClosed[macosArm64]"
+private const val C_ROOT_PENDING_FOR_TEST =
+    C_API_TEST_PACKAGE +
+        "CodexAgentCRootValueAccessorsTest#pendingForPreservesOrderDuplicatesOwnershipAndErrors[macosArm64]"
 
 internal data class CAbiBootstrapClaimSpec(
     val owner: String,
@@ -2469,6 +2535,198 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         listOf("codex_agent_integration_authorization_state_target") + integrationCarrierSymbols,
         listOf(C_INTEGRATION_STATE_VALUES_TEST),
     )
+
+    ordinary(
+        "AgentAuthenticationState", "constructor", "<init>",
+        listOf("codex_agent_authentication_state_create", "codex_agent_authentication_state_destroy"),
+        listOf(
+            C_AUTHENTICATION_CONFIGURATION_DEFAULTS_TEST,
+            C_AUTHENTICATION_CONFIGURATION_OWNERSHIP_TEST,
+            C_AUTHENTICATION_CONFIGURATION_VALIDATION_TEST,
+        ),
+        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationStatus;" +
+            "io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl?;" +
+            "io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl?;kotlin.String?;" +
+            "io.github.codex_agent_labs.codexmobile.agent.CodexFailure?){}[0]",
+    )
+    listOf(
+        "deviceUserCode" to listOf(
+            "codex_agent_authentication_state_has_device_user_code",
+            "codex_agent_authentication_state_device_user_code_copy",
+        ),
+        "deviceVerificationUrl" to listOf(
+            "codex_agent_authentication_state_has_device_verification_url",
+            "codex_agent_authentication_state_device_verification_url",
+        ),
+        "failure" to listOf(
+            "codex_agent_authentication_state_has_failure",
+            "codex_agent_authentication_state_failure",
+        ),
+        "pendingSignInUrl" to listOf(
+            "codex_agent_authentication_state_has_pending_sign_in_url",
+            "codex_agent_authentication_state_pending_sign_in_url",
+        ),
+    ).forEach { (property, symbols) ->
+        ordinary(
+            "AgentAuthenticationState", "property", property, symbols,
+            listOf(C_AUTHENTICATION_CONFIGURATION_OWNERSHIP_TEST),
+        )
+    }
+    ordinary(
+        "AgentAuthenticationState", "property", "status",
+        listOf("codex_agent_authentication_state_status"),
+        listOf(C_AUTHENTICATION_CONFIGURATION_DEFAULTS_TEST),
+    )
+
+    ordinary(
+        "AgentConversationSettings", "constructor", "<init>",
+        listOf("codex_agent_conversation_settings_create", "codex_agent_conversation_settings_destroy"),
+        listOf(C_AUTHENTICATION_CONFIGURATION_DEFAULTS_TEST, C_AUTHENTICATION_CONFIGURATION_VALIDATION_TEST),
+        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset;kotlin.String?){}[0]",
+    )
+    ordinary(
+        "AgentConversationSettings", "property", "approvalPreset",
+        listOf("codex_agent_conversation_settings_approval_preset"),
+        listOf(C_AUTHENTICATION_CONFIGURATION_DEFAULTS_TEST),
+    )
+    ordinary(
+        "AgentConversationSettings", "property", "serviceTier",
+        listOf(
+            "codex_agent_conversation_settings_has_service_tier",
+            "codex_agent_conversation_settings_service_tier_copy",
+        ),
+        listOf(C_AUTHENTICATION_CONFIGURATION_DEFAULTS_TEST),
+    )
+
+    ordinary(
+        "CodexAuthorizationUrl.Companion", "function", "chatGpt",
+        listOf("codex_agent_authorization_url_chat_gpt", "codex_agent_authorization_url_destroy"),
+        listOf(C_AUTHENTICATION_CONFIGURATION_URL_CLIENT_TEST),
+    )
+    ordinary(
+        "CodexAuthorizationUrl.Companion", "function", "external",
+        listOf("codex_agent_authorization_url_external", "codex_agent_authorization_url_destroy"),
+        listOf(C_AUTHENTICATION_CONFIGURATION_URL_CLIENT_TEST),
+    )
+    ordinary(
+        "CodexAuthorizationUrl", "property", "purpose",
+        listOf("codex_agent_authorization_url_purpose"),
+        listOf(C_AUTHENTICATION_CONFIGURATION_URL_CLIENT_TEST),
+    )
+    ordinary(
+        "CodexAuthorizationUrl", "property", "value",
+        listOf("codex_agent_authorization_url_value_copy"),
+        listOf(C_AUTHENTICATION_CONFIGURATION_URL_CLIENT_TEST),
+    )
+
+    ordinary(
+        "CodexClientInfo", "constructor", "<init>",
+        listOf("codex_agent_client_info_value_create", "codex_agent_client_info_value_destroy"),
+        listOf(C_AUTHENTICATION_CONFIGURATION_URL_CLIENT_TEST, C_AUTHENTICATION_CONFIGURATION_VALIDATION_TEST),
+        "<init>(kotlin.String;kotlin.String;kotlin.String){}[0]",
+    )
+    listOf(
+        "name" to "codex_agent_client_info_value_name_copy",
+        "title" to "codex_agent_client_info_value_title_copy",
+        "version" to "codex_agent_client_info_value_version_copy",
+    ).forEach { (property, symbol) ->
+        ordinary(
+            "CodexClientInfo", "property", property, listOf(symbol),
+            listOf(C_AUTHENTICATION_CONFIGURATION_URL_CLIENT_TEST),
+        )
+    }
+
+    ordinary(
+        "AgentFormField", "function", "accepts",
+        listOf("codex_agent_form_field_accepts"),
+        listOf(C_FORM_FIELD_ACCEPTS_TEST, C_ELICITATION_BEHAVIOR_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentElicitation", "function", "initialValues",
+        listOf("codex_agent_elicitation_initial_values"),
+        listOf(C_ELICITATION_BEHAVIOR_VALUES_TEST, C_ELICITATION_BEHAVIOR_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentElicitation", "function", "validate",
+        listOf("codex_agent_elicitation_validate"),
+        listOf(C_ELICITATION_BEHAVIOR_VALUES_TEST, C_ELICITATION_BEHAVIOR_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentElicitation", "function", "accept",
+        listOf("codex_agent_elicitation_accept"),
+        listOf(C_ELICITATION_BEHAVIOR_VALUES_TEST, C_ELICITATION_BEHAVIOR_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentElicitation", "function", "accepts",
+        listOf("codex_agent_elicitation_accepts"),
+        listOf(C_ELICITATION_BEHAVIOR_RESPONSE_TEST, C_ELICITATION_BEHAVIOR_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentElicitationResponse.Companion", "function", "decline",
+        listOf("codex_agent_elicitation_response_decline"),
+        listOf(C_ELICITATION_BEHAVIOR_RESPONSE_TEST, C_ELICITATION_BEHAVIOR_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentElicitationResponse.Companion", "function", "cancel",
+        listOf("codex_agent_elicitation_response_cancel"),
+        listOf(C_ELICITATION_BEHAVIOR_RESPONSE_TEST, C_ELICITATION_BEHAVIOR_VALIDATION_TEST),
+    )
+
+    listOf(
+        "name" to "codex_agent_invocation_name_copy",
+        "key" to "codex_agent_invocation_key_copy",
+    ).forEach { (property, symbol) ->
+        ordinary(
+            "AgentInvocation", "property", property, listOf(symbol),
+            listOf(C_SEALED_INVOCATION_VALUES_TEST, C_SEALED_BASE_VALIDATION_TEST),
+        )
+    }
+    ordinary(
+        "AgentPendingInteraction", "property", "requestId",
+        listOf("codex_agent_pending_interaction_request_id_copy"),
+        listOf(C_SEALED_PENDING_VALUES_TEST, C_SEALED_BASE_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentPendingInteraction", "property", "conversationId",
+        listOf("codex_agent_pending_interaction_conversation_id"),
+        listOf(C_SEALED_PENDING_VALUES_TEST, C_SEALED_BASE_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentIntegration", "property", "id",
+        listOf("codex_agent_integration_id_copy"),
+        listOf(C_SEALED_INTEGRATION_VALUES_TEST, C_SEALED_BASE_VALIDATION_TEST),
+    )
+    ordinary(
+        "AgentIntegration", "property", "displayName",
+        listOf("codex_agent_integration_display_name_copy"),
+        listOf(C_SEALED_INTEGRATION_VALUES_TEST, C_SEALED_BASE_VALIDATION_TEST),
+    )
+
+    ordinary(
+        "CodexHostState.Failed", "property", "workspace",
+        listOf("codex_agent_host_state_failed_workspace"),
+        listOf(C_ROOT_HOST_VALUES_TEST),
+    )
+    ordinary(
+        "CodexHostState.Preparing", "property", "workspace",
+        listOf("codex_agent_host_state_preparing_workspace"),
+        listOf(C_ROOT_HOST_VALUES_TEST),
+    )
+    ordinary(
+        "CodexHostState.WorkspaceRequired", "property", "requirement",
+        listOf("codex_agent_host_state_workspace_required_requirement"),
+        listOf(C_ROOT_HOST_VALUES_TEST),
+    )
+    ordinary(
+        "AgentInteractionState", "function", "pendingFor",
+        listOf(
+            "codex_agent_interaction_state_pending_for",
+            "codex_agent_pending_interaction_list_destroy",
+            "codex_agent_pending_interaction_list_count",
+            "codex_agent_pending_interaction_list_at",
+        ),
+        listOf(C_ROOT_PENDING_FOR_TEST),
+    )
 }.sortedWith(compareBy(CAbiBootstrapClaimSpec::owner, CAbiBootstrapClaimSpec::kind, CAbiBootstrapClaimSpec::abi))
 
 internal fun deriveCAbiBootstrapClaims(
@@ -2561,9 +2819,9 @@ private fun List<String>.sortedNewlineSha256(): String = MessageDigest.getInstan
 private fun exactExportPolicy(file: File): Set<String> {
     check(file.releaseDigest() == C_ABI_MACOS_EXPORTS_SHA256) { "Reviewed macOS C ABI export policy drift" }
     val rows = file.readLines().filter(String::isNotBlank)
-    check(rows.size == 586 && rows == rows.sorted() && rows.size == rows.distinct().size &&
+    check(rows.size == 637 && rows == rows.sorted() && rows.size == rows.distinct().size &&
         rows.all { it.startsWith("_codex_agent_") }) {
-        "macOS C ABI export policy must contain the exact sorted 586-symbol inventory"
+        "macOS C ABI export policy must contain the exact sorted 637-symbol inventory"
     }
     return rows.mapTo(sortedSetOf()) { it.removePrefix("_") }
 }
@@ -2667,6 +2925,18 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val integrationStateValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val authenticationConfigurationValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val elicitationBehaviorValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sealedBasePropertyValuesCConsumer: RegularFileProperty
+
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val rootValueAccessorsCConsumer: RegularFileProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val releaseLibrary: RegularFileProperty
@@ -2813,6 +3083,26 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "Reviewed C integration-state-values consumer drift"
             }
         }
+        val authenticationConfigurationValuesC = authenticationConfigurationValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_AUTHENTICATION_CONFIGURATION_VALUES_C_SHA256) {
+                "Reviewed C authentication-configuration-values consumer drift"
+            }
+        }
+        val elicitationBehaviorValuesC = elicitationBehaviorValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_ELICITATION_BEHAVIOR_VALUES_C_SHA256) {
+                "Reviewed C elicitation-behavior-values consumer drift"
+            }
+        }
+        val sealedBasePropertyValuesC = sealedBasePropertyValuesCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_SEALED_BASE_PROPERTY_VALUES_C_SHA256) {
+                "Reviewed C sealed-base-property-values consumer drift"
+            }
+        }
+        val rootValueAccessorsC = rootValueAccessorsCConsumer.get().asFile.also {
+            check(it.releaseDigest() == C_ABI_ROOT_VALUE_ACCESSORS_C_SHA256) {
+                "Reviewed C root-value-accessors consumer drift"
+            }
+        }
         val library = releaseLibrary.get().asFile
         val generated = generatedHeader.get().asFile
         val nativeExecutable = nativeTestExecutable.get().asFile
@@ -2833,6 +3123,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             "C ABI Native test inventory contains skipped or failed tests"
         }
         val passedTests = nativeTests.mapTo(sortedSetOf(), CanonicalTestResult::testId)
+        check(C_ELICITATION_BEHAVIOR_RECLAMATION_TEST in passedTests) {
+            "Missing passed Native C ABI support lifecycle test $C_ELICITATION_BEHAVIOR_RECLAMATION_TEST"
+        }
 
         val work = consumerOutputDirectory.get().asFile
         check(work.deleteRecursively() || !work.exists()) { "Could not clear C ABI consumer work directory" }
@@ -2928,6 +3221,22 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 "c11-integration-state-values", clang, "c11", integrationStateValuesC,
                 work, include, library, rpath, sdk, true,
             ),
+            compileConsumer(
+                "c11-authentication-configuration-values", clang, "c11", authenticationConfigurationValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
+            compileConsumer(
+                "c11-elicitation-behavior-values", clang, "c11", elicitationBehaviorValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
+            compileConsumer(
+                "c11-sealed-base-property-values", clang, "c11", sealedBasePropertyValuesC,
+                work, include, library, rpath, sdk, true,
+            ),
+            compileConsumer(
+                "c11-root-value-accessors", clang, "c11", rootValueAccessorsC,
+                work, include, library, rpath, sdk, true,
+            ),
         )
 
         val defined = normalizedCodexSymbols(
@@ -2961,7 +3270,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
-            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.7.0)") {
+            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.8.0)") {
             "Unexpected C ABI dylib loader versions: $linkedIdentity"
         }
 
@@ -2988,6 +3297,10 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 elicitationInteractionValuesC,
                 hookCatalogValuesC,
                 integrationStateValuesC,
+                authenticationConfigurationValuesC,
+                elicitationBehaviorValuesC,
+                sealedBasePropertyValuesC,
+                rootValueAccessorsC,
             )
                 .joinToString("\n") { it.readText() },
             exports,
@@ -3005,7 +3318,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             put("schemaVersion", JsonPrimitive(1))
             put("protocol", JsonPrimitive(C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL))
             put("result", JsonPrimitive("observed"))
-            put("milestone", JsonPrimitive("D099"))
+            put("milestone", JsonPrimitive("D100"))
             put("language", JsonPrimitive("c-abi"))
             put("canonical", buildJsonObject {
                 put("apiReportSha256", JsonPrimitive(canonical.canonical.apiReportSha256))

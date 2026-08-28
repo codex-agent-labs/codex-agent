@@ -611,8 +611,61 @@ class DesktopCAbiExportPolicyTest {
             "codex_agent_turn_request_prompt_copy",
             "codex_agent_turn_request_service_tier_copy",
         )
+        val abi18 = listOf(
+            "codex_agent_authentication_state_create",
+            "codex_agent_authentication_state_destroy",
+            "codex_agent_authentication_state_device_user_code_copy",
+            "codex_agent_authentication_state_device_verification_url",
+            "codex_agent_authentication_state_failure",
+            "codex_agent_authentication_state_has_device_user_code",
+            "codex_agent_authentication_state_has_device_verification_url",
+            "codex_agent_authentication_state_has_failure",
+            "codex_agent_authentication_state_has_pending_sign_in_url",
+            "codex_agent_authentication_state_pending_sign_in_url",
+            "codex_agent_authentication_state_status",
+            "codex_agent_authorization_url_chat_gpt",
+            "codex_agent_authorization_url_destroy",
+            "codex_agent_authorization_url_external",
+            "codex_agent_authorization_url_purpose",
+            "codex_agent_authorization_url_value_copy",
+            "codex_agent_client_info_value_create",
+            "codex_agent_client_info_value_destroy",
+            "codex_agent_client_info_value_name_copy",
+            "codex_agent_client_info_value_title_copy",
+            "codex_agent_client_info_value_version_copy",
+            "codex_agent_conversation_settings_approval_preset",
+            "codex_agent_conversation_settings_create",
+            "codex_agent_conversation_settings_destroy",
+            "codex_agent_conversation_settings_has_service_tier",
+            "codex_agent_conversation_settings_service_tier_copy",
+            "codex_agent_elicitation_accept",
+            "codex_agent_elicitation_accepts",
+            "codex_agent_elicitation_initial_values",
+            "codex_agent_elicitation_response_cancel",
+            "codex_agent_elicitation_response_decline",
+            "codex_agent_elicitation_validate",
+            "codex_agent_form_content_count",
+            "codex_agent_form_content_create",
+            "codex_agent_form_content_destroy",
+            "codex_agent_form_content_key_copy",
+            "codex_agent_form_content_value_at",
+            "codex_agent_form_field_accepts",
+            "codex_agent_host_state_failed_workspace",
+            "codex_agent_host_state_preparing_workspace",
+            "codex_agent_host_state_workspace_required_requirement",
+            "codex_agent_integration_display_name_copy",
+            "codex_agent_integration_id_copy",
+            "codex_agent_interaction_state_pending_for",
+            "codex_agent_invocation_key_copy",
+            "codex_agent_invocation_name_copy",
+            "codex_agent_pending_interaction_conversation_id",
+            "codex_agent_pending_interaction_list_at",
+            "codex_agent_pending_interaction_list_count",
+            "codex_agent_pending_interaction_list_destroy",
+            "codex_agent_pending_interaction_request_id_copy",
+        )
         val exports = repository.resolve("codex-agent-runtime-desktop/native/c-api/exports")
-        val all = (abi10 + abi11 + abi12 + abi13 + abi14 + abi15 + abi16 + abi17).sorted()
+        val all = (abi10 + abi11 + abi12 + abi13 + abi14 + abi15 + abi16 + abi17 + abi18).sorted()
         assertEquals(
             all.map { "_$it" },
             exports.resolve("macos.exports").readLines(),
@@ -625,7 +678,8 @@ class DesktopCAbiExportPolicyTest {
                 linuxVersion("1.4", abi14, "CODEX_AGENT_1.3") + "\n" +
                 linuxVersion("1.5", abi15, "CODEX_AGENT_1.4") + "\n" +
                 linuxVersion("1.6", abi16, "CODEX_AGENT_1.5") + "\n" +
-                linuxVersion("1.7", abi17, "CODEX_AGENT_1.6"),
+                linuxVersion("1.7", abi17, "CODEX_AGENT_1.6") + "\n" +
+                linuxVersion("1.8", abi18, "CODEX_AGENT_1.7"),
             exports.resolve("linux.map").readText(),
         )
         assertEquals(
@@ -642,7 +696,7 @@ class DesktopCAbiExportPolicyTest {
             "-Wl,-exported_symbols_list,",
             "-Wl,-install_name,@rpath/libcodex_agent.dylib",
             "-Wl,-compatibility_version,1.0.0",
-            "-Wl,-current_version,1.7.0",
+            "-Wl,-current_version,1.8.0",
             "target.name.startsWith(\"linux\")",
             "-Wl,--version-script,",
             "-Wl,-soname,libcodex_agent.so.1",
