@@ -35,6 +35,12 @@ class ReleaseToolingCliFunctionalTest {
                 val entries = archive.entries().asSequence().map { it.name }.toList()
                 assertTrue("ReleaseToolingCliKt.class" in entries)
                 assertFalse("ReleaseToolingGradleTasksKt.class" in entries)
+                listOf(
+                    "GenerateCrossLanguageCAbiScenarioProofTask",
+                    "PackageCrossLanguageCAbiSdkTask",
+                    "GenerateCrossLanguageCAbiPackageEvidenceTask",
+                    "VerifyCrossLanguageCAbiPackageEvidenceTask",
+                ).forEach { task -> assertFalse(entries.any { it.startsWith(task) }, task) }
                 assertFalse(entries.any { it.startsWith("org/gradle/") || it.startsWith("com/android/") })
                 assertFalse(entries.any { it.startsWith("gradle/kotlin/dsl/") })
             }
@@ -148,6 +154,7 @@ class ReleaseToolingCliFunctionalTest {
         val workingDirectory = createTempDirectory("release-tooling-commands").toFile()
         try {
             listOf(
+                "assemble-c-abi-binding-receipt",
                 "audit-cross-language-bindings",
                 "stage-promoted-maven",
                 "assemble-promoted-candidate",

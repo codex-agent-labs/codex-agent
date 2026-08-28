@@ -143,12 +143,8 @@ class CrossLanguageBindingTasksTest {
             val wiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
             listOf(
                 "reports/cross-language-api/canonical-coverage.json",
-                "reports/cross-language-api/binding-obligations-m7_5.json",
                 "reports/cross-language-api/bindings/kotlin-parity.json",
                 "reports/cross-language-api/bindings/java-parity.json",
-                "javascript-typescript-parity.json",
-                "swift-parity.json",
-                "objective-c-parity.json",
                 "rootProject.allprojects",
                 "tasks.configureEach",
                 "mustRunAfter(invalidateCrossLanguageBindingParityOutputs)",
@@ -156,16 +152,11 @@ class CrossLanguageBindingTasksTest {
                 "invalidateCodexAgentAppleBindingEvidence",
                 "verifyCrossLanguageApiCoverage.configure",
                 "dependsOn(invalidateCrossLanguageBindingParityOutputs)",
-                ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity",
-                ":codex-agent-runtime-ios:generateCodexAgentAppleBindingEvidence",
-                "kotlinReceipt.set(verifyKotlinBindingParity.flatMap",
-                "javaReceipt.set(verifyJavaBindingParity.flatMap",
-                "javaScriptTypeScriptReceipt.set(javaScriptTypeScriptBindingParityReceiptFile)",
-                "swiftReceipt.set(swiftBindingParityReceiptFile)",
-                "objectiveCReceipt.set(objectiveCBindingParityReceiptFile)",
             ).forEach { contract ->
                 assertTrue(contract in wiring, "Missing convention-plugin cleanup contract: $contract")
             }
+            assertFalse("auditCrossLanguageBindingParity" in wiring)
+            assertFalse("binding-obligations-m7_5.json" in wiring)
             val appleWiring = File("src/main/kotlin/codexagent.ios-runtime.gradle.kts").readText()
             assertTrue("dependsOn(invalidateAppleBindingEvidence)" in appleWiring)
             assertTrue("mustRunAfter(invalidateAppleBindingEvidence)" in appleWiring)

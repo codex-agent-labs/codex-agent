@@ -65,22 +65,10 @@ val verifyCrossLanguageApiCoverage = tasks.register<VerifyCrossLanguageApiCovera
     receiptFile.set(canonicalCrossLanguageCoverageReceiptFile)
 }
 
-val crossLanguageBindingAuditFile =
-    layout.buildDirectory.file("reports/cross-language-api/binding-obligations-m7_5.json")
 val kotlinBindingParityReceiptFile =
     layout.buildDirectory.file("reports/cross-language-api/bindings/kotlin-parity.json")
 val javaBindingParityReceiptFile =
     layout.buildDirectory.file("reports/cross-language-api/bindings/java-parity.json")
-val javaScriptTypeScriptBindingParityReceiptFile = rootProject.layout.projectDirectory.file(
-    "codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/" +
-        "javascript-typescript-parity.json",
-)
-val swiftBindingParityReceiptFile = rootProject.layout.projectDirectory.file(
-    "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/swift-parity.json",
-)
-val objectiveCBindingParityReceiptFile = rootProject.layout.projectDirectory.file(
-    "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/objective-c-parity.json",
-)
 val invalidateCrossLanguageBindingParityOutputs = tasks.register<Delete>(
     "invalidateCrossLanguageBindingParityOutputs",
 ) {
@@ -88,7 +76,6 @@ val invalidateCrossLanguageBindingParityOutputs = tasks.register<Delete>(
     description = "Deletes stale binding parity outputs before their prerequisites execute."
     delete(
         canonicalCrossLanguageCoverageReceiptFile,
-        crossLanguageBindingAuditFile,
         kotlinBindingParityReceiptFile,
         javaBindingParityReceiptFile,
     )
@@ -155,29 +142,6 @@ val verifyJavaBindingParity = tasks.register<VerifyJavaBindingParityTask>("verif
     compiledJavaTests.set(javaBindingCompiledTests)
     testResults.set(javaBindingTestResults)
     receiptFile.set(javaBindingParityReceiptFile)
-}
-
-val auditCrossLanguageBindingParity = tasks.register<AuditCrossLanguageBindingParityTask>(
-    "auditCrossLanguageBindingParity",
-) {
-    group = "verification"
-    description = "Recomputes the authoritative active-language obligation audit from verified language receipts."
-    dependsOn(
-        verifyKotlinBindingParity,
-        verifyJavaBindingParity,
-        ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity",
-        ":codex-agent-runtime-ios:generateCodexAgentAppleBindingEvidence",
-    )
-    apiReport.set(discoverCrossLanguageApi.flatMap(DiscoverCrossLanguageApiTask::reportFile))
-    canonicalCoverageReceipt.set(
-        verifyCrossLanguageApiCoverage.flatMap(VerifyCrossLanguageApiCoverageTask::receiptFile),
-    )
-    kotlinReceipt.set(verifyKotlinBindingParity.flatMap(VerifyKotlinBindingParityTask::receiptFile))
-    javaReceipt.set(verifyJavaBindingParity.flatMap(VerifyJavaBindingParityTask::receiptFile))
-    javaScriptTypeScriptReceipt.set(javaScriptTypeScriptBindingParityReceiptFile)
-    swiftReceipt.set(swiftBindingParityReceiptFile)
-    objectiveCReceipt.set(objectiveCBindingParityReceiptFile)
-    auditFile.set(crossLanguageBindingAuditFile)
 }
 
 val verifyProtocolSource = tasks.register<VerifyProtocolSourceTask>("verifyProtocolSource") {

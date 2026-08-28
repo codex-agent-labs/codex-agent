@@ -213,7 +213,7 @@ jobs:
         with:
           name: codex-agent-arm64-production-transport-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-production
-      - name: Restore only the verified production classifier
+      - name: Restore only the verified production classifiers
         if: needs.linux-arm64-reuse.outputs.production_reused == 'true'
         shell: bash
         run: |
@@ -222,9 +222,12 @@ jobs:
             --actual build/ci/linux-arm64-production/payload/build/ci/linux-arm64-producer-identities
           shopt -s nullglob
           archives=(build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/distributions/*-app-server-linux-arm64.zip)
+          c_abi_archives=(build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip)
           test "${#archives[@]}" -eq 1
+          test "${#c_abi_archives[@]}" -eq 1
           mkdir -p codex-agent-runtime-desktop/build/distributions
           cp "${archives[0]}" codex-agent-runtime-desktop/build/distributions/
+          cp "${c_abi_archives[0]}" codex-agent-runtime-desktop/build/distributions/
       - if: inputs.linuxArm64Test
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -237,12 +240,15 @@ jobs:
         with:
           name: codex-agent-ci-linux-arm64-supervisor-${{ inputs.validationTree }}
           path: build/desktop-supervisors
-      - name: Cross-build one classifier
+      - name: Cross-build the two Linux Arm64 classifiers
         if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
         run: >-
           ./gradlew
           :codex-agent-runtime-desktop:packageLinuxArm64AppServer
+          :codex-agent-runtime-desktop:packageLinuxArm64CAbiSdk
           -PcodexAgent.desktopSupervisorDirectory="$PWD/build/desktop-supervisors"
+          -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}"
+          -PcodexAgent.candidateTree="${{ inputs.validationTree }}"
           --parallel --stacktrace
       - name: Cross-build the native test executable
         if: inputs.linuxArm64Test
@@ -252,6 +258,7 @@ jobs:
         run: >-
           ./gradlew -p gradle/build-logic stageLinuxArm64RuntimeEvidenceBundle
           -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}"
+          -PcodexAgent.candidateTree="${{ inputs.validationTree }}"
           -PcodexAgent.linuxArm64TestExecutable="$PWD/codex-agent-runtime-desktop/build/bin/linuxArm64/debugTest/test.kexe"
           -PcodexAgent.linuxArm64DistributionsDirectory="$PWD/codex-agent-runtime-desktop/build/distributions"
           -PcodexAgent.jvmRuntimeEvidenceRunner="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip"
@@ -260,14 +267,17 @@ jobs:
           -PcodexAgent.desktopDistributionManifest="$PWD/codex-agent-runtime-desktop/codex-app-server-distributions.json"
           -PcodexAgent.linuxArm64RuntimeEvidenceBundle="$PWD/build/linux-arm64-inputs/runtime.zip"
           --parallel --stacktrace
-      - name: Preserve the exact classifier with the execution bundle
+      - name: Preserve the exact classifiers with the execution bundle
         shell: bash
         run: |
           shopt -s nullglob
           archives=(codex-agent-runtime-desktop/build/distributions/*-app-server-linux-arm64.zip)
+          c_abi_archives=(codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip)
           test "${#archives[@]}" -eq 1
+          test "${#c_abi_archives[@]}" -eq 1
           mkdir -p build/linux-arm64-inputs
           cp "${archives[0]}" build/linux-arm64-inputs/
+          cp "${c_abi_archives[0]}" build/linux-arm64-inputs/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -306,9 +316,12 @@ jobs:
         run: |
           shopt -s nullglob
           archives=(build/ci/linux-arm64-input/*-app-server-linux-arm64.zip)
+          c_abi_archives=(build/ci/linux-arm64-input/*-c-abi-linux-arm64.zip)
           test "${#archives[@]}" -eq 1
+          test "${#c_abi_archives[@]}" -eq 1
           mkdir -p codex-agent-runtime-desktop/build/distributions
           cp "${archives[0]}" codex-agent-runtime-desktop/build/distributions/
+          cp "${c_abi_archives[0]}" codex-agent-runtime-desktop/build/distributions/
           if [ -f build/ci/linux-arm64-input/runtime.zip ]; then
             printf 'LINUX_ARM64_RUNTIME_BUNDLE=%s/build/ci/linux-arm64-input/runtime.zip\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           fi

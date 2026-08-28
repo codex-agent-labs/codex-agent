@@ -241,7 +241,7 @@ internal fun buildJavaScriptTypeScriptBindingReceipt(
         "JavaScript/TypeScript claims and exclusions do not exactly cover the canonical API"
     }
     val receipt = CrossLanguageBindingReceipt(
-        phase = CrossLanguageBindingPhase.M7_5,
+        phase = CrossLanguageBindingPhase.M8,
         language = CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT,
         canonical = evidence.canonical.canonical,
         artifacts = artifacts,

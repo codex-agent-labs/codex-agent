@@ -34,6 +34,10 @@ codex-agent-runtime-desktop/codex-app-server-distributions.json
 codex-agent-runtime-desktop/src/commonMain/**
 codex-agent-runtime-desktop/src/desktopMain/**
 codex-agent-runtime-desktop/src/jvmMain/**
+codex-agent-runtime-desktop/native/c-api/**
+codex-agent-runtime-desktop/src/nativeMain/**/capi/**
+codex-agent-runtime-desktop/src/nativeTest/**/capi/**
+codex-agent-runtime-desktop/src/nativeInterop/cinterop/codex_agent_c.def
 codex-agent-runtime-android/build.gradle.kts
 codex-agent-runtime-android/src/main/**
 tooling/protocol-generator/src/main/**

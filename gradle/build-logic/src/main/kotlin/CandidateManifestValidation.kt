@@ -136,6 +136,7 @@ private fun verifyPromotedCandidateManifestStructure(manifest: JsonObject) {
         "jvmRuntime", "jvmRuntimeRunner", "nodeRuntime", "nodeRuntimeRunner", "nodeWasmRuntime",
         "nodeWasmRuntimeRunner", "androidRuntime", "swiftPackageProof", "iosNativeTests",
         "iosDeviceRustProof", "iosSimulatorRustProof", "artifactMetrics", "iosRuntimeMetrics", "releaseTooling",
+        "crossLanguageM8",
     )
     check(evidence.keys == expectedEvidence) { "Promoted candidate evidence set is invalid" }
     expectedEvidence.minus(candidateEvidenceArrayNames).forEach { name ->
@@ -195,6 +196,7 @@ private fun verifyPromotedCandidateManifestStructure(manifest: JsonObject) {
         evidence, "androidRuntime", candidateFirebaseAndroidEvidenceFileNames.toSet(),
         requireValidationCommit = true,
     )
+    verifyEvidenceArray(evidence, "crossLanguageM8", crossLanguageM8EvidenceFileNames)
 
     val policies = manifest.releaseObject("policies")
     check(policies.keys == setOf(
@@ -235,6 +237,7 @@ private fun verifyPromotedRustProofRecordShape(record: JsonObject) {
 
 internal val candidateEvidenceArrayNames = setOf(
     "desktopRuntime", "jvmRuntime", "nodeRuntime", "nodeWasmRuntime", "androidRuntime",
+    "crossLanguageM8",
 )
 
 private fun verifyEvidenceArray(

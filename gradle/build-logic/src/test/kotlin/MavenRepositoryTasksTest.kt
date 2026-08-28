@@ -11,7 +11,7 @@ class MavenRepositoryTasksTest {
         writeExactRepository(repository, signed = true)
         verifyMavenRepository(repository, GROUP, VERSION, true, inventory)
         val report = inventory.readReleaseObject()
-        assertEquals(154, report.releaseInt("primaryArtifactCount"))
+        assertEquals(159, report.releaseInt("primaryArtifactCount"))
         assertEquals(25, report.releaseArray("artifactIds").size)
         assertEquals(6, report.releaseArray("relocationArtifactIds").size)
         expectedMavenPrimaryPaths(VERSION).forEach { relative ->

@@ -75,7 +75,7 @@ class CrossLanguageAppleBindingEvidenceTest {
                 writeCrossLanguageBindingReceipt(file, receipt)
                 val actual = readCrossLanguageBindingReceipt(file)
 
-                assertEquals(CrossLanguageBindingPhase.M7_5, actual.phase)
+                assertEquals(CrossLanguageBindingPhase.M8, actual.phase)
                 assertEquals(language, actual.language)
                 assertEquals(671, actual.publicSymbols.size)
                 assertEquals(556, actual.projectionClaims.size)

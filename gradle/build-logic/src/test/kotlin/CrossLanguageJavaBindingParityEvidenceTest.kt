@@ -157,7 +157,7 @@ class CrossLanguageJavaBindingParityEvidenceTest {
 
         assertEquals(CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA, decoded.toJson().releaseInt("schema"))
         assertEquals(CrossLanguageBinding.JAVA, decoded.language)
-        assertEquals(CrossLanguageBindingPhase.M7_5, decoded.phase)
+        assertEquals(CrossLanguageBindingPhase.M8, decoded.phase)
         assertEquals(CrossLanguageBindingCanonicalIdentity("f".repeat(64), "0".repeat(64)), decoded.canonical)
         assertEquals(
             mapOf(

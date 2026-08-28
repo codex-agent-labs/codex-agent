@@ -46,6 +46,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
         val receipt = buildJavaScriptTypeScriptBindingReceipt(files)
 
         assertEquals(CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA, receipt.toJson()["schema"]?.toString()?.toInt())
+        assertEquals(CrossLanguageBindingPhase.M8, receipt.phase)
         assertEquals(556, receipt.projectionClaims.size)
         assertEquals(14, receipt.scenarioEvidence.size)
         assertEquals(keys, receipt.projectionClaims.map(CrossLanguageProjectionClaim::capabilityKey).sorted())

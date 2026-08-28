@@ -5,7 +5,7 @@ import kotlin.test.assertTrue
 
 class RepositoryVerificationTasksTest {
     @Test
-    fun `repository verification keeps portable binding producers and macOS owns the complete audit`() {
+    fun `repository verification keeps portable producers and leaves complete M8 audit to distributed CI`() {
         assertTrue(":codex-agent-core:verifyKotlinBindingParity" in repositoryVerificationTaskPaths)
         assertTrue(":codex-agent-core:verifyJavaBindingParity" in repositoryVerificationTaskPaths)
         assertTrue(
@@ -22,7 +22,8 @@ class RepositoryVerificationTasksTest {
         assertTrue("gradle.includedBuild(\"build-logic\").task(\":test\")" in source)
         assertTrue("dependsOn(\n            repositoryVerificationTaskPaths" in source)
         assertTrue(":codex-agent-runtime-ios:verifyIosRuntime" in source)
-        assertTrue(":codex-agent-core:auditCrossLanguageBindingParity" in source)
+        assertFalse(":codex-agent-core:auditCrossLanguageBindingParity" in source)
+        assertTrue("distributed CI owns complete M8 parity" in source)
     }
 
     @Test

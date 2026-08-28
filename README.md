@@ -284,9 +284,12 @@ The core tasks write exact-tree evidence under
 - `codex-agent-runtime-ios/build/reports/cross-language-api/bindings/swift-parity.json`
   and `codex-agent-runtime-ios/build/reports/cross-language-api/bindings/objective-c-parity.json`
   are the verified Apple receipts.
-- `binding-obligations-m7_5.json` is the complete five-language obligation
-  audit over the Kotlin, Java, JavaScript/TypeScript, Swift, and Objective-C
-  receipts.
+- `codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/` contains
+  the canonical bootstrap, exact shared-scenario proof, and matching-host SDK
+  package proofs. CI verifies all five desktop hosts and derives
+  `c-abi-parity.json` from those exact artifacts.
+- `binding-obligations-m8.json` is the complete six-language obligation audit
+  over Kotlin, Java, JavaScript/TypeScript, Swift, Objective-C, and the C ABI.
 
 For a binding, add the smallest idiomatic public artifact projection and a real
 consumer test. Extend that language's evidence derivation so each exact
@@ -301,18 +304,20 @@ report. The current focused gates are:
 ./gradlew verifyRepository
 # macOS only
 ./gradlew verifyIosRuntime
-./gradlew :codex-agent-core:auditCrossLanguageBindingParity
+./gradlew :codex-agent-runtime-desktop:generateCodexAgentCAbiScenarioProof
 ```
 
 The portable root `verifyRepository` task and core `check` produce the Kotlin,
-Java, and JavaScript/TypeScript receipts without running Xcode or the aggregate;
-invoke a producer directly for a focused language check. On macOS, root
-`verifyIosRuntime` runs the iOS verification and the direct complete aggregate;
-invoke `:codex-agent-core:auditCrossLanguageBindingParity` directly for only
-that five-language aggregate.
+Java, and JavaScript/TypeScript receipts without running Xcode or claiming the
+distributed aggregate. On macOS, root `verifyIosRuntime` verifies the iOS
+runtime and Apple receipts. Only the merge gate has all five matching-host C
+SDK proofs; it derives the C receipt, runs the exact six-receipt M8 audit, and
+preserves the canonical API, coverage, receipts, and audit through promotion
+and release-candidate verification.
 An active pair without verified projection evidence is `missing`. A future
-phase pair remains applicable but `pending`: at M7.5 Kotlin, Java, Swift,
-Objective-C, and JavaScript/TypeScript are active; M8 activates C ABI; the
+phase pair remains applicable but `pending`: M7.5 historically activated
+Kotlin, Java, Swift, Objective-C, and JavaScript/TypeScript; M8 also activates
+the C ABI. The
 `M9_PYTHON`, `M9_CSHARP`, `M9_RUST`, `M9_CPP`, and `M9_DART` phases activate
 their wrappers independently; M11 requires the all-eleven set to be satisfied.
 A C receipt cannot satisfy a wrapper.
@@ -323,7 +328,7 @@ architectural reason. Its matcher and tests must reject owner, kind, ABI,
 signature, stale-key, wildcard, broad-reason, duplicate, and projection-conflict
 drift. An unfinished binding or future-phase obligation is never an exclusion.
 
-To onboard an M8 or M9 gate, implement its exact
+To onboard an M9 wrapper gate, implement its exact
 `CrossLanguageBindingReceipt` producer and verifier task, write
 `<language-id>-parity.json`, wire that task and receipt into the phase audit and
 repository/CI ownership, and advance the audit phase. Reuse

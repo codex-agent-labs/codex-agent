@@ -110,7 +110,7 @@ internal fun buildJavaBindingParityReceipt(
 ): CrossLanguageBindingReceipt {
     val artifacts = evidence.digests.artifactDigests
     return CrossLanguageBindingReceipt(
-        phase = CrossLanguageBindingPhase.M7_5,
+        phase = CrossLanguageBindingPhase.M8,
         language = CrossLanguageBinding.JAVA,
         canonical = CrossLanguageBindingCanonicalIdentity(
             apiReportSha256 = canonicalDigests.apiReportSha256,

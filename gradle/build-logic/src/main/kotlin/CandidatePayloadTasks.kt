@@ -107,6 +107,12 @@ private fun verifyPromotedCandidatePayload(
     val expectedTree = manifest.releaseString("candidateTree")
     val evidence = manifest.releaseObject("evidence")
     val artifacts = manifest.releaseObject("artifacts")
+    val crossLanguageM8Files = evidence.releaseArray("crossLanguageM8").associate { value ->
+        val record = value.jsonObject
+        val name = record.releaseString("fileName")
+        name to safePayloadFile(payload, name)
+    }
+    verifyCompleteCrossLanguageM8Evidence(crossLanguageM8Files)
     val promotion = safePayloadFile(payload, evidence.releaseObject("promotionReceipt").releaseString("fileName"))
         .readReleaseObject()
     check(promotion.releaseInt("schemaVersion") == 1 &&

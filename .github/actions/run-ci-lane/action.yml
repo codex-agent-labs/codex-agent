@@ -361,6 +361,7 @@ runs:
         CI_NODE_WASM_REQUIRED: ${{ steps.selection.outputs.node_wasm }}
         CI_PRODUCTION_REUSED: 'false'
         CI_VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        CI_VALIDATION_TREE: ${{ inputs.validation-tree }}
       shell: bash
       run: ci/run-lane.sh "${{ inputs.lane }}"
     - id: execution
@@ -379,6 +380,7 @@ runs:
         CI_NODE_WASM_REQUIRED: ${{ steps.selection.outputs.node_wasm }}
         CI_PRODUCTION_REUSED: 'true'
         CI_VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        CI_VALIDATION_TREE: ${{ inputs.validation-tree }}
       shell: bash
       run: ci/run-lane.sh "${{ inputs.lane }}"
     - name: Stage reusable production after a later validation failure

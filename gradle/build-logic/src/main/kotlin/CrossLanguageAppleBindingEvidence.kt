@@ -4920,7 +4920,7 @@ internal fun buildAppleBindingParityReceipt(
     }
 
     return CrossLanguageBindingReceipt(
-        phase = CrossLanguageBindingPhase.M7_5,
+        phase = CrossLanguageBindingPhase.M8,
         language = language,
         canonical = CrossLanguageBindingCanonicalIdentity(
             canonical.appleSha256("apiReportSha256"),

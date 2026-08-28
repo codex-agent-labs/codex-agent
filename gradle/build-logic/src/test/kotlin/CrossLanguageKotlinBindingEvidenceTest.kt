@@ -19,7 +19,7 @@ class CrossLanguageKotlinBindingEvidenceTest {
         verifyKotlinBindingParityReceipt(actual, expected)
 
         assertEquals(CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA, actual.toJson().releaseInt("schema"))
-        assertEquals(CrossLanguageBindingPhase.M7_5, actual.phase)
+        assertEquals(CrossLanguageBindingPhase.M8, actual.phase)
         assertEquals(CrossLanguageBinding.KOTLIN, actual.language)
         assertEquals(evidence.digests.apiReportSha256, actual.canonical.apiReportSha256)
         assertEquals(evidence.digests.canonicalCoverageSha256, actual.canonical.coverageReceiptSha256)

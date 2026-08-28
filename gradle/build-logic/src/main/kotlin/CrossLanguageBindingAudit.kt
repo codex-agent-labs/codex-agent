@@ -41,6 +41,58 @@ internal data class CrossLanguageBindingAudit(
     val errors: List<String>,
 )
 
+internal val crossLanguageM8EvidenceFileNames = setOf(
+    "canonical-api.json",
+    "canonical-coverage.json",
+    "kotlin-parity.json",
+    "java-parity.json",
+    "javascript-typescript-parity.json",
+    "swift-parity.json",
+    "objective-c-parity.json",
+    "c-abi-parity.json",
+    "binding-obligations-m8.json",
+)
+
+internal fun verifyCompleteCrossLanguageM8Evidence(
+    files: Map<String, File>,
+): CrossLanguageBindingAudit {
+    check(files.keys == crossLanguageM8EvidenceFileNames && files.size == crossLanguageM8EvidenceFileNames.size) {
+        "Cross-language M8 evidence file set is incomplete or unexpected"
+    }
+    files.forEach { (name, file) ->
+        check(file.name == name && file.isFile && !Files.isSymbolicLink(file.toPath())) {
+            "Cross-language M8 evidence is missing, unsafe, or misnamed: $name"
+        }
+    }
+    check(files.values.map { it.canonicalFile.parentFile }.toSet().size == 1) {
+        "Cross-language M8 evidence must share one directory"
+    }
+    val apiReport = files.getValue("canonical-api.json")
+    val coverageReceipt = files.getValue("canonical-coverage.json")
+    val canonicalEvidence = readCrossLanguageCanonicalApiEvidence(apiReport, coverageReceipt)
+    val receiptFiles = CrossLanguageBinding.entries.filter { it.isActive(CrossLanguageBindingPhase.M8) }
+        .associateWith { language -> files.getValue("${language.id}-parity.json") }
+    val receipts = readCrossLanguageBindingReceipts(receiptFiles)
+    val receiptDigests = receiptFiles.mapValues { (_, file) -> file.releaseDigest() }
+    val audit = readCrossLanguageBindingAudit(
+        auditFile = files.getValue("binding-obligations-m8.json"),
+        phase = CrossLanguageBindingPhase.M8,
+        capabilityKeys = canonicalEvidence.memberKeys,
+        canonical = canonicalEvidence.canonical,
+        receipts = receipts,
+        expectedLanguageReceiptSha256 = receiptDigests,
+    )
+    check(audit.result == "complete" && audit.errors.isEmpty() && audit.summary == CrossLanguageBindingAuditSummary(
+        total = 6_116,
+        active = 3_324,
+        pending = 2_780,
+        excluded = 12,
+        satisfied = 3_324,
+        missing = 0,
+    )) { "Cross-language M8 evidence is not the complete accepted obligation matrix" }
+    return audit
+}
+
 internal fun writeCompleteCrossLanguageBindingAudit(
     phase: CrossLanguageBindingPhase,
     apiReport: File,

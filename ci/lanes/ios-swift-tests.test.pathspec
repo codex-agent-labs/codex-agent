@@ -22,3 +22,7 @@ codex-agent-runtime-desktop/src/webMain/**
 codex-agent-runtime-desktop/src/webTest/**
 codex-agent-runtime-desktop/src/jsMain/**
 codex-agent-runtime-desktop/src/jsTest/**
+codex-agent-runtime-desktop/native/c-api/**
+codex-agent-runtime-desktop/src/nativeMain/**/capi/**
+codex-agent-runtime-desktop/src/nativeTest/**/capi/**
+codex-agent-runtime-desktop/src/nativeInterop/cinterop/codex_agent_c.def

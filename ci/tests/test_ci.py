@@ -23,7 +23,7 @@ from unittest.mock import patch
 CI_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_ROOT))
 
-from impact import LANES, effective_pathspecs, plan, write_github_outputs  # noqa: E402
+from impact import LANES, M8_OWNER_LANES, effective_pathspecs, plan, write_github_outputs  # noqa: E402
 from evidence import main as evidence_main  # noqa: E402
 from receipt import (  # noqa: E402
     aggregate,
@@ -39,6 +39,7 @@ from reuse import (  # noqa: E402
 )
 from stage import OUTPUTS, archive_tree, copy_matches, restore_production_files, safe_extract_tar  # noqa: E402
 from validation_reuse import (  # noqa: E402
+    M8_FILES,
     discover as discover_validation,
     materialize,
     validate as validate_aggregate_reuse,
@@ -46,6 +47,17 @@ from validation_reuse import (  # noqa: E402
 
 
 class RunLaneContractTest(unittest.TestCase):
+    def test_action_and_lane_driver_bind_every_execution_to_the_candidate_tree(self) -> None:
+        action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
+        driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
+
+        self.assertEqual(2, action.count("CI_VALIDATION_TREE: ${{ inputs.validation-tree }}"))
+        self.assertIn('tree=${CI_VALIDATION_TREE:?validation tree is required}', driver)
+        self.assertIn(
+            '-PcodexAgent.candidateCommit="$commit" -PcodexAgent.candidateTree="$tree"',
+            driver,
+        )
+
     def test_contracts_run_the_exact_portable_binding_receipt_gates(self) -> None:
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
         contracts = driver.split("  contracts)", 1)[1].split("  portable)", 1)[0]
@@ -72,21 +84,35 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertNotIn(":codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests", swift_tests)
         self.assertNotIn(":codex-agent-runtime-ios:generateCodexAgentAppleCompilerEvidence", swift_tests)
 
-    def test_merge_gate_runs_the_packaged_m7_5_audit_over_exactly_five_receipts(self) -> None:
+    def test_merge_gate_assembles_c_abi_and_runs_packaged_m8_audit_over_exactly_six_receipts(self) -> None:
         workflow = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         merge_gate = workflow.split("\n  merge-gate:", 1)[1]
-        command = 'java -jar "$release_tool" audit-cross-language-bindings'
+        assemble = 'java -jar "$release_tool" assemble-c-abi-binding-receipt'
+        audit = 'java -jar "$release_tool" audit-cross-language-bindings'
 
-        self.assertEqual(1, merge_gate.count(command))
-        self.assertIn("--phase M7_5", merge_gate)
-        self.assertLess(merge_gate.index("lane_ios_swift_tests_test"), merge_gate.index(command))
+        self.assertEqual(1, merge_gate.count(assemble))
+        self.assertEqual(1, merge_gate.count(audit))
+        self.assertIn("--phase M8", merge_gate)
+        self.assertNotIn("--phase M7_5", merge_gate)
+        self.assertLess(merge_gate.index("lane_ios_swift_tests_test"), merge_gate.index(assemble))
+        self.assertLess(merge_gate.index(assemble), merge_gate.index(audit))
         self.assertEqual({
             "kotlin-parity.json",
             "java-parity.json",
             "javascript-typescript-parity.json",
             "swift-parity.json",
             "objective-c-parity.json",
+            "c-abi-parity.json",
         }, set(re.findall(r"[a-z]+(?:-[a-z]+)*-parity\.json", merge_gate)))
+        for literal in ("6116", "3324", "2780", "12", "0"):
+            self.assertIn(literal, merge_gate)
+        for evidence in (
+            "canonical-api.json", "canonical-coverage.json", "kotlin-parity.json",
+            "java-parity.json", "javascript-typescript-parity.json", "swift-parity.json",
+            "objective-c-parity.json", "c-abi-parity.json", "binding-obligations-m8.json",
+        ):
+            self.assertIn(evidence, merge_gate)
+        self.assertIn("path: build/ci/final-validation/*", merge_gate)
 
 
 class GitFixture(unittest.TestCase):
@@ -100,7 +126,11 @@ class GitFixture(unittest.TestCase):
         self.write("ci/impact.py", "# planner\n")
         for lane in LANES:
             self.write(f"configured/{lane}.txt", "configured\n")
-            self.write(f"ci/lanes/{lane}.production.pathspec", f"configured/{lane}.txt\n")
+            platform = "desktop-linux-x64-only/**\n" if lane == "desktop-linux-x64" else ""
+            self.write(
+                f"ci/lanes/{lane}.production.pathspec",
+                f"configured/{lane}.txt\n{platform}",
+            )
         inventories = {
             "shared.production": "common/**\n",
             "android.production": "android/**\nconfigured/android.txt\n",
@@ -114,7 +144,7 @@ class GitFixture(unittest.TestCase):
             ),
             "contracts.production": "configured/contracts.txt\n",
             "contracts.test": "binding-contract-tests/**\n",
-            "contracts.metadata": "Package.swift\n",
+            "contracts.metadata": "Package.swift\n.github/workflows/promote.yml\n",
             "node-js.test": "binding-node-tests/**\n",
             "consumer-common.production": (
                 "codex-agent-core/src/jvmMain/**\nconfigured/consumer-common.txt\n"
@@ -341,6 +371,45 @@ class ImpactPlanTest(GitFixture):
             for action in ("build", "test", "metadata")
         ))
 
+    def test_any_m8_owner_activity_runs_the_exact_m8_coordinator_closure(self) -> None:
+        self.assertEqual({
+            "contracts",
+            "node-js",
+            "desktop-macos-arm64",
+            "desktop-macos-x64",
+            "desktop-linux-arm64",
+            "desktop-linux-x64",
+            "desktop-windows-x64",
+            "ios-swift-tests",
+        }, set(M8_OWNER_LANES))
+        base = self.base
+        cases = (
+            (".github/workflows/promote.yml", "metadata-only\n", "contracts", "metadata"),
+            ("desktop-linux-x64-only/Runtime.kt", "platform-only\n", "desktop-linux-x64", "build"),
+        )
+        for relative, contents, owner, action in cases:
+            with self.subTest(relative=relative):
+                result, _, target = self.make_plan(relative, contents, base=base)
+                base = target
+                self.assertEqual([], result["unknownPaths"])
+                self.assertTrue(result["lanes"][owner][action])
+                self.assertTrue(result["lanes"]["ios-swift-tests"]["test"])
+                self.assertTrue(all(
+                    any(result["lanes"][lane][item] for item in ("build", "test", "metadata"))
+                    for lane in M8_OWNER_LANES
+                ))
+
+    def test_c_abi_sdk_legal_inputs_are_owned_by_all_five_desktop_lanes(self) -> None:
+        root = CI_ROOT.parent
+        desktop_lanes = {lane for lane in LANES if lane.startswith("desktop-")}
+        for relative in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+            with self.subTest(relative=relative):
+                self.assertEqual(desktop_lanes, {
+                    lane
+                    for lane in desktop_lanes
+                    if relative in effective_pathspecs(root, lane, "production")
+                })
+
     def test_android_change_excludes_unrelated_platforms(self) -> None:
         result, _, _ = self.make_plan("android/Main.kt")
         self.assertTrue(result["lanes"]["android"]["build"])
@@ -461,14 +530,16 @@ class ImpactPlanTest(GitFixture):
         inventory = plan_path.parent / "inventories/ios-swift-tests/production-inputs.git-tree"
         self.assertIn("\tconfigured/ios-framework-device.txt\n", inventory.read_text(encoding="utf-8"))
 
-    def test_checksum_only_change_selects_metadata_without_product_builds(self) -> None:
+    def test_checksum_contract_metadata_change_runs_m8_without_ios_package_build(self) -> None:
         result, _, _ = self.make_plan("Package.swift", "// checksum only\n")
         self.assertTrue(result["lanes"]["ios-package"]["metadata"])
-        self.assertFalse(any(
-            state[action]
-            for lane, state in result["lanes"].items()
-            for action in ("build", "test")
-            if lane.startswith("ios-")
+        self.assertTrue(result["lanes"]["contracts"]["metadata"])
+        self.assertTrue(result["lanes"]["ios-swift-tests"]["test"])
+        self.assertFalse(result["lanes"]["ios-package"]["build"])
+        self.assertFalse(result["lanes"]["ios-package"]["test"])
+        self.assertTrue(all(
+            any(result["lanes"][lane][action] for action in ("build", "test", "metadata"))
+            for lane in M8_OWNER_LANES
         ))
 
     def test_swift_wrapper_change_keeps_framework_production_compatible(self) -> None:
@@ -507,21 +578,36 @@ class ImpactPlanTest(GitFixture):
             )
 
     def test_candidate_support_fallbacks_produce_complete_desktop_and_privacy_lanes(self) -> None:
+        base = self.base
         for consumer in ("consumer-desktop", "consumer-node-js", "consumer-node-wasm"):
-            desktop, _, _ = self.make_plan(
+            desktop, _, target = self.make_plan(
                 f"configured/{consumer}.txt",
                 f"{consumer} changed\n",
+                base=base,
             )
+            base = target
             for lane in (name for name in LANES if name.startswith("desktop-")):
                 self.assertTrue(desktop["lanes"][lane]["build"])
                 self.assertTrue(desktop["lanes"][lane]["test"])
 
-        privacy, _, _ = self.make_plan("privacy-policy/review.json", "{}\n")
+        privacy, _, _ = self.make_plan("privacy-policy/review.json", "{}\n", base=base)
         self.assertTrue(privacy["lanes"]["ios-privacy-metrics"]["metadata"])
         for lane in ("ios-framework-device", "ios-framework-simulator"):
             self.assertTrue(privacy["lanes"][lane]["build"])
         for lane in ("ios-kotlin-tests", "ios-swift-tests", "ios-package"):
             self.assertFalse(any(privacy["lanes"][lane][action] for action in ("build", "test", "metadata")))
+
+    def test_m8_binding_owner_change_requires_every_receipt_and_host_proof_lane(self) -> None:
+        result, _, _ = self.make_plan(
+            "gradle/build-logic/src/main/kotlin/CrossLanguageApiCoverage.kt",
+            "// binding owner changed\n",
+        )
+        self.assertTrue(result["lanes"]["ios-swift-tests"]["test"])
+        self.assertTrue(result["lanes"]["contracts"]["test"])
+        self.assertTrue(result["lanes"]["node-js"]["test"])
+        for lane in (name for name in LANES if name.startswith("desktop-")):
+            self.assertTrue(result["lanes"][lane]["build"], lane)
+            self.assertTrue(result["lanes"][lane]["test"], lane)
 
     def test_privacy_workflow_uses_only_framework_artifacts_and_complete_gate(self) -> None:
         apple = (CI_ROOT.parent / ".github/workflows/apple-runtime-evidence.yml").read_text(encoding="utf-8")
@@ -600,14 +686,13 @@ class ImpactPlanTest(GitFixture):
         result, _, _ = self.make_plan("common/Api.kt")
         self.assertTrue(all(state["build"] for state in result["lanes"].values()))
 
-    def test_contract_only_change_does_not_propagate(self) -> None:
+    def test_contract_owner_change_runs_the_m8_coordinator(self) -> None:
         result, _, _ = self.make_plan("configured/contracts.txt")
         self.assertTrue(result["lanes"]["contracts"]["build"])
-        self.assertFalse(any(
-            state[action]
-            for lane, state in result["lanes"].items()
-            if lane != "contracts"
-            for action in ("build", "test", "metadata")
+        self.assertTrue(result["lanes"]["ios-swift-tests"]["test"])
+        self.assertTrue(all(
+            any(result["lanes"][lane][action] for action in ("build", "test", "metadata"))
+            for lane in M8_OWNER_LANES
         ))
 
     def test_jvm_only_change_selects_only_common_and_desktop_consumers(self) -> None:
@@ -643,16 +728,34 @@ class RealImpactPlanTest(unittest.TestCase):
                 )
             }
 
+        all_desktop_tests = {
+            "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
+            "desktop-linux-x64", "desktop-windows-x64",
+        }
         for path in (
             "codex-agent-core/src/commonTest/kotlin/io/github/codex_agent_labs/"
             "codexmobile/agent/CrossLanguageDomainValueContractTest.kt",
+            "codex-agent-core/src/commonMain/kotlin/io/github/codex_agent_labs/"
+            "codexmobile/agent/CodexHost.kt",
+            "gradle/build-logic/src/main/kotlin/CrossLanguageApiCoverage.kt",
+            "gradle/build-logic/src/main/kotlin/CrossLanguageBindingReceipt.kt",
+            "gradle/build-logic/src/main/kotlin/CrossLanguageCAbiBootstrapEvidence.kt",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    all_desktop_tests,
+                    {
+                        lane
+                        for lane in matching_lanes(path, "test")
+                        if lane.startswith("desktop-")
+                    },
+                )
+
+        for path in (
             "codex-agent-core/src/jvmAndAndroidMain/kotlin/io/github/codex_agent_labs/"
             "codexmobile/agent/CodexJava.kt",
             "codex-agent-core/src/jvmTest/kotlin/io/github/codex_agent_labs/"
             "codexmobile/agent/CodexPublicApiAdoptionTest.kt",
-            "gradle/build-logic/src/main/kotlin/CrossLanguageApiCoverage.kt",
-            "gradle/build-logic/src/main/kotlin/CrossLanguageBindingReceipt.kt",
-            "gradle/build-logic/src/main/kotlin/CrossLanguageCAbiBootstrapEvidence.kt",
             "gradle/build-logic/src/main/kotlin/codexagent.core-verification.gradle.kts",
             "gradle/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
         ):
@@ -669,7 +772,7 @@ class RealImpactPlanTest(unittest.TestCase):
         native_interop = "codex-agent-runtime-desktop/src/nativeInterop/cinterop/codex_agent_c.def"
         self.assertEqual(
             {
-                "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
+                "contracts", "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
                 "desktop-linux-x64", "desktop-windows-x64", "consumer-desktop",
             },
             matching_lanes(native_interop, "production"),
@@ -735,7 +838,13 @@ class RealImpactPlanTest(unittest.TestCase):
                 self.assertEqual({"contracts"}, matching_lanes("production", prefix + filename))
 
         cli = prefix + "ReleaseToolingCli.kt"
-        self.assertEqual({"ios-swift-tests"}, matching_lanes("test", cli))
+        self.assertEqual(
+            {
+                "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
+                "desktop-linux-x64", "desktop-windows-x64", "ios-swift-tests",
+            },
+            matching_lanes("test", cli),
+        )
         self.assertEqual(set(), matching_lanes("metadata", cli))
 
         self.assertEqual(
@@ -890,24 +999,26 @@ class RealImpactPlanTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     {"contracts", "node-js", "ios-swift-tests"} | (
-                        {"desktop-macos-arm64"}
-                        if path in {
-                            prefix + "CrossLanguageApiCoverage.kt",
-                            prefix + "CrossLanguageBindingReceipt.kt",
-                            prefix + "codexagent.core-verification.gradle.kts",
+                        {
+                            "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
+                            "desktop-linux-x64", "desktop-windows-x64",
                         }
-                        else set()
+                        if Path(path).name.startswith("CrossLanguage")
+                        else {"desktop-macos-arm64"}
                     ),
                     matching_lanes("test", path),
                 )
 
         canonical_behavior_inputs = {
             "codex-agent-core/src/commonMain/kotlin/sample/Canonical.kt": {
-                "contracts", "node-js", "ios-swift-tests",
+                "contracts", "node-js", "ios-swift-tests", "desktop-macos-arm64",
+                "desktop-macos-x64", "desktop-linux-arm64", "desktop-linux-x64",
+                "desktop-windows-x64",
             },
             "codex-agent-core/src/commonTest/kotlin/sample/CanonicalTest.kt": {
                 "contracts", "node-js", "desktop-macos-arm64",
-                "ios-kotlin-tests", "ios-swift-tests",
+                "desktop-macos-x64", "desktop-linux-arm64", "desktop-linux-x64",
+                "desktop-windows-x64", "ios-kotlin-tests", "ios-swift-tests",
             },
             "codex-agent-core/src/jvmTest/kotlin/sample/CanonicalJvmTest.kt": {
                 "contracts", "node-js", "desktop-macos-arm64", "ios-swift-tests",
@@ -1119,23 +1230,83 @@ class RealImpactPlanTest(unittest.TestCase):
 
 
 class StageArchiveTest(unittest.TestCase):
+    def test_desktop_lanes_stage_exact_c_abi_sdk_and_host_proof(self) -> None:
+        targets = {
+            "desktop-macos-arm64": "macos-arm64",
+            "desktop-macos-x64": "macos-x64",
+            "desktop-linux-arm64": "linux-arm64",
+            "desktop-linux-x64": "linux-x64",
+            "desktop-windows-x64": "windows-x64",
+        }
+        expected_sdks = set()
+        expected_proofs = set()
+        for lane, classifier in targets.items():
+            with self.subTest(lane=lane):
+                sdk = (
+                    "build",
+                    f"codex-agent-runtime-desktop/build/distributions/*-c-abi-{classifier}.zip",
+                    "c-abi-sdk",
+                )
+                proof = (
+                    "test",
+                    "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/"
+                    f"packages/c-abi-package-{classifier}.json",
+                    "c-abi-package-proof",
+                )
+                expected_sdks.add((lane, sdk))
+                expected_proofs.add((lane, proof))
+                self.assertEqual(1, OUTPUTS[lane].count(sdk))
+                self.assertEqual(1, OUTPUTS[lane].count(proof))
+
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    for _, pattern, _ in (sdk, proof):
+                        with self.subTest(pattern=pattern), self.assertRaisesRegex(
+                            ValueError, "Required lane output did not match",
+                        ):
+                            copy_matches(root, root / "staged", pattern)
+
+        self.assertEqual(expected_sdks, {
+            (lane, output)
+            for lane, outputs in OUTPUTS.items()
+            for output in outputs
+            if output[2] == "c-abi-sdk"
+        })
+        self.assertEqual(expected_proofs, {
+            (lane, output)
+            for lane, outputs in OUTPUTS.items()
+            for output in outputs
+            if output[2] == "c-abi-package-proof"
+        })
+
     def test_macos_arm64_stages_exact_c_abi_bootstrap_evidence(self) -> None:
         observed = (
-            "test",
-            "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json",
-            "cross-language-c-abi-bootstrap-evidence",
+            (
+                "test",
+                "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json",
+                "cross-language-c-abi-bootstrap-evidence",
+            ),
+            (
+                "test",
+                "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/c-abi-scenarios.json",
+                "cross-language-c-abi-scenario-proof",
+            ),
         )
-        self.assertEqual(1, OUTPUTS["desktop-macos-arm64"].count(observed))
-        self.assertFalse(any(
-            observed in outputs
-            for lane, outputs in OUTPUTS.items()
-            if lane != "desktop-macos-arm64"
-        ))
+        for output in observed:
+            self.assertEqual(1, OUTPUTS["desktop-macos-arm64"].count(output))
+            self.assertFalse(any(
+                output in outputs
+                for lane, outputs in OUTPUTS.items()
+                if lane != "desktop-macos-arm64"
+            ))
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaisesRegex(ValueError, "Required lane output did not match"):
-                copy_matches(root, root / "staged", observed[1])
+            for _, pattern, _ in observed:
+                with self.subTest(pattern=pattern), self.assertRaisesRegex(
+                    ValueError, "Required lane output did not match",
+                ):
+                    copy_matches(root, root / "staged", pattern)
 
     def test_contracts_stages_the_exact_binding_parity_prerequisites(self) -> None:
         self.assertEqual((
@@ -1344,6 +1515,35 @@ class StageProductionRestoreTest(unittest.TestCase):
             self.assertEqual({build_evidence[0]: build_evidence[1]}, evidence)
             self.assertFalse((root / "output" / binding_receipt[0]).exists())
 
+    def test_restored_desktop_production_keeps_c_abi_sdk_and_drops_host_proof(self) -> None:
+        targets = {
+            "desktop-macos-arm64": "macos-arm64",
+            "desktop-macos-x64": "macos-x64",
+            "desktop-linux-arm64": "linux-arm64",
+            "desktop-linux-x64": "linux-x64",
+            "desktop-windows-x64": "windows-x64",
+        }
+        for lane, classifier in targets.items():
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                sdk = (f"payload/runtime-{classifier}.zip", "c-abi-sdk")
+                proof = (f"payload/proof-{classifier}.json", "c-abi-package-proof")
+                test_evidence = [proof]
+                if lane == "desktop-macos-arm64":
+                    test_evidence.extend((
+                        ("payload/bootstrap-evidence.json", "cross-language-c-abi-bootstrap-evidence"),
+                        ("payload/c-abi-scenarios.json", "cross-language-c-abi-scenario-proof"),
+                    ))
+                source = self.source(root, [sdk], test_evidence)
+
+                artifacts, evidence = restore_production_files(source, root / "output", lane)
+
+                self.assertEqual({sdk[0]: sdk[1]}, artifacts)
+                self.assertEqual({}, evidence)
+                self.assertTrue((root / "output" / sdk[0]).is_file())
+                for relative, _ in test_evidence:
+                    self.assertFalse((root / "output" / relative).exists())
+
     def test_restored_production_keeps_build_owned_evidence(self) -> None:
         cases = (
             ("ios-rust-device", "payload/rust-proof.json", "rust-proof"),
@@ -1481,6 +1681,40 @@ class ReceiptTest(GitFixture):
         queue_receipt = json.loads(materialized.read_text(encoding="utf-8"))
         self.assertEqual("merge_group", queue_receipt["event"])
         self.assertEqual(merge_plan["validationCommit"], queue_receipt["validationCommit"])
+
+        m8_output = self.root / "materialized-m8"
+        m8_output.mkdir()
+        for name in M8_FILES:
+            (reusable / name).write_bytes(f"exact:{name}".encode())
+        materialize(reusable, current, m8_output / "validation-receipt.json")
+        for name in M8_FILES:
+            self.assertEqual((reusable / name).read_bytes(), (m8_output / name).read_bytes())
+        (reusable / "c-abi-parity.json").unlink()
+        with self.assertRaisesRegex(ValueError, "file set mismatch"):
+            validate_aggregate_reuse(reusable, current)
+        for name in M8_FILES:
+            (reusable / name).unlink(missing_ok=True)
+        nested = reusable / "nested"
+        nested.mkdir()
+        (nested / "canonical-api.json").write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "only root regular files"):
+            validate_aggregate_reuse(reusable, current)
+        shutil.rmtree(nested)
+
+        original_plan = (reusable / "impact-plan.json").read_bytes()
+        original_receipt = (reusable / "validation-receipt.json").read_bytes()
+        required_plan = json.loads(original_plan)
+        required_plan["lanes"]["ios-swift-tests"]["test"] = True
+        (reusable / "impact-plan.json").write_text(json.dumps(required_plan), encoding="utf-8")
+        required_receipt = json.loads(original_receipt)
+        swift = dict(required_receipt["lanes"]["android"])
+        swift["artifactName"] = f"codex-agent-ci-ios-swift-tests-{self.first_tree}"
+        required_receipt["lanes"]["ios-swift-tests"] = swift
+        (reusable / "validation-receipt.json").write_text(json.dumps(required_receipt), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "lacks required M8"):
+            validate_aggregate_reuse(reusable, current)
+        (reusable / "impact-plan.json").write_bytes(original_plan)
+        (reusable / "validation-receipt.json").write_bytes(original_receipt)
 
         source_plan = json.loads((reusable / "impact-plan.json").read_text(encoding="utf-8"))
         source_plan["lanes"]["portable"].update(build=True, reasons=["ci-full-label"])
@@ -1687,6 +1921,65 @@ class ReceiptTest(GitFixture):
             self.assertFalse(incompatible["reused"])
             production = restore(arguments(current_path, "restored-production", "production"))
             self.assertTrue(production["reused"])
+
+    def test_c_abi_sdk_reuse_requires_exact_commit_and_tree_identity(self) -> None:
+        receipt_path = self.receipt_root / "lane-receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["artifacts"][0]["kind"] = "c-abi-sdk"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        archive = self.root / "c-abi-sdk-lane.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            for file in self.receipt_root.iterdir():
+                output.write(file, file.name)
+        artifact = {
+            "name": f"codex-agent-ci-android-{self.first_tree}",
+            "archive_download_url": "https://example.invalid/c-abi-sdk-lane.zip",
+            "digest": f"sha256:{hashlib.sha256(archive.read_bytes()).hexdigest()}",
+        }
+
+        def identity_variant(name: str, commit: str, tree: str) -> Path:
+            root = self.root / "build" / name
+            shutil.copytree(self.plan_path.parent / "inventories", root / "inventories")
+            value = json.loads(self.plan_path.read_text(encoding="utf-8"))
+            value.update(validationCommit=commit, validationTree=tree)
+            path = root / "impact-plan.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            return path
+
+        mismatches = {
+            "commit-only": identity_variant("commit-only", "c" * 40, self.first_tree),
+            "tree-only": identity_variant("tree-only", self.first_target, "d" * 40),
+        }
+
+        def arguments(plan_path: Path, destination: str, mode: str) -> Namespace:
+            return Namespace(
+                plan=plan_path,
+                lane="android",
+                destination=self.root / destination,
+                mode=mode,
+                workflow="ci.yml",
+                runner=["os=Linux", "arch=X64"],
+                toolchain=["java=25", "gradle=9.4.1"],
+                token="token",
+                api_url="https://api.github.invalid",
+            )
+
+        with (
+            patch("reuse.candidate_artifacts", return_value=[artifact]),
+            patch("reuse.promoted_artifacts", return_value=[]),
+            patch("reuse.api_request", return_value=archive.read_bytes()),
+        ):
+            self.assertTrue(restore(arguments(
+                self.plan_path, "restored-exact-c-abi-sdk", "full",
+            ))["reused"])
+            for mismatch, plan_path in mismatches.items():
+                for mode in ("full", "production"):
+                    with self.subTest(mismatch=mismatch, mode=mode):
+                        restored = restore(arguments(
+                            plan_path, f"rejected-{mismatch}-c-abi-sdk-{mode}", mode,
+                        ))
+                        self.assertFalse(restored["reused"])
+                        self.assertEqual("no-compatible-artifact", restored["reason"])
 
     def test_failed_lane_production_artifact_is_never_full_reuse(self) -> None:
         partial_root = self.root / "partial"

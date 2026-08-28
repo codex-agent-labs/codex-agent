@@ -6,5 +6,6 @@ codex-agent-core/src/jvmMain/**
 codex-agent-core/src/jvmAndAndroidMain/**
 codex-agent-runtime-desktop/src/jvmMain/**
 gradle/build-logic/src/main/kotlin/KmpConsumerVerificationTask.kt
+gradle/build-logic/src/main/kotlin/CrossLanguageCAbiPackageEvidence.kt
 gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt
 gradle/build-logic/src/main/kotlin/codexagent.root-release.gradle.kts

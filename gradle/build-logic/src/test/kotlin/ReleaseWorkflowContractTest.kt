@@ -144,6 +144,15 @@ class ReleaseWorkflowContractTest {
         assertFalse("ci/promote.py" in bootstrap || "uses:" in bootstrap)
         assertTrue("vars.CI_MERGE_QUEUE_ENABLED == 'true'" in discover)
         assertTrue("needs.discover.result == 'success'" in aggregate)
+        listOf(
+            "canonical-api.json", "canonical-coverage.json", "kotlin-parity.json",
+            "java-parity.json", "javascript-typescript-parity.json", "swift-parity.json",
+            "objective-c-parity.json", "c-abi-parity.json", "binding-obligations-m8.json",
+        ).forEach { evidence ->
+            assertEquals(1, aggregate.lineSequence().count {
+                "build/promotion/source/$evidence" in it
+            }, evidence)
+        }
     }
 
     @Test

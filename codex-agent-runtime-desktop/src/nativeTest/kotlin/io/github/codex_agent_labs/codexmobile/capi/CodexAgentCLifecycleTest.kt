@@ -82,6 +82,19 @@ class CodexAgentCLifecycleTest {
                 ),
             )
 
+            val cancelledSlot = alloc<COpaquePointerVar>().also { it.value = null }
+            val cancelledObserver = StateObserver(cancelledSlot.ptr)
+            assertEquals(
+                CODEX_AGENT_STATUS_OK,
+                codexAgentHostStateSubscribe(
+                    context,
+                    host,
+                    stateCallback,
+                    cancelledObserver.userData,
+                    cancelledSlot.ptr,
+                ),
+            )
+
             receiveHostState(context, throwingObserver, throwingSlot.value).also {
                 assertEquals(HOST_NEW, it.value)
                 assertEquals(0, it.terminal)
@@ -90,6 +103,23 @@ class CodexAgentCLifecycleTest {
                 assertEquals(HOST_NEW, it.value)
                 assertEquals(0, it.terminal)
             }
+            receiveHostState(context, cancelledObserver, cancelledSlot.value).also {
+                assertEquals(HOST_NEW, it.value)
+                assertEquals(0, it.terminal)
+            }
+            val cancelledHandle = assertNotNull(cancelledSlot.value)
+            destroySubscription(context, cancelledSlot.ptr)
+            withTimeout(TIMEOUT_MILLIS) { cancelledObserver.events.receive() }.also { event ->
+                assertEquals(context, event.context)
+                assertEquals(cancelledHandle, event.subscription)
+                assertEquals(CODEX_AGENT_STATUS_CANCELLED, event.eventStatus)
+                assertNull(event.snapshot)
+                assertEquals(1, event.terminal)
+                assertEquals(cancelledObserver.userData, event.userData)
+                assertEquals(cancelledHandle, event.publishedSubscription)
+            }
+            assertEquals(2, cancelledObserver.callbacks.load())
+            assertNoStateCallback(cancelledObserver)
             destroySubscription(context, throwingSlot.ptr)
             assertEquals(1, throwingObserver.callbacks.load())
             assertNoStateCallback(throwingObserver)
@@ -114,6 +144,9 @@ class CodexAgentCLifecycleTest {
                 assertEquals(0, state.terminal)
                 readySeen = state.value == HOST_READY
             }
+            assertEquals(2, cancelledObserver.callbacks.load())
+            assertNoStateCallback(cancelledObserver)
+            cancelledObserver.dispose()
 
             assertEquals(CODEX_AGENT_STATUS_BUSY, codexAgentContextDestroy(contextSlot.ptr))
             assertEquals(context, contextSlot.value)

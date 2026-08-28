@@ -115,7 +115,7 @@ internal fun buildKotlinBindingParityReceipt(
         "Kotlin binding receipt requires passed tests"
     }
     return CrossLanguageBindingReceipt(
-        phase = CrossLanguageBindingPhase.M7_5,
+        phase = CrossLanguageBindingPhase.M8,
         language = CrossLanguageBinding.KOTLIN,
         canonical = CrossLanguageBindingCanonicalIdentity(
             evidence.digests.apiReportSha256,

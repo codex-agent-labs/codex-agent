@@ -217,10 +217,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p build/ci/desktop-classifiers
-          while IFS= read -r archive; do cp "$archive" build/ci/desktop-classifiers/; done < <(
-            find build/ci/desktop-lanes -type f -name '*-app-server-*.zip' -print
-          )
+          mapfile -t app_archives < <(find build/ci/desktop-lanes -type f -name '*-app-server-*.zip' -print)
+          mapfile -t c_abi_archives < <(find build/ci/desktop-lanes -type f -name '*-c-abi-*.zip' -print)
+          test "${#app_archives[@]}" -eq 5
+          test "${#c_abi_archives[@]}" -eq 5
+          cp "${app_archives[@]}" "${c_abi_archives[@]}" build/ci/desktop-classifiers/
           test "$(find build/ci/desktop-classifiers -type f -name '*-app-server-*.zip' | wc -l | tr -d ' ')" -eq 5
+          test "$(find build/ci/desktop-classifiers -type f -name '*-c-abi-*.zip' | wc -l | tr -d ' ')" -eq 5
           printf 'DESKTOP_CLASSIFIERS=%s/build/ci/desktop-classifiers\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - if: matrix.lane == 'consumer-android'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -287,8 +290,11 @@ jobs:
             python3 ci/receipt.py aggregate --plan build/ci/plan/impact-plan.json \
               --receipts build/ci/receipts --output build/ci/validation-receipt.json
           fi
-      - name: Require complete five-language binding parity
+      - name: Require complete six-language M8 binding parity
         if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_ios_swift_tests_test == 'true'
+        env:
+          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
         shell: bash
         run: |
           one_file() {
@@ -296,27 +302,91 @@ jobs:
             test "${#matches[@]}" -eq 1
             printf '%s\n' "${matches[0]}"
           }
+          one_desktop_file() {
+            mapfile -t matches < <(find build/ci/receipts -type f \
+              -path '*/payload/codex-agent-runtime-desktop/build/*' -name "$1" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
           binding_root=build/ci/cross-language-bindings
-          mkdir -p "$binding_root/receipts"
+          mkdir -p "$binding_root/receipts" "$binding_root/c-abi-packages" "$binding_root/c-abi-proofs"
           release_tool=$(one_file codex-agent-release-tooling.jar)
           api_report=$(one_file canonical-api.json)
           coverage_receipt=$(one_file canonical-coverage.json)
+          bootstrap=$(one_desktop_file bootstrap-evidence.json)
+          scenario_proof=$(one_desktop_file c-abi-scenarios.json)
+          for proof in c-abi-package-macos-arm64.json c-abi-package-macos-x64.json \
+              c-abi-package-linux-arm64.json c-abi-package-linux-x64.json c-abi-package-windows-x64.json; do
+            cp "$(one_desktop_file "$proof")" "$binding_root/c-abi-proofs/$proof"
+          done
+          mapfile -t versions < <(jq -r '.libraryVersion' "$binding_root"/c-abi-proofs/*.json | sort -u)
+          test "${#versions[@]}" -eq 1
+          version=${versions[0]}
+          test -n "$version"
+          for classifier in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
+            archive=$(one_desktop_file "*-$version-c-abi-$classifier.zip")
+            cp "$archive" "$binding_root/c-abi-packages/$(basename "$archive")"
+          done
+          java -jar "$release_tool" assemble-c-abi-binding-receipt \
+            --repository "$PWD" \
+            --bootstrap "$bootstrap" \
+            --scenario-proof "$scenario_proof" \
+            --packages "$binding_root/c-abi-packages" \
+            --proofs "$binding_root/c-abi-proofs" \
+            --version "$version" \
+            --commit "$VALIDATION_COMMIT" \
+            --tree "$VALIDATION_TREE" \
+            --output "$binding_root/receipts/c-abi-parity.json"
           for receipt in kotlin-parity.json java-parity.json javascript-typescript-parity.json swift-parity.json objective-c-parity.json; do
             cp "$(one_file "$receipt")" "$binding_root/receipts/$receipt"
           done
           java -jar "$release_tool" audit-cross-language-bindings \
-            --phase M7_5 \
+            --phase M8 \
             --api-report "$api_report" \
             --coverage-receipt "$coverage_receipt" \
             --receipts "$binding_root/receipts" \
-            --output "$binding_root/binding-obligations-m7_5.json"
+            --output "$binding_root/binding-obligations-m8.json"
+          jq -e '
+            .result == "complete" and .phase == "M8" and
+            .summary == {
+              total: 6116, active: 3324, pending: 2780,
+              excluded: 12, satisfied: 3324, missing: 0
+            }
+          ' "$binding_root/binding-obligations-m8.json" >/dev/null
+          mkdir -p "$binding_root/m8"
+          cp "$api_report" "$binding_root/m8/canonical-api.json"
+          cp "$coverage_receipt" "$binding_root/m8/canonical-coverage.json"
+          cp "$binding_root"/receipts/*.json "$binding_root/m8/"
+          cp "$binding_root/binding-obligations-m8.json" "$binding_root/m8/"
+          test "$(find "$binding_root/m8" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 9
+      - name: Stage the exact reusable validation artifact
+        env:
+          M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}
+        shell: bash
+        run: |
+          validation_root=build/ci/final-validation
+          mkdir -p "$validation_root"
+          cp build/ci/plan/impact-plan.json "$validation_root/impact-plan.json"
+          cp build/ci/validation-receipt.json "$validation_root/validation-receipt.json"
+          if [ -d build/ci/cross-language-bindings/m8 ]; then
+            cp build/ci/cross-language-bindings/m8/*.json "$validation_root/"
+          elif [ -f build/ci/binding-obligations-m8.json ]; then
+            for evidence in canonical-api.json canonical-coverage.json kotlin-parity.json java-parity.json \
+                javascript-typescript-parity.json swift-parity.json objective-c-parity.json \
+                c-abi-parity.json binding-obligations-m8.json; do
+              test -f "build/ci/$evidence"
+              cp "build/ci/$evidence" "$validation_root/$evidence"
+            done
+          else
+            test "$M8_REQUIRED" != true
+          fi
+          count=$(find "$validation_root" -maxdepth 1 -type f | wc -l | tr -d ' ')
+          test "$count" -eq 2 || test "$count" -eq 11
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
           overwrite: true
           name: codex-agent-ci-validation-${{ needs.plan.outputs.validation_tree }}
-          path: |
-            build/ci/plan/impact-plan.json
-            build/ci/validation-receipt.json
+          path: build/ci/final-validation/*
           compression-level: 0
           retention-days: 90

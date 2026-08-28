@@ -13,6 +13,20 @@ import org.gradle.testfixtures.ProjectBuilder
 
 class CandidateManifestTasksTest {
     @Test
+    fun `promoted candidate schema carries the exact complete M8 evidence set`() {
+        assertEquals(14, PROMOTED_CANDIDATE_SCHEMA)
+        assertEquals(
+            setOf(
+                "canonical-api.json", "canonical-coverage.json", "kotlin-parity.json",
+                "java-parity.json", "javascript-typescript-parity.json", "swift-parity.json",
+                "objective-c-parity.json", "c-abi-parity.json", "binding-obligations-m8.json",
+            ),
+            crossLanguageM8EvidenceFileNames,
+        )
+        assertTrue("crossLanguageM8" in candidateEvidenceArrayNames)
+    }
+
+    @Test
     fun `promoted candidate traverses and emits every Central bundle`() {
         fun record(name: String) = buildJsonObject {
             put("fileName", JsonPrimitive(name))
@@ -160,6 +174,7 @@ class CandidateManifestTasksTest {
         assertTrue("candidateEvidenceArrayNames.forEach" in repository.resolve(
             "gradle/build-logic/src/main/kotlin/CandidatePayloadTasks.kt",
         ).readText())
+        assertTrue("crossLanguageM8" in candidateEvidenceArrayNames)
     }
 
     @Test

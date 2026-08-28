@@ -1,4 +1,5 @@
 import kotlin.io.path.createTempFile
+import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -8,6 +9,51 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 class CrossLanguageBindingAuditTest {
+    @Test
+    fun `complete M8 bundle is freshly recomputed and rejects missing extra and stale evidence`() {
+        val root = createTempDirectory("binding-m8").toFile()
+        try {
+            val members = (0 until 556).map { index ->
+                "common|owner=sample/Owner|kind=property|abi=sample/Owner.value$index"
+            }.sorted()
+            val fixture = CrossLanguageBindingCliFixture(
+                root,
+                members,
+                "binding-obligations-m8.json",
+            )
+            CrossLanguageBinding.entries.filter { it.isActive(CrossLanguageBindingPhase.M8) }.forEach { language ->
+                fixture.writeReceipt(
+                    language,
+                    phase = CrossLanguageBindingPhase.M8,
+                    excludedMembers = if (language == CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT) {
+                        members.take(12)
+                    } else {
+                        emptyList()
+                    },
+                )
+            }
+            fixture.writeCompleteAudit(CrossLanguageBindingPhase.M8)
+            CrossLanguageBinding.entries.filter { it.isActive(CrossLanguageBindingPhase.M8) }.forEach { language ->
+                fixture.receipt(language).copyTo(root.resolve("${language.id}-parity.json"))
+            }
+            val files = crossLanguageM8EvidenceFileNames.associateWith(root::resolve)
+
+            val audit = verifyCompleteCrossLanguageM8Evidence(files)
+
+            assertEquals(CrossLanguageBindingAuditSummary(6_116, 3_324, 2_780, 12, 3_324, 0), audit.summary)
+            assertFailsWith<IllegalStateException> {
+                verifyCompleteCrossLanguageM8Evidence(files - "c-abi-parity.json")
+            }
+            assertFailsWith<IllegalStateException> {
+                verifyCompleteCrossLanguageM8Evidence(files + ("extra.json" to root.resolve("extra.json")))
+            }
+            root.resolve("c-abi-parity.json").writeBytes(root.resolve("kotlin-parity.json").readBytes())
+            assertFailsWith<IllegalStateException> { verifyCompleteCrossLanguageM8Evidence(files) }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     @Test
     fun `materializes Kotlin Java and JavaScript proof with every remaining active and future pair`() {
         val javaScript = receipt(CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT, FULL_MEMBER_SET).let { receipt ->

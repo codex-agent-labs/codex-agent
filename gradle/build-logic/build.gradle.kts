@@ -89,6 +89,16 @@ val releaseToolingClasses = listOf(
     "CrossLanguageBindingTestEvidence",
     "CrossLanguageBindingTestStatus",
     "CrossLanguageCanonicalApiEvidence",
+    "CrossLanguageCAbiBindingEvidenceInput",
+    "CrossLanguageCAbiBindingEvidenceKt",
+    "CrossLanguageCAbiConsumerProof",
+    "CrossLanguageCAbiEvidenceValues",
+    "CrossLanguageCAbiPackageEvidenceKt",
+    "CrossLanguageCAbiPackageInput",
+    "CrossLanguageCAbiPackageSnapshot",
+    "CrossLanguageCAbiScenarioMapping",
+    "CrossLanguageCAbiScenarioProof",
+    "CrossLanguageCAbiTargetSpec",
     "CrossLanguageObligationStatus",
     "CrossLanguageProjectionClaim",
     "CrossLanguageScenarioEvidence",
@@ -134,6 +144,11 @@ val releaseToolingClasses = listOf(
     "ReviewedPrivacyApi",
     "TransportProducerIdentity",
     "TransportedRuntimeEvidence",
+    "CAbiBindingBootstrapClaim",
+    "CAbiBindingBootstrapEvidence",
+    "CAbiBindingBootstrapTest",
+    "CAbiBinaryInspection",
+    "CAbiPackageMember",
 )
 val releaseToolingJar = tasks.register<Jar>("releaseToolingJar") {
     group = "build"

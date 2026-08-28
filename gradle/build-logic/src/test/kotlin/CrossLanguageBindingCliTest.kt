@@ -89,15 +89,18 @@ class CrossLanguageBindingCliTest {
     }
 }
 
-internal class CrossLanguageBindingCliFixture(val root: File) {
+internal class CrossLanguageBindingCliFixture(
+    val root: File,
+    val members: List<String> = listOf(
+        "common|owner=sample/Owner|kind=function|abi=sample/Owner.first",
+        "common|owner=sample/Owner|kind=property|abi=sample/Owner.second",
+    ),
+    outputName: String = "binding-obligations-m7_5.json",
+) {
     val apiReport: File = root.resolve("canonical-api.json")
     val coverageReceipt: File = root.resolve("canonical-coverage.json")
     val receiptDirectory: File = root.resolve("receipts")
-    val output: File = root.resolve("binding-obligations-m7_5.json")
-    val members = listOf(
-        "common|owner=sample/Owner|kind=function|abi=sample/Owner.first",
-        "common|owner=sample/Owner|kind=property|abi=sample/Owner.second",
-    )
+    val output: File = root.resolve(outputName)
 
     init {
         writeApiReport()
@@ -113,6 +116,7 @@ internal class CrossLanguageBindingCliFixture(val root: File) {
         language: CrossLanguageBinding,
         phase: CrossLanguageBindingPhase = CrossLanguageBindingPhase.M7_5,
         claimedMembers: List<String> = members,
+        excludedMembers: List<String> = emptyList(),
     ) {
         val testId = "sample.${language.name}BindingTest#projection"
         val symbols = if (language == CrossLanguageBinding.KOTLIN) members else members.mapIndexed { index, _ ->
@@ -140,7 +144,7 @@ internal class CrossLanguageBindingCliFixture(val root: File) {
                     CrossLanguageScenarioEvidence(language, scenario, listOf(testId))
                 },
                 projectionClaims = if (language == CrossLanguageBinding.KOTLIN) emptyList() else
-                    claimedMembers.map { member ->
+                    claimedMembers.filterNot(excludedMembers::contains).map { member ->
                         val index = members.indexOf(member).also { check(it >= 0) }
                         CrossLanguageProjectionClaim(
                             capabilityKey = member,
@@ -150,7 +154,13 @@ internal class CrossLanguageBindingCliFixture(val root: File) {
                             sharedScenarios = CrossLanguageBindingScenario.entries,
                         )
                     },
-                applicabilityExclusions = emptyList(),
+                applicabilityExclusions = excludedMembers.map { member ->
+                    CrossLanguageApplicabilityExclusion(
+                        member,
+                        language,
+                        "This exact canonical capability is not applicable to the fixture projection.",
+                    )
+                },
             ),
         )
     }

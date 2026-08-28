@@ -2,6 +2,7 @@ import java.io.File
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.bundling.Zip
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
@@ -22,16 +23,11 @@ val importedClassifierDirectory = providers.gradleProperty("codexAgent.desktopCl
 val supervisorDirectory = providers.gradleProperty("codexAgent.desktopSupervisorDirectory")
     .map(::file)
     .orElse(layout.buildDirectory.dir("supervisor").map { it.asFile })
-val hostOs = System.getProperty("os.name").lowercase()
-val hostArch = System.getProperty("os.arch").lowercase()
-val hostTarget = when {
-    "mac" in hostOs && hostArch in setOf("aarch64", "arm64") -> "macosArm64"
-    "mac" in hostOs && hostArch in setOf("amd64", "x86_64") -> "macosX64"
-    "linux" in hostOs && hostArch in setOf("aarch64", "arm64") -> "linuxArm64"
-    "linux" in hostOs && hostArch in setOf("amd64", "x86_64") -> "linuxX64"
-    "windows" in hostOs && hostArch in setOf("amd64", "x86_64") -> "mingwX64"
-    else -> null
-}
+val hostTarget = crossLanguageCAbiHostTarget(
+    System.getProperty("os.name"),
+    System.getProperty("os.arch"),
+)
+val localCAbiRunner = hostTarget?.let(crossLanguageCAbiTargetSpecs::getValue)
 val hostSupervisorName = if (hostTarget == "mingwX64") {
     "codex-process-supervisor.exe"
 } else {
@@ -183,6 +179,91 @@ extensions.configure<KotlinMultiplatformExtension> {
     sourceSets.getByName("commonMain").kotlin.srcDir(generateDesktopDistributionSource)
 }
 
+val cAbiCandidateCommit = providers.gradleProperty("codexAgent.candidateCommit")
+val cAbiCandidateTree = providers.gradleProperty("codexAgent.candidateTree")
+val cAbiReviewedHeader = layout.projectDirectory.file("native/c-api/include/codex_agent.h")
+val cAbiLicense = rootProject.layout.projectDirectory.file("LICENSE")
+val cAbiNotice = rootProject.layout.projectDirectory.file("THIRD_PARTY_NOTICES.md")
+fun cAbiExportPolicy(target: String) = layout.projectDirectory.file(
+    when {
+        target.startsWith("macos") -> "native/c-api/exports/macos.exports"
+        target.startsWith("linux") -> "native/c-api/exports/linux.map"
+        target == "mingwX64" -> "native/c-api/exports/windows.def"
+        else -> error("Unsupported C ABI package target: $target")
+    },
+)
+fun cAbiReleaseLibrary(target: String) = layout.buildDirectory.file(
+    "bin/$target/releaseShared/" + when {
+        target.startsWith("macos") -> "libcodex_agent.dylib"
+        target.startsWith("linux") -> "libcodex_agent.so"
+        target == "mingwX64" -> "codex_agent.dll"
+        else -> error("Unsupported C ABI package target: $target")
+    },
+)
+val mingwMsvcImportLibrary = layout.buildDirectory.file("c-abi/mingwX64/codex_agent.lib")
+val generateMingwX64MsvcImportLibrary = tasks.register<Exec>("generateMingwX64MsvcImportLibrary") {
+    group = "distribution"
+    description = "Generates the reviewed Windows C ABI MSVC import library."
+    dependsOn("linkReleaseSharedMingwX64")
+    val definition = cAbiExportPolicy("mingwX64")
+    val tool = providers.gradleProperty("codexAgent.cAbiTool.msvcImport").orElse("lib")
+    inputs.file(definition).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.property("tool", tool)
+    outputs.file(mingwMsvcImportLibrary)
+    outputs.upToDateWhen { false }
+    doFirst {
+        mingwMsvcImportLibrary.get().asFile.parentFile.mkdirs()
+        commandLine(
+            tool.get(), "/nologo", "/machine:x64", "/brepro",
+            "/def:${definition.asFile.absolutePath}",
+            "/out:${mingwMsvcImportLibrary.get().asFile.absolutePath}",
+        )
+    }
+}
+val cAbiPackageTasks = crossLanguageCAbiTargetSpecs.mapValues { (target, spec) ->
+    tasks.register<PackageCrossLanguageCAbiSdkTask>(
+        "package${target.replaceFirstChar(Char::uppercase)}CAbiSdk",
+    ) {
+        group = "distribution"
+        description = "Packages the verified ${spec.classifier} Desktop C ABI SDK."
+        dependsOn(if (target == "mingwX64") generateMingwX64MsvcImportLibrary else
+            tasks.named("linkReleaseShared${target.replaceFirstChar(Char::uppercase)}"))
+        this.target.set(target)
+        classifier.set(spec.classifier)
+        libraryVersion.set(project.version.toString())
+        producerCommit.set(cAbiCandidateCommit)
+        producerTree.set(cAbiCandidateTree)
+        reviewedHeader.set(cAbiReviewedHeader)
+        license.set(cAbiLicense)
+        notice.set(cAbiNotice)
+        library.set(cAbiReleaseLibrary(target))
+        exportPolicy.set(cAbiExportPolicy(target))
+        if (target == "mingwX64") {
+            gnuImportLibrary.set(layout.buildDirectory.file(
+                "bin/mingwX64/releaseShared/libcodex_agent.dll.a",
+            ))
+            msvcImportLibrary.set(mingwMsvcImportLibrary)
+        }
+        outputFile.set(layout.buildDirectory.file(
+            "distributions/${crossLanguageCAbiArchiveFileName(project.version.toString(), target)}",
+        ))
+    }
+}
+val cAbiArchiveFiles = crossLanguageCAbiTargetSpecs.mapValues { (target, _) ->
+    if (importedClassifierDirectory.isPresent) {
+        layout.file(importedClassifierDirectory.map { directory ->
+            file("$directory/${crossLanguageCAbiArchiveFileName(project.version.toString(), target)}")
+        })
+    } else {
+        cAbiPackageTasks.getValue(target).flatMap { it.outputFile }
+    }
+}
+tasks.register("packageDesktopCAbiSdks") {
+    group = "distribution"
+    description = "Packages all five Desktop C ABI SDK classifiers."
+    dependsOn(cAbiPackageTasks.values)
+}
+
 val cAbiBootstrapEvidenceFile =
     layout.buildDirectory.file("reports/cross-language-api/c-abi/bootstrap-evidence.json")
 val cAbiBootstrapConsumerOutput = layout.buildDirectory.dir("c-abi-bootstrap/consumers")
@@ -207,7 +288,8 @@ rootProject.findProject(":codex-agent-core")?.tasks?.matching {
 }?.configureEach {
     dependsOn(invalidateCAbiBootstrapEvidence)
 }
-tasks.register<GenerateCAbiBootstrapEvidenceTask>("generateCodexAgentCAbiBootstrapEvidence") {
+val generateCAbiBootstrapEvidence =
+    tasks.register<GenerateCAbiBootstrapEvidenceTask>("generateCodexAgentCAbiBootstrapEvidence") {
     group = "verification"
     description = "Emits observed macOS Arm64 evidence for the finite C ABI bootstrap slice."
     dependsOn(
@@ -332,6 +414,15 @@ tasks.register<GenerateCAbiBootstrapEvidenceTask>("generateCodexAgentCAbiBootstr
     consumerOutputDirectory.set(cAbiBootstrapConsumerOutput)
     evidenceFile.set(cAbiBootstrapEvidenceFile)
 }
+val cAbiScenarioProofFile =
+    layout.buildDirectory.file("reports/cross-language-api/c-abi/c-abi-scenarios.json")
+tasks.register<GenerateCrossLanguageCAbiScenarioProofTask>("generateCodexAgentCAbiScenarioProof") {
+    group = "verification"
+    description = "Emits the exact14-scenario C ABI behavior proof from observed Native evidence."
+    dependsOn(generateCAbiBootstrapEvidence)
+    bootstrapEvidence.set(cAbiBootstrapEvidenceFile)
+    proofFile.set(cAbiScenarioProofFile)
+}
 
 val nodeRuntimeEvidenceRunnerArchive = layout.file(
     providers.gradleProperty("codexAgent.nodeRuntimeEvidenceRunnerArchive").map(::File),
@@ -394,6 +485,25 @@ check(desktopManifest.distributions.map { it.target }.toSet() == desktopRuntimeE
 }
 val requestedEvidenceTarget = providers.gradleProperty("codexAgent.desktopEvidenceTarget").orNull
 requestedEvidenceTarget?.let { check(it in desktopRuntimeEvidenceTargets) { "Unknown desktop evidence target: $it" } }
+val cAbiConsumerSources = layout.projectDirectory.dir("native/c-api/consumer").asFileTree.matching {
+    include("*.c", "*.cpp")
+}
+fun cAbiToolDefaults(target: String): Map<String, String> = when {
+    target.startsWith("macos") -> mapOf(
+        "c" to "clang", "cpp" to "clang++", "file" to "file", "architecture" to "lipo",
+        "symbols" to "nm", "loader" to "otool", "versions" to "otool",
+    )
+    target.startsWith("linux") -> mapOf(
+        "c" to "cc", "cpp" to "c++", "file" to "file", "architecture" to "readelf",
+        "symbols" to "nm", "loader" to "readelf", "versions" to "readelf",
+    )
+    target == "mingwX64" -> mapOf(
+        "c" to "cl", "cpp" to "cl", "gnuC" to "gcc", "gnuCpp" to "g++",
+        "architecture" to "dumpbin", "symbols" to "dumpbin", "msvcImport" to "lib",
+        "gnuImport" to "nm",
+    )
+    else -> error("Unsupported C ABI evidence target: $target")
+}
 desktopManifest.distributions.forEach { distribution ->
     val packageTask = desktopPackageTasks.getValue(distribution)
     val targetTitle = distribution.target.replaceFirstChar(Char::uppercase)
@@ -405,6 +515,37 @@ desktopManifest.distributions.forEach { distribution ->
                 "-PcodexAgent.desktopEvidenceTarget must equal ${distribution.target}"
             }
         }
+    }
+    tasks.register<GenerateCrossLanguageCAbiPackageEvidenceTask>(
+        "generate${targetTitle}CAbiPackageEvidence",
+    ) {
+        group = "verification"
+        description = "Executes exact ${distribution.target} C ABI package and consumer evidence."
+        dependsOn(validateEvidenceTarget)
+        if (!importedClassifierDirectory.isPresent) dependsOn(cAbiPackageTasks.getValue(distribution.target))
+        target.set(distribution.target)
+        classifier.set(crossLanguageCAbiTargetSpecs.getValue(distribution.target).classifier)
+        libraryVersion.set(project.version.toString())
+        producerCommit.set(cAbiCandidateCommit)
+        producerTree.set(cAbiCandidateTree)
+        runnerOs.set(providers.environmentVariable("RUNNER_OS")
+            .orElse(localCAbiRunner?.runnerOs ?: "unsupported"))
+        runnerArch.set(providers.environmentVariable("RUNNER_ARCH")
+            .orElse(localCAbiRunner?.runnerArch ?: "unsupported"))
+        cAbiToolDefaults(distribution.target).forEach { (id, executable) ->
+            tools.put(id, providers.gradleProperty("codexAgent.cAbiTool.$id").orElse(executable))
+        }
+        compileOnlyConsumers.set(crossLanguageCAbiCompileOnlyConsumers.sorted())
+        packageFile.set(cAbiArchiveFiles.getValue(distribution.target))
+        reviewedHeader.set(cAbiReviewedHeader)
+        license.set(cAbiLicense)
+        notice.set(cAbiNotice)
+        exportPolicy.set(cAbiExportPolicy(distribution.target))
+        consumerSources.from(cAbiConsumerSources)
+        evidenceFile.set(layout.buildDirectory.file(
+            "reports/cross-language-api/c-abi/packages/" +
+                crossLanguageCAbiPackageEvidenceFileName(distribution.target),
+        ))
     }
     registerJvmRuntimeEvidenceTask(
         distribution,
@@ -463,6 +604,13 @@ pluginManager.withPlugin("maven-publish") {
                         classifier = distribution.classifier
                         extension = "zip"
                         builtBy(packageTask)
+                    }
+                }
+                crossLanguageCAbiTargetSpecs.forEach { (target, spec) ->
+                    artifact(cAbiArchiveFiles.getValue(target)) {
+                        classifier = spec.classifier
+                        extension = "zip"
+                        if (!importedClassifierDirectory.isPresent) builtBy(cAbiPackageTasks.getValue(target))
                     }
                 }
             }

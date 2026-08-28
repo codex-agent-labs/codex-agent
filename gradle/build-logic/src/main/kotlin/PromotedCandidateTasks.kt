@@ -10,7 +10,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 
-internal const val PROMOTED_CANDIDATE_SCHEMA = 13
+internal const val PROMOTED_CANDIDATE_SCHEMA = 14
 internal const val RELEASE_TOOLING_FILE_NAME = "codex-agent-release-tooling.jar"
 
 internal fun aggregateReleaseSbomFileName(version: String) = "codex-agent-$version.cdx.json"
@@ -416,10 +416,19 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
 
         val promotionRoot = inputs.promotedArtifacts
         val validationRoot = promotionRoot.resolve("codex-agent-promoted-validation-$commit")
-        val validationFiles = safeRegularFiles(validationRoot).associateBy { it.name }
-        check(validationFiles.keys == setOf("impact-plan.json", "validation-receipt.json", "promotion-receipt.json")) {
+        val validationEntries = safeRegularFiles(validationRoot)
+        check(validationEntries.all { it.parentFile.canonicalFile == validationRoot.canonicalFile }) {
+            "Promoted validation artifact files must be at its root"
+        }
+        val validationFiles = validationEntries.associateBy { it.name }
+        val expectedValidationFiles = setOf(
+            "impact-plan.json", "validation-receipt.json", "promotion-receipt.json",
+        ) + crossLanguageM8EvidenceFileNames
+        check(validationFiles.keys == expectedValidationFiles && validationEntries.size == expectedValidationFiles.size) {
             "Promoted validation artifact has a missing or unexpected file set"
         }
+        val crossLanguageM8Sources = crossLanguageM8EvidenceFileNames.associateWith(validationFiles::getValue)
+        verifyCompleteCrossLanguageM8Evidence(crossLanguageM8Sources)
         val promotionReceipt = validationFiles.getValue("promotion-receipt.json").readReleaseObject()
         validatePromotionReceipt(
             promotionReceipt, commit, tree, inputs.promotionRunId, inputs.promotionRunAttempt,
@@ -489,6 +498,9 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         val validationReceiptFile = copyToPayload(
             validationFiles.getValue("validation-receipt.json"), payload, "validation-receipt.json",
         )
+        val crossLanguageM8Files = crossLanguageM8Sources.toSortedMap().values.map { source ->
+            copyToPayload(source, payload, source.name)
+        }
 
         val policies = linkedMapOf(
             "approvals" to copyToPayload(inputs.approvals, payload),
@@ -543,6 +555,9 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
                 put("promotionReceipt", promotionReceiptFile.releaseRecord())
                 put("impactPlan", impactPlanFile.releaseRecord())
                 put("validationReceipt", validationReceiptFile.releaseRecord())
+                put("crossLanguageM8", buildJsonArray {
+                    crossLanguageM8Files.forEach { add(it.releaseRecord()) }
+                })
                 put("promotedArtifactInventory", promotionInventory.releaseRecord())
                 put("privacyAudit", privacyAudit.releaseRecord())
                 put("releaseTooling", releaseTooling.releaseRecord())
@@ -1029,14 +1044,27 @@ private fun verifyPromotedPublicationBytes(lanes: Map<String, PromotedLane>, mav
     check(android.releaseDigest() == mavenAndroid.releaseDigest()) {
         "Promoted Android AAR and Maven publication differ"
     }
-    val desktop = lanes.filterKeys { it.startsWith("desktop-") }.values.map { it.one("classifier") }
-    check(desktop.size == desktopRuntimeEvidenceTargets.size) { "Promoted desktop classifier set is incomplete" }
     val mavenDesktop = maven.resolve(
         "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-desktop/$version",
     )
-    desktop.forEach { classifier ->
-        check(classifier.releaseDigest() == mavenDesktop.resolve(classifier.name).releaseDigest()) {
-            "Promoted desktop classifier and Maven publication differ: ${classifier.name}"
+    check(promotedDesktopLanes.keys == desktopRuntimeEvidenceTargets.keys &&
+        promotedDesktopLanes.keys == crossLanguageCAbiTargetSpecs.keys) {
+        "Promoted desktop target ownership is inconsistent"
+    }
+    promotedDesktopLanes.forEach { (target, laneName) ->
+        val lane = lanes.getValue(laneName)
+        val classifier = lane.one("classifier")
+        val expectedClassifier =
+            "codex-agent-runtime-desktop-$version-${desktopRuntimeEvidenceTargets.getValue(target).classifier}.zip"
+        check(classifier.name == expectedClassifier &&
+            classifier.releaseDigest() == mavenDesktop.resolve(expectedClassifier).releaseDigest()) {
+            "Promoted desktop classifier and Maven publication differ: $expectedClassifier"
+        }
+        val cAbiSdk = lane.one("c-abi-sdk")
+        val expectedCAbiSdk = crossLanguageCAbiArchiveFileName(version, target)
+        check(cAbiSdk.name == expectedCAbiSdk &&
+            cAbiSdk.releaseDigest() == mavenDesktop.resolve(expectedCAbiSdk).releaseDigest()) {
+            "Promoted C ABI SDK and Maven publication differ: $expectedCAbiSdk"
         }
     }
 }

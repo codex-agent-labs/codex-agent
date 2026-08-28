@@ -39,7 +39,72 @@ fun main(arguments: Array<String>) {
             check(releaseJson.parseToJsonElement("{\"ready\":true}").jsonObject.releaseBoolean("ready"))
             check(requireIosFreeDiskSpace(2L * 1024 * 1024 * 1024, 1) > 0)
             check(desktopRuntimeEvidenceFileName("linuxX64") == "desktop-runtime-linuxX64.json")
+            check(crossLanguageCAbiTargetSpecs.size == 5)
+            check(productionCrossLanguageCAbiScenarioMappings().sumOf { it.testIds.size } == 231)
             println("codex-agent release tooling is ready")
+        }
+        "assemble-c-abi-binding-receipt" -> {
+            options.requireOnly(
+                "repository", "bootstrap", "scenario-proof", "packages", "proofs",
+                "version", "commit", "tree", "output",
+            )
+            val output = options.file("output")
+            Files.deleteIfExists(output.toPath())
+            val repository = options.file("repository").canonicalFile
+            val bootstrap = options.file("bootstrap")
+            val scenarioFile = options.file("scenario-proof")
+            val packages = options.file("packages")
+            val proofs = options.file("proofs")
+            val version = options.required("version")
+            val commit = options.required("commit")
+            val tree = options.required("tree")
+            val archiveNames = crossLanguageCAbiTargetSpecs.keys.associateWith { target ->
+                crossLanguageCAbiArchiveFileName(version, target)
+            }
+            val proofNames = crossLanguageCAbiTargetSpecs.keys.associateWith(::crossLanguageCAbiPackageEvidenceFileName)
+            requireExactReleaseToolingDirectory(packages, archiveNames.values.toSet(), "C ABI packages")
+            requireExactReleaseToolingDirectory(proofs, proofNames.values.toSet(), "C ABI package proofs")
+            val header = repository.resolve("codex-agent-runtime-desktop/native/c-api/include/codex_agent.h")
+            val license = repository.resolve("LICENSE")
+            val notice = repository.resolve("THIRD_PARTY_NOTICES.md")
+            val consumers = repository.resolve("codex-agent-runtime-desktop/native/c-api/consumer")
+                .listFiles().orEmpty().filter { it.extension in setOf("c", "cpp") }
+            crossLanguageCAbiTargetSpecs.keys.sorted().forEach { target ->
+                val exportPolicy = repository.resolve(
+                    "codex-agent-runtime-desktop/native/c-api/exports/" + when {
+                        target.startsWith("macos") -> "macos.exports"
+                        target.startsWith("linux") -> "linux.map"
+                        else -> "windows.def"
+                    },
+                )
+                portableVerifyCrossLanguageCAbiPackageEvidence(
+                    target, version, commit, tree,
+                    packages.resolve(archiveNames.getValue(target)),
+                    proofs.resolve(proofNames.getValue(target)),
+                    header, license, notice, exportPolicy, consumers,
+                )
+            }
+            val scenario = readCrossLanguageCAbiScenarioProof(scenarioFile, bootstrap)
+            val artifacts = buildList {
+                add(CrossLanguageBindingArtifactIdentity("c-abi-bootstrap", bootstrap.releaseDigest()))
+                add(CrossLanguageBindingArtifactIdentity(C_ABI_SCENARIO_PROOF_ARTIFACT_ID, scenarioFile.releaseDigest()))
+                crossLanguageCAbiTargetSpecs.keys.sorted().forEach { target ->
+                    add(CrossLanguageBindingArtifactIdentity(
+                        crossLanguageCAbiPackageProofIds.getValue(target),
+                        proofs.resolve(proofNames.getValue(target)).releaseDigest(),
+                    ))
+                }
+            }
+            writeCrossLanguageCAbiBindingReceipt(
+                output,
+                CrossLanguageCAbiBindingEvidenceInput(
+                    bootstrapEvidence = bootstrap,
+                    scenarioMappings = scenario.mappings,
+                    artifactIdentities = artifacts,
+                    testProgramSha256 = scenario.testProgramSha256,
+                    testResultsSha256 = scenario.testResultsSha256,
+                ),
+            )
         }
         "audit-cross-language-bindings" -> {
             options.requireOnly("phase", "api-report", "coverage-receipt", "receipts", "output")
@@ -178,5 +243,15 @@ fun main(arguments: Array<String>) {
             }
         }
         else -> error("Unknown release-tooling command: $command")
+    }
+}
+
+private fun requireExactReleaseToolingDirectory(directory: File, expected: Set<String>, label: String) {
+    check(directory.isDirectory && !Files.isSymbolicLink(directory.toPath())) {
+        "$label directory is missing or symbolic: $directory"
+    }
+    val actual = directory.listFiles().orEmpty().map(File::getName).toSet()
+    check(actual == expected && directory.listFiles().orEmpty().size == expected.size) {
+        "$label inventory mismatch: expected=${expected.sorted()} actual=${actual.sorted()}"
     }
 }

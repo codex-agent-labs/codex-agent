@@ -18,11 +18,14 @@ sys.path.insert(0, str(CI_ROOT))
 
 from impact import LANES  # noqa: E402
 from promote import (  # noqa: E402
+    M8_VALIDATION_FILES,
+    PROMOTED_VALIDATION_FILES,
     already_promoted,
     create_promotion_receipt,
     discover,
     predecessor_promotion_sources,
     selected_validation_run,
+    validate_source_artifacts,
     validate_lane,
     wait_for_predecessor_promotion,
 )
@@ -110,9 +113,11 @@ class PromotionTest(unittest.TestCase):
         ))
         self.plan_zip = self.zip_tree(self.plan_root, self.root / "plan.zip")
         self.aggregate_zip = self.root / "aggregate.zip"
-        with zipfile.ZipFile(self.aggregate_zip, "w") as archive:
-            archive.write(self.plan_path, "impact-plan.json")
-            archive.write(self.aggregate_path, "validation-receipt.json")
+        self.m8_root = self.root / "m8"
+        self.m8_root.mkdir()
+        for name in M8_VALIDATION_FILES:
+            self.write_json(self.m8_root / name, {"artifact": name})
+        self.rebuild_aggregate_zip(M8_VALIDATION_FILES)
         self.lane_zip = self.zip_tree(self.lane_root, self.root / "lane.zip")
         self.run = {
             "id": 71,
@@ -146,6 +151,21 @@ class PromotionTest(unittest.TestCase):
             for path in root.rglob("*"):
                 if path.is_file():
                     archive.write(path, path.relative_to(root))
+        return destination
+
+    def rebuild_aggregate_zip(self, m8_names: set[str]) -> None:
+        with zipfile.ZipFile(self.aggregate_zip, "w") as archive:
+            archive.write(self.plan_path, "impact-plan.json")
+            archive.write(self.aggregate_path, "validation-receipt.json")
+            for name in sorted(m8_names):
+                archive.write(self.m8_root / name, name)
+
+    def aggregate_fixture(self, destination: Path, m8_names: set[str]) -> Path:
+        destination.mkdir()
+        shutil.copyfile(self.plan_path, destination / "impact-plan.json")
+        shutil.copyfile(self.aggregate_path, destination / "validation-receipt.json")
+        for name in m8_names:
+            shutil.copyfile(self.m8_root / name, destination / name)
         return destination
 
     @staticmethod
@@ -236,6 +256,55 @@ class PromotionTest(unittest.TestCase):
         self.assertEqual(71, promotion_receipt["validationRunId"])
         self.assertEqual(41, promotion_receipt["lanes"]["android"]["sourceRunId"])
 
+    def test_source_validation_accepts_only_exact_base_or_complete_m8_root_sets(self) -> None:
+        plan_root = self.root / "validated-plan"
+        shutil.copytree(self.plan_root, plan_root)
+        for label, names in (("base", set()), ("m8", M8_VALIDATION_FILES)):
+            with self.subTest(label=label):
+                result = validate_source_artifacts(
+                    plan_root,
+                    self.aggregate_fixture(self.root / f"aggregate-{label}", names),
+                    REPOSITORY,
+                    self.validated_commit,
+                    self.final_tree,
+                )
+                self.assertEqual(names, set(result[-1]))
+
+    def test_source_validation_rejects_partial_extra_nested_and_symlink_sets(self) -> None:
+        plan_root = self.root / "strict-plan"
+        shutil.copytree(self.plan_root, plan_root)
+        fixtures = {
+            "partial": self.aggregate_fixture(
+                self.root / "aggregate-partial", {next(iter(M8_VALIDATION_FILES))}
+            ),
+            "extra": self.aggregate_fixture(self.root / "aggregate-extra", M8_VALIDATION_FILES),
+            "nested": self.aggregate_fixture(self.root / "aggregate-nested", set()),
+            "symlink": self.aggregate_fixture(self.root / "aggregate-symlink", M8_VALIDATION_FILES),
+        }
+        (fixtures["extra"] / "unexpected.json").write_text("{}\n", encoding="utf-8")
+        nested = fixtures["nested"] / "nested"
+        nested.mkdir()
+        shutil.copyfile(self.m8_root / "canonical-api.json", nested / "canonical-api.json")
+        symlink = fixtures["symlink"] / "canonical-api.json"
+        symlink.unlink()
+        symlink.symlink_to(self.m8_root / "canonical-api.json")
+        for label, root in fixtures.items():
+            with self.subTest(label=label), self.assertRaisesRegex(
+                ValueError, "missing, partial, nested, or unexpected"
+            ):
+                validate_source_artifacts(
+                    plan_root,
+                    root,
+                    REPOSITORY,
+                    self.validated_commit,
+                    self.final_tree,
+                )
+
+    def test_missing_current_m8_bundle_fails_when_any_owner_lane_is_active(self) -> None:
+        self.rebuild_aggregate_zip(set())
+        with self.assertRaisesRegex(ValueError, "M8 bundle while owner lanes are active"):
+            self.discover(self.root / "active-without-m8")
+
     def test_full_initial_promotion_does_not_wait_for_a_predecessor(self) -> None:
         with (
             patch("promote.immediate_first_parent") as first_parent,
@@ -259,9 +328,7 @@ class PromotionTest(unittest.TestCase):
             output=self.aggregate_path,
         ))
         self.zip_tree(self.plan_root, self.plan_zip)
-        with zipfile.ZipFile(self.aggregate_zip, "w") as archive:
-            archive.write(self.plan_path, "impact-plan.json")
-            archive.write(self.aggregate_path, "validation-receipt.json")
+        self.rebuild_aggregate_zip(set())
 
         predecessor = "b" * 40
         absent = set(LANES) - {"android"}
@@ -277,15 +344,30 @@ class PromotionTest(unittest.TestCase):
             }
             for lane in absent
         }
+        def carried_with_m8(*arguments, **_keywords):
+            destination = arguments[-1]
+            destination.mkdir(parents=True)
+            for name in M8_VALIDATION_FILES:
+                shutil.copyfile(self.m8_root / name, destination / name)
+            return carried
+
         with (
             patch("promote.immediate_first_parent", return_value=predecessor) as first_parent,
-            patch("promote.wait_for_predecessor_promotion", return_value=carried) as wait,
+            patch("promote.wait_for_predecessor_promotion", side_effect=carried_with_m8) as wait,
         ):
             self.discover(self.root / "incremental")
         first_parent.assert_called_once_with(API_URL, REPOSITORY, self.final_commit, "token")
         self.assertEqual(predecessor, wait.call_args.args[2])
         self.assertEqual(self.final_commit, wait.call_args.args[3])
         self.assertEqual(absent, wait.call_args.args[5])
+        self.assertEqual(
+            M8_VALIDATION_FILES,
+            {
+                path.name
+                for path in (self.root / "incremental/source").iterdir()
+                if path.name in M8_VALIDATION_FILES
+            },
+        )
         promotion = json.loads(
             (self.root / "incremental/promotion-plan.json").read_text(encoding="utf-8")
         )
@@ -410,10 +492,7 @@ class PromotionTest(unittest.TestCase):
         promoted_zip = self.zip_tree(output / "source", self.root / "promoted.zip")
         inventory_zip = self.zip_tree(output / "plan", self.root / "promoted-inventories.zip")
         with zipfile.ZipFile(promoted_zip) as archive:
-            self.assertEqual(
-                {"impact-plan.json", "validation-receipt.json", "promotion-receipt.json"},
-                set(archive.namelist()),
-            )
+            self.assertEqual(PROMOTED_VALIDATION_FILES, set(archive.namelist()))
         promoted_aggregate = f"codex-agent-promoted-validation-{self.final_commit}"
         promoted_inventories = f"codex-agent-promoted-inventories-{self.final_commit}"
         artifacts = {
@@ -501,6 +580,7 @@ class PromotionTest(unittest.TestCase):
             for index, lane in enumerate(LANES)
         })
         requested = {"consumer-common", "ios-package"}
+        carried_m8 = self.root / "carried-m8"
         with (
             patch("promote.workflow_runs", return_value=[prior_run]),
             patch("promote.artifacts_for_run", return_value=artifacts),
@@ -522,10 +602,45 @@ class PromotionTest(unittest.TestCase):
                 output / "plan/impact-plan.json",
                 requested,
                 "token",
+                carried_m8,
             )
         self.assertEqual(requested, set(carried))
         self.assertTrue(all(item["sourceKind"] == "promotion" for item in carried.values()))
         self.assertTrue(all(item["sourceRunId"] == 81 for item in carried.values()))
+        self.assertEqual(M8_VALIDATION_FILES, {path.name for path in carried_m8.iterdir()})
+        for name in M8_VALIDATION_FILES:
+            self.assertEqual((output / "source" / name).read_bytes(), (carried_m8 / name).read_bytes())
+
+        (output / "plan/inventories/contracts/metadata-inputs.git-tree").write_text(
+            "different M8 owner inventory\n",
+            encoding="utf-8",
+        )
+        rejected_m8 = self.root / "rejected-m8"
+        with (
+            patch("promote.workflow_runs", return_value=[prior_run]),
+            patch("promote.artifacts_for_run", return_value=artifacts),
+            patch("promote.api_json", return_value={"tree": {"sha": self.final_tree}}),
+            patch(
+                "reuse.api_request",
+                side_effect=lambda url, _token: (
+                    inventory_zip.read_bytes()
+                    if url.endswith("prior-inventories.zip")
+                    else promoted_zip.read_bytes()
+                ),
+            ),
+            self.assertRaisesRegex(ValueError, "incompatible.*contracts"),
+        ):
+            predecessor_promotion_sources(
+                API_URL,
+                REPOSITORY,
+                self.final_commit,
+                "f" * 40,
+                output / "plan/impact-plan.json",
+                requested,
+                "token",
+                rejected_m8,
+            )
+        self.assertFalse(rejected_m8.exists())
 
         carried_plan_path = output / "carried-plan.json"
         carried_plan = json.loads((output / "promotion-plan.json").read_text(encoding="utf-8"))

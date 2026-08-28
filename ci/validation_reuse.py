@@ -14,17 +14,40 @@ from receipt import required_lanes, safe_extract
 from reuse import download_artifact, paginated_items, run_matches_pr
 
 
-def one(root: Path, name: str) -> Path:
-    matches = list(root.rglob(name))
-    if len(matches) != 1 or not matches[0].is_file() or matches[0].is_symlink():
-        raise ValueError(f"Expected exactly one safe {name}")
-    return matches[0]
+BASE_FILES = {"impact-plan.json", "validation-receipt.json"}
+M8_FILES = {
+    "canonical-api.json",
+    "canonical-coverage.json",
+    "kotlin-parity.json",
+    "java-parity.json",
+    "javascript-typescript-parity.json",
+    "swift-parity.json",
+    "objective-c-parity.json",
+    "c-abi-parity.json",
+    "binding-obligations-m8.json",
+}
+
+
+def exact_files(root: Path) -> set[str]:
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("Reusable validation artifact root is unsafe")
+    entries = list(root.iterdir())
+    if any(not entry.is_file() or entry.is_symlink() for entry in entries):
+        raise ValueError("Reusable validation artifact must contain only root regular files")
+    actual = {entry.name for entry in entries}
+    if actual not in (BASE_FILES, BASE_FILES | M8_FILES):
+        raise ValueError(
+            f"Reusable validation file set mismatch: expected={sorted(BASE_FILES)} or "
+            f"{sorted(BASE_FILES | M8_FILES)} actual={sorted(actual)}"
+        )
+    return actual
 
 
 def validate(root: Path, current_plan: Path) -> dict[str, object]:
     plan = json.loads(current_plan.read_text(encoding="utf-8"))
-    source_plan = json.loads(one(root, "impact-plan.json").read_text(encoding="utf-8"))
-    receipt = json.loads(one(root, "validation-receipt.json").read_text(encoding="utf-8"))
+    files = exact_files(root)
+    source_plan = json.loads((root / "impact-plan.json").read_text(encoding="utf-8"))
+    receipt = json.loads((root / "validation-receipt.json").read_text(encoding="utf-8"))
     expected = {
         "schemaVersion", "repository", "event", "validationCommit", "validationTree",
         "impactPlan", "lanes", "result",
@@ -38,6 +61,8 @@ def validate(root: Path, current_plan: Path) -> dict[str, object]:
     }
     if set(source_plan) != plan_keys or source_plan.get("schemaVersion") != 1:
         raise ValueError("Reusable PR impact plan schema mismatch")
+    if source_plan["lanes"].get("ios-swift-tests", {}).get("test") is True and files == BASE_FILES:
+        raise ValueError("Reusable PR validation lacks required M8 binding evidence")
     if receipt["event"] != "pull_request" or source_plan.get("event") != "pull_request":
         raise ValueError("Only authoritative PR validation may satisfy an identical merge group")
     if (
@@ -91,6 +116,9 @@ def materialize(root: Path, current_plan: Path, output: Path) -> None:
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if exact_files(root) == BASE_FILES | M8_FILES:
+        for name in M8_FILES:
+            shutil.copy2(root / name, output.parent / name)
 
 
 def discover(plan_path: Path, destination: Path, token: str, api_url: str) -> dict[str, object]:

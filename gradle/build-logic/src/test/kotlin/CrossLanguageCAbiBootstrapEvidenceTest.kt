@@ -318,7 +318,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             val wiring = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
             val generator = wiring.substringAfter(
                 "tasks.register<GenerateCAbiBootstrapEvidenceTask>(\"generateCodexAgentCAbiBootstrapEvidence\")",
-            ).substringBefore("\n}\n\nval nodeRuntimeEvidenceRunnerArchive")
+            ).substringBefore("\n}\nval cAbiScenarioProofFile")
             listOf(
                 "reports/cross-language-api/c-abi/bootstrap-evidence.json",
                 "c-abi-bootstrap/consumers",

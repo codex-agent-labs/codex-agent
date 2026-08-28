@@ -44,6 +44,17 @@ LANES = (
 
 CATEGORIES = ("production", "test", "metadata")
 
+M8_OWNER_LANES = frozenset((
+    "contracts",
+    "node-js",
+    "desktop-macos-arm64",
+    "desktop-macos-x64",
+    "desktop-linux-arm64",
+    "desktop-linux-x64",
+    "desktop-windows-x64",
+    "ios-swift-tests",
+))
+
 DEPENDENCIES = {
     "android": ("consumer-android",),
     "node-js": ("contracts", "consumer-node-js"),
@@ -99,6 +110,16 @@ SUPPORT_DEPENDENCIES = {
         ("contracts", "build"),
         ("contracts", "test"),
         ("node-js", "test"),
+        ("desktop-macos-arm64", "build"),
+        ("desktop-macos-arm64", "test"),
+        ("desktop-macos-x64", "build"),
+        ("desktop-macos-x64", "test"),
+        ("desktop-linux-arm64", "build"),
+        ("desktop-linux-arm64", "test"),
+        ("desktop-linux-x64", "build"),
+        ("desktop-linux-x64", "test"),
+        ("desktop-windows-x64", "build"),
+        ("desktop-windows-x64", "test"),
     ),
     "ios-package": (("ios-framework-device", "build"), ("ios-framework-simulator", "build")),
     "ios-privacy-metrics": (
@@ -368,6 +389,18 @@ def plan(
         propagated = True
         while propagated:
             propagated = False
+            if any(
+                lanes[lane][action]
+                for lane in M8_OWNER_LANES
+                for action in ("build", "test", "metadata")
+            ):
+                propagated |= require_action(
+                    root,
+                    lanes,
+                    "ios-swift-tests",
+                    "test",
+                    "required-by:cross-language-m8",
+                )
             for upstream, downstreams in DEPENDENCIES.items():
                 if lanes[upstream]["build"] and any(
                     not reason.startswith("required-by:")

@@ -6,7 +6,8 @@ build=${CI_LANE_BUILD:-false}
 test_lane=${CI_LANE_TEST:-false}
 metadata=${CI_LANE_METADATA:-false}
 commit=${CI_VALIDATION_COMMIT:?validation commit is required}
-args=(--build-cache --parallel --stacktrace -PcodexAgent.candidateCommit="$commit")
+tree=${CI_VALIDATION_TREE:?validation tree is required}
+args=(--build-cache --parallel --stacktrace -PcodexAgent.candidateCommit="$commit" -PcodexAgent.candidateTree="$tree")
 [ -z "${IOS_NATIVE_EVIDENCE:-}" ] || args+=(-PcodexAgent.iosNativeEvidenceDirectory="$IOS_NATIVE_EVIDENCE")
 [ -z "${IOS_DEVICE_FRAMEWORK:-}" ] || args+=(-PcodexAgent.iosDeviceFrameworkDirectory="$IOS_DEVICE_FRAMEWORK")
 [ -z "${IOS_SIMULATOR_FRAMEWORK:-}" ] || args+=(-PcodexAgent.iosSimulatorFrameworkDirectory="$IOS_SIMULATOR_FRAMEWORK")
@@ -18,34 +19,40 @@ args=(--build-cache --parallel --stacktrace -PcodexAgent.candidateCommit="$commi
 [ -z "${ANDROID_EVIDENCE:-}" ] || args+=(-PcodexAgent.androidRuntimeEvidenceDirectory="$ANDROID_EVIDENCE")
 
 run_desktop() {
-  local target=$1 native_task=$2 jvm_task=$3 node_task=$4 wasm_task=$5 classifier=$6 evidence_task=${7:-}
+  local target=$1 native_task=$2 jvm_task=$3 node_task=$4 wasm_task=$5 classifier=$6 evidence_task=${7:-} scenario_task=${8:-}
   local imported=(codex-agent-runtime-desktop/build/distributions/codex-agent-runtime-desktop-*-${classifier}.zip)
-  if [ "${#imported[@]}" -eq 1 ] && [ -f "${imported[0]}" ]; then
-    args+=(-PcodexAgent.desktopClassifierDirectory="$PWD/codex-agent-runtime-desktop/build/distributions")
-  fi
-  local package_task
+  local c_abi_classifier package_task c_abi_package_task c_abi_evidence_task
   case "$target" in
-    macosArm64) package_task=packageMacosArm64AppServer ;;
-    macosX64) package_task=packageMacosX64AppServer ;;
-    linuxX64) package_task=packageLinuxX64AppServer ;;
-    mingwX64) package_task=packageMingwX64AppServer ;;
+    macosArm64) package_task=packageMacosArm64AppServer; c_abi_classifier=c-abi-macos-arm64; c_abi_package_task=packageMacosArm64CAbiSdk; c_abi_evidence_task=generateMacosArm64CAbiPackageEvidence ;;
+    macosX64) package_task=packageMacosX64AppServer; c_abi_classifier=c-abi-macos-x64; c_abi_package_task=packageMacosX64CAbiSdk; c_abi_evidence_task=generateMacosX64CAbiPackageEvidence ;;
+    linuxX64) package_task=packageLinuxX64AppServer; c_abi_classifier=c-abi-linux-x64; c_abi_package_task=packageLinuxX64CAbiSdk; c_abi_evidence_task=generateLinuxX64CAbiPackageEvidence ;;
+    mingwX64) package_task=packageMingwX64AppServer; c_abi_classifier=c-abi-windows-x64; c_abi_package_task=packageMingwX64CAbiSdk; c_abi_evidence_task=generateMingwX64CAbiPackageEvidence ;;
     *) echo "Unsupported direct desktop target: $target" >&2; return 2 ;;
   esac
+  local imported_c_abi=(codex-agent-runtime-desktop/build/distributions/codex-agent-runtime-desktop-*-${c_abi_classifier}.zip)
+  if [ "${#imported[@]}" -eq 1 ] && [ -f "${imported[0]}" ] && \
+      [ "${#imported_c_abi[@]}" -eq 1 ] && [ -f "${imported_c_abi[0]}" ]; then
+    args+=(-PcodexAgent.desktopClassifierDirectory="$PWD/codex-agent-runtime-desktop/build/distributions")
+  fi
   if [ "$test_lane" = true ]; then
     args+=(-PcodexAgent.desktopEvidenceTarget="$target")
-    local native_tasks=(":codex-agent-runtime-desktop:$native_task")
+    local native_tasks=(":codex-agent-runtime-desktop:$native_task" ":codex-agent-runtime-desktop:$c_abi_evidence_task")
     [ -z "$evidence_task" ] || native_tasks+=("$evidence_task")
+    [ -z "$scenario_task" ] || native_tasks+=("$scenario_task")
     ./gradlew "${native_tasks[@]}" "${args[@]}"
   elif [ "$build" = true ]; then
-    ./gradlew ":codex-agent-runtime-desktop:$package_task" "${args[@]}"
+    ./gradlew ":codex-agent-runtime-desktop:$package_task" \
+      ":codex-agent-runtime-desktop:$c_abi_package_task" "${args[@]}"
   fi
   if [ "$test_lane" = true ]; then
     local archives=(codex-agent-runtime-desktop/build/distributions/*-"$classifier".zip)
+    local c_abi_archives=(codex-agent-runtime-desktop/build/distributions/*-"$c_abi_classifier".zip)
     if [ ! -f "${archives[0]}" ]; then
       ./gradlew ":codex-agent-runtime-desktop:$native_task" "${args[@]}"
       archives=(codex-agent-runtime-desktop/build/distributions/*-"$classifier".zip)
     fi
     test "${#archives[@]}" -eq 1
+    test "${#c_abi_archives[@]}" -eq 1
     test -f codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip
     test -f codex-agent-runtime-desktop/build/distributions/codex-agent-node-runtime-evidence-runner.zip
     test -f codex-agent-runtime-desktop/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip
@@ -112,24 +119,34 @@ case "$lane" in
   desktop-macos-arm64)
     run_desktop macosArm64 recordMacosArm64DesktopRuntimeEvidence recordJvmRuntimeMacosArm64Evidence \
       nodeRuntimeMacosArm64Test nodeWasmRuntimeMacosArm64Test app-server-macos-arm64 \
-      :codex-agent-runtime-desktop:generateCodexAgentCAbiBootstrapEvidence
+      :codex-agent-runtime-desktop:generateCodexAgentCAbiBootstrapEvidence \
+      :codex-agent-runtime-desktop:generateCodexAgentCAbiScenarioProof
     ;;
   desktop-macos-x64)
     run_desktop macosX64 recordMacosX64DesktopRuntimeEvidence recordJvmRuntimeMacosX64Evidence \
       nodeRuntimeMacosX64Test nodeWasmRuntimeMacosX64Test app-server-macos-x64
     ;;
   desktop-linux-arm64)
-    [ "$build" != true ] || test -f codex-agent-runtime-desktop/build/distributions/codex-agent-*-app-server-linux-arm64.zip
+    if [ "$build" = true ]; then
+      test -f codex-agent-runtime-desktop/build/distributions/codex-agent-*-app-server-linux-arm64.zip
+      test -f codex-agent-runtime-desktop/build/distributions/codex-agent-*-c-abi-linux-arm64.zip
+    fi
     if [ "$test_lane" = true ]; then
       test -n "${LINUX_ARM64_RUNTIME_BUNDLE:-}"
       ./gradlew -p gradle/build-logic executeLinuxArm64RuntimeEvidenceBundle \
         -PcodexAgent.candidateCommit="$commit" \
+        -PcodexAgent.candidateTree="$tree" \
         -PcodexAgent.linuxArm64RuntimeEvidenceBundle="$LINUX_ARM64_RUNTIME_BUNDLE" \
         -PcodexAgent.desktopEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/desktop-runtime-evidence/desktop-runtime-linuxArm64.json" \
         -PcodexAgent.jvmEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/jvm-runtime-evidence/jvm-runtime-linuxArm64.json" \
         -PcodexAgent.nodeEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-runtime-linuxArm64.json" \
         -PcodexAgent.nodeWasmEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-wasm-runtime-linuxArm64.json" \
         -PcodexAgent.javaExecutable=java --parallel --stacktrace
+      c_abi_archives=(codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip)
+      test "${#c_abi_archives[@]}" -eq 1
+      ./gradlew :codex-agent-runtime-desktop:generateLinuxArm64CAbiPackageEvidence \
+        -PcodexAgent.desktopClassifierDirectory="$PWD/codex-agent-runtime-desktop/build/distributions" \
+        -PcodexAgent.desktopEvidenceTarget=linuxArm64 "${args[@]}"
     fi
     ;;
   desktop-linux-x64)

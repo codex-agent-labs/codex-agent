@@ -290,6 +290,15 @@ def restore(arguments: argparse.Namespace) -> dict[str, object]:
                         toolchain=toolchain,
                         categories=categories,
                     )
+                    if any(
+                        item["kind"] == "c-abi-sdk"
+                        for collection in ("artifacts", "evidence")
+                        for item in receipt[collection]
+                    ) and (
+                        receipt["validationCommit"] != plan["validationCommit"]
+                        or receipt["validationTree"] != plan["validationTree"]
+                    ):
+                        continue
                     if not artifact.get("_promoted") and receipt["artifactName"] != artifact["name"]:
                         continue
                 except (OSError, ValueError, json.JSONDecodeError, KeyError):

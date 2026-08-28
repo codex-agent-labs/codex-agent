@@ -40,10 +40,7 @@ fun Project.registerRepositoryVerificationTasks() {
     }
     tasks.register("verifyIosRuntime") {
         group = "verification"
-        description = "Runs iOS runtime and complete Kotlin, Java, JS, Swift, and Objective-C parity on macOS."
-        dependsOn(
-            ":codex-agent-runtime-ios:verifyIosRuntime",
-            ":codex-agent-core:auditCrossLanguageBindingParity",
-        )
+        description = "Runs portable iOS runtime and Apple binding verification; distributed CI owns complete M8 parity."
+        dependsOn(":codex-agent-runtime-ios:verifyIosRuntime")
     }
 }

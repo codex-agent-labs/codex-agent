@@ -110,7 +110,7 @@ jobs:
           test "$(jq -r .promotionRunAttempt "$promotion_receipt")" = "$promotion_run_attempt"
           manifest="$PAYLOAD/candidate-manifest.json"
           jq -e '
-            .schemaVersion == 13 and
+            .schemaVersion == 14 and
             (.evidence.releaseTooling | keys | sort) == ["bytes", "fileName", "sha256"]
           ' "$manifest" >/dev/null
           release_tool_name=$(jq -r .evidence.releaseTooling.fileName "$manifest")

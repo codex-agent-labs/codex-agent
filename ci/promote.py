@@ -14,7 +14,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from impact import LANES
+from impact import LANES, M8_OWNER_LANES
 from receipt import (
     INPUT_NAMES,
     SCHEMA_VERSION,
@@ -59,8 +59,19 @@ PROMOTION_RECEIPT_KEYS = {
     *PROMOTION_PLAN_KEYS,
     "workflowPath", "promotionRunId", "promotionRunAttempt", "result",
 }
-
-
+M8_VALIDATION_FILES = {
+    "canonical-api.json",
+    "canonical-coverage.json",
+    "kotlin-parity.json",
+    "java-parity.json",
+    "javascript-typescript-parity.json",
+    "swift-parity.json",
+    "objective-c-parity.json",
+    "c-abi-parity.json",
+    "binding-obligations-m8.json",
+}
+SOURCE_VALIDATION_FILES = {"impact-plan.json", "validation-receipt.json"}
+PROMOTED_VALIDATION_FILES = SOURCE_VALIDATION_FILES | {"promotion-receipt.json"} | M8_VALIDATION_FILES
 def api_items(url: str, key: str, token: str) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     page = 1
@@ -140,20 +151,10 @@ def extract_artifact(artifact: dict[str, object], token: str, destination: Path)
         safe_extract(archive, destination)
 
 
-def one_file(root: Path, name: str) -> Path:
-    matches = [path for path in root.rglob(name) if path.is_file() and not path.is_symlink()]
-    if len(matches) != 1:
-        raise ValueError(f"Artifact must contain exactly one {name}")
-    return matches[0]
-
-
 def require_exact_files(root: Path, names: set[str]) -> None:
-    actual = {
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*")
-        if path.is_file()
-    }
-    if actual != names:
+    entries = list(root.iterdir())
+    actual = {path.relative_to(root).as_posix() for path in entries}
+    if actual != names or any(path.is_symlink() or not path.is_file() for path in entries):
         raise ValueError(f"Artifact file set mismatch: expected={sorted(names)} actual={sorted(actual)}")
 
 
@@ -258,20 +259,29 @@ def validate_source_artifacts(
     repository: str,
     validated_commit: str,
     final_tree: str,
-) -> tuple[dict[str, object], dict[str, object], Path, Path]:
+) -> tuple[dict[str, object], dict[str, object], Path, Path, dict[str, Path]]:
     plan_path = plan_root / "impact-plan.json"
     if not plan_path.is_file() or plan_path.is_symlink():
         raise ValueError("Plan artifact has no root impact-plan.json")
-    aggregate_plan_path = one_file(aggregate_root, "impact-plan.json")
-    aggregate_path = one_file(aggregate_root, "validation-receipt.json")
-    aggregate_files = {path for path in aggregate_root.rglob("*") if path.is_file()}
-    if aggregate_files != {aggregate_plan_path, aggregate_path}:
-        raise ValueError("Aggregate artifact has a missing or unexpected file set")
+    actual = {path.relative_to(aggregate_root).as_posix() for path in aggregate_root.iterdir()}
+    allowed = (SOURCE_VALIDATION_FILES, SOURCE_VALIDATION_FILES | M8_VALIDATION_FILES)
+    if (
+        actual not in allowed
+        or any(path.is_symlink() or not path.is_file() for path in aggregate_root.iterdir())
+    ):
+        raise ValueError("Aggregate artifact has a missing, partial, nested, or unexpected file set")
+    aggregate_plan_path = aggregate_root / "impact-plan.json"
+    aggregate_path = aggregate_root / "validation-receipt.json"
     if aggregate_plan_path.read_bytes() != plan_path.read_bytes():
         raise ValueError("Aggregate and plan artifacts contain different impact plans")
     plan = validate_plan(plan_path, repository, validated_commit, final_tree, allow_reused_validation=True)
     aggregate = validate_aggregate(aggregate_path, plan)
-    return plan, aggregate, plan_path, aggregate_path
+    m8_files = {
+        name: aggregate_root / name
+        for name in M8_VALIDATION_FILES
+        if name in actual
+    }
+    return plan, aggregate, plan_path, aggregate_path, m8_files
 
 
 def selected_validation_run(
@@ -431,10 +441,7 @@ def already_promoted(
             inventory_root = Path(temporary) / "inventories"
             extract_artifact(aggregate_artifact, token, root)
             extract_artifact(inventory_artifact, token, inventory_root)
-            require_exact_files(
-                root,
-                {"impact-plan.json", "validation-receipt.json", "promotion-receipt.json"},
-            )
+            require_exact_files(root, PROMOTED_VALIDATION_FILES)
             receipt = validate_promotion_receipt(
                 read_json(root / "promotion-receipt.json"),
                 repository,
@@ -473,6 +480,7 @@ def predecessor_promotion_sources(
     current_plan: Path,
     lanes: set[str],
     token: str,
+    m8_destination: Path | None = None,
 ) -> dict[str, dict[str, object]] | None:
     for run in workflow_runs(api_url, repository, "promote.yml", "push", token):
         prior_commit = run.get("head_sha")
@@ -499,10 +507,7 @@ def predecessor_promotion_sources(
             inventory_root = Path(temporary) / "inventories"
             extract_artifact(aggregate_artifact, token, root)
             extract_artifact(inventory_artifact, token, inventory_root)
-            require_exact_files(
-                root,
-                {"impact-plan.json", "validation-receipt.json", "promotion-receipt.json"},
-            )
+            require_exact_files(root, PROMOTED_VALIDATION_FILES)
             receipt = validate_promotion_receipt(
                 read_json(root / "promotion-receipt.json"),
                 repository,
@@ -526,14 +531,22 @@ def predecessor_promotion_sources(
             }
             if any(source_name not in artifacts for source_name in source_names.values()):
                 continue
+            inventory_lanes = lanes | (M8_OWNER_LANES if m8_destination is not None else set())
             incompatible = sorted(
-                lane for lane in lanes if not inventories_match(current_plan, prior_plan, lane)
+                lane for lane in inventory_lanes
+                if not inventories_match(current_plan, prior_plan, lane)
             )
             if incompatible:
                 raise ValueError(
                     f"Immediate first-parent promotion {predecessor_commit} is incompatible "
-                    f"with absent lanes {incompatible}"
+                    f"with carried inputs {incompatible}"
                 )
+            if m8_destination is not None:
+                if m8_destination.exists() and any(m8_destination.iterdir()):
+                    raise ValueError(f"M8 carry destination must be empty: {m8_destination}")
+                m8_destination.mkdir(parents=True, exist_ok=True)
+                for name in M8_VALIDATION_FILES:
+                    shutil.copyfile(root / name, m8_destination / name)
             return {
                 lane: {
                     "sourceKind": "promotion",
@@ -559,6 +572,7 @@ def wait_for_predecessor_promotion(
     token: str,
     timeout_seconds: int,
     poll_seconds: int,
+    m8_destination: Path | None = None,
 ) -> dict[str, dict[str, object]]:
     if timeout_seconds < 0 or poll_seconds < 1:
         raise ValueError("Predecessor wait timeout must be non-negative and poll interval positive")
@@ -572,6 +586,7 @@ def wait_for_predecessor_promotion(
             current_plan,
             lanes,
             token,
+            m8_destination,
         )
         if result is not None:
             return result
@@ -623,13 +638,23 @@ def discover(arguments: argparse.Namespace) -> dict[str, object]:
         aggregate_root = temporary_root / "aggregate"
         extract_artifact(artifacts[plan_name], token, plan_root)
         extract_artifact(artifacts[aggregate_name], token, aggregate_root)
-        plan, aggregate, plan_path, aggregate_path = validate_source_artifacts(
+        plan, aggregate, plan_path, aggregate_path, current_m8_files = validate_source_artifacts(
             plan_root,
             aggregate_root,
             arguments.repository,
             validated_commit,
             final_tree,
         )
+        active_m8_owners = sorted(
+            lane
+            for lane in M8_OWNER_LANES
+            if any(plan["lanes"][lane][action] for action in ("build", "test", "metadata"))
+        )
+        if not current_m8_files and active_m8_owners:
+            raise ValueError(
+                f"Validation is missing the M8 bundle while owner lanes are active: "
+                f"{active_m8_owners}"
+            )
         current_lanes = required_lanes(plan)
         lanes: dict[str, dict[str, object]] = {
             lane: {
@@ -657,6 +682,7 @@ def discover(arguments: argparse.Namespace) -> dict[str, object]:
         if missing_lanes:
             raise ValueError(f"Validation receipt source artifacts are missing: {missing_lanes}")
         absent = set(LANES) - set(lanes)
+        carried_m8_root = temporary_root / "carried-m8"
         if absent:
             if plan["full"]:
                 raise ValueError(
@@ -683,6 +709,7 @@ def discover(arguments: argparse.Namespace) -> dict[str, object]:
                 token,
                 getattr(arguments, "predecessor_timeout_seconds", PREDECESSOR_WAIT_SECONDS),
                 getattr(arguments, "predecessor_poll_seconds", PREDECESSOR_POLL_SECONDS),
+                carried_m8_root if not current_m8_files else None,
             ))
         lanes = {lane: lanes[lane] for lane in LANES}
         promotion_plan = validate_promotion_plan({
@@ -712,6 +739,14 @@ def discover(arguments: argparse.Namespace) -> dict[str, object]:
         source.mkdir()
         shutil.copyfile(plan_path, source / "impact-plan.json")
         shutil.copyfile(aggregate_path, source / "validation-receipt.json")
+        m8_files = current_m8_files or {
+            name: carried_m8_root / name
+            for name in M8_VALIDATION_FILES
+        }
+        for name, path in m8_files.items():
+            if not path.is_file() or path.is_symlink():
+                raise ValueError(f"M8 validation evidence is missing or unsafe: {name}")
+            shutil.copyfile(path, source / name)
         write_json(output / "promotion-plan.json", promotion_plan)
 
     matrix = {
