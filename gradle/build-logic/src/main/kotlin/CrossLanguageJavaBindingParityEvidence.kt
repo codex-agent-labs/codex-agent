@@ -31,9 +31,9 @@ internal data class CrossLanguageJavaBindingParityEvidence(
 }
 
 private const val JAVA_BINDING_TEST_CLASS =
-    "io.github.codex_agent_labs.codexmobile.agent.CodexJavaApiTest#"
+    "io.github.codex_agent_labs.codexagent.agent.CodexJavaApiTest#"
 private const val JAVA_BINDING_TEST_INTERNAL_NAME =
-    "io/github/codex_agent_labs/codexmobile/agent/CodexJavaApiTest"
+    "io/github/codex_agent_labs/codexagent/agent/CodexJavaApiTest"
 private const val JAVA_STRUCTURAL_VERIFIER_TEST_ID =
     "build-logic.CrossLanguageJavaBindingEvidence#ordinaryAndHostStructurePassed"
 private const val JUNIT_JUPITER_TEST = "Lorg/junit/jupiter/api/Test;"

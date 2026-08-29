@@ -734,9 +734,9 @@ class RealImpactPlanTest(unittest.TestCase):
         }
         for path in (
             "codex-agent-core/src/commonTest/kotlin/io/github/codex_agent_labs/"
-            "codexmobile/agent/CrossLanguageDomainValueContractTest.kt",
+            "codexagent/agent/CrossLanguageDomainValueContractTest.kt",
             "codex-agent-core/src/commonMain/kotlin/io/github/codex_agent_labs/"
-            "codexmobile/agent/CodexHost.kt",
+            "codexagent/agent/CodexHost.kt",
             "gradle/build-logic/src/main/kotlin/CrossLanguageApiCoverage.kt",
             "gradle/build-logic/src/main/kotlin/CrossLanguageBindingReceipt.kt",
             "gradle/build-logic/src/main/kotlin/CrossLanguageCAbiBootstrapEvidence.kt",
@@ -753,9 +753,9 @@ class RealImpactPlanTest(unittest.TestCase):
 
         for path in (
             "codex-agent-core/src/jvmAndAndroidMain/kotlin/io/github/codex_agent_labs/"
-            "codexmobile/agent/CodexJava.kt",
+            "codexagent/agent/CodexJava.kt",
             "codex-agent-core/src/jvmTest/kotlin/io/github/codex_agent_labs/"
-            "codexmobile/agent/CodexPublicApiAdoptionTest.kt",
+            "codexagent/agent/CodexPublicApiAdoptionTest.kt",
             "gradle/build-logic/src/main/kotlin/codexagent.core-verification.gradle.kts",
             "gradle/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
         ):
@@ -875,7 +875,7 @@ class RealImpactPlanTest(unittest.TestCase):
         )
         common_desktop_test = (
             "codex-agent-runtime-desktop/src/commonTest/kotlin/"
-            "io/github/codex_agent_labs/codexmobile/appserver/runtime/ExternalProcessCodexRuntimeTest.kt"
+            "io/github/codex_agent_labs/codexagent/appserver/runtime/ExternalProcessCodexRuntimeTest.kt"
         )
         self.assertEqual(
             {
@@ -890,7 +890,7 @@ class RealImpactPlanTest(unittest.TestCase):
         self.assertEqual(set(), matching_lanes("metadata", common_desktop_test))
         shared_host_policy_test = (
             "codex-agent-runtime-desktop/src/commonTest/kotlin/"
-            "io/github/codex_agent_labs/codexmobile/appserver/runtime/host/SharedHostPolicyTest.kt"
+            "io/github/codex_agent_labs/codexagent/appserver/runtime/host/SharedHostPolicyTest.kt"
         )
         self.assertEqual(
             matching_lanes("test", common_desktop_test),
@@ -898,7 +898,7 @@ class RealImpactPlanTest(unittest.TestCase):
         )
         desktop_host_files_test = (
             "codex-agent-runtime-desktop/src/desktopTest/kotlin/"
-            "io/github/codex_agent_labs/codexmobile/appserver/runtime/host/DesktopHostFilesSecurityTest.kt"
+            "io/github/codex_agent_labs/codexagent/appserver/runtime/host/DesktopHostFilesSecurityTest.kt"
         )
         self.assertEqual(
             {
@@ -909,7 +909,7 @@ class RealImpactPlanTest(unittest.TestCase):
         )
         web_host_files_test = (
             "codex-agent-runtime-desktop/src/webTest/kotlin/"
-            "io/github/codex_agent_labs/codexmobile/appserver/runtime/NodeHostFilesSecurityTest.kt"
+            "io/github/codex_agent_labs/codexagent/appserver/runtime/NodeHostFilesSecurityTest.kt"
         )
         self.assertEqual(
             {"contracts", "portable", "node-js", "node-wasm", "ios-swift-tests"},
@@ -927,7 +927,7 @@ class RealImpactPlanTest(unittest.TestCase):
         )
         codex_java_source = (
             "codex-agent-core/src/jvmAndAndroidMain/kotlin/"
-            "io/github/codex_agent_labs/codexmobile/agent/CodexJava.kt"
+            "io/github/codex_agent_labs/codexagent/agent/CodexJava.kt"
         )
         self.assertEqual(
             {
@@ -945,7 +945,7 @@ class RealImpactPlanTest(unittest.TestCase):
             matching_lanes(
                 "production",
                 "codex-agent-runtime-desktop/src/jvmMain/kotlin/"
-                "io/github/codex_agent_labs/codexmobile/agent/runtime/DesktopCodexJava.kt",
+                "io/github/codex_agent_labs/codexagent/agent/runtime/DesktopCodexJava.kt",
             ),
         )
 
@@ -1034,7 +1034,7 @@ class RealImpactPlanTest(unittest.TestCase):
             matching_lanes(
                 "production",
                 "codex-agent-runtime-android/src/main/kotlin/"
-                "io/github/codex_agent_labs/codexmobile/agent/runtime/AndroidCodexJava.kt",
+                "io/github/codex_agent_labs/codexagent/agent/runtime/AndroidCodexJava.kt",
             ),
         )
 

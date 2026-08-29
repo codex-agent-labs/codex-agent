@@ -328,7 +328,7 @@ class CrossLanguageJavaBindingParityEvidenceTest {
     private companion object {
         val CAPABILITIES = (0 until 556).map { index -> "canonical-capability-$index" }
         const val JAVA_TEST_INTERNAL_NAME =
-            "io/github/codex_agent_labs/codexmobile/agent/CodexJavaApiTest"
+            "io/github/codex_agent_labs/codexagent/agent/CodexJavaApiTest"
         val LAMBDA_METAFACTORY = Handle(
             Opcodes.H_INVOKESTATIC,
             "java/lang/invoke/LambdaMetafactory",

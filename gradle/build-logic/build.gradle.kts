@@ -51,10 +51,8 @@ val releaseToolingClasses = listOf(
     "BoundProducedEvidence",
     "BoundRuntimeEvidence",
     "CandidateCiProvenanceKt",
-    "CandidateInputFiles",
     "CandidateIosNativeEvidenceKt",
     "CandidateManifestValidationKt",
-    "CandidateModelKt",
     "CandidatePayloadTasksKt",
     "CandidateRuntimeEvidenceKt",
     "CentralBundleTasksKt",
@@ -214,19 +212,19 @@ tasks.register<JavaExec>("executeLinuxArm64RuntimeEvidenceBundle") {
         layout.buildDirectory.file("reports/desktop-runtime-evidence/desktop-runtime-linuxArm64.json").map { it.asFile })
     val desktopReport = providers.gradleProperty("codexAgent.desktopTestReportOutput").map(::JavaFile).orElse(
         layout.buildDirectory.file("test-results/linuxArm64SplitTest/TEST-linuxArm64Test." +
-            "io.github.codex_agent_labs.codexmobile.appserver.runtime.DesktopCodexRuntimeTest.xml").map { it.asFile })
+            "io.github.codex_agent_labs.codexagent.appserver.runtime.DesktopCodexRuntimeTest.xml").map { it.asFile })
     val jvmEvidence = providers.gradleProperty("codexAgent.jvmEvidenceOutput").map(::JavaFile).orElse(
         layout.buildDirectory.file("reports/jvm-runtime-evidence/jvm-runtime-linuxArm64.json").map { it.asFile })
     val nodeEvidence = providers.gradleProperty("codexAgent.nodeEvidenceOutput").map(::JavaFile).orElse(
         layout.buildDirectory.file("reports/node-runtime-evidence/node-runtime-linuxArm64.json").map { it.asFile })
     val nodeReport = providers.gradleProperty("codexAgent.nodeTestReportOutput").map(::JavaFile).orElse(
         layout.buildDirectory.file("test-results/linuxArm64NodeSplitTest/TEST-nodeRuntimeLinuxArm64Test." +
-            "io.github.codex_agent_labs.codexmobile.appserver.runtime.NodeCodexRuntimeTest.xml").map { it.asFile })
+            "io.github.codex_agent_labs.codexagent.appserver.runtime.NodeCodexRuntimeTest.xml").map { it.asFile })
     val wasmEvidence = providers.gradleProperty("codexAgent.nodeWasmEvidenceOutput").map(::JavaFile).orElse(
         layout.buildDirectory.file("reports/node-runtime-evidence/node-wasm-runtime-linuxArm64.json").map { it.asFile })
     val wasmReport = providers.gradleProperty("codexAgent.nodeWasmTestReportOutput").map(::JavaFile).orElse(
         layout.buildDirectory.file("test-results/linuxArm64NodeWasmSplitTest/TEST-nodeWasmRuntimeLinuxArm64Test." +
-            "io.github.codex_agent_labs.codexmobile.appserver.runtime.NodeCodexRuntimeTest.xml").map { it.asFile })
+            "io.github.codex_agent_labs.codexagent.appserver.runtime.NodeCodexRuntimeTest.xml").map { it.asFile })
     dependsOn(tasks.named("classes")); classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("LinuxArm64RuntimeEvidenceBundleKt")
     inputs.property("candidateCommit", candidateCommit); inputs.file(bundle)

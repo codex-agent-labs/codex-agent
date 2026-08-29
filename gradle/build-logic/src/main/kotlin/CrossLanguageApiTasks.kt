@@ -104,7 +104,7 @@ abstract class DiscoverCrossLanguageApiTask @Inject constructor(
                 wasmDirectory.absolutePath,
                 marker,
                 boundariesFile.absolutePath,
-                "io.github.codex_agent_labs.codexmobile.agent.CodexBindingApiKotlinOnly",
+                "io.github.codex_agent_labs.codexagent.agent.CodexBindingApiKotlinOnly",
                 excludedTypesFile.absolutePath,
                 dataClassesFile.absolutePath,
                 singletonObjectsFile.absolutePath,

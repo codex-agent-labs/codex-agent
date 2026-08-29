@@ -22,7 +22,7 @@ kotlin {
     jvmToolchain(17)
 
     android {
-        namespace = "io.github.codex_agent_labs.codexmobile.agent"
+        namespace = "io.github.codex_agent_labs.codexagent.agent"
         compileSdk = 37
         minSdk = 26
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)

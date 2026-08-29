@@ -35,19 +35,19 @@ internal const val APPLE_AUTHORIZATION_URL_OWNER_USR = "c:objc(cs)CodexAgentCode
 internal const val APPLE_AUTHORIZATION_URL_COMPANION_OWNER_USR =
     "c:objc(cs)CodexAgentCodexAuthorizationUrlCompanion"
 private const val APPLE_CODEX_FAILURE_CANONICAL_OWNER =
-    "io.github.codex_agent_labs.codexmobile.agent/CodexFailure"
+    "io.github.codex_agent_labs.codexagent.agent/CodexFailure"
 private const val APPLE_CONVERSATION_ID_CANONICAL_OWNER =
-    "io.github.codex_agent_labs.codexmobile.agent/ConversationId"
+    "io.github.codex_agent_labs.codexagent.agent/ConversationId"
 private const val APPLE_APPROVAL_DECISION_CANONICAL_OWNER =
-    "io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision"
+    "io.github.codex_agent_labs.codexagent.agent/AgentApprovalDecision"
 private const val APPLE_COLLABORATION_MODE_CANONICAL_OWNER =
-    "io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode"
+    "io.github.codex_agent_labs.codexagent.agent/AgentCollaborationMode"
 private const val APPLE_MESSAGE_ROLE_CANONICAL_OWNER =
-    "io.github.codex_agent_labs.codexmobile.agent/AgentMessageRole"
+    "io.github.codex_agent_labs.codexagent.agent/AgentMessageRole"
 private const val APPLE_INSTALLATION_SCOPE_CANONICAL_OWNER =
-    "io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope"
+    "io.github.codex_agent_labs.codexagent.agent/AgentInstallationScope"
 private const val APPLE_MCP_ENVIRONMENT_SOURCE_CANONICAL_OWNER =
-    "io.github.codex_agent_labs.codexmobile.agent/AgentMcpEnvironmentSource"
+    "io.github.codex_agent_labs.codexagent.agent/AgentMcpEnvironmentSource"
 
 private val appleCodexFailureMembers = linkedMapOf(
     "constructor:<init>" to "$APPLE_CODEX_FAILURE_OWNER_USR(im)initWithCode:message:isRecoverable:",
@@ -58,13 +58,13 @@ private val appleCodexFailureMembers = linkedMapOf(
 
 private val appleCodexFailureCoverageTokens = mapOf(
     "constructor:<init>" to
-        "api-v1:CodexFailure#constructor:<init>#sha256:db9872249097654acec4959fcef85fbac47c20419b28bbceee4a2ed40f619dce",
+        "api-v1:CodexFailure#constructor:<init>#sha256:64c9861a196f37e527186e0919ab27ebf6c343060b0b4f72a97ebd996117a3ee",
     "property:code" to
-        "api-v1:CodexFailure#property:code#sha256:3a601436ff450cdd3e651dfc2e9faf56278431319e63c16c5fc2bff9417f10f9",
+        "api-v1:CodexFailure#property:code#sha256:0e355590529ac630f015749573a83c546b84d47366924f762ae9290c798e1e84",
     "property:isRecoverable" to
-        "api-v1:CodexFailure#property:isRecoverable#sha256:8973cb954621824ea55abdabe7aa39d7b8db93b56057971121255b2e7bd0cfa6",
+        "api-v1:CodexFailure#property:isRecoverable#sha256:8b3e0cd4535919558e2decfc0de3b49568003332c49069a7389b385f0d027601",
     "property:message" to
-        "api-v1:CodexFailure#property:message#sha256:8bc0e280b734d05df8b06e7f8f5544ba9323faa14cd59b35531b05ea3023ddad",
+        "api-v1:CodexFailure#property:message#sha256:b0f8435c4128db5e5c4cba0e7ee006f8cf5dd9b6ab7969b66ece1543b8713548",
 )
 
 private val appleConversationIdMembers = linkedMapOf(
@@ -74,9 +74,9 @@ private val appleConversationIdMembers = linkedMapOf(
 
 private val appleConversationIdCoverageTokens = mapOf(
     "conversation-id:constructor:<init>" to
-        "api-v1:ConversationId#constructor:<init>#sha256:9d99d061ecf0a53892277568e9139bd83e1f5cc70b1a9725943f892e99723bd3",
+        "api-v1:ConversationId#constructor:<init>#sha256:573c9f03f57af8d9112e9a13b5dd3164a81b475100890f5e7c2b2c69f1c8a3bc",
     "conversation-id:property:value" to
-        "api-v1:ConversationId#property:value#sha256:d0c5dcf6402ad6595ff8b063d896bbb1d2c818322353860f18edfb17c84e1dfa",
+        "api-v1:ConversationId#property:value#sha256:0517eb1ae6bf106cf1c3d2387f07ec2c0b4e7e63be2b493ed1b5218d01a06762",
 )
 
 private val appleApprovalDecisionMembers = linkedMapOf(
@@ -86,9 +86,9 @@ private val appleApprovalDecisionMembers = linkedMapOf(
 
 private val appleApprovalDecisionCoverageTokens = mapOf(
     "enum-entry:ACCEPT" to
-        "api-v1:AgentApprovalDecision#enum-entry:ACCEPT#sha256:c6613f75901ffd0146f3c8f945f73fabdc67efb237d52809c8a1e062835dc868",
+        "api-v1:AgentApprovalDecision#enum-entry:ACCEPT#sha256:cb5db919ac1743570a758b03085e6357f26e451d4d653547e46c29046dfaefa1",
     "enum-entry:DECLINE" to
-        "api-v1:AgentApprovalDecision#enum-entry:DECLINE#sha256:db4d1df5ec20f42363a10d2b7a416c5e114a21663f8f70e0b32f4608dade7d56",
+        "api-v1:AgentApprovalDecision#enum-entry:DECLINE#sha256:c152818b78520d8d40a7902ec1e524edbde2556d96370e01c4285fa0076bd756",
 )
 
 private val appleCollaborationModeMembers = linkedMapOf(
@@ -98,9 +98,9 @@ private val appleCollaborationModeMembers = linkedMapOf(
 
 private val appleCollaborationModeCoverageTokens = mapOf(
     "enum-entry:DEFAULT" to
-        "api-v1:AgentCollaborationMode#enum-entry:DEFAULT#sha256:e7a82ccb52ea70efb42bb512dfc2ef7616813fd6e0668c6d661f6b3b01c8a3d3",
+        "api-v1:AgentCollaborationMode#enum-entry:DEFAULT#sha256:6d5290f01f4836d5bf0c09e94f50ec3d1fc8cae7ab0b3dd6225a7e4ea5d5008e",
     "enum-entry:PLAN" to
-        "api-v1:AgentCollaborationMode#enum-entry:PLAN#sha256:ec0e7395b27d5e890c396ea4e39af43f49b093b933ee9062c83fc9c07a754e4d",
+        "api-v1:AgentCollaborationMode#enum-entry:PLAN#sha256:c3ed0df001f578fa0f0c10c576f1acb2b4f7de23730901b89bde00dc6c2438ce",
 )
 
 private val appleMessageRoleMembers = linkedMapOf(
@@ -110,9 +110,9 @@ private val appleMessageRoleMembers = linkedMapOf(
 
 private val appleMessageRoleCoverageTokens = mapOf(
     "enum-entry:USER" to
-        "api-v1:AgentMessageRole#enum-entry:USER#sha256:5572c10ccfb5180d31c30ba322e62f73ce28013434d77ee9e6fe416e076fe895",
+        "api-v1:AgentMessageRole#enum-entry:USER#sha256:89678bbeb0d454fb7e8329acfdec1129d7a3ffed09feedfe86baefe5f9926d2d",
     "enum-entry:ASSISTANT" to
-        "api-v1:AgentMessageRole#enum-entry:ASSISTANT#sha256:f369c4f0e47685b440320333006c0c058783ee2a55f2b9c554839a8d9a0df128",
+        "api-v1:AgentMessageRole#enum-entry:ASSISTANT#sha256:ff544c6452a430ab94a22ce3212265c7fa76869978c9099f0f13925cc2b70215",
 )
 
 private val appleInstallationScopeMembers = linkedMapOf(
@@ -122,9 +122,9 @@ private val appleInstallationScopeMembers = linkedMapOf(
 
 private val appleInstallationScopeCoverageTokens = mapOf(
     "enum-entry:User" to
-        "api-v1:AgentInstallationScope#enum-entry:User#sha256:2f69afc19c6f7a1b033fe00173acf97939c51d49f4e8f10c4cf7ee75d42477a3",
+        "api-v1:AgentInstallationScope#enum-entry:User#sha256:cd5b6f8bd50641eae4ee39e06fe302b2fb1a13d923bfc782dd3edea4c69bf4a6",
     "enum-entry:Workspace" to
-        "api-v1:AgentInstallationScope#enum-entry:Workspace#sha256:fff8b4780086308bd27166be208daf44e8bb8595bcd4ce0de0fc4cd7d261b267",
+        "api-v1:AgentInstallationScope#enum-entry:Workspace#sha256:b0afc23065bb7d19f402e985207b0a67fda85f69dd6dcc9469085769d06341da",
 )
 
 private val appleMcpEnvironmentSourceMembers = linkedMapOf(
@@ -134,13 +134,13 @@ private val appleMcpEnvironmentSourceMembers = linkedMapOf(
 
 private val appleMcpEnvironmentSourceCoverageTokens = mapOf(
     "enum-entry:LOCAL" to
-        "api-v1:AgentMcpEnvironmentSource#enum-entry:LOCAL#sha256:40057398186ec13d19eb3fc39bc9c1049a83d95baaf69b91e2ae6af4f15216cb",
+        "api-v1:AgentMcpEnvironmentSource#enum-entry:LOCAL#sha256:281dcaca62ac0fce585283ae007767e8f05cb35ae7c18ff06ede81b92b34c72b",
     "enum-entry:REMOTE" to
-        "api-v1:AgentMcpEnvironmentSource#enum-entry:REMOTE#sha256:6f5abdbe115733f4b06fa9e6652b6e6ed03d721494d32a2cee5b175c41b686e7",
+        "api-v1:AgentMcpEnvironmentSource#enum-entry:REMOTE#sha256:2d058e2805b3127ed58deb66c3f3f515df372478885c51b0d0677dc43a4dcba3",
 )
 
-private const val appleCanonicalPackage = "io.github.codex_agent_labs.codexmobile.agent"
-private const val appleCanonicalAbiPackage = "io.github.codex_agent_labs.codexmobile.agent"
+private const val appleCanonicalPackage = "io.github.codex_agent_labs.codexagent.agent"
+private const val appleCanonicalAbiPackage = "io.github.codex_agent_labs.codexagent.agent"
 
 internal data class AppleOrdinaryType(
     val canonical: String,

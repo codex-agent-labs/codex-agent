@@ -31,7 +31,7 @@ class CrossLanguageCAbiBindingEvidenceTest {
             C_ABI_BINDING_ARTIFACT_IDS,
         )
         assertEquals(
-            "f0b7217e2d302f331829437ce0dd4f54d72ec8503770b6e71f82e68612809651",
+            "9a73e6d5b49ae052b236cb432f380b3f342d68760655e04369c31d4724d2d4a9",
             C_ABI_BINDING_CAPABILITY_SHA256,
         )
         val mappings = productionCrossLanguageCAbiScenarioMappings()

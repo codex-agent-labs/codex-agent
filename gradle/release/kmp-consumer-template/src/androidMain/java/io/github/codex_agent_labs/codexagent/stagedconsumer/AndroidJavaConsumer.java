@@ -1,11 +1,11 @@
 package io.github.codex_agent_labs.codexagent.stagedconsumer;
 
 import android.content.Context;
-import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo;
-import io.github.codex_agent_labs.codexmobile.agent.CodexHost;
-import io.github.codex_agent_labs.codexmobile.agent.CodexJava;
-import io.github.codex_agent_labs.codexmobile.agent.CodexJavaObservation;
-import io.github.codex_agent_labs.codexmobile.agent.runtime.AndroidCodex;
+import io.github.codex_agent_labs.codexagent.agent.CodexClientInfo;
+import io.github.codex_agent_labs.codexagent.agent.CodexHost;
+import io.github.codex_agent_labs.codexagent.agent.CodexJava;
+import io.github.codex_agent_labs.codexagent.agent.CodexJavaObservation;
+import io.github.codex_agent_labs.codexagent.agent.runtime.AndroidCodex;
 import java.util.concurrent.CompletionStage;
 
 public final class AndroidJavaConsumer {

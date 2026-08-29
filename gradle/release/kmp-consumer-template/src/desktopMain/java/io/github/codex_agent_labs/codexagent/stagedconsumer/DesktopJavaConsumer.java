@@ -1,11 +1,11 @@
 package io.github.codex_agent_labs.codexagent.stagedconsumer;
 
-import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo;
-import io.github.codex_agent_labs.codexmobile.agent.CodexHost;
-import io.github.codex_agent_labs.codexmobile.agent.CodexHostState;
-import io.github.codex_agent_labs.codexmobile.agent.CodexJava;
-import io.github.codex_agent_labs.codexmobile.agent.CodexJavaObservation;
-import io.github.codex_agent_labs.codexmobile.agent.runtime.DesktopCodex;
+import io.github.codex_agent_labs.codexagent.agent.CodexClientInfo;
+import io.github.codex_agent_labs.codexagent.agent.CodexHost;
+import io.github.codex_agent_labs.codexagent.agent.CodexHostState;
+import io.github.codex_agent_labs.codexagent.agent.CodexJava;
+import io.github.codex_agent_labs.codexagent.agent.CodexJavaObservation;
+import io.github.codex_agent_labs.codexagent.agent.runtime.DesktopCodex;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;

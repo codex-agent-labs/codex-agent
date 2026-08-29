@@ -11,7 +11,7 @@ internal const val PINNED_NODE_VERSION = "24.18.0"
 internal const val NODE_RUNTIME_JS_BACKEND = "js"
 internal const val NODE_RUNTIME_WASM_BACKEND = "wasm"
 internal const val NODE_RUNTIME_TEST_CLASS =
-    "io.github.codex_agent_labs.codexmobile.appserver.runtime.NodeCodexRuntimeTest"
+    "io.github.codex_agent_labs.codexagent.appserver.runtime.NodeCodexRuntimeTest"
 internal const val NODE_RUNTIME_RUNNER_ARCHIVE = "codex-agent-node-runtime-evidence-runner.zip"
 internal const val NODE_RUNTIME_RUNNER_ENTRY = "codex-agent-codex-agent-runtime-desktop.js"
 internal const val NODE_WASM_RUNTIME_RUNNER_ARCHIVE = "codex-agent-node-wasm-runtime-evidence-runner.zip"

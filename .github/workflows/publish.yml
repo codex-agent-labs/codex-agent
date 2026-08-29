@@ -242,18 +242,16 @@ jobs:
           PAYLOAD: ${{ steps.paths.outputs.payload }}
           RECORD: ${{ steps.paths.outputs.record }}
           RELEASE_TAG: ${{ steps.identity.outputs.release_tag }}
-          SBOM_ASSET: ${{ steps.candidate.outputs.sbomAsset }}
           SWIFT_ASSET: ${{ steps.candidate.outputs.swiftAsset }}
           RELEASE_IS_DRAFT: ${{ steps.release.outputs.draft }}
         run: |
           if [ "$RELEASE_IS_DRAFT" = true ]; then
             gh release upload "$RELEASE_TAG" "$RECORD" "$PAYLOAD/$SWIFT_ASSET" \
-              "$PAYLOAD/$SWIFT_ASSET.sha256" "$PAYLOAD/$SBOM_ASSET" \
-              "$PAYLOAD/candidate-manifest.json" \
+              "$PAYLOAD/$SWIFT_ASSET.sha256" "$PAYLOAD/candidate-manifest.json" \
               --repo "$GITHUB_REPOSITORY" --clobber
           fi
           release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
-          test "$(jq '.assets | length' <<<"$release_json")" -eq 5
+          test "$(jq '.assets | length' <<<"$release_json")" -eq 4
           while IFS='|' read -r asset_name asset_path; do
             expected_digest="sha256:$(openssl dgst -sha256 "$asset_path" | awk '{print $NF}')"
             asset_count=$(jq --arg asset_name "$asset_name" \
@@ -265,7 +263,6 @@ jobs:
           done <<EOF
           $SWIFT_ASSET|$PAYLOAD/$SWIFT_ASSET
           $SWIFT_ASSET.sha256|$PAYLOAD/$SWIFT_ASSET.sha256
-          $SBOM_ASSET|$PAYLOAD/$SBOM_ASSET
           candidate-manifest.json|$PAYLOAD/candidate-manifest.json
           central-deployment.json|$RECORD
           EOF
@@ -291,7 +288,6 @@ jobs:
             ${{ steps.paths.outputs.record }}
             ${{ steps.paths.outputs.verification }}
             ${{ steps.paths.outputs.payload }}/candidate-manifest.json
-            ${{ steps.paths.outputs.payload }}/${{ steps.candidate.outputs.sbomAsset }}
           retention-days: 90
 
   swift-resolution:

@@ -406,10 +406,10 @@ val generateCAbiBootstrapEvidence =
     nativeTestExecutable.set(layout.buildDirectory.file("bin/macosArm64/debugTest/test.kexe"))
     nativeTestResults.set(layout.buildDirectory.dir("test-results/macosArm64Test"))
     nativeMainSources.set(layout.projectDirectory.dir(
-        "src/nativeMain/kotlin/io/github/codex_agent_labs/codexmobile/capi",
+        "src/nativeMain/kotlin/io/github/codex_agent_labs/codexagent/capi",
     ))
     nativeTestSources.set(layout.projectDirectory.dir(
-        "src/nativeTest/kotlin/io/github/codex_agent_labs/codexmobile/capi",
+        "src/nativeTest/kotlin/io/github/codex_agent_labs/codexagent/capi",
     ))
     consumerOutputDirectory.set(cAbiBootstrapConsumerOutput)
     evidenceFile.set(cAbiBootstrapEvidenceFile)
@@ -587,7 +587,7 @@ desktopManifest.distributions.forEach { distribution ->
         distributionManifest.set(layout.projectDirectory.file("codex-app-server-distributions.json"))
         testReport.set(layout.buildDirectory.file(
             "test-results/${distribution.target}Test/TEST-${distribution.target}Test." +
-                "io.github.codex_agent_labs.codexmobile.appserver.runtime.DesktopCodexRuntimeTest.xml",
+                "io.github.codex_agent_labs.codexagent.appserver.runtime.DesktopCodexRuntimeTest.xml",
         ))
         evidenceFile.set(layout.buildDirectory.file(
             "reports/desktop-runtime-evidence/${desktopRuntimeEvidenceFileName(distribution.target)}",

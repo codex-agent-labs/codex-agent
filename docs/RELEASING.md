@@ -46,8 +46,8 @@ follows:
   Keep Firebase OIDC configuration in `merge-validation`; keep signing and
   Maven Central credentials only in the candidate/publication environments,
   with required reviewers.
-- Set `CI_MERGE_QUEUE_ENABLED=true` only after the trusted Android bootstrap
-  described below is on `main` and the queue rules are ready.
+- Set `CI_MERGE_QUEUE_ENABLED=true` when the merge-queue rules and trusted
+  workflow are configured.
 
 ## Candidate identity
 
@@ -77,8 +77,8 @@ not publication authority.
 4. Main promotion forwards equal-tree receipts and the exact bytes uploaded by
    the producing jobs. Candidate assembly verifies those promoted inputs,
    signs the unsigned Maven primaries, generates mandated sidecars, and
-   assembles the Central bundles, release manifest, and deterministic CycloneDX
-   release-artifact SBOM without compiling, linking, or running platform tests.
+   assembles the Central bundle and release manifest without compiling,
+   linking, or running platform tests.
 
 Git commit, tree, blob, and explicit toolchain identity decide reuse. Checksums
 remain for SwiftPM, Maven Central, signatures, pinned external inputs, GitHub
@@ -96,7 +96,7 @@ build/protected-candidate/<candidate-commit>/payload/
 
 The aggregate verifies the imported evidence, iOS runtime, Swift package,
 privacy declarations, Maven inventories, pre-merge consumer receipts, Central
-bundles, aggregate SBOM, and canonical candidate manifest. Candidate tasks may
+bundle, and canonical candidate manifest. Candidate tasks may
 inspect, inventory, sign, and assemble promoted files; they may not compile,
 link, run Xcode, boot a simulator, or execute a platform test.
 
@@ -120,26 +120,6 @@ Follow the [iOS development verification order](RUNTIME_IOS.md#verification)
 before starting the expensive Apple gate; it includes the scoped clean,
 simulator-only Swift typecheck, source freeze, disk budget, and exact-evidence
 reuse rules.
-
-## Trusted Android rollout
-
-The Firebase job has OIDC authority and deliberately executes workflow code
-pinned to `main`, so the modernization must be enabled in three ordered steps:
-
-1. Freeze candidate tags, then land the new trusted
-   `android-runtime-evidence.yml` interface and its pinned-main dependencies on
-   `main`: `ci/impact.py`, `ci/receipt.py`, `ci/evidence.py`, the Firebase
-   evidence model/task/plugin files, and `setup-kmp`. The old candidate caller
-   is intentionally unavailable during this short bootstrap window.
-2. In a later change, land the CI caller and the remaining modernization that
-   passes those exact bindings. Do not weaken the pin to `main` and do not give
-   OIDC or release secrets to PR-controlled workflow code.
-3. Confirm the trusted pre-merge evidence path, then set
-   `CI_MERGE_QUEUE_ENABLED=true` and enable the one-PR merge queue ruleset.
-
-Attempting the trusted workflow interface change and its new caller in one PR
-fails closed because GitHub resolves reusable-workflow inputs from `main`.
-Do not create a candidate tag until step 2 has landed.
 
 ## Manual ChatGPT acceptance
 
@@ -196,11 +176,9 @@ bytes and never rebuilds Maven, native, or runtime artifacts. It:
 3. Waits for protected release-environment approval, then uses an Ubuntu job to
    create or reuse the matching Maven Central deployment and GitHub draft
    release.
-4. Promotes the recorded bundles to Maven Central and attaches exactly five
-   GitHub release assets: the Swift ZIP, its checksum, the CycloneDX SBOM, the
-   candidate manifest, and the Central deployment record. It compares every
-   official GitHub asset digest with the exact local bytes without downloading
-   them again.
+4. Promotes only the recorded Central bundle and exact Swift package/candidate
+   assets, comparing the official GitHub asset digest with the manifest-bound
+   artifact without downloading it again.
 5. Runs one downstream macOS job whose only public asset download is the clean
    Swift Package resolution check.
 6. On rerun, reuses matching validated or published records and fails closed on

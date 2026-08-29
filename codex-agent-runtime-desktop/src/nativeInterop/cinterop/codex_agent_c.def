@@ -1,2 +1,2 @@
 headers = codex_agent.h
-package = io.github.codex_agent_labs.codexmobile.capi.headers
+package = io.github.codex_agent_labs.codexagent.capi.headers

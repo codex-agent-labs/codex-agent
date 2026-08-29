@@ -6556,7 +6556,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "function:agentCapabilityPromptLabel:(capability: AgentCapability): string"
         private const val AGENT_INVOCATION_TYPE =
             "type:AgentInvocation:AgentPluginInvocation | AgentSkillInvocation"
-        private const val CANONICAL_AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent"
+        private const val CANONICAL_AGENT_PACKAGE = "io.github.codex_agent_labs.codexagent.agent"
         private const val HOST_STATE_GETTER = "getter:CodexHost#state:CodexHostState"
         private const val HOST_STATE_OBSERVER =
             "method:CodexHost#observeState:" +

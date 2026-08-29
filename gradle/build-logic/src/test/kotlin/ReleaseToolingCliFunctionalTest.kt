@@ -77,15 +77,6 @@ class ReleaseToolingCliFunctionalTest {
                 source.writeText(relative)
                 source.resolveSibling(source.name + ".sha256").writeText("verification-only checksum")
             }
-            expectedMavenRelocationPaths(version).forEach { relative ->
-                repositories.getValue("common").resolve(relative).apply {
-                    parentFile.mkdirs()
-                    writeText(relative)
-                }
-            }
-            val duplicatedPath = "$group/codex-agent/$version/codex-agent-$version.module"
-            val duplicate = repositories.getValue("android").resolve(duplicatedPath).apply { parentFile.mkdirs() }
-            repositories.getValue("common").resolve(duplicatedPath).copyTo(duplicate)
             val result = runTool(
                 root,
                 "stage-promoted-maven",
@@ -96,22 +87,9 @@ class ReleaseToolingCliFunctionalTest {
             )
             assertEquals(0, result.first, result.second)
             assertEquals(
-                expectedMavenPrimaryPaths(version).size + expectedMavenRelocationPaths(version).size,
+                expectedMavenPrimaryPaths(version).size,
                 output.walkTopDown().count(File::isFile),
             )
-            duplicate.writeText("divergent primary")
-            val failedOutput = root.resolve("failed-output")
-            val failed = runTool(
-                root,
-                "stage-promoted-maven",
-                "--promoted", promoted.absolutePath,
-                "--commit", commit,
-                "--version", version,
-                "--output", failedOutput.absolutePath,
-            )
-            assertTrue(failed.first != 0, failed.second)
-            assertTrue(duplicatedPath in failed.second, failed.second)
-            assertFalse(failedOutput.exists())
         } finally {
             root.deleteRecursively()
         }

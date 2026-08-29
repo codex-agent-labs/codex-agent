@@ -1,21 +1,21 @@
-import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
-import io.github.codex_agent_labs.codexmobile.agent.AgentCapability as CoreCapability
-import io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationBrowser
-import io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationPresentation
-import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo
-import io.github.codex_agent_labs.codexmobile.agent.CodexHost as CoreHost
-import io.github.codex_agent_labs.codexmobile.agent.CodexPathWorkspaceSelection
-import io.github.codex_agent_labs.codexmobile.agent.CodexPlatform
-import io.github.codex_agent_labs.codexmobile.agent.CodexRuntimeFeature
-import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace
-import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceResolution
-import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelection
-import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelectionReason
-import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceStore
-import io.github.codex_agent_labs.codexmobile.agent.PreparedCodexRuntime
-import io.github.codex_agent_labs.codexmobile.appserver.runtime.CodexJsonLine
-import io.github.codex_agent_labs.codexmobile.appserver.runtime.CodexRuntime
-import io.github.codex_agent_labs.codexmobile.appserver.runtime.CodexRuntimeEvent
+import io.github.codex_agent_labs.codexagent.agent.AgentApprovalPreset
+import io.github.codex_agent_labs.codexagent.agent.AgentCapability as CoreCapability
+import io.github.codex_agent_labs.codexagent.agent.CodexAuthorizationBrowser
+import io.github.codex_agent_labs.codexagent.agent.CodexAuthorizationPresentation
+import io.github.codex_agent_labs.codexagent.agent.CodexClientInfo
+import io.github.codex_agent_labs.codexagent.agent.CodexHost as CoreHost
+import io.github.codex_agent_labs.codexagent.agent.CodexPathWorkspaceSelection
+import io.github.codex_agent_labs.codexagent.agent.CodexPlatform
+import io.github.codex_agent_labs.codexagent.agent.CodexRuntimeFeature
+import io.github.codex_agent_labs.codexagent.agent.CodexWorkspace
+import io.github.codex_agent_labs.codexagent.agent.CodexWorkspaceResolution
+import io.github.codex_agent_labs.codexagent.agent.CodexWorkspaceSelection
+import io.github.codex_agent_labs.codexagent.agent.CodexWorkspaceSelectionReason
+import io.github.codex_agent_labs.codexagent.agent.CodexWorkspaceStore
+import io.github.codex_agent_labs.codexagent.agent.PreparedCodexRuntime
+import io.github.codex_agent_labs.codexagent.appserver.runtime.CodexJsonLine
+import io.github.codex_agent_labs.codexagent.appserver.runtime.CodexRuntime
+import io.github.codex_agent_labs.codexagent.appserver.runtime.CodexRuntimeEvent
 import kotlin.js.jsTypeOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -3298,11 +3298,11 @@ private class ApiTestPlatform(
 }
 
 private class RecordingAuthorizationBrowser : CodexAuthorizationBrowser {
-    val urls: MutableList<io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl> = mutableListOf()
+    val urls: MutableList<io.github.codex_agent_labs.codexagent.agent.CodexAuthorizationUrl> = mutableListOf()
     var closedPresentations: Int = 0
 
     override fun open(
-        url: io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl,
+        url: io.github.codex_agent_labs.codexagent.agent.CodexAuthorizationUrl,
     ): CodexAuthorizationPresentation {
         urls += url
         return CodexAuthorizationPresentation { closedPresentations += 1 }

@@ -27,7 +27,7 @@ internal data class CrossLanguageKotlinBindingEvidence(
     val scenarioEvidence: List<CrossLanguageScenarioEvidence>,
 )
 
-private const val CANONICAL_TEST_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent."
+private const val CANONICAL_TEST_PACKAGE = "io.github.codex_agent_labs.codexagent.agent."
 
 internal val kotlinBindingScenarioMappings = listOf(
     KotlinBindingScenarioMapping(

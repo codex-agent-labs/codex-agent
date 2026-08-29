@@ -18,7 +18,7 @@ val desktopRuntimeEvidenceTargets = linkedMapOf(
 )
 
 internal const val DESKTOP_RUNTIME_TEST_CLASS =
-    "io.github.codex_agent_labs.codexmobile.appserver.runtime.DesktopCodexRuntimeTest"
+    "io.github.codex_agent_labs.codexagent.appserver.runtime.DesktopCodexRuntimeTest"
 internal val desktopRuntimeTestMethods = sortedSetOf(
     "closeDuringStartClosesNewProcessExactlyOnce",
     "initializesAndShutsDownOfficialAppServerWhenProvided",

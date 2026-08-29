@@ -1,103 +1,103 @@
 @file:OptIn(ExperimentalJsExport::class, ExperimentalJsStatic::class)
 
-import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset
-import io.github.codex_agent_labs.codexmobile.agent.AgentApprovalDecision as CoreApprovalDecision
-import io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationState as CoreAuthenticationState
-import io.github.codex_agent_labs.codexmobile.agent.AgentCapability as CoreCapability
-import io.github.codex_agent_labs.codexmobile.agent.AgentCatalogFreshness as CoreCatalogFreshness
-import io.github.codex_agent_labs.codexmobile.agent.AgentCollaborationMode as CoreCollaborationMode
-import io.github.codex_agent_labs.codexmobile.agent.AgentConnector as CoreConnector
-import io.github.codex_agent_labs.codexmobile.agent.AgentConversation as CoreAgentConversation
-import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSummary as CoreConversationSummary
-import io.github.codex_agent_labs.codexmobile.agent.AgentConversationSettings
-import io.github.codex_agent_labs.codexmobile.agent.AgentConversationState as CoreConversationState
-import io.github.codex_agent_labs.codexmobile.agent.AgentConversationStatus
-import io.github.codex_agent_labs.codexmobile.agent.AgentElicitation as CoreElicitation
-import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationAction as CoreElicitationAction
-import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationResponse as CoreElicitationResponse
-import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidation as CoreElicitationValidation
-import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationIssue as CoreElicitationValidationIssue
-import io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationReason as CoreElicitationValidationReason
-import io.github.codex_agent_labs.codexmobile.agent.AgentFormField as CoreFormField
-import io.github.codex_agent_labs.codexmobile.agent.AgentFormFieldType as CoreFormFieldType
-import io.github.codex_agent_labs.codexmobile.agent.AgentFormOption as CoreFormOption
-import io.github.codex_agent_labs.codexmobile.agent.AgentFormStringFormat as CoreFormStringFormat
-import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue as CoreFormValue
-import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.BooleanValue as CoreFormBooleanValue
-import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Number as CoreFormNumberValue
-import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.Text as CoreFormTextValue
-import io.github.codex_agent_labs.codexmobile.agent.AgentFormValue.TextList as CoreFormTextListValue
-import io.github.codex_agent_labs.codexmobile.agent.AgentHookActivity as CoreHookActivity
-import io.github.codex_agent_labs.codexmobile.agent.AgentHook as CoreHook
-import io.github.codex_agent_labs.codexmobile.agent.AgentHookCatalog as CoreHookCatalog
-import io.github.codex_agent_labs.codexmobile.agent.AgentHookHandler as CoreHookHandler
-import io.github.codex_agent_labs.codexmobile.agent.AgentHookRunStatus as CoreHookRunStatus
-import io.github.codex_agent_labs.codexmobile.agent.AgentHookTrustStatus as CoreHookTrustStatus
-import io.github.codex_agent_labs.codexmobile.agent.AgentInstallationScope as CoreInstallationScope
-import io.github.codex_agent_labs.codexmobile.agent.AgentIntegration as CoreIntegration
-import io.github.codex_agent_labs.codexmobile.agent.AgentIntegrationAuthorizationState as CoreIntegrationAuthorizationState
-import io.github.codex_agent_labs.codexmobile.agent.AgentIntegrationAuthorizationStatus as CoreIntegrationAuthorizationStatus
-import io.github.codex_agent_labs.codexmobile.agent.AgentInteractionState as CoreInteractionState
-import io.github.codex_agent_labs.codexmobile.agent.AgentInvocation as CoreInvocation
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable as CoreMcpEnvironmentVariable
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpAuthStatus as CoreMcpAuthStatus
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpAuthentication as CoreMcpAuthentication
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpOauthConfiguration as CoreMcpOauthConfiguration
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpServer as CoreMcpServer
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpServerConfiguration as CoreMcpServerConfiguration
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolApproval as CoreMcpToolApproval
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolConfiguration as CoreMcpToolConfiguration
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolExposureSurface as CoreMcpToolExposureSurface
-import io.github.codex_agent_labs.codexmobile.agent.AgentMcpTransport as CoreMcpTransport
-import io.github.codex_agent_labs.codexmobile.agent.AgentMessage as CoreMessage
-import io.github.codex_agent_labs.codexmobile.agent.AgentMessageRole as CoreMessageRole
-import io.github.codex_agent_labs.codexmobile.agent.AgentModel as CoreModel
-import io.github.codex_agent_labs.codexmobile.agent.AgentPlanProgress as CorePlanProgress
-import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStep as CorePlanStep
-import io.github.codex_agent_labs.codexmobile.agent.AgentPlanStepStatus as CorePlanStepStatus
-import io.github.codex_agent_labs.codexmobile.agent.AgentPendingApproval as CorePendingApproval
-import io.github.codex_agent_labs.codexmobile.agent.AgentPendingElicitation as CorePendingElicitation
-import io.github.codex_agent_labs.codexmobile.agent.AgentPendingInteraction as CorePendingInteraction
-import io.github.codex_agent_labs.codexmobile.agent.AgentPluginAuthPolicy as CorePluginAuthPolicy
-import io.github.codex_agent_labs.codexmobile.agent.AgentPluginCatalog as CorePluginCatalog
-import io.github.codex_agent_labs.codexmobile.agent.AgentPluginDetail as CorePluginDetail
-import io.github.codex_agent_labs.codexmobile.agent.AgentPluginInstallPolicy as CorePluginInstallPolicy
-import io.github.codex_agent_labs.codexmobile.agent.AgentPluginInstallResult as CorePluginInstallResult
-import io.github.codex_agent_labs.codexmobile.agent.AgentPluginReference as CorePluginReference
-import io.github.codex_agent_labs.codexmobile.agent.AgentPluginSkill as CorePluginSkill
-import io.github.codex_agent_labs.codexmobile.agent.AgentPluginSummary as CorePluginSummary
-import io.github.codex_agent_labs.codexmobile.agent.AgentResolution as CoreResolution
-import io.github.codex_agent_labs.codexmobile.agent.AgentResourceOrigin as CoreResourceOrigin
-import io.github.codex_agent_labs.codexmobile.agent.AgentServiceTier as CoreServiceTier
-import io.github.codex_agent_labs.codexmobile.agent.AgentSkill as CoreSkill
-import io.github.codex_agent_labs.codexmobile.agent.AgentSkillCatalog as CoreSkillCatalog
-import io.github.codex_agent_labs.codexmobile.agent.AgentSkillChunk as CoreSkillChunk
-import io.github.codex_agent_labs.codexmobile.agent.AgentSkillScope as CoreAgentSkillScope
-import io.github.codex_agent_labs.codexmobile.agent.AgentTurnProgress as CoreTurnProgress
-import io.github.codex_agent_labs.codexmobile.agent.AgentTurnRequest as CoreTurnRequest
-import io.github.codex_agent_labs.codexmobile.agent.CodexAgent as CoreAgent
-import io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication as CoreAuthentication
-import io.github.codex_agent_labs.codexmobile.agent.CodexAuthenticationMethod as CoreAuthenticationMethod
-import io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl as CoreAuthorizationUrl
-import io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo
-import io.github.codex_agent_labs.codexmobile.agent.CodexConnectors as CoreConnectors
-import io.github.codex_agent_labs.codexmobile.agent.CodexConversation as CoreConversation
-import io.github.codex_agent_labs.codexmobile.agent.CodexFailure as CoreFailure
-import io.github.codex_agent_labs.codexmobile.agent.CodexHost as CoreHost
-import io.github.codex_agent_labs.codexmobile.agent.CodexHostState as CoreHostState
-import io.github.codex_agent_labs.codexmobile.agent.CodexHooks as CoreHooks
-import io.github.codex_agent_labs.codexmobile.agent.CodexIntegrationAuthorization as CoreIntegrationAuthorization
-import io.github.codex_agent_labs.codexmobile.agent.CodexInteractions as CoreInteractions
-import io.github.codex_agent_labs.codexmobile.agent.CodexModels as CoreModels
-import io.github.codex_agent_labs.codexmobile.agent.CodexMcpServers as CoreMcpServers
-import io.github.codex_agent_labs.codexmobile.agent.CodexOperationException
-import io.github.codex_agent_labs.codexmobile.agent.CodexPathWorkspaceSelection
-import io.github.codex_agent_labs.codexmobile.agent.CodexPlugins as CorePlugins
-import io.github.codex_agent_labs.codexmobile.agent.CodexSkills as CoreSkills
-import io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace as CoreWorkspace
-import io.github.codex_agent_labs.codexmobile.agent.ConversationId
-import io.github.codex_agent_labs.codexmobile.agent.runtime.NodeCodexPlatform
+import io.github.codex_agent_labs.codexagent.agent.AgentApprovalPreset
+import io.github.codex_agent_labs.codexagent.agent.AgentApprovalDecision as CoreApprovalDecision
+import io.github.codex_agent_labs.codexagent.agent.AgentAuthenticationState as CoreAuthenticationState
+import io.github.codex_agent_labs.codexagent.agent.AgentCapability as CoreCapability
+import io.github.codex_agent_labs.codexagent.agent.AgentCatalogFreshness as CoreCatalogFreshness
+import io.github.codex_agent_labs.codexagent.agent.AgentCollaborationMode as CoreCollaborationMode
+import io.github.codex_agent_labs.codexagent.agent.AgentConnector as CoreConnector
+import io.github.codex_agent_labs.codexagent.agent.AgentConversation as CoreAgentConversation
+import io.github.codex_agent_labs.codexagent.agent.AgentConversationSummary as CoreConversationSummary
+import io.github.codex_agent_labs.codexagent.agent.AgentConversationSettings
+import io.github.codex_agent_labs.codexagent.agent.AgentConversationState as CoreConversationState
+import io.github.codex_agent_labs.codexagent.agent.AgentConversationStatus
+import io.github.codex_agent_labs.codexagent.agent.AgentElicitation as CoreElicitation
+import io.github.codex_agent_labs.codexagent.agent.AgentElicitationAction as CoreElicitationAction
+import io.github.codex_agent_labs.codexagent.agent.AgentElicitationResponse as CoreElicitationResponse
+import io.github.codex_agent_labs.codexagent.agent.AgentElicitationValidation as CoreElicitationValidation
+import io.github.codex_agent_labs.codexagent.agent.AgentElicitationValidationIssue as CoreElicitationValidationIssue
+import io.github.codex_agent_labs.codexagent.agent.AgentElicitationValidationReason as CoreElicitationValidationReason
+import io.github.codex_agent_labs.codexagent.agent.AgentFormField as CoreFormField
+import io.github.codex_agent_labs.codexagent.agent.AgentFormFieldType as CoreFormFieldType
+import io.github.codex_agent_labs.codexagent.agent.AgentFormOption as CoreFormOption
+import io.github.codex_agent_labs.codexagent.agent.AgentFormStringFormat as CoreFormStringFormat
+import io.github.codex_agent_labs.codexagent.agent.AgentFormValue as CoreFormValue
+import io.github.codex_agent_labs.codexagent.agent.AgentFormValue.BooleanValue as CoreFormBooleanValue
+import io.github.codex_agent_labs.codexagent.agent.AgentFormValue.Number as CoreFormNumberValue
+import io.github.codex_agent_labs.codexagent.agent.AgentFormValue.Text as CoreFormTextValue
+import io.github.codex_agent_labs.codexagent.agent.AgentFormValue.TextList as CoreFormTextListValue
+import io.github.codex_agent_labs.codexagent.agent.AgentHookActivity as CoreHookActivity
+import io.github.codex_agent_labs.codexagent.agent.AgentHook as CoreHook
+import io.github.codex_agent_labs.codexagent.agent.AgentHookCatalog as CoreHookCatalog
+import io.github.codex_agent_labs.codexagent.agent.AgentHookHandler as CoreHookHandler
+import io.github.codex_agent_labs.codexagent.agent.AgentHookRunStatus as CoreHookRunStatus
+import io.github.codex_agent_labs.codexagent.agent.AgentHookTrustStatus as CoreHookTrustStatus
+import io.github.codex_agent_labs.codexagent.agent.AgentInstallationScope as CoreInstallationScope
+import io.github.codex_agent_labs.codexagent.agent.AgentIntegration as CoreIntegration
+import io.github.codex_agent_labs.codexagent.agent.AgentIntegrationAuthorizationState as CoreIntegrationAuthorizationState
+import io.github.codex_agent_labs.codexagent.agent.AgentIntegrationAuthorizationStatus as CoreIntegrationAuthorizationStatus
+import io.github.codex_agent_labs.codexagent.agent.AgentInteractionState as CoreInteractionState
+import io.github.codex_agent_labs.codexagent.agent.AgentInvocation as CoreInvocation
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpEnvironmentSource as CoreMcpEnvironmentSource
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpEnvironmentVariable as CoreMcpEnvironmentVariable
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpAuthStatus as CoreMcpAuthStatus
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpAuthentication as CoreMcpAuthentication
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpOauthConfiguration as CoreMcpOauthConfiguration
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpServer as CoreMcpServer
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpServerConfiguration as CoreMcpServerConfiguration
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpToolApproval as CoreMcpToolApproval
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpToolConfiguration as CoreMcpToolConfiguration
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpToolExposureSurface as CoreMcpToolExposureSurface
+import io.github.codex_agent_labs.codexagent.agent.AgentMcpTransport as CoreMcpTransport
+import io.github.codex_agent_labs.codexagent.agent.AgentMessage as CoreMessage
+import io.github.codex_agent_labs.codexagent.agent.AgentMessageRole as CoreMessageRole
+import io.github.codex_agent_labs.codexagent.agent.AgentModel as CoreModel
+import io.github.codex_agent_labs.codexagent.agent.AgentPlanProgress as CorePlanProgress
+import io.github.codex_agent_labs.codexagent.agent.AgentPlanStep as CorePlanStep
+import io.github.codex_agent_labs.codexagent.agent.AgentPlanStepStatus as CorePlanStepStatus
+import io.github.codex_agent_labs.codexagent.agent.AgentPendingApproval as CorePendingApproval
+import io.github.codex_agent_labs.codexagent.agent.AgentPendingElicitation as CorePendingElicitation
+import io.github.codex_agent_labs.codexagent.agent.AgentPendingInteraction as CorePendingInteraction
+import io.github.codex_agent_labs.codexagent.agent.AgentPluginAuthPolicy as CorePluginAuthPolicy
+import io.github.codex_agent_labs.codexagent.agent.AgentPluginCatalog as CorePluginCatalog
+import io.github.codex_agent_labs.codexagent.agent.AgentPluginDetail as CorePluginDetail
+import io.github.codex_agent_labs.codexagent.agent.AgentPluginInstallPolicy as CorePluginInstallPolicy
+import io.github.codex_agent_labs.codexagent.agent.AgentPluginInstallResult as CorePluginInstallResult
+import io.github.codex_agent_labs.codexagent.agent.AgentPluginReference as CorePluginReference
+import io.github.codex_agent_labs.codexagent.agent.AgentPluginSkill as CorePluginSkill
+import io.github.codex_agent_labs.codexagent.agent.AgentPluginSummary as CorePluginSummary
+import io.github.codex_agent_labs.codexagent.agent.AgentResolution as CoreResolution
+import io.github.codex_agent_labs.codexagent.agent.AgentResourceOrigin as CoreResourceOrigin
+import io.github.codex_agent_labs.codexagent.agent.AgentServiceTier as CoreServiceTier
+import io.github.codex_agent_labs.codexagent.agent.AgentSkill as CoreSkill
+import io.github.codex_agent_labs.codexagent.agent.AgentSkillCatalog as CoreSkillCatalog
+import io.github.codex_agent_labs.codexagent.agent.AgentSkillChunk as CoreSkillChunk
+import io.github.codex_agent_labs.codexagent.agent.AgentSkillScope as CoreAgentSkillScope
+import io.github.codex_agent_labs.codexagent.agent.AgentTurnProgress as CoreTurnProgress
+import io.github.codex_agent_labs.codexagent.agent.AgentTurnRequest as CoreTurnRequest
+import io.github.codex_agent_labs.codexagent.agent.CodexAgent as CoreAgent
+import io.github.codex_agent_labs.codexagent.agent.CodexAuthentication as CoreAuthentication
+import io.github.codex_agent_labs.codexagent.agent.CodexAuthenticationMethod as CoreAuthenticationMethod
+import io.github.codex_agent_labs.codexagent.agent.CodexAuthorizationUrl as CoreAuthorizationUrl
+import io.github.codex_agent_labs.codexagent.agent.CodexClientInfo
+import io.github.codex_agent_labs.codexagent.agent.CodexConnectors as CoreConnectors
+import io.github.codex_agent_labs.codexagent.agent.CodexConversation as CoreConversation
+import io.github.codex_agent_labs.codexagent.agent.CodexFailure as CoreFailure
+import io.github.codex_agent_labs.codexagent.agent.CodexHost as CoreHost
+import io.github.codex_agent_labs.codexagent.agent.CodexHostState as CoreHostState
+import io.github.codex_agent_labs.codexagent.agent.CodexHooks as CoreHooks
+import io.github.codex_agent_labs.codexagent.agent.CodexIntegrationAuthorization as CoreIntegrationAuthorization
+import io.github.codex_agent_labs.codexagent.agent.CodexInteractions as CoreInteractions
+import io.github.codex_agent_labs.codexagent.agent.CodexModels as CoreModels
+import io.github.codex_agent_labs.codexagent.agent.CodexMcpServers as CoreMcpServers
+import io.github.codex_agent_labs.codexagent.agent.CodexOperationException
+import io.github.codex_agent_labs.codexagent.agent.CodexPathWorkspaceSelection
+import io.github.codex_agent_labs.codexagent.agent.CodexPlugins as CorePlugins
+import io.github.codex_agent_labs.codexagent.agent.CodexSkills as CoreSkills
+import io.github.codex_agent_labs.codexagent.agent.CodexWorkspace as CoreWorkspace
+import io.github.codex_agent_labs.codexagent.agent.ConversationId
+import io.github.codex_agent_labs.codexagent.agent.runtime.NodeCodexPlatform
 import kotlin.js.ExperimentalJsExport
 import kotlin.js.ExperimentalJsStatic
 import kotlin.js.JsExport

@@ -6,16 +6,6 @@ import kotlinx.serialization.json.buildJsonObject
 
 private data class MavenArtifactSpec(val artifactId: String, val suffixes: List<String>)
 
-internal const val OLD_MAVEN_GROUP = "io.github.ciurlaro"
-internal val mavenRelocationArtifactIds = sortedSetOf(
-    "codex-agent",
-    "codex-agent-android",
-    "codex-agent-iosarm64",
-    "codex-agent-iossimulatorarm64",
-    "codex-agent-jvm",
-    "codex-agent-runtime-android",
-)
-
 private val mavenArtifactSpecs = listOf(
     MavenArtifactSpec("codex-agent", listOf("-javadoc.jar", "-kotlin-tooling-metadata.json", "-sources.jar", ".jar", ".module", ".pom")),
     MavenArtifactSpec("codex-agent-android", listOf("-javadoc.jar", "-sources.jar", ".aar", ".module", ".pom")),
@@ -77,43 +67,6 @@ internal fun expectedMavenPrimaryPaths(version: String): Set<String> = mavenArti
     }
 }.toSortedSet()
 
-internal fun expectedMavenRelocationPaths(version: String): Set<String> = mavenRelocationArtifactIds.mapTo(sortedSetOf()) {
-    "${OLD_MAVEN_GROUP.replace('.', '/')}/$it/$version/$it-$version.pom"
-}
-
-internal fun generateMavenRelocationPoms(outputDirectory: File, newGroup: String, version: String) {
-    mavenRelocationArtifactIds.forEach { artifactId ->
-        outputDirectory.resolve("$artifactId/$version/$artifactId-$version.pom").apply {
-            parentFile.mkdirs()
-            writeText(
-                """<?xml version="1.0" encoding="UTF-8"?>
-                    |<project xmlns="http://maven.apache.org/POM/4.0.0"
-                    |         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                    |         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-                    |  <modelVersion>4.0.0</modelVersion>
-                    |  <groupId>$OLD_MAVEN_GROUP</groupId>
-                    |  <artifactId>$artifactId</artifactId>
-                    |  <version>$version</version>
-                    |  <name>$artifactId relocation</name>
-                    |  <url>https://github.com/${CodexAgentBuild.REPOSITORY}</url>
-                    |  <licenses><license>
-                    |    <name>GNU General Public License v3.0 or later</name>
-                    |    <url>https://www.gnu.org/licenses/gpl-3.0.txt</url>
-                    |    <distribution>repo</distribution>
-                    |  </license></licenses>
-                    |  <distributionManagement><relocation>
-                    |    <groupId>$newGroup</groupId>
-                    |    <artifactId>$artifactId</artifactId>
-                    |    <version>$version</version>
-                    |    <message>Codex Agent moved to $newGroup.</message>
-                    |  </relocation></distributionManagement>
-                    |</project>
-                    |""".trimMargin(),
-            )
-        }
-    }
-}
-
 internal fun verifyMavenRepository(
     repository: File,
     groupId: String,
@@ -121,6 +74,7 @@ internal fun verifyMavenRepository(
     requireSignatures: Boolean,
     inventory: File,
 ) {
+    check(groupId == CodexAgentBuild.MAVEN_GROUP) { "Unexpected Maven group: $groupId" }
     val groupPath = groupId.replace('.', '/')
     val groupRoot = repository.resolve(groupPath)
     check(groupRoot.isDirectory) { "Maven group is missing: $groupId" }
@@ -140,26 +94,7 @@ internal fun verifyMavenRepository(
         "Maven primary artifact set mismatch: expected=$expectedPrimary actual=$actualPrimary"
     }
 
-    val relocationRoot = repository.resolve(OLD_MAVEN_GROUP.replace('.', '/'))
-    check(relocationRoot.isDirectory) { "Maven relocation group is missing: $OLD_MAVEN_GROUP" }
-    val relocationIds = relocationRoot.listFiles().orEmpty().filter(File::isDirectory)
-        .mapTo(sortedSetOf(), File::getName)
-    check(relocationIds == mavenRelocationArtifactIds) {
-        "Maven relocation set mismatch: expected=$mavenRelocationArtifactIds actual=$relocationIds"
-    }
-    val expectedRelocations = expectedMavenRelocationPaths(version)
-    val actualRelocations = relocationIds.flatMap { artifactId ->
-        val versionDirectory = relocationRoot.resolve("$artifactId/$version")
-        check(versionDirectory.isDirectory) { "$artifactId relocation version $version is missing" }
-        versionDirectory.listFiles().orEmpty().filter { it.isFile && !it.isMavenSidecar() }.map {
-            it.relativeTo(repository).invariantSeparatorsPath
-        }
-    }.toSortedSet()
-    check(actualRelocations == expectedRelocations) {
-        "Maven relocation POM set mismatch: expected=$expectedRelocations actual=$actualRelocations"
-    }
-
-    val expectedRootPrimary = expectedPrimary.mapTo(sortedSetOf()) { "$groupPath/$it" } + expectedRelocations
+    val expectedRootPrimary = expectedPrimary.mapTo(sortedSetOf()) { "$groupPath/$it" }
     expectedRootPrimary.forEach { relative ->
         val primary = repository.resolve(relative)
         checksumAlgorithms.forEach { (suffix, algorithm) ->
@@ -200,14 +135,10 @@ internal fun verifyMavenRepository(
     }
     val files = expectedFiles.map(repository::resolve)
     inventory.atomicWriteJson(buildJsonObject {
-        put("schemaVersion", JsonPrimitive(2))
+        put("schemaVersion", JsonPrimitive(3))
         put("groupId", JsonPrimitive(groupId))
         put("version", JsonPrimitive(version))
         put("artifactIds", buildJsonArray { expectedIds.forEach { add(JsonPrimitive(it)) } })
-        put("relocationGroupId", JsonPrimitive(OLD_MAVEN_GROUP))
-        put("relocationArtifactIds", buildJsonArray {
-            mavenRelocationArtifactIds.forEach { add(JsonPrimitive(it)) }
-        })
         put("primaryArtifactCount", JsonPrimitive(expectedRootPrimary.size))
         put("signaturesRequired", JsonPrimitive(requireSignatures))
         put("files", buildJsonArray {

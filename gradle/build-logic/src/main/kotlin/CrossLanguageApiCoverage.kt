@@ -8,7 +8,7 @@ import org.jetbrains.org.objectweb.asm.Opcodes
 import org.w3c.dom.Element
 
 internal const val COVERS_API_ANNOTATION_DESCRIPTOR =
-    "Lio/github/codex_agent_labs/codexmobile/agent/CoversApi;"
+    "Lio/github/codex_agent_labs/codexagent/agent/CoversApi;"
 private val JUNIT_TEST_ANNOTATION_DESCRIPTORS = setOf(
     "Lorg/junit/Test;",
     "Lorg/junit/jupiter/api/Test;",

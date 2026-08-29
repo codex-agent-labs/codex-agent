@@ -26,13 +26,13 @@ internal const val C_ABI_BINDING_CAPABILITY_COUNT = 556
 internal const val C_ABI_BINDING_PUBLIC_SYMBOL_COUNT = 777
 internal const val C_ABI_BINDING_ARTIFACT_COUNT = 7
 internal const val C_ABI_BINDING_CAPABILITY_SHA256 =
-    "f0b7217e2d302f331829437ce0dd4f54d72ec8503770b6e71f82e68612809651"
+    "9a73e6d5b49ae052b236cb432f380b3f342d68760655e04369c31d4724d2d4a9"
 internal const val C_ABI_SCENARIO_SELECTED_TEST_COUNT = 138
 internal const val C_ABI_SCENARIO_MAPPING_ROW_COUNT = 231
 internal const val C_ABI_SCENARIO_SELECTED_TEST_SHA256 =
-    "3b9f72beb66a2dd60f16353b74702e0fde84ebb0715053183b94ddf47ba0b1e3"
+    "9672bf2f656ec48d4ab4cd7f7ea60ceea250ba2ced57a3624c4c589312bbd6e6"
 internal const val C_ABI_SCENARIO_MAPPING_SHA256 =
-    "6a50afe334bfe0f31bbfd7eadc78e9b0b619a18af5eaab59976d88ebc99b46e9"
+    "d544777fe7d7b0cb0c17213fd436db77c10a8cb042007ff64b2c04eed7db1929"
 internal val C_ABI_BINDING_ARTIFACT_IDS = sortedSetOf(
     "c-abi-bootstrap",
     C_ABI_SCENARIO_PROOF_ARTIFACT_ID,
@@ -303,7 +303,7 @@ internal fun productionCrossLanguageCAbiScenarioMappings(): List<CrossLanguageCA
 }
 
 private fun cAbiNativeTestId(classAndMethod: String): String =
-    "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi." + classAndMethod + "[macosArm64]"
+    "macosArm64Test.io.github.codex_agent_labs.codexagent.capi." + classAndMethod + "[macosArm64]"
 
 /**
  * Frozen expectations are explicit so compact unit fixtures do not weaken production callers.

@@ -3,15 +3,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import org.gradle.api.publish.PublishingExtension
-import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
 val candidateCommitValue = providers.gradleProperty("codexAgent.candidateCommit")
 val candidateReleaseTag = providers.gradleProperty("codexAgent.releaseTag")
 val candidatePathCommit = candidateCommitValue.orElse("UNBOUND")
 val candidateRoot = layout.buildDirectory.dir(candidatePathCommit.map { "protected-candidate/$it" })
-val candidateArtifacts = candidateRoot.map { it.dir("artifacts") }
-val candidateEvidence = candidateRoot.map { it.dir("evidence") }
 val candidateReports = candidateRoot.map { it.dir("reports") }
-private val reuseVerifiedApple = providers.gradleProperty(IOS_VERIFIED_DISTRIBUTION_PROPERTY).isPresent
 val importedMavenRepository = providers.gradleProperty("codexAgent.mavenRepositoryDirectory")
 val centralStagingDirectory = layout.dir(importedMavenRepository.map(::file))
     .orElse(candidateRoot.map { it.dir("maven-repository") })
@@ -67,9 +63,6 @@ val iosResourcePolicyFile = layout.projectDirectory.file("gradle/release/ios-res
 val privacyRequiredReasonReviewTemplate = layout.projectDirectory.file("gradle/release/privacy-required-reason-review.json")
 val privacyRequiredReasonReviewOverride =
     layout.file(providers.gradleProperty("codexAgent.privacyRequiredReasonReview").map { File(it) })
-val generatedPrivacyRequiredReasonReview = layout.projectDirectory.file(
-    "codex-agent-runtime-ios/build/reports/ios-release/privacy/privacy-required-reason-review.json")
-val privacyRequiredReasonReview = privacyRequiredReasonReviewOverride.orElse(generatedPrivacyRequiredReasonReview)
 val desktopDistributionManifestFile =
     layout.projectDirectory.file("codex-agent-runtime-desktop/codex-app-server-distributions.json")
 val desktopBundledLicenseFile =
@@ -123,65 +116,6 @@ tasks.register<VerifyPublicationReadinessTask>("verifyPublicationReadiness") {
     desktopDistributionManifest.set(desktopDistributionManifestFile)
     desktopBundledLicense.set(desktopBundledLicenseFile)
     desktopBundledNotice.set(desktopBundledNoticeFile)
-}
-val desktopEvidenceDirectory = providers.gradleProperty("codexAgent.desktopEvidenceDirectory")
-val iosNativeEvidenceDirectoryPath = providers.gradleProperty("codexAgent.iosNativeEvidenceDirectory")
-val desktopEvidenceFiles = objects.fileCollection().apply {
-    desktopRuntimeEvidenceTargets.keys.forEach { target ->
-        from(desktopEvidenceDirectory.map { directory -> file("$directory/${desktopRuntimeEvidenceFileName(target)}") })
-    }
-}
-val prepareProtectedCandidate = tasks.register<PrepareProtectedCandidateTask>("prepareProtectedCandidate") {
-    dependsOn("verifyReleaseMetadata")
-    version.set(project.version.toString())
-    releaseTag.set(candidateReleaseTag)
-    candidateCommit.set(candidateCommitValue)
-    parallelExecution.set(gradle.startParameter.isParallelProjectExecutionEnabled)
-    desktopEvidence.from(desktopEvidenceFiles)
-    iosNativeEvidenceDirectory.set(layout.dir(iosNativeEvidenceDirectoryPath.map(::file)))
-    repositoryDirectory.set(layout.projectDirectory)
-    candidateDirectory.set(candidateRoot)
-}
-val stageCentralRepository = tasks.register("stageCentralRepository") {
-    group = "publishing"
-    dependsOn(
-        ":codex-agent-core:publishAllPublicationsToCENTRAL_STAGINGRepository",
-        ":codex-agent-runtime-android:publishAllPublicationsToCENTRAL_STAGINGRepository",
-        ":codex-agent-runtime-desktop:publishAllPublicationsToCENTRAL_STAGINGRepository",
-        ":codex-agent-runtime-ios:publishAllPublicationsToCENTRAL_STAGINGRepository",
-    )
-}
-val generateRelocationPoms = tasks.register<GenerateMavenRelocationPomsTask>("generateMavenRelocationPoms") {
-    outputDirectory.set(centralStagingDirectory.map { it.dir(OLD_MAVEN_GROUP.replace('.', '/')) })
-    newGroup.set(CodexAgentBuild.MAVEN_GROUP)
-    version.set(project.version.toString())
-    mustRunAfter(stageCentralRepository)
-}
-val generateConsumerCommonRelocationPoms = tasks.register<GenerateMavenRelocationPomsTask>(
-    "generateConsumerCommonMavenRelocationPoms",
-) {
-    outputDirectory.set(stagedConsumerRepositories.getValue("common").map {
-        it.dir(OLD_MAVEN_GROUP.replace('.', '/'))
-    })
-    newGroup.set(CodexAgentBuild.MAVEN_GROUP)
-    version.set(project.version.toString())
-}
-
-val mavenInventoryFile = candidateReports.map { it.file("maven-inventory.json") }
-val verifyCentralStaging = tasks.register<VerifyMavenStagingTask>("verifyCentralStaging") {
-    group = "verification"
-    description = "Verifies the exact staged KMP repository, relocations, and required sidecars."
-    if (!importedMavenRepository.isPresent) {
-        dependsOn(stageCentralRepository, generateRelocationPoms)
-    }
-    repositoryDirectory.set(centralStagingDirectory)
-    groupId.set(project.group.toString())
-    version.set(project.version.toString())
-    requireSignatures.set(
-        providers.gradleProperty("signingInMemoryKey").isPresent ||
-            providers.gradleProperty("signing.secretKeyRingFile").isPresent,
-    )
-    inventoryFile.set(mavenInventoryFile)
 }
 val rootLocalProperties = layout.projectDirectory.file("local.properties")
 val rootAndroidSdkDirectory = providers.environmentVariable("ANDROID_HOME").orElse(
@@ -249,7 +183,6 @@ val stagedConsumerTasks = linkedMapOf(
     }}ConsumerMavenRepository") {
         if (!importedMavenRepository.isPresent) {
             dependsOn(stagedConsumerPublicationTasks.getValue(target))
-            if (target == "common") dependsOn(generateConsumerCommonRelocationPoms)
         }
         inputs.dir(repository)
         inputs.property("repositoryPath", repository.map { it.asFile.absolutePath })
@@ -292,143 +225,6 @@ val stagedConsumerTasks = linkedMapOf(
         resultFile.set(candidateReports.map { it.file("kmp-consumer-$target.json") })
     }
 }
-val cleanKmpConsumerResult = candidateReports.map { it.file("clean-kmp-consumer.json") }
-val verifyStagedKmpConsumer = tasks.register<AggregateStagedKmpConsumerTask>("verifyStagedKmpConsumer") {
-    group = "verification"
-    description = "Verifies every target-specific staged KMP consumer result."
-    dependsOn(verifyCentralStaging, stagedConsumerTasks.values)
-    targetResults.from(stagedConsumerTasks.values.map { it.flatMap(VerifyStagedKmpConsumerTask::resultFile) })
-    projectVersion.set(project.version.toString())
-    resultFile.set(cleanKmpConsumerResult)
-}
-val centralBundleFile = candidateArtifacts.map { it.file("codex-agent-${project.version}-central.zip") }
-val centralBundleInventory = candidateReports.map { it.file("central-bundle.json") }
-val packageCentralBundle = tasks.register<BuildCentralBundleTask>("packageCentralBundle") {
-    group = "publishing"
-    description = "Builds and inventories the exact deterministic Central Portal bundle."
-    dependsOn(verifyStagedKmpConsumer)
-    repositoryDirectory.set(centralStagingDirectory)
-    mavenInventory.set(mavenInventoryFile)
-    maximumBytes.set(1_000_000_000L)
-    bundleFile.set(centralBundleFile)
-    inventoryFile.set(centralBundleInventory)
-}
-val swiftArchiveName = "CodexAgent-${project.version}.xcframework.zip"
-val stagedSwiftZip = candidateArtifacts.map { it.file(swiftArchiveName) }
-val stagedSwiftChecksum = candidateArtifacts.map { it.file("$swiftArchiveName.sha256") }
-val stagedSwiftPmProof = candidateEvidence.map { it.file("swiftpm-proof.json") }
-val stagedIosNativeEvidence = candidateEvidence.map { it.file("ios-native-evidence.json") }
-val stageIosNativeEvidence = tasks.register<CopyCandidateFileTask>("stageProtectedIosNativeEvidence") {
-    dependsOn(":codex-agent-runtime-ios:validateImportedCodexAgentIosNativeEvidence")
-    sourceFile.set(layout.projectDirectory.file(
-        "codex-agent-runtime-ios/build/imported-rust/ios-native-evidence.json",
-    ))
-    outputFile.set(stagedIosNativeEvidence)
-}
-val stageSwiftZip = tasks.register<CopyCandidateFileTask>("stageProtectedSwiftPackage") {
-    sourceFile.set(layout.projectDirectory.file("codex-agent-runtime-ios/build/distributions/$swiftArchiveName"))
-    outputFile.set(stagedSwiftZip)
-}
-val stageSwiftChecksum = tasks.register<CopyCandidateFileTask>("stageProtectedSwiftChecksum") {
-    sourceFile.set(layout.projectDirectory.file("codex-agent-runtime-ios/build/distributions/$swiftArchiveName.sha256"))
-    outputFile.set(stagedSwiftChecksum)
-}
-val stagedPrivacyAudit = candidateEvidence.map { it.file("privacy-audit.json") }
-val stagePrivacyAudit = tasks.register<CopyCandidateFileTask>("stageProtectedPrivacyAudit") {
-    sourceFile.set(layout.projectDirectory.file("codex-agent-runtime-ios/build/reports/ios-release/privacy/audit.json"))
-    outputFile.set(stagedPrivacyAudit)
-}
-
-val runtimeMetrics = layout.projectDirectory.file("codex-agent-runtime-ios/build/reports/ios-release/runtime-metrics.json")
-
-val candidateManifest = candidateRoot.map { it.file("candidate-manifest.json") }
-val generateCandidateManifest = tasks.register<GenerateCandidateManifestTask>("generateCandidateManifest") {
-    group = "publishing"
-    description = "Generates the one canonical hash-bound protected-candidate manifest."
-    candidateVersion.set(project.version.toString())
-    releaseTag.set(candidateReleaseTag)
-    candidateCommit.set(candidateCommitValue)
-    swiftZip.set(stagedSwiftZip)
-    swiftChecksum.set(stagedSwiftChecksum)
-    swiftPmProof.set(stagedSwiftPmProof)
-    centralBundle.set(centralBundleFile)
-    centralInventory.set(centralBundleInventory)
-    mavenInventory.set(mavenInventoryFile)
-    kmpConsumer.set(cleanKmpConsumerResult)
-    desktopEvidence.from(desktopEvidenceFiles)
-    iosNativeEvidence.set(stagedIosNativeEvidence)
-    privacyAudit.set(stagedPrivacyAudit); artifactMetrics.set(layout.projectDirectory.file("codex-agent-runtime-ios/build/reports/ios-release/artifact-metrics.json"))
-    iosRuntimeMetrics.set(runtimeMetrics)
-    approvalsFile.set(publicationApprovals)
-    privacyManifest.set(privacyManifestFile)
-    privacyDataFlowReview.set(privacyDataFlowReviewFile)
-    privacyReviews.set(privacyRequiredReasonReview)
-    packageSwift.set(layout.projectDirectory.file("Package.swift"))
-    desktopDistributionManifest.set(desktopDistributionManifestFile)
-    desktopBundledLicense.set(desktopBundledLicenseFile)
-    desktopBundledNotice.set(desktopBundledNoticeFile)
-    outputFile.set(candidateManifest)
-}
-val verifyCandidateManifest = tasks.register<VerifyProtectedCandidateManifestTask>("verifyCandidateManifest") {
-    dependsOn(generateCandidateManifest)
-    manifestFile.set(candidateManifest)
-    candidateVersion.set(project.version.toString())
-    releaseTag.set(candidateReleaseTag)
-    candidateCommit.set(candidateCommitValue)
-    swiftZip.set(stagedSwiftZip)
-    swiftChecksum.set(stagedSwiftChecksum)
-    swiftPmProof.set(stagedSwiftPmProof)
-    centralBundle.set(centralBundleFile)
-    centralInventory.set(centralBundleInventory)
-    mavenInventory.set(mavenInventoryFile)
-    kmpConsumer.set(cleanKmpConsumerResult)
-    desktopEvidence.from(desktopEvidenceFiles)
-    iosNativeEvidence.set(stagedIosNativeEvidence)
-    privacyAudit.set(stagedPrivacyAudit); artifactMetrics.set(layout.projectDirectory.file("codex-agent-runtime-ios/build/reports/ios-release/artifact-metrics.json"))
-    iosRuntimeMetrics.set(runtimeMetrics)
-    approvalsFile.set(publicationApprovals)
-    privacyManifest.set(privacyManifestFile)
-    privacyDataFlowReview.set(privacyDataFlowReviewFile)
-    privacyReviews.set(privacyRequiredReasonReview)
-    packageSwift.set(layout.projectDirectory.file("Package.swift"))
-    desktopDistributionManifest.set(desktopDistributionManifestFile)
-    desktopBundledLicense.set(desktopBundledLicenseFile)
-    desktopBundledNotice.set(desktopBundledNoticeFile)
-}
-registerProtectedRuntimeCandidates(
-    candidateCommit = candidateCommitValue,
-    candidateEvidence = candidateEvidence,
-    candidateReports = candidateReports,
-    centralStagingDirectory = centralStagingDirectory,
-    distributionManifest = desktopDistributionManifestFile,
-    prepareCandidate = prepareProtectedCandidate,
-    verifyCentralStaging = verifyCentralStaging,
-    generateManifest = generateCandidateManifest,
-    verifyManifest = verifyCandidateManifest,
-)
-
-val protectedCandidatePhases = registerProtectedCandidatePhases(prepareProtectedCandidate)
-
-gradle.projectsEvaluated {
-    val ios = project(":codex-agent-runtime-ios").tasks
-    val swiftPackageProof = ios.named<RecordSwiftPackageProofTask>("recordCodexAgentSwiftPackageProof") {
-        proofFile.set(stagedSwiftPmProof)
-    }
-    stageSwiftZip.configure { dependsOn(swiftPackageProof) }
-    stageSwiftChecksum.configure { dependsOn(swiftPackageProof) }
-    stagePrivacyAudit.configure {
-        dependsOn(ios.named(
-            if (reuseVerifiedApple) "validateImportedCodexAgentIosVerifiedDistribution"
-            else "verifyIosPrivacyManifest",
-        ))
-    }
-    if (!reuseVerifiedApple && !providers.gradleProperty("codexAgent.privacyRequiredReasonReview").isPresent)
-        generateCandidateManifest.configure { dependsOn(ios.named("generateIosPrivacyRequiredReasonReview")) }
-    subprojects {
-        tasks.withType<PublishToMavenRepository>().configureEach { mustRunAfter(protectedCandidatePhases.privacy) }
-    }
-}
-
 tasks.register<VerifyCandidatePayloadTask>("verifyCandidatePayload") {
     githubOutputFile.set(providers.gradleProperty("codexAgent.githubOutputFile").map(layout.projectDirectory::file))
     group = "verification"

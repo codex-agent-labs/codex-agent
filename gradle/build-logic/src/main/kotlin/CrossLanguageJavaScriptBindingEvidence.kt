@@ -2776,7 +2776,7 @@ private fun CanonicalJavaScriptMember.isExactD044HostLifecycleState(): Boolean =
     )
 
 private fun CanonicalJavaScriptMember.exactAgentCapabilityMetadataSymbol(): String? {
-    if (owner != "io.github.codex_agent_labs.codexmobile.agent/AgentCapability") return null
+    if (owner != "io.github.codex_agent_labs.codexagent.agent/AgentCapability") return null
     return when {
         isExactProperty("AgentCapability", "displayLabel", "kotlin/String!!") ->
             javaScriptAgentCapabilityDisplayLabel
@@ -2789,15 +2789,15 @@ private fun CanonicalJavaScriptMember.exactAgentCapabilityMetadataSymbol(): Stri
 }
 
 private fun CanonicalJavaScriptMember.exactAgentInvocationBaseName(): String? {
-    if (owner != "io.github.codex_agent_labs.codexmobile.agent/AgentInvocation") return null
+    if (owner != "io.github.codex_agent_labs.codexagent.agent/AgentInvocation") return null
     return listOf("key", "name").singleOrNull { isExactProperty("AgentInvocation", it, "kotlin/String!!") }
 }
 
 private fun CanonicalJavaScriptMember.isExactAgentMessageCapabilities(): Boolean =
-    owner == "io.github.codex_agent_labs.codexmobile.agent/AgentMessage" && isExactProperty(
+    owner == "io.github.codex_agent_labs.codexagent.agent/AgentMessage" && isExactProperty(
         "AgentMessage",
         "capabilities",
-        "kotlin.collections/Set<INVARIANT:io.github.codex_agent_labs.codexmobile.agent/AgentCapability!!>!!",
+        "kotlin.collections/Set<INVARIANT:io.github.codex_agent_labs.codexagent.agent/AgentCapability!!>!!",
     )
 
 private fun CanonicalJavaScriptMember.requiresExactD043FlattenedProjection(): Boolean =
@@ -2814,7 +2814,7 @@ private fun CanonicalJavaScriptMember.isD043SurfaceMember(): Boolean = when (sim
 }
 
 private fun CanonicalJavaScriptMember.isExactD043SurfaceMember(): Boolean {
-    if (owner.substringBeforeLast('/') != "io.github.codex_agent_labs.codexmobile.agent") return false
+    if (owner.substringBeforeLast('/') != "io.github.codex_agent_labs.codexagent.agent") return false
     return exactAgentCapabilityMetadataSymbol() != null || exactAgentInvocationBaseName() != null ||
         isExactAgentMessageCapabilities() ||
         isExactProperty("AgentMessage", "collaborationMode", "$canonicalAgentPackage/AgentCollaborationMode!!") ||
@@ -2835,7 +2835,7 @@ private fun CanonicalJavaScriptMember.isExactD043SurfaceMember(): Boolean {
         }
 }
 
-private const val canonicalAgentPackage = "io.github.codex_agent_labs.codexmobile.agent"
+private const val canonicalAgentPackage = "io.github.codex_agent_labs.codexagent.agent"
 
 private fun CanonicalJavaScriptMember.isExactConversationSettingsMember(): Boolean {
     val canonicalPackage = owner.substringBeforeLast('/')
@@ -2879,7 +2879,7 @@ private fun CanonicalJavaScriptMember.isExactPathWorkspaceSelectionMember(): Boo
     ) || isExactProperty("CodexPathWorkspaceSelection", "path", "kotlin/String!!")
 
 private fun CanonicalJavaScriptMember.isExactAgentSkillScopeDisplayName(): Boolean =
-    owner == "io.github.codex_agent_labs.codexmobile.agent/AgentSkillScope" &&
+    owner == "io.github.codex_agent_labs.codexagent.agent/AgentSkillScope" &&
         isExactProperty("AgentSkillScope", "displayName", "kotlin/String!!")
 
 private fun CanonicalJavaScriptMember.isExactApiKeyAuthenticationMethodMember(): Boolean =

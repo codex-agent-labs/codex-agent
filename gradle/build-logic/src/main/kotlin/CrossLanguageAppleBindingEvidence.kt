@@ -57,8 +57,8 @@ private const val swiftBrowserTest =
     "CodexAuthorizationBrowserTests/testGenericBrowserOpensTypedExternalURLAndCancelsPresentation()"
 
 
-private const val appleCanonicalPackage = "io.github.codex_agent_labs.codexmobile.agent"
-private const val appleCanonicalAbiPackage = "io.github.codex_agent_labs.codexmobile.agent"
+private const val appleCanonicalPackage = "io.github.codex_agent_labs.codexagent.agent"
+private const val appleCanonicalAbiPackage = "io.github.codex_agent_labs.codexagent.agent"
 
 private fun appleOwnerUsr(objectiveCName: String): String = "c:objc(cs)$objectiveCName"
 
@@ -4963,11 +4963,11 @@ private fun appleBindingUsr(capability: String): String =
         ?: d087CapabilitiesByKey[capability]?.usr
         ?: d088CapabilitiesByKey[capability]?.usr
         ?: d089CapabilitiesByKey[capability]?.usr ?: when {
-    "|owner=io.github.codex_agent_labs.codexmobile.agent/CodexFailure|kind=constructor|" in capability ->
+    "|owner=io.github.codex_agent_labs.codexagent.agent/CodexFailure|kind=constructor|" in capability ->
         appleFailureConstructorUsr
-    "|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=constructor|" in capability ->
+    "|owner=io.github.codex_agent_labs.codexagent.agent/ConversationId|kind=constructor|" in capability ->
         appleConversationIdConstructorUsr
-    "|owner=io.github.codex_agent_labs.codexmobile.agent/ConversationId|kind=property|" in capability &&
+    "|owner=io.github.codex_agent_labs.codexagent.agent/ConversationId|kind=property|" in capability &&
         "|{}value[0]|" in capability -> appleConversationIdValueUsr
     "|{}code[0]|" in capability -> appleFailureCodeUsr
     "|{}isRecoverable[0]|" in capability -> appleFailureRecoverableUsr

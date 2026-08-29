@@ -22,7 +22,7 @@ import org.gradle.work.DisableCachingByDefault
 internal const val C_ABI_BOOTSTRAP_EVIDENCE_PROTOCOL = "codex-agent-c-abi-bootstrap-evidence-v1"
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_COUNT = 556
 internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
-    "f0b7217e2d302f331829437ce0dd4f54d72ec8503770b6e71f82e68612809651"
+    "9a73e6d5b49ae052b236cb432f380b3f342d68760655e04369c31d4724d2d4a9"
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
@@ -92,8 +92,8 @@ private const val C_ABI_STATE_FLOWS_C_SHA256 =
 private const val C_ABI_INTERACTION_IDENTITY_C_SHA256 =
     "1343065e248a5128adbfa64f345dd2042ef7846e3f18f0485011dd75b2f09637"
 
-private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexmobile.agent/"
-private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexmobile.capi."
+private const val AGENT_PACKAGE = "io.github.codex_agent_labs.codexagent.agent/"
+private const val C_API_TEST_PACKAGE = "macosArm64Test.io.github.codex_agent_labs.codexagent.capi."
 private const val C_LIFECYCLE_TEST =
     C_API_TEST_PACKAGE +
         "CodexAgentCLifecycleTest#projectsCanonicalLifecycleAndQuiescesEveryCallback[macosArm64]"
@@ -721,7 +721,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "<init>",
         listOf("codex_agent_conversation_summary_create", "codex_agent_conversation_summary_destroy"),
         listOf(C_CONVERSATION_VALUES_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.ConversationId;kotlin.String;kotlin.Long){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.ConversationId;kotlin.String;kotlin.Long){}[0]",
     )
     ordinary(
         "AgentConversationSummary", "property", "conversationId",
@@ -761,7 +761,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             "codex_agent_workspace_resolution_available_destroy",
         ),
         listOf(C_WORKSPACE_VALUES_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.CodexWorkspace){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.CodexWorkspace){}[0]",
     )
     ordinary(
         "CodexWorkspaceResolution.Available", "property", "workspace",
@@ -776,7 +776,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             "codex_agent_workspace_selection_required_destroy",
         ),
         listOf(C_APPROVAL_WORKSPACE_ENUM_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.CodexWorkspaceSelectionReason;kotlin.String){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.CodexWorkspaceSelectionReason;kotlin.String){}[0]",
     )
     ordinary(
         "CodexWorkspaceResolution.SelectionRequired", "property", "reason",
@@ -848,7 +848,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             "codex_agent_mcp_environment_variable_destroy",
         ),
         listOf(C_MCP_ENVIRONMENT_VALUES_TEST, C_MCP_ENVIRONMENT_VALIDATION_TEST),
-        "<init>(kotlin.String;io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentSource?){}[0]",
+        "<init>(kotlin.String;io.github.codex_agent_labs.codexagent.agent.AgentMcpEnvironmentSource?){}[0]",
     )
     ordinary(
         "AgentMcpEnvironmentVariable", "property", "name",
@@ -897,7 +897,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "<init>",
         listOf("codex_agent_mcp_tool_configuration_create", "codex_agent_mcp_tool_configuration_destroy"),
         listOf(C_MCP_TOOL_VALUES_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolApproval?){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentMcpToolApproval?){}[0]",
     )
     ordinary(
         "AgentMcpToolConfiguration", "property", "approval",
@@ -924,7 +924,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             "codex_agent_elicitation_validation_issue_destroy",
         ),
         listOf(C_ELICITATION_VALIDATION_VALUES_TEST),
-        "<init>(kotlin.String;io.github.codex_agent_labs.codexmobile.agent.AgentElicitationValidationReason){}[0]",
+        "<init>(kotlin.String;io.github.codex_agent_labs.codexagent.agent.AgentElicitationValidationReason){}[0]",
     )
     ordinary(
         "AgentElicitationValidationIssue", "property", "fieldName",
@@ -963,7 +963,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "<init>",
         listOf("codex_agent_plan_step_create", "codex_agent_plan_step_destroy"),
         listOf(C_PLAN_STEP_VALUES_TEST),
-        "<init>(kotlin.String;io.github.codex_agent_labs.codexmobile.agent.AgentPlanStepStatus){}[0]",
+        "<init>(kotlin.String;io.github.codex_agent_labs.codexagent.agent.AgentPlanStepStatus){}[0]",
     )
     ordinary(
         "AgentPlanStep", "property", "text",
@@ -1452,7 +1452,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "<init>",
         listOf("codex_agent_pending_approval_create", "codex_agent_pending_approval_destroy"),
         listOf(C_PENDING_APPROVAL_VALUES_TEST),
-        "<init>(kotlin.String;io.github.codex_agent_labs.codexmobile.agent.ConversationId;kotlin.String;kotlin.String){}[0]",
+        "<init>(kotlin.String;io.github.codex_agent_labs.codexagent.agent.ConversationId;kotlin.String;kotlin.String){}[0]",
     )
     listOf(
         "conversationId" to "codex_agent_pending_approval_conversation_id",
@@ -1538,7 +1538,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentIntegration.Connector", "constructor", "<init>",
         listOf("codex_agent_integration_connector_create", "codex_agent_integration_connector_destroy"),
         listOf(C_INTEGRATION_CONNECTOR_CONSTRUCTOR_TEST, C_INTEGRATION_CONNECTOR_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentConnector){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentConnector){}[0]",
     )
     ordinary(
         "AgentIntegration.Connector", "property", "connector",
@@ -1560,7 +1560,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentIntegration.McpServer", "constructor", "<init>",
         listOf("codex_agent_integration_mcp_server_create", "codex_agent_integration_mcp_server_destroy"),
         listOf(C_INTEGRATION_MCP_CONSTRUCTOR_TEST, C_INTEGRATION_MCP_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentMcpServer){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentMcpServer){}[0]",
     )
     listOf(
         Triple(
@@ -1591,14 +1591,14 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             C_MCP_SERVER_CONFIGURATION_DEFAULTS_TEST,
             C_MCP_SERVER_CONFIGURATION_VALIDATION_TEST,
         ),
-        "<init>(kotlin.String;io.github.codex_agent_labs.codexmobile.agent.AgentMcpTransport;" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentMcpAuthentication?;kotlin.String;kotlin.Boolean;" +
-            "kotlin.Boolean;kotlin.Boolean;kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent." +
-            "AgentMcpToolExposureSurface>?;kotlin.Double?;kotlin.Double?;io.github.codex_agent_labs.codexmobile." +
+        "<init>(kotlin.String;io.github.codex_agent_labs.codexagent.agent.AgentMcpTransport;" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentMcpAuthentication?;kotlin.String;kotlin.Boolean;" +
+            "kotlin.Boolean;kotlin.Boolean;kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent." +
+            "AgentMcpToolExposureSurface>?;kotlin.Double?;kotlin.Double?;io.github.codex_agent_labs.codexagent." +
             "agent.AgentMcpToolApproval?;kotlin.collections.List<kotlin.String>?;kotlin.collections.List<kotlin.String>?;" +
-            "kotlin.collections.List<kotlin.String>?;io.github.codex_agent_labs.codexmobile.agent." +
+            "kotlin.collections.List<kotlin.String>?;io.github.codex_agent_labs.codexagent.agent." +
             "AgentMcpOauthConfiguration?;kotlin.String?;kotlin.collections.Map<kotlin.String," +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentMcpToolConfiguration>){}[0]",
+            "io.github.codex_agent_labs.codexagent.agent.AgentMcpToolConfiguration>){}[0]",
     )
     listOf(
         "authentication" to listOf("codex_agent_mcp_server_configuration_authentication"),
@@ -1700,9 +1700,9 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             C_MCP_SERVER_GETTER_VALIDATION_TEST,
             C_MCP_SERVER_LIFECYCLE_TEST,
         ),
-        "<init>(kotlin.String;kotlin.String;io.github.codex_agent_labs.codexmobile.agent.AgentMcpAuthStatus;" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentMcpServerConfiguration?;" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentResourceOrigin;kotlin.Boolean){}[0]",
+        "<init>(kotlin.String;kotlin.String;io.github.codex_agent_labs.codexagent.agent.AgentMcpAuthStatus;" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentMcpServerConfiguration?;" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentResourceOrigin;kotlin.Boolean){}[0]",
     )
     listOf(
         Triple(
@@ -1795,7 +1795,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         listOf(C_MCP_TRANSPORT_STDIO_VALUES_TEST, C_MCP_TRANSPORT_CONSTRUCTOR_VALIDATION_TEST),
         "<init>(kotlin.String;kotlin.collections.List<kotlin.String>;kotlin.String?;" +
             "kotlin.collections.Map<kotlin.String,kotlin.String>?;kotlin.collections.List<" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentMcpEnvironmentVariable>){}[0]",
+            "io.github.codex_agent_labs.codexagent.agent.AgentMcpEnvironmentVariable>){}[0]",
     )
     listOf(
         "arguments" to listOf(
@@ -1828,7 +1828,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentElicitationValidation", "constructor", "<init>",
         listOf("codex_agent_elicitation_validation_create", "codex_agent_elicitation_validation_destroy"),
         listOf(C_ELICITATION_VALIDATION_LIST_VALUES_TEST, C_ELICITATION_VALIDATION_LIST_VALIDATION_TEST),
-        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent." +
+        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent." +
             "AgentElicitationValidationIssue>){}[0]",
     )
     ordinary(
@@ -1861,7 +1861,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentHookActivity", "constructor", "<init>",
         listOf("codex_agent_hook_activity_create", "codex_agent_hook_activity_destroy"),
         listOf(C_HOOK_ACTIVITY_LIST_VALUES_TEST, C_PROGRESS_LIST_VALIDATION_TEST),
-        "<init>(kotlin.String;kotlin.String;kotlin.String;io.github.codex_agent_labs.codexmobile.agent." +
+        "<init>(kotlin.String;kotlin.String;kotlin.String;io.github.codex_agent_labs.codexagent.agent." +
             "AgentHookRunStatus;kotlin.String?;kotlin.collections.List<kotlin.String>){}[0]",
     )
     listOf(
@@ -1887,7 +1887,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         listOf(C_MODEL_LIST_VALUES_TEST, C_PROGRESS_LIST_VALIDATION_TEST),
         "<init>(kotlin.String;kotlin.String;kotlin.String;kotlin.collections.List<kotlin.String>;" +
             "kotlin.String;kotlin.Boolean;kotlin.collections.List<io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentServiceTier>;kotlin.String?){}[0]",
+            "codexagent.agent.AgentServiceTier>;kotlin.String?){}[0]",
     )
     listOf(
         "defaultEffort" to listOf("codex_agent_model_default_effort_copy"),
@@ -1915,7 +1915,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentPlanProgress", "constructor", "<init>",
         listOf("codex_agent_plan_progress_create", "codex_agent_plan_progress_destroy"),
         listOf(C_PLAN_PROGRESS_LIST_VALUES_TEST, C_PROGRESS_LIST_VALIDATION_TEST),
-        "<init>(kotlin.String?;kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent." +
+        "<init>(kotlin.String?;kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent." +
             "AgentPlanStep>){}[0]",
     )
     listOf(
@@ -1935,8 +1935,8 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentPluginCatalog", "constructor", "<init>",
         listOf("codex_agent_plugin_catalog_create", "codex_agent_plugin_catalog_destroy"),
         listOf(C_PLUGIN_CATALOG_LIST_VALUES_TEST, C_RESOURCE_LIST_VALIDATION_TEST),
-        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentPluginSummary>;" +
-            "kotlin.collections.List<kotlin.String>;io.github.codex_agent_labs.codexmobile.agent." +
+        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent.AgentPluginSummary>;" +
+            "kotlin.collections.List<kotlin.String>;io.github.codex_agent_labs.codexagent.agent." +
             "AgentCatalogFreshness){}[0]",
     )
     listOf(
@@ -1957,9 +1957,9 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentPluginDetail", "constructor", "<init>",
         listOf("codex_agent_plugin_detail_create", "codex_agent_plugin_detail_destroy"),
         listOf(C_PLUGIN_DETAIL_LIST_VALUES_TEST, C_RESOURCE_LIST_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentPluginSummary;kotlin.String;" +
-            "kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentPluginSkill>;" +
-            "kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentConnector>;" +
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentPluginSummary;kotlin.String;" +
+            "kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent.AgentPluginSkill>;" +
+            "kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent.AgentConnector>;" +
             "kotlin.collections.List<kotlin.String>;kotlin.Int){}[0]",
     )
     listOf(
@@ -1986,8 +1986,8 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentPluginInstallResult", "constructor", "<init>",
         listOf("codex_agent_plugin_install_result_create", "codex_agent_plugin_install_result_destroy"),
         listOf(C_PLUGIN_DETAIL_LIST_VALUES_TEST, C_RESOURCE_LIST_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentPluginAuthPolicy;" +
-            "kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentConnector>;" +
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentPluginAuthPolicy;" +
+            "kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent.AgentConnector>;" +
             "kotlin.String?){}[0]",
     )
     listOf(
@@ -2011,9 +2011,9 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentPluginSummary", "constructor", "<init>",
         listOf("codex_agent_plugin_summary_create", "codex_agent_plugin_summary_destroy"),
         listOf(C_PLUGIN_CATALOG_LIST_VALUES_TEST, C_RESOURCE_LIST_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentPluginReference;kotlin.String;" +
-            "kotlin.String;kotlin.Boolean;kotlin.Boolean;io.github.codex_agent_labs.codexmobile.agent." +
-            "AgentPluginInstallPolicy;io.github.codex_agent_labs.codexmobile.agent.AgentPluginAuthPolicy;" +
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentPluginReference;kotlin.String;" +
+            "kotlin.String;kotlin.Boolean;kotlin.Boolean;io.github.codex_agent_labs.codexagent.agent." +
+            "AgentPluginInstallPolicy;io.github.codex_agent_labs.codexagent.agent.AgentPluginAuthPolicy;" +
             "kotlin.Boolean;kotlin.collections.List<kotlin.String>;kotlin.String?;kotlin.String?;" +
             "kotlin.String?;kotlin.String?){}[0]",
     )
@@ -2055,9 +2055,9 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         listOf("codex_agent_skill_create", "codex_agent_skill_destroy"),
         listOf(C_SKILL_CATALOG_LIST_VALUES_TEST, C_RESOURCE_LIST_VALIDATION_TEST),
         "<init>(kotlin.String;kotlin.String;kotlin.String;kotlin.String;io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentSkillScope;kotlin.Boolean;kotlin.String?;" +
+            "codexagent.agent.AgentSkillScope;kotlin.Boolean;kotlin.String?;" +
             "kotlin.collections.List<kotlin.String>;kotlin.Boolean;io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentResourceOrigin){}[0]",
+            "codexagent.agent.AgentResourceOrigin){}[0]",
     )
     listOf(
         "brandColor" to listOf("codex_agent_skill_has_brand_color", "codex_agent_skill_brand_color_copy"),
@@ -2081,7 +2081,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentSkillCatalog", "constructor", "<init>",
         listOf("codex_agent_skill_catalog_create", "codex_agent_skill_catalog_destroy"),
         listOf(C_SKILL_CATALOG_LIST_VALUES_TEST, C_RESOURCE_LIST_VALIDATION_TEST),
-        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentSkill>;" +
+        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent.AgentSkill>;" +
             "kotlin.collections.List<kotlin.String>){}[0]",
     )
     listOf(
@@ -2102,9 +2102,9 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         listOf("codex_agent_turn_progress_create", "codex_agent_turn_progress_destroy"),
         listOf(C_TURN_PROGRESS_LIST_VALUES_TEST, C_PROGRESS_LIST_VALIDATION_TEST),
         "<init>(kotlin.String;kotlin.String;kotlin.String;kotlin.String;io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentPlanProgress?;kotlin.String;kotlin.Int?;io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentWorkActivity?;kotlin.collections.List<io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentHookActivity>;kotlin.Boolean){}[0]",
+            "codexagent.agent.AgentPlanProgress?;kotlin.String;kotlin.Int?;io.github.codex_agent_labs." +
+            "codexagent.agent.AgentWorkActivity?;kotlin.collections.List<io.github.codex_agent_labs." +
+            "codexagent.agent.AgentHookActivity>;kotlin.Boolean){}[0]",
     )
     listOf(
         "commentary" to listOf("codex_agent_turn_progress_commentary_copy"),
@@ -2180,11 +2180,11 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentMessage", "constructor", "<init>",
         listOf("codex_agent_message_create", "codex_agent_message_destroy"),
         listOf(C_CONVERSATION_AGGREGATE_VALUES_TEST, C_CONVERSATION_AGGREGATE_VALIDATION_TEST),
-        "<init>(kotlin.String;kotlin.String?;io.github.codex_agent_labs.codexmobile.agent.AgentMessageRole;" +
-            "kotlin.String;io.github.codex_agent_labs.codexmobile.agent.AgentCollaborationMode;kotlin.String?;" +
+        "<init>(kotlin.String;kotlin.String?;io.github.codex_agent_labs.codexagent.agent.AgentMessageRole;" +
+            "kotlin.String;io.github.codex_agent_labs.codexagent.agent.AgentCollaborationMode;kotlin.String?;" +
             "kotlin.String?;kotlin.String?;kotlin.Int?;kotlin.collections.Set<io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentCapability>;kotlin.collections.List<io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentInvocation>){}[0]",
+            "codexagent.agent.AgentCapability>;kotlin.collections.List<io.github.codex_agent_labs." +
+            "codexagent.agent.AgentInvocation>){}[0]",
     )
     listOf(
         "capabilities" to listOf(
@@ -2228,8 +2228,8 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentConversation", "constructor", "<init>",
         listOf("codex_agent_conversation_value_create", "codex_agent_conversation_value_destroy"),
         listOf(C_CONVERSATION_AGGREGATE_VALUES_TEST, C_CONVERSATION_AGGREGATE_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentConversationSummary;" +
-            "kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentMessage>){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentConversationSummary;" +
+            "kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent.AgentMessage>){}[0]",
     )
     ordinary(
         "AgentConversation", "property", "messages",
@@ -2250,10 +2250,10 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         listOf("codex_agent_turn_request_create", "codex_agent_turn_request_destroy"),
         listOf(C_TURN_REQUEST_VALUES_TEST, C_CONVERSATION_AGGREGATE_VALIDATION_TEST),
         "<init>(kotlin.String;kotlin.String?;kotlin.String?;kotlin.String?;kotlin.String?;" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset;kotlin.collections.Set<" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentCapability>;kotlin.collections.List<" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentInvocation>;io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentCollaborationMode){}[0]",
+            "io.github.codex_agent_labs.codexagent.agent.AgentApprovalPreset;kotlin.collections.Set<" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentCapability>;kotlin.collections.List<" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentInvocation>;io.github.codex_agent_labs." +
+            "codexagent.agent.AgentCollaborationMode){}[0]",
     )
     listOf(
         "approvalPreset" to listOf("codex_agent_turn_request_approval_preset"),
@@ -2295,11 +2295,11 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentConversationState", "constructor", "<init>",
         listOf("codex_agent_conversation_state_create", "codex_agent_snapshot_destroy"),
         listOf(C_CONVERSATION_STATE_VALUES_TEST, C_CONVERSATION_AGGREGATE_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentConversationStatus;" +
-            "io.github.codex_agent_labs.codexmobile.agent.ConversationId?;io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentConversation?;io.github.codex_agent_labs.codexmobile.agent." +
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentConversationStatus;" +
+            "io.github.codex_agent_labs.codexagent.agent.ConversationId?;io.github.codex_agent_labs." +
+            "codexagent.agent.AgentConversation?;io.github.codex_agent_labs.codexagent.agent." +
             "AgentTurnProgress;kotlin.String?;kotlin.String?;kotlin.String?;" +
-            "io.github.codex_agent_labs.codexmobile.agent.CodexFailure?){}[0]",
+            "io.github.codex_agent_labs.codexagent.agent.CodexFailure?){}[0]",
     )
     listOf(
         "canCancelTurn" to listOf("codex_agent_conversation_state_can_cancel_turn"),
@@ -2338,10 +2338,10 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         listOf("codex_agent_form_field_create", "codex_agent_form_field_destroy"),
         listOf(C_FORM_FIELD_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
         "<init>(kotlin.String;kotlin.String;kotlin.String?;kotlin.Boolean;" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentFormFieldType;kotlin.collections.List<" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentFormOption>;io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentFormValue?;kotlin.Double?;kotlin.Double?;io.github.codex_agent_labs." +
-            "codexmobile.agent.AgentFormStringFormat?;kotlin.Long?;kotlin.Long?;kotlin.Long?;kotlin.Long?;" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentFormFieldType;kotlin.collections.List<" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentFormOption>;io.github.codex_agent_labs." +
+            "codexagent.agent.AgentFormValue?;kotlin.Double?;kotlin.Double?;io.github.codex_agent_labs." +
+            "codexagent.agent.AgentFormStringFormat?;kotlin.Long?;kotlin.Long?;kotlin.Long?;kotlin.Long?;" +
             "kotlin.Boolean;kotlin.Boolean){}[0]",
     )
     listOf(
@@ -2382,8 +2382,8 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentElicitation", "constructor", "<init>",
         listOf("codex_agent_elicitation_create", "codex_agent_elicitation_destroy"),
         listOf(C_ELICITATION_RESPONSE_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
-        "<init>(kotlin.String;kotlin.String;io.github.codex_agent_labs.codexmobile.agent.ConversationId;" +
-            "kotlin.String;kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent." +
+        "<init>(kotlin.String;kotlin.String;io.github.codex_agent_labs.codexagent.agent.ConversationId;" +
+            "kotlin.String;kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent." +
             "AgentFormField>?;kotlin.String?){}[0]",
     )
     listOf(
@@ -2408,8 +2408,8 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentElicitationResponse", "constructor", "<init>",
         listOf("codex_agent_elicitation_response_create", "codex_agent_elicitation_response_destroy"),
         listOf(C_ELICITATION_RESPONSE_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentElicitationAction;" +
-            "kotlin.collections.Map<kotlin.String,io.github.codex_agent_labs.codexmobile.agent." +
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentElicitationAction;" +
+            "kotlin.collections.Map<kotlin.String,io.github.codex_agent_labs.codexagent.agent." +
             "AgentFormValue>){}[0]",
     )
     ordinary(
@@ -2430,7 +2430,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentPendingElicitation", "constructor", "<init>",
         listOf("codex_agent_pending_elicitation_create", "codex_agent_pending_elicitation_destroy"),
         listOf(C_INTERACTION_STATE_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentElicitation){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentElicitation){}[0]",
     )
     listOf(
         "conversationId" to listOf("codex_agent_pending_elicitation_conversation_id"),
@@ -2447,9 +2447,9 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentInteractionState", "constructor", "<init>",
         listOf("codex_agent_interaction_state_create", "codex_agent_interaction_state_destroy"),
         listOf(C_INTERACTION_STATE_VALUES_TEST, C_ELICITATION_INTERACTION_VALIDATION_TEST),
-        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent." +
+        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent." +
             "AgentPendingInteraction>;kotlin.collections.Set<kotlin.String>;" +
-            "io.github.codex_agent_labs.codexmobile.agent.CodexFailure?){}[0]",
+            "io.github.codex_agent_labs.codexagent.agent.CodexFailure?){}[0]",
     )
     ordinary(
         "AgentInteractionState", "property", "failure",
@@ -2478,9 +2478,9 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         listOf("codex_agent_hook_create", "codex_agent_hook_destroy"),
         listOf(C_HOOK_VALUES_TEST, C_HOOK_CATALOG_VALIDATION_TEST),
         "<init>(kotlin.String;kotlin.String;kotlin.Boolean;kotlin.String;" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentHookHandler;kotlin.Boolean;kotlin.String;" +
-            "kotlin.String;kotlin.Long;io.github.codex_agent_labs.codexmobile.agent.AgentHookTrustStatus;" +
-            "kotlin.String?;kotlin.String?;kotlin.String?;io.github.codex_agent_labs.codexmobile.agent." +
+            "io.github.codex_agent_labs.codexagent.agent.AgentHookHandler;kotlin.Boolean;kotlin.String;" +
+            "kotlin.String;kotlin.Long;io.github.codex_agent_labs.codexagent.agent.AgentHookTrustStatus;" +
+            "kotlin.String?;kotlin.String?;kotlin.String?;io.github.codex_agent_labs.codexagent.agent." +
             "AgentResourceOrigin;kotlin.Boolean){}[0]",
     )
     listOf(
@@ -2515,7 +2515,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentHookCatalog", "constructor", "<init>",
         listOf("codex_agent_hook_catalog_create", "codex_agent_hook_catalog_destroy"),
         listOf(C_HOOK_CATALOG_VALUES_TEST, C_HOOK_CATALOG_VALIDATION_TEST),
-        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexmobile.agent.AgentHook>;" +
+        "<init>(kotlin.collections.List<io.github.codex_agent_labs.codexagent.agent.AgentHook>;" +
             "kotlin.collections.List<kotlin.String>;kotlin.collections.List<kotlin.String>){}[0]",
     )
     listOf(
@@ -2542,9 +2542,9 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             "codex_agent_integration_authorization_state_destroy",
         ),
         listOf(C_INTEGRATION_STATE_VALUES_TEST, C_INTEGRATION_STATE_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentIntegrationAuthorizationStatus;" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentIntegration?;" +
-            "io.github.codex_agent_labs.codexmobile.agent.CodexFailure?){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentIntegrationAuthorizationStatus;" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentIntegration?;" +
+            "io.github.codex_agent_labs.codexagent.agent.CodexFailure?){}[0]",
     )
     ordinary(
         "AgentIntegrationAuthorizationState", "property", "failure",
@@ -2570,10 +2570,10 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             C_AUTHENTICATION_CONFIGURATION_OWNERSHIP_TEST,
             C_AUTHENTICATION_CONFIGURATION_VALIDATION_TEST,
         ),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentAuthenticationStatus;" +
-            "io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl?;" +
-            "io.github.codex_agent_labs.codexmobile.agent.CodexAuthorizationUrl?;kotlin.String?;" +
-            "io.github.codex_agent_labs.codexmobile.agent.CodexFailure?){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentAuthenticationStatus;" +
+            "io.github.codex_agent_labs.codexagent.agent.CodexAuthorizationUrl?;" +
+            "io.github.codex_agent_labs.codexagent.agent.CodexAuthorizationUrl?;kotlin.String?;" +
+            "io.github.codex_agent_labs.codexagent.agent.CodexFailure?){}[0]",
     )
     listOf(
         "deviceUserCode" to listOf(
@@ -2608,7 +2608,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "AgentConversationSettings", "constructor", "<init>",
         listOf("codex_agent_conversation_settings_create", "codex_agent_conversation_settings_destroy"),
         listOf(C_AUTHENTICATION_CONFIGURATION_DEFAULTS_TEST, C_AUTHENTICATION_CONFIGURATION_VALIDATION_TEST),
-        "<init>(io.github.codex_agent_labs.codexmobile.agent.AgentApprovalPreset;kotlin.String?){}[0]",
+        "<init>(io.github.codex_agent_labs.codexagent.agent.AgentApprovalPreset;kotlin.String?){}[0]",
     )
     ordinary(
         "AgentConversationSettings", "property", "approvalPreset",
@@ -2787,8 +2787,8 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "CodexHost.<init>",
         listOf("codex_agent_host_options_t", "codex_agent_host_create"),
         canonicalSignatureReference =
-            "<init>(io.github.codex_agent_labs.codexmobile.agent.CodexPlatform;" +
-                "io.github.codex_agent_labs.codexmobile.agent.CodexClientInfo){}[0]",
+            "<init>(io.github.codex_agent_labs.codexagent.agent.CodexPlatform;" +
+                "io.github.codex_agent_labs.codexagent.agent.CodexClientInfo){}[0]",
         consumerReferences = listOf("codex_agent_host_options_t", "codex_agent_host_create"),
         publicSymbols = listOf("codex_agent_host_create"),
         nativeTestIds = listOf(C_HOST_FACTORY_CREATE_TEST, C_HOST_FACTORY_INVALID_TEST),
@@ -2889,7 +2889,7 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
         "CodexConversation", "function", "send",
         listOf("codex_agent_conversation_send_request", "codex_agent_operation_result"),
         listOf(conversationOperationsTest),
-        "send(io.github.codex_agent_labs.codexmobile.agent.AgentTurnRequest){}[0]",
+        "send(io.github.codex_agent_labs.codexagent.agent.AgentTurnRequest){}[0]",
     )
     ordinary(
         "CodexConversation", "function", "runShellCommand",
@@ -3307,8 +3307,8 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             "CodexAgentCInteractionOperationsTest",
             "resolveApprovalUsesExactOwnedPendingIdentityAndCompletesCancellableOperation",
         )),
-        "resolve(io.github.codex_agent_labs.codexmobile.agent.AgentPendingApproval;" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentApprovalDecision){}[0]",
+        "resolve(io.github.codex_agent_labs.codexagent.agent.AgentPendingApproval;" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentApprovalDecision){}[0]",
     )
     ordinary(
         "CodexInteractions", "function", "resolve",
@@ -3317,8 +3317,8 @@ internal val cAbiBootstrapClaimSpecs: List<CAbiBootstrapClaimSpec> = buildList {
             "CodexAgentCInteractionOperationsTest",
             "resolveElicitationCopiesResponseAndUsesExactOwnedPendingIdentity",
         )),
-        "resolve(io.github.codex_agent_labs.codexmobile.agent.AgentPendingElicitation;" +
-            "io.github.codex_agent_labs.codexmobile.agent.AgentElicitationResponse){}[0]",
+        "resolve(io.github.codex_agent_labs.codexagent.agent.AgentPendingElicitation;" +
+            "io.github.codex_agent_labs.codexagent.agent.AgentElicitationResponse){}[0]",
     )
 }.sortedWith(compareBy(CAbiBootstrapClaimSpec::owner, CAbiBootstrapClaimSpec::kind, CAbiBootstrapClaimSpec::abi))
 

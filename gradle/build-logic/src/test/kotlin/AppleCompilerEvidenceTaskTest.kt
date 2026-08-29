@@ -1157,7 +1157,7 @@ class AppleCompilerEvidenceTaskTest {
             "parameters=[REGULAR:kotlin/String!!:default=false:vararg=false]"
 
     private fun canonicalProperty(name: String, type: String, owner: String = "CodexFailure"): String {
-        val canonicalOwner = "io.github.codex_agent_labs.codexmobile.agent/$owner"
+        val canonicalOwner = "io.github.codex_agent_labs.codexagent.agent/$owner"
         return "common|owner=$canonicalOwner|kind=property|abi=$canonicalOwner.$name|{}$name[0]|" +
             "propertyKind=VAL|type=$type"
     }
@@ -2204,7 +2204,7 @@ class AppleCompilerEvidenceTaskTest {
     private fun qualifiedType(value: String) = buildJsonObject { put("qualType", JsonPrimitive(value)) }
 
     private companion object {
-        const val CANONICAL_OWNER = "io.github.codex_agent_labs.codexmobile.agent/CodexFailure"
+        const val CANONICAL_OWNER = "io.github.codex_agent_labs.codexagent.agent/CodexFailure"
         const val OWNER = "c:objc(cs)CodexAgentCodexFailure"
         const val CONSTRUCTOR = "$OWNER(im)initWithCode:message:isRecoverable:"
         const val FAILURE_SWIFT_CONSTRUCTOR_TYPE = "\$sySo010CodexAgentA7FailureCSS_SSSbtcABmcD"
@@ -2212,38 +2212,38 @@ class AppleCompilerEvidenceTaskTest {
         const val RECOVERABLE = "$OWNER(py)isRecoverable"
         const val MESSAGE = "$OWNER(py)message"
         const val CONVERSATION_ID_CANONICAL_OWNER =
-            "io.github.codex_agent_labs.codexmobile.agent/ConversationId"
+            "io.github.codex_agent_labs.codexagent.agent/ConversationId"
         const val CONVERSATION_ID_OWNER = "c:objc(cs)CodexAgentConversationId"
         const val CONVERSATION_ID_CONSTRUCTOR = "$CONVERSATION_ID_OWNER(im)initWithValue:"
         const val CONVERSATION_ID_VALUE = "$CONVERSATION_ID_OWNER(py)value"
         const val CONVERSATION_ID_SWIFT_CONSTRUCTOR_TYPE =
             "\$sySo24CodexAgentConversationIdCSS_tcABmcD"
         const val APPROVAL_CANONICAL_OWNER =
-            "io.github.codex_agent_labs.codexmobile.agent/AgentApprovalDecision"
+            "io.github.codex_agent_labs.codexagent.agent/AgentApprovalDecision"
         const val APPROVAL_OWNER = "c:objc(cs)CodexAgentAgentApprovalDecision"
         const val ACCEPT = "$APPROVAL_OWNER(cpy)accept"
         const val DECLINE = "$APPROVAL_OWNER(cpy)decline"
         const val APPROVAL_SWIFT_TYPE = "\$sSo010CodexAgentB16ApprovalDecisionCD"
         const val COLLABORATION_CANONICAL_OWNER =
-            "io.github.codex_agent_labs.codexmobile.agent/AgentCollaborationMode"
+            "io.github.codex_agent_labs.codexagent.agent/AgentCollaborationMode"
         const val COLLABORATION_OWNER = "c:objc(cs)CodexAgentAgentCollaborationMode"
         const val DEFAULT = "$COLLABORATION_OWNER(cpy)default_"
         const val PLAN = "$COLLABORATION_OWNER(cpy)plan"
         const val COLLABORATION_SWIFT_TYPE = "\$sSo010CodexAgentB17CollaborationModeCD"
         const val MESSAGE_ROLE_CANONICAL_OWNER =
-            "io.github.codex_agent_labs.codexmobile.agent/AgentMessageRole"
+            "io.github.codex_agent_labs.codexagent.agent/AgentMessageRole"
         const val MESSAGE_ROLE_OWNER = "c:objc(cs)CodexAgentAgentMessageRole"
         const val USER = "$MESSAGE_ROLE_OWNER(cpy)user"
         const val ASSISTANT = "$MESSAGE_ROLE_OWNER(cpy)assistant"
         const val MESSAGE_ROLE_SWIFT_TYPE = "\$sSo010CodexAgentB11MessageRoleCD"
         const val INSTALLATION_SCOPE_CANONICAL_OWNER =
-            "io.github.codex_agent_labs.codexmobile.agent/AgentInstallationScope"
+            "io.github.codex_agent_labs.codexagent.agent/AgentInstallationScope"
         const val INSTALLATION_SCOPE_OWNER = "c:objc(cs)CodexAgentAgentInstallationScope"
         const val INSTALLATION_USER = "$INSTALLATION_SCOPE_OWNER(cpy)user"
         const val INSTALLATION_WORKSPACE = "$INSTALLATION_SCOPE_OWNER(cpy)workspace"
         const val INSTALLATION_SCOPE_SWIFT_TYPE = "\$sSo010CodexAgentB17InstallationScopeCD"
         const val MCP_ENVIRONMENT_SOURCE_CANONICAL_OWNER =
-            "io.github.codex_agent_labs.codexmobile.agent/AgentMcpEnvironmentSource"
+            "io.github.codex_agent_labs.codexagent.agent/AgentMcpEnvironmentSource"
         const val MCP_ENVIRONMENT_SOURCE_OWNER = "c:objc(cs)CodexAgentAgentMcpEnvironmentSource"
         const val MCP_ENVIRONMENT_LOCAL = "$MCP_ENVIRONMENT_SOURCE_OWNER(cpy)local"
         const val MCP_ENVIRONMENT_REMOTE = "$MCP_ENVIRONMENT_SOURCE_OWNER(cpy)remote"

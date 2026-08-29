@@ -419,10 +419,10 @@ class CrossLanguageBindingParityTest {
 
     private companion object {
         const val CAPABILITY =
-            "io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication|property|isAuthenticated|" +
+            "io.github.codex_agent_labs.codexagent.agent.CodexAuthentication|property|isAuthenticated|" +
                 "():kotlinx.coroutines.flow.StateFlow<kotlin.Boolean>"
         const val FUTURE_CAPABILITY =
-            "io.github.codex_agent_labs.codexmobile.agent.CodexAuthentication|function|refresh|():kotlin.Unit"
+            "io.github.codex_agent_labs.codexagent.agent.CodexAuthentication|function|refresh|():kotlin.Unit"
         const val JAVA_SYMBOL = "CodexJava#observeAuthenticationStatus(CodexAuthentication,Executor,Consumer)"
 
         fun passingInput(

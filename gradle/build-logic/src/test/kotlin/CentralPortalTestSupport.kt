@@ -5,7 +5,6 @@ import java.util.zip.ZipOutputStream
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 
 internal const val CENTRAL_API = "https://central.example/api/v1/publisher"
 internal const val CENTRAL_ID = "28570f16-da32-4c14-bd2e-c1acc0782365"
@@ -87,28 +86,19 @@ internal fun withCentralFixture(
 }
 
 internal class CentralFixture(directory: File, bundleBytes: ByteArray) {
-    val bundle = directory.resolve("bundle.zip").apply { writeBytes(bundleBytes) }
+    val bundle = directory.resolve(centralBundleFileName("0.2.0", CENTRAL_MAIN_SHARD)).apply {
+        writeBytes(bundleBytes)
+    }
     val candidate = directory.resolve("candidate.json")
     val record = directory.resolve("state/deployment.json")
     val name = "codex-agent-0.2.0-$CENTRAL_COMMIT-${bundle.releaseDigest()}"
 
     init {
-        val canonical = CandidateManifestFixture(
-            directory.resolve("candidate-fixture"),
+        candidate.atomicWriteJson(schema14CandidateManifest(
             "0.2.0",
             CENTRAL_COMMIT,
-        )
-        val centralInventory = directory.resolve("candidate-central-bundle.json").apply {
-            atomicWriteJson(buildJsonObject {
-                put("belowCentralPortalUploadLimit", JsonPrimitive(true))
-                put("mavenInventorySha256", JsonPrimitive(canonical.mavenInventory.releaseDigest()))
-                put("bundle", bundle.releaseRecord())
-            })
-        }
-        candidate.atomicWriteJson(buildCandidateManifest(canonical.inputs.copy(
-            centralBundle = bundle,
-            centralInventory = centralInventory,
-        )))
+            mapOf(CENTRAL_MAIN_SHARD to bundle),
+        ))
     }
 
     fun prepare(portal: FakePortal, allow: Boolean = false) = prepare(portal::send, allow)
