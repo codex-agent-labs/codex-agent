@@ -211,13 +211,13 @@ val generateMingwX64MsvcImportLibrary = tasks.register<Exec>("generateMingwX64Ms
     inputs.property("tool", tool)
     outputs.file(mingwMsvcImportLibrary)
     outputs.upToDateWhen { false }
+    commandLine(
+        tool.get(), "/nologo", "/machine:x64", "/brepro",
+        "/def:${definition.asFile.absolutePath}",
+        "/out:${mingwMsvcImportLibrary.get().asFile.absolutePath}",
+    )
     doFirst {
-        mingwMsvcImportLibrary.get().asFile.parentFile.mkdirs()
-        commandLine(
-            tool.get(), "/nologo", "/machine:x64", "/brepro",
-            "/def:${definition.asFile.absolutePath}",
-            "/out:${mingwMsvcImportLibrary.get().asFile.absolutePath}",
-        )
+        outputs.files.singleFile.parentFile.mkdirs()
     }
 }
 val cAbiPackageTasks = crossLanguageCAbiTargetSpecs.mapValues { (target, spec) ->

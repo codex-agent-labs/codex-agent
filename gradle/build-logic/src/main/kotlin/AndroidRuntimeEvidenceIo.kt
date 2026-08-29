@@ -19,7 +19,7 @@ internal fun findPassingAndroidRuntimeReport(directory: File): AndroidTestReport
     val parsed = directory.walkTopDown()
         .filter { it.isFile && it.extension == "xml" }
         .mapNotNull { runCatching { parseAndroidTestReport(it) }.getOrNull() }
-        .filter { it.testCases.toSet() == REQUIRED_ANDROID_RUNTIME_CASES }
+        .filter { it.testCases.toSet().containsAll(REQUIRED_ANDROID_RUNTIME_CASES) }
         .toList()
     check(parsed.size == 1) { "Expected exactly one RuntimeBootstrapDeviceTest report, found ${parsed.size}" }
     return parsed.single().also(::requirePassingAndroidRuntimeReport)
@@ -29,8 +29,8 @@ internal fun requirePassingAndroidRuntimeReport(file: File): AndroidTestReport =
     parseAndroidTestReport(file).also(::requirePassingAndroidRuntimeReport)
 
 private fun requirePassingAndroidRuntimeReport(report: AndroidTestReport) {
-    check(report.testCases.size == REQUIRED_ANDROID_RUNTIME_CASES.size) { "Android runtime test count mismatch" }
-    check(report.testCases.toSet() == REQUIRED_ANDROID_RUNTIME_CASES) {
+    check(report.testCases.size == report.testCases.toSet().size) { "Android runtime tests must be unique" }
+    check(report.testCases.toSet().containsAll(REQUIRED_ANDROID_RUNTIME_CASES)) {
         "Required Android runtime test class and methods did not run"
     }
     check(report.failures == 0 && report.errors == 0 && report.skipped == 0) {

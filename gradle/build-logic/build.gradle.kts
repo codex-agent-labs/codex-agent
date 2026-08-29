@@ -174,9 +174,7 @@ val releaseToolingJar = tasks.register<Jar>("releaseToolingJar") {
 }
 tasks.withType<Test>().configureEach {
     dependsOn(releaseToolingJar)
-    doFirst {
-        systemProperty("codexAgent.releaseToolingJar", releaseToolingJar.get().archiveFile.get().asFile)
-    }
+    systemProperty("codexAgent.releaseToolingJar", releaseToolingJar.flatMap { it.archiveFile }.get().asFile)
 }
 
 val candidateCommit = providers.gradleProperty("codexAgent.candidateCommit")

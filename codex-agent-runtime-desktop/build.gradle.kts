@@ -116,9 +116,10 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     inputs.file(npmGeneratedEnumDeclarations)
     outputs.file(npmDeclarationReport)
     doLast {
-        val rawCompilerDeclaration = npmGeneratedDeclaration.get().asFile
-        val reviewedGoldenDeclaration = npmReviewedDeclaration.asFile
-        val generatedEnumDeclarations = npmGeneratedEnumDeclarations.get().asFile
+        val declarations = inputs.files.files.associateBy(File::getName)
+        val rawCompilerDeclaration = declarations.getValue("codex-agent-codex-agent-runtime-desktop.d.ts")
+        val reviewedGoldenDeclaration = declarations.getValue("index.d.ts")
+        val generatedEnumDeclarations = declarations.getValue("canonical-enums.d.ts")
         val raw = rawCompilerDeclaration.readText().replace("\r\n", "\n")
         val lines = raw.lines()
         val sanitized = mutableListOf<String>()

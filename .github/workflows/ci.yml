@@ -34,6 +34,15 @@ jobs:
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - run: '"$HOME/go/bin/actionlint"'
       - run: python3 -m unittest discover -s ci/tests -v
+      - uses: ./.github/actions/setup-kmp
+        with:
+          cache-read-only: "true"
+      - name: Reject configuration-cache-incompatible CI task actions
+        run: >-
+          ./gradlew :build-logic:test
+          :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity
+          :codex-agent-runtime-desktop:generateMingwX64MsvcImportLibrary
+          --dry-run --configuration-cache --configuration-cache-problems=fail --no-build-cache
       - if: github.event_name == 'pull_request' && steps.actionlint-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
