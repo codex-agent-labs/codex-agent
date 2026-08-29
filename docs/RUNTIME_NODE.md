@@ -1,8 +1,8 @@
-# Node runtimes
+# Desktop/Host Node adapter
 
-`codex-agent-runtime-desktop` provides a local Codex App Server runtime to both
-Kotlin/JS and Kotlin/WasmJS applications running on Node.js. It implements the
-existing `CodexRuntimeFactory` boundary. Applications use the public
+`codex-agent-runtime-desktop` provides the Node adapter for the same verified
+external-process Desktop/Host execution model used by JVM and Kotlin/Native.
+Kotlin/JS and Kotlin/WasmJS applications running on Node.js use the canonical
 `CodexHost` -> `CodexAgent` -> `CodexConversation` lifecycle; the raw runtime
 and protocol handshake remain internal.
 
@@ -25,7 +25,8 @@ combinations are rejected.
 
 ## Configuration
 
-Add the client and runtime to a Kotlin/JS or Kotlin/WasmJS Node application:
+Add the core and Desktop/Host runtime to a Kotlin/JS or Kotlin/WasmJS Node
+application:
 
 ```kotlin
 dependencies {
@@ -53,10 +54,10 @@ it is not synthesized from the Codex Agent artifact version. Each optional
 agent resource exposes `isAvailable`, and rejects an unavailable operation
 before RPC.
 
-There is no separate Node execution model or Windows supervisor classifier.
-Kotlin applications use `NodeCodexPlatform` with `CodexHost`; JavaScript and
-TypeScript applications use `createCodexHost`. Both call the same Desktop/Host
-adapter and canonical lifecycle.
+Node is not a separate execution model. `NodeCodexPlatform` and the
+JavaScript/TypeScript `createCodexHost` entry point use the same Desktop/Host
+lifecycle, package verification, installation, storage, and process supervision
+as the JVM and Native adapters.
 
 ## Security and lifecycle
 

@@ -6,16 +6,16 @@ ready host supplies a `CodexAgent`, and the agent opens one active
 `CodexConversation`. These three objects expose their own immutable observable
 state and follow the runtime, agent, and conversation lifetimes respectively.
 
-## Supported standalone targets
+## Execution models and supported hosts
 
-| Application target | Local runtime |
-| --- | --- |
-| Android | Packaged Android App Server |
-| iOS Arm64 and Apple Silicon Simulator | Embedded in-process App Server |
-| macOS Arm64/x64, Linux Arm64/x64, Windows x64 | Native desktop runtime |
-| JVM desktop on those five hosts | JVM desktop runtime |
-| Kotlin/JS on Node.js on those five hosts | JS Node runtime |
-| Kotlin/WasmJS on Node.js on those five hosts | WasmJS Node runtime |
+| Execution model | Runtime placement | Adapters and supported hosts |
+| --- | --- | --- |
+| Android | Packaged local process | Android |
+| iOS | Embedded in-process | iOS Arm64 and Apple Silicon Simulator |
+| Desktop/Host | Verified external process | JVM, Kotlin/Native, and Node adapters on macOS Arm64/x64, Linux Arm64/x64, and Windows x64 |
+
+Kotlin/JS and Kotlin/WasmJS use the Node adapter within Desktop/Host; Node is
+not a fourth execution model.
 
 Browser JavaScript, browser Wasm, and WASI are not supported execution targets.
 The runtime API does not provide remote or cloud execution, a gateway, or a
@@ -45,6 +45,33 @@ implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.2.0")
 ```
 
 Version `0.2.0` has not yet been tagged or published.
+
+The other currently implemented and locally verified package surfaces are:
+
+- Node-only npm package `@codex-agent-labs/codex-agent`;
+- `CodexAgent-<version>.xcframework.zip` through SwiftPM products
+  `CodexAgent`, `CodexAgentAuthentication`, `CodexAgentObservation`, and
+  `CodexAgentSwiftSupport`;
+- the five Desktop/Host App Server classifiers listed below.
+
+The Desktop Maven publication is configured to carry five `c-abi-*` SDK
+classifiers. They are not a supported or publishable C SDK claim until strict
+five-host R804/M8 evidence passes for the final commit and tree. No Python, C#,
+Rust, C++, or Dart package is currently claimed.
+
+## Pre-release module migration
+
+This is a clean migration with no forwarding modules or compatibility
+artifacts.
+
+- The Gradle project `:codex-agent-client` became `:codex-agent-core`. Its
+  Maven root publication is
+  `io.github.codex-agent-labs:codex-agent:<version>`, not
+  `codex-agent-core`; no compatibility publication exists.
+- The Gradle project `:codex-agent-runtime-node` was merged into
+  `:codex-agent-runtime-desktop`. JVM, Kotlin/Native, Kotlin/JS-on-Node, and
+  Kotlin/WasmJS-on-Node use that one Desktop/Host runtime and its five App
+  Server classifiers; no `codex-agent-runtime-node` publication exists.
 
 ## Storage
 
@@ -77,7 +104,7 @@ Each classifier ZIP contains the pinned App Server, its matching process
 supervisor, licenses, and a strict internal runtime manifest. Point the platform
 adapter at the directory containing the ZIP; it selects the current target,
 verifies every member, installs it atomically into the versioned data cache, and
-repairs a corrupt cache before starting the host:
+repairs a corrupt cache before starting the host.
 
 The caller establishes the bundle directory as an authenticated-delivery
 boundary: verify the signed Maven classifier artifact (or independently
@@ -272,7 +299,7 @@ drift makes old coverage stale. `@CodexBindingApiKotlinOnly` is reserved for
 the narrow Kotlin coroutine-scope ownership boundary; it is not a general
 binding exclusion.
 
-The core tasks write exact-tree evidence under
+The core tasks write content-hash-bound evidence under
 `codex-agent-core/build/reports/cross-language-api/`:
 
 - `canonical-api.json` is the compiler-derived owner and member inventory.
@@ -286,10 +313,11 @@ The core tasks write exact-tree evidence under
   are the verified Apple receipts.
 - `codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/` contains
   the canonical bootstrap, exact shared-scenario proof, and matching-host SDK
-  package proofs. CI verifies all five desktop hosts and derives
-  `c-abi-parity.json` from those exact artifacts.
-- `binding-obligations-m8.json` is the complete six-language obligation audit
-  over Kotlin, Java, JavaScript/TypeScript, Swift, Objective-C, and the C ABI.
+  package proofs. Only a successful exact five-host merge-gate run may derive
+  strict `c-abi-parity.json` from those exact artifacts and produce complete
+  `binding-obligations-m8.json` over Kotlin, Java, JavaScript/TypeScript, Swift,
+  Objective-C, and the C ABI. Until then these are evidence producers, not a
+  supported or public C SDK claim.
 
 For a binding, add the smallest idiomatic public artifact projection and a real
 consumer test. Extend that language's evidence derivation so each exact
@@ -310,10 +338,10 @@ report. The current focused gates are:
 The portable root `verifyRepository` task and core `check` produce the Kotlin,
 Java, and JavaScript/TypeScript receipts without running Xcode or claiming the
 distributed aggregate. On macOS, root `verifyIosRuntime` verifies the iOS
-runtime and Apple receipts. Only the merge gate has all five matching-host C
-SDK proofs; it derives the C receipt, runs the exact six-receipt M8 audit, and
-preserves the canonical API, coverage, receipts, and audit through promotion
-and release-candidate verification.
+runtime and Apple receipts. Only a successful merge-gate run can collect all
+five matching-host C SDK proofs, derive the C receipt, run the exact six-receipt
+M8 audit, and preserve the canonical API, coverage, receipts, and audit through
+promotion and release-candidate verification.
 An active pair without verified projection evidence is `missing`. A future
 phase pair remains applicable but `pending`: M7.5 historically activated
 Kotlin, Java, Swift, Objective-C, and JavaScript/TypeScript; M8 also activates
@@ -339,13 +367,14 @@ capabilities or language activation.
 
 ## Release evidence
 
-An unlabeled pull request runs only lightweight workflow and impact checks.
-Adding `merge-ready` validates the prospective merge tree and runs only its
-affected product, platform, and consumer lanes. Successful lanes from an
-earlier run of the same pull request may be reused; `ci:full` may add work but
-never suppresses required work. A merge group reuses the pull-request result
-when its Git tree is identical, otherwise it reevaluates the changed base and
-runs the newly affected lanes.
+An unlabeled pull request runs lightweight workflow and impact planning; its
+required merge gate remains failed until readiness is declared. On a non-draft
+pull request, adding `merge-ready` validates the prospective merge tree and
+runs its affected product, platform, and consumer lanes. Adding `ci:full`
+forces every lane. Successful lanes from an earlier run of the same pull
+request may be reused; full mode never suppresses required work. A merge group
+reuses the pull-request result when its Git tree is identical, otherwise it
+reevaluates the changed base and runs the newly affected lanes.
 
 A push to `main` only promotes equal-tree validation receipts, their exact
 GitHub-hosted artifacts, and selected cache seeds; it never compiles or tests.
@@ -361,7 +390,7 @@ independent builds are equivalent.
 
 See [protocol provenance](docs/PROTOCOL.md), the
 [iOS runtime design](docs/RUNTIME_IOS.md), the
-[Node runtime design](docs/RUNTIME_NODE.md), and the
+[Desktop/Host Node-adapter design](docs/RUNTIME_NODE.md), and the
 [release procedure](docs/RELEASING.md).
 
 ## License
