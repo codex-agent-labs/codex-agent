@@ -2,6 +2,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -9,8 +10,203 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 
-internal const val PROMOTED_CANDIDATE_SCHEMA = 14
+internal const val PROMOTED_CANDIDATE_SCHEMA = 15
 internal const val RELEASE_TOOLING_FILE_NAME = "codex-agent-release-tooling.jar"
+
+internal fun aggregateReleaseSbomFileName(version: String) = "codex-agent-$version.cdx.json"
+
+internal fun buildAggregateReleaseSbom(
+    version: String,
+    releaseTag: String,
+    commit: String,
+    tree: String,
+    mavenInventory: File,
+    swiftArchive: File,
+    desktopDistributionManifest: File,
+    desktopBundledLicense: File,
+    desktopBundledNotice: File,
+): JsonObject {
+    check(releaseTag == "v$version" && version.matches(Regex("[A-Za-z0-9._-]+"))) {
+        "Aggregate SBOM release identity is invalid"
+    }
+    check(listOf(commit, tree).all { it.matches(Regex("[0-9a-f]{40}")) }) {
+        "Aggregate SBOM Git identity is not immutable"
+    }
+    val maven = mavenInventory.readReleaseObject()
+    check(maven.keys == setOf(
+        "schemaVersion", "groupId", "version", "artifactIds", "primaryArtifactCount", "signaturesRequired", "files",
+    ) && maven.releaseInt("schemaVersion") == 3 &&
+        maven.releaseString("groupId") == CodexAgentBuild.MAVEN_GROUP &&
+        maven.releaseString("version") == version && maven.releaseBoolean("signaturesRequired")) {
+        "Aggregate SBOM Maven inventory identity is invalid"
+    }
+    val groupPath = CodexAgentBuild.MAVEN_GROUP.replace('.', '/')
+    val artifactIds = expectedMavenPrimaryPaths(version).mapTo(sortedSetOf()) { it.substringBefore('/') }
+    check(maven.releaseArray("artifactIds").map { (it as? JsonPrimitive)?.content } == artifactIds.toList()) {
+        "Aggregate SBOM Maven coordinate set is invalid"
+    }
+    val primaryPaths = expectedMavenPrimaryPaths(version).mapTo(sortedSetOf()) { "$groupPath/$it" }
+    check(maven.releaseInt("primaryArtifactCount") == primaryPaths.size) {
+        "Aggregate SBOM Maven primary count is invalid"
+    }
+    val inventoryRecords = maven.releaseArray("files").map { value ->
+        (value as? JsonObject ?: error("Aggregate SBOM Maven inventory record is invalid")).also { record ->
+            check(record.keys == setOf("path", "bytes", "sha256") &&
+                record.releaseString("path").isSafeRelativePath() && record.releaseLong("bytes") > 0 &&
+                record.releaseString("sha256").matches(Regex("[0-9a-f]{64}"))) {
+                "Aggregate SBOM Maven inventory record is invalid"
+            }
+        }
+    }
+    val inventoryByPath = inventoryRecords.associateBy { it.releaseString("path") }
+    check(inventoryByPath.size == inventoryRecords.size) { "Aggregate SBOM Maven inventory has duplicate paths" }
+    val expectedInventoryPaths = primaryPaths.flatMapTo(sortedSetOf()) { path ->
+        listOf(path, "$path.asc", "$path.md5", "$path.sha1", "$path.sha256", "$path.sha512")
+    }
+    check(inventoryByPath.keys == expectedInventoryPaths) {
+        "Aggregate SBOM Maven inventory file set is invalid"
+    }
+
+    fun license(id: String) = buildJsonArray { add(buildJsonObject {
+        put("license", buildJsonObject { put("id", JsonPrimitive(id)) })
+    }) }
+    fun hashes(sha256: String) = buildJsonArray { add(buildJsonObject {
+        put("alg", JsonPrimitive("SHA-256")); put("content", JsonPrimitive(sha256))
+    }) }
+    fun distributionReference(url: String, sha256: String) = buildJsonObject {
+        put("type", JsonPrimitive("distribution")); put("url", JsonPrimitive(url))
+        put("hashes", hashes(sha256))
+    }
+    fun properties(values: List<Pair<String, String>>) = buildJsonArray {
+        values.sortedBy(Pair<String, String>::first).forEach { (name, value) -> add(buildJsonObject {
+            put("name", JsonPrimitive(name)); put("value", JsonPrimitive(value))
+        }) }
+    }
+
+    val representedPrimaries = mutableSetOf<String>()
+    val mavenComponents = artifactIds.map { artifactId ->
+        val ref = "pkg:maven/${CodexAgentBuild.MAVEN_GROUP}/$artifactId@$version"
+        val paths = primaryPaths.filter { it.startsWith("$groupPath/$artifactId/$version/") }.sorted()
+        check(paths.isNotEmpty() && paths.all(representedPrimaries::add)) {
+            "Aggregate SBOM Maven primary ownership is invalid for $artifactId"
+        }
+        buildJsonObject {
+            put("type", JsonPrimitive("library")); put("bom-ref", JsonPrimitive(ref))
+            put("group", JsonPrimitive(CodexAgentBuild.MAVEN_GROUP)); put("name", JsonPrimitive(artifactId))
+            put("version", JsonPrimitive(version)); put("purl", JsonPrimitive(ref)); put("licenses", license("GPL-3.0-or-later"))
+            put("externalReferences", buildJsonArray { paths.forEach { path ->
+                add(distributionReference(
+                    "https://repo1.maven.org/maven2/$path",
+                    inventoryByPath.getValue(path).releaseString("sha256"),
+                ))
+            } })
+        }
+    }
+    check(representedPrimaries == primaryPaths) { "Aggregate SBOM Maven primary coverage is incomplete" }
+
+    val rootRef = "urn:codex-agent:release:$commit"
+    val swiftRef = "urn:codex-agent:swift:$version"
+    val swiftComponent = buildJsonObject {
+        put("type", JsonPrimitive("framework")); put("bom-ref", JsonPrimitive(swiftRef))
+        put("name", JsonPrimitive("CodexAgent")); put("version", JsonPrimitive(version))
+        put("hashes", hashes(swiftArchive.releaseDigest())); put("licenses", license("GPL-3.0-or-later"))
+        put("externalReferences", buildJsonArray { add(distributionReference(
+            "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/$releaseTag/${swiftArchive.name}",
+            swiftArchive.releaseDigest(),
+        )) })
+    }
+    val desktopManifest = readDesktopCodexManifest(desktopDistributionManifest)
+    check(desktopManifest.distributions.map(DesktopCodexDistributionSpec::target).toSet() ==
+        desktopRuntimeEvidenceTargets.keys) { "Aggregate SBOM Desktop target set is invalid" }
+    val codexRef = "pkg:github/openai/codex@${desktopManifest.releaseTag}"
+    val codexComponent = buildJsonObject {
+        put("type", JsonPrimitive("application")); put("bom-ref", JsonPrimitive(codexRef))
+        put("group", JsonPrimitive("openai")); put("name", JsonPrimitive("codex"))
+        put("version", JsonPrimitive(desktopManifest.releaseTag)); put("purl", JsonPrimitive(codexRef))
+        put("licenses", license("Apache-2.0"))
+        put("externalReferences", buildJsonArray {
+            desktopManifest.distributions.sortedBy(DesktopCodexDistributionSpec::target).forEach { distribution ->
+                add(distributionReference(
+                    "https://github.com/openai/codex/releases/download/${desktopManifest.releaseTag}/${distribution.asset}",
+                    distribution.archiveSha256,
+                ))
+            }
+        })
+        put("properties", properties(
+            desktopManifest.distributions.map { distribution ->
+                "io.github.codex-agent-labs.release.binarySha256.${distribution.target}" to
+                    distribution.binarySha256
+            } + listOf(
+                "io.github.codex-agent-labs.release.bundledLicenseSha256" to desktopBundledLicense.releaseDigest(),
+                "io.github.codex-agent-labs.release.bundledNoticeSha256" to desktopBundledNotice.releaseDigest(),
+            ),
+        ))
+    }
+    val components = (mavenComponents + swiftComponent + codexComponent)
+        .sortedBy { it.releaseString("bom-ref") }
+    val componentRefs = components.map { it.releaseString("bom-ref") }
+    check(componentRefs.size == componentRefs.toSet().size && rootRef !in componentRefs) {
+        "Aggregate SBOM component references are not unique"
+    }
+    return buildJsonObject {
+        put("${'$'}schema", JsonPrimitive("https://cyclonedx.org/schema/bom-1.7.schema.json"))
+        put("bomFormat", JsonPrimitive("CycloneDX")); put("specVersion", JsonPrimitive("1.7"))
+        put("version", JsonPrimitive(1))
+        put("metadata", buildJsonObject {
+            put("lifecycles", buildJsonArray { add(buildJsonObject { put("phase", JsonPrimitive("post-build")) }) })
+            put("component", buildJsonObject {
+                put("type", JsonPrimitive("library")); put("bom-ref", JsonPrimitive(rootRef))
+                put("group", JsonPrimitive(CodexAgentBuild.REPOSITORY.substringBefore('/')))
+                put("name", JsonPrimitive(CodexAgentBuild.REPOSITORY.substringAfter('/')))
+                put("version", JsonPrimitive(releaseTag))
+                put("purl", JsonPrimitive("pkg:github/${CodexAgentBuild.REPOSITORY}@$releaseTag"))
+                put("licenses", license("GPL-3.0-or-later"))
+                put("externalReferences", buildJsonArray { add(buildJsonObject {
+                    put("type", JsonPrimitive("vcs"))
+                    put("url", JsonPrimitive("https://github.com/${CodexAgentBuild.REPOSITORY}/tree/$commit"))
+                }) })
+            })
+            put("properties", properties(listOf(
+                "io.github.codex-agent-labs.release.candidateCommit" to commit,
+                "io.github.codex-agent-labs.release.candidateTree" to tree,
+                "io.github.codex-agent-labs.release.desktopManifestSha256" to desktopDistributionManifest.releaseDigest(),
+                "io.github.codex-agent-labs.release.mavenInventorySha256" to mavenInventory.releaseDigest(),
+                "io.github.codex-agent-labs.release.swiftArchiveSha256" to swiftArchive.releaseDigest(),
+            )))
+        })
+        put("components", JsonArray(components))
+        put("dependencies", buildJsonArray { add(buildJsonObject {
+            put("ref", JsonPrimitive(rootRef))
+            put("dependsOn", buildJsonArray { componentRefs.sorted().forEach { add(JsonPrimitive(it)) } })
+        }) })
+        put("compositions", buildJsonArray { add(buildJsonObject {
+            put("aggregate", JsonPrimitive("incomplete"))
+            put("assemblies", buildJsonArray { add(JsonPrimitive(rootRef)) })
+            put("dependencies", buildJsonArray { add(JsonPrimitive(rootRef)) })
+        }) })
+    }
+}
+
+internal fun verifyAggregateReleaseSbom(
+    sbom: File,
+    version: String,
+    releaseTag: String,
+    commit: String,
+    tree: String,
+    mavenInventory: File,
+    swiftArchive: File,
+    desktopDistributionManifest: File,
+    desktopBundledLicense: File,
+    desktopBundledNotice: File,
+) {
+    check(sbom.name == aggregateReleaseSbomFileName(version)) { "Aggregate SBOM file name is invalid" }
+    val expected = buildAggregateReleaseSbom(
+        version, releaseTag, commit, tree, mavenInventory, swiftArchive, desktopDistributionManifest,
+        desktopBundledLicense, desktopBundledNotice,
+    )
+    val expectedText = releaseJson.encodeToString(JsonElement.serializer(), expected) + "\n"
+    check(sbom.readText() == expectedText) { "Aggregate SBOM does not match the exact release inputs" }
+}
 
 private val promotedReceiptKeys = setOf(
     "schemaVersion", "repository", "finalCommit", "finalTree", "validatedCommit", "validatedTree",
@@ -312,6 +508,18 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
             policies.getValue("approvals"), policies.getValue("desktopDistributionManifest"),
             policies.getValue("desktopBundledLicense"), policies.getValue("desktopBundledNotice"),
         )
+        val sbom = payload.resolve(aggregateReleaseSbomFileName(version))
+        sbom.atomicWriteJson(buildAggregateReleaseSbom(
+            version,
+            inputs.releaseTag,
+            commit,
+            tree,
+            mavenInventory,
+            swiftArchive,
+            policies.getValue("desktopDistributionManifest"),
+            policies.getValue("desktopBundledLicense"),
+            policies.getValue("desktopBundledNotice"),
+        ))
 
         val manifest = buildJsonObject {
             put("schemaVersion", JsonPrimitive(PROMOTED_CANDIDATE_SCHEMA))
@@ -329,6 +537,7 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
                 put("centralBundles", buildJsonArray {
                     centralBundles.forEach { add(it.releaseRecord()) }
                 })
+                put("sbom", sbom.releaseRecord())
             })
             put("evidence", buildJsonObject {
                 put("swiftPackageChecksum", swiftChecksum.releaseRecord())

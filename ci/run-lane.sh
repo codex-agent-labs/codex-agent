@@ -80,12 +80,12 @@ case "$lane" in
       [ "$build" != true ] || contract_tasks=(:codex-agent-core:verifyProtocolSource "${contract_tasks[@]}")
       ./gradlew "${contract_tasks[@]}" "${args[@]}"
     fi
-    [ "$build" != true ] || ./gradlew -p gradle/build-logic releaseToolingJar --stacktrace
+    [ "$build" != true ] || ./gradlew :build-logic:releaseToolingJar --stacktrace
     if [ "$test_lane" = true ]; then
       ./gradlew :codex-agent-core:jvmTest :tooling:protocol-generator:test "${args[@]}"
-      ./gradlew -p gradle/build-logic test --parallel --stacktrace
+      ./gradlew :build-logic:test --parallel --stacktrace
     fi
-    [ "$metadata" != true ] || ./gradlew -p gradle/build-logic test --tests '*WorkflowContractTest' --parallel --stacktrace
+    [ "$metadata" != true ] || ./gradlew :build-logic:test --tests '*WorkflowContractTest' --parallel --stacktrace
     ;;
   portable)
     [ "$build" != true ] || ./gradlew :codex-agent-runtime-desktop:packageJvmRuntimeEvidenceRunner \
@@ -93,7 +93,7 @@ case "$lane" in
         :codex-agent-runtime-desktop:packageNodeWasmRuntimeEvidenceRunner "${args[@]}"
     if [ "$test_lane" = true ]; then
       ./gradlew :codex-agent-runtime-desktop:jvmTest "${args[@]}"
-      ./gradlew -p gradle/build-logic test --tests '*RuntimeEvidence*' --parallel --stacktrace
+      ./gradlew :build-logic:test --tests '*RuntimeEvidence*' --parallel --stacktrace
     fi
     ;;
   android)

@@ -4,7 +4,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
-internal fun schema14CandidateManifest(
+internal fun schema15CandidateManifest(
     version: String,
     commit: String,
     centralBundles: Map<String, File> = emptyMap(),
@@ -49,6 +49,7 @@ internal fun schema14CandidateManifest(
             put("centralBundles", buildJsonArray {
                 centralBundleShardNames.forEach { add(centralRecord(it)) }
             })
+            put("sbom", record(aggregateReleaseSbomFileName(version)))
         })
         put("evidence", buildJsonObject {
             mapOf(

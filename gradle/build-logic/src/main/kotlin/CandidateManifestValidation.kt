@@ -20,7 +20,7 @@ internal fun verifyCandidateManifestStructure(manifest: JsonObject) {
     check(manifest.releaseBoolean("protectedCandidate")) { "Candidate is not technically protected" }
 
     val artifacts = manifest.releaseObject("artifacts")
-    check(artifacts.keys == setOf("swiftPackage", "centralBundles")) {
+    check(artifacts.keys == setOf("swiftPackage", "centralBundles", "sbom")) {
         "Candidate artifact set is invalid"
     }
     val swift = artifacts.releaseObject("swiftPackage")
@@ -35,6 +35,11 @@ internal fun verifyCandidateManifestStructure(manifest: JsonObject) {
         "Promoted Central bundle set is invalid"
     }
     centralBundles.forEach(::verifyRecordShape)
+    val sbom = artifacts.releaseObject("sbom")
+    verifyRecordShape(sbom)
+    check(sbom.releaseString("fileName") == aggregateReleaseSbomFileName(version)) {
+        "Promoted candidate SBOM file name is invalid"
+    }
     val evidence = manifest.releaseObject("evidence")
     val expectedEvidence = setOf(
         "swiftPackageChecksum", "centralBundleInventory", "mavenInventory", "promotionReceipt",

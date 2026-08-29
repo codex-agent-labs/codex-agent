@@ -58,6 +58,7 @@ internal fun verifyCandidatePayload(
                 add(JsonPrimitive(record.releaseString("fileName")))
             }
         })
+        put("sbomAsset", JsonPrimitive(artifacts.releaseObject("sbom").releaseString("fileName")))
     }
 }
 
@@ -65,6 +66,7 @@ internal fun candidatePayloadRecords(manifest: JsonObject): List<JsonObject> = b
     val artifacts = manifest.releaseObject("artifacts")
     add(artifacts.releaseObject("swiftPackage"))
     promotedCentralBundleRecords(manifest).forEach(::add)
+    add(artifacts.releaseObject("sbom"))
     val evidence = manifest.releaseObject("evidence")
     evidence.filterKeys { it !in candidateEvidenceArrayNames }.values.forEach { add(it as JsonObject) }
     candidateEvidenceArrayNames.forEach { name ->
@@ -224,6 +226,19 @@ private fun verifyPromotedCandidatePayload(
         artifacts.releaseObject("swiftPackage").releaseString("swiftPmChecksum") == swift.releaseDigest()) {
         "Transported Swift checksum does not bind the promoted ZIP"
     }
+    val policies = manifest.releaseObject("policies")
+    verifyAggregateReleaseSbom(
+        safePayloadFile(payload, artifacts.releaseObject("sbom").releaseString("fileName")),
+        expectedVersion,
+        "v$expectedVersion",
+        expectedCommit,
+        expectedTree,
+        mavenFile,
+        swift,
+        safePayloadFile(payload, policies.releaseObject("desktopDistributionManifest").releaseString("fileName")),
+        safePayloadFile(payload, policies.releaseObject("desktopBundledLicense").releaseString("fileName")),
+        safePayloadFile(payload, policies.releaseObject("desktopBundledNotice").releaseString("fileName")),
+    )
     check(evidence.releaseObject("privacyAudit").releaseString("fileName") == "privacy-audit.json") {
         "Transported promoted privacy audit is missing"
     }
@@ -523,6 +538,7 @@ internal fun candidateGithubOutputs(result: JsonObject): String = buildString {
     append("releaseTag=").append(result.releaseString("releaseTag")).append('\n')
     append("swiftAsset=").append(result.releaseString("swiftAsset")).append('\n')
     append("centralBundles=").append(result.releaseArray("centralBundles")).append('\n')
+    append("sbomAsset=").append(result.releaseString("sbomAsset")).append('\n')
 }
 
 internal fun resolveCandidatePrivacyReview(

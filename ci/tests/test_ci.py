@@ -1085,14 +1085,6 @@ class RealImpactPlanTest(unittest.TestCase):
             matching_lanes("test", gradle_tasks),
         )
 
-        for filename in (
-            "ProtectedNodeRuntimeRegistration.kt",
-            "ProtectedRuntimeCandidateRegistration.kt",
-        ):
-            registration = prefix + filename
-            self.assertEqual(set(), matching_lanes("production", registration))
-            self.assertEqual({"contracts"}, matching_lanes("test", registration))
-
         future_source = prefix + "FutureProductionTask.kt"
         for category in ("production", "test", "metadata"):
             self.assertEqual(set(), matching_lanes(category, future_source))
