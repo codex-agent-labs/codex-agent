@@ -43,6 +43,15 @@ class RepositoryLayoutContractTest {
     }
 
     @Test
+    fun `runtime modules expose the canonical Core API`() {
+        val coreApi = Regex("""(?m)^\s*api\(project\(":codex-agent-core"\)\)\s*$""")
+        listOf("android", "desktop", "ios").forEach { runtime ->
+            val build = repository.resolve("codex-agent-runtime-$runtime/build.gradle.kts").readText()
+            assertEquals(1, coreApi.findAll(build).count(), runtime)
+        }
+    }
+
+    @Test
     fun `canonical repository identity has one production owner`() {
         val canonicalRepository = "codex-agent-labs" + "/codex-agent"
         val production = repository.resolve("gradle/build-logic/src/main/kotlin")
