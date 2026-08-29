@@ -14,7 +14,6 @@ import io.github.codex_agent_labs.codexagent.agent.CodexConversation
 import io.github.codex_agent_labs.codexagent.agent.CodexHost
 import io.github.codex_agent_labs.codexagent.agent.CodexHostState
 import io.github.codex_agent_labs.codexagent.agent.CodexPlatform
-import io.github.codex_agent_labs.codexagent.agent.isResolving
 import kotlinx.coroutines.CoroutineScope
 
 fun publicHost(
