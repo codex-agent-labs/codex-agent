@@ -6,8 +6,20 @@ import kotlin.test.assertFailsWith
 
 class AndroidRuntimeEvidenceIoTest {
     @Test
-    fun `passing report requires the exact runtime class and methods`() = withReport(reportXml()) { report ->
+    fun `passing report requires the baseline runtime class and methods`() = withReport(reportXml()) { report ->
         assertEquals(REQUIRED_ANDROID_RUNTIME_TESTS.size, requirePassingAndroidRuntimeReport(report).testCases.size)
+    }
+
+    @Test
+    fun `passing report accepts additional clean candidate tests`() = withReport(
+        reportXml()
+            .replace("tests=\"2\"", "tests=\"3\"")
+            .replace(
+                "</testsuite>",
+                "<testcase classname=\"io.example.CandidateTest\" name=\"newContract\"/></testsuite>",
+            ),
+    ) { report ->
+        assertEquals(REQUIRED_ANDROID_RUNTIME_TESTS.size + 1, requirePassingAndroidRuntimeReport(report).testCases.size)
     }
 
     @Test
