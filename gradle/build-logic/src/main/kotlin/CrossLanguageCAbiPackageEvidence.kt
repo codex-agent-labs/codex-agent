@@ -1258,7 +1258,9 @@ private fun inspectCAbiBinary(
             val msvc = root.resolve(spec.importLibraryPaths[1])
             val gnu = root.resolve(spec.importLibraryPaths[0])
             val msvcListing = inspect("msvcImport", "/list", msvc.absolutePath)
-            val gnuSymbols = normalizedCAbiSymbols(inspect("gnuImport", "-g", "--defined-only", gnu.absolutePath))
+            val gnuSymbols = crossLanguageCAbiGnuImportSymbols(
+                inspect("gnuImport", "-g", "--defined-only", gnu.absolutePath),
+            )
             check("machine (x64)" in headers.lowercase() || "8664" in headers.lowercase()) {
                 "C ABI PE architecture mismatch"
             }
@@ -1473,6 +1475,10 @@ private fun headerSymbols(header: File): Set<String> = Regex("\\b(codex_agent_[A
 private fun normalizedCAbiSymbols(output: String): Set<String> = C_ABI_SYMBOL.findAll(output).map { match ->
     match.groupValues[1].removePrefix("_").substringBefore('@')
 }.filter { it.startsWith("codex_agent_") }.toCollection(sortedSetOf())
+
+internal fun crossLanguageCAbiGnuImportSymbols(output: String): Set<String> = output.lineSequence().mapNotNull { line ->
+    C_ABI_SYMBOL.matchEntire(line.trim().takeLastWhile { !it.isWhitespace() })?.groupValues?.get(1)?.removePrefix("_")
+}.toCollection(sortedSetOf())
 
 private fun safeCAbiPackagePath(path: String): Boolean {
     if (path.isBlank() || path.startsWith('/') || path.startsWith('\\') || '\\' in path || ':' in path) return false

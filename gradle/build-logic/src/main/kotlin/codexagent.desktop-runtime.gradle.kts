@@ -570,7 +570,7 @@ desktopManifest.distributions.forEach { distribution ->
     val testTaskName = "${distribution.target}Test"
     if (requestedEvidenceTarget == distribution.target) {
         val evidenceRoot = layout.buildDirectory.dir("desktop-runtime-evidence/${distribution.target}")
-        tasks.named<KotlinNativeTest>(testTaskName) {
+        tasks.withType<KotlinNativeTest>().matching { it.name == testTaskName }.configureEach {
             dependsOn(packageTask)
             environment(
                 RUNTIME_BUNDLE_DIRECTORY_ENV,

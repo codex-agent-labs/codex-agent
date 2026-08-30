@@ -48,6 +48,8 @@ class CrossLanguageCAbiPackageEvidenceTest {
             "/brepro",
             "cAbiToolDefaults(distribution.target)",
             "crossLanguageCAbiCompileOnlyConsumers.sorted()",
+            "tasks.withType<KotlinNativeTest>().matching { it.name == testTaskName }.configureEach",
+            "dependsOn(validateEvidenceTarget, testTaskName)",
             "val localCAbiRunner = hostTarget?.let(crossLanguageCAbiTargetSpecs::getValue)",
             ".orElse(localCAbiRunner?.runnerOs ?: \"unsupported\")",
             ".orElse(localCAbiRunner?.runnerArch ?: \"unsupported\")",
@@ -66,6 +68,7 @@ class CrossLanguageCAbiPackageEvidenceTest {
             "check(runnerOs.get() == spec.runnerOs && runnerArch.get() == spec.runnerArch)" in
                 File("src/main/kotlin/CrossLanguageCAbiPackageEvidence.kt").readText(),
         )
+        assertFalse("tasks.named<KotlinNativeTest>(testTaskName)" in wiring)
         assertFalse("runtime-python" in wiring)
     }
 
@@ -115,6 +118,26 @@ class CrossLanguageCAbiPackageEvidenceTest {
         assertEquals("1.12", CROSS_LANGUAGE_C_ABI_CURRENT)
         assertEquals("1.0", CROSS_LANGUAGE_C_ABI_MINIMUM)
         assertEquals("0x010c0000", CROSS_LANGUAGE_C_ABI_ENCODED)
+    }
+
+    @Test
+    fun `GNU import symbols exclude thunks and linker metadata without hiding exact extras`() {
+        val listing = """
+            00000000 T codex_agent_host_create
+            00000000 T __imp_codex_agent_host_create
+            00000000 I \u007fcodex_agent_NULL_THUNK_DATA
+                     U __NULL_IMPORT_DESCRIPTOR
+            00000000 T _codex_agent_host_destroy
+            00000000 T codex_agent_unreviewed_extra
+        """.trimIndent() + "\n00000000\tD\tcodex_agent_unreviewed_data"
+
+        assertEquals(
+            setOf(
+                "codex_agent_host_create", "codex_agent_host_destroy", "codex_agent_unreviewed_data",
+                "codex_agent_unreviewed_extra",
+            ),
+            crossLanguageCAbiGnuImportSymbols(listing),
+        )
     }
 
     @Test
