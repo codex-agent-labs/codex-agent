@@ -101,6 +101,13 @@ arguments cannot express naturally in Swift:
 `Error.codexFailure` for the stable failure carried by a thrown
 `CodexOperationException`. Advanced generated overloads remain available.
 
+The same XCFramework is the Objective-C SDK. Stable generated Objective-C
+names expose completion-block operations, current-value observation callbacks
+with explicit tokens, typed immutable values, structured `NSError` failures,
+and explicit close semantics. The package's Objective-C consumer compiles and
+executes the same Host → Agent → Conversation lifecycle; there is no separate
+Objective-C runtime or state machine.
+
 ```swift
 import CodexAgent
 import CodexAgentObservation
@@ -204,6 +211,5 @@ authenticate or claim a real model call.
 
 Follow the [manual release acceptance procedure](RELEASING.md) to use the
 ChatGPT browser sheet and prove a real model reads and patches a local sandbox
-file. Signed physical-device execution remains an external release gate when no
-device/team is available; physical compilation/linking and Simulator acceptance
-remain required.
+file. Signed physical-device execution is optional additional product testing;
+physical slice compilation/linking and Simulator acceptance remain required.

@@ -1,6 +1,8 @@
 # `@codex-agent-labs/codex-agent`
 
-Node.js 24.18+ (<25) SDK for the local Desktop/Host Codex Agent runtime.
+Node.js `>=24.18.0 <25` SDK for the local Desktop/Host Codex Agent runtime.
+The ESM/CommonJS package coordinate is `@codex-agent-labs/codex-agent@0.2.0`;
+use the locally assembled package until that version is published.
 
 The package exposes the canonical `CodexHost` → `CodexAgent` → `CodexConversation` lifecycle through native promises, typed state subscriptions, structured errors, `AbortSignal`, and explicit disposal. It does not support browsers, browser Wasm, WASI, remote execution, or cloud execution.
 
@@ -35,7 +37,7 @@ try {
   }
   const agent = host.agent;
   if (!agent) throw new Error("Codex Host is not ready");
-  const conversation = await agent.openConversation();
+  await using conversation = await agent.openConversation();
   await conversation.send("Explain this repository");
 } finally {
   state.dispose();
@@ -46,3 +48,7 @@ Each subscription asynchronously receives the current snapshot and then the
 newest observable snapshots. `close()`/`dispose()` is idempotent, prevents later
 callbacks, and is automatic after a terminal `closed` snapshot. A callback
 failure closes only that subscription and is reported through `console.error`.
+Operation failures reject with `CodexError` and retain a structured
+code, recoverability flag, and optional cause; state snapshots expose structured
+`CodexFailure` values. Cancellation rejects with an `AbortError`. Host and Conversation
+have asynchronous disposal, while observations dispose synchronously.

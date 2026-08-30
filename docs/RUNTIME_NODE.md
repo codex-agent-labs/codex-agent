@@ -6,9 +6,11 @@ Kotlin/JS and Kotlin/WasmJS applications running on Node.js use the canonical
 `CodexHost` -> `CodexAgent` -> `CodexConversation` lifecycle; the raw runtime
 and protocol handshake remain internal.
 
-Kotlin consumers use the Maven dependency; JavaScript and TypeScript consumers
-use `@codex-agent-labs/codex-agent`. Browser JavaScript, browser Wasm, and WASI
-are unsupported.
+After publication, Kotlin consumers use the Maven dependency and JavaScript or
+TypeScript consumers use `@codex-agent-labs/codex-agent@0.2.0` on Node.js
+`>=24.18.0 <25`. Version `0.2.0` is not published yet; use locally built
+artifacts before release. Browser JavaScript, browser Wasm, and WASI are
+unsupported.
 
 ## Supported hosts
 
@@ -25,8 +27,8 @@ combinations are rejected.
 
 ## Configuration
 
-Add the core and Desktop/Host runtime to a Kotlin/JS or Kotlin/WasmJS Node
-application:
+After publication, add the core and Desktop/Host runtime to a Kotlin/JS or
+Kotlin/WasmJS Node application:
 
 ```kotlin
 dependencies {
@@ -77,9 +79,9 @@ authenticates the supervisor and legal files, while the strict internal
 manifest binds and re-verifies every member. A self-consistent manifest alone
 does not authenticate a replacement classifier.
 
-The supervisor launches only the configured App Server and owns its complete
-process tree. Closing or restarting the runtime therefore cannot leave an App
-Server child behind. Newline-delimited JSON is forwarded to the internal
+The supervisor launches only the configured App Server. Windows assigns it to a
+kill-on-close Job Object; POSIX sends `TERM` and then `KILL` to its process group
+with bounded waits. Newline-delimited JSON is forwarded to the internal
 connection owned by the prepared `CodexAgent`, which performs the sole
 initialize/initialized handshake.
 
@@ -97,13 +99,21 @@ receive nor store OAuth tokens and do not require `OPENAI_API_KEY`.
 
 ## Release evidence
 
-One portable evidence bundle is reused by a five-host GitHub Actions matrix.
-Every host executes the native desktop, JVM, Kotlin/JS-on-Node, and
-Kotlin/WasmJS-on-Node lifecycle checks through the bundle installer with its
-matching classifier. Each report
-binds the candidate commit, actual OS and architecture, exact compiled runners,
-classifier ZIP, App Server, supervisor, and test outcomes.
+The merge-ready workflow is configured to reuse one portable evidence bundle in
+a five-host GitHub Actions matrix. Each host executes the native desktop, JVM,
+Kotlin/JS-on-Node, and Kotlin/WasmJS-on-Node lifecycle checks through the bundle
+installer with its matching classifier. Each report binds the candidate commit,
+actual OS and architecture, exact compiled runners, classifier ZIP, App Server,
+supervisor, and test outcomes. A release claim requires those completed
+five-host receipts for the exact candidate.
 
 Linux Arm64 is compiled on a supported x64 host and executed on the real Arm64
 runner. Candidate assembly downloads the completed matrix evidence and does not
 repeat the host smokes.
+
+When the five C SDK classifiers are staged, matching-host consumer jobs install
+and exercise the Python, C#, Rust, C++, and Dart packages. The configured final
+M11 audit requires the Node/JavaScript receipt, the C ABI receipt, all five
+native-wrapper receipts, and the Kotlin/Java/Apple receipts for the same
+candidate identity. See the
+[language and platform support matrix](SUPPORT_MATRIX.md).

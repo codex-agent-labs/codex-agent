@@ -46,18 +46,23 @@ implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.2.0")
 
 Version `0.2.0` has not yet been tagged or published.
 
-The other currently implemented and locally verified package surfaces are:
+The other implemented package surfaces are:
 
 - Node-only npm package `@codex-agent-labs/codex-agent`;
 - `CodexAgent-<version>.xcframework.zip` through SwiftPM products
   `CodexAgent`, `CodexAgentAuthentication`, `CodexAgentObservation`, and
   `CodexAgentSwiftSupport`;
+- the stable C ABI and the Python, C#, Rust, C++, and Dart Desktop/Host
+  projections packaged for the five native hosts;
 - the five Desktop/Host App Server classifiers listed below.
 
-The Desktop Maven publication is configured to carry five `c-abi-*` SDK
-classifiers. They are not a supported or publishable C SDK claim until strict
-five-host R804/M8 evidence passes for the final commit and tree. No Python, C#,
-Rust, C++, or Dart package is currently claimed.
+See the mechanically checked [language and platform support](docs/SUPPORT_MATRIX.md)
+for exact coordinates, compatibility floors, host classifiers, package asset
+names, idiomatic async/state/failure/ownership mappings, and unsupported modes.
+The publication workflow will attach the native wrapper packages as GitHub
+release assets and will not upload them to language registries. No release
+claim is final until strict five-host M11 evidence passes for the exact commit
+and tree.
 
 ## Pre-release module migration
 
@@ -313,11 +318,16 @@ The core tasks write content-hash-bound evidence under
   are the verified Apple receipts.
 - `codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/` contains
   the canonical bootstrap, exact shared-scenario proof, and matching-host SDK
-  package proofs. Only a successful exact five-host merge-gate run may derive
-  strict `c-abi-parity.json` from those exact artifacts and produce complete
-  `binding-obligations-m8.json` over Kotlin, Java, JavaScript/TypeScript, Swift,
-  Objective-C, and the C ABI. Until then these are evidence producers, not a
-  supported or public C SDK claim.
+  package proofs.
+- The same binding report directory contains `python-parity.json`,
+  `csharp-parity.json`, `rust-parity.json`, `cpp-parity.json`, and
+  `dart-parity.json`; every strict merge-gate-derived native receipt also binds
+  exact installed-package consumer proof from all five hosts.
+
+Only a successful exact five-host merge-gate run may derive the strict C and
+native-wrapper receipts from those exact artifacts. M11 then produces
+`binding-obligations-m11.json` over all eleven languages; local producer output
+cannot substitute for that final-head distributed receipt.
 
 For a binding, add the smallest idiomatic public artifact projection and a real
 consumer test. Extend that language's evidence derivation so each exact
@@ -328,20 +338,28 @@ report. The current focused gates are:
 ```shell
 ./gradlew :codex-agent-core:verifyKotlinBindingParity \
   :codex-agent-core:verifyJavaBindingParity \
-  :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity
+  :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity \
+  :codex-agent-runtime-desktop:verifyPythonBindingParity \
+  :codex-agent-runtime-desktop:verifyCSharpBindingParity \
+  :codex-agent-runtime-desktop:verifyRustBindingParity \
+  :codex-agent-runtime-desktop:verifyCppBindingParity \
+  :codex-agent-runtime-desktop:verifyDartBindingParity
 ./gradlew verifyRepository
 # macOS only
 ./gradlew verifyIosRuntime
 ./gradlew :codex-agent-runtime-desktop:generateCodexAgentCAbiScenarioProof
 ```
 
-The portable root `verifyRepository` task and core `check` produce the Kotlin,
-Java, and JavaScript/TypeScript receipts without running Xcode or claiming the
-distributed aggregate. On macOS, root `verifyIosRuntime` verifies the iOS
-runtime and Apple receipts. Only a successful merge-gate run can collect all
-five matching-host C SDK proofs, derive the C receipt, run the exact six-receipt
-M8 audit, and preserve the canonical API, coverage, receipts, and audit through
-promotion and release-candidate verification.
+The portable root `verifyRepository` task produces the Kotlin, Java, and
+JavaScript/TypeScript receipts without running Xcode. It also runs native-wrapper
+parity when all authoritative five-host release/consumer inputs are supplied
+together; a local invocation without them makes no native-wrapper or distributed
+aggregate claim. On macOS, root `verifyIosRuntime` verifies the iOS runtime and
+Apple receipts. Only a successful merge-gate run can collect all five
+matching-host C SDK and installed-package proofs, derive the C/native receipts,
+run the exact eleven-receipt M11 audit, and preserve the canonical API, coverage,
+packages, receipts, and audit through promotion and release-candidate
+verification.
 An active pair without verified projection evidence is `missing`. A future
 phase pair remains applicable but `pending`: M7.5 historically activated
 Kotlin, Java, Swift, Objective-C, and JavaScript/TypeScript; M8 also activates
@@ -356,14 +374,12 @@ architectural reason. Its matcher and tests must reject owner, kind, ABI,
 signature, stale-key, wildcard, broad-reason, duplicate, and projection-conflict
 drift. An unfinished binding or future-phase obligation is never an exclusion.
 
-To onboard an M9 wrapper gate, implement its exact
-`CrossLanguageBindingReceipt` producer and verifier task, write
-`<language-id>-parity.json`, wire that task and receipt into the phase audit and
-repository/CI ownership, and advance the audit phase. Reuse
-`CrossLanguageBinding`, `CrossLanguageBindingPhase`, and
-`writeCompleteCrossLanguageBindingAudit`, which derive the active languages and
-required receipt names. Do not add a separate manual manifest for canonical
-capabilities or language activation.
+Native wrapper gates reuse `CrossLanguageBindingReceipt`,
+`CrossLanguageBindingPhase`, and `writeCompleteCrossLanguageBindingAudit`,
+which derive active languages and required receipt names. A new capability must
+pass canonical coverage, exact per-language compiler/reference/executed
+behavior matching, installed-package consumption, and M11 fan-in; do not add a
+manual capability manifest or a second language-activation mechanism.
 
 ## Release evidence
 
