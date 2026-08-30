@@ -49,6 +49,34 @@ from validation_reuse import (  # noqa: E402
 
 
 class RunLaneContractTest(unittest.TestCase):
+    def test_c_abi_evidence_inputs_are_lf_canonical(self) -> None:
+        root = CI_ROOT.parent
+        c_abi = root / "codex-agent-runtime-desktop/native/c-api"
+        paths = [
+            "LICENSE",
+            "THIRD_PARTY_NOTICES.md",
+            *(
+                path.relative_to(root).as_posix()
+                for directory in ("include", "exports", "consumer")
+                for path in sorted((c_abi / directory).rglob("*"))
+                if path.is_file()
+            ),
+        ]
+
+        resolved = subprocess.run(
+            ["git", "check-attr", "text", "eol", "--", *paths],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        expected = [
+            line
+            for path in paths
+            for line in (f"{path}: text: set", f"{path}: eol: lf")
+        ]
+        self.assertEqual(expected, resolved)
+
     def test_action_and_lane_driver_bind_every_execution_to_the_candidate_tree(self) -> None:
         action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
