@@ -106,6 +106,17 @@ class RunLaneContractTest(unittest.TestCase):
             self.assertLess(
                 package.index("components: rustfmt,clippy"), package.index(command)
             )
+        self.assertEqual(
+            [
+                'CODEX_AGENT_LIBRARY="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" --all-targets --release --locked --offline',
+                'CODEX_AGENT_REAL_SDK="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" \\',
+            ],
+            [
+                line.strip()
+                for line in package.splitlines()
+                if 'cargo test --manifest-path "$binding/rust/Cargo.toml"' in line
+            ],
+        )
 
     def test_action_and_lane_driver_bind_every_execution_to_the_candidate_tree(self) -> None:
         action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")

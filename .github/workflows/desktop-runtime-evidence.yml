@@ -425,7 +425,7 @@ jobs:
           cargo fetch --manifest-path "$binding/rust/Cargo.toml" --locked
           cargo fmt --manifest-path "$binding/rust/Cargo.toml" -- --check
           cargo clippy --manifest-path "$binding/rust/Cargo.toml" --all-targets --locked --offline -- -D warnings
-          cargo test --manifest-path "$binding/rust/Cargo.toml" --all-targets --release --locked --offline
+          CODEX_AGENT_LIBRARY="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" --all-targets --release --locked --offline
           CODEX_AGENT_REAL_SDK="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" \
             --all-targets --release --locked --offline -- --ignored --test-threads=1
           cmake -S "$binding/cpp" -B build/native-wrapper-cpp-tests \
