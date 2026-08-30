@@ -52,6 +52,10 @@ class RunLaneContractTest(unittest.TestCase):
     def test_c_abi_evidence_inputs_are_lf_canonical(self) -> None:
         root = CI_ROOT.parent
         c_abi = root / "codex-agent-runtime-desktop/native/c-api"
+        shared = (root / "ci/lanes/shared.production.pathspec").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(".gitattributes", shared.splitlines())
         paths = [
             "LICENSE",
             "THIRD_PARTY_NOTICES.md",
@@ -76,6 +80,32 @@ class RunLaneContractTest(unittest.TestCase):
             for line in (f"{path}: text: set", f"{path}: eol: lf")
         ]
         self.assertEqual(expected, resolved)
+
+    def test_native_wrapper_package_installs_rust_quality_components(self) -> None:
+        workflow = (
+            CI_ROOT.parent / ".github/workflows/desktop-runtime-evidence.yml"
+        ).read_text(encoding="utf-8")
+        package = workflow.split("\n  native-wrapper-packages:", 1)[1].split(
+            "\n  native-wrapper-host-consumers:", 1
+        )[0]
+        action = package.split(
+            "uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b",
+            1,
+        )[1].split("- uses: dart-lang/setup-dart@", 1)[0]
+
+        self.assertEqual(
+            ["components: rustfmt,clippy"],
+            [
+                line.strip()
+                for line in action.splitlines()
+                if line.strip().startswith("components:")
+            ],
+        )
+        self.assertNotIn("toolchain:", action)
+        for command in ("cargo fmt ", "cargo clippy "):
+            self.assertLess(
+                package.index("components: rustfmt,clippy"), package.index(command)
+            )
 
     def test_action_and_lane_driver_bind_every_execution_to_the_candidate_tree(self) -> None:
         action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
@@ -187,7 +217,7 @@ class GitFixture(unittest.TestCase):
                 f"configured/{lane}.txt\n{platform}",
             )
         inventories = {
-            "shared.production": "common/**\n",
+            "shared.production": "common/**\n.gitattributes\n",
             "android.production": "android/**\nconfigured/android.txt\n",
             "android.test": "android-tests/**\n",
             "android.metadata": "android-metadata/**\n",
@@ -750,6 +780,16 @@ class ImpactPlanTest(GitFixture):
         write_github_outputs(output, result)
         values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
         self.assertEqual("true", values["native_wrappers"])
+
+    def test_checkout_attribute_policy_change_selects_every_lane(self) -> None:
+        result, _, _ = self.make_plan(".gitattributes", "* text eol=lf\n")
+
+        self.assertEqual([], result["unknownPaths"])
+        self.assertFalse(result["full"])
+        self.assertTrue(all(state["build"] for state in result["lanes"].values()))
+        self.assertTrue(
+            all(state["reuseAllowed"] for state in result["lanes"].values())
+        )
 
     def test_shared_production_change_selects_every_lane(self) -> None:
         result, _, _ = self.make_plan("common/Api.kt")

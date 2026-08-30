@@ -374,7 +374,7 @@ jobs:
           dotnet-version: "8.0.419"
       - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
         with:
-          toolchain: "1.95.0"
+          components: rustfmt,clippy
       - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
         with:
           sdk: "3.13.2"
