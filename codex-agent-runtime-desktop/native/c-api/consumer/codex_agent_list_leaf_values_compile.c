@@ -31,14 +31,14 @@
         uint8_t copied[256] = {0};                                              \
         const char *expected_value = (expected);                                \
         const size_t expected_size = strlen(expected_value);                    \
-        size_t required = SIZE_MAX;                                             \
-        CHECK((function)((context), (handle), (index), NULL, 0U, &required) ==  \
+        size_t copy_required = SIZE_MAX;                                        \
+        CHECK((function)((context), (handle), (index), NULL, 0U, &copy_required) == \
               (expected_size == 0U ? CODEX_AGENT_STATUS_OK :                    \
                                      CODEX_AGENT_STATUS_BUFFER_TOO_SMALL));     \
-        CHECK(required == expected_size);                                       \
-        CHECK((function)((context), (handle), (index), copied, sizeof(copied),  \
-                         &required) == CODEX_AGENT_STATUS_OK);                   \
-        CHECK(required == expected_size);                                       \
+        CHECK(copy_required == expected_size);                                  \
+        CHECK((function)((context), (handle), (index), copied, sizeof(copied),     \
+                         &copy_required) == CODEX_AGENT_STATUS_OK);                \
+        CHECK(copy_required == expected_size);                                  \
         CHECK(memcmp(copied, expected_value, expected_size) == 0);              \
     } while (0)
 

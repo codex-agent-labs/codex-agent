@@ -14,13 +14,13 @@
         uint8_t copied[256];                                                        \
         const char *expected_value = (expected);                                    \
         const size_t expected_size = strlen(expected_value);                        \
-        size_t required = 0U;                                                       \
-        CHECK((function)((context), (handle), NULL, 0U, &required) ==               \
+        size_t copy_required = 0U;                                                  \
+        CHECK((function)((context), (handle), NULL, 0U, &copy_required) ==          \
               CODEX_AGENT_STATUS_BUFFER_TOO_SMALL);                                \
-        CHECK(required == expected_size);                                           \
-        CHECK((function)((context), (handle), copied, sizeof(copied), &required) ==  \
+        CHECK(copy_required == expected_size);                                      \
+        CHECK((function)((context), (handle), copied, sizeof(copied), &copy_required) == \
               CODEX_AGENT_STATUS_OK);                                               \
-        CHECK(required == expected_size);                                           \
+        CHECK(copy_required == expected_size);                                      \
         CHECK(memcmp(copied, expected_value, expected_size) == 0);                  \
     } while (0)
 
