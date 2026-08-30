@@ -68,6 +68,9 @@ class CrossLanguageCAbiPackageEvidenceTest {
             "check(runnerOs.get() == spec.runnerOs && runnerArch.get() == spec.runnerArch)" in
                 File("src/main/kotlin/CrossLanguageCAbiPackageEvidence.kt").readText(),
         )
+        val cppCmake = File("../../codex-agent-runtime-desktop/bindings/cpp/CMakeLists.txt").readText()
+        assertTrue("\"${'$'}{CodexAgent_C_SDK_ROOT}/LICENSE.txt\"" in cppCmake)
+        assertFalse("../../../LICENSE" in cppCmake)
         assertFalse("tasks.named<KotlinNativeTest>(testTaskName)" in wiring)
         assertFalse("runtime-python" in wiring)
     }
@@ -287,6 +290,7 @@ class CrossLanguageCAbiPackageEvidenceTest {
         crossLanguageCAbiTargetSpecs.values.forEach { spec ->
             val targetRoot = output.resolve(spec.classifier.removePrefix("c-abi-"))
             assertEquals(fixture.library(spec).releaseDigest(), targetRoot.resolve(spec.libraryPath).releaseDigest())
+            assertEquals(fixture.license.releaseDigest(), targetRoot.resolve("LICENSE.txt").releaseDigest())
             assertTrue(targetRoot.resolve("codex-agent-c-abi-manifest.json").isFile)
             assertEquals(
                 evidence.getValue(spec.target).readText(),

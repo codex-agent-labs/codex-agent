@@ -150,7 +150,7 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
         DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/native"
     )
     install(
-        FILES README.md "${CMAKE_CURRENT_SOURCE_DIR}/../../../LICENSE"
+        FILES README.md "${CodexAgent_C_SDK_ROOT}/LICENSE.txt"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/CodexAgent"
     )
 
