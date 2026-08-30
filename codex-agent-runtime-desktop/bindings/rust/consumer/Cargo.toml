@@ -1,0 +1,22 @@
+[package]
+name = "codex-agent-rust-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+autobins = false
+default-run = "codex-agent-rust-consumer"
+
+[[bin]]
+name = "codex-agent-rust-consumer"
+path = "src/main.rs"
+
+[[bin]]
+name = "codex-agent-rust-host-smoke"
+path = "src/bin/host_smoke.rs"
+
+[[bin]]
+name = "codex-agent-rust-lifecycle-smoke"
+path = "src/bin/lifecycle_smoke.rs"
+
+[dependencies]
+codex-agent = { path = ".." }

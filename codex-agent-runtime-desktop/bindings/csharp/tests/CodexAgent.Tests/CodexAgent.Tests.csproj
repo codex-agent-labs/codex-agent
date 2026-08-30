@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CodexAgent.Tests</AssemblyName>
+    <RollForward>Major</RollForward>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/CodexAgent/CodexAgent.csproj" />
+    <None Include="../../parity/capability-claims.tsv" Link="parity/capability-claims.tsv" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../../../codex-agent-core/build/reports/cross-language-api/canonical-api.json" Link="parity/canonical-api.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../../build/reports/cross-language-api/c-abi/bootstrap-evidence.json" Link="parity/c-abi-bootstrap-evidence.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../../native/c-api/include/codex_agent.h" Link="parity/codex_agent.h" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="BuildFakeCodexAgentNativeLibraryMacos" AfterTargets="Build" Condition="$([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('osx-'))">
+    <Exec Command="clang -std=c11 -Wall -Wextra -Werror -dynamiclib -I../../../../native/c-api/include native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent.dylib&quot;" />
+  </Target>
+  <Target Name="BuildFakeCodexAgentNativeLibraryLinux" AfterTargets="Build" Condition="$([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('linux-'))">
+    <Exec Command="cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -I../../../../native/c-api/include native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent.so&quot;" />
+  </Target>
+
+  <Target Name="BuildRealMcpValueFixtureMacos" AfterTargets="Build" Condition="'$(CodexAgentRealSdkPath)' != '' and $([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('osx-'))">
+    <Exec Command="clang -std=c11 -Wall -Wextra -Werror -dynamiclib -I../../../../native/c-api/include native/real_mcp_value_fixture.c &quot;$(CodexAgentRealSdkPath)&quot; -Wl,-rpath,&quot;$([System.IO.Path]::GetDirectoryName('$(CodexAgentRealSdkPath)'))&quot; -o &quot;$(TargetDir)libcodex_agent_csharp_fixture.dylib&quot;" />
+  </Target>
+  <Target Name="BuildRealMcpValueFixtureLinux" AfterTargets="Build" Condition="'$(CodexAgentRealSdkPath)' != '' and $([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('linux-'))">
+    <Exec Command="cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -I../../../../native/c-api/include native/real_mcp_value_fixture.c &quot;$(CodexAgentRealSdkPath)&quot; -Wl,-rpath,&quot;$([System.IO.Path]::GetDirectoryName('$(CodexAgentRealSdkPath)'))&quot; -o &quot;$(TargetDir)libcodex_agent_csharp_fixture.so&quot;" />
+  </Target>
+</Project>
