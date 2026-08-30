@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import sys
@@ -22,6 +23,9 @@ from native_wrappers import (  # noqa: E402
     deterministic_zip,
     files,
     host_classifier,
+    normalize_nupkg,
+    normalize_python_sdist,
+    package_all,
     safe_extract_tar,
     safe_extract_zip,
     stage_dart_release,
@@ -29,6 +33,96 @@ from native_wrappers import (  # noqa: E402
 
 
 class NativeWrapperReleaseTest(unittest.TestCase):
+    def test_python_sdist_normalization_removes_archive_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archives = []
+            for index, timestamp in enumerate((1_000_000_000, 2_000_000_000)):
+                archive = root / f"sdist-{index}.tar.gz"
+                with archive.open("wb") as raw:
+                    with tarfile.open(fileobj=raw, mode="w:gz") as output:
+                        member = tarfile.TarInfo("codex_agent-0.2.0/value")
+                        member.size = 7
+                        member.mtime = timestamp
+                        member.uid = member.gid = index + 1
+                        output.addfile(member, io.BytesIO(b"payload"))
+                normalize_python_sdist(archive, root / f"work-{index}")
+                archives.append(archive.read_bytes())
+            self.assertEqual(archives[0], archives[1])
+
+    def test_nupkg_normalization_removes_opc_identity_and_zip_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archives = []
+            core = b"<coreProperties><version>0.2.0</version></coreProperties>"
+            for index, identity in enumerate(("1" * 32, "2" * 32)):
+                archive = root / f"package-{index}.nupkg"
+                relationship = (
+                    '<Relationships><Relationship Type="http://schemas.openxmlformats.org/package/2006/'
+                    f'relationships/metadata/core-properties" Target="/package/services/metadata/core-properties/'
+                    f'{identity}.psmdcp" Id="R{identity[:16]}" /></Relationships>'
+                )
+                with zipfile.ZipFile(archive, "w") as output:
+                    output.writestr("_rels/.rels", relationship)
+                    output.writestr(f"package/services/metadata/core-properties/{identity}.psmdcp", core)
+                    output.writestr("lib/net8.0/CodexAgent.dll", b"assembly")
+                normalize_nupkg(archive, root / f"work-{index}")
+                archives.append(archive.read_bytes())
+            self.assertEqual(archives[0], archives[1])
+
+    def test_normalizers_reject_malformed_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sdist = root / "multiple-roots.tar.gz"
+            with tarfile.open(sdist, "w:gz") as output:
+                for name in ("first/value", "second/value"):
+                    member = tarfile.TarInfo(name)
+                    member.size = 7
+                    output.addfile(member, io.BytesIO(b"payload"))
+            with self.assertRaisesRegex(ValueError, "one package root"):
+                normalize_python_sdist(sdist, root / "sdist-work")
+
+            for count in (0, 2):
+                package = root / f"relationships-{count}.nupkg"
+                relationship = (
+                    '<Relationship Type="http://schemas.openxmlformats.org/package/2006/relationships/'
+                    'metadata/core-properties" Target="/package/services/metadata/core-properties/core.psmdcp" '
+                    'Id="RCORE" />'
+                )
+                with zipfile.ZipFile(package, "w") as output:
+                    output.writestr("_rels/.rels", f"<Relationships>{relationship * count}</Relationships>")
+                    output.writestr("package/services/metadata/core-properties/core.psmdcp", b"core")
+                with self.assertRaisesRegex(ValueError, "one core-properties relationship"):
+                    normalize_nupkg(package, root / f"nupkg-work-{count}")
+
+            unsafe = root / "unsafe.nupkg"
+            with zipfile.ZipFile(unsafe, "w") as output:
+                output.writestr("../escape", b"escape")
+            with self.assertRaisesRegex(ValueError, "unsafe"):
+                normalize_nupkg(unsafe, root / "unsafe-work")
+
+    def test_package_reproducibility_failure_names_every_differing_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calls = 0
+
+            def package_once(*_arguments: object) -> None:
+                nonlocal calls
+                output = Path(_arguments[-1])
+                output.mkdir(parents=True)
+                (output / "changed").write_text(str(calls), encoding="utf-8")
+                if calls:
+                    (output / "second-only").write_text("extra", encoding="utf-8")
+                else:
+                    (output / "first-only").write_text("extra", encoding="utf-8")
+                calls += 1
+
+            with patch("native_wrappers.package_once", side_effect=package_once):
+                with self.assertRaisesRegex(ValueError, "(?s)changed.*second-only") as failure:
+                    package_all(root, root, root, root / "packages")
+            self.assertIn("first=missing", str(failure.exception))
+            self.assertIn("second=missing", str(failure.exception))
+
     def test_dart_release_excludes_repository_tests_and_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -53,6 +147,19 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             )
 
     def test_release_inventory_is_exact(self) -> None:
+        packaging = ast.parse((CI_ROOT / "native_wrappers.py").read_text(encoding="utf-8"))
+        functions = {node.name: node for node in packaging.body if isinstance(node, ast.FunctionDef)}
+        calls = {
+            name: {
+                node.func.id
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            }
+            for name, function in functions.items()
+        }
+        self.assertIn("normalize_python_sdist", calls["package_python"])
+        self.assertIn("normalize_nupkg", calls["package_once"])
+        self.assertIn("-p:PathMap=", ast.unparse(functions["package_once"]))
         self.assertEqual(
             ["macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"],
             list(HOSTS),

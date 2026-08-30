@@ -8,6 +8,7 @@ import gzip
 import hashlib
 import os
 import platform
+import re
 import shlex
 import shutil
 import stat
@@ -193,6 +194,15 @@ def require_matching_proofs(package_root: Path, sdk_root: Path, language: str) -
             raise ValueError(f"{language} installed package {name} does not match the verified SDK")
 
 
+def normalize_python_sdist(package: Path, work: Path) -> None:
+    extracted = work / "python-sdist"
+    safe_extract_tar(package, extracted)
+    roots = list(extracted.iterdir())
+    if len(roots) != 1 or not roots[0].is_dir() or roots[0].is_symlink():
+        raise ValueError("Python sdist must contain one package root")
+    deterministic_tar(roots[0], package, roots[0].name)
+
+
 def package_python(source: Path, output: Path, work: Path) -> None:
     setup = (
         "from setuptools import Distribution, setup\n"
@@ -205,6 +215,8 @@ def package_python(source: Path, output: Path, work: Path) -> None:
     (all_source / "setup.py").write_text(setup, encoding="utf-8")
     env = os.environ | {"SOURCE_DATE_EPOCH": str(FIXED_TIME), "PYTHONHASHSEED": "0"}
     run(sys.executable, "-m", "build", "--sdist", "--no-isolation", "--outdir", output, cwd=all_source, env=env)
+    sdist = require_one(output, "*.tar.gz")
+    normalize_python_sdist(sdist, work)
     for classifier, tag in PYTHON_TAGS.items():
         wheel_source = work / f"python-{classifier}"
         shutil.copytree(all_source, wheel_source)
@@ -230,6 +242,30 @@ def package_python(source: Path, output: Path, work: Path) -> None:
 
 def package_inventory(root: Path) -> list[tuple[str, str]]:
     return [(path.relative_to(root).as_posix(), sha256(path)) for path in files(root)]
+
+
+def normalize_nupkg(package: Path, work: Path) -> None:
+    extracted = work / "csharp-nupkg"
+    safe_extract_zip(package, extracted)
+    core = require_one(extracted / "package/services/metadata/core-properties", "*.psmdcp")
+    digest = sha256(core)
+    relative = core.relative_to(extracted).as_posix()
+    canonical_relative = f"package/services/metadata/core-properties/{digest[:32]}.psmdcp"
+    relationships = extracted / "_rels/.rels"
+    contents = relationships.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r'(<Relationship Type="http://schemas.openxmlformats.org/package/2006/relationships/'
+        r'metadata/core-properties" Target="/)' + re.escape(relative) + r'(" Id=")[^"]+(" />)'
+    )
+    contents, count = pattern.subn(
+        lambda match: f"{match.group(1)}{canonical_relative}{match.group(2)}R{digest[:16].upper()}{match.group(3)}",
+        contents,
+    )
+    if count != 1:
+        raise ValueError("NuGet package must contain one core-properties relationship")
+    relationships.write_text(contents, encoding="utf-8")
+    core.rename(extracted / canonical_relative)
+    deterministic_zip(extracted, package, "")
 
 
 def write_package_toolchains(output: Path) -> None:
@@ -280,14 +316,15 @@ def package_once(repository: Path, sources: Path, sdks: Path, output: Path) -> N
         python_output.mkdir()
         package_python(sources / "python", python_output, work)
 
+        csharp_source = sources / "csharp"
         csharp_output = output / "csharp"
         csharp_output.mkdir()
         run(
             "dotnet", "pack", "src/CodexAgent/CodexAgent.csproj", "--configuration", "Release",
             "--output", csharp_output, "-p:CodexAgentRequireNativeAssets=true",
-            cwd=sources / "csharp",
+            f"-p:PathMap={csharp_source}=/_/csharp", cwd=csharp_source,
         )
-        require_one(csharp_output, "CodexAgent.*.nupkg")
+        normalize_nupkg(require_one(csharp_output, "CodexAgent.*.nupkg"), work)
 
         rust_source = sources / "rust"
         rust_target = work / "rust-target"
@@ -337,8 +374,16 @@ def package_all(repository: Path, sources: Path, sdks: Path, output: Path) -> No
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-reproducibility-") as temporary:
         second = Path(temporary) / "packages"
         package_once(repository, sources, sdks, second)
-        if package_inventory(output) != package_inventory(second):
-            raise ValueError("native wrapper release packages are not reproducible")
+        first_inventory = dict(package_inventory(output))
+        second_inventory = dict(package_inventory(second))
+        if first_inventory != second_inventory:
+            differences = sorted(first_inventory.keys() | second_inventory.keys())
+            details = [
+                f"{path} (first={first_inventory.get(path, 'missing')}, "
+                f"second={second_inventory.get(path, 'missing')})"
+                for path in differences if first_inventory.get(path) != second_inventory.get(path)
+            ]
+            raise ValueError("native wrapper release packages are not reproducible:\n" + "\n".join(details))
 
 
 def host_classifier() -> str:
