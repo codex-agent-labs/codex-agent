@@ -352,7 +352,7 @@ report. The current focused gates are:
 
 The portable root `verifyRepository` task produces the Kotlin, Java, and
 JavaScript/TypeScript receipts without running Xcode. It also runs native-wrapper
-parity when all authoritative five-host release/consumer inputs are supplied
+parity when all authoritative five-host release and consumer inputs are supplied
 together; a local invocation without them makes no native-wrapper or distributed
 aggregate claim. On macOS, root `verifyIosRuntime` verifies the iOS runtime and
 Apple receipts. Only a successful merge-gate run can collect all five
