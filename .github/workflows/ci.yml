@@ -268,6 +268,18 @@ jobs:
     needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple, consumers]
     runs-on: ubuntu-24.04
     steps:
+      - name: Require readiness and successful prerequisites
+        env:
+          MERGE_READY: ${{ needs.plan.outputs.merge_ready }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          if [ "$MERGE_READY" != true ]; then
+            echo 'The merge-ready label is required before product CI can pass.' >&2
+            exit 1
+          fi
+          if grep -Eq 'failure|cancelled' <<<"$RESULTS"; then
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -304,19 +316,10 @@ jobs:
           test -d "$source/sdks"
           cp -R "$source" build/ci/native-wrapper-release
           echo 'restored=true' >> "$GITHUB_OUTPUT"
-      - name: Require readiness, successful prerequisites, and an exact receipt set
+      - name: Require an exact receipt set
         env:
-          MERGE_READY: ${{ needs.plan.outputs.merge_ready }}
-          RESULTS: ${{ join(needs.*.result, ' ') }}
           VALIDATION_REUSED: ${{ needs.plan.outputs.validation_reused }}
         run: |
-          if [ "$MERGE_READY" != true ]; then
-            echo 'The merge-ready label is required before product CI can pass.' >&2
-            exit 1
-          fi
-          if grep -Eq 'failure|cancelled' <<<"$RESULTS"; then
-            exit 1
-          fi
           if [ "$VALIDATION_REUSED" = true ]; then
             python3 ci/validation_reuse.py materialize --plan build/ci/plan/impact-plan.json \
               --destination build/ci/plan/reused-validation \

@@ -85,8 +85,8 @@ class RunLaneContractTest(unittest.TestCase):
         workflow = (
             CI_ROOT.parent / ".github/workflows/desktop-runtime-evidence.yml"
         ).read_text(encoding="utf-8")
-        package = workflow.split("\n  native-wrapper-packages:", 1)[1].split(
-            "\n  native-wrapper-host-consumers:", 1
+        package = workflow.split("\n  native-wrapper-language:", 1)[1].split(
+            "\n  native-wrapper-package-validation:", 1
         )[0]
         action = package.split(
             "uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b",
@@ -122,8 +122,8 @@ class RunLaneContractTest(unittest.TestCase):
         workflow = (
             CI_ROOT.parent / ".github/workflows/desktop-runtime-evidence.yml"
         ).read_text(encoding="utf-8")
-        package = workflow.split("\n  native-wrapper-packages:", 1)[1].split(
-            "\n  native-wrapper-host-consumers:", 1
+        package = workflow.split("\n  native-wrapper-language:", 1)[1].split(
+            "\n  native-wrapper-package-validation:", 1
         )[0]
         lines = [line.strip() for line in package.splitlines()]
         project = (
@@ -148,9 +148,117 @@ class RunLaneContractTest(unittest.TestCase):
             arguments[-1][0],
             lines.index(
                 'cp "$csharp/artifacts"/{compiler-evidence.tsv,executed-tests.tsv} '
-                '"$release/evidence/csharp/"'
+                '"$evidence/"'
             ),
         )
+
+    def test_native_wrapper_validation_stages_once_fans_out_and_collects(self) -> None:
+        workflow = (
+            CI_ROOT.parent / ".github/workflows/desktop-runtime-evidence.yml"
+        ).read_text(encoding="utf-8")
+        stage = workflow.split("\n  native-wrapper-sdk-stage:", 1)[1].split(
+            "\n  native-wrapper-language:", 1
+        )[0]
+        language = workflow.split("\n  native-wrapper-language:", 1)[1].split(
+            "\n  native-wrapper-package-validation:", 1
+        )[0]
+        package = workflow.split("\n  native-wrapper-package-validation:", 1)[1].split(
+            "\n  native-wrapper-release-assembly:", 1
+        )[0]
+        assembly = workflow.split("\n  native-wrapper-release-assembly:", 1)[1].split(
+            "\n  native-wrapper-host-consumers:", 1
+        )[0]
+        consumers = workflow.split("\n  native-wrapper-host-consumers:", 1)[1]
+
+        self.assertEqual(1, workflow.count("name: Reassemble and verify the exact five C SDKs"))
+        self.assertEqual(1, workflow.count("prepareNativeWrapperPackageSources"))
+        self.assertIn("name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}", stage)
+        self.assertIn("retention-days: 1", stage)
+
+        self.assertIn("needs: native-wrapper-sdk-stage", language)
+        self.assertIn("fail-fast: false", language)
+        self.assertIn(
+            "name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}",
+            language,
+        )
+        self.assertEqual(
+            ["python", "csharp", "rust", "cpp", "dart"],
+            [
+                line.strip().removeprefix("- language: ")
+                for line in language.splitlines()
+                if line.strip().startswith("- language: ")
+            ],
+        )
+        self.assertIn(
+            "name: codex-agent-native-wrapper-evidence-${{ matrix.language }}-${{ inputs.validationTree }}",
+            language,
+        )
+        self.assertIn("path: build/native-wrapper-evidence", language)
+        self.assertIn("include-hidden-files: true", language)
+        self.assertIn("retention-days: 1", language)
+        for check in (
+            'test "${actual_files[*]}" = "${expected_files[*]}"',
+            'test -f "$evidence/$file"',
+            'test -s "$evidence/$file"',
+            'test ! -L "$evidence/$file"',
+        ):
+            self.assertIn(check, language)
+
+        self.assertIn("needs: native-wrapper-sdk-stage", package)
+        self.assertIn(
+            "name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}",
+            package,
+        )
+        self.assertIn("python ci/native_wrappers.py package", package)
+        self.assertIn(
+            "name: codex-agent-native-wrapper-package-validation-${{ inputs.validationTree }}",
+            package,
+        )
+        self.assertIn("retention-days: 1", package)
+
+        self.assertIn("if: always() && inputs.nativeWrappers", assembly)
+        self.assertIn(
+            "needs: [native-wrapper-sdk-stage, native-wrapper-language, native-wrapper-package-validation]",
+            assembly,
+        )
+        self.assertLess(
+            assembly.index("name: Require every parallel native-wrapper validation"),
+            assembly.index("uses: actions/download-artifact@"),
+        )
+        for result in (
+            "needs.native-wrapper-sdk-stage.result",
+            "needs.native-wrapper-language.result",
+            "needs.native-wrapper-package-validation.result",
+        ):
+            self.assertIn(result, assembly)
+        for result in ("SDK_STAGE_RESULT", "LANGUAGE_RESULT", "PACKAGE_RESULT"):
+            self.assertIn(f'test "${result}" = success', assembly)
+        self.assertIn(
+            "pattern: codex-agent-native-wrapper-evidence-*-${{ inputs.validationTree }}",
+            assembly,
+        )
+        self.assertIn("merge-multiple: true", assembly)
+        self.assertIn("expected_languages=(cpp csharp dart python rust)", assembly)
+        self.assertIn(
+            "expected_files=(compiler-evidence.tsv executed-tests.tsv test-program)",
+            assembly,
+        )
+        for check in (
+            'test "${actual_languages[*]}" = "${expected_languages[*]}"',
+            'test "${actual_files[*]}" = "${expected_files[*]}"',
+            'test -d "$directory"',
+            'test ! -L "$directory"',
+            'test -f "$directory/$file"',
+            'test -s "$directory/$file"',
+            'test ! -L "$directory/$file"',
+        ):
+            self.assertIn(check, assembly)
+        self.assertIn(
+            "name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}",
+            assembly,
+        )
+        self.assertIn("retention-days: 90", assembly)
+        self.assertIn("needs: native-wrapper-release-assembly", consumers)
 
     def test_action_and_lane_driver_bind_every_execution_to_the_candidate_tree(self) -> None:
         action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
@@ -195,6 +303,15 @@ class RunLaneContractTest(unittest.TestCase):
         assemble = 'java -jar "$release_tool" assemble-c-abi-binding-receipt'
         audit = 'java -jar "$release_tool" audit-cross-language-bindings'
 
+        self.assertLess(
+            merge_gate.index("name: Require readiness and successful prerequisites"),
+            merge_gate.index("uses: actions/checkout@"),
+        )
+        self.assertLess(
+            merge_gate.index("name: Require readiness and successful prerequisites"),
+            merge_gate.index("uses: actions/download-artifact@"),
+        )
+        self.assertIn("if grep -Eq 'failure|cancelled' <<<\"$RESULTS\"; then", merge_gate)
         self.assertEqual(1, merge_gate.count(assemble))
         self.assertEqual(3, merge_gate.count(audit))
         self.assertEqual(2, merge_gate.count("advance-cross-language-binding-receipt"))
