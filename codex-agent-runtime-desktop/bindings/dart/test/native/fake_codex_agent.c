@@ -1045,7 +1045,9 @@ LEAF_SERVICE(mcp_servers)
   API int CALL name(void *c, void *service, int32_t *out) { \
     (void)c; (void)service; leaf_record(#name); \
     if (test_load(&agent_released) != 0) return 1; \
-    if (out == NULL) return 1; *out = 1; return OK; \
+    if (out == NULL) return 1; \
+    *out = 1; \
+    return OK; \
   }
 AVAILABLE(codex_agent_skills_is_available)
 AVAILABLE(codex_agent_hooks_is_available)
@@ -1145,23 +1147,31 @@ SNAPSHOT_VALUE(codex_agent_integration_authorization_active_value, 102)
 SNAPSHOT_VALUE(codex_agent_interactions_state_value, 103)
 API int CALL codex_agent_integration_authorization_active_has_value(void *c, void *s, int32_t *out) {
   (void)c; (void)s; leaf_record("codex_agent_integration_authorization_active_has_value");
-  if (out == NULL) return 1; *out = 1; return OK;
+  if (out == NULL) return 1;
+  *out = 1;
+  return OK;
 }
 API int CALL codex_agent_interactions_approvals_count(void *c, void *s, size_t *out) {
   (void)c; (void)s; leaf_record("codex_agent_interactions_approvals_count");
-  if (out == NULL) return 1; *out = 1; return OK;
+  if (out == NULL) return 1;
+  *out = 1;
+  return OK;
 }
 API int CALL codex_agent_interactions_approvals_at(void *c, void *s, size_t index, void **out) {
   (void)c; (void)s; leaf_record("codex_agent_interactions_approvals_at");
-  if (index != 0) return 1; return value_out(out, 104);
+  if (index != 0) return 1;
+  return value_out(out, 104);
 }
 API int CALL codex_agent_interactions_elicitations_count(void *c, void *s, size_t *out) {
   (void)c; (void)s; leaf_record("codex_agent_interactions_elicitations_count");
-  if (out == NULL) return 1; *out = 1; return OK;
+  if (out == NULL) return 1;
+  *out = 1;
+  return OK;
 }
 API int CALL codex_agent_interactions_elicitations_at(void *c, void *s, size_t index, void **out) {
   (void)c; (void)s; leaf_record("codex_agent_interactions_elicitations_at");
-  if (index != 0) return 1; return value_out(out, 105);
+  if (index != 0) return 1;
+  return value_out(out, 105);
 }
 
 /* The verified shared value bridge resolves its complete exact surface
