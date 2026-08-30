@@ -5,11 +5,15 @@ import kotlin.test.assertTrue
 
 class RepositoryVerificationTasksTest {
     @Test
-    fun `repository verification keeps portable producers and leaves complete M8 audit to distributed CI`() {
+    fun `repository verification keeps portable producers and includes imported native wrapper parity`() {
         assertTrue(":codex-agent-core:verifyKotlinBindingParity" in repositoryVerificationTaskPaths)
         assertTrue(":codex-agent-core:verifyJavaBindingParity" in repositoryVerificationTaskPaths)
         assertTrue(
             ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity" in
+                repositoryVerificationTaskPaths,
+        )
+        assertTrue(
+            ":codex-agent-runtime-desktop:verifyNativeWrapperBindingParity" in
                 repositoryVerificationTaskPaths,
         )
         assertTrue(":codex-agent-runtime-desktop:macosArm64Test" in repositoryVerificationTaskPaths)

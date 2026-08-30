@@ -80,6 +80,21 @@ internal fun File.releaseDigest(algorithm: String = "SHA-256"): String = inputSt
     it.releaseDigest(algorithm)
 }
 
+internal fun verifiedRegularFiles(root: File): Map<String, File> {
+    check(root.isDirectory && !Files.isSymbolicLink(root.toPath())) {
+        "Verified evidence directory is missing or unsafe"
+    }
+    val entries = Files.walk(root.toPath()).use { it.toList() }
+    entries.filter { it != root.toPath() }.forEach { path ->
+        check(!Files.isSymbolicLink(path) && (Files.isDirectory(path) || Files.isRegularFile(path))) {
+            "Verified evidence contains an unsafe entry: $path"
+        }
+    }
+    return entries.filter(Files::isRegularFile).associate { path ->
+        root.toPath().relativize(path).joinToString("/") to path.toFile()
+    }
+}
+
 internal fun InputStream.releaseDigest(algorithm: String = "SHA-256"): String {
     val digest = MessageDigest.getInstance(algorithm)
     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)

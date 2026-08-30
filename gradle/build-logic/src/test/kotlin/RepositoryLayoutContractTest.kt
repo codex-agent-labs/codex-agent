@@ -125,7 +125,7 @@ class RepositoryLayoutContractTest {
                 """(?:\./)?$rootReleaseName(?=[\"'\s,}]|\z))""",
         )
         val rootJsStorePath = Regex("""(?<!gradle/)${Regex.escape(oldJsStore)}(?:/|\b)""")
-        val ignoredDirectories = setOf(".git", ".gradle", ".codex", ".agents", "build")
+        val ignoredDirectories = setOf(".git", ".gradle", ".codex", ".agents", "build", "target")
         val liveExtensions = setOf("kt", "kts", "java", "md", "yml", "yaml", "json", "toml", "properties")
         val failures = repository.walkTopDown()
             .onEnter { it == repository || it.name !in ignoredDirectories }

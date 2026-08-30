@@ -116,6 +116,13 @@ jobs:
           github-token: ${{ github.token }}
           name: codex-agent-promoted-validation-${{ needs.identity.outputs.candidate_commit }}
           path: ${{ steps.paths.outputs.promoted }}/codex-agent-promoted-validation-${{ needs.identity.outputs.candidate_commit }}
+      - name: Download the exact native-wrapper packages from the promotion
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          run-id: ${{ needs.identity.outputs.promotion_run_id }}
+          github-token: ${{ github.token }}
+          name: codex-agent-promoted-native-wrapper-packages-${{ needs.identity.outputs.candidate_commit }}
+          path: ${{ steps.paths.outputs.promoted }}/codex-agent-promoted-native-wrapper-packages-${{ needs.identity.outputs.candidate_commit }}
       - name: Download every exact promoted lane artifact
         env:
           GH_TOKEN: ${{ github.token }}

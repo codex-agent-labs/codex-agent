@@ -4,7 +4,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
-internal fun schema15CandidateManifest(
+internal fun schema16CandidateManifest(
     version: String,
     commit: String,
     centralBundles: Map<String, File> = emptyMap(),
@@ -49,6 +49,11 @@ internal fun schema15CandidateManifest(
             put("centralBundles", buildJsonArray {
                 centralBundleShardNames.forEach { add(centralRecord(it)) }
             })
+            put("nativeWrapperPackages", buildJsonArray {
+                nativeWrapperBindings.map { "codex-agent-${it.id}.package" }.sorted().forEach {
+                    add(record(it))
+                }
+            })
             put("sbom", record(aggregateReleaseSbomFileName(version)))
         })
         put("evidence", buildJsonObject {
@@ -82,7 +87,10 @@ internal fun schema15CandidateManifest(
                     nodeRuntimeEvidenceFileName(it, NODE_RUNTIME_WASM_BACKEND)
                 },
                 "androidRuntime" to candidateFirebaseAndroidEvidenceFileNames,
-                "crossLanguageM8" to crossLanguageM8EvidenceFileNames,
+                "crossLanguageM11" to crossLanguageM11EvidenceFileNames,
+                "nativeWrapperPackageToolchains" to nativeWrapperBindings.map {
+                    "codex-agent-${it.id}-package-toolchain.tsv"
+                },
             ).forEach { (name, fileNames) ->
                 put(name, buildJsonArray { fileNames.forEach { add(runtimeRecord(it)) } })
             }

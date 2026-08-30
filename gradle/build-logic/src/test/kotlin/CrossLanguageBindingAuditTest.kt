@@ -55,6 +55,49 @@ class CrossLanguageBindingAuditTest {
     }
 
     @Test
+    fun `complete M11 bundle is freshly recomputed and rejects an M8 receipt`() {
+        val root = createTempDirectory("binding-m11").toFile()
+        try {
+            val members = (0 until 556).map { index ->
+                "common|owner=sample/Owner|kind=property|abi=sample/Owner.value$index"
+            }.sorted()
+            val fixture = CrossLanguageBindingCliFixture(
+                root,
+                members,
+                "binding-obligations-m11.json",
+            )
+            CrossLanguageBinding.entries.forEach { language ->
+                fixture.writeReceipt(
+                    language,
+                    phase = CrossLanguageBindingPhase.M11,
+                    excludedMembers = if (language == CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT) {
+                        members.take(12)
+                    } else {
+                        emptyList()
+                    },
+                )
+            }
+            fixture.writeCompleteAudit(CrossLanguageBindingPhase.M11)
+            CrossLanguageBinding.entries.forEach { language ->
+                fixture.receipt(language).copyTo(root.resolve("${language.id}-parity.json"))
+            }
+            val files = crossLanguageM11EvidenceFileNames.associateWith(root::resolve)
+
+            val audit = verifyCompleteCrossLanguageM11Evidence(files)
+
+            assertEquals(CrossLanguageBindingAuditSummary(6_116, 6_104, 0, 12, 6_104, 0), audit.summary)
+            fixture.writeReceipt(CrossLanguageBinding.KOTLIN, CrossLanguageBindingPhase.M8)
+            fixture.receipt(CrossLanguageBinding.KOTLIN).copyTo(
+                root.resolve("kotlin-parity.json"),
+                overwrite = true,
+            )
+            assertFailsWith<IllegalStateException> { verifyCompleteCrossLanguageM11Evidence(files) }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `materializes Kotlin Java and JavaScript proof with every remaining active and future pair`() {
         val javaScript = receipt(CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT, FULL_MEMBER_SET).let { receipt ->
             receipt.copy(

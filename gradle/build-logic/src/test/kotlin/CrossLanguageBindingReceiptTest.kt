@@ -10,7 +10,7 @@ import kotlinx.serialization.json.JsonPrimitive
 
 class CrossLanguageBindingReceiptTest {
     @Test
-    fun `schema three round trips every evaluator record with receipt language injected`() = withReceipt { file ->
+    fun `schema four round trips every evaluator record with receipt language injected`() = withReceipt { file ->
         val expected = receipt()
         writeCrossLanguageBindingReceipt(file, expected)
 
@@ -39,6 +39,12 @@ class CrossLanguageBindingReceiptTest {
             root.replaceObject("canonical") { JsonObject(it - "apiReportSha256") },
             root.replaceObject("canonical") { JsonObject(it + ("unexpected" to JsonPrimitive("value"))) },
             root.replaceFirstArrayObject("artifacts") { JsonObject(it - "sha256") },
+            nativeReceipt().toJson().replaceFirstArrayObject("hostConsumerProofs") {
+                JsonObject(it - "toolchainIdentitySha256")
+            },
+            nativeReceipt().toJson().replaceFirstArrayObject("hostConsumerProofs") {
+                JsonObject(it + ("unexpected" to JsonPrimitive("value")))
+            },
             root.replaceFirstArrayObject("tests") { JsonObject(it + ("unexpected" to JsonPrimitive("value"))) },
             root.replaceFirstArrayObject("scenarios") { JsonObject(it - "testIds") },
             root.replaceFirstArrayObject("claims") { JsonObject(it - "executedTests") },
@@ -71,6 +77,7 @@ class CrossLanguageBindingReceiptTest {
             root.replaceFirstArrayObject("claims") { claim ->
                 claim.replaceArray("sharedScenarios") { it + it.first() }
             },
+            nativeReceipt().toJson().replaceArray("hostConsumerProofs") { it + it.first() },
         )
         duplicates.forEach { invalid ->
             file.atomicWriteJson(invalid)
@@ -81,6 +88,9 @@ class CrossLanguageBindingReceiptTest {
             file.atomicWriteJson(root.replaceArray(name) { it.reversed() })
             assertFailure("not canonically encoded") { readCrossLanguageBindingReceipt(file) }
         }
+        val native = nativeReceipt().toJson()
+        file.atomicWriteJson(native.replaceArray("hostConsumerProofs") { it.reversed() })
+        assertFailure("not canonically encoded") { readCrossLanguageBindingReceipt(file) }
     }
 
     @Test
@@ -98,10 +108,17 @@ class CrossLanguageBindingReceiptTest {
             root.replaceFirstArrayObject("artifacts") {
                 JsonObject(it + ("sha256" to JsonPrimitive("g".repeat(64))))
             },
+            nativeReceipt().toJson().replaceFirstArrayObject("hostConsumerProofs") {
+                JsonObject(it + ("nativeLibrarySha256" to JsonPrimitive("f".repeat(63))))
+            },
         ).forEach { invalid ->
             file.atomicWriteJson(invalid)
             assertFailure("SHA-256") { readCrossLanguageBindingReceipt(file) }
         }
+        file.atomicWriteJson(nativeReceipt().toJson().replaceFirstArrayObject("hostConsumerProofs") {
+            JsonObject(it + ("candidateCommit" to JsonPrimitive("f".repeat(39))))
+        })
+        assertFailure("Git object ID") { readCrossLanguageBindingReceipt(file) }
     }
 
     @Test
@@ -118,6 +135,9 @@ class CrossLanguageBindingReceiptTest {
             },
             root.replaceFirstArrayObject("claims") { claim ->
                 claim.replaceArray("sharedScenarios") { listOf(JsonPrimitive("future-scenario")) }
+            },
+            nativeReceipt().toJson().replaceFirstArrayObject("hostConsumerProofs") {
+                JsonObject(it + ("status" to JsonPrimitive("skipped")))
             },
         ).forEach { invalid ->
             file.atomicWriteJson(invalid)
@@ -251,6 +271,48 @@ class CrossLanguageBindingReceiptTest {
         }
     }
 
+    @Test
+    fun `native wrappers require exact five host consumers and non-native bindings reject them`() =
+        withReceipt { file ->
+            val native = nativeReceipt()
+            writeCrossLanguageBindingReceipt(file, native)
+            assertEquals(
+                listOf("linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-x64"),
+                readCrossLanguageBindingReceipt(file).hostConsumerProofs.map { it.classifier },
+            )
+
+            assertFailure("exact five") {
+                writeCrossLanguageBindingReceipt(file, native.copy(hostConsumerProofs = native.hostConsumerProofs.drop(1)))
+            }
+            assertFailure("runner identity") {
+                writeCrossLanguageBindingReceipt(
+                    file,
+                    native.copy(hostConsumerProofs = native.hostConsumerProofs.mapIndexed { index, proof ->
+                        if (index == 0) proof.copy(runnerArch = "X64") else proof
+                    }),
+                )
+            }
+            assertFailure("package artifact mismatch") {
+                writeCrossLanguageBindingReceipt(
+                    file,
+                    native.copy(hostConsumerProofs = native.hostConsumerProofs.mapIndexed { index, proof ->
+                        if (index == 0) proof.copy(packageSha256 = "9".repeat(64)) else proof
+                    }),
+                )
+            }
+            assertFailure("mix candidate identities") {
+                writeCrossLanguageBindingReceipt(
+                    file,
+                    native.copy(hostConsumerProofs = native.hostConsumerProofs.mapIndexed { index, proof ->
+                        if (index == 0) proof.copy(candidateTree = "9".repeat(40)) else proof
+                    }),
+                )
+            }
+            assertFailure("must not carry") {
+                writeCrossLanguageBindingReceipt(file, receipt().copy(hostConsumerProofs = native.hostConsumerProofs))
+            }
+        }
+
     private fun receipt(language: CrossLanguageBinding = CrossLanguageBinding.JAVA): CrossLanguageBindingReceipt {
         val tests = TESTS.map { id ->
             CrossLanguageBindingTestEvidence(language, id, CrossLanguageBindingTestStatus.PASSED)
@@ -292,6 +354,26 @@ class CrossLanguageBindingReceiptTest {
                 ),
             ),
         )
+    }
+
+    private fun nativeReceipt(): CrossLanguageBindingReceipt {
+        val base = receipt(CrossLanguageBinding.PYTHON).copy(phase = CrossLanguageBindingPhase.M9_PYTHON)
+        val packageArtifact = base.artifacts.single { it.id == "runtime" }
+        return base.copy(hostConsumerProofs = crossLanguageCAbiTargetSpecs.values.map { spec ->
+            CrossLanguageBindingHostConsumerProof(
+                classifier = spec.classifier.removePrefix("c-abi-"),
+                runnerOs = spec.runnerOs,
+                runnerArch = spec.runnerArch,
+                toolchainIdentitySha256 = "3".repeat(64),
+                packageArtifactId = packageArtifact.id,
+                packageSha256 = packageArtifact.sha256,
+                nativeLibrarySha256 = "4".repeat(64),
+                testId = "python.host.${spec.target}",
+                status = CrossLanguageBindingTestStatus.PASSED,
+                candidateCommit = "5".repeat(40),
+                candidateTree = "6".repeat(40),
+            )
+        })
     }
 
     private fun withReceipt(block: (File) -> Unit) {

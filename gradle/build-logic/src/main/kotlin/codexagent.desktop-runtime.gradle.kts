@@ -1,9 +1,12 @@
 import java.io.File
+import org.gradle.api.Task
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.Sync
+import org.gradle.api.tasks.TaskProvider
 import org.gradle.api.tasks.bundling.Zip
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
@@ -20,6 +23,9 @@ val generateDesktopDistributionSource = tasks.register<GenerateDesktopDistributi
 val desktopManifest = readDesktopCodexManifest(desktopManifestFile.asFile)
 val localArchiveDirectory = providers.gradleProperty("codexAgent.desktopArchiveDirectory")
 val importedClassifierDirectory = providers.gradleProperty("codexAgent.desktopClassifierDirectory")
+val importedCAbiEvidenceDirectory = providers.gradleProperty("codexAgent.cAbiPackageEvidenceDirectory")
+    .map(::file)
+    .orElse(layout.buildDirectory.dir("reports/cross-language-api/c-abi/packages").map { it.asFile })
 val supervisorDirectory = providers.gradleProperty("codexAgent.desktopSupervisorDirectory")
     .map(::file)
     .orElse(layout.buildDirectory.dir("supervisor").map { it.asFile })
@@ -33,6 +39,9 @@ val hostSupervisorName = if (hostTarget == "mingwX64") {
 } else {
     "codex-process-supervisor"
 }
+val mingwGnuImportLibrary = layout.buildDirectory.file(
+    "bin/mingwX64/releaseShared/libcodex_agent.dll.a",
+)
 val compileDesktopProcessSupervisor = tasks.register<CompileDesktopProcessSupervisorTask>(
     "compileDesktopProcessSupervisor",
 ) {
@@ -161,10 +170,16 @@ extensions.configure<KotlinMultiplatformExtension> {
                     "-Wl,--version-script,${exportPolicyFile.asFile}",
                     "-Wl,-soname,libcodex_agent.so.1",
                 )
-                target.name == "mingwX64" -> linkerOpts(
-                    "-Wl,--exclude-all-symbols",
-                    exportPolicyFile.asFile.absolutePath,
-                )
+                target.name == "mingwX64" -> {
+                    linkTaskProvider.configure {
+                        outputs.file(mingwGnuImportLibrary)
+                    }
+                    linkerOpts(
+                        "-Wl,--exclude-all-symbols",
+                        "-Wl,--out-implib,${mingwGnuImportLibrary.get().asFile.absolutePath}",
+                        exportPolicyFile.asFile.absolutePath,
+                    )
+                }
             }
         }
         target.compilations.getByName("main").cinterops.create("codexDesktop") {
@@ -239,9 +254,7 @@ val cAbiPackageTasks = crossLanguageCAbiTargetSpecs.mapValues { (target, spec) -
         library.set(cAbiReleaseLibrary(target))
         exportPolicy.set(cAbiExportPolicy(target))
         if (target == "mingwX64") {
-            gnuImportLibrary.set(layout.buildDirectory.file(
-                "bin/mingwX64/releaseShared/libcodex_agent.dll.a",
-            ))
+            gnuImportLibrary.set(mingwGnuImportLibrary)
             msvcImportLibrary.set(mingwMsvcImportLibrary)
         }
         outputFile.set(layout.buildDirectory.file(
@@ -592,6 +605,131 @@ desktopManifest.distributions.forEach { distribution ->
         evidenceFile.set(layout.buildDirectory.file(
             "reports/desktop-runtime-evidence/${desktopRuntimeEvidenceFileName(distribution.target)}",
         ))
+    }
+}
+
+val stageNativeWrapperCAbiSdks = tasks.register<StageCrossLanguageNativeWrapperSdksTask>(
+    "stageNativeWrapperCAbiSdks",
+) {
+    group = "distribution"
+    description = "Verifies and stages the exact five C ABI SDK packages for first-class native wrappers."
+    libraryVersion.set(project.version.toString())
+    producerCommit.set(cAbiCandidateCommit)
+    producerTree.set(cAbiCandidateTree)
+    archives.from(cAbiArchiveFiles.values)
+    evidence.from(crossLanguageCAbiTargetSpecs.keys.map { target ->
+        layout.file(importedCAbiEvidenceDirectory.map { directory ->
+            directory.resolve(crossLanguageCAbiPackageEvidenceFileName(target))
+        })
+    })
+    reviewedHeader.set(cAbiReviewedHeader)
+    license.set(cAbiLicense)
+    notice.set(cAbiNotice)
+    macosExportPolicy.set(cAbiExportPolicy("macosArm64"))
+    linuxExportPolicy.set(cAbiExportPolicy("linuxArm64"))
+    windowsExportPolicy.set(cAbiExportPolicy("mingwX64"))
+    consumerSources.from(cAbiConsumerSources)
+    outputDirectory.set(layout.buildDirectory.dir("native-wrapper-c-abi-sdks"))
+}
+
+val materializeNativeWrapperPackageAssets = tasks.register<MaterializeCrossLanguageNativeWrapperPackageAssetsTask>(
+    "materializeNativeWrapperPackageAssets",
+) {
+    group = "distribution"
+    description = "Maps the verified C ABI SDK bytes into the five native-wrapper package layouts."
+    dependsOn(stageNativeWrapperCAbiSdks)
+    stagedSdkDirectory.from(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })
+    outputDirectory.set(layout.buildDirectory.dir("native-wrapper-package-assets"))
+}
+
+val nativeWrapperBindingRoot = rootProject.layout.projectDirectory.dir(
+    "codex-agent-runtime-desktop/bindings",
+)
+val nativeWrapperPackageSourceTasks = mapOf(
+    "python" to listOf("build/**", "dist/**", "**/__pycache__/**", "**/*.egg-info/**"),
+    "csharp" to listOf("artifacts/**", "**/bin/**", "**/obj/**"),
+    "rust" to listOf("target/**", "consumer/target/**"),
+    "cpp" to listOf("build*/**", "consumer/build*/**"),
+    "dart" to listOf("build/**", ".dart_tool/**", ".pub/**", "doc/**"),
+).mapValues { (language, excluded) ->
+    tasks.register<Sync>("prepare${language.replaceFirstChar(Char::uppercase)}NativeWrapperPackageSource") {
+        group = "distribution"
+        description = "Prepares the $language wrapper package source with verified native SDK bytes."
+        dependsOn(materializeNativeWrapperPackageAssets)
+        duplicatesStrategy = DuplicatesStrategy.FAIL
+        from(nativeWrapperBindingRoot.dir(language)) { exclude(excluded) }
+        from(materializeNativeWrapperPackageAssets.flatMap { it.outputDirectory.dir(language) })
+        into(layout.buildDirectory.dir("native-wrapper-package-sources/$language"))
+    }
+}
+tasks.register("prepareNativeWrapperPackageSources") {
+    group = "distribution"
+    description = "Prepares all native wrapper package sources from the verified five-host SDK staging."
+    dependsOn(nativeWrapperPackageSourceTasks.values)
+}
+
+val nativeWrapperReleaseDirectory = providers.gradleProperty("codexAgent.nativeWrapperReleaseDirectory")
+    .map(::file)
+val nativeWrapperHostEvidenceDirectory = providers.gradleProperty(
+    "codexAgent.nativeWrapperHostEvidenceDirectory",
+).map(::file)
+val nativeWrapperApiReport = providers.gradleProperty("codexAgent.nativeWrapperApiReport").map(::file)
+val nativeWrapperCoverageReceipt = providers.gradleProperty(
+    "codexAgent.nativeWrapperCoverageReceipt",
+).map(::file)
+val nativeWrapperBootstrapEvidence = providers.gradleProperty(
+    "codexAgent.nativeWrapperBootstrapEvidence",
+).map(::file)
+val nativeWrapperReceiptTasks: Map<String, TaskProvider<out Task>> = listOf(
+    Triple("Python", "python", "M9_PYTHON"),
+    Triple("CSharp", "csharp", "M9_CSHARP"),
+    Triple("Rust", "rust", "M9_RUST"),
+    Triple("Cpp", "cpp", "M9_CPP"),
+    Triple("Dart", "dart", "M9_DART"),
+).associate { (title, language, phase) ->
+    language to tasks.register<GenerateCrossLanguageNativeWrapperBindingReceiptTask>(
+        "verify${title}BindingParity",
+    ) {
+        group = "verification"
+        description = "Verifies exact compiler, behavior, package, and five-host $language binding parity."
+        this.phase.set(phase)
+        this.language.set(language)
+        apiReport.set(layout.file(nativeWrapperApiReport))
+        canonicalCoverageReceipt.set(layout.file(nativeWrapperCoverageReceipt))
+        cAbiBootstrapEvidence.set(layout.file(nativeWrapperBootstrapEvidence))
+        claims.set(nativeWrapperBindingRoot.file("$language/parity/capability-claims.tsv"))
+        compilerEvidence.set(layout.file(nativeWrapperReleaseDirectory.map {
+            it.resolve("evidence/$language/compiler-evidence.tsv")
+        }))
+        testProgram.set(layout.file(nativeWrapperReleaseDirectory.map {
+            it.resolve("evidence/$language/test-program")
+        }))
+        testResults.set(layout.file(nativeWrapperReleaseDirectory.map {
+            it.resolve("evidence/$language/executed-tests.tsv")
+        }))
+        packageArtifacts.set(layout.dir(nativeWrapperReleaseDirectory.map { it.resolve("packages/$language") }))
+        hostEvidenceDirectory.set(layout.dir(nativeWrapperHostEvidenceDirectory.map { it.resolve(language) }))
+        stagedCAbiSdks.set(layout.dir(nativeWrapperReleaseDirectory.map { it.resolve("sdks") }))
+        receipt.set(layout.buildDirectory.file(
+            "reports/cross-language-api/bindings/$language-parity.json",
+        ))
+    }
+}
+tasks.register("verifyNativeWrapperBindingParity") {
+    group = "verification"
+    description = "Runs native-wrapper parity when authoritative five-host evidence is supplied."
+    val inputs = listOf(
+        nativeWrapperReleaseDirectory,
+        nativeWrapperHostEvidenceDirectory,
+        nativeWrapperApiReport,
+        nativeWrapperCoverageReceipt,
+        nativeWrapperBootstrapEvidence,
+    )
+    if (inputs.any { it.isPresent }) {
+        check(inputs.all { it.isPresent }) {
+            "Native-wrapper parity requires release, host, API, coverage, and bootstrap evidence together"
+        }
+        dependsOn(nativeWrapperReceiptTasks.values)
     }
 }
 

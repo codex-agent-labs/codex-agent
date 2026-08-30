@@ -525,7 +525,7 @@ internal fun crossLanguageCAbiCapabilitySha256(capabilityKeys: List<String>): St
     capabilityKeys.sorted().joinToString(separator = "", transform = { "$it\n" })
         .byteInputStream().releaseDigest()
 
-private data class CAbiBindingBootstrapClaim(
+internal data class CAbiBindingBootstrapClaim(
     val capabilityKey: String,
     val headerReferences: List<String>,
     val consumerReferences: List<String>,
@@ -533,12 +533,12 @@ private data class CAbiBindingBootstrapClaim(
     val nativeTestIds: List<String>,
 )
 
-private data class CAbiBindingBootstrapTest(
+internal data class CAbiBindingBootstrapTest(
     val testId: String,
     val status: CrossLanguageBindingTestStatus,
 )
 
-private data class CAbiBindingBootstrapEvidence(
+internal data class CAbiBindingBootstrapEvidence(
     val apiReportSha256: String,
     val coverageReceiptSha256: String,
     val capabilityCount: Int,
@@ -553,7 +553,7 @@ private data class CAbiBindingBootstrapEvidence(
     val claims: List<CAbiBindingBootstrapClaim>,
 )
 
-private fun readCAbiBootstrapEvidence(file: File): CAbiBindingBootstrapEvidence {
+internal fun readCAbiBootstrapEvidence(file: File): CAbiBindingBootstrapEvidence {
     check(file.isFile && !Files.isSymbolicLink(file.toPath())) {
         "C ABI bootstrap evidence is missing, non-regular, or a symlink: $file"
     }

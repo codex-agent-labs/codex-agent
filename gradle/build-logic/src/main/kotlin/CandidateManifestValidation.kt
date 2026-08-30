@@ -20,7 +20,7 @@ internal fun verifyCandidateManifestStructure(manifest: JsonObject) {
     check(manifest.releaseBoolean("protectedCandidate")) { "Candidate is not technically protected" }
 
     val artifacts = manifest.releaseObject("artifacts")
-    check(artifacts.keys == setOf("swiftPackage", "centralBundles", "sbom")) {
+    check(artifacts.keys == setOf("swiftPackage", "centralBundles", "nativeWrapperPackages", "sbom")) {
         "Candidate artifact set is invalid"
     }
     val swift = artifacts.releaseObject("swiftPackage")
@@ -35,6 +35,12 @@ internal fun verifyCandidateManifestStructure(manifest: JsonObject) {
         "Promoted Central bundle set is invalid"
     }
     centralBundles.forEach(::verifyRecordShape)
+    val nativeWrapperPackages = promotedNativeWrapperPackageRecords(manifest)
+    check(nativeWrapperPackages.isNotEmpty() &&
+        nativeWrapperPackages.map { it.releaseString("fileName") }.let { it == it.sorted() && it.size == it.toSet().size }) {
+        "Promoted native-wrapper package set is invalid"
+    }
+    nativeWrapperPackages.forEach(::verifyRecordShape)
     val sbom = artifacts.releaseObject("sbom")
     verifyRecordShape(sbom)
     check(sbom.releaseString("fileName") == aggregateReleaseSbomFileName(version)) {
@@ -47,7 +53,7 @@ internal fun verifyCandidateManifestStructure(manifest: JsonObject) {
         "jvmRuntime", "jvmRuntimeRunner", "nodeRuntime", "nodeRuntimeRunner", "nodeWasmRuntime",
         "nodeWasmRuntimeRunner", "androidRuntime", "swiftPackageProof", "iosNativeTests",
         "iosDeviceRustProof", "iosSimulatorRustProof", "artifactMetrics", "iosRuntimeMetrics", "releaseTooling",
-        "crossLanguageM8",
+        "crossLanguageM11", "nativeWrapperPackageToolchains",
     )
     check(evidence.keys == expectedEvidence) { "Promoted candidate evidence set is invalid" }
     expectedEvidence.minus(candidateEvidenceArrayNames).forEach { name ->
@@ -107,7 +113,12 @@ internal fun verifyCandidateManifestStructure(manifest: JsonObject) {
         evidence, "androidRuntime", candidateFirebaseAndroidEvidenceFileNames.toSet(),
         requireValidationCommit = true,
     )
-    verifyEvidenceArray(evidence, "crossLanguageM8", crossLanguageM8EvidenceFileNames)
+    verifyEvidenceArray(evidence, "crossLanguageM11", crossLanguageM11EvidenceFileNames)
+    verifyEvidenceArray(
+        evidence,
+        "nativeWrapperPackageToolchains",
+        nativeWrapperBindings.map { "codex-agent-${it.id}-package-toolchain.tsv" }.toSet(),
+    )
 
     val policies = manifest.releaseObject("policies")
     check(policies.keys == setOf(
@@ -121,6 +132,11 @@ internal fun verifyCandidateManifestStructure(manifest: JsonObject) {
 internal fun promotedCentralBundleRecords(manifest: JsonObject): List<JsonObject> =
     manifest.releaseObject("artifacts").releaseArray("centralBundles").map { value ->
         value as? JsonObject ?: error("Invalid promoted Central bundle record")
+    }
+
+internal fun promotedNativeWrapperPackageRecords(manifest: JsonObject): List<JsonObject> =
+    manifest.releaseObject("artifacts").releaseArray("nativeWrapperPackages").map { value ->
+        value as? JsonObject ?: error("Invalid promoted native-wrapper package record")
     }
 
 internal fun promotedCentralBundleRecord(manifest: JsonObject, shard: String): JsonObject {
@@ -158,7 +174,7 @@ private fun verifyPromotedRustProofRecordShape(record: JsonObject) {
 
 internal val candidateEvidenceArrayNames = setOf(
     "desktopRuntime", "jvmRuntime", "nodeRuntime", "nodeWasmRuntime", "androidRuntime",
-    "crossLanguageM8",
+    "crossLanguageM11", "nativeWrapperPackageToolchains",
 )
 
 private fun verifyEvidenceArray(

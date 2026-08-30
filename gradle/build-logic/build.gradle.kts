@@ -100,6 +100,7 @@ val releaseToolingClasses = listOf(
     "CrossLanguageObligationStatus",
     "CrossLanguageProjectionClaim",
     "CrossLanguageScenarioEvidence",
+    "CrossLanguageNativeWrapper",
     "DeploymentTargetRecord",
     "DesktopClassifierInspectionKt",
     "DesktopClassifierProof",

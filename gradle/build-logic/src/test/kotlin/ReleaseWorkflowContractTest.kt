@@ -99,6 +99,7 @@ class ReleaseWorkflowContractTest {
         assertTrue("python3 ci/promote.py receipt" in promote)
         assertTrue("name: ${'$'}{{ matrix.promotedArtifactName }}" in promote)
         assertTrue("name: ${'$'}{{ needs.discover.outputs.promoted_aggregate }}" in promote)
+        assertTrue("name: codex-agent-promoted-native-wrapper-packages-${'$'}{{ github.sha }}" in promote)
         assertFalse("\nconcurrency:\n" in promote)
         val android = workflows.getValue("android-runtime-evidence.yml")
         assertTrue("MERGE_READY: ${'$'}{{ !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'merge-ready') }}" in android)
@@ -147,7 +148,9 @@ class ReleaseWorkflowContractTest {
         listOf(
             "canonical-api.json", "canonical-coverage.json", "kotlin-parity.json",
             "java-parity.json", "javascript-typescript-parity.json", "swift-parity.json",
-            "objective-c-parity.json", "c-abi-parity.json", "binding-obligations-m8.json",
+            "objective-c-parity.json", "c-abi-parity.json", "python-parity.json",
+            "csharp-parity.json", "rust-parity.json", "cpp-parity.json", "dart-parity.json",
+            "binding-obligations-m11.json",
         ).forEach { evidence ->
             assertEquals(1, aggregate.lineSequence().count {
                 "build/promotion/source/$evidence" in it
@@ -165,6 +168,10 @@ class ReleaseWorkflowContractTest {
         listOf(".path", ".event", ".head_branch", ".head_sha", ".head_repository.full_name", ".conclusion", ".run_attempt")
             .forEach { assertTrue(it in resolver, it) }
         assertTrue("name: codex-agent-promoted-validation-${'$'}{{ needs.identity.outputs.candidate_commit }}" in candidate)
+        assertTrue(
+            "name: codex-agent-promoted-native-wrapper-packages-${'$'}{{ needs.identity.outputs.candidate_commit }}" in
+                candidate,
+        )
         assertFalse("pattern: codex-agent-promoted-*" in candidate)
         assertFalse("promoted-inventories" in candidate)
         listOf(
@@ -390,7 +397,9 @@ class ReleaseWorkflowContractTest {
             "central-deployment.json|${'$'}RECORD",
         ).forEach { asset -> assertTrue(asset in publish, asset) }
         assertTrue("release_json=${'$'}(gh api" in publish)
-        assertTrue("test \"${'$'}(jq '.assets | length' <<<\"${'$'}release_json\")\" -eq 5" in publish)
+        assertTrue("NATIVE_WRAPPER_ASSETS: ${'$'}{{ steps.candidate.outputs.nativeWrapperAssets }}" in publish)
+        assertTrue("\"${'$'}PAYLOAD/candidate-manifest.json\" \"${'$'}{native_paths[@]}\"" in publish)
+        assertTrue("5 + ${'$'}{#native_assets[@]}" in publish)
         assertTrue("test \"${'$'}asset_count\" -eq 1" in publish)
         assertTrue("test \"${'$'}api_digest\" = \"${'$'}expected_digest\"" in publish)
     }

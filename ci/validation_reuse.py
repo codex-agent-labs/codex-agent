@@ -10,6 +10,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from impact import NATIVE_WRAPPER_LANES
 from receipt import required_lanes, safe_extract
 from reuse import download_artifact, paginated_items, run_matches_pr
 
@@ -26,6 +27,23 @@ M8_FILES = {
     "c-abi-parity.json",
     "binding-obligations-m8.json",
 }
+M11_FILES = {
+    "canonical-api.json",
+    "canonical-coverage.json",
+    "kotlin-parity.json",
+    "java-parity.json",
+    "javascript-typescript-parity.json",
+    "swift-parity.json",
+    "objective-c-parity.json",
+    "c-abi-parity.json",
+    "python-parity.json",
+    "csharp-parity.json",
+    "rust-parity.json",
+    "cpp-parity.json",
+    "dart-parity.json",
+    "binding-obligations-m11.json",
+}
+NATIVE_WRAPPER_LANGUAGES = {"python", "csharp", "rust", "cpp", "dart"}
 
 
 def exact_files(root: Path) -> set[str]:
@@ -35,12 +53,28 @@ def exact_files(root: Path) -> set[str]:
     if any(not entry.is_file() or entry.is_symlink() for entry in entries):
         raise ValueError("Reusable validation artifact must contain only root regular files")
     actual = {entry.name for entry in entries}
-    if actual not in (BASE_FILES, BASE_FILES | M8_FILES):
+    if actual not in (BASE_FILES, BASE_FILES | M8_FILES, BASE_FILES | M11_FILES):
         raise ValueError(
             f"Reusable validation file set mismatch: expected={sorted(BASE_FILES)} or "
-            f"{sorted(BASE_FILES | M8_FILES)} actual={sorted(actual)}"
+            f"{sorted(BASE_FILES | M8_FILES)} or {sorted(BASE_FILES | M11_FILES)} "
+            f"actual={sorted(actual)}"
         )
     return actual
+
+
+def validate_native_wrapper_release(root: Path) -> None:
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("Reusable native-wrapper release root is unsafe")
+    entries = list(root.iterdir())
+    if {entry.name for entry in entries} != {"packages", "evidence", "sdks"} or any(
+        not entry.is_dir() or entry.is_symlink() for entry in entries
+    ):
+        raise ValueError("Reusable native-wrapper release root is incomplete or unexpected")
+    languages = list((root / "packages").iterdir())
+    if {entry.name for entry in languages} != NATIVE_WRAPPER_LANGUAGES or any(
+        not entry.is_dir() or entry.is_symlink() or not any(entry.iterdir()) for entry in languages
+    ):
+        raise ValueError("Reusable native-wrapper package language set is incomplete or unsafe")
 
 
 def validate(root: Path, current_plan: Path) -> dict[str, object]:
@@ -63,6 +97,13 @@ def validate(root: Path, current_plan: Path) -> dict[str, object]:
         raise ValueError("Reusable PR impact plan schema mismatch")
     if source_plan["lanes"].get("ios-swift-tests", {}).get("test") is True and files == BASE_FILES:
         raise ValueError("Reusable PR validation lacks required M8 binding evidence")
+    native_wrappers_required = all(
+        source_plan["lanes"].get(lane, {}).get("build") is True
+        and source_plan["lanes"].get(lane, {}).get("test") is True
+        for lane in NATIVE_WRAPPER_LANES
+    )
+    if native_wrappers_required and files != BASE_FILES | M11_FILES:
+        raise ValueError("Reusable PR validation lacks required M11 native-wrapper evidence")
     if receipt["event"] != "pull_request" or source_plan.get("event") != "pull_request":
         raise ValueError("Only authoritative PR validation may satisfy an identical merge group")
     if (
@@ -116,8 +157,9 @@ def materialize(root: Path, current_plan: Path, output: Path) -> None:
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if exact_files(root) == BASE_FILES | M8_FILES:
-        for name in M8_FILES:
+    files = exact_files(root)
+    if files in (BASE_FILES | M8_FILES, BASE_FILES | M11_FILES):
+        for name in files - BASE_FILES:
             shutil.copy2(root / name, output.parent / name)
 
 
@@ -126,6 +168,8 @@ def discover(plan_path: Path, destination: Path, token: str, api_url: str) -> di
     repository = plan["repository"]
     wanted = f"codex-agent-ci-validation-{plan['validationTree']}"
     candidate = destination.with_name(f"{destination.name}.candidate")
+    native_destination = destination.with_name("reused-native-wrapper-release")
+    native_candidate = native_destination.with_name(f"{native_destination.name}.candidate")
     try:
         runs = paginated_items(
             f"{api_url}/repos/{repository}/actions/workflows/ci.yml/runs?event=pull_request&status=completed",
@@ -159,9 +203,29 @@ def discover(plan_path: Path, destination: Path, token: str, api_url: str) -> di
                         shutil.rmtree(candidate)
                     safe_extract(Path(archive.name), candidate)
                 validate(candidate, plan_path)
+                if exact_files(candidate) == BASE_FILES | M11_FILES:
+                    native_name = f"codex-agent-native-wrapper-packages-{plan['validationTree']}"
+                    native_artifact = next(
+                        (item for item in artifacts if item.get("name") == native_name and not item.get("expired")),
+                        None,
+                    )
+                    if native_artifact is None:
+                        continue
+                    native_bytes = download_artifact(native_artifact, token)
+                    with tempfile.NamedTemporaryFile(suffix=".zip") as archive:
+                        archive.write(native_bytes)
+                        archive.flush()
+                        if native_candidate.exists():
+                            shutil.rmtree(native_candidate)
+                        safe_extract(Path(archive.name), native_candidate)
+                    validate_native_wrapper_release(native_candidate)
                 if destination.exists():
                     shutil.rmtree(destination)
                 candidate.rename(destination)
+                if native_candidate.exists():
+                    if native_destination.exists():
+                        shutil.rmtree(native_destination)
+                    native_candidate.rename(native_destination)
                 return {
                     "reused": True,
                     "sourceRunId": int(run["id"]),
@@ -169,11 +233,15 @@ def discover(plan_path: Path, destination: Path, token: str, api_url: str) -> di
                     "artifactName": wanted,
                 }
             except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+                if native_candidate.exists():
+                    shutil.rmtree(native_candidate)
                 continue
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         pass
     if candidate.exists():
         shutil.rmtree(candidate)
+    if native_candidate.exists():
+        shutil.rmtree(native_candidate)
     return {"reused": False}
 
 

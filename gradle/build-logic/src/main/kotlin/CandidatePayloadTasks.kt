@@ -58,6 +58,11 @@ internal fun verifyCandidatePayload(
                 add(JsonPrimitive(record.releaseString("fileName")))
             }
         })
+        put("nativeWrapperAssets", buildJsonArray {
+            promotedNativeWrapperPackageRecords(manifest).forEach { record ->
+                add(JsonPrimitive(record.releaseString("fileName")))
+            }
+        })
         put("sbomAsset", JsonPrimitive(artifacts.releaseObject("sbom").releaseString("fileName")))
     }
 }
@@ -66,6 +71,7 @@ internal fun candidatePayloadRecords(manifest: JsonObject): List<JsonObject> = b
     val artifacts = manifest.releaseObject("artifacts")
     add(artifacts.releaseObject("swiftPackage"))
     promotedCentralBundleRecords(manifest).forEach(::add)
+    promotedNativeWrapperPackageRecords(manifest).forEach(::add)
     add(artifacts.releaseObject("sbom"))
     val evidence = manifest.releaseObject("evidence")
     evidence.filterKeys { it !in candidateEvidenceArrayNames }.values.forEach { add(it as JsonObject) }
@@ -86,12 +92,13 @@ private fun verifyPromotedCandidatePayload(
     val expectedTree = manifest.releaseString("candidateTree")
     val evidence = manifest.releaseObject("evidence")
     val artifacts = manifest.releaseObject("artifacts")
-    val crossLanguageM8Files = evidence.releaseArray("crossLanguageM8").associate { value ->
+    val crossLanguageM11Files = evidence.releaseArray("crossLanguageM11").associate { value ->
         val record = value.jsonObject
         val name = record.releaseString("fileName")
         name to safePayloadFile(payload, name)
     }
-    verifyCompleteCrossLanguageM8Evidence(crossLanguageM8Files)
+    verifyCompleteCrossLanguageM11Evidence(crossLanguageM11Files)
+    verifyTransportedNativeWrapperPackages(manifest, payload, crossLanguageM11Files)
     val promotion = safePayloadFile(payload, evidence.releaseObject("promotionReceipt").releaseString("fileName"))
         .readReleaseObject()
     check(promotion.releaseInt("schemaVersion") == 1 &&
@@ -235,6 +242,9 @@ private fun verifyPromotedCandidatePayload(
         expectedTree,
         mavenFile,
         swift,
+        promotedNativeWrapperPackageRecords(manifest).map { record ->
+            safePayloadFile(payload, record.releaseString("fileName"))
+        },
         safePayloadFile(payload, policies.releaseObject("desktopDistributionManifest").releaseString("fileName")),
         safePayloadFile(payload, policies.releaseObject("desktopBundledLicense").releaseString("fileName")),
         safePayloadFile(payload, policies.releaseObject("desktopBundledNotice").releaseString("fileName")),
@@ -244,6 +254,34 @@ private fun verifyPromotedCandidatePayload(
     }
     verifyPromotedIosEvidence(manifest, payload, expectedVersion, expectedCommit, expectedTree, swift, swiftChecksum)
     verifyPromotedRuntimeEvidence(manifest, payload, expectedVersion, mavenFile, centralBundle)
+}
+
+private fun verifyTransportedNativeWrapperPackages(
+    manifest: JsonObject,
+    payload: File,
+    crossLanguageM11Files: Map<String, File>,
+) {
+    val receipts = nativeWrapperBindings.associateWith { language ->
+        readCrossLanguageBindingReceipt(crossLanguageM11Files.getValue("${language.id}-parity.json"))
+    }
+    val expected = nativeWrapperM11PackageArtifacts(receipts).values.flatMap { it.values }
+    val packageRecords = promotedNativeWrapperPackageRecords(manifest)
+    val toolchainRecords = manifest.releaseObject("evidence").releaseArray("nativeWrapperPackageToolchains")
+        .map { it.jsonObject }
+    val actual = (packageRecords + toolchainRecords).associateBy { it.releaseString("fileName") }
+    check(actual.size == packageRecords.size + toolchainRecords.size &&
+        actual.keys == expected.map { File(it.id).name }.toSet()) {
+        "Transported native-wrapper candidate package set does not match M11 receipts"
+    }
+    expected.forEach { artifact ->
+        val name = File(artifact.id).name
+        val record = actual.getValue(name)
+        val file = safePayloadFile(payload, name)
+        verifyReleaseRecord(file, record)
+        check(record.releaseString("sha256") == artifact.sha256) {
+            "Transported native-wrapper package hash does not match M11 receipt: ${artifact.id}"
+        }
+    }
 }
 
 private fun verifyPromotedIosEvidence(
@@ -538,6 +576,7 @@ internal fun candidateGithubOutputs(result: JsonObject): String = buildString {
     append("releaseTag=").append(result.releaseString("releaseTag")).append('\n')
     append("swiftAsset=").append(result.releaseString("swiftAsset")).append('\n')
     append("centralBundles=").append(result.releaseArray("centralBundles")).append('\n')
+    append("nativeWrapperAssets=").append(result.releaseArray("nativeWrapperAssets")).append('\n')
     append("sbomAsset=").append(result.releaseString("sbomAsset")).append('\n')
 }
 

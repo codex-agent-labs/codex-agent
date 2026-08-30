@@ -18,15 +18,16 @@ sys.path.insert(0, str(CI_ROOT))
 
 from impact import LANES  # noqa: E402
 from promote import (  # noqa: E402
-    M8_VALIDATION_FILES,
+    M11_VALIDATION_FILES,
     PROMOTED_VALIDATION_FILES,
     already_promoted,
     create_promotion_receipt,
     discover,
     predecessor_promotion_sources,
     selected_validation_run,
-    validate_source_artifacts,
     validate_lane,
+    validate_native_wrapper_packages,
+    validate_source_artifacts,
     wait_for_predecessor_promotion,
 )
 from receipt import INPUT_NAMES, aggregate, create_receipt, safe_extract  # noqa: E402
@@ -113,11 +114,40 @@ class PromotionTest(unittest.TestCase):
         ))
         self.plan_zip = self.zip_tree(self.plan_root, self.root / "plan.zip")
         self.aggregate_zip = self.root / "aggregate.zip"
-        self.m8_root = self.root / "m8"
-        self.m8_root.mkdir()
-        for name in M8_VALIDATION_FILES:
-            self.write_json(self.m8_root / name, {"artifact": name})
-        self.rebuild_aggregate_zip(M8_VALIDATION_FILES)
+        self.m11_root = self.root / "m11"
+        self.m11_root.mkdir()
+        for name in M11_VALIDATION_FILES:
+            self.write_json(self.m11_root / name, {"artifact": name})
+        self.native_wrapper_root = self.root / "native-wrapper-release"
+        for language in ("python", "csharp", "rust", "cpp", "dart"):
+            (self.native_wrapper_root / "packages" / language).mkdir(parents=True, exist_ok=True)
+            package = self.native_wrapper_root / "packages" / language / f"{language}.package"
+            package.write_text(language, encoding="utf-8")
+            toolchain = (
+                self.native_wrapper_root / "packages" / language /
+                f"codex-agent-{language}-package-toolchain.tsv"
+            )
+            toolchain.write_text("tool\tversion\ntest\t1\n", encoding="utf-8")
+            self.write_json(self.m11_root / f"{language}-parity.json", {
+                "schema": 4,
+                "result": "passed",
+                "phase": "M11",
+                "language": language,
+                "artifacts": [
+                    {
+                        "id": f"{language}-package/{path.name}",
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                    for path in sorted((package, toolchain))
+                ],
+            })
+        self.rebuild_aggregate_zip(M11_VALIDATION_FILES)
+        self.write_json(self.native_wrapper_root / "evidence/evidence.json", {"result": "passed"})
+        self.write_json(self.native_wrapper_root / "sdks/sdks.json", {"targets": 5})
+        self.native_wrapper_zip = self.zip_tree(
+            self.native_wrapper_root,
+            self.root / "native-wrapper-packages.zip",
+        )
         self.lane_zip = self.zip_tree(self.lane_root, self.root / "lane.zip")
         self.run = {
             "id": 71,
@@ -153,19 +183,19 @@ class PromotionTest(unittest.TestCase):
                     archive.write(path, path.relative_to(root))
         return destination
 
-    def rebuild_aggregate_zip(self, m8_names: set[str]) -> None:
+    def rebuild_aggregate_zip(self, m11_names: set[str]) -> None:
         with zipfile.ZipFile(self.aggregate_zip, "w") as archive:
             archive.write(self.plan_path, "impact-plan.json")
             archive.write(self.aggregate_path, "validation-receipt.json")
-            for name in sorted(m8_names):
-                archive.write(self.m8_root / name, name)
+            for name in sorted(m11_names):
+                archive.write(self.m11_root / name, name)
 
-    def aggregate_fixture(self, destination: Path, m8_names: set[str]) -> Path:
+    def aggregate_fixture(self, destination: Path, m11_names: set[str]) -> Path:
         destination.mkdir()
         shutil.copyfile(self.plan_path, destination / "impact-plan.json")
         shutil.copyfile(self.aggregate_path, destination / "validation-receipt.json")
-        for name in m8_names:
-            shutil.copyfile(self.m8_root / name, destination / name)
+        for name in m11_names:
+            shutil.copyfile(self.m11_root / name, destination / name)
         return destination
 
     @staticmethod
@@ -186,6 +216,12 @@ class PromotionTest(unittest.TestCase):
                 "archive_download_url": "https://example.invalid/aggregate.zip",
                 "digest": self.digest(self.aggregate_zip),
             },
+            f"codex-agent-native-wrapper-packages-{self.final_tree}": {
+                "id": 3,
+                "name": f"codex-agent-native-wrapper-packages-{self.final_tree}",
+                "archive_download_url": "https://example.invalid/native-wrapper-packages.zip",
+                "digest": self.digest(self.native_wrapper_zip),
+            },
         }
         result.update({
             f"codex-agent-ci-{lane}-{self.final_tree}": {
@@ -203,6 +239,7 @@ class PromotionTest(unittest.TestCase):
             "https://example.invalid/plan.zip": self.plan_zip.read_bytes(),
             "https://example.invalid/aggregate.zip": self.aggregate_zip.read_bytes(),
             "https://example.invalid/lane.zip": self.lane_zip.read_bytes(),
+            "https://example.invalid/native-wrapper-packages.zip": self.native_wrapper_zip.read_bytes(),
         }
         return values[url]
 
@@ -256,10 +293,10 @@ class PromotionTest(unittest.TestCase):
         self.assertEqual(71, promotion_receipt["validationRunId"])
         self.assertEqual(41, promotion_receipt["lanes"]["android"]["sourceRunId"])
 
-    def test_source_validation_accepts_only_exact_base_or_complete_m8_root_sets(self) -> None:
+    def test_source_validation_accepts_only_exact_base_or_complete_m11_root_sets(self) -> None:
         plan_root = self.root / "validated-plan"
         shutil.copytree(self.plan_root, plan_root)
-        for label, names in (("base", set()), ("m8", M8_VALIDATION_FILES)):
+        for label, names in (("base", set()), ("m11", M11_VALIDATION_FILES)):
             with self.subTest(label=label):
                 result = validate_source_artifacts(
                     plan_root,
@@ -275,19 +312,19 @@ class PromotionTest(unittest.TestCase):
         shutil.copytree(self.plan_root, plan_root)
         fixtures = {
             "partial": self.aggregate_fixture(
-                self.root / "aggregate-partial", {next(iter(M8_VALIDATION_FILES))}
+                self.root / "aggregate-partial", {next(iter(M11_VALIDATION_FILES))}
             ),
-            "extra": self.aggregate_fixture(self.root / "aggregate-extra", M8_VALIDATION_FILES),
+            "extra": self.aggregate_fixture(self.root / "aggregate-extra", M11_VALIDATION_FILES),
             "nested": self.aggregate_fixture(self.root / "aggregate-nested", set()),
-            "symlink": self.aggregate_fixture(self.root / "aggregate-symlink", M8_VALIDATION_FILES),
+            "symlink": self.aggregate_fixture(self.root / "aggregate-symlink", M11_VALIDATION_FILES),
         }
         (fixtures["extra"] / "unexpected.json").write_text("{}\n", encoding="utf-8")
         nested = fixtures["nested"] / "nested"
         nested.mkdir()
-        shutil.copyfile(self.m8_root / "canonical-api.json", nested / "canonical-api.json")
+        shutil.copyfile(self.m11_root / "canonical-api.json", nested / "canonical-api.json")
         symlink = fixtures["symlink"] / "canonical-api.json"
         symlink.unlink()
-        symlink.symlink_to(self.m8_root / "canonical-api.json")
+        symlink.symlink_to(self.m11_root / "canonical-api.json")
         for label, root in fixtures.items():
             with self.subTest(label=label), self.assertRaisesRegex(
                 ValueError, "missing, partial, nested, or unexpected"
@@ -300,10 +337,25 @@ class PromotionTest(unittest.TestCase):
                     self.final_tree,
                 )
 
-    def test_missing_current_m8_bundle_fails_when_any_owner_lane_is_active(self) -> None:
+    def test_native_wrapper_packages_are_bound_exactly_to_m11_receipts(self) -> None:
+        packages = self.native_wrapper_root / "packages"
+        validate_native_wrapper_packages(packages, self.m11_root)
+        for label, mutate in (
+            ("missing", lambda root: (root / "python/python.package").unlink()),
+            ("extra", lambda root: (root / "csharp/unexpected.bin").write_text("x")),
+            ("tampered", lambda root: (root / "rust/rust.package").write_text("tampered")),
+        ):
+            with self.subTest(label=label):
+                changed = self.root / f"native-wrapper-{label}"
+                shutil.copytree(packages, changed)
+                mutate(changed)
+                with self.assertRaisesRegex(ValueError, "package bytes do not match"):
+                    validate_native_wrapper_packages(changed, self.m11_root)
+
+    def test_missing_current_m11_bundle_fails_when_any_owner_lane_is_active(self) -> None:
         self.rebuild_aggregate_zip(set())
-        with self.assertRaisesRegex(ValueError, "M8 bundle while owner lanes are active"):
-            self.discover(self.root / "active-without-m8")
+        with self.assertRaisesRegex(ValueError, "M11 bundle while owner lanes are active"):
+            self.discover(self.root / "active-without-m11")
 
     def test_full_initial_promotion_does_not_wait_for_a_predecessor(self) -> None:
         with (
@@ -344,16 +396,18 @@ class PromotionTest(unittest.TestCase):
             }
             for lane in absent
         }
-        def carried_with_m8(*arguments, **_keywords):
-            destination = arguments[-1]
+        def carried_with_m11(*arguments, **_keywords):
+            destination = arguments[-2]
+            native_destination = arguments[-1]
             destination.mkdir(parents=True)
-            for name in M8_VALIDATION_FILES:
-                shutil.copyfile(self.m8_root / name, destination / name)
+            for name in M11_VALIDATION_FILES:
+                shutil.copyfile(self.m11_root / name, destination / name)
+            shutil.copytree(self.native_wrapper_root / "packages", native_destination)
             return carried
 
         with (
             patch("promote.immediate_first_parent", return_value=predecessor) as first_parent,
-            patch("promote.wait_for_predecessor_promotion", side_effect=carried_with_m8) as wait,
+            patch("promote.wait_for_predecessor_promotion", side_effect=carried_with_m11) as wait,
         ):
             self.discover(self.root / "incremental")
         first_parent.assert_called_once_with(API_URL, REPOSITORY, self.final_commit, "token")
@@ -361,11 +415,11 @@ class PromotionTest(unittest.TestCase):
         self.assertEqual(self.final_commit, wait.call_args.args[3])
         self.assertEqual(absent, wait.call_args.args[5])
         self.assertEqual(
-            M8_VALIDATION_FILES,
+            M11_VALIDATION_FILES,
             {
                 path.name
                 for path in (self.root / "incremental/source").iterdir()
-                if path.name in M8_VALIDATION_FILES
+                if path.name in M11_VALIDATION_FILES
             },
         )
         promotion = json.loads(
@@ -491,6 +545,10 @@ class PromotionTest(unittest.TestCase):
         ))
         promoted_zip = self.zip_tree(output / "source", self.root / "promoted.zip")
         inventory_zip = self.zip_tree(output / "plan", self.root / "promoted-inventories.zip")
+        promoted_native_zip = self.zip_tree(
+            output / "native-wrapper-packages",
+            self.root / "promoted-native-wrapper-packages.zip",
+        )
         with zipfile.ZipFile(promoted_zip) as archive:
             self.assertEqual(PROMOTED_VALIDATION_FILES, set(archive.namelist()))
         promoted_aggregate = f"codex-agent-promoted-validation-{self.final_commit}"
@@ -507,6 +565,12 @@ class PromotionTest(unittest.TestCase):
                 "name": promoted_inventories,
                 "archive_download_url": "https://example.invalid/promoted-inventories.zip",
                 "digest": self.digest(inventory_zip),
+            },
+            f"codex-agent-promoted-native-wrapper-packages-{self.final_commit}": {
+                "id": 13,
+                "name": f"codex-agent-promoted-native-wrapper-packages-{self.final_commit}",
+                "archive_download_url": "https://example.invalid/promoted-native-wrapper-packages.zip",
+                "digest": self.digest(promoted_native_zip),
             },
         }
         artifacts.update({
@@ -525,6 +589,8 @@ class PromotionTest(unittest.TestCase):
                 side_effect=lambda url, _token: (
                     inventory_zip.read_bytes()
                     if url.endswith("promoted-inventories.zip")
+                    else promoted_native_zip.read_bytes()
+                    if url.endswith("promoted-native-wrapper-packages.zip")
                     else promoted_zip.read_bytes()
                 ),
             ),
@@ -557,6 +623,10 @@ class PromotionTest(unittest.TestCase):
         ))
         promoted_zip = self.zip_tree(output / "source", self.root / "prior.zip")
         inventory_zip = self.zip_tree(output / "plan", self.root / "prior-inventories.zip")
+        promoted_native_zip = self.zip_tree(
+            output / "native-wrapper-packages",
+            self.root / "prior-native-wrapper-packages.zip",
+        )
         artifacts = {
             f"codex-agent-promoted-validation-{self.final_commit}": {
                 "id": 11,
@@ -570,6 +640,12 @@ class PromotionTest(unittest.TestCase):
                 "archive_download_url": "https://example.invalid/prior-inventories.zip",
                 "digest": self.digest(inventory_zip),
             },
+            f"codex-agent-promoted-native-wrapper-packages-{self.final_commit}": {
+                "id": 13,
+                "name": f"codex-agent-promoted-native-wrapper-packages-{self.final_commit}",
+                "archive_download_url": "https://example.invalid/prior-native-wrapper-packages.zip",
+                "digest": self.digest(promoted_native_zip),
+            },
         }
         artifacts.update({
             f"codex-agent-promoted-{lane}-{self.final_commit}": {
@@ -580,7 +656,8 @@ class PromotionTest(unittest.TestCase):
             for index, lane in enumerate(LANES)
         })
         requested = {"consumer-common", "ios-package"}
-        carried_m8 = self.root / "carried-m8"
+        carried_m11 = self.root / "carried-m11"
+        carried_native = self.root / "carried-native-wrapper-packages"
         with (
             patch("promote.workflow_runs", return_value=[prior_run]),
             patch("promote.artifacts_for_run", return_value=artifacts),
@@ -590,6 +667,8 @@ class PromotionTest(unittest.TestCase):
                 side_effect=lambda url, _token: (
                     inventory_zip.read_bytes()
                     if url.endswith("prior-inventories.zip")
+                    else promoted_native_zip.read_bytes()
+                    if url.endswith("prior-native-wrapper-packages.zip")
                     else promoted_zip.read_bytes()
                 ),
             ),
@@ -602,20 +681,25 @@ class PromotionTest(unittest.TestCase):
                 output / "plan/impact-plan.json",
                 requested,
                 "token",
-                carried_m8,
+                carried_m11,
+                carried_native,
             )
         self.assertEqual(requested, set(carried))
         self.assertTrue(all(item["sourceKind"] == "promotion" for item in carried.values()))
         self.assertTrue(all(item["sourceRunId"] == 81 for item in carried.values()))
-        self.assertEqual(M8_VALIDATION_FILES, {path.name for path in carried_m8.iterdir()})
-        for name in M8_VALIDATION_FILES:
-            self.assertEqual((output / "source" / name).read_bytes(), (carried_m8 / name).read_bytes())
+        self.assertEqual(M11_VALIDATION_FILES, {path.name for path in carried_m11.iterdir()})
+        for name in M11_VALIDATION_FILES:
+            self.assertEqual((output / "source" / name).read_bytes(), (carried_m11 / name).read_bytes())
+        self.assertEqual(
+            {"python", "csharp", "rust", "cpp", "dart"},
+            {path.name for path in carried_native.iterdir()},
+        )
 
         (output / "plan/inventories/contracts/metadata-inputs.git-tree").write_text(
             "different M8 owner inventory\n",
             encoding="utf-8",
         )
-        rejected_m8 = self.root / "rejected-m8"
+        rejected_m11 = self.root / "rejected-m11"
         with (
             patch("promote.workflow_runs", return_value=[prior_run]),
             patch("promote.artifacts_for_run", return_value=artifacts),
@@ -625,6 +709,8 @@ class PromotionTest(unittest.TestCase):
                 side_effect=lambda url, _token: (
                     inventory_zip.read_bytes()
                     if url.endswith("prior-inventories.zip")
+                    else promoted_native_zip.read_bytes()
+                    if url.endswith("prior-native-wrapper-packages.zip")
                     else promoted_zip.read_bytes()
                 ),
             ),
@@ -638,9 +724,10 @@ class PromotionTest(unittest.TestCase):
                 output / "plan/impact-plan.json",
                 requested,
                 "token",
-                rejected_m8,
+                rejected_m11,
+                self.root / "rejected-native-wrapper-packages",
             )
-        self.assertFalse(rejected_m8.exists())
+        self.assertFalse(rejected_m11.exists())
 
         carried_plan_path = output / "carried-plan.json"
         carried_plan = json.loads((output / "promotion-plan.json").read_text(encoding="utf-8"))

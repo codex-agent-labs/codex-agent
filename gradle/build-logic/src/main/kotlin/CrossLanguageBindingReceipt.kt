@@ -9,7 +9,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 
-internal const val CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA = 3
+internal const val CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA = 4
 
 internal data class CrossLanguageBindingCanonicalIdentity(
     val apiReportSha256: String,
@@ -19,6 +19,20 @@ internal data class CrossLanguageBindingCanonicalIdentity(
 internal data class CrossLanguageBindingArtifactIdentity(
     val id: String,
     val sha256: String,
+)
+
+internal data class CrossLanguageBindingHostConsumerProof(
+    val classifier: String,
+    val runnerOs: String,
+    val runnerArch: String,
+    val toolchainIdentitySha256: String,
+    val packageArtifactId: String,
+    val packageSha256: String,
+    val nativeLibrarySha256: String,
+    val testId: String,
+    val status: CrossLanguageBindingTestStatus,
+    val candidateCommit: String,
+    val candidateTree: String,
 )
 
 internal data class CrossLanguageBindingReceipt(
@@ -33,6 +47,7 @@ internal data class CrossLanguageBindingReceipt(
     val scenarioEvidence: List<CrossLanguageScenarioEvidence>,
     val projectionClaims: List<CrossLanguageProjectionClaim>,
     val applicabilityExclusions: List<CrossLanguageApplicabilityExclusion>,
+    val hostConsumerProofs: List<CrossLanguageBindingHostConsumerProof> = emptyList(),
 )
 
 internal fun writeCrossLanguageBindingReceipt(
@@ -89,6 +104,23 @@ internal fun CrossLanguageBindingReceipt.toJson(): JsonObject {
                 })
             }
         })
+        put("hostConsumerProofs", buildJsonArray {
+            receipt.hostConsumerProofs.forEach { proof ->
+                add(buildJsonObject {
+                    put("classifier", JsonPrimitive(proof.classifier))
+                    put("runnerOs", JsonPrimitive(proof.runnerOs))
+                    put("runnerArch", JsonPrimitive(proof.runnerArch))
+                    put("toolchainIdentitySha256", JsonPrimitive(proof.toolchainIdentitySha256))
+                    put("packageArtifactId", JsonPrimitive(proof.packageArtifactId))
+                    put("packageSha256", JsonPrimitive(proof.packageSha256))
+                    put("nativeLibrarySha256", JsonPrimitive(proof.nativeLibrarySha256))
+                    put("testId", JsonPrimitive(proof.testId))
+                    put("status", JsonPrimitive(proof.status.name.lowercase()))
+                    put("candidateCommit", JsonPrimitive(proof.candidateCommit))
+                    put("candidateTree", JsonPrimitive(proof.candidateTree))
+                })
+            }
+        })
         put("testProgramSha256", JsonPrimitive(receipt.testProgramSha256))
         put("testResultsSha256", JsonPrimitive(receipt.testResultsSha256))
         put("publicSymbols", receipt.publicSymbols.toJsonArray())
@@ -132,7 +164,7 @@ internal fun CrossLanguageBindingReceipt.toJson(): JsonObject {
 private fun JsonObject.toCrossLanguageBindingReceipt(): CrossLanguageBindingReceipt {
     requireKeys(
         "receipt",
-        "schema", "result", "phase", "language", "canonical", "artifacts",
+        "schema", "result", "phase", "language", "canonical", "artifacts", "hostConsumerProofs",
         "testProgramSha256", "testResultsSha256", "publicSymbols", "tests", "scenarios",
         "claims", "exclusions",
     )
@@ -148,6 +180,31 @@ private fun JsonObject.toCrossLanguageBindingReceipt(): CrossLanguageBindingRece
         ?: error("Unknown cross-language binding language: $languageId")
     val canonicalObject = exactObject("canonical").also {
         it.requireKeys("canonical identity", "apiReportSha256", "coverageReceiptSha256")
+    }
+    val hostConsumerProofs = exactArray("hostConsumerProofs").map { value ->
+        val proof = value.exactObject("binding host consumer proof")
+        proof.requireKeys(
+            "binding host consumer proof",
+            "classifier", "runnerOs", "runnerArch", "toolchainIdentitySha256", "packageArtifactId",
+            "packageSha256", "nativeLibrarySha256", "testId", "status", "candidateCommit", "candidateTree",
+        )
+        val statusId = proof.exactString("status")
+        val status = CrossLanguageBindingTestStatus.entries.singleOrNull {
+            it.name.lowercase() == statusId
+        } ?: error("Unknown cross-language binding host consumer status: $statusId")
+        CrossLanguageBindingHostConsumerProof(
+            classifier = proof.exactString("classifier"),
+            runnerOs = proof.exactString("runnerOs"),
+            runnerArch = proof.exactString("runnerArch"),
+            toolchainIdentitySha256 = proof.exactString("toolchainIdentitySha256"),
+            packageArtifactId = proof.exactString("packageArtifactId"),
+            packageSha256 = proof.exactString("packageSha256"),
+            nativeLibrarySha256 = proof.exactString("nativeLibrarySha256"),
+            testId = proof.exactString("testId"),
+            status = status,
+            candidateCommit = proof.exactString("candidateCommit"),
+            candidateTree = proof.exactString("candidateTree"),
+        )
     }
     val tests = exactArray("tests").map { value ->
         val test = value.exactObject("binding test")
@@ -213,6 +270,7 @@ private fun JsonObject.toCrossLanguageBindingReceipt(): CrossLanguageBindingRece
         scenarioEvidence = scenarios,
         projectionClaims = claims,
         applicabilityExclusions = exclusions,
+        hostConsumerProofs = hostConsumerProofs,
     )
 }
 
@@ -226,6 +284,46 @@ private fun CrossLanguageBindingReceipt.normalized(): CrossLanguageBindingReceip
     artifacts.forEach { artifact ->
         requireExactRecord(artifact.id, "binding artifact")
         requireSha256(artifact.sha256, "binding artifact ${artifact.id}")
+    }
+    val artifactDigests = artifacts.associate { it.id to it.sha256 }
+    val expectedHostProofs = crossLanguageCAbiTargetSpecs.values.associateBy {
+        it.classifier.removePrefix("c-abi-")
+    }
+    val nativeWrapper = language in nativeWrapperBindings
+    if (nativeWrapper) {
+        check(language.isActive(phase)) { "Native wrapper host proof language is inactive at ${phase.name}" }
+        check(hostConsumerProofs.map(CrossLanguageBindingHostConsumerProof::classifier).toSet() ==
+            expectedHostProofs.keys && hostConsumerProofs.size == expectedHostProofs.size) {
+            "Native wrapper receipt requires the exact five host consumer proofs"
+        }
+    } else check(hostConsumerProofs.isEmpty()) {
+        "Non-native binding receipt must not carry host consumer proofs"
+    }
+    requireUnique(hostConsumerProofs.map(CrossLanguageBindingHostConsumerProof::classifier), "host classifier")
+    requireUnique(hostConsumerProofs.map(CrossLanguageBindingHostConsumerProof::testId), "host consumer test")
+    hostConsumerProofs.forEach { proof ->
+        val spec = expectedHostProofs[proof.classifier]
+            ?: error("Unsupported native wrapper host classifier: ${proof.classifier}")
+        check(proof.runnerOs == spec.runnerOs && proof.runnerArch == spec.runnerArch) {
+            "Native wrapper host runner identity mismatch for ${proof.classifier}"
+        }
+        requireSha256(proof.toolchainIdentitySha256, "host toolchain identity ${proof.classifier}")
+        requireExactRecord(proof.packageArtifactId, "host package artifact ${proof.classifier}")
+        requireSha256(proof.packageSha256, "host package ${proof.classifier}")
+        requireSha256(proof.nativeLibrarySha256, "host native library ${proof.classifier}")
+        requireExactRecord(proof.testId, "host consumer test ${proof.classifier}")
+        check(proof.status == CrossLanguageBindingTestStatus.PASSED) {
+            "Native wrapper host consumer did not pass for ${proof.classifier}"
+        }
+        requireGitOid(proof.candidateCommit, "host candidate commit ${proof.classifier}")
+        requireGitOid(proof.candidateTree, "host candidate tree ${proof.classifier}")
+        check(artifactDigests[proof.packageArtifactId] == proof.packageSha256) {
+            "Native wrapper host package artifact mismatch for ${proof.classifier}"
+        }
+    }
+    check(hostConsumerProofs.map { it.candidateCommit }.distinct().size <= 1 &&
+        hostConsumerProofs.map { it.candidateTree }.distinct().size <= 1) {
+        "Native wrapper host proofs mix candidate identities"
     }
     requireUnique(publicSymbols, "binding public symbol")
     publicSymbols.forEach { requireExactRecord(it, "binding public symbol") }
@@ -317,6 +415,7 @@ private fun CrossLanguageBindingReceipt.normalized(): CrossLanguageBindingReceip
         applicabilityExclusions = applicabilityExclusions.sortedBy(
             CrossLanguageApplicabilityExclusion::capabilityKey,
         ),
+        hostConsumerProofs = hostConsumerProofs.sortedBy(CrossLanguageBindingHostConsumerProof::classifier),
     )
 }
 
@@ -363,6 +462,12 @@ private fun JsonObject.exactStrings(name: String): List<String> = exactArray(nam
 private fun requireSha256(value: String, label: String) {
     check(value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }) {
         "$label SHA-256 is not exact"
+    }
+}
+
+private fun requireGitOid(value: String, label: String) {
+    check(value.length == 40 && value.all { it in '0'..'9' || it in 'a'..'f' }) {
+        "$label is not an exact Git object ID"
     }
 }
 

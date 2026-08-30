@@ -10,7 +10,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 
-internal const val PROMOTED_CANDIDATE_SCHEMA = 15
+internal const val PROMOTED_CANDIDATE_SCHEMA = 16
 internal const val RELEASE_TOOLING_FILE_NAME = "codex-agent-release-tooling.jar"
 
 internal fun aggregateReleaseSbomFileName(version: String) = "codex-agent-$version.cdx.json"
@@ -22,6 +22,7 @@ internal fun buildAggregateReleaseSbom(
     tree: String,
     mavenInventory: File,
     swiftArchive: File,
+    nativeWrapperPackages: List<File>,
     desktopDistributionManifest: File,
     desktopBundledLicense: File,
     desktopBundledNotice: File,
@@ -31,6 +32,11 @@ internal fun buildAggregateReleaseSbom(
     }
     check(listOf(commit, tree).all { it.matches(Regex("[0-9a-f]{40}")) }) {
         "Aggregate SBOM Git identity is not immutable"
+    }
+    check(nativeWrapperPackages.isNotEmpty() &&
+        nativeWrapperPackages.map(File::getName).let { it.size == it.toSet().size } &&
+        nativeWrapperPackages.all { it.isFile && !Files.isSymbolicLink(it.toPath()) }) {
+        "Aggregate SBOM native-wrapper package inventory is invalid"
     }
     val maven = mavenInventory.readReleaseObject()
     check(maven.keys == setOf(
@@ -115,6 +121,21 @@ internal fun buildAggregateReleaseSbom(
             swiftArchive.releaseDigest(),
         )) })
     }
+    val nativeWrapperComponents = nativeWrapperPackages.sortedBy(File::getName).map { file ->
+        val digest = file.releaseDigest()
+        buildJsonObject {
+            put("type", JsonPrimitive("library"))
+            put("bom-ref", JsonPrimitive("urn:codex-agent:native-wrapper-package:$digest"))
+            put("name", JsonPrimitive(file.name))
+            put("version", JsonPrimitive(version))
+            put("hashes", hashes(digest))
+            put("licenses", license("GPL-3.0-or-later"))
+            put("externalReferences", buildJsonArray { add(distributionReference(
+                "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/$releaseTag/${file.name}",
+                digest,
+            )) })
+        }
+    }
     val desktopManifest = readDesktopCodexManifest(desktopDistributionManifest)
     check(desktopManifest.distributions.map(DesktopCodexDistributionSpec::target).toSet() ==
         desktopRuntimeEvidenceTargets.keys) { "Aggregate SBOM Desktop target set is invalid" }
@@ -142,7 +163,7 @@ internal fun buildAggregateReleaseSbom(
             ),
         ))
     }
-    val components = (mavenComponents + swiftComponent + codexComponent)
+    val components = (mavenComponents + swiftComponent + nativeWrapperComponents + codexComponent)
         .sortedBy { it.releaseString("bom-ref") }
     val componentRefs = components.map { it.releaseString("bom-ref") }
     check(componentRefs.size == componentRefs.toSet().size && rootRef !in componentRefs) {
@@ -171,6 +192,8 @@ internal fun buildAggregateReleaseSbom(
                 "io.github.codex-agent-labs.release.candidateTree" to tree,
                 "io.github.codex-agent-labs.release.desktopManifestSha256" to desktopDistributionManifest.releaseDigest(),
                 "io.github.codex-agent-labs.release.mavenInventorySha256" to mavenInventory.releaseDigest(),
+                "io.github.codex-agent-labs.release.nativeWrapperPackageCount" to
+                    nativeWrapperPackages.size.toString(),
                 "io.github.codex-agent-labs.release.swiftArchiveSha256" to swiftArchive.releaseDigest(),
             )))
         })
@@ -195,13 +218,15 @@ internal fun verifyAggregateReleaseSbom(
     tree: String,
     mavenInventory: File,
     swiftArchive: File,
+    nativeWrapperPackages: List<File>,
     desktopDistributionManifest: File,
     desktopBundledLicense: File,
     desktopBundledNotice: File,
 ) {
     check(sbom.name == aggregateReleaseSbomFileName(version)) { "Aggregate SBOM file name is invalid" }
     val expected = buildAggregateReleaseSbom(
-        version, releaseTag, commit, tree, mavenInventory, swiftArchive, desktopDistributionManifest,
+        version, releaseTag, commit, tree, mavenInventory, swiftArchive, nativeWrapperPackages,
+        desktopDistributionManifest,
         desktopBundledLicense, desktopBundledNotice,
     )
     val expectedText = releaseJson.encodeToString(JsonElement.serializer(), expected) + "\n"
@@ -365,6 +390,11 @@ internal data class TransportProducerIdentity(
     val tree: String,
 )
 
+private data class PromotedNativeWrapperPackages(
+    val packages: List<File>,
+    val toolchains: List<File>,
+)
+
 internal data class PromotedCandidateInputs(
     val promotedArtifacts: File,
     val signedMavenRepository: File,
@@ -414,12 +444,18 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         val validationFiles = validationEntries.associateBy { it.name }
         val expectedValidationFiles = setOf(
             "impact-plan.json", "validation-receipt.json", "promotion-receipt.json",
-        ) + crossLanguageM8EvidenceFileNames
+        ) + crossLanguageM11EvidenceFileNames
         check(validationFiles.keys == expectedValidationFiles && validationEntries.size == expectedValidationFiles.size) {
             "Promoted validation artifact has a missing or unexpected file set"
         }
-        val crossLanguageM8Sources = crossLanguageM8EvidenceFileNames.associateWith(validationFiles::getValue)
-        verifyCompleteCrossLanguageM8Evidence(crossLanguageM8Sources)
+        val crossLanguageM11Sources = crossLanguageM11EvidenceFileNames.associateWith(validationFiles::getValue)
+        verifyCompleteCrossLanguageM11Evidence(crossLanguageM11Sources)
+        val nativeWrapperPackages = copyPromotedNativeWrapperPackages(
+            promotionRoot,
+            commit,
+            crossLanguageM11Sources,
+            payload,
+        )
         val promotionReceipt = validationFiles.getValue("promotion-receipt.json").readReleaseObject()
         validatePromotionReceipt(
             promotionReceipt, commit, tree, inputs.promotionRunId, inputs.promotionRunAttempt,
@@ -489,7 +525,7 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         val validationReceiptFile = copyToPayload(
             validationFiles.getValue("validation-receipt.json"), payload, "validation-receipt.json",
         )
-        val crossLanguageM8Files = crossLanguageM8Sources.toSortedMap().values.map { source ->
+        val crossLanguageM11Files = crossLanguageM11Sources.toSortedMap().values.map { source ->
             copyToPayload(source, payload, source.name)
         }
 
@@ -516,6 +552,7 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
             tree,
             mavenInventory,
             swiftArchive,
+            nativeWrapperPackages.packages,
             policies.getValue("desktopDistributionManifest"),
             policies.getValue("desktopBundledLicense"),
             policies.getValue("desktopBundledNotice"),
@@ -537,6 +574,9 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
                 put("centralBundles", buildJsonArray {
                     centralBundles.forEach { add(it.releaseRecord()) }
                 })
+                put("nativeWrapperPackages", buildJsonArray {
+                    nativeWrapperPackages.packages.forEach { add(it.releaseRecord()) }
+                })
                 put("sbom", sbom.releaseRecord())
             })
             put("evidence", buildJsonObject {
@@ -546,8 +586,11 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
                 put("promotionReceipt", promotionReceiptFile.releaseRecord())
                 put("impactPlan", impactPlanFile.releaseRecord())
                 put("validationReceipt", validationReceiptFile.releaseRecord())
-                put("crossLanguageM8", buildJsonArray {
-                    crossLanguageM8Files.forEach { add(it.releaseRecord()) }
+                put("crossLanguageM11", buildJsonArray {
+                    crossLanguageM11Files.forEach { add(it.releaseRecord()) }
+                })
+                put("nativeWrapperPackageToolchains", buildJsonArray {
+                    nativeWrapperPackages.toolchains.forEach { add(it.releaseRecord()) }
                 })
                 put("promotedArtifactInventory", promotionInventory.releaseRecord())
                 put("privacyAudit", privacyAudit.releaseRecord())
@@ -580,6 +623,82 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         verifyCandidatePayload(
             payload.resolve("candidate-manifest.json"), payload, version, inputs.releaseTag, commit, policies,
         )
+}
+
+internal fun nativeWrapperM11PackageArtifacts(
+    receipts: Map<CrossLanguageBinding, CrossLanguageBindingReceipt>,
+): Map<CrossLanguageBinding, Map<String, CrossLanguageBindingArtifactIdentity>> {
+    check(receipts.keys == nativeWrapperBindings.toSet()) {
+        "Native-wrapper M11 receipt language set is incomplete"
+    }
+    val result = nativeWrapperBindings.associateWith { language ->
+        val receipt = receipts.getValue(language)
+        check(receipt.phase == CrossLanguageBindingPhase.M11 && receipt.language == language) {
+            "Native-wrapper M11 receipt identity mismatch for ${language.id}"
+        }
+        val prefix = "${language.id}-package/"
+        receipt.artifacts.filter { it.id.startsWith(prefix) }.associateBy { artifact ->
+            artifact.id.removePrefix(prefix).also { relative ->
+                check(relative == File(relative).name) {
+                    "Native-wrapper M11 package layout is not flat: ${artifact.id}"
+                }
+            }
+        }.also { artifacts ->
+            check(artifacts.isNotEmpty()) { "Native-wrapper M11 package inventory is empty for ${language.id}" }
+        }
+    }
+    val names = result.values.flatMap { it.keys }
+    check(names.size == names.toSet().size) { "Native-wrapper M11 package file names are ambiguous" }
+    return result
+}
+
+internal fun verifyNativeWrapperPackageFiles(
+    packageRoot: File,
+    expected: Map<CrossLanguageBinding, Map<String, CrossLanguageBindingArtifactIdentity>>,
+): Map<CrossLanguageBinding, Map<String, File>> {
+    check(packageRoot.isDirectory && !Files.isSymbolicLink(packageRoot.toPath())) {
+        "Promoted native-wrapper package artifact is missing or unsafe"
+    }
+    val languageRoots = packageRoot.listFiles()?.toList().orEmpty()
+    check(languageRoots.map(File::getName).toSet() == nativeWrapperBindings.map { it.id }.toSet() &&
+        languageRoots.size == nativeWrapperBindings.size &&
+        languageRoots.all { it.isDirectory && !Files.isSymbolicLink(it.toPath()) }) {
+        "Promoted native-wrapper package language set is incomplete or unexpected"
+    }
+    return nativeWrapperBindings.associateWith { language ->
+        val actual = verifiedRegularFiles(packageRoot.resolve(language.id))
+        check(actual.keys.all { it == File(it).name } && actual.keys == expected.getValue(language).keys) {
+            "Promoted native-wrapper package inventory mismatch for ${language.id}"
+        }
+        actual.onEach { (name, source) ->
+            check(source.releaseDigest() == expected.getValue(language).getValue(name).sha256) {
+                "Promoted native-wrapper package hash mismatch: ${language.id}-package/$name"
+            }
+        }
+    }
+}
+
+private fun copyPromotedNativeWrapperPackages(
+    promotionRoot: File,
+    commit: String,
+    crossLanguageM11Sources: Map<String, File>,
+    payload: File,
+): PromotedNativeWrapperPackages {
+    val packageRoot = promotionRoot.resolve("codex-agent-promoted-native-wrapper-packages-$commit")
+    val receipts = nativeWrapperBindings.associateWith { language ->
+        readCrossLanguageBindingReceipt(crossLanguageM11Sources.getValue("${language.id}-parity.json"))
+    }
+    val expected = nativeWrapperM11PackageArtifacts(receipts)
+    val sources = verifyNativeWrapperPackageFiles(packageRoot, expected).values
+        .flatMap { it.toSortedMap().values }
+    val copied = sources.map { copyToPayload(it, payload) }
+    val (toolchains, packages) = copied.partition { it.name.endsWith("-package-toolchain.tsv") }
+    check(toolchains.map(File::getName).toSet() ==
+        nativeWrapperBindings.map { "codex-agent-${it.id}-package-toolchain.tsv" }.toSet() &&
+        packages.isNotEmpty()) {
+        "Promoted native-wrapper package/toolchain split is invalid"
+    }
+    return PromotedNativeWrapperPackages(packages.sortedBy(File::getName), toolchains.sortedBy(File::getName))
 }
 
 private fun copyPromotedRuntimeEvidence(
@@ -832,6 +951,7 @@ private fun validatePromotedLanes(
 
     val expectedDirectories = promotionLanes.keys.mapTo(mutableSetOf()) { "codex-agent-promoted-$it-$commit" }
     expectedDirectories += "codex-agent-promoted-validation-$commit"
+    expectedDirectories += "codex-agent-promoted-native-wrapper-packages-$commit"
     val actualDirectories = root.listFiles().orEmpty().filter(File::isDirectory).mapTo(mutableSetOf(), File::getName)
     check(actualDirectories == expectedDirectories) { "Promoted artifact directory set mismatch" }
     return promotionLanes.mapValues { (lane, value) ->

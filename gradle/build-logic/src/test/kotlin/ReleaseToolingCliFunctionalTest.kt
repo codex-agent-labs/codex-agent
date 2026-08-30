@@ -40,6 +40,8 @@ class ReleaseToolingCliFunctionalTest {
                     "PackageCrossLanguageCAbiSdkTask",
                     "GenerateCrossLanguageCAbiPackageEvidenceTask",
                     "VerifyCrossLanguageCAbiPackageEvidenceTask",
+                    "GenerateCrossLanguageNativeWrapperBindingReceiptTask",
+                    "AdvanceCrossLanguageBindingReceiptPhaseTask",
                 ).forEach { task -> assertFalse(entries.any { it.startsWith(task) }, task) }
                 assertFalse(entries.any { it.startsWith("org/gradle/") || it.startsWith("com/android/") })
                 assertFalse(entries.any { it.startsWith("gradle/kotlin/dsl/") })
@@ -133,6 +135,8 @@ class ReleaseToolingCliFunctionalTest {
         try {
             listOf(
                 "assemble-c-abi-binding-receipt",
+                "assemble-native-wrapper-binding-receipt",
+                "advance-cross-language-binding-receipt",
                 "audit-cross-language-bindings",
                 "stage-promoted-maven",
                 "assemble-promoted-candidate",

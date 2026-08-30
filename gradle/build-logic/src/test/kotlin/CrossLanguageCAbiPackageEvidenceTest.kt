@@ -42,6 +42,8 @@ class CrossLanguageCAbiPackageEvidenceTest {
             "rootProject.layout.projectDirectory.file(\"LICENSE\")",
             "rootProject.layout.projectDirectory.file(\"THIRD_PARTY_NOTICES.md\")",
             "libcodex_agent.dll.a",
+            "-Wl,--out-implib,${'$'}{mingwGnuImportLibrary.get().asFile.absolutePath}",
+            "outputs.file(mingwGnuImportLibrary)",
             "/machine:x64",
             "/brepro",
             "cAbiToolDefaults(distribution.target)",
@@ -50,6 +52,14 @@ class CrossLanguageCAbiPackageEvidenceTest {
             ".orElse(localCAbiRunner?.runnerOs ?: \"unsupported\")",
             ".orElse(localCAbiRunner?.runnerArch ?: \"unsupported\")",
             "artifact(cAbiArchiveFiles.getValue(target))",
+            "tasks.register<StageCrossLanguageNativeWrapperSdksTask>",
+            "tasks.register<MaterializeCrossLanguageNativeWrapperPackageAssetsTask>",
+            "codexAgent.cAbiPackageEvidenceDirectory",
+            "native-wrapper-c-abi-sdks",
+            "native-wrapper-package-assets",
+            "prepareNativeWrapperPackageSources",
+            "native-wrapper-package-sources/",
+            "\"dart\" to listOf(\"build/**\"",
         ).forEach { contract -> assertTrue(contract in wiring, "Missing desktop C ABI wiring: $contract") }
         assertEquals(1, Regex("artifact\\(cAbiArchiveFiles\\.getValue\\(target\\)\\)").findAll(wiring).count())
         assertTrue(
@@ -218,6 +228,121 @@ class CrossLanguageCAbiPackageEvidenceTest {
     }
 
     @Test
+    fun `wrapper SDK staging verifies and extracts exactly all five package proofs`() = withFixture { fixture ->
+        val archives = linkedMapOf<String, File>()
+        val evidence = linkedMapOf<String, File>()
+        crossLanguageCAbiTargetSpecs.values.forEach { spec ->
+            val archive = fixture.root.resolve(crossLanguageCAbiArchiveFileName("0.2.0", spec.target))
+            val snapshot = packageCrossLanguageCAbiSdk(fixture.input(spec), archive)
+            val proof = fixture.root.resolve(crossLanguageCAbiPackageEvidenceFileName(spec.target)).apply {
+                atomicWriteJson(fixture.evidence(spec, snapshot))
+            }
+            archives[spec.target] = archive
+            evidence[spec.target] = proof
+        }
+        val output = fixture.root.resolve("wrapper-sdks")
+        val input = CrossLanguageNativeWrapperSdkInput(
+            "0.2.0",
+            "a".repeat(40),
+            "b".repeat(40),
+            archives,
+            evidence,
+            fixture.header,
+            fixture.license,
+            fixture.notice,
+            crossLanguageCAbiTargetSpecs.mapValues { (_, spec) ->
+                if (spec.format == "elf") fixture.linuxPolicy else fixture.policy
+            },
+            fixture.consumers.values.toList(),
+        )
+
+        stageCrossLanguageNativeWrapperSdks(input, output)
+
+        val index = output.resolve("codex-agent-native-wrapper-sdks.json").readReleaseObject()
+        assertEquals(1, index.getValue("schemaVersion").jsonPrimitive.content.toInt())
+        assertEquals(5, index.getValue("targets").jsonArray.size)
+        crossLanguageCAbiTargetSpecs.values.forEach { spec ->
+            val targetRoot = output.resolve(spec.classifier.removePrefix("c-abi-"))
+            assertEquals(fixture.library(spec).releaseDigest(), targetRoot.resolve(spec.libraryPath).releaseDigest())
+            assertTrue(targetRoot.resolve("codex-agent-c-abi-manifest.json").isFile)
+            assertEquals(
+                evidence.getValue(spec.target).readText(),
+                targetRoot.resolve("codex-agent-c-abi-evidence.json").readText(),
+            )
+        }
+
+        val packageAssets = fixture.root.resolve("wrapper-package-assets")
+        materializeCrossLanguageNativeWrapperPackageAssets(output, packageAssets)
+        crossLanguageCAbiTargetSpecs.values.forEach { spec ->
+            val classifier = spec.classifier.removePrefix("c-abi-")
+            val packageClassifier = when (classifier) {
+                "macos-arm64" -> "osx-arm64"
+                "macos-x64" -> "osx-x64"
+                "windows-x64" -> "win-x64"
+                else -> classifier
+            }
+            val libraryName = File(spec.libraryPath).name
+            listOf(
+                packageAssets.resolve("python/src/codex_agent/native/$classifier"),
+                packageAssets.resolve("csharp/native/$packageClassifier"),
+                packageAssets.resolve("rust/native/$packageClassifier"),
+                packageAssets.resolve("dart/lib/src/native/$classifier"),
+            ).forEach { destination ->
+                assertEquals(fixture.library(spec).releaseDigest(), destination.resolve(libraryName).releaseDigest())
+                assertTrue(destination.resolve("codex-agent-c-abi-manifest.json").isFile)
+                assertEquals(
+                    evidence.getValue(spec.target).readText(),
+                    destination.resolve("codex-agent-c-abi-evidence.json").readText(),
+                )
+            }
+            val cppSdk = packageAssets.resolve("cpp/native/$classifier")
+            assertEquals(fixture.library(spec).releaseDigest(), cppSdk.resolve(spec.libraryPath).releaseDigest())
+            assertTrue(cppSdk.resolve("include/codex_agent.h").isFile)
+            assertTrue(cppSdk.resolve("codex-agent-c-abi-manifest.json").isFile)
+            assertEquals(
+                evidence.getValue(spec.target).readText(),
+                cppSdk.resolve("codex-agent-c-abi-evidence.json").readText(),
+            )
+        }
+        assertEquals(
+            output.resolve("codex-agent-native-wrapper-sdks.json").readText(),
+            packageAssets.resolve("codex-agent-native-wrapper-sdks.json").readText(),
+        )
+
+        assertFailsWith<IllegalStateException> {
+            stageCrossLanguageNativeWrapperSdks(
+                input.copy(archives = input.archives - "linuxArm64"),
+                fixture.root.resolve("missing-target"),
+            )
+        }
+        val stale = fixture.root.resolve("stale-evidence.json").apply {
+            atomicWriteJson(evidence.getValue("macosArm64").readReleaseObject().with(
+                "archiveSha256",
+                JsonPrimitive("0".repeat(64)),
+            ))
+        }
+        assertFailsWith<IllegalStateException> {
+            stageCrossLanguageNativeWrapperSdks(
+                input.copy(evidence = input.evidence + ("macosArm64" to stale)),
+                fixture.root.resolve("stale-proof"),
+            )
+        }
+        output.resolve("macos-arm64/lib/libcodex_agent.dylib").appendText("tampered")
+        assertFailsWith<IllegalStateException> {
+            materializeCrossLanguageNativeWrapperPackageAssets(output, fixture.root.resolve("tampered-assets"))
+        }
+        stageCrossLanguageNativeWrapperSdks(input, output)
+        output.resolve("macos-arm64/codex-agent-c-abi-manifest.json").appendText("tampered")
+        assertFailsWith<IllegalStateException> {
+            materializeCrossLanguageNativeWrapperPackageAssets(
+                output,
+                fixture.root.resolve("tampered-manifest-assets"),
+            )
+        }
+        Unit
+    }
+
+    @Test
     fun `proof rejects stale tampered missing extra and unexecuted dimensions`() = withFixture { fixture ->
         val spec = crossLanguageCAbiTargetSpecs.getValue("macosArm64")
         val input = fixture.input(spec)
@@ -348,6 +473,10 @@ class CrossLanguageCAbiPackageEvidenceTest {
     fun `Gradle task cache boundaries match filesystem and toolchain behavior`() {
         assertNotNull(PackageCrossLanguageCAbiSdkTask::class.java.getAnnotation(CacheableTask::class.java))
         assertNotNull(VerifyCrossLanguageCAbiPackageEvidenceTask::class.java.getAnnotation(CacheableTask::class.java))
+        assertNotNull(StageCrossLanguageNativeWrapperSdksTask::class.java.getAnnotation(CacheableTask::class.java))
+        assertNotNull(
+            MaterializeCrossLanguageNativeWrapperPackageAssetsTask::class.java.getAnnotation(CacheableTask::class.java),
+        )
         assertNotNull(
             GenerateCrossLanguageCAbiPackageEvidenceTask::class.java.getAnnotation(DisableCachingByDefault::class.java),
         )

@@ -10,7 +10,7 @@ class CrossLanguageBindingParityTest {
         assertEquals(
             listOf(
                 "kotlin", "java", "swift", "objective-c", "javascript-typescript", "c-abi",
-                "python", "csharp", "rust", "c++", "dart",
+                "python", "csharp", "rust", "cpp", "dart",
             ),
             CrossLanguageBinding.entries.map(CrossLanguageBinding::id),
         )

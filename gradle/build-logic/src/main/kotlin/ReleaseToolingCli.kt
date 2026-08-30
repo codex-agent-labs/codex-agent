@@ -106,6 +106,52 @@ fun main(arguments: Array<String>) {
                 ),
             )
         }
+        "assemble-native-wrapper-binding-receipt" -> {
+            options.requireOnly(
+                "phase", "language", "api-report", "coverage-receipt", "c-abi-bootstrap",
+                "claims", "compiler-evidence", "test-program", "test-results", "packages",
+                "host-evidence", "staged-c-abi-sdks", "output",
+            )
+            val output = options.file("output")
+            Files.deleteIfExists(output.toPath())
+            val phaseName = options.required("phase")
+            val phase = CrossLanguageBindingPhase.entries.singleOrNull { it.name == phaseName }
+                ?: error("Unknown native wrapper binding phase: $phaseName")
+            val languageName = options.required("language")
+            val language = CrossLanguageBinding.entries.singleOrNull { it.id == languageName }
+                ?: error("Unknown native wrapper binding language: $languageName")
+            val expected = deriveCrossLanguageNativeWrapperBindingReceipt(
+                CrossLanguageNativeWrapperEvidenceInput(
+                    phase = phase,
+                    language = language,
+                    apiReport = options.file("api-report"),
+                    canonicalCoverageReceipt = options.file("coverage-receipt"),
+                    cAbiBootstrapEvidence = options.file("c-abi-bootstrap"),
+                    claims = options.file("claims"),
+                    compilerEvidence = options.file("compiler-evidence"),
+                    testProgram = options.file("test-program"),
+                    testResults = options.file("test-results"),
+                    packageArtifacts = nativeWrapperPackageArtifacts(language, options.file("packages")),
+                    hostEvidenceDirectory = options.file("host-evidence"),
+                    stagedCAbiSdks = options.file("staged-c-abi-sdks"),
+                ),
+            )
+            writeCrossLanguageBindingReceipt(output, expected)
+            check(readCrossLanguageBindingReceipt(output).toJson() == expected.toJson()) {
+                "Native wrapper binding receipt does not match freshly recomputed evidence"
+            }
+        }
+        "advance-cross-language-binding-receipt" -> {
+            options.requireOnly("phase", "source", "output")
+            val phaseName = options.required("phase")
+            val phase = CrossLanguageBindingPhase.entries.singleOrNull { it.name == phaseName }
+                ?: error("Unknown carried binding phase: $phaseName")
+            advanceCrossLanguageBindingReceiptPhase(
+                options.file("source"),
+                phase,
+                options.file("output"),
+            )
+        }
         "audit-cross-language-bindings" -> {
             options.requireOnly("phase", "api-report", "coverage-receipt", "receipts", "output")
             val output = options.file("output")

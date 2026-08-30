@@ -41,7 +41,7 @@ class CrossLanguageCAbiBindingEvidenceTest {
     }
 
     @Test
-    fun `derives and re-reads schema three M8 C ABI evidence without family inference`() = withFixture { fixture ->
+    fun `derives and re-reads schema four M8 C ABI evidence without family inference`() = withFixture { fixture ->
         val output = fixture.directory.resolve("binding-receipt.json")
 
         val receipt = writeCrossLanguageCAbiBindingReceipt(output, fixture.input())
@@ -63,7 +63,7 @@ class CrossLanguageCAbiBindingEvidenceTest {
             receipt.projectionClaims.single { it.capabilityKey == CAPABILITY_B }.sharedScenarios.toSet(),
         )
         val root = output.readReleaseObject()
-        assertEquals(3, root.releaseInt("schema"))
+        assertEquals(4, root.releaseInt("schema"))
         assertEquals("passed", root.releaseString("result"))
         assertEquals("M8", root.releaseString("phase"))
         assertEquals("c-abi", root.releaseString("language"))

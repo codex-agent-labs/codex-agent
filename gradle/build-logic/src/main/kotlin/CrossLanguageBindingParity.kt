@@ -22,12 +22,20 @@ internal enum class CrossLanguageBinding(
     PYTHON("python", CrossLanguageBindingPhase.M9_PYTHON),
     CSHARP("csharp", CrossLanguageBindingPhase.M9_CSHARP),
     RUST("rust", CrossLanguageBindingPhase.M9_RUST),
-    CPP("c++", CrossLanguageBindingPhase.M9_CPP),
+    CPP("cpp", CrossLanguageBindingPhase.M9_CPP),
     DART("dart", CrossLanguageBindingPhase.M9_DART),
     ;
 
     fun isActive(phase: CrossLanguageBindingPhase): Boolean = phase.ordinal >= activationPhase.ordinal
 }
+
+internal val nativeWrapperBindings = listOf(
+    CrossLanguageBinding.PYTHON,
+    CrossLanguageBinding.CSHARP,
+    CrossLanguageBinding.RUST,
+    CrossLanguageBinding.CPP,
+    CrossLanguageBinding.DART,
+)
 
 /** Closed R757 projection scenarios. Additions deliberately create obligations for every active language. */
 internal enum class CrossLanguageBindingScenario(val id: String) {

@@ -857,6 +857,8 @@ class DesktopCAbiExportPolicyTest {
             "-Wl,-soname,libcodex_agent.so.1",
             "target.name == \"mingwX64\"",
             "-Wl,--exclude-all-symbols",
+            "-Wl,--out-implib,${'$'}{mingwGnuImportLibrary.get().asFile.absolutePath}",
+            "outputs.file(mingwGnuImportLibrary)",
             "native/c-api/exports/windows.def",
             "linkTaskProvider.configure",
             "inputs.file(exportPolicyFile)",

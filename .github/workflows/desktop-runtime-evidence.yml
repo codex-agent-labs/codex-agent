@@ -27,6 +27,9 @@ on:
       linuxArm64Metadata:
         required: true
         type: boolean
+      nativeWrappers:
+        required: true
+        type: boolean
 
 permissions:
   actions: read
@@ -338,3 +341,197 @@ jobs:
           producer-identities: build/ci/linux-arm64-producer-identities
           production-prepared: "true"
           reuse-disabled: "true"
+
+  native-wrapper-packages:
+    if: >-
+      always() && inputs.nativeWrappers &&
+      needs.runtime.result == 'success' &&
+      (needs.linux-arm64-runtime.result == 'success' || needs.linux-arm64-reuse.outputs.reused == 'true')
+    needs: [runtime, linux-arm64-reuse, linux-arm64-runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-ci-contracts-${{ inputs.validationTree }}
+          path: build/ci/contracts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-ci-desktop-*-${{ inputs.validationTree }}
+          path: build/ci/desktop-lanes
+      - uses: ./.github/actions/setup-kmp
+        with:
+          cache-read-only: "true"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.419"
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        with:
+          toolchain: "1.95.0"
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        with:
+          sdk: "3.13.2"
+      - run: python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1
+      - name: Reassemble and verify the exact five C SDKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          one_file() {
+            mapfile -t matches < <(find "$1" -type f -name "$2" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          classifiers=build/ci/native-wrapper-classifiers
+          proofs=build/ci/native-wrapper-proofs
+          mkdir -p "$classifiers" "$proofs" \
+            codex-agent-core/build/reports/cross-language-api \
+            codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi
+          mapfile -t archives < <(find build/ci/desktop-lanes -type f -name '*-c-abi-*.zip' -print)
+          mapfile -t package_proofs < <(find build/ci/desktop-lanes -type f -name 'c-abi-package-*.json' -print)
+          test "${#archives[@]}" -eq 5
+          test "${#package_proofs[@]}" -eq 5
+          cp "${archives[@]}" "$classifiers/"
+          cp "${package_proofs[@]}" "$proofs/"
+          cp "$(one_file build/ci/contracts canonical-api.json)" \
+            codex-agent-core/build/reports/cross-language-api/canonical-api.json
+          cp "$(one_file build/ci/contracts canonical-coverage.json)" \
+            codex-agent-core/build/reports/cross-language-api/canonical-coverage.json
+          cp "$(one_file build/ci/desktop-lanes bootstrap-evidence.json)" \
+            codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json
+          ./gradlew :codex-agent-runtime-desktop:prepareNativeWrapperPackageSources \
+            -PcodexAgent.desktopClassifierDirectory="$PWD/$classifiers" \
+            -PcodexAgent.cAbiPackageEvidenceDirectory="$PWD/$proofs" \
+            -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}" \
+            -PcodexAgent.candidateTree="${{ inputs.validationTree }}" \
+            --stacktrace
+      - name: Execute all five wrapper behavior and parity suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/linux-x64/lib/libcodex_agent.so"
+          binding="$PWD/codex-agent-runtime-desktop/bindings"
+          CODEX_AGENT_LIBRARY="$sdk" python -m unittest discover -s "$binding/python/tests" -v
+          dotnet build "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
+            --configuration Release -p:CodexAgentRealSdkPath="$sdk"
+          dotnet run --project "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
+            --configuration Release --no-build -- --real-mcp-values "$sdk"
+          cargo fetch --manifest-path "$binding/rust/Cargo.toml" --locked
+          cargo fmt --manifest-path "$binding/rust/Cargo.toml" -- --check
+          cargo clippy --manifest-path "$binding/rust/Cargo.toml" --all-targets --locked --offline -- -D warnings
+          cargo test --manifest-path "$binding/rust/Cargo.toml" --all-targets --release --locked --offline
+          CODEX_AGENT_REAL_SDK="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" \
+            --all-targets --release --locked --offline -- --ignored --test-threads=1
+          cmake -S "$binding/cpp" -B build/native-wrapper-cpp-tests \
+            -DCodexAgent_C_SDK_ROOT="$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/linux-x64" \
+            -DCodexAgent_NATIVE_CLASSIFIER=linux-x64 -DCMAKE_BUILD_TYPE=Release \
+            -DCODEX_AGENT_CPP_BUILD_TESTS=ON
+          cmake --build build/native-wrapper-cpp-tests --config Release --parallel 2
+          ctest --test-dir build/native-wrapper-cpp-tests --build-config Release --output-on-failure -j2
+          pushd "$binding/dart"
+          dart pub get --enforce-lockfile
+          dart format --output=none --set-exit-if-changed .
+          dart analyze
+          CODEX_AGENT_LIBRARY="$sdk" CODEX_AGENT_REAL_LIBRARY="$sdk" dart test
+          popd
+      - name: Build the exact release packages and retain parity evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=build/native-wrapper-release
+          python ci/native_wrappers.py package \
+            --repository "$PWD" \
+            --sources "$PWD/codex-agent-runtime-desktop/build/native-wrapper-package-sources" \
+            --sdks "$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks" \
+            --output "$PWD/$release/packages"
+          cp -R codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks "$release/sdks"
+          mkdir -p "$release/evidence"/{python,csharp,rust,cpp,dart}
+          cp codex-agent-runtime-desktop/bindings/python/build/cross-language-evidence/{compiler-evidence.tsv,executed-tests.tsv} "$release/evidence/python/"
+          cp codex-agent-runtime-desktop/bindings/python/tests/test_enum_parity.py "$release/evidence/python/test-program"
+          csharp=codex-agent-runtime-desktop/bindings/csharp/tests/CodexAgent.Tests/bin/Release/net8.0
+          cp "$csharp/artifacts"/{compiler-evidence.tsv,executed-tests.tsv} "$release/evidence/csharp/"
+          cp "$csharp/CodexAgent.Tests.dll" "$release/evidence/csharp/test-program"
+          cp codex-agent-runtime-desktop/bindings/rust/target/cross-language-evidence/{compiler-evidence.tsv,executed-tests.tsv} "$release/evidence/rust/"
+          cp codex-agent-runtime-desktop/bindings/rust/tests/enum_parity.rs "$release/evidence/rust/test-program"
+          cp build/native-wrapper-cpp-tests/parity/{compiler-evidence.tsv,executed-tests.tsv} "$release/evidence/cpp/"
+          cp build/native-wrapper-cpp-tests/tests/codex_agent_cpp_value_test "$release/evidence/cpp/test-program"
+          cp codex-agent-runtime-desktop/bindings/dart/build/parity/{compiler-evidence.tsv,executed-tests.tsv} "$release/evidence/dart/"
+          cp codex-agent-runtime-desktop/bindings/dart/test/enum_parity_test.dart "$release/evidence/dart/test-program"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}
+          path: build/native-wrapper-release
+          compression-level: 0
+          retention-days: 90
+
+  native-wrapper-host-consumers:
+    needs: native-wrapper-packages
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - classifier: macos-arm64
+            runner: macos-26
+          - classifier: macos-x64
+            runner: macos-26-intel
+          - classifier: linux-arm64
+            runner: ubuntu-24.04-arm
+          - classifier: linux-x64
+            runner: ubuntu-24.04
+          - classifier: windows-x64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      CI_VALIDATION_TREE: ${{ inputs.validationTree }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.planArtifact }}
+          path: build/ci/plan
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}
+          path: build/native-wrapper-release
+      - if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.419"
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        with:
+          toolchain: "1.95.0"
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        with:
+          sdk: "3.13.2"
+      - shell: bash
+        run: >-
+          python ci/native_wrappers.py consume
+          --repository "$PWD"
+          --packages "$PWD/build/native-wrapper-release/packages"
+          --sdks "$PWD/build/native-wrapper-release/sdks"
+          --plan "$PWD/build/ci/plan/impact-plan.json"
+          --output "$PWD/build/native-wrapper-host/${{ matrix.classifier }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          name: codex-agent-native-wrapper-host-${{ matrix.classifier }}-${{ inputs.validationTree }}
+          path: build/native-wrapper-host/${{ matrix.classifier }}
+          compression-level: 0
+          retention-days: 90

@@ -61,6 +61,7 @@ jobs:
       consumer_matrix: ${{ steps.impact.outputs.consumer_matrix }}
       desktop_matrix: ${{ steps.impact.outputs.desktop_matrix }}
       any_desktop: ${{ steps.impact.outputs.any_desktop }}
+      native_wrappers: ${{ steps.impact.outputs.native_wrappers }}
       any_apple: ${{ steps.impact.outputs.any_apple }}
       lane_android: ${{ steps.impact.outputs.lane_android }}
       lane_android_build: ${{ steps.impact.outputs.lane_android_build }}
@@ -194,6 +195,7 @@ jobs:
       linuxArm64Build: ${{ fromJSON(needs.plan.outputs.lane_desktop_linux_arm64_build) }}
       linuxArm64Test: ${{ fromJSON(needs.plan.outputs.lane_desktop_linux_arm64_test) }}
       linuxArm64Metadata: ${{ fromJSON(needs.plan.outputs.lane_desktop_linux_arm64_metadata) }}
+      nativeWrappers: ${{ fromJSON(needs.plan.outputs.native_wrappers) }}
 
   apple:
     if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.any_apple == 'true'
@@ -278,6 +280,30 @@ jobs:
         with:
           pattern: codex-agent-ci-*
           path: build/ci/receipts
+      - if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-packages-${{ needs.plan.outputs.validation_tree }}
+          path: build/ci/native-wrapper-release
+      - if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-native-wrapper-host-*-${{ needs.plan.outputs.validation_tree }}
+          path: build/ci/native-wrapper-hosts
+      - name: Restore the exact reused native-wrapper release
+        id: restore-reused-native-wrapper-release
+        if: needs.plan.outputs.validation_reused == 'true'
+        run: |
+          source=build/ci/plan/reused-native-wrapper-release
+          if [ ! -d "$source" ]; then
+            echo 'restored=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          test -d "$source/packages"
+          test -d "$source/evidence"
+          test -d "$source/sdks"
+          cp -R "$source" build/ci/native-wrapper-release
+          echo 'restored=true' >> "$GITHUB_OUTPUT"
       - name: Require readiness, successful prerequisites, and an exact receipt set
         env:
           MERGE_READY: ${{ needs.plan.outputs.merge_ready }}
@@ -300,7 +326,9 @@ jobs:
               --receipts build/ci/receipts --output build/ci/validation-receipt.json
           fi
       - name: Require complete six-language M8 binding parity
-        if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_ios_swift_tests_test == 'true'
+        if: >-
+          needs.plan.outputs.validation_reused != 'true' &&
+          (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true')
         env:
           VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
           VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
@@ -368,16 +396,141 @@ jobs:
           cp "$binding_root"/receipts/*.json "$binding_root/m8/"
           cp "$binding_root/binding-obligations-m8.json" "$binding_root/m8/"
           test "$(find "$binding_root/m8" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 9
+      - name: Require complete native-wrapper parity through M11
+        if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true'
+        env:
+          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          one_file() {
+            mapfile -t matches < <(find build/ci/receipts -type f -name "$1" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          one_host_evidence() {
+            mapfile -t matches < <(find build/ci/native-wrapper-hosts -type f \
+              -path "*/evidence/$1/$2.tsv" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          binding_root=build/ci/cross-language-bindings
+          release=build/ci/native-wrapper-release
+          release_tool=$(one_file codex-agent-release-tooling.jar)
+          api_report=$(one_file canonical-api.json)
+          coverage_receipt=$(one_file canonical-coverage.json)
+          mapfile -t bootstraps < <(find build/ci/receipts -type f \
+            -path '*/payload/codex-agent-runtime-desktop/build/*' \
+            -name bootstrap-evidence.json -print)
+          test "${#bootstraps[@]}" -eq 1
+          bootstrap=${bootstraps[0]}
+          for classifier in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
+            for language in python csharp rust cpp dart; do
+              evidence=$(one_host_evidence "$language" "$classifier")
+              artifact_root=$(dirname "$(dirname "$(dirname "$evidence")")")
+              test -f "$artifact_root/lane-receipt.json"
+              host="$binding_root/host/$language"
+              mkdir -p "$host"
+              cp "$evidence" "$host/$classifier.tsv"
+              cp "$artifact_root/lane-receipt.json" "$host/$classifier-lane-receipt.json"
+            done
+          done
+          ./gradlew \
+            :codex-agent-runtime-desktop:verifyPythonBindingParity \
+            :codex-agent-runtime-desktop:verifyCSharpBindingParity \
+            :codex-agent-runtime-desktop:verifyRustBindingParity \
+            :codex-agent-runtime-desktop:verifyCppBindingParity \
+            :codex-agent-runtime-desktop:verifyDartBindingParity \
+            -PcodexAgent.nativeWrapperReleaseDirectory="$PWD/$release" \
+            -PcodexAgent.nativeWrapperHostEvidenceDirectory="$PWD/$binding_root/host" \
+            -PcodexAgent.nativeWrapperApiReport="$PWD/$api_report" \
+            -PcodexAgent.nativeWrapperCoverageReceipt="$PWD/$coverage_receipt" \
+            -PcodexAgent.nativeWrapperBootstrapEvidence="$PWD/$bootstrap" \
+            --stacktrace
+
+          languages=(python csharp rust cpp dart)
+          phases=(M9_PYTHON M9_CSHARP M9_RUST M9_CPP M9_DART)
+          satisfied=(3880 4436 4992 5548 6104)
+          pending=(2224 1668 1112 556 0)
+          previous="$binding_root/m8"
+          for index in "${!languages[@]}"; do
+            language=${languages[$index]}
+            phase=${phases[$index]}
+            phase_root="$binding_root/${phase,,}"
+            receipts="$phase_root/receipts"
+            mkdir -p "$receipts"
+            for source in "$previous"/*-parity.json; do
+              java -jar "$release_tool" advance-cross-language-binding-receipt \
+                --phase "$phase" --source "$source" --output "$receipts/$(basename "$source")"
+            done
+            cp "codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/$language-parity.json" \
+              "$receipts/$language-parity.json"
+            audit="$phase_root/binding-obligations-${phase,,}.json"
+            java -jar "$release_tool" audit-cross-language-bindings \
+              --phase "$phase" \
+              --api-report "$api_report" \
+              --coverage-receipt "$coverage_receipt" \
+              --receipts "$receipts" \
+              --output "$audit"
+            jq -e --arg phase "$phase" --argjson satisfied "${satisfied[$index]}" \
+              --argjson pending "${pending[$index]}" '
+                .result == "complete" and .phase == $phase and
+                .summary == {
+                  total: 6116, active: 6104, pending: $pending,
+                  excluded: 12, satisfied: $satisfied, missing: 0
+                }
+              ' "$audit" >/dev/null
+            previous="$receipts"
+          done
+
+          m11_receipts="$binding_root/m11-receipts"
+          mkdir -p "$m11_receipts"
+          for source in "$previous"/*-parity.json; do
+            java -jar "$release_tool" advance-cross-language-binding-receipt \
+              --phase M11 --source "$source" --output "$m11_receipts/$(basename "$source")"
+          done
+          m11_audit="$binding_root/binding-obligations-m11.json"
+          java -jar "$release_tool" audit-cross-language-bindings \
+            --phase M11 \
+            --api-report "$api_report" \
+            --coverage-receipt "$coverage_receipt" \
+            --receipts "$m11_receipts" \
+            --output "$m11_audit"
+          jq -e '
+            .result == "complete" and .phase == "M11" and
+            .summary == {
+              total: 6116, active: 6104, pending: 0,
+              excluded: 12, satisfied: 6104, missing: 0
+            }
+          ' "$m11_audit" >/dev/null
+          mkdir -p "$binding_root/m11"
+          cp "$api_report" "$binding_root/m11/canonical-api.json"
+          cp "$coverage_receipt" "$binding_root/m11/canonical-coverage.json"
+          cp "$m11_receipts"/*.json "$binding_root/m11/"
+          cp "$m11_audit" "$binding_root/m11/"
+          test "$(find "$binding_root/m11" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 14
       - name: Stage the exact reusable validation artifact
         env:
           M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}
+          M11_REQUIRED: ${{ needs.plan.outputs.native_wrappers }}
         shell: bash
         run: |
           validation_root=build/ci/final-validation
           mkdir -p "$validation_root"
           cp build/ci/plan/impact-plan.json "$validation_root/impact-plan.json"
           cp build/ci/validation-receipt.json "$validation_root/validation-receipt.json"
-          if [ -d build/ci/cross-language-bindings/m8 ]; then
+          if [ -d build/ci/cross-language-bindings/m11 ]; then
+            cp build/ci/cross-language-bindings/m11/*.json "$validation_root/"
+          elif [ -f build/ci/binding-obligations-m11.json ]; then
+            for evidence in canonical-api.json canonical-coverage.json kotlin-parity.json java-parity.json \
+                javascript-typescript-parity.json swift-parity.json objective-c-parity.json \
+                c-abi-parity.json python-parity.json csharp-parity.json rust-parity.json \
+                cpp-parity.json dart-parity.json binding-obligations-m11.json; do
+              test -f "build/ci/$evidence"
+              cp "build/ci/$evidence" "$validation_root/$evidence"
+            done
+          elif [ -d build/ci/cross-language-bindings/m8 ]; then
             cp build/ci/cross-language-bindings/m8/*.json "$validation_root/"
           elif [ -f build/ci/binding-obligations-m8.json ]; then
             for evidence in canonical-api.json canonical-coverage.json kotlin-parity.json java-parity.json \
@@ -389,13 +542,26 @@ jobs:
           else
             test "$M8_REQUIRED" != true
           fi
+          if [ "$M11_REQUIRED" = true ]; then
+            test -f "$validation_root/binding-obligations-m11.json"
+          fi
           count=$(find "$validation_root" -maxdepth 1 -type f | wc -l | tr -d ' ')
-          test "$count" -eq 2 || test "$count" -eq 11
+          test "$count" -eq 2 || test "$count" -eq 11 || test "$count" -eq 16
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
           overwrite: true
           name: codex-agent-ci-validation-${{ needs.plan.outputs.validation_tree }}
           path: build/ci/final-validation/*
+          compression-level: 0
+          retention-days: 90
+      - if: steps.restore-reused-native-wrapper-release.outputs.restored == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          include-hidden-files: true
+          name: codex-agent-native-wrapper-packages-${{ needs.plan.outputs.validation_tree }}
+          path: build/ci/native-wrapper-release
           compression-level: 0
           retention-days: 90

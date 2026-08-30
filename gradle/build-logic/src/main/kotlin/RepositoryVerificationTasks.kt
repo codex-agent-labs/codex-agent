@@ -6,6 +6,7 @@ internal val repositoryVerificationTaskPaths = listOf(
     ":codex-agent-core:verifyKotlinBindingParity",
     ":codex-agent-core:verifyJavaBindingParity",
     ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity",
+    ":codex-agent-runtime-desktop:verifyNativeWrapperBindingParity",
     ":codex-agent-core:compileAndroidMain",
     ":codex-agent-core:compileKotlinJs",
     ":codex-agent-core:compileKotlinWasmJs",

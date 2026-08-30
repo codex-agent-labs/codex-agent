@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -14,7 +15,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from impact import LANES, M8_OWNER_LANES
+from impact import LANES, M8_OWNER_LANES, NATIVE_WRAPPER_LANES
 from receipt import (
     INPUT_NAMES,
     SCHEMA_VERSION,
@@ -59,7 +60,7 @@ PROMOTION_RECEIPT_KEYS = {
     *PROMOTION_PLAN_KEYS,
     "workflowPath", "promotionRunId", "promotionRunAttempt", "result",
 }
-M8_VALIDATION_FILES = {
+M11_VALIDATION_FILES = {
     "canonical-api.json",
     "canonical-coverage.json",
     "kotlin-parity.json",
@@ -68,10 +69,27 @@ M8_VALIDATION_FILES = {
     "swift-parity.json",
     "objective-c-parity.json",
     "c-abi-parity.json",
-    "binding-obligations-m8.json",
+    "python-parity.json",
+    "csharp-parity.json",
+    "rust-parity.json",
+    "cpp-parity.json",
+    "dart-parity.json",
+    "binding-obligations-m11.json",
 }
 SOURCE_VALIDATION_FILES = {"impact-plan.json", "validation-receipt.json"}
-PROMOTED_VALIDATION_FILES = SOURCE_VALIDATION_FILES | {"promotion-receipt.json"} | M8_VALIDATION_FILES
+PROMOTED_VALIDATION_FILES = SOURCE_VALIDATION_FILES | {"promotion-receipt.json"} | M11_VALIDATION_FILES
+M11_OWNER_LANES = M8_OWNER_LANES | frozenset(NATIVE_WRAPPER_LANES)
+NATIVE_WRAPPER_LANGUAGES = {"python", "csharp", "rust", "cpp", "dart"}
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def api_items(url: str, key: str, token: str) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     page = 1
@@ -156,6 +174,47 @@ def require_exact_files(root: Path, names: set[str]) -> None:
     actual = {path.relative_to(root).as_posix() for path in entries}
     if actual != names or any(path.is_symlink() or not path.is_file() for path in entries):
         raise ValueError(f"Artifact file set mismatch: expected={sorted(names)} actual={sorted(actual)}")
+
+
+def validate_native_wrapper_packages(root: Path, m11_root: Path) -> None:
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("Native-wrapper package artifact is missing or unsafe")
+    entries = list(root.iterdir())
+    if {entry.name for entry in entries} != NATIVE_WRAPPER_LANGUAGES or any(
+        not entry.is_dir() or entry.is_symlink() for entry in entries
+    ):
+        raise ValueError("Native-wrapper package language inventory is incomplete or unexpected")
+    for language in sorted(NATIVE_WRAPPER_LANGUAGES):
+        package_root = root / language
+        package_files = list(package_root.iterdir())
+        if not package_files or any(path.is_symlink() or not path.is_file() for path in package_files):
+            raise ValueError(f"Native-wrapper {language} package inventory is unsafe, nested, or empty")
+        receipt = read_json(m11_root / f"{language}-parity.json")
+        if (receipt.get("schema") != 4 or receipt.get("result") != "passed" or
+                receipt.get("phase") != "M11" or receipt.get("language") != language):
+            raise ValueError(f"Native-wrapper {language} M11 receipt identity is invalid")
+        artifacts = receipt.get("artifacts")
+        if not isinstance(artifacts, list):
+            raise ValueError(f"Native-wrapper {language} M11 artifact inventory is invalid")
+        prefix = f"{language}-package/"
+        expected: dict[str, str] = {}
+        for item in artifacts:
+            if not isinstance(item, dict) or set(item) != {"id", "sha256"}:
+                raise ValueError(f"Native-wrapper {language} M11 artifact record is invalid")
+            artifact_id = item.get("id")
+            sha256 = item.get("sha256")
+            if isinstance(artifact_id, str) and artifact_id.startswith(prefix):
+                name = artifact_id.removeprefix(prefix)
+                if (not name or name != Path(name).name or name in expected or
+                        not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)):
+                    raise ValueError(f"Native-wrapper {language} M11 package record is invalid")
+                expected[name] = sha256
+        actual = {path.name: file_sha256(path) for path in package_files}
+        if not expected or actual != expected:
+            raise ValueError(f"Native-wrapper {language} package bytes do not match its M11 receipt")
+        toolchain = f"codex-agent-{language}-package-toolchain.tsv"
+        if toolchain not in expected:
+            raise ValueError(f"Native-wrapper {language} package toolchain evidence is missing")
 
 
 def validate_plan(
@@ -264,7 +323,7 @@ def validate_source_artifacts(
     if not plan_path.is_file() or plan_path.is_symlink():
         raise ValueError("Plan artifact has no root impact-plan.json")
     actual = {path.relative_to(aggregate_root).as_posix() for path in aggregate_root.iterdir()}
-    allowed = (SOURCE_VALIDATION_FILES, SOURCE_VALIDATION_FILES | M8_VALIDATION_FILES)
+    allowed = (SOURCE_VALIDATION_FILES, SOURCE_VALIDATION_FILES | M11_VALIDATION_FILES)
     if (
         actual not in allowed
         or any(path.is_symlink() or not path.is_file() for path in aggregate_root.iterdir())
@@ -276,12 +335,12 @@ def validate_source_artifacts(
         raise ValueError("Aggregate and plan artifacts contain different impact plans")
     plan = validate_plan(plan_path, repository, validated_commit, final_tree, allow_reused_validation=True)
     aggregate = validate_aggregate(aggregate_path, plan)
-    m8_files = {
+    m11_files = {
         name: aggregate_root / name
-        for name in M8_VALIDATION_FILES
+        for name in M11_VALIDATION_FILES
         if name in actual
     }
-    return plan, aggregate, plan_path, aggregate_path, m8_files
+    return plan, aggregate, plan_path, aggregate_path, m11_files
 
 
 def selected_validation_run(
@@ -421,6 +480,7 @@ def already_promoted(
 ) -> bool:
     aggregate_name = f"codex-agent-promoted-validation-{final_commit}"
     inventory_name = f"codex-agent-promoted-inventories-{final_commit}"
+    native_wrapper_name = f"codex-agent-promoted-native-wrapper-packages-{final_commit}"
     for run in workflow_runs(api_url, repository, "promote.yml", "push", token):
         if (
             run.get("conclusion") != "success"
@@ -434,7 +494,8 @@ def already_promoted(
         artifacts = artifacts_for_run(api_url, repository, run_id, token)
         aggregate_artifact = artifacts.get(aggregate_name)
         inventory_artifact = artifacts.get(inventory_name)
-        if aggregate_artifact is None or inventory_artifact is None:
+        native_wrapper_artifact = artifacts.get(native_wrapper_name)
+        if aggregate_artifact is None or inventory_artifact is None or native_wrapper_artifact is None:
             continue
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "aggregate"
@@ -459,6 +520,9 @@ def already_promoted(
             if plan_path.read_bytes() != (root / "impact-plan.json").read_bytes():
                 raise ValueError("Promoted aggregate and inventory plans differ")
             validate_aggregate(root / "validation-receipt.json", plan)
+            native_wrapper_root = Path(temporary) / "native-wrapper-packages"
+            extract_artifact(native_wrapper_artifact, token, native_wrapper_root)
+            validate_native_wrapper_packages(native_wrapper_root, root)
         if all(item["promotedArtifactName"] in artifacts for item in receipt["lanes"].values()):
             return True
     return False
@@ -480,8 +544,11 @@ def predecessor_promotion_sources(
     current_plan: Path,
     lanes: set[str],
     token: str,
-    m8_destination: Path | None = None,
+    m11_destination: Path | None = None,
+    native_wrapper_destination: Path | None = None,
 ) -> dict[str, dict[str, object]] | None:
+    if (m11_destination is None) != (native_wrapper_destination is None):
+        raise ValueError("M11 evidence and native-wrapper packages must be carried together")
     for run in workflow_runs(api_url, repository, "promote.yml", "push", token):
         prior_commit = run.get("head_sha")
         if (
@@ -499,7 +566,11 @@ def predecessor_promotion_sources(
         inventory_name = f"codex-agent-promoted-inventories-{prior_commit}"
         aggregate_artifact = artifacts.get(aggregate_name)
         inventory_artifact = artifacts.get(inventory_name)
-        if aggregate_artifact is None or inventory_artifact is None:
+        native_wrapper_artifact = artifacts.get(
+            f"codex-agent-promoted-native-wrapper-packages-{prior_commit}"
+        )
+        if (aggregate_artifact is None or inventory_artifact is None or
+                m11_destination is not None and native_wrapper_artifact is None):
             continue
         prior_tree = commit_tree(api_url, repository, prior_commit, token)
         with tempfile.TemporaryDirectory() as temporary:
@@ -531,7 +602,7 @@ def predecessor_promotion_sources(
             }
             if any(source_name not in artifacts for source_name in source_names.values()):
                 continue
-            inventory_lanes = lanes | (M8_OWNER_LANES if m8_destination is not None else set())
+            inventory_lanes = lanes | (M11_OWNER_LANES if m11_destination is not None else set())
             incompatible = sorted(
                 lane for lane in inventory_lanes
                 if not inventories_match(current_plan, prior_plan, lane)
@@ -541,12 +612,18 @@ def predecessor_promotion_sources(
                     f"Immediate first-parent promotion {predecessor_commit} is incompatible "
                     f"with carried inputs {incompatible}"
                 )
-            if m8_destination is not None:
-                if m8_destination.exists() and any(m8_destination.iterdir()):
-                    raise ValueError(f"M8 carry destination must be empty: {m8_destination}")
-                m8_destination.mkdir(parents=True, exist_ok=True)
-                for name in M8_VALIDATION_FILES:
-                    shutil.copyfile(root / name, m8_destination / name)
+            if m11_destination is not None:
+                if m11_destination.exists() and any(m11_destination.iterdir()):
+                    raise ValueError(f"M11 carry destination must be empty: {m11_destination}")
+                m11_destination.mkdir(parents=True, exist_ok=True)
+                for name in M11_VALIDATION_FILES:
+                    shutil.copyfile(root / name, m11_destination / name)
+                if native_wrapper_destination.exists():
+                    raise ValueError(
+                        f"Native-wrapper carry destination already exists: {native_wrapper_destination}"
+                    )
+                extract_artifact(native_wrapper_artifact, token, native_wrapper_destination)
+                validate_native_wrapper_packages(native_wrapper_destination, root)
             return {
                 lane: {
                     "sourceKind": "promotion",
@@ -572,7 +649,8 @@ def wait_for_predecessor_promotion(
     token: str,
     timeout_seconds: int,
     poll_seconds: int,
-    m8_destination: Path | None = None,
+    m11_destination: Path | None = None,
+    native_wrapper_destination: Path | None = None,
 ) -> dict[str, dict[str, object]]:
     if timeout_seconds < 0 or poll_seconds < 1:
         raise ValueError("Predecessor wait timeout must be non-negative and poll interval positive")
@@ -586,7 +664,8 @@ def wait_for_predecessor_promotion(
             current_plan,
             lanes,
             token,
-            m8_destination,
+            m11_destination,
+            native_wrapper_destination,
         )
         if result is not None:
             return result
@@ -638,23 +717,28 @@ def discover(arguments: argparse.Namespace) -> dict[str, object]:
         aggregate_root = temporary_root / "aggregate"
         extract_artifact(artifacts[plan_name], token, plan_root)
         extract_artifact(artifacts[aggregate_name], token, aggregate_root)
-        plan, aggregate, plan_path, aggregate_path, current_m8_files = validate_source_artifacts(
+        plan, aggregate, plan_path, aggregate_path, current_m11_files = validate_source_artifacts(
             plan_root,
             aggregate_root,
             arguments.repository,
             validated_commit,
             final_tree,
         )
-        active_m8_owners = sorted(
+        active_m11_owners = sorted(
             lane
-            for lane in M8_OWNER_LANES
+            for lane in M11_OWNER_LANES
             if any(plan["lanes"][lane][action] for action in ("build", "test", "metadata"))
         )
-        if not current_m8_files and active_m8_owners:
+        if not current_m11_files and active_m11_owners:
             raise ValueError(
-                f"Validation is missing the M8 bundle while owner lanes are active: "
-                f"{active_m8_owners}"
+                f"Validation is missing the M11 bundle while owner lanes are active: "
+                f"{active_m11_owners}"
             )
+        native_wrapper_artifact = artifacts.get(
+            f"codex-agent-native-wrapper-packages-{final_tree}"
+        )
+        if current_m11_files and native_wrapper_artifact is None:
+            raise ValueError("Validation is missing the exact native-wrapper package artifact")
         current_lanes = required_lanes(plan)
         lanes: dict[str, dict[str, object]] = {
             lane: {
@@ -682,7 +766,8 @@ def discover(arguments: argparse.Namespace) -> dict[str, object]:
         if missing_lanes:
             raise ValueError(f"Validation receipt source artifacts are missing: {missing_lanes}")
         absent = set(LANES) - set(lanes)
-        carried_m8_root = temporary_root / "carried-m8"
+        carried_m11_root = temporary_root / "carried-m11"
+        carried_native_wrapper_root = temporary_root / "carried-native-wrapper-packages"
         if absent:
             if plan["full"]:
                 raise ValueError(
@@ -709,7 +794,8 @@ def discover(arguments: argparse.Namespace) -> dict[str, object]:
                 token,
                 getattr(arguments, "predecessor_timeout_seconds", PREDECESSOR_WAIT_SECONDS),
                 getattr(arguments, "predecessor_poll_seconds", PREDECESSOR_POLL_SECONDS),
-                carried_m8_root if not current_m8_files else None,
+                carried_m11_root if not current_m11_files else None,
+                carried_native_wrapper_root if not current_m11_files else None,
             ))
         lanes = {lane: lanes[lane] for lane in LANES}
         promotion_plan = validate_promotion_plan({
@@ -739,14 +825,24 @@ def discover(arguments: argparse.Namespace) -> dict[str, object]:
         source.mkdir()
         shutil.copyfile(plan_path, source / "impact-plan.json")
         shutil.copyfile(aggregate_path, source / "validation-receipt.json")
-        m8_files = current_m8_files or {
-            name: carried_m8_root / name
-            for name in M8_VALIDATION_FILES
+        m11_files = current_m11_files or {
+            name: carried_m11_root / name
+            for name in M11_VALIDATION_FILES
         }
-        for name, path in m8_files.items():
+        for name, path in m11_files.items():
             if not path.is_file() or path.is_symlink():
-                raise ValueError(f"M8 validation evidence is missing or unsafe: {name}")
+                raise ValueError(f"M11 validation evidence is missing or unsafe: {name}")
             shutil.copyfile(path, source / name)
+        native_wrapper_output = output / "native-wrapper-packages"
+        if current_m11_files:
+            extracted = temporary_root / "native-wrapper-validation-artifact"
+            extract_artifact(native_wrapper_artifact, token, extracted)
+            if {entry.name for entry in extracted.iterdir()} != {"packages", "evidence", "sdks"}:
+                raise ValueError("Validation native-wrapper artifact root is incomplete or unexpected")
+            shutil.copytree(extracted / "packages", native_wrapper_output)
+        else:
+            shutil.copytree(carried_native_wrapper_root, native_wrapper_output)
+        validate_native_wrapper_packages(native_wrapper_output, source)
         write_json(output / "promotion-plan.json", promotion_plan)
 
     matrix = {

@@ -133,7 +133,7 @@ case "$lane" in
     fi
     if [ "$test_lane" = true ]; then
       test -n "${LINUX_ARM64_RUNTIME_BUNDLE:-}"
-      ./gradlew -p gradle/build-logic executeLinuxArm64RuntimeEvidenceBundle \
+      ./gradlew :build-logic:executeLinuxArm64RuntimeEvidenceBundle \
         -PcodexAgent.candidateCommit="$commit" \
         -PcodexAgent.candidateTree="$tree" \
         -PcodexAgent.linuxArm64RuntimeEvidenceBundle="$LINUX_ARM64_RUNTIME_BUNDLE" \

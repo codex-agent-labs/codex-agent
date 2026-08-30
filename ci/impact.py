@@ -171,6 +171,7 @@ DESKTOP_RUNNERS = {
     "desktop-linux-x64": "ubuntu-24.04",
     "desktop-windows-x64": "windows-2025",
 }
+NATIVE_WRAPPER_LANES = tuple(lane for lane in LANES if lane.startswith("desktop-"))
 
 
 def run_git(root: Path, *arguments: str, binary: bool = False) -> bytes | str:
@@ -490,6 +491,7 @@ def write_github_outputs(path: Path, result: dict[str, object]) -> None:
     ]
     lines.append(f"desktop_matrix={json.dumps(desktop_matrix, separators=(',', ':'))}")
     lines.append(f"any_desktop={str(any(any(result['lanes'][lane][action] for action in ('build', 'test', 'metadata')) for lane in DESKTOP_LANES)).lower()}")
+    lines.append(f"native_wrappers={str(all(result['lanes'][lane]['build'] and result['lanes'][lane]['test'] for lane in NATIVE_WRAPPER_LANES)).lower()}")
     lines.append(f"any_apple={str(any(any(result['lanes'][lane][action] for action in ('build', 'test', 'metadata')) for lane in APPLE_LANES)).lower()}")
     with path.open("a", encoding="utf-8") as output:
         output.write("\n".join(lines) + "\n")

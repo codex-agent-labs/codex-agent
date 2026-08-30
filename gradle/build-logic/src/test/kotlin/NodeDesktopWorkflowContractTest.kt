@@ -19,7 +19,8 @@ class NodeDesktopWorkflowContractTest {
             "packageNodeWasmRuntimeEvidenceRunner",
         ).forEach { assertTrue(it in driver, it) }
         assertFalse("setup-sccache" in desktop)
-        assertEquals(1, Regex("(?m)^    strategy:$").findAll(desktop).count())
+        assertEquals(2, Regex("(?m)^    strategy:$").findAll(desktop).count())
+        assertTrue("  native-wrapper-host-consumers:" in desktop)
     }
 
     @Test
@@ -91,6 +92,8 @@ class NodeDesktopWorkflowContractTest {
         assertTrue(":codex-agent-runtime-desktop:packageLinuxArm64AppServer" in desktop)
         assertEquals(1, Regex("stageLinuxArm64RuntimeEvidenceBundle").findAll(combined).count())
         assertEquals(1, Regex("executeLinuxArm64RuntimeEvidenceBundle").findAll(combined).count())
+        assertTrue("./gradlew :build-logic:executeLinuxArm64RuntimeEvidenceBundle" in driver)
+        assertFalse("./gradlew -p gradle/build-logic executeLinuxArm64RuntimeEvidenceBundle" in driver)
         assertTrue("RUNNER_OS: Linux" in desktop && "RUNNER_ARCH: ARM64" in desktop)
         assertFalse("recordJvmRuntimeLinuxArm64Evidence" in combined)
     }
@@ -184,6 +187,10 @@ class NodeDesktopWorkflowContractTest {
     fun `candidate downloads exact promoted lanes and never invokes desktop evidence`() {
         val candidate = workflows.getValue("release-candidate.yml")
         assertTrue("codex-agent-promoted-validation-${'$'}{{ needs.identity.outputs.candidate_commit }}" in candidate)
+        assertTrue(
+            "codex-agent-promoted-native-wrapper-packages-${'$'}{{ needs.identity.outputs.candidate_commit }}" in
+                candidate,
+        )
         assertTrue("codex-agent-promoted-${'$'}lane-${'$'}CANDIDATE_COMMIT" in candidate)
         assertTrue("java -jar \"${'$'}RELEASE_TOOL\" assemble-promoted-candidate" in candidate)
         assertFalse("./gradlew" in candidate)

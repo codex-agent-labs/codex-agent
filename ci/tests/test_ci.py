@@ -23,11 +23,12 @@ from unittest.mock import patch
 CI_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_ROOT))
 
-from impact import LANES, M8_OWNER_LANES, effective_pathspecs, plan, write_github_outputs  # noqa: E402
+from impact import LANES, M8_OWNER_LANES, NATIVE_WRAPPER_LANES, effective_pathspecs, plan, write_github_outputs  # noqa: E402
 from evidence import main as evidence_main  # noqa: E402
 from receipt import (  # noqa: E402
     aggregate,
     create_receipt,
+    required_lanes,
     safe_extract,
     validate_receipt,
 )
@@ -40,6 +41,7 @@ from reuse import (  # noqa: E402
 from stage import OUTPUTS, archive_tree, copy_matches, restore_production_files, safe_extract_tar  # noqa: E402
 from validation_reuse import (  # noqa: E402
     M8_FILES,
+    M11_FILES,
     discover as discover_validation,
     materialize,
     validate as validate_aggregate_reuse,
@@ -84,15 +86,23 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertNotIn(":codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests", swift_tests)
         self.assertNotIn(":codex-agent-runtime-ios:generateCodexAgentAppleCompilerEvidence", swift_tests)
 
-    def test_merge_gate_assembles_c_abi_and_runs_packaged_m8_audit_over_exactly_six_receipts(self) -> None:
+    def test_merge_gate_carries_exact_receipts_from_m8_through_native_wrappers_to_m11(self) -> None:
         workflow = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         merge_gate = workflow.split("\n  merge-gate:", 1)[1]
         assemble = 'java -jar "$release_tool" assemble-c-abi-binding-receipt'
         audit = 'java -jar "$release_tool" audit-cross-language-bindings'
 
         self.assertEqual(1, merge_gate.count(assemble))
-        self.assertEqual(1, merge_gate.count(audit))
+        self.assertEqual(3, merge_gate.count(audit))
+        self.assertEqual(2, merge_gate.count("advance-cross-language-binding-receipt"))
         self.assertIn("--phase M8", merge_gate)
+        self.assertIn("phases=(M9_PYTHON M9_CSHARP M9_RUST M9_CPP M9_DART)", merge_gate)
+        self.assertIn("--phase M11", merge_gate)
+        for task in (
+            "verifyPythonBindingParity", "verifyCSharpBindingParity", "verifyRustBindingParity",
+            "verifyCppBindingParity", "verifyDartBindingParity",
+        ):
+            self.assertEqual(1, merge_gate.count(f":codex-agent-runtime-desktop:{task}"))
         self.assertNotIn("--phase M7_5", merge_gate)
         self.assertLess(merge_gate.index("lane_ios_swift_tests_test"), merge_gate.index(assemble))
         self.assertLess(merge_gate.index(assemble), merge_gate.index(audit))
@@ -103,15 +113,32 @@ class RunLaneContractTest(unittest.TestCase):
             "swift-parity.json",
             "objective-c-parity.json",
             "c-abi-parity.json",
-        }, set(re.findall(r"[a-z]+(?:-[a-z]+)*-parity\.json", merge_gate)))
-        for literal in ("6116", "3324", "2780", "12", "0"):
+            "python-parity.json",
+            "csharp-parity.json",
+            "rust-parity.json",
+            "cpp-parity.json",
+            "dart-parity.json",
+        }, set(re.findall(r"[a-z]+(?:-[a-z]+)*-parity\.json", merge_gate)) - {"language-parity.json"})
+        for literal in ("6116", "3324", "2780", "3880", "4436", "4992", "5548", "6104", "12", "0"):
             self.assertIn(literal, merge_gate)
         for evidence in (
             "canonical-api.json", "canonical-coverage.json", "kotlin-parity.json",
             "java-parity.json", "javascript-typescript-parity.json", "swift-parity.json",
             "objective-c-parity.json", "c-abi-parity.json", "binding-obligations-m8.json",
+            "python-parity.json", "csharp-parity.json", "rust-parity.json",
+            "cpp-parity.json", "dart-parity.json", "binding-obligations-m11.json",
         ):
             self.assertIn(evidence, merge_gate)
+        self.assertIn("codex-agent-native-wrapper-packages-", merge_gate)
+        self.assertIn("codex-agent-native-wrapper-host-*", merge_gate)
+        self.assertIn("build/ci/plan/reused-native-wrapper-release", merge_gate)
+        self.assertIn("needs.plan.outputs.validation_reused == 'true'", merge_gate)
+        self.assertIn("id: restore-reused-native-wrapper-release", merge_gate)
+        self.assertIn("steps.restore-reused-native-wrapper-release.outputs.restored == 'true'", merge_gate)
+        self.assertNotIn(
+            "needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.native_wrappers == 'true'",
+            merge_gate,
+        )
         self.assertIn("path: build/ci/final-validation/*", merge_gate)
 
 
@@ -681,6 +708,20 @@ class ImpactPlanTest(GitFixture):
         matrix = json.loads(values["consumer_matrix"])
         self.assertTrue(matrix)
         self.assertTrue(all(item["runner"] == "ubuntu-24.04" for item in matrix))
+
+    def test_native_wrapper_changes_select_all_five_build_and_test_owners(self) -> None:
+        result, _, _ = self.make_plan(
+            "codex-agent-runtime-desktop/bindings/python/src/codex_agent/_ffi.py",
+            "wrapper changed\n",
+        )
+        self.assertTrue(all(
+            result["lanes"][lane]["build"] and result["lanes"][lane]["test"]
+            for lane in NATIVE_WRAPPER_LANES
+        ))
+        output = self.root / "github-output-native-wrappers"
+        write_github_outputs(output, result)
+        values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+        self.assertEqual("true", values["native_wrappers"])
 
     def test_shared_production_change_selects_every_lane(self) -> None:
         result, _, _ = self.make_plan("common/Api.kt")
@@ -1686,6 +1727,19 @@ class ReceiptTest(GitFixture):
             validate_aggregate_reuse(reusable, current)
         for name in M8_FILES:
             (reusable / name).unlink(missing_ok=True)
+
+        m11_output = self.root / "materialized-m11"
+        m11_output.mkdir()
+        for name in M11_FILES:
+            (reusable / name).write_bytes(f"exact:{name}".encode())
+        materialize(reusable, current, m11_output / "validation-receipt.json")
+        for name in M11_FILES:
+            self.assertEqual((reusable / name).read_bytes(), (m11_output / name).read_bytes())
+        (reusable / "dart-parity.json").unlink()
+        with self.assertRaisesRegex(ValueError, "file set mismatch"):
+            validate_aggregate_reuse(reusable, current)
+        for name in M11_FILES:
+            (reusable / name).unlink(missing_ok=True)
         nested = reusable / "nested"
         nested.mkdir()
         (nested / "canonical-api.json").write_text("{}\n", encoding="utf-8")
@@ -1707,6 +1761,14 @@ class ReceiptTest(GitFixture):
             validate_aggregate_reuse(reusable, current)
         (reusable / "impact-plan.json").write_bytes(original_plan)
         (reusable / "validation-receipt.json").write_bytes(original_receipt)
+
+        native_required = json.loads(original_plan)
+        for lane in NATIVE_WRAPPER_LANES:
+            native_required["lanes"][lane].update(build=True, test=True)
+        (reusable / "impact-plan.json").write_text(json.dumps(native_required), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "lacks required M11"):
+            validate_aggregate_reuse(reusable, current)
+        (reusable / "impact-plan.json").write_bytes(original_plan)
 
         source_plan = json.loads((reusable / "impact-plan.json").read_text(encoding="utf-8"))
         source_plan["lanes"]["portable"].update(build=True, reasons=["ci-full-label"])
@@ -2119,6 +2181,98 @@ class ReceiptTest(GitFixture):
             self.assertEqual(
                 {"reused": False},
                 discover_validation(current_path, self.root / "malformed", "token", "https://api.invalid"),
+            )
+
+    def test_m11_validation_reuse_relays_the_exact_native_wrapper_release(self) -> None:
+        reusable = self.root / "reusable-m11"
+        reusable.mkdir()
+        source_plan = json.loads(self.plan_path.read_text(encoding="utf-8"))
+        for lane in NATIVE_WRAPPER_LANES:
+            source_plan["lanes"][lane].update(build=True, test=True)
+        (reusable / "impact-plan.json").write_text(json.dumps(source_plan), encoding="utf-8")
+        source_receipt = json.loads((self.receipt_root / "lane-receipt.json").read_text(encoding="utf-8"))
+        lane_summary = {
+            key: source_receipt[key]
+            for key in ("runId", "runAttempt", "validationCommit", "validationTree", "result")
+        }
+        validation_receipt = {
+            "schemaVersion": 1,
+            "repository": source_plan["repository"],
+            "event": "pull_request",
+            "validationCommit": source_plan["validationCommit"],
+            "validationTree": source_plan["validationTree"],
+            "impactPlan": "impact-plan.json",
+            "lanes": {
+                lane: dict(lane_summary, artifactName=f"codex-agent-ci-{lane}-{self.first_tree}")
+                for lane in required_lanes(source_plan)
+            },
+            "result": "passed",
+        }
+        (reusable / "validation-receipt.json").write_text(json.dumps(validation_receipt), encoding="utf-8")
+        for name in M11_FILES:
+            (reusable / name).write_text(f"exact:{name}", encoding="utf-8")
+        validation_archive = self.root / "validation-m11.zip"
+        with zipfile.ZipFile(validation_archive, "w") as output:
+            for file in reusable.iterdir():
+                output.write(file, file.name)
+
+        native_release = self.root / "native-wrapper-release"
+        for directory in ("evidence", "sdks"):
+            self.write(f"native-wrapper-release/{directory}/proof.txt", directory)
+        for language in ("python", "csharp", "rust", "cpp", "dart"):
+            self.write(f"native-wrapper-release/packages/{language}/{language}.package", language)
+        native_archive = self.root / "native-wrapper-release.zip"
+        with zipfile.ZipFile(native_archive, "w") as output:
+            for file in native_release.rglob("*"):
+                if file.is_file():
+                    output.write(file, file.relative_to(native_release))
+
+        current = dict(source_plan, event="merge_group")
+        current_path = self.root / "merge-m11-plan.json"
+        current_path.write_text(json.dumps(current), encoding="utf-8")
+        validation_name = f"codex-agent-ci-validation-{self.first_tree}"
+        native_name = f"codex-agent-native-wrapper-packages-{self.first_tree}"
+        artifacts = [
+            {"name": validation_name, "expired": False},
+            {"name": native_name, "expired": False},
+        ]
+
+        def api(url: str, _token: str) -> dict[str, object]:
+            if "/workflows/" in url:
+                return {"workflow_runs": [{
+                    "id": 999,
+                    "run_attempt": 3,
+                    "conclusion": "success",
+                    "pull_requests": [{"number": source_plan["pullRequest"]}],
+                }]}
+            return {"artifacts": artifacts}
+
+        with (
+            patch("reuse.api_json", side_effect=api),
+            patch(
+                "validation_reuse.download_artifact",
+                side_effect=lambda artifact, _token: (
+                    native_archive.read_bytes() if artifact["name"] == native_name
+                    else validation_archive.read_bytes()
+                ),
+            ),
+        ):
+            destination = self.root / "validation-m11-destination"
+            result = discover_validation(current_path, destination, "token", "https://api.invalid")
+        self.assertTrue(result["reused"])
+        relayed = self.root / "reused-native-wrapper-release"
+        self.assertEqual(
+            {"python", "csharp", "rust", "cpp", "dart"},
+            {path.name for path in (relayed / "packages").iterdir()},
+        )
+
+        artifacts.pop()
+        with patch("reuse.api_json", side_effect=api), patch(
+            "validation_reuse.download_artifact", return_value=validation_archive.read_bytes(),
+        ):
+            self.assertEqual(
+                {"reused": False},
+                discover_validation(current_path, self.root / "missing-native", "token", "https://api.invalid"),
             )
 
 

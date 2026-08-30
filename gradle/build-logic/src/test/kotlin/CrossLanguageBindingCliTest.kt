@@ -161,6 +161,27 @@ internal class CrossLanguageBindingCliFixture(
                         "This exact canonical capability is not applicable to the fixture projection.",
                     )
                 },
+                hostConsumerProofs = if (language in setOf(
+                    CrossLanguageBinding.PYTHON,
+                    CrossLanguageBinding.CSHARP,
+                    CrossLanguageBinding.RUST,
+                    CrossLanguageBinding.CPP,
+                    CrossLanguageBinding.DART,
+                )) crossLanguageCAbiTargetSpecs.values.map { spec ->
+                    CrossLanguageBindingHostConsumerProof(
+                        classifier = spec.classifier.removePrefix("c-abi-"),
+                        runnerOs = spec.runnerOs,
+                        runnerArch = spec.runnerArch,
+                        toolchainIdentitySha256 = "4".repeat(64),
+                        packageArtifactId = "${language.id}-artifact",
+                        packageSha256 = "1".repeat(64),
+                        nativeLibrarySha256 = "5".repeat(64),
+                        testId = "${language.id}.host.${spec.target}",
+                        status = CrossLanguageBindingTestStatus.PASSED,
+                        candidateCommit = "6".repeat(40),
+                        candidateTree = "7".repeat(40),
+                    )
+                } else emptyList(),
             ),
         )
     }
