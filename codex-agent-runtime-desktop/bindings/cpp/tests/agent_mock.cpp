@@ -2,6 +2,7 @@
 
 #include "agent_native_probe.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>

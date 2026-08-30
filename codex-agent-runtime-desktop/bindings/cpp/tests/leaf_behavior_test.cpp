@@ -2,6 +2,7 @@
 
 #include "leaf_native_probe.hpp"
 
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
