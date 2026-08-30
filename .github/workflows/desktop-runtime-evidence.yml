@@ -422,6 +422,8 @@ jobs:
             --configuration Release -p:CodexAgentRealSdkPath="$sdk"
           dotnet run --project "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
             --configuration Release --no-build -- --real-mcp-values "$sdk"
+          dotnet run --project "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
+            --configuration Release --no-build
           cargo fetch --manifest-path "$binding/rust/Cargo.toml" --locked
           cargo fmt --manifest-path "$binding/rust/Cargo.toml" -- --check
           cargo clippy --manifest-path "$binding/rust/Cargo.toml" --all-targets --locked --offline -- -D warnings

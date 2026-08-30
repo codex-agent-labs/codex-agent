@@ -118,6 +118,40 @@ class RunLaneContractTest(unittest.TestCase):
             ],
         )
 
+    def test_native_wrapper_package_emits_csharp_aggregate_evidence(self) -> None:
+        workflow = (
+            CI_ROOT.parent / ".github/workflows/desktop-runtime-evidence.yml"
+        ).read_text(encoding="utf-8")
+        package = workflow.split("\n  native-wrapper-packages:", 1)[1].split(
+            "\n  native-wrapper-host-consumers:", 1
+        )[0]
+        lines = [line.strip() for line in package.splitlines()]
+        project = (
+            'dotnet run --project '
+            '"$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \\'
+        )
+        arguments = [
+            (index, line)
+            for index, line in enumerate(lines)
+            if line.startswith("--configuration Release --no-build")
+        ]
+
+        self.assertEqual(2, lines.count(project))
+        self.assertEqual(
+            [
+                '--configuration Release --no-build -- --real-mcp-values "$sdk"',
+                "--configuration Release --no-build",
+            ],
+            [line for _, line in arguments],
+        )
+        self.assertLess(
+            arguments[-1][0],
+            lines.index(
+                'cp "$csharp/artifacts"/{compiler-evidence.tsv,executed-tests.tsv} '
+                '"$release/evidence/csharp/"'
+            ),
+        )
+
     def test_action_and_lane_driver_bind_every_execution_to_the_candidate_tree(self) -> None:
         action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")

@@ -87,12 +87,12 @@ structured failures, identity, nullability, bounded disposal, and cleanup-failur
 quarantine through `CodexNativeLibrary.CleanupIssues`:
 
 ```sh
-dotnet build tests/CodexAgent.Tests/CodexAgent.Tests.csproj --configuration Release
-dotnet run --project tests/CodexAgent.Tests/CodexAgent.Tests.csproj --configuration Release --no-build
+dotnet build tests/CodexAgent.Tests/CodexAgent.Tests.csproj --configuration Release \
+  -p:CodexAgentRealSdkPath=/path/to/libcodex_agent
 dotnet run --project tests/CodexAgent.Tests/CodexAgent.Tests.csproj \
-  --configuration Release \
-  -p:CodexAgentRealSdkPath=/path/to/libcodex_agent \
+  --configuration Release --no-build \
   -- --real-mcp-values /path/to/libcodex_agent
+dotnet run --project tests/CodexAgent.Tests/CodexAgent.Tests.csproj --configuration Release --no-build
 dotnet pack src/CodexAgent/CodexAgent.csproj --configuration Release --output artifacts
 dotnet restore samples/CodexAgent.Consumer/CodexAgent.Consumer.csproj --force
 dotnet build samples/CodexAgent.Consumer/CodexAgent.Consumer.csproj --configuration Release --no-restore
