@@ -118,6 +118,33 @@ class RunLaneContractTest(unittest.TestCase):
             ],
         )
 
+    def test_native_wrapper_dart_behavior_runs_declared_sdk_floor(self) -> None:
+        root = CI_ROOT.parent
+        workflow = (root / ".github/workflows/desktop-runtime-evidence.yml").read_text(
+            encoding="utf-8"
+        )
+        language = workflow.split("\n  native-wrapper-language:", 1)[1].split(
+            "\n  native-wrapper-package-validation:", 1
+        )[0]
+        pubspec = (
+            root / "codex-agent-runtime-desktop/bindings/dart/pubspec.yaml"
+        ).read_text(encoding="utf-8")
+        floor = re.search(r'^  sdk: ">=([0-9.]+) <4\.0\.0"$', pubspec, re.MULTILINE)
+        action = language.split("uses: dart-lang/setup-dart@", 1)[1].split(
+            "- name: Execute the wrapper behavior and parity suite", 1
+        )[0]
+
+        self.assertIsNotNone(floor)
+        self.assertIn("if: matrix.language == 'dart'", action)
+        self.assertEqual(
+            [f'sdk: "{floor.group(1)}"'],
+            [line.strip() for line in action.splitlines() if line.strip().startswith("sdk:")],
+        )
+        self.assertLess(
+            language.index(f'sdk: "{floor.group(1)}"'),
+            language.index("dart pub get --enforce-lockfile"),
+        )
+
     def test_native_wrapper_package_emits_csharp_aggregate_evidence(self) -> None:
         workflow = (
             CI_ROOT.parent / ".github/workflows/desktop-runtime-evidence.yml"
