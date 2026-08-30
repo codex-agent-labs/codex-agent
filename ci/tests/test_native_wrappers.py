@@ -7,6 +7,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -148,6 +149,10 @@ class NativeWrapperReleaseTest(unittest.TestCase):
 
     def test_release_inventory_is_exact(self) -> None:
         packaging = ast.parse((CI_ROOT / "native_wrappers.py").read_text(encoding="utf-8"))
+        csharp_project = ET.parse(
+            CI_ROOT.parent
+            / "codex-agent-runtime-desktop/bindings/csharp/src/CodexAgent/CodexAgent.csproj"
+        ).getroot()
         functions = {node.name: node for node in packaging.body if isinstance(node, ast.FunctionDef)}
         calls = {
             name: {
@@ -160,6 +165,18 @@ class NativeWrapperReleaseTest(unittest.TestCase):
         self.assertIn("normalize_python_sdist", calls["package_python"])
         self.assertIn("normalize_nupkg", calls["package_once"])
         self.assertIn("-p:PathMap=", ast.unparse(functions["package_once"]))
+        self.assertEqual(
+            [
+                (f"../../native/**/codex-agent-c-abi-{proof}.json",
+                 "runtimes/%(RecursiveDir)native/%(Filename)%(Extension)")
+                for proof in ("manifest", "evidence")
+            ],
+            [
+                (item.get("Include"), item.get("PackagePath"))
+                for item in csharp_project.findall(".//None")
+                if "codex-agent-c-abi-" in item.get("Include", "")
+            ],
+        )
         self.assertEqual(
             ["macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"],
             list(HOSTS),

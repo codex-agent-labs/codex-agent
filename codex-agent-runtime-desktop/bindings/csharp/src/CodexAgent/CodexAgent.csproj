@@ -28,8 +28,8 @@
     <None Include="../../native/linux-arm64/libcodex_agent.so" Pack="true" PackagePath="runtimes/linux-arm64/native/" Condition="Exists('../../native/linux-arm64/libcodex_agent.so')" />
     <None Include="../../native/linux-x64/libcodex_agent.so" Pack="true" PackagePath="runtimes/linux-x64/native/" Condition="Exists('../../native/linux-x64/libcodex_agent.so')" />
     <None Include="../../native/win-x64/codex_agent.dll" Pack="true" PackagePath="runtimes/win-x64/native/" Condition="Exists('../../native/win-x64/codex_agent.dll')" />
-    <None Include="../../native/**/codex-agent-c-abi-manifest.json" Pack="true" PackagePath="runtimes/%(RecursiveDir)native/" />
-    <None Include="../../native/**/codex-agent-c-abi-evidence.json" Pack="true" PackagePath="runtimes/%(RecursiveDir)native/" />
+    <None Include="../../native/**/codex-agent-c-abi-manifest.json" Pack="true" PackagePath="runtimes/%(RecursiveDir)native/%(Filename)%(Extension)" />
+    <None Include="../../native/**/codex-agent-c-abi-evidence.json" Pack="true" PackagePath="runtimes/%(RecursiveDir)native/%(Filename)%(Extension)" />
   </ItemGroup>
 
   <Target Name="RequireCodexAgentNativeAssets" BeforeTargets="GenerateNuspec" Condition="'$(CodexAgentRequireNativeAssets)' == 'true'">
