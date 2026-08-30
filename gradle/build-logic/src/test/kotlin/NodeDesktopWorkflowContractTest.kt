@@ -19,13 +19,13 @@ class NodeDesktopWorkflowContractTest {
             "packageNodeWasmRuntimeEvidenceRunner",
         ).forEach { assertTrue(it in driver, it) }
         assertFalse("setup-sccache" in desktop)
-        assertEquals(2, Regex("(?m)^    strategy:$").findAll(desktop).count())
+        assertEquals(3, Regex("(?m)^    strategy:$").findAll(desktop).count())
         assertTrue("  native-wrapper-host-consumers:" in desktop)
     }
 
     @Test
     fun `desktop lanes publish strict receipts and consumers import all classifiers`() {
-        val ci = workflows.getValue("ci.yml")
+        val ci = workflows.getValue("product-validation.yml")
         val desktop = workflows.getValue("desktop-runtime-evidence.yml")
         assertTrue("uses: ./.github/actions/run-ci-lane" in desktop)
         assertTrue("pattern: codex-agent-ci-desktop-*-" in ci)
@@ -40,7 +40,7 @@ class NodeDesktopWorkflowContractTest {
         val nodeJs = driver.substringAfter("  node-js)").substringBefore("  node-wasm)")
         val nodeWasm = driver.substringAfter("  node-wasm)").substringBefore("  desktop-macos-arm64)")
         val strictTask = ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity"
-        val ci = workflows.getValue("ci.yml")
+        val ci = workflows.getValue("product-validation.yml")
 
         assertEquals(1, Regex(Regex.escape(strictTask)).findAll(nodeJs).count())
         assertFalse(":codex-agent-runtime-desktop:verifyPackedNpmConsumers" in nodeJs)
@@ -100,7 +100,7 @@ class NodeDesktopWorkflowContractTest {
 
     @Test
     fun `Linux ARM exact reuse gates every expensive job and preserves miss paths`() {
-        val ci = workflows.getValue("ci.yml")
+        val ci = workflows.getValue("product-validation.yml")
         val desktop = workflows.getValue("desktop-runtime-evidence.yml")
         val lane = repository.resolve(".github/actions/run-ci-lane/action.yml").readText()
         val stage = repository.resolve("ci/stage.py").readText()

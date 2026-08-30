@@ -35,6 +35,8 @@ class CacheSeedTest(unittest.TestCase):
             "event": "merge_group",
             "repository": REPO,
             "mergeReady": True,
+            "remoteBuildAuthorized": True,
+            "remoteBuildAuthorizationReason": "merge-group",
             "validationCommit": COMMIT,
             "validationTree": TREE,
             "lanes": {
@@ -355,6 +357,7 @@ class CacheSeedTest(unittest.TestCase):
         self.assertFalse(result["write"])
 
         self.plan["event"] = "pull_request"
+        self.plan["remoteBuildAuthorizationReason"] = "pull-request-final"
         self.write_plan()
         pull_environment = {
             "GITHUB_EVENT_NAME": "pull_request",
@@ -368,6 +371,55 @@ class CacheSeedTest(unittest.TestCase):
         self.assertTrue(result["write"])
         self.assertTrue(result["seed"])
 
+    def test_policy_rejects_unauthorized_plan_even_when_environment_matches(self) -> None:
+        self.plan["remoteBuildAuthorized"] = False
+        self.plan["remoteBuildAuthorizationReason"] = "merge-group-event-required"
+        self.write_plan()
+        arguments = Namespace(
+            plan=self.plan_path,
+            lane="android",
+            validation_commit=COMMIT,
+            runner_os="Linux",
+            runner_arch="X64",
+            github_output=None,
+        )
+        environment = {
+            "GITHUB_EVENT_NAME": "merge_group",
+            "GITHUB_REPOSITORY": REPO,
+            "GITHUB_SHA": COMMIT,
+            "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-7-deadbeef",
+            "PR_NUMBER": "",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            self.assertRaises(ValueError),
+        ):
+            policy(arguments)
+
+    def test_authorized_workflow_dispatch_never_writes_or_seeds_dependency_caches(self) -> None:
+        self.plan["event"] = "workflow_dispatch"
+        self.plan["remoteBuildAuthorizationReason"] = "protected-dispatch"
+        self.write_plan()
+        arguments = Namespace(
+            plan=self.plan_path,
+            lane="android",
+            validation_commit=COMMIT,
+            runner_os="Linux",
+            runner_arch="X64",
+            github_output=None,
+        )
+        environment = {
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REPOSITORY": REPO,
+            "GITHUB_SHA": COMMIT,
+            "GITHUB_REF": "refs/heads/main",
+            "PR_NUMBER": "",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            result = policy(arguments)
+        for name in ("write", "rust-write", "sccache-write", "seed", "rust-seed"):
+            self.assertFalse(result[name], name)
+
     def test_policy_isolates_cargo_and_sccache_writers(self) -> None:
         namespaces = {
             "ios-native-tests": "codex-agent-rust-v1-ios-native-tests",
@@ -375,6 +427,7 @@ class CacheSeedTest(unittest.TestCase):
             "ios-rust-simulator": "codex-agent-rust-v1-ios-rust-simulator",
         }
         self.plan["event"] = "pull_request"
+        self.plan["remoteBuildAuthorizationReason"] = "pull-request-final"
         self.plan["lanes"] = {
             lane: {"build": True, "test": False, "metadata": False}
             for lane in (*namespaces, "ios-framework-device", "ios-package")
@@ -456,6 +509,7 @@ class CacheSeedTest(unittest.TestCase):
                 self.assertFalse(result["sccache-write"])
 
         self.plan["event"] = "merge_group"
+        self.plan["remoteBuildAuthorizationReason"] = "merge-group"
         self.write_plan()
         merge = environment | {
             "GITHUB_EVENT_NAME": "merge_group",
@@ -495,6 +549,7 @@ class CacheSeedTest(unittest.TestCase):
     def test_identical_tree_merge_group_promotes_pr_source_seed_without_product_job(self) -> None:
         pr_commit = "3" * 40
         self.plan["event"] = "pull_request"
+        self.plan["remoteBuildAuthorizationReason"] = "pull-request-final"
         self.plan["validationCommit"] = pr_commit
         self.write_plan()
         seed = self.root / "pr-seed"
@@ -503,6 +558,7 @@ class CacheSeedTest(unittest.TestCase):
         self.assertEqual(pr_commit, manifest["validationCommit"])
 
         self.plan["event"] = "merge_group"
+        self.plan["remoteBuildAuthorizationReason"] = "merge-group"
         self.plan["validationCommit"] = COMMIT
         self.write_plan()
         self.write_promotion(pr_commit)

@@ -27,6 +27,7 @@ from promote import (  # noqa: E402
     selected_validation_run,
     validate_lane,
     validate_native_wrapper_packages,
+    validate_plan,
     validate_source_artifacts,
     wait_for_predecessor_promotion,
 )
@@ -76,6 +77,8 @@ class PromotionTest(unittest.TestCase):
             "validationCommit": self.validated_commit,
             "validationTree": self.final_tree,
             "mergeReady": True,
+            "remoteBuildAuthorized": True,
+            "remoteBuildAuthorizationReason": "merge-group",
             "androidEvidenceRequired": False,
             "full": True,
             "unknownPaths": [],
@@ -306,6 +309,33 @@ class PromotionTest(unittest.TestCase):
                     self.final_tree,
                 )
                 self.assertEqual(names, set(result[-1]))
+
+    def test_promotion_rejects_nonexact_or_unauthorized_remote_build_plans(self) -> None:
+        original = dict(self.plan)
+        mutations = {
+            "unauthorized": {
+                "remoteBuildAuthorized": False,
+                "remoteBuildAuthorizationReason": "merge-group-event-required",
+            },
+            "wrong-type": {"remoteBuildAuthorized": "true"},
+            "wrong-reason": {"remoteBuildAuthorizationReason": "pull-request-final"},
+            "missing-reason": {"remoteBuildAuthorizationReason": None},
+        }
+        for label, changes in mutations.items():
+            with self.subTest(label=label):
+                self.plan = original | changes
+                if changes.get("remoteBuildAuthorizationReason") is None:
+                    self.plan.pop("remoteBuildAuthorizationReason")
+                self.write_json(self.plan_path, self.plan)
+                with self.assertRaises(ValueError):
+                    validate_plan(
+                        self.plan_path,
+                        REPOSITORY,
+                        self.validated_commit,
+                        self.final_tree,
+                    )
+        self.plan = original
+        self.write_json(self.plan_path, self.plan)
 
     def test_source_validation_rejects_partial_extra_nested_and_symlink_sets(self) -> None:
         plan_root = self.root / "strict-plan"

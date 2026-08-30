@@ -10,7 +10,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from impact import NATIVE_WRAPPER_LANES
+from impact import NATIVE_WRAPPER_LANES, validate_remote_build_authorization
 from receipt import required_lanes, safe_extract
 from reuse import download_artifact, paginated_items, run_matches_pr
 
@@ -90,11 +90,21 @@ def validate(root: Path, current_plan: Path) -> dict[str, object]:
         raise ValueError("Unsupported aggregate validation receipt")
     plan_keys = {
         "schemaVersion", "event", "repository", "pullRequest", "baseCommit", "headCommit",
-        "validationCommit", "validationTree", "mergeReady", "androidEvidenceRequired", "full",
+        "validationCommit", "validationTree", "mergeReady", "remoteBuildAuthorized",
+        "remoteBuildAuthorizationReason", "androidEvidenceRequired", "full",
         "unknownPaths", "changedPaths", "lanes",
     }
-    if set(source_plan) != plan_keys or source_plan.get("schemaVersion") != 1:
-        raise ValueError("Reusable PR impact plan schema mismatch")
+    if (
+        set(source_plan) != plan_keys
+        or set(plan) != plan_keys
+        or source_plan.get("schemaVersion") != 1
+        or plan.get("schemaVersion") != 1
+        or plan.get("event") != "merge_group"
+        or plan.get("mergeReady") is not True
+    ):
+        raise ValueError("Reusable impact plan schema or identity mismatch")
+    source_authorized, source_reason = validate_remote_build_authorization(source_plan)
+    current_authorized, current_reason = validate_remote_build_authorization(plan)
     if source_plan["lanes"].get("ios-swift-tests", {}).get("test") is True and files == BASE_FILES:
         raise ValueError("Reusable PR validation lacks required M8 binding evidence")
     native_wrappers_required = all(
@@ -108,6 +118,10 @@ def validate(root: Path, current_plan: Path) -> dict[str, object]:
         raise ValueError("Only authoritative PR validation may satisfy an identical merge group")
     if (
         not source_plan.get("mergeReady")
+        or not source_authorized
+        or source_reason != "pull-request-final"
+        or not current_authorized
+        or current_reason != "merge-group"
         or receipt["repository"] != plan["repository"]
         or source_plan["repository"] != plan["repository"]
         or source_plan["pullRequest"] != plan.get("pullRequest")

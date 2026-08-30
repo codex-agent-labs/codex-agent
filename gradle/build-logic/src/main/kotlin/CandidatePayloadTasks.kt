@@ -122,8 +122,11 @@ private fun verifyPromotedCandidatePayload(
     }.keys
     val promotionLanes = promotion.releaseObject("lanes")
     val validationLanes = validation.releaseObject("lanes")
-    check(plan.releaseInt("schemaVersion") == 1 && plan.releaseString("repository") == CodexAgentBuild.REPOSITORY &&
+    check(plan.keys == impactPlanKeys && plan.releaseInt("schemaVersion") == 1 &&
+        plan.releaseString("repository") == CodexAgentBuild.REPOSITORY &&
         plan.releaseString("event") == "merge_group" && plan.releaseBoolean("mergeReady") &&
+        plan.releaseBoolean("remoteBuildAuthorized") &&
+        plan.releaseString("remoteBuildAuthorizationReason") == "merge-group" &&
         plan.releaseString("validationTree") == expectedTree &&
         validation.releaseInt("schemaVersion") == 1 &&
         validation.releaseString("repository") == CodexAgentBuild.REPOSITORY &&

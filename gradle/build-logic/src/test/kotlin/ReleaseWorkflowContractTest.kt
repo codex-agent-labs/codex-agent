@@ -9,6 +9,7 @@ internal object ReleaseWorkflowFixture {
         .first { it.resolve(".github/workflows/release-candidate.yml").isFile }
     val workflows = listOf(
         "ci.yml",
+        "product-validation.yml",
         "promote.yml",
         "android-runtime-evidence.yml",
         "apple-runtime-evidence.yml",
@@ -86,11 +87,13 @@ class ReleaseWorkflowContractTest {
 
     @Test
     fun `merge validation is promoted on main without rebuilding it`() {
-        val ci = workflows.getValue("ci.yml")
+        val caller = workflows.getValue("ci.yml")
+        val ci = workflows.getValue("product-validation.yml")
         val promote = workflows.getValue("promote.yml")
-        assertTrue("pull_request:" in ci && "merge_group:" in ci)
+        assertTrue("pull_request:" in caller && "merge_group:" in caller)
+        assertTrue("workflow_call:" in ci)
         assertTrue("  merge-gate:\n    name: CI / merge-gate\n" in ci)
-        assertFalse(Regex("(?m)^  push:$").containsMatchIn(ci))
+        assertFalse(Regex("(?m)^  push:$").containsMatchIn(caller + ci))
         assertTrue("python3 ci/receipt.py aggregate" in ci)
         assertTrue("name: codex-agent-ci-validation-${'$'}{{ needs.plan.outputs.validation_tree }}" in ci)
         assertTrue("branches: [main]" in promote)
@@ -102,8 +105,8 @@ class ReleaseWorkflowContractTest {
         assertTrue("name: codex-agent-promoted-native-wrapper-packages-${'$'}{{ github.sha }}" in promote)
         assertFalse("\nconcurrency:\n" in promote)
         val android = workflows.getValue("android-runtime-evidence.yml")
-        assertTrue("MERGE_READY: ${'$'}{{ !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'merge-ready') }}" in android)
-        assertTrue("[[ \"${'$'}GITHUB_EVENT_NAME\" = merge_group || \"${'$'}MERGE_READY\" = true ]]" in android)
+        assertTrue("PR_REMOTE_FINAL:" in android)
+        assertTrue("\"${'$'}GITHUB_EVENT_NAME\" = workflow_dispatch" in android)
         assertFalse("--test-targets=" in android)
         assertTrue("--format=none 2>&1 | tee \"${'$'}matrix_status\"" in android)
         assertTrue("Test \\[(matrix-[A-Za-z0-9_-]+)\\] has been created in the Google Cloud" in android)
@@ -116,7 +119,7 @@ class ReleaseWorkflowContractTest {
         assertTrue("matrix[\"resultStorage\"][\"googleCloudStorage\"][\"gcsPath\"].rstrip(\"/\")" in android)
         assertTrue("gcloud storage cp \"${'$'}results_uri/**/*.xml\"" in android)
         assertFalse("mapfile -t result_uris" in android)
-        assertFalse("curl " in android)
+        assertTrue("environments/product-attestation" in android)
         assertFalse("urllib.request" in android)
         listOf("./gradlew", "setup-kmp", "setup-android", "cargo ", "xcodebuild", "firebase").forEach {
             assertFalse(it.lowercase() in promote.lowercase(), it)
@@ -125,7 +128,7 @@ class ReleaseWorkflowContractTest {
 
     @Test
     fun `full Android lane reuse does not suppress trusted evidence`() {
-        val job = workflows.getValue("ci.yml")
+        val job = workflows.getValue("product-validation.yml")
             .substringAfter("\n  android-runtime-evidence:")
             .substringBefore("\n\n  desktop:")
         assertTrue("needs.plan.outputs.validation_reused != 'true'" in job)

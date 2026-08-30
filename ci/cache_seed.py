@@ -11,6 +11,8 @@ import re
 import shutil
 from pathlib import Path, PurePosixPath
 
+from impact import validate_remote_build_authorization
+
 
 OID = re.compile(r"[0-9a-f]{40}")
 KEY = re.compile(r"[A-Za-z0-9_.-]+")
@@ -136,10 +138,18 @@ def read_plan(path: Path, merge_group_only: bool = False) -> dict[str, object]:
         not isinstance(value, dict)
         or value.get("schemaVersion") != 1
         or value.get("mergeReady") is not True
-        or value.get("event") not in {"pull_request", "merge_group"}
+        or value.get("event") not in {"pull_request", "merge_group", "workflow_dispatch"}
         or merge_group_only and value.get("event") != "merge_group"
     ):
-        raise ValueError("Cache seeds require an authoritative merge-group impact plan")
+        raise ValueError("Cache seeds require an authoritative impact plan")
+    authorized, reason = validate_remote_build_authorization(value)
+    expected_reason = {
+        "pull_request": "pull-request-final",
+        "merge_group": "merge-group",
+        "workflow_dispatch": "protected-dispatch",
+    }[value["event"]]
+    if not authorized or reason != expected_reason:
+        raise ValueError("Cache seeds require an authorized impact plan")
     require_oid(value.get("validationCommit"), "plan validation commit")
     require_oid(value.get("validationTree"), "plan validation tree")
     if not isinstance(value.get("repository"), str) or "/" not in value["repository"]:

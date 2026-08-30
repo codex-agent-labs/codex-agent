@@ -74,7 +74,7 @@ class CacheIdentityContractTest(unittest.TestCase):
     def test_failed_validation_preserves_only_successful_production_then_fails(self) -> None:
         lane = (REPOSITORY / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
         stage = (REPOSITORY / "ci/stage.py").read_text(encoding="utf-8")
-        workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        workflow = (REPOSITORY / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
         self.assertIn("id: production-execution", lane)
         self.assertIn("id: execution", lane)
         self.assertIn("steps.production-execution.outcome == 'success'", lane)

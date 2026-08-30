@@ -49,6 +49,113 @@ from validation_reuse import (  # noqa: E402
 
 
 class RunLaneContractTest(unittest.TestCase):
+    def test_remote_product_jobs_are_guarded_before_materialization(self) -> None:
+        workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text(
+            encoding="utf-8"
+        )
+
+        def job(name: str) -> str:
+            match = re.search(
+                rf"^  {re.escape(name)}:\n(?P<body>.*?)(?=^  [a-z0-9-]+:\n|\Z)",
+                workflow,
+                re.MULTILINE | re.DOTALL,
+            )
+            self.assertIsNotNone(match, name)
+            return match.group("body")
+
+        dispatch = job("dispatch-authorization")
+        self.assertIn("if: github.event_name == 'workflow_dispatch'", dispatch)
+        self.assertIn("environment: product-attestation", dispatch)
+        self.assertIn("actions: read", dispatch)
+        for policy in (
+            ".can_admins_bypass == false",
+            "custom_branch_policies: true",
+            '.type == "required_reviewers" and (.reviewers | length) > 0',
+            '.type == "branch_policy"',
+            ".total_count > 0 and (.branch_policies | length) == .total_count",
+        ):
+            self.assertIn(policy, dispatch)
+        for exact_identity in (
+            'test "$GITHUB_SHA" = "$VALIDATION_COMMIT"',
+            'test "$(git rev-parse \'HEAD^{tree}\')" = "$VALIDATION_TREE"',
+            'git merge-base --is-ancestor "$BASE_COMMIT" "$VALIDATION_COMMIT"',
+        ):
+            self.assertIn(exact_identity, dispatch)
+
+        plan_job = job("plan")
+        self.assertIn("needs: dispatch-authorization", plan_job)
+        self.assertIn(
+            "event_authorized: ${{ steps.event-authorization.outputs.authorized }}",
+            plan_job,
+        )
+        self.assertIn(
+            "remote_build_authorized: ${{ steps.impact.outputs.remote_build_authorized }}",
+            plan_job,
+        )
+        self.assertIn(
+            "remote_build_authorization_reason: ${{ steps.impact.outputs.remote_build_authorization_reason }}",
+            plan_job,
+        )
+        for argument in (
+            '--event-payload "$GITHUB_EVENT_PATH"',
+            '--github-ref "$GITHUB_REF"',
+            '--github-sha "$GITHUB_SHA"',
+        ):
+            self.assertIn(argument, plan_job)
+        event_authorization = plan_job.split("- id: event-authorization", 1)[1].split(
+            "- uses: actions/checkout@", 1,
+        )[0]
+        for condition in (
+            "github.event.action == 'checks_requested'",
+            "github.sha == github.event.merge_group.head_sha",
+            "github.ref == github.event.merge_group.head_ref",
+            "github.event.action == 'labeled'",
+            "github.event.label.name == 'ci:remote-final'",
+            "github.event.pull_request.draft == false",
+            "contains(github.event.pull_request.labels.*.name, 'merge-ready')",
+            "contains(github.event.pull_request.labels.*.name, 'ci:remote-final')",
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            "github.event.pull_request.head.repo.fork == false",
+            "github.sha == github.event.pull_request.merge_commit_sha",
+            "needs.dispatch-authorization.outputs.approved == 'true'",
+            "github.sha == inputs.validationCommit",
+        ):
+            self.assertIn(condition, event_authorization)
+
+        event_guard = "needs.plan.outputs.event_authorized == 'true'"
+        planner_guard = "needs.plan.outputs.remote_build_authorized == 'true'"
+        for name in (
+            "product",
+            "android",
+            "android-runtime-evidence",
+            "desktop",
+            "apple",
+            "consumers",
+        ):
+            with self.subTest(job=name):
+                self.assertIn(event_guard, job(name))
+                self.assertIn(planner_guard, job(name))
+
+        lint = job("workflow-lint")
+        self.assertEqual(2, lint.count(event_guard))
+        self.assertEqual(2, lint.count(planner_guard))
+        self.assertLess(lint.index(event_guard), lint.index("uses: ./.github/actions/setup-kmp"))
+
+        self.assertLess(
+            workflow.index("- id: validation-reuse"),
+            workflow.index("\n  product:"),
+        )
+
+        gate = job("merge-gate")
+        self.assertLess(
+            gate.index('if [ "$EVENT_AUTHORIZED" != true ]'),
+            gate.index("uses: actions/checkout@"),
+        )
+        self.assertLess(
+            gate.index('if [ "$REMOTE_BUILD_AUTHORIZED" != true ]'),
+            gate.index("uses: actions/checkout@"),
+        )
+
     def test_c_abi_evidence_inputs_are_lf_canonical(self) -> None:
         root = CI_ROOT.parent
         c_abi = root / "codex-agent-runtime-desktop/native/c-api"
@@ -325,7 +432,7 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertNotIn(":codex-agent-runtime-ios:generateCodexAgentAppleCompilerEvidence", swift_tests)
 
     def test_merge_gate_carries_exact_receipts_from_m8_through_native_wrappers_to_m11(self) -> None:
-        workflow = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
         merge_gate = workflow.split("\n  merge-gate:", 1)[1]
         assemble = 'java -jar "$release_tool" assemble-c-abi-binding-receipt'
         audit = 'java -jar "$release_tool" audit-cross-language-bindings'
@@ -487,6 +594,65 @@ class GitFixture(unittest.TestCase):
         self.git("commit", "-qm", relative)
         return self.git("rev-parse", "HEAD")
 
+    def pull_request_event(
+        self,
+        *,
+        base: str,
+        target: str,
+        pull_request: int = 7,
+        labels: tuple[str, ...] = ("merge-ready", "ci:remote-final"),
+        action: str = "labeled",
+        event_label: str = "ci:remote-final",
+        draft: bool = False,
+        head_repository: str = "codex-agent-labs/codex-agent",
+        head_fork: bool = False,
+    ) -> dict[str, object]:
+        repository = "codex-agent-labs/codex-agent"
+        payload: dict[str, object] = {
+            "action": action,
+            "number": pull_request,
+            "repository": {"full_name": repository},
+            "pull_request": {
+                "number": pull_request,
+                "draft": draft,
+                "merge_commit_sha": target,
+                "labels": [{"name": label} for label in labels],
+                "base": {
+                    "sha": base,
+                    "repo": {"full_name": repository, "fork": False},
+                },
+                "head": {
+                    "sha": target,
+                    "repo": {"full_name": head_repository, "fork": head_fork},
+                },
+            },
+        }
+        if action in {"labeled", "unlabeled"}:
+            payload["label"] = {"name": event_label}
+        return payload
+
+    def pull_request_authorization(
+        self,
+        *,
+        base: str,
+        target: str,
+        pull_request: int = 7,
+        merge_ready: bool = True,
+    ) -> dict[str, object]:
+        labels = ("merge-ready", "ci:remote-final") if merge_ready else ()
+        return {
+            "event_payload": self.pull_request_event(
+                base=base,
+                target=target,
+                pull_request=pull_request,
+                labels=labels,
+                action="labeled" if merge_ready else "synchronize",
+            ),
+            "github_ref": f"refs/pull/{pull_request}/merge",
+            "github_sha": target,
+            "dispatch_approved": False,
+        }
+
     def make_plan(
         self,
         relative: str,
@@ -499,19 +665,25 @@ class GitFixture(unittest.TestCase):
         base: str | None = None,
     ) -> tuple[dict[str, object], Path, str]:
         target = self.commit(relative, contents)
+        effective_base = base or self.base
         output = self.root / "build/ci/impact-plan.json"
         result = plan(
             root=self.root,
-            base=base or self.base,
+            base=effective_base,
             target=target,
             head=target,
             event="pull_request",
             pull_request=pull_request,
-            merge_ready=merge_ready,
             force_full=force_full,
             require_android_evidence=require_android_evidence,
             repository="codex-agent-labs/codex-agent",
             output=output,
+            **self.pull_request_authorization(
+                base=effective_base,
+                target=target,
+                pull_request=pull_request,
+                merge_ready=merge_ready,
+            ),
         )
         return result, output, target
 
@@ -553,10 +725,10 @@ class ImpactPlanTest(GitFixture):
             head=target,
             event="pull_request",
             pull_request=7,
-            merge_ready=True,
             force_full=False,
             repository="codex-agent-labs/codex-agent",
             output=self.root / "build/ci/rename-impact-plan.json",
+            **self.pull_request_authorization(base=base, target=target),
         )
 
         self.assertEqual([], result["unknownPaths"])
@@ -576,10 +748,10 @@ class ImpactPlanTest(GitFixture):
             head=target,
             event="pull_request",
             pull_request=7,
-            merge_ready=True,
             force_full=False,
             repository="codex-agent-labs/codex-agent",
             output=self.root / "build/ci/unclassified-rename-impact-plan.json",
+            **self.pull_request_authorization(base=base, target=target),
         )
 
         self.assertEqual(["legacy/old.txt"], result["unknownPaths"])
@@ -604,10 +776,10 @@ class ImpactPlanTest(GitFixture):
             head=target,
             event="pull_request",
             pull_request=7,
-            merge_ready=True,
             force_full=False,
             repository="codex-agent-labs/codex-agent",
             output=self.root / "build/ci/deletion-impact-plan.json",
+            **self.pull_request_authorization(base=base, target=target),
         )
 
         self.assertEqual([], result["unknownPaths"])
@@ -626,10 +798,10 @@ class ImpactPlanTest(GitFixture):
             head=target,
             event="pull_request",
             pull_request=7,
-            merge_ready=True,
             force_full=False,
             repository="codex-agent-labs/codex-agent",
             output=self.root / "build/ci/unclassified-deletion-impact-plan.json",
+            **self.pull_request_authorization(base=base, target=target),
         )
 
         self.assertEqual(["legacy/removed.txt"], result["unknownPaths"])
@@ -825,11 +997,11 @@ class ImpactPlanTest(GitFixture):
             head=self.base,
             event="pull_request",
             pull_request=7,
-            merge_ready=True,
             force_full=False,
             require_android_evidence=False,
             repository="codex-agent-labs/codex-agent",
             output=prior_path,
+            **self.pull_request_authorization(base=self.base, target=self.base),
         )
         wrapper = "codex-agent-runtime-ios/apple/Sources/Wrapper.swift"
         result, current_path, _ = self.make_plan(wrapper, "public struct Wrapper {}\n")
@@ -906,7 +1078,7 @@ class ImpactPlanTest(GitFixture):
         for job in ("kotlin-tests", "swift-tests", "package", "privacy-metrics"):
             self.assertIn(f"\n  {job}:\n", apple)
 
-        workflow = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
         for consumer in ("consumer-desktop", "consumer-node-js", "consumer-node-wasm"):
             self.assertEqual(2, workflow.count(f"matrix.lane == '{consumer}'"))
         gate = workflow[workflow.index("\n  merge-gate:"):]
@@ -1004,12 +1176,426 @@ class ImpactPlanTest(GitFixture):
 
     def test_unlabeled_pr_spends_no_product_ci(self) -> None:
         result, _, _ = self.make_plan("android/Main.kt", merge_ready=False)
+        self.assertFalse(result["remoteBuildAuthorized"])
+        self.assertEqual("merge-ready-required", result["remoteBuildAuthorizationReason"])
         self.assertFalse(any(
             state[action]
             for state in result["lanes"].values()
             for action in ("build", "test", "metadata")
         ))
         self.assertTrue(all(state["reasons"] == ["merge-ready-required"] for state in result["lanes"].values()))
+
+    def test_remote_final_pr_authorization_is_emitted_to_github_outputs(self) -> None:
+        result, _, _ = self.make_plan("android/Main.kt")
+        self.assertTrue(result["remoteBuildAuthorized"])
+        self.assertEqual("pull-request-final", result["remoteBuildAuthorizationReason"])
+
+        output = self.root / "github-authorization-output"
+        write_github_outputs(output, result)
+        values = dict(
+            line.split("=", 1)
+            for line in output.read_text(encoding="utf-8").splitlines()
+        )
+        self.assertEqual("true", values["remote_build_authorized"])
+        self.assertEqual(
+            "pull-request-final",
+            values["remote_build_authorization_reason"],
+        )
+
+        contradictory = dict(
+            result,
+            remoteBuildAuthorizationReason="merge-ready-required",
+        )
+        with self.assertRaisesRegex(ValueError, "contradictory"):
+            write_github_outputs(output, contradictory)
+        wrong_event_reason = dict(
+            result,
+            remoteBuildAuthorizationReason="merge-group",
+        )
+        with self.assertRaisesRegex(ValueError, "does not match its event"):
+            write_github_outputs(output, wrong_event_reason)
+
+    def test_ci_full_label_cannot_authorize_or_emit_product_matrices(self) -> None:
+        target = self.commit("android/Main.kt", "changed\n")
+        payload = self.pull_request_event(
+            base=self.base,
+            target=target,
+            labels=("ci:full",),
+            event_label="ci:full",
+        )
+        result = plan(
+            root=self.root,
+            base=self.base,
+            target=target,
+            head=target,
+            event="pull_request",
+            pull_request=7,
+            force_full=True,
+            repository="codex-agent-labs/codex-agent",
+            output=self.root / "build/ci/ci-full-only.json",
+            event_payload=payload,
+            github_ref="refs/pull/7/merge",
+            github_sha=target,
+            dispatch_approved=False,
+        )
+        self.assertTrue(result["full"])
+        self.assertFalse(result["remoteBuildAuthorized"])
+        github_output = self.root / "build/ci/ci-full-only.out"
+        write_github_outputs(github_output, result)
+        values = dict(
+            line.split("=", 1)
+            for line in github_output.read_text(encoding="utf-8").splitlines()
+        )
+        self.assertEqual("[]", values["product_matrix"])
+        self.assertEqual("[]", values["consumer_matrix"])
+        self.assertEqual("[]", values["desktop_matrix"])
+
+    def test_pull_request_authorization_failures_are_fail_closed(self) -> None:
+        target = self.commit("android/Main.kt", "changed\n")
+        cases = {
+            "draft-pull-request": self.pull_request_event(
+                base=self.base,
+                target=target,
+                draft=True,
+            ),
+            "merge-ready-required": self.pull_request_event(
+                base=self.base,
+                target=target,
+                labels=(),
+                action="synchronize",
+            ),
+            "remote-final-required": self.pull_request_event(
+                base=self.base,
+                target=target,
+                labels=("merge-ready",),
+                event_label="merge-ready",
+            ),
+            "remote-final-event-required": self.pull_request_event(
+                base=self.base,
+                target=target,
+                action="synchronize",
+            ),
+            "untrusted-pull-request": self.pull_request_event(
+                base=self.base,
+                target=target,
+                head_repository="someone/example",
+                head_fork=True,
+            ),
+        }
+        for reason, payload in cases.items():
+            with self.subTest(reason=reason):
+                result = plan(
+                    root=self.root,
+                    base=self.base,
+                    target=target,
+                    head=target,
+                    event="pull_request",
+                    pull_request=7,
+                    force_full=True,
+                    repository="codex-agent-labs/codex-agent",
+                    output=self.root / f"build/ci/{reason}.json",
+                    event_payload=payload,
+                    github_ref="refs/pull/7/merge",
+                    github_sha=target,
+                    dispatch_approved=False,
+                )
+                self.assertFalse(result["remoteBuildAuthorized"])
+                self.assertEqual(reason, result["remoteBuildAuthorizationReason"])
+                self.assertTrue(result["full"])
+                self.assertTrue(all(
+                    not state[action]
+                    for state in result["lanes"].values()
+                    for action in ("build", "test", "metadata")
+                ))
+                self.assertTrue(all(
+                    state["reasons"] == [reason]
+                    for state in result["lanes"].values()
+                ))
+                github_output = self.root / f"build/ci/{reason}.out"
+                write_github_outputs(github_output, result)
+                values = dict(
+                    line.split("=", 1)
+                    for line in github_output.read_text(encoding="utf-8").splitlines()
+                )
+                for matrix in ("product_matrix", "consumer_matrix", "desktop_matrix"):
+                    self.assertEqual("[]", values[matrix])
+                for selector in ("any_desktop", "native_wrappers", "any_apple"):
+                    self.assertEqual("false", values[selector])
+
+    def test_malformed_pull_request_labels_and_numbers_write_no_plan(self) -> None:
+        target = self.commit("android/Main.kt", "changed\n")
+        duplicate = self.pull_request_event(base=self.base, target=target)
+        duplicate["pull_request"]["labels"].append({"name": "merge-ready"})
+        wrong_type = self.pull_request_event(base=self.base, target=target)
+        wrong_type["pull_request"]["labels"] = "merge-ready"
+        contradiction = self.pull_request_event(
+            base=self.base,
+            target=target,
+            labels=("merge-ready",),
+        )
+        embedded_bool = self.pull_request_event(base=self.base, target=target)
+        embedded_bool["pull_request"]["number"] = True
+        cases = {
+            "duplicate-labels": duplicate,
+            "wrong-label-type": wrong_type,
+            "contradictory-label-event": contradiction,
+            "boolean-embedded-number": embedded_bool,
+        }
+        for name, payload in cases.items():
+            with self.subTest(name=name):
+                output = self.root / f"build/ci/malformed-{name}.json"
+                with self.assertRaises(ValueError):
+                    plan(
+                        root=self.root,
+                        base=self.base,
+                        target=target,
+                        head=target,
+                        event="pull_request",
+                        pull_request=7,
+                        force_full=False,
+                        repository="codex-agent-labs/codex-agent",
+                        output=output,
+                        event_payload=payload,
+                        github_ref="refs/pull/7/merge",
+                        github_sha=target,
+                        dispatch_approved=False,
+                    )
+                self.assertFalse(output.exists())
+
+        boolean_top = self.pull_request_event(
+            base=self.base,
+            target=target,
+            pull_request=1,
+        )
+        boolean_top["number"] = True
+        boolean_top["pull_request"]["number"] = True
+        with self.assertRaisesRegex(ValueError, "event pull-request number"):
+            plan(
+                root=self.root,
+                base=self.base,
+                target=target,
+                head=target,
+                event="pull_request",
+                pull_request=1,
+                force_full=False,
+                repository="codex-agent-labs/codex-agent",
+                output=self.root / "build/ci/boolean-top-number.json",
+                event_payload=boolean_top,
+                github_ref="refs/pull/1/merge",
+                github_sha=target,
+                dispatch_approved=False,
+            )
+
+    def test_pull_request_head_and_validation_commit_are_distinct_identities(self) -> None:
+        head = self.commit("android/Main.kt", "changed\n")
+        self.git("commit", "--allow-empty", "-qm", "synthetic merge candidate")
+        validation = self.git("rev-parse", "HEAD")
+        payload = self.pull_request_event(base=self.base, target=validation)
+        payload["pull_request"]["head"]["sha"] = head
+        arguments = {
+            "root": self.root,
+            "base": self.base,
+            "target": validation,
+            "head": head,
+            "event": "pull_request",
+            "pull_request": 7,
+            "force_full": False,
+            "repository": "codex-agent-labs/codex-agent",
+            "event_payload": payload,
+            "github_ref": "refs/pull/7/merge",
+            "github_sha": validation,
+            "dispatch_approved": False,
+        }
+        result = plan(
+            **arguments,
+            output=self.root / "build/ci/distinct-pr-identities.json",
+        )
+        self.assertTrue(result["remoteBuildAuthorized"])
+        self.assertEqual(head, result["headCommit"])
+        self.assertEqual(validation, result["validationCommit"])
+
+        wrong_head = json.loads(json.dumps(payload))
+        wrong_head["pull_request"]["head"]["sha"] = validation
+        with self.assertRaisesRegex(ValueError, "head SHA"):
+            plan(
+                **{**arguments, "event_payload": wrong_head},
+                output=self.root / "build/ci/wrong-pr-head.json",
+            )
+
+    def test_merge_group_requires_the_exact_checks_requested_event(self) -> None:
+        target = self.commit("android/Main.kt", "changed\n")
+        head_ref = "refs/heads/gh-readonly-queue/main/pr-7-deadbeef"
+
+        def payload(action: str) -> dict[str, object]:
+            return {
+                "action": action,
+                "repository": {"full_name": "codex-agent-labs/codex-agent"},
+                "merge_group": {
+                    "base_sha": self.base,
+                    "head_sha": target,
+                    "head_ref": head_ref,
+                },
+            }
+
+        denied = plan(
+            root=self.root,
+            base=self.base,
+            target=target,
+            head=target,
+            event="merge_group",
+            pull_request=7,
+            force_full=False,
+            repository="codex-agent-labs/codex-agent",
+            output=self.root / "build/ci/merge-group-denied.json",
+            event_payload=payload("destroyed"),
+            github_ref=head_ref,
+            github_sha=target,
+            dispatch_approved=False,
+        )
+        self.assertFalse(denied["remoteBuildAuthorized"])
+        self.assertEqual(
+            "merge-group-event-required",
+            denied["remoteBuildAuthorizationReason"],
+        )
+
+        authorized = plan(
+            root=self.root,
+            base=self.base,
+            target=target,
+            head=target,
+            event="merge_group",
+            pull_request=7,
+            force_full=False,
+            repository="codex-agent-labs/codex-agent",
+            output=self.root / "build/ci/merge-group-authorized.json",
+            event_payload=payload("checks_requested"),
+            github_ref=head_ref,
+            github_sha=target,
+            dispatch_approved=False,
+        )
+        self.assertTrue(authorized["remoteBuildAuthorized"])
+        self.assertEqual("merge-group", authorized["remoteBuildAuthorizationReason"])
+
+    def test_dispatch_requires_exact_identity_and_protected_approval(self) -> None:
+        target = self.commit("android/Main.kt", "changed\n")
+        tree = self.git("rev-parse", f"{target}^{{tree}}")
+        payload = {
+            "repository": {"full_name": "codex-agent-labs/codex-agent"},
+            "ref": "architecture/codex-agent-core",
+            "inputs": {
+                "baseCommit": self.base,
+                "validationCommit": target,
+                "validationTree": tree,
+            },
+        }
+        arguments = {
+            "root": self.root,
+            "base": self.base,
+            "target": target,
+            "head": target,
+            "event": "workflow_dispatch",
+            "pull_request": None,
+            "force_full": False,
+            "repository": "codex-agent-labs/codex-agent",
+            "event_payload": payload,
+            "github_ref": "refs/heads/architecture/codex-agent-core",
+            "github_sha": target,
+        }
+
+        denied = plan(
+            **arguments,
+            output=self.root / "build/ci/dispatch-denied.json",
+            dispatch_approved=False,
+        )
+        self.assertFalse(denied["remoteBuildAuthorized"])
+        self.assertEqual(
+            "dispatch-approval-required",
+            denied["remoteBuildAuthorizationReason"],
+        )
+
+        authorized = plan(
+            **arguments,
+            output=self.root / "build/ci/dispatch-authorized.json",
+            dispatch_approved=True,
+        )
+        self.assertTrue(authorized["remoteBuildAuthorized"])
+        self.assertEqual("protected-dispatch", authorized["remoteBuildAuthorizationReason"])
+
+        tag_payload = json.loads(json.dumps(payload))
+        tag_payload["ref"] = "v0.2.0"
+        tag = plan(
+            **{
+                **arguments,
+                "event_payload": tag_payload,
+                "github_ref": "refs/tags/v0.2.0",
+            },
+            output=self.root / "build/ci/dispatch-tag.json",
+            dispatch_approved=True,
+        )
+        self.assertTrue(tag["remoteBuildAuthorized"])
+
+        bad_ref = json.loads(json.dumps(payload))
+        bad_ref["ref"] = "other"
+        bad_ref_output = self.root / "build/ci/dispatch-ref-mismatch.json"
+        with self.assertRaisesRegex(ValueError, "runner ref"):
+            plan(
+                **{**arguments, "event_payload": bad_ref},
+                output=bad_ref_output,
+                dispatch_approved=True,
+            )
+        self.assertFalse(bad_ref_output.exists())
+
+        bad_payload = json.loads(json.dumps(payload))
+        bad_payload["inputs"]["validationTree"] = "0" * 40
+        with self.assertRaisesRegex(ValueError, "dispatch identity"):
+            plan(
+                **{**arguments, "event_payload": bad_payload},
+                output=self.root / "build/ci/dispatch-mismatch.json",
+                dispatch_approved=True,
+            )
+
+    def test_unknown_event_and_mismatched_runner_identity_fail_closed(self) -> None:
+        target = self.commit("android/Main.kt", "changed\n")
+        payload = {"repository": {"full_name": "codex-agent-labs/codex-agent"}}
+        result = plan(
+            root=self.root,
+            base=self.base,
+            target=target,
+            head=target,
+            event="repository_dispatch",
+            pull_request=None,
+            force_full=True,
+            repository="codex-agent-labs/codex-agent",
+            output=self.root / "build/ci/unsupported-event.json",
+            event_payload=payload,
+            github_ref="refs/heads/main",
+            github_sha=target,
+            dispatch_approved=False,
+        )
+        self.assertFalse(result["remoteBuildAuthorized"])
+        self.assertEqual("unsupported-event", result["remoteBuildAuthorizationReason"])
+        self.assertFalse(any(
+            state[action]
+            for state in result["lanes"].values()
+            for action in ("build", "test", "metadata")
+        ))
+
+        with self.assertRaisesRegex(ValueError, "GitHub SHA"):
+            plan(
+                root=self.root,
+                base=self.base,
+                target=target,
+                head=target,
+                event="repository_dispatch",
+                pull_request=None,
+                force_full=True,
+                repository="codex-agent-labs/codex-agent",
+                output=self.root / "build/ci/mismatched-runner.json",
+                event_payload=payload,
+                github_ref="refs/heads/main",
+                github_sha="0" * 40,
+                dispatch_approved=False,
+            )
 
 
 class RealImpactPlanTest(unittest.TestCase):
@@ -1399,6 +1985,41 @@ class RealImpactPlanTest(unittest.TestCase):
                 text=True,
             )
 
+        def authorization(
+            base_commit: str,
+            target_commit: str,
+            pull_request: int = 13,
+        ) -> dict[str, object]:
+            repository = "codex-agent-labs/codex-agent"
+            return {
+                "event_payload": {
+                    "action": "labeled",
+                    "label": {"name": "ci:remote-final"},
+                    "number": pull_request,
+                    "repository": {"full_name": repository},
+                    "pull_request": {
+                        "number": pull_request,
+                        "draft": False,
+                        "merge_commit_sha": target_commit,
+                        "labels": [
+                            {"name": "merge-ready"},
+                            {"name": "ci:remote-final"},
+                        ],
+                        "base": {
+                            "sha": base_commit,
+                            "repo": {"full_name": repository, "fork": False},
+                        },
+                        "head": {
+                            "sha": target_commit,
+                            "repo": {"full_name": repository, "fork": False},
+                        },
+                    },
+                },
+                "github_ref": f"refs/pull/{pull_request}/merge",
+                "github_sha": target_commit,
+                "dispatch_approved": False,
+            }
+
         base_result = git(repository, "merge-base", "HEAD", "origin/main", check=False)
         if base_result.returncode:
             self.skipTest("origin/main history is unavailable in this checkout")
@@ -1435,11 +2056,11 @@ class RealImpactPlanTest(unittest.TestCase):
                 head=fixed_target,
                 event="pull_request",
                 pull_request=13,
-                merge_ready=True,
                 force_full=True,
                 require_android_evidence=True,
                 repository="codex-agent-labs/codex-agent",
                 output=prior_path,
+                **authorization(base, fixed_target),
             )
             self.assertEqual([], prior["unknownPaths"])
             self.assertTrue(all(state["reuseAllowed"] for state in prior["lanes"].values()))
@@ -1460,11 +2081,11 @@ class RealImpactPlanTest(unittest.TestCase):
                 head=repair_target,
                 event="pull_request",
                 pull_request=13,
-                merge_ready=True,
                 force_full=True,
                 require_android_evidence=True,
                 repository="codex-agent-labs/codex-agent",
                 output=repair_path,
+                **authorization(base, repair_target),
             )
             self.assertEqual([], repair["unknownPaths"])
             self.assertTrue(all(state["reuseAllowed"] for state in repair["lanes"].values()))
@@ -1508,11 +2129,11 @@ class RealImpactPlanTest(unittest.TestCase):
                 head=unknown_target,
                 event="pull_request",
                 pull_request=13,
-                merge_ready=True,
                 force_full=False,
                 require_android_evidence=True,
                 repository="codex-agent-labs/codex-agent",
                 output=clone / "build/test-plans/unknown/impact-plan.json",
+                **authorization(base, unknown_target),
             )
             self.assertEqual([future_relative], unknown["unknownPaths"])
             self.assertTrue(unknown["full"])
@@ -1962,7 +2583,11 @@ class ReceiptTest(GitFixture):
             output=reusable / "validation-receipt.json",
         ))
         merge_plan = json.loads(self.plan_path.read_text(encoding="utf-8"))
-        merge_plan["event"] = "merge_group"
+        merge_plan.update(
+            event="merge_group",
+            remoteBuildAuthorized=True,
+            remoteBuildAuthorizationReason="merge-group",
+        )
         current = self.root / "merge-plan.json"
         current.write_text(json.dumps(merge_plan), encoding="utf-8")
         validate_aggregate_reuse(reusable, current)
@@ -2091,11 +2716,14 @@ class ReceiptTest(GitFixture):
             head=self.first_target,
             event="pull_request",
             pull_request=7,
-            merge_ready=True,
             force_full=True,
             require_android_evidence=False,
             repository="codex-agent-labs/codex-agent",
             output=forced_path,
+            **self.pull_request_authorization(
+                base=self.base,
+                target=self.first_target,
+            ),
         )
         self.assertEqual(
             {"build": True, "test": True, "metadata": True},
@@ -2398,7 +3026,11 @@ class ReceiptTest(GitFixture):
                 if file.is_file():
                     output.write(file, file.relative_to(reusable))
         current = json.loads(self.plan_path.read_text(encoding="utf-8"))
-        current["event"] = "merge_group"
+        current.update(
+            event="merge_group",
+            remoteBuildAuthorized=True,
+            remoteBuildAuthorizationReason="merge-group",
+        )
         current_path = self.root / "merge-plan.json"
         current_path.write_text(json.dumps(current), encoding="utf-8")
         artifact = {
@@ -2484,7 +3116,12 @@ class ReceiptTest(GitFixture):
                 if file.is_file():
                     output.write(file, file.relative_to(native_release))
 
-        current = dict(source_plan, event="merge_group")
+        current = dict(
+            source_plan,
+            event="merge_group",
+            remoteBuildAuthorized=True,
+            remoteBuildAuthorizationReason="merge-group",
+        )
         current_path = self.root / "merge-m11-plan.json"
         current_path.write_text(json.dumps(current), encoding="utf-8")
         validation_name = f"codex-agent-ci-validation-{self.first_tree}"

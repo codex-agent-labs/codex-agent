@@ -7,6 +7,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -138,6 +139,7 @@ SUPPORT_TRIGGER_ACTIONS = {
 HARMLESS_PATHS = ("README.md", "docs/**", ".gitignore", ".editorconfig")
 FULL_VALIDATION_PATHS = {
     ".github/workflows/ci.yml",
+    ".github/workflows/product-validation.yml",
     ".github/workflows/android-runtime-evidence.yml",
     ".github/workflows/apple-runtime-evidence.yml",
     ".github/workflows/desktop-runtime-evidence.yml",
@@ -172,6 +174,233 @@ DESKTOP_RUNNERS = {
     "desktop-windows-x64": "windows-2025",
 }
 NATIVE_WRAPPER_LANES = tuple(lane for lane in LANES if lane.startswith("desktop-"))
+
+OID = re.compile(r"[0-9a-f]{40}")
+AUTHORIZED_REMOTE_BUILD_REASONS = frozenset((
+    "merge-group",
+    "protected-dispatch",
+    "pull-request-final",
+))
+DENIED_REMOTE_BUILD_REASONS = frozenset((
+    "dispatch-approval-required",
+    "draft-pull-request",
+    "merge-group-event-required",
+    "merge-ready-required",
+    "remote-final-event-required",
+    "remote-final-required",
+    "unsupported-event",
+    "untrusted-pull-request",
+))
+REMOTE_BUILD_AUTHORIZATION_REASONS = (
+    AUTHORIZED_REMOTE_BUILD_REASONS | DENIED_REMOTE_BUILD_REASONS
+)
+AUTHORIZED_REMOTE_REASON_BY_EVENT = {
+    "merge_group": "merge-group",
+    "pull_request": "pull-request-final",
+    "workflow_dispatch": "protected-dispatch",
+}
+DENIED_REMOTE_REASONS_BY_EVENT = {
+    "merge_group": frozenset(("merge-group-event-required",)),
+    "pull_request": frozenset((
+        "draft-pull-request",
+        "merge-ready-required",
+        "remote-final-event-required",
+        "remote-final-required",
+        "untrusted-pull-request",
+    )),
+    "workflow_dispatch": frozenset(("dispatch-approval-required",)),
+}
+
+
+def require_object(value: object, label: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"Malformed {label}")
+    return value
+
+
+def require_string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Malformed {label}")
+    return value
+
+
+def require_oid(value: object, label: str) -> str:
+    if not isinstance(value, str) or not OID.fullmatch(value):
+        raise ValueError(f"Malformed {label}")
+    return value
+
+
+def require_positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"Malformed {label}")
+    return value
+
+
+def validate_remote_build_authorization(plan: dict[str, object]) -> tuple[bool, str]:
+    authorized = plan.get("remoteBuildAuthorized")
+    reason = plan.get("remoteBuildAuthorizationReason")
+    event = plan.get("event")
+    merge_ready = plan.get("mergeReady")
+    if (
+        type(authorized) is not bool
+        or not isinstance(reason, str)
+        or not isinstance(event, str)
+        or type(merge_ready) is not bool
+    ):
+        raise ValueError("Impact plan remote-build authorization fields have invalid types")
+    if reason not in REMOTE_BUILD_AUTHORIZATION_REASONS:
+        raise ValueError("Impact plan remote-build authorization reason is unsupported")
+    if authorized != (reason in AUTHORIZED_REMOTE_BUILD_REASONS):
+        raise ValueError("Impact plan remote-build authorization fields are contradictory")
+    expected = AUTHORIZED_REMOTE_REASON_BY_EVENT.get(event)
+    if authorized and (not merge_ready or reason != expected):
+        raise ValueError("Impact plan remote-build authorization does not match its event")
+    if not authorized:
+        denied = DENIED_REMOTE_REASONS_BY_EVENT.get(event, frozenset(("unsupported-event",)))
+        if reason not in denied:
+            raise ValueError("Impact plan remote-build denial does not match its event")
+    return authorized, reason
+
+
+def evaluate_remote_build_authorization(
+    *,
+    event: str,
+    event_payload: dict[str, object],
+    repository: str,
+    pull_request: int | None,
+    base_commit: str,
+    head_commit: str,
+    validation_commit: str,
+    validation_tree: str,
+    github_ref: str,
+    github_sha: str,
+    dispatch_approved: bool,
+) -> tuple[bool, str, bool]:
+    if type(dispatch_approved) is not bool:
+        raise ValueError("Dispatch approval must be a Boolean")
+    if event != "workflow_dispatch" and dispatch_approved:
+        raise ValueError("Dispatch approval is invalid for this event")
+    payload = require_object(event_payload, "event payload")
+    event_repository = require_object(payload.get("repository"), "event repository")
+    if require_string(event_repository.get("full_name"), "event repository identity") != repository:
+        raise ValueError("Event repository does not match the planned repository")
+    if require_oid(github_sha, "GitHub SHA") != validation_commit:
+        raise ValueError("GitHub SHA does not match the validation commit")
+    require_oid(validation_tree, "validation tree")
+    require_string(github_ref, "GitHub ref")
+
+    if event == "pull_request":
+        number = require_positive_int(pull_request, "pull-request number")
+        if require_positive_int(payload.get("number"), "event pull-request number") != number:
+            raise ValueError("Pull-request number does not match the event payload")
+        request = require_object(payload.get("pull_request"), "pull request")
+        if require_positive_int(
+            request.get("number"), "embedded pull-request number",
+        ) != number:
+            raise ValueError("Embedded pull-request number does not match the event payload")
+        action = require_string(payload.get("action"), "pull-request action")
+        draft = request.get("draft")
+        if type(draft) is not bool:
+            raise ValueError("Malformed pull-request draft state")
+        if github_ref != f"refs/pull/{number}/merge":
+            raise ValueError("Pull-request ref does not match its number")
+        if require_oid(request.get("merge_commit_sha"), "pull-request merge commit") != validation_commit:
+            raise ValueError("Pull-request merge commit does not match the validation commit")
+
+        base = require_object(request.get("base"), "pull-request base")
+        head = require_object(request.get("head"), "pull-request head")
+        base_repository = require_object(base.get("repo"), "pull-request base repository")
+        head_repository = require_object(head.get("repo"), "pull-request head repository")
+        if require_oid(base.get("sha"), "pull-request base SHA") != base_commit:
+            raise ValueError("Pull-request base SHA does not match the planned base")
+        if require_oid(head.get("sha"), "pull-request head SHA") != head_commit:
+            raise ValueError("Pull-request head SHA does not match the planned head")
+        base_repository_name = require_string(
+            base_repository.get("full_name"), "pull-request base repository identity",
+        )
+        head_repository_name = require_string(
+            head_repository.get("full_name"), "pull-request head repository identity",
+        )
+        head_is_fork = head_repository.get("fork")
+        if type(head_is_fork) is not bool:
+            raise ValueError("Malformed pull-request fork state")
+
+        raw_labels = request.get("labels")
+        if not isinstance(raw_labels, list):
+            raise ValueError("Malformed pull-request label state")
+        labels = [
+            require_string(require_object(item, "pull-request label").get("name"), "label name")
+            for item in raw_labels
+        ]
+        if len(labels) != len(set(labels)):
+            raise ValueError("Duplicate pull-request label state")
+        event_label: str | None = None
+        if action in {"labeled", "unlabeled"}:
+            event_label = require_string(
+                require_object(payload.get("label"), "event label").get("name"),
+                "event label name",
+            )
+            if (action == "labeled") != (event_label in labels):
+                raise ValueError("Event label contradicts the current pull-request labels")
+        elif "label" in payload:
+            raise ValueError("Unexpected event label for pull-request action")
+
+        merge_ready = not draft and "merge-ready" in labels
+        if (
+            base_repository_name != repository
+            or head_repository_name != repository
+            or head_is_fork
+        ):
+            return False, "untrusted-pull-request", merge_ready
+        if draft:
+            return False, "draft-pull-request", False
+        if "merge-ready" not in labels:
+            return False, "merge-ready-required", False
+        if "ci:remote-final" not in labels:
+            return False, "remote-final-required", True
+        if action != "labeled" or event_label != "ci:remote-final":
+            return False, "remote-final-event-required", True
+        return True, "pull-request-final", True
+
+    if event == "merge_group":
+        number = require_positive_int(pull_request, "merge-group pull-request number")
+        group = require_object(payload.get("merge_group"), "merge group")
+        head_ref = require_string(group.get("head_ref"), "merge-group head ref")
+        match = re.search(r"(?:^|/)pr-(\d+)-", head_ref)
+        if match is None or int(match.group(1)) != number:
+            raise ValueError("Merge-group ref does not identify the planned pull request")
+        if require_oid(group.get("base_sha"), "merge-group base SHA") != base_commit:
+            raise ValueError("Merge-group base SHA does not match the planned base")
+        if require_oid(group.get("head_sha"), "merge-group head SHA") != validation_commit:
+            raise ValueError("Merge-group head SHA does not match the validation commit")
+        if head_commit != validation_commit or github_ref != head_ref:
+            raise ValueError("Merge-group runner identity does not match the planned candidate")
+        if require_string(payload.get("action"), "merge-group action") != "checks_requested":
+            return False, "merge-group-event-required", True
+        return True, "merge-group", True
+
+    if event == "workflow_dispatch":
+        if pull_request is not None:
+            raise ValueError("Workflow dispatch must not claim a pull-request number")
+        inputs = require_object(payload.get("inputs"), "workflow-dispatch inputs")
+        dispatch_ref = require_string(payload.get("ref"), "workflow-dispatch ref")
+        if github_ref not in {f"refs/heads/{dispatch_ref}", f"refs/tags/{dispatch_ref}"}:
+            raise ValueError("Workflow-dispatch ref does not match the runner ref")
+        expected_base = require_oid(inputs.get("baseCommit"), "dispatch base commit")
+        expected_commit = require_oid(inputs.get("validationCommit"), "dispatch validation commit")
+        expected_tree = require_oid(inputs.get("validationTree"), "dispatch validation tree")
+        if (
+            expected_base != base_commit
+            or expected_commit != validation_commit
+            or expected_commit != head_commit
+            or expected_tree != validation_tree
+        ):
+            raise ValueError("Workflow-dispatch identity does not match the checked-out candidate")
+        if not dispatch_approved:
+            return False, "dispatch-approval-required", False
+        return True, "protected-dispatch", True
+
+    return False, "unsupported-event", False
 
 
 def run_git(root: Path, *arguments: str, binary: bool = False) -> bytes | str:
@@ -324,16 +553,34 @@ def plan(
     head: str,
     event: str,
     pull_request: int | None,
-    merge_ready: bool,
     force_full: bool,
     repository: str,
     output: Path,
+    event_payload: dict[str, object],
+    github_ref: str,
+    github_sha: str,
+    dispatch_approved: bool,
     require_android_evidence: bool = False,
 ) -> dict[str, object]:
+    if type(force_full) is not bool or type(require_android_evidence) is not bool:
+        raise ValueError("Planner flags must be Booleans")
     base_commit = str(run_git(root, "rev-parse", f"{base}^{{commit}}")).strip()
     target_commit = str(run_git(root, "rev-parse", f"{target}^{{commit}}")).strip()
     head_commit = str(run_git(root, "rev-parse", f"{head}^{{commit}}")).strip()
     validation_tree = str(run_git(root, "rev-parse", f"{target}^{{tree}}")).strip()
+    remote_authorized, remote_reason, ready = evaluate_remote_build_authorization(
+        event=event,
+        event_payload=event_payload,
+        repository=repository,
+        pull_request=pull_request,
+        base_commit=base_commit,
+        head_commit=head_commit,
+        validation_commit=target_commit,
+        validation_tree=validation_tree,
+        github_ref=github_ref,
+        github_sha=github_sha,
+        dispatch_approved=dispatch_approved,
+    )
     changes, removals = changed_paths(root, base_commit, target_commit)
     lanes: dict[str, dict[str, object]] = {}
     covered: set[str] = set()
@@ -418,11 +665,10 @@ def plan(
                             root, lanes, upstream, action, f"required-by:{downstream}",
                         )
 
-    ready = merge_ready or event == "merge_group"
-    if not ready:
+    if not remote_authorized:
         for state in lanes.values():
             state.update(build=False, test=False, metadata=False, reuseAllowed=False)
-            state["reasons"] = ["merge-ready-required"]
+            state["reasons"] = [remote_reason]
 
     result: dict[str, object] = {
         "schemaVersion": 1,
@@ -434,6 +680,8 @@ def plan(
         "validationCommit": target_commit,
         "validationTree": validation_tree,
         "mergeReady": ready,
+        "remoteBuildAuthorized": remote_authorized,
+        "remoteBuildAuthorizationReason": remote_reason,
         "androidEvidenceRequired": require_android_evidence and any(
             lanes["android"][action] for action in ("build", "test", "metadata")
         ),
@@ -442,6 +690,7 @@ def plan(
         "changedPaths": sorted(changes),
         "lanes": lanes,
     }
+    validate_remote_build_authorization(result)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     inventory_root = output.parent / "inventories"
@@ -453,8 +702,11 @@ def plan(
 
 
 def write_github_outputs(path: Path, result: dict[str, object]) -> None:
+    validate_remote_build_authorization(result)
     lines = [
         f"merge_ready={str(result['mergeReady']).lower()}",
+        f"remote_build_authorized={str(result['remoteBuildAuthorized']).lower()}",
+        f"remote_build_authorization_reason={result['remoteBuildAuthorizationReason']}",
         f"full={str(result['full']).lower()}",
         f"validation_tree={result['validationTree']}",
         f"validation_commit={result['validationCommit']}",
@@ -503,9 +755,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--head")
-    parser.add_argument("--event", choices=("pull_request", "merge_group"), required=True)
+    parser.add_argument("--event", required=True)
+    parser.add_argument("--event-payload", type=Path, required=True)
+    parser.add_argument("--github-ref", required=True)
+    parser.add_argument("--github-sha", required=True)
     parser.add_argument("--pull-request", type=int)
-    parser.add_argument("--merge-ready", action="store_true")
+    parser.add_argument("--dispatch-approved", action="store_true")
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--require-android-evidence", action="store_true")
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", "codex-agent-labs/codex-agent"))
@@ -518,6 +773,20 @@ def main() -> None:
     arguments = parse_args()
     root = arguments.repo.resolve()
     output = arguments.output if arguments.output.is_absolute() else root / arguments.output
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"Duplicate event-payload key: {key}")
+            value[key] = item
+        return value
+
+    event_payload = json.loads(
+        arguments.event_payload.read_text(encoding="utf-8"),
+        object_pairs_hook=unique_object,
+    )
+    if not isinstance(event_payload, dict):
+        raise ValueError("GitHub event payload must be an object")
     result = plan(
         root=root,
         base=arguments.base,
@@ -525,11 +794,14 @@ def main() -> None:
         head=arguments.head or arguments.target,
         event=arguments.event,
         pull_request=arguments.pull_request,
-        merge_ready=arguments.merge_ready,
         force_full=arguments.full,
         require_android_evidence=arguments.require_android_evidence,
         repository=arguments.repository,
         output=output,
+        event_payload=event_payload,
+        github_ref=arguments.github_ref,
+        github_sha=arguments.github_sha,
+        dispatch_approved=arguments.dispatch_approved,
     )
     if arguments.github_output:
         write_github_outputs(arguments.github_output, result)

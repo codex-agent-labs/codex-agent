@@ -291,10 +291,10 @@ internal val promotedCandidateLaneNames = setOf(
     "consumer-desktop", "consumer-ios-device", "consumer-ios-simulator", "consumer-node-js",
     "consumer-node-wasm",
 )
-private val impactPlanKeys = setOf(
+internal val impactPlanKeys = setOf(
     "schemaVersion", "event", "repository", "pullRequest", "baseCommit", "headCommit",
-    "validationCommit", "validationTree", "mergeReady", "androidEvidenceRequired", "full",
-    "unknownPaths", "changedPaths", "lanes",
+    "validationCommit", "validationTree", "mergeReady", "remoteBuildAuthorized",
+    "remoteBuildAuthorizationReason", "androidEvidenceRequired", "full", "unknownPaths", "changedPaths", "lanes",
 )
 private val impactLaneKeys = setOf("build", "test", "metadata", "reuseAllowed", "reasons")
 private val aggregateReceiptKeys = setOf(
@@ -922,8 +922,9 @@ private fun validatePromotedLanes(
         plan.releaseString("repository") == CodexAgentBuild.REPOSITORY &&
         plan.releaseString("event") == "merge_group" && plan.releaseString("validationTree") == tree &&
         plan.releaseString("validationCommit") == promotion.releaseString("validatedCommit") &&
-        plan.releaseBoolean("mergeReady")) {
-        "A merge-ready impact plan is required for release promotion"
+        plan.releaseBoolean("mergeReady") && plan.releaseBoolean("remoteBuildAuthorized") &&
+        plan.releaseString("remoteBuildAuthorizationReason") == "merge-group") {
+        "An authorized merge-group impact plan is required for release promotion"
     }
     val planned = plan.releaseObject("lanes")
     check(planned.keys == promotedCandidateLaneNames && planned.values.all { value ->

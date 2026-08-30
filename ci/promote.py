@@ -15,7 +15,12 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from impact import LANES, M8_OWNER_LANES, NATIVE_WRAPPER_LANES
+from impact import (
+    LANES,
+    M8_OWNER_LANES,
+    NATIVE_WRAPPER_LANES,
+    validate_remote_build_authorization,
+)
 from receipt import (
     INPUT_NAMES,
     SCHEMA_VERSION,
@@ -35,7 +40,8 @@ PREDECESSOR_POLL_SECONDS = 15
 OID = re.compile(r"[0-9a-f]{40}")
 PLAN_KEYS = {
     "schemaVersion", "event", "repository", "pullRequest", "baseCommit", "headCommit",
-    "validationCommit", "validationTree", "mergeReady", "androidEvidenceRequired", "full",
+    "validationCommit", "validationTree", "mergeReady", "remoteBuildAuthorized",
+    "remoteBuildAuthorizationReason", "androidEvidenceRequired", "full",
     "unknownPaths", "changedPaths", "lanes",
 }
 LANE_PLAN_KEYS = {"build", "test", "metadata", "reuseAllowed", "reasons"}
@@ -227,10 +233,13 @@ def validate_plan(
     plan = read_json(plan_path)
     if set(plan) != PLAN_KEYS or plan.get("schemaVersion") != SCHEMA_VERSION:
         raise ValueError("Unsupported or non-exact impact plan schema")
+    remote_authorized, remote_reason = validate_remote_build_authorization(plan)
     if (
         plan.get("repository") != repository
         or plan.get("event") != "merge_group"
         or plan.get("mergeReady") is not True
+        or not remote_authorized
+        or remote_reason != "merge-group"
         or plan.get("validationCommit") != validated_commit
         or plan.get("validationTree") != final_tree
     ):
