@@ -62,13 +62,13 @@ class DesktopCodexRuntimeTest {
     fun rejectsWrongTargetChecksum(): Unit = runBlocking {
         val temporary = FileSystem.SYSTEM_TEMPORARY_DIRECTORY /
             "codex-agent-desktop-wrong-hash-${Random.nextLong().toString(16)}"
-        FileSystem.SYSTEM.createDirectories(temporary)
-        val directory = FileSystem.SYSTEM.canonicalize(temporary)
+        desktopFileSystem.createDirectories(temporary)
+        val directory = desktopFileSystem.canonicalize(temporary)
         val distribution = desktopCodexDistribution(currentDesktopTarget())
         val executable = directory / distribution.executableName
         val supervisor = directory / distribution.supervisorExecutableName
-        FileSystem.SYSTEM.write(executable) { writeUtf8("not an app server") }
-        FileSystem.SYSTEM.write(supervisor) { writeUtf8("not a supervisor") }
+        desktopFileSystem.write(executable) { writeUtf8("not an app server") }
+        desktopFileSystem.write(supervisor) { writeUtf8("not a supervisor") }
         val runtime = DesktopCodexRuntimeFactory(
             DesktopCodexRuntimeConfiguration(executable, supervisor, supervisor.sha256(), directory),
         ).create()
@@ -78,7 +78,7 @@ class DesktopCodexRuntimeTest {
             assertContains(error.message.orEmpty(), "checksum")
         } finally {
             runtime.close()
-            FileSystem.SYSTEM.deleteRecursively(directory, mustExist = false)
+            desktopFileSystem.deleteRecursively(directory, mustExist = false)
         }
     }
 
@@ -112,8 +112,8 @@ class DesktopCodexRuntimeValidationTest {
     fun revalidatesCanonicalLaunchPathsAndExpectedAppServerName(): Unit = runBlocking {
         val temporary = FileSystem.SYSTEM_TEMPORARY_DIRECTORY /
             "codex-agent-desktop-path-validation-${Random.nextLong().toString(16)}"
-        FileSystem.SYSTEM.createDirectories(temporary)
-        val directory = FileSystem.SYSTEM.canonicalize(temporary)
+        desktopFileSystem.createDirectories(temporary)
+        val directory = desktopFileSystem.canonicalize(temporary)
         val distribution = desktopCodexDistribution(currentDesktopTarget())
         val appServerTarget = directory / "app-server-target"
         val appServerLink = directory / distribution.executableName
@@ -121,12 +121,12 @@ class DesktopCodexRuntimeValidationTest {
         val supervisor = directory / distribution.supervisorExecutableName
         val workspace = directory / "workspace"
         val workspaceLink = directory / "workspace-link"
-        FileSystem.SYSTEM.write(appServerTarget) { writeUtf8("not an app server") }
-        FileSystem.SYSTEM.write(wrongName) { writeUtf8("not an app server") }
-        FileSystem.SYSTEM.write(supervisor) { writeUtf8("not a supervisor") }
-        FileSystem.SYSTEM.createDirectories(workspace)
-        FileSystem.SYSTEM.createSymlink(appServerLink, appServerTarget)
-        FileSystem.SYSTEM.createSymlink(workspaceLink, workspace)
+        desktopFileSystem.write(appServerTarget) { writeUtf8("not an app server") }
+        desktopFileSystem.write(wrongName) { writeUtf8("not an app server") }
+        desktopFileSystem.write(supervisor) { writeUtf8("not a supervisor") }
+        desktopFileSystem.createDirectories(workspace)
+        desktopFileSystem.createSymlink(appServerLink, appServerTarget)
+        desktopFileSystem.createSymlink(workspaceLink, workspace)
 
         suspend fun rejection(configuration: DesktopCodexRuntimeConfiguration): String {
             val runtime = DesktopCodexRuntimeFactory(configuration).create()
@@ -166,7 +166,7 @@ class DesktopCodexRuntimeValidationTest {
                 "Desktop working directory must not be a symbolic link",
             )
         } finally {
-            FileSystem.SYSTEM.deleteRecursively(directory, mustExist = false)
+            desktopFileSystem.deleteRecursively(directory, mustExist = false)
         }
     }
 }

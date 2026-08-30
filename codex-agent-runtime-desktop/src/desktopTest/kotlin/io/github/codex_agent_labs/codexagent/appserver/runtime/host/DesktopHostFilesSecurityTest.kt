@@ -3,6 +3,7 @@ package io.github.codex_agent_labs.codexagent.appserver.runtime.host
 import io.github.codex_agent_labs.codexagent.agent.CodexPathWorkspaceSelection
 import io.github.codex_agent_labs.codexagent.agent.CodexWorkspaceResolution
 import io.github.codex_agent_labs.codexagent.agent.CodexWorkspaceSelectionReason
+import io.github.codex_agent_labs.codexagent.appserver.runtime.desktopFileSystem
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -19,7 +20,7 @@ class DesktopHostFilesSecurityTest {
         withTemporaryDirectory { root ->
             val bundle = root / "bundle"
             val data = root / "data"
-            FileSystem.SYSTEM.createDirectories(bundle)
+            desktopFileSystem.createDirectories(bundle)
             writeBundle(bundle)
 
             val installed = RuntimeBundleInstaller(bundle, data, descriptor()) {}.install()
@@ -35,31 +36,31 @@ class DesktopHostFilesSecurityTest {
             val bundle = root / "bundle"
             val data = root / "data"
             val outside = root / "outside"
-            FileSystem.SYSTEM.createDirectories(bundle)
-            FileSystem.SYSTEM.createDirectories(outside)
+            desktopFileSystem.createDirectories(bundle)
+            desktopFileSystem.createDirectories(outside)
             (outside / "sentinel").writeUtf8("keep")
             val expectedArchive = bundle / archiveName()
             val actualArchive = bundle / "actual.zip"
             actualArchive.writeBytes(bundleBytes())
-            FileSystem.SYSTEM.createSymlink(expectedArchive, actualArchive)
+            desktopFileSystem.createSymlink(expectedArchive, actualArchive)
 
             assertTrue(runCatching {
                 RuntimeBundleInstaller(bundle, data, descriptor()) {}.install()
             }.isFailure)
             assertEquals("keep", (outside / "sentinel").readUtf8())
 
-            FileSystem.SYSTEM.delete(expectedArchive)
+            desktopFileSystem.delete(expectedArchive)
             expectedArchive.writeBytes(bundleBytes())
-            FileSystem.SYSTEM.createDirectories(data)
-            FileSystem.SYSTEM.createSymlink(data / "runtimes", outside)
+            desktopFileSystem.createDirectories(data)
+            desktopFileSystem.createSymlink(data / "runtimes", outside)
             assertTrue(runCatching {
                 RuntimeBundleInstaller(bundle, data, descriptor()) {}.install()
             }.isFailure)
             assertEquals("keep", (outside / "sentinel").readUtf8())
 
-            FileSystem.SYSTEM.delete(data / "runtimes")
-            FileSystem.SYSTEM.createDirectories(data / "runtimes")
-            FileSystem.SYSTEM.createSymlink(data / "runtimes" / descriptor().libraryVersion, outside)
+            desktopFileSystem.delete(data / "runtimes")
+            desktopFileSystem.createDirectories(data / "runtimes")
+            desktopFileSystem.createSymlink(data / "runtimes" / descriptor().libraryVersion, outside)
             assertTrue(runCatching {
                 RuntimeBundleInstaller(bundle, data, descriptor()) {}.install()
             }.isFailure)
@@ -74,9 +75,9 @@ class DesktopHostFilesSecurityTest {
             val workspace = root / "workspace"
             val secondWorkspace = root / "second-workspace"
             val target = root / "selection-target"
-            FileSystem.SYSTEM.createDirectories(data)
-            FileSystem.SYSTEM.createDirectories(workspace)
-            FileSystem.SYSTEM.createDirectories(secondWorkspace)
+            desktopFileSystem.createDirectories(data)
+            desktopFileSystem.createDirectories(workspace)
+            desktopFileSystem.createDirectories(secondWorkspace)
             val store = PathWorkspaceStore(data)
             assertIs<CodexWorkspaceResolution.Available>(
                 store.select(CodexPathWorkspaceSelection(workspace.toString())),
@@ -88,7 +89,7 @@ class DesktopHostFilesSecurityTest {
             store.clear()
 
             target.writeUtf8("\"${workspace}\"")
-            FileSystem.SYSTEM.createSymlink(data / "workspace.json", target)
+            desktopFileSystem.createSymlink(data / "workspace.json", target)
 
             val restored = store.restore()
             assertEquals(
@@ -96,8 +97,8 @@ class DesktopHostFilesSecurityTest {
                 assertIs<CodexWorkspaceResolution.SelectionRequired>(restored).reason,
             )
             store.clear()
-            assertTrue(FileSystem.SYSTEM.metadataOrNull(data / "workspace.json") == null)
-            assertTrue(FileSystem.SYSTEM.metadataOrNull(target)?.isRegularFile == true)
+            assertTrue(desktopFileSystem.metadataOrNull(data / "workspace.json") == null)
+            assertTrue(desktopFileSystem.metadataOrNull(target)?.isRegularFile == true)
         }
     }
 }
@@ -151,7 +152,7 @@ private fun archiveName() =
     "codex-agent-runtime-desktop-${descriptor().libraryVersion}-${descriptor().classifier}.zip"
 
 private fun Path.writeBytes(bytes: ByteArray) {
-    val sink = FileSystem.SYSTEM.sink(this).buffer()
+    val sink = desktopFileSystem.sink(this).buffer()
     try {
         sink.write(bytes)
     } finally {
@@ -160,7 +161,7 @@ private fun Path.writeBytes(bytes: ByteArray) {
 }
 
 private fun Path.writeUtf8(value: String) {
-    val sink = FileSystem.SYSTEM.sink(this).buffer()
+    val sink = desktopFileSystem.sink(this).buffer()
     try {
         sink.writeUtf8(value)
     } finally {
@@ -169,7 +170,7 @@ private fun Path.writeUtf8(value: String) {
 }
 
 private fun Path.readUtf8(): String {
-    val source = FileSystem.SYSTEM.source(this).buffer()
+    val source = desktopFileSystem.source(this).buffer()
     return try {
         source.readUtf8()
     } finally {
@@ -180,11 +181,11 @@ private fun Path.readUtf8(): String {
 private suspend fun withTemporaryDirectory(block: suspend (Path) -> Unit) {
     val root = FileSystem.SYSTEM_TEMPORARY_DIRECTORY /
         "codex-host-files-${Random.nextLong().toString().replace('-', '0')}"
-    FileSystem.SYSTEM.createDirectory(root, mustCreate = true)
+    desktopFileSystem.createDirectory(root, mustCreate = true)
     try {
         block(root)
     } finally {
-        FileSystem.SYSTEM.deleteRecursively(root, mustExist = false)
+        desktopFileSystem.deleteRecursively(root, mustExist = false)
     }
 }
 
