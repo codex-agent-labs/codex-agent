@@ -21,6 +21,7 @@ import io.github.codex_agent_labs.codexagent.appserver.runtime.CodexRuntime
 import io.github.codex_agent_labs.codexagent.appserver.runtime.CodexRuntimeEvent
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -45,13 +46,21 @@ internal class NativeCodexBehaviorFixture(
     val clientInfo = CodexClientInfo("native_fixture", "Native Fixture", "test")
     val newConversationId = ConversationId("native-thread")
 
-    val selectedWorkspaces = mutableListOf<CodexWorkspaceSelection>()
-    val preparedWorkspaces = mutableListOf<CodexWorkspace>()
-    val openRequests = mutableListOf<Pair<String, JsonObject>>()
-    val turnRequests = mutableListOf<JsonObject>()
-    val interruptRequests = mutableListOf<JsonObject>()
-    val additionalRequests = mutableListOf<Pair<String, JsonObject>>()
-    val serverResponses = mutableListOf<JsonObject>()
+    private val selectedWorkspacesState = AtomicReference<List<CodexWorkspaceSelection>>(emptyList())
+    private val preparedWorkspacesState = AtomicReference<List<CodexWorkspace>>(emptyList())
+    private val openRequestsState = AtomicReference<List<Pair<String, JsonObject>>>(emptyList())
+    private val turnRequestsState = AtomicReference<List<JsonObject>>(emptyList())
+    private val interruptRequestsState = AtomicReference<List<JsonObject>>(emptyList())
+    private val additionalRequestsState = AtomicReference<List<Pair<String, JsonObject>>>(emptyList())
+    private val serverResponsesState = AtomicReference<List<JsonObject>>(emptyList())
+
+    val selectedWorkspaces: List<CodexWorkspaceSelection> get() = selectedWorkspacesState.load()
+    val preparedWorkspaces: List<CodexWorkspace> get() = preparedWorkspacesState.load()
+    val openRequests: List<Pair<String, JsonObject>> get() = openRequestsState.load()
+    val turnRequests: List<JsonObject> get() = turnRequestsState.load()
+    val interruptRequests: List<JsonObject> get() = interruptRequestsState.load()
+    val additionalRequests: List<Pair<String, JsonObject>> get() = additionalRequestsState.load()
+    val serverResponses: List<JsonObject> get() = serverResponsesState.load()
 
     val turnStartObserved = CompletableDeferred<Unit>()
     val releaseTurnStart = CompletableDeferred<Unit>()
@@ -68,7 +77,7 @@ internal class NativeCodexBehaviorFixture(
             CodexAuthorizationBrowser { CodexAuthorizationPresentation.None }
         override val workspaceStore: CodexWorkspaceStore = object : CodexWorkspaceStore {
             override suspend fun select(selection: CodexWorkspaceSelection): CodexWorkspaceResolution {
-                selectedWorkspaces += selection
+                selectedWorkspacesState.append(selection)
                 require(selection is CodexPathWorkspaceSelection)
                 return CodexWorkspaceResolution.Available(workspace)
             }
@@ -83,7 +92,7 @@ internal class NativeCodexBehaviorFixture(
         }
 
         override suspend fun prepare(workspace: CodexWorkspace): PreparedCodexRuntime {
-            preparedWorkspaces += workspace
+            preparedWorkspacesState.append(workspace)
             prepareFailure?.let { throw it }
             return PreparedCodexRuntime(
                 runtimeFactory = { runtime },
@@ -99,6 +108,10 @@ internal class NativeCodexBehaviorFixture(
 
     suspend fun request(id: Long, method: String, params: JsonObject): Unit =
         runtime.request(id, method, params)
+
+    fun clearAdditionalRequests() {
+        additionalRequestsState.store(emptyList())
+    }
 
     private inner class ScriptedRuntime : CodexRuntime {
         val started = AtomicBoolean(false)
@@ -118,7 +131,7 @@ internal class NativeCodexBehaviorFixture(
             val request = Json.parseToJsonElement(line.value).jsonObject
             val method = request["method"]?.jsonPrimitive?.content
             if (method == null) {
-                serverResponses += request
+                serverResponsesState.append(request)
                 onServerResponse(request)
                 return
             }
@@ -135,7 +148,7 @@ internal class NativeCodexBehaviorFixture(
                 )
 
                 "thread/start", "thread/resume" -> {
-                    openRequests += method to params
+                    openRequestsState.append(method to params)
                     val id = if (method == "thread/resume") {
                         params.getValue("threadId").jsonPrimitive.content
                     } else {
@@ -145,7 +158,7 @@ internal class NativeCodexBehaviorFixture(
                 }
 
                 "turn/start" -> {
-                    turnRequests += params
+                    turnRequestsState.append(params)
                     val threadId = params.getValue("threadId").jsonPrimitive.content
                     turnStartObserved.complete(Unit)
                     notify(
@@ -163,7 +176,7 @@ internal class NativeCodexBehaviorFixture(
                 }
 
                 "turn/interrupt" -> {
-                    interruptRequests += params
+                    interruptRequestsState.append(params)
                     respond(request, buildJsonObject {})
                     notify(
                         "turn/completed",
@@ -185,7 +198,7 @@ internal class NativeCodexBehaviorFixture(
                 }
 
                 else -> {
-                    additionalRequests += method to params
+                    additionalRequestsState.append(method to params)
                     additionalResponse(method, params)?.let { respond(request, it) }
                 }
             }
@@ -248,5 +261,12 @@ internal class NativeCodexBehaviorFixture(
 
     private companion object {
         const val TURN_ID = "native-turn"
+    }
+}
+
+private fun <T> AtomicReference<List<T>>.append(value: T) {
+    while (true) {
+        val current = load()
+        if (compareAndSet(current, current + value)) return
     }
 }

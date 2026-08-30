@@ -296,7 +296,7 @@ class CodexAgentCSuspendCatalogOperationsTest {
     fun pluginsListCopiesFlagAndCatalog(): Unit = catalogTest { graph ->
         val plugins = graph.service(CodexAgentCHandleKind.PLUGINS, ::codexAgentAgentPlugins)
         graph.agent.plugins.list(forceReload = true)
-        graph.fixture.additionalRequests.clear()
+        graph.fixture.clearAdditionalRequests()
         val result = graph.operation(
             inspect = { operation ->
                 assertCatalogOperationSnapshot(graph.context) { output ->
@@ -729,7 +729,8 @@ private class CatalogProtocol {
     }
 
     private fun uniquePath(kind: String): Path =
-        "/tmp/codex-agent-catalog-$kind-${Random.nextLong().toULong()}".toPath()
+        SYSTEM_TEMPORARY_ROOT /
+            "codex-agent-catalog-$kind-${Random.nextLong().toULong()}"
 
     private fun skillsResponse(): JsonObject = buildJsonObject {
         putJsonArray("data") {
@@ -740,7 +741,7 @@ private class CatalogProtocol {
                     add(skillEntry("catalog-read", CATALOG_SKILL_PATH, "system"))
                     FileSystem.SYSTEM.listOrNull(USER_SKILLS_ROOT).orEmpty().forEach { directory ->
                         val manifest = directory / "SKILL.md"
-                        if (FileSystem.SYSTEM.metadata(manifest)?.isRegularFile == true) {
+                        if (FileSystem.SYSTEM.metadata(manifest).isRegularFile) {
                             add(skillEntry(directory.name, manifest, "user"))
                         }
                     }
@@ -758,7 +759,7 @@ private class CatalogProtocol {
                 putJsonArray("hooks") {
                     add(hookEntry("catalog-hook", "/workspace/.codex/hooks.json"))
                     FileSystem.SYSTEM.listOrNull(USER_HOOK_ASSETS).orEmpty().forEach { directory ->
-                        if (FileSystem.SYSTEM.metadata(directory / ".codex-agent-owned.json")?.isRegularFile == true) {
+                        if (FileSystem.SYSTEM.metadata(directory / ".codex-agent-owned.json").isRegularFile) {
                             add(hookEntry("installed-${directory.name}", USER_HOOKS_FILE.toString()))
                         }
                     }
@@ -1085,6 +1086,9 @@ private typealias CatalogServiceAccessor = (
 
 private val CATALOG_SKILL_PATH = "/tmp/codex-agent-catalog-read/SKILL.md".toPath()
 private const val CATALOG_SKILL_TEXT = "catalog skill"
-private val USER_SKILLS_ROOT = "/private/tmp/codex-native-fixture/skills".toPath()
-private val USER_HOOKS_FILE = "/private/tmp/codex-native-fixture/hooks.json".toPath()
-private val USER_HOOK_ASSETS = "/private/tmp/codex-native-fixture/.codex-agent-hooks".toPath()
+private val SYSTEM_TEMPORARY_ROOT =
+    FileSystem.SYSTEM.canonicalize(FileSystem.SYSTEM_TEMPORARY_DIRECTORY)
+private val USER_FIXTURE_ROOT = SYSTEM_TEMPORARY_ROOT / "codex-native-fixture"
+private val USER_SKILLS_ROOT = USER_FIXTURE_ROOT / "skills"
+private val USER_HOOKS_FILE = USER_FIXTURE_ROOT / "hooks.json"
+private val USER_HOOK_ASSETS = USER_FIXTURE_ROOT / ".codex-agent-hooks"

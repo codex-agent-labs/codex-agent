@@ -74,7 +74,7 @@ class CodexAgentCSuspendConversationOperationsTest {
             }
         }
         val graph = createSuspendConversationGraph(fixture)
-        fixture.additionalRequests.clear()
+        fixture.clearAdditionalRequests()
         try {
             memScoped {
                 val listSlot = emptySuspendConversationHandle()
