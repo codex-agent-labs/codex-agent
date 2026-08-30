@@ -1282,7 +1282,7 @@ codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_plugin_create(
     if (name == nullptr || uri == nullptr || out_plugin == nullptr ||
         *out_plugin != nullptr)
         return CODEX_AGENT_STATUS_INVALID_ARGUMENT;
-    *out_plugin = new struct codex_agent_invocation_plugin{
+    *out_plugin = new codex_agent_invocation_plugin_t{
         from_view(*name), from_view(*uri)};
     return CODEX_AGENT_STATUS_OK;
 }
@@ -1299,7 +1299,7 @@ codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_skill_create(
     if (name == nullptr || path == nullptr || out_skill == nullptr ||
         *out_skill != nullptr)
         return CODEX_AGENT_STATUS_INVALID_ARGUMENT;
-    *out_skill = new struct codex_agent_invocation_skill{
+    *out_skill = new codex_agent_invocation_skill_t{
         from_view(*name), from_view(*path)};
     return CODEX_AGENT_STATUS_OK;
 }
@@ -1370,7 +1370,7 @@ codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_plugin(
         *out_plugin != nullptr ||
         invocation->kind != CODEX_AGENT_INVOCATION_KIND_PLUGIN)
         return CODEX_AGENT_STATUS_WRONG_HANDLE_TYPE;
-    *out_plugin = new struct codex_agent_invocation_plugin{
+    *out_plugin = new codex_agent_invocation_plugin_t{
         invocation->name, invocation->location};
     return CODEX_AGENT_STATUS_OK;
 }
@@ -1381,7 +1381,7 @@ codex_agent_status_t CODEX_AGENT_CALL codex_agent_invocation_skill(
     if (invocation == nullptr || out_skill == nullptr || *out_skill != nullptr ||
         invocation->kind != CODEX_AGENT_INVOCATION_KIND_SKILL)
         return CODEX_AGENT_STATUS_WRONG_HANDLE_TYPE;
-    *out_skill = new struct codex_agent_invocation_skill{
+    *out_skill = new codex_agent_invocation_skill_t{
         invocation->name, invocation->location};
     return CODEX_AGENT_STATUS_OK;
 }
