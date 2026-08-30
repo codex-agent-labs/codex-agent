@@ -1,5 +1,6 @@
 use libloading::Library;
 use std::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::path::Path;
 
 #[cfg(test)]
@@ -301,7 +302,7 @@ macro_rules! api {
     ) => {
         #[allow(dead_code)]
         pub(crate) struct Api {
-            _library: Library,
+            _library: ManuallyDrop<Library>,
             pub(crate) abi_version: $abi_version_ty,
             $(pub(crate) $field: $ty,)+
         }
@@ -341,7 +342,8 @@ macro_rules! api {
                             .map_err(|error| LoadError::MissingSymbol(format!("missing C SDK symbol {}: {error}", $symbol)))?
                     };
                 )+
-                Ok(Self { _library: library, abi_version, $($field,)+ })
+                // Kotlin/Native owns process-wide runtime state and cannot be safely unloaded.
+                Ok(Self { _library: ManuallyDrop::new(library), abi_version, $($field,)+ })
             }
         }
     };
