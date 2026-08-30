@@ -4116,18 +4116,27 @@ mod tests {
         let copy: Copy = symbol(context, b"codex_agent_test_release_log_copy\0")
             .expect("load release-log copier");
         let mut required = 0;
-        // SAFETY: the first call supplies no buffer and requests the exact required size.
-        let first = unsafe { copy(std::ptr::null_mut(), 0, &mut required) };
-        assert!(matches!(
-            first,
-            ffi::STATUS_OK | ffi::STATUS_BUFFER_TOO_SMALL
-        ));
-        let mut bytes = vec![0; required];
-        // SAFETY: bytes has exactly the capacity returned by the first call.
-        let status = unsafe { copy(bytes.as_mut_ptr(), bytes.len(), &mut required) };
-        assert_eq!(status, ffi::STATUS_OK);
-        bytes.truncate(required);
-        bytes
+        let mut bytes = Vec::new();
+        loop {
+            let buffer = if bytes.is_empty() {
+                std::ptr::null_mut()
+            } else {
+                bytes.as_mut_ptr()
+            };
+            // SAFETY: buffer is null for zero capacity or writable for bytes.len().
+            let status = unsafe { copy(buffer, bytes.len(), &mut required) };
+            match status {
+                ffi::STATUS_OK => {
+                    bytes.truncate(required);
+                    return bytes;
+                }
+                ffi::STATUS_BUFFER_TOO_SMALL => {
+                    assert!(required > bytes.len(), "release-log size must grow");
+                    bytes.resize(required, 0);
+                }
+                _ => panic!("unexpected release-log copy status: {status}"),
+            }
+        }
     }
 
     fn wait_for_count(mut count: impl FnMut() -> i32, expected: i32, description: &str) {

@@ -1,5 +1,6 @@
 use codex_agent::*;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;

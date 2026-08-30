@@ -224,16 +224,27 @@ impl Control {
 
     fn release_log(&self) -> Vec<u8> {
         let mut required = 0;
-        // SAFETY: required is a valid scalar output; zero capacity permits a null buffer.
-        let first = unsafe { (self.copy_release_log)(std::ptr::null_mut(), 0, &mut required) };
-        assert!(matches!(first, 0 | 9));
-        let mut bytes = vec![0; required];
-        // SAFETY: bytes is writable for its capacity and required remains live.
-        let status =
-            unsafe { (self.copy_release_log)(bytes.as_mut_ptr(), bytes.len(), &mut required) };
-        assert_eq!(status, 0);
-        bytes.truncate(required);
-        bytes
+        let mut bytes = Vec::new();
+        loop {
+            let buffer = if bytes.is_empty() {
+                std::ptr::null_mut()
+            } else {
+                bytes.as_mut_ptr()
+            };
+            // SAFETY: buffer is null for zero capacity or writable for bytes.len().
+            let status = unsafe { (self.copy_release_log)(buffer, bytes.len(), &mut required) };
+            match status {
+                0 => {
+                    bytes.truncate(required);
+                    return bytes;
+                }
+                9 => {
+                    assert!(required > bytes.len(), "release-log size must grow");
+                    bytes.resize(required, 0);
+                }
+                _ => panic!("unexpected release-log copy status: {status}"),
+            }
+        }
     }
 }
 
