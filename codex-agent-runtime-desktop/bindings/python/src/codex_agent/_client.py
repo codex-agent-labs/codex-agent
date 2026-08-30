@@ -470,7 +470,7 @@ class HostStateReady(HostState):
     agent: CodexAgent
 
     def __init__(self, agent: CodexAgent) -> None:
-        super().__init__(HostStateKind.READY, agent)
+        HostState.__init__(self, HostStateKind.READY, agent)
 
 
 class Conversations(_OwnedHandle):
