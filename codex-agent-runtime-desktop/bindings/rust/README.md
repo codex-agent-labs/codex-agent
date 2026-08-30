@@ -48,8 +48,8 @@ Host or Conversation records a cleanup issue rather than pretending shutdown suc
 release is not semantic Host/Conversation close.
 
 Resolution checks `CODEX_AGENT_LIBRARY`, an executable-adjacent native library,
-the executable's `runtimes/<target>/native/` directory, then the crate's
-`native/<target>/` directory. Target IDs are `osx-arm64`, `osx-x64`,
+then the executable's `runtimes/<target>/native/` directory. Copy the matching
+verified crate asset to one of those deployment locations. Target IDs are `osx-arm64`, `osx-x64`,
 `linux-arm64`, `linux-x64`, and `win-x64`. ABI `1.12.0` validation is
 fail-closed at load time; no platform-loader search-path fallback is used.
 

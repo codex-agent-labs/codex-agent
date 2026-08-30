@@ -1,4 +1,6 @@
 .dart_tool/
 consumer/
+parity/
 pubspec.lock
+test/
 tool/

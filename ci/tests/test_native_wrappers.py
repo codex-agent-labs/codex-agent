@@ -15,17 +15,43 @@ CI_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_ROOT))
 
 from native_wrappers import (  # noqa: E402
+    DART_RELEASE_EXCLUDES,
     HOSTS,
     LANGUAGES,
     deterministic_tar,
     deterministic_zip,
+    files,
     host_classifier,
     safe_extract_tar,
     safe_extract_zip,
+    stage_dart_release,
 )
 
 
 class NativeWrapperReleaseTest(unittest.TestCase):
+    def test_dart_release_excludes_repository_tests_and_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "lib").mkdir()
+            (source / "lib/codex_agent.dart").write_text("library codex_agent;\n", encoding="utf-8")
+            for relative in DART_RELEASE_EXCLUDES:
+                path = source / relative
+                if relative in {".dart_tool", "consumer", "parity", "test", "tool"}:
+                    path.mkdir()
+                    (path / "payload").write_text("excluded\n", encoding="utf-8")
+                else:
+                    path.write_text("excluded\n", encoding="utf-8")
+
+            destination = root / "release"
+            stage_dart_release(source, destination)
+
+            self.assertEqual(
+                ["lib/codex_agent.dart"],
+                [path.relative_to(destination).as_posix() for path in files(destination)],
+            )
+
     def test_release_inventory_is_exact(self) -> None:
         self.assertEqual(
             ["macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"],

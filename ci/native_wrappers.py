@@ -34,6 +34,16 @@ PYTHON_TAGS = {
     "windows-x64": "win_amd64",
 }
 LANGUAGES = ("python", "csharp", "rust", "cpp", "dart")
+DART_RELEASE_EXCLUDES = (
+    ".dart_tool",
+    ".gitignore",
+    ".pubignore",
+    "consumer",
+    "parity",
+    "pubspec.lock",
+    "test",
+    "tool",
+)
 PACKAGE_CLASSIFIERS = {
     "macos-arm64": "osx-arm64",
     "macos-x64": "osx-x64",
@@ -101,6 +111,16 @@ def deterministic_tar(source: Path, output: Path, prefix: str) -> None:
                 info.mode = 0o755 if os.access(path, os.X_OK) else 0o644
                 with path.open("rb") as source_file:
                     archive.addfile(info, source_file)
+
+
+def stage_dart_release(source: Path, destination: Path) -> None:
+    shutil.copytree(source, destination)
+    for relative in DART_RELEASE_EXCLUDES:
+        path = destination / relative
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        elif path.exists() or path.is_symlink():
+            path.unlink()
 
 
 def safe_extract_zip(archive: Path, destination: Path) -> None:
@@ -282,9 +302,10 @@ def package_once(repository: Path, sources: Path, sdks: Path, output: Path) -> N
         dart_source = sources / "dart"
         run("dart", "pub", "get", "--enforce-lockfile", cwd=dart_source)
         run("dart", "pub", "publish", "--dry-run", cwd=dart_source)
-        shutil.rmtree(dart_source / ".dart_tool")
+        dart_release = work / "dart-release"
+        stage_dart_release(dart_source, dart_release)
         deterministic_tar(
-            dart_source,
+            dart_release,
             output / "dart/codex-agent-dart-0.2.0.tar.gz",
             "codex_agent-0.2.0",
         )

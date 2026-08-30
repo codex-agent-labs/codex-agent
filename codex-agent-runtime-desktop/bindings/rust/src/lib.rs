@@ -364,7 +364,7 @@ impl CodexNativeLibrary {
     /// Loads the matching-host library from deterministic package/application locations.
     ///
     /// `CODEX_AGENT_LIBRARY` takes precedence. Otherwise the loader checks beside the executable,
-    /// `runtimes/<target>/native`, then this crate's `native/<target>` package asset. It never
+    /// then `runtimes/<target>/native`. It never depends on a Cargo source/cache directory or
     /// falls back to a same-named library from the platform loader search path.
     pub fn load_default() -> Result<Self, CodexError> {
         let target = RuntimeTarget::current()?;
@@ -385,17 +385,11 @@ impl CodexNativeLibrary {
                     .join(file),
             );
         }
-        candidates.push(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("native")
-                .join(target.identifier())
-                .join(file),
-        );
         if let Some(path) = candidates.iter().find(|candidate| candidate.is_file()) {
             return Self::load(path);
         }
         Err(CodexError::load(format!(
-            "could not find packaged verified {} C SDK library {file}; set CODEX_AGENT_LIBRARY to an explicit verified library",
+            "could not find verified {} C SDK library {file}; set CODEX_AGENT_LIBRARY to an explicit verified library",
             target.identifier()
         )))
     }
