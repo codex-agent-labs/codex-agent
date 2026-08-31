@@ -1383,8 +1383,21 @@ class CrossLanguageAppleBindingEvidenceTest {
             "reports/cross-language-api/bindings/objective-c-parity.json",
             "swiftReceiptFile.set(swiftBindingReceiptFile)",
             "objectiveCReceiptFile.set(objectiveCBindingReceiptFile)",
+            "delete(appleBindingEvidenceFile, swiftBindingReceiptFile, objectiveCBindingReceiptFile)",
+            "mustRunAfter(invalidateAppleBindingEvidence)",
+            "it.name == \"invalidateCrossLanguageBindingParityOutputs\"",
+            "rootProject.tasks.matching { it.name == \"prepareContractInputs\" }",
+            "dependsOn(invalidateAppleBindingEvidence)",
+            ":codex-agent-core:verifyCrossLanguageApiCoverage",
             "dependsOn(appleBindingEvidence)",
         ).forEach { expected -> assertTrue(expected in registration) }
+        val coreOrdering = registration.substringAfter("project(\":codex-agent-core\").tasks.matching {")
+            .substringBefore("val appleCompilerEvidence")
+        assertTrue("mustRunAfter(invalidateAppleBindingEvidence)" in coreOrdering)
+        assertFalse(
+            "dependsOn(invalidateAppleBindingEvidence)" in coreOrdering,
+            "Core must not depend on Apple-owned invalidation; ordering only is permitted",
+        )
     }
 
     private data class Fixture(

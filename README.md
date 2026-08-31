@@ -25,7 +25,11 @@ general-purpose shell.
 
 - `codex-agent-core` contains `CodexHost`, `CodexAgent`,
   `CodexConversation`, their public domain model, and the narrow runtime and
-  extension contracts used by platform adapters.
+  extension contracts used by platform adapters. It is the published Contract
+  module.
+- `codex-agent-sdk` is the thin public `codex-agent` facade. Each target exports
+  the matching `codex-agent-core` publication and contains no domain
+  implementation.
 - `codex-agent-runtime-android` verifies and launches the packaged Android App
   Server with its loopback proxy, certificate preparation, and SQLite privacy
   guard.
@@ -38,6 +42,7 @@ general-purpose shell.
 ## Coordinates
 
 ```kotlin
+implementation("io.github.codex-agent-labs:codex-agent-core:0.2.0")
 implementation("io.github.codex-agent-labs:codex-agent:0.2.0")
 implementation("io.github.codex-agent-labs:codex-agent-runtime-android:0.2.0")
 implementation("io.github.codex-agent-labs:codex-agent-runtime-ios:0.2.0")
@@ -71,8 +76,10 @@ artifacts.
 
 - The Gradle project `:codex-agent-client` became `:codex-agent-core`. Its
   Maven root publication is
-  `io.github.codex-agent-labs:codex-agent:<version>`, not
-  `codex-agent-core`; no compatibility publication exists.
+  `io.github.codex-agent-labs:codex-agent-core:<version>`. The thin
+  `:codex-agent-sdk` facade publishes
+  `io.github.codex-agent-labs:codex-agent:<version>`; no compatibility
+  publication exists.
 - The Gradle project `:codex-agent-runtime-node` was merged into
   `:codex-agent-runtime-desktop`. JVM, Kotlin/Native, Kotlin/JS-on-Node, and
   Kotlin/WasmJS-on-Node use that one Desktop/Host runtime and its five App
@@ -309,8 +316,9 @@ The core tasks write content-hash-bound evidence under
 
 - `canonical-api.json` is the compiler-derived owner and member inventory.
 - `canonical-coverage.json` binds every member to successful canonical tests.
-- `bindings/kotlin-parity.json` and `bindings/java-parity.json` are verified
-  core language receipts.
+- `bindings/kotlin-parity.json` is the Contract-owned Kotlin receipt;
+  `bindings/java-parity.json` is the SDK-owned Java receipt retained at the
+  established report path.
 - `codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/javascript-typescript-parity.json`
   is the verified JavaScript/TypeScript receipt.
 - `codex-agent-runtime-ios/build/reports/cross-language-api/bindings/swift-parity.json`
@@ -344,17 +352,25 @@ report. The current focused gates are:
   :codex-agent-runtime-desktop:verifyRustBindingParity \
   :codex-agent-runtime-desktop:verifyCppBindingParity \
   :codex-agent-runtime-desktop:verifyDartBindingParity
-./gradlew verifyRepository
+./gradlew verifySdk \
+  -PcodexAgent.sdkBindingEvidenceDirectory=<exact-m11-evidence-directory>
+./gradlew verifyRepository \
+  -PcodexAgent.repositoryContractEvidenceDirectory=<contract-evidence-directory> \
+  -PcodexAgent.repositoryRuntimeEvidenceDirectory=<runtime-evidence-directory> \
+  -PcodexAgent.repositorySdkEvidenceDirectory=<sdk-evidence-directory> \
+  -PcodexAgent.repositoryTrustDomain=<development-or-release>
 # macOS only
 ./gradlew verifyIosRuntime
 ./gradlew :codex-agent-runtime-desktop:generateCodexAgentCAbiScenarioProof
 ```
 
-The portable root `verifyRepository` task produces the Kotlin, Java, and
-JavaScript/TypeScript receipts without running Xcode. It also runs native-wrapper
-parity when all authoritative five-host release and consumer inputs are supplied
-together; a local invocation without them makes no native-wrapper or distributed
-aggregate claim. On macOS, root `verifyIosRuntime` verifies the iOS runtime and
+`verifyContract` produces only canonical Contract and Kotlin evidence.
+`verifySdk` verifies the facade and an exact imported eleven-language receipt
+set whose canonical API and coverage identities match that Contract;
+`verifyRepository` aggregates independently supplied product receipts without
+rebuilding their owners. Native-wrapper parity requires all authoritative five-host release and consumer inputs together;
+missing inputs fail the gate instead of producing a no-op success. On macOS,
+root `verifyIosRuntime` verifies the iOS runtime and
 Apple receipts. Only a successful merge-gate run can collect all five
 matching-host C SDK and installed-package proofs, derive the C/native receipts,
 run the exact eleven-receipt M11 audit, and preserve the canonical API, coverage,

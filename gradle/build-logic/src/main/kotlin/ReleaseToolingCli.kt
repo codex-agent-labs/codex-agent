@@ -33,7 +33,8 @@ fun main(arguments: Array<String>) {
     when (command) {
         "self-check" -> {
             options.requireOnly()
-            check(canonicalPromotedMavenOwners().size == expectedMavenPrimaryPaths("VERSION")
+            check(canonicalPromotedMavenOwners().size ==
+                expectedMavenPrimaryPaths(ProductVersions("CONTRACT", "RUNTIME", "SDK"))
                 .map { it.substringBefore('/') }.toSet().size)
             check(centralAuthorization("user", "password").startsWith("Bearer "))
             check(releaseJson.parseToJsonElement("{\"ready\":true}").jsonObject.releaseBoolean("ready"))
@@ -168,22 +169,33 @@ fun main(arguments: Array<String>) {
             )
         }
         "stage-promoted-maven" -> {
-            options.requireOnly("promoted", "commit", "version", "output")
+            options.requireOnly(
+                "promoted", "commit", "contract-version", "runtime-version", "sdk-version", "output",
+            )
             stageCanonicalPromotedMavenPrimaries(
-                options.file("promoted"), options.required("commit"), options.required("version"),
+                options.file("promoted"), options.required("commit"), ProductVersions(
+                    options.required("contract-version"),
+                    options.required("runtime-version"),
+                    options.required("sdk-version"),
+                ),
                 options.file("output"),
             )
         }
         "assemble-promoted-candidate" -> {
             options.requireOnly(
-                "repository", "promoted", "signed-maven", "version", "tag", "commit", "tree",
+                "repository", "promoted", "signed-maven", "contract-version", "runtime-version", "sdk-version",
+                "tag", "commit", "tree",
                 "promotion-run-id", "promotion-run-attempt", "release-tool", "payload",
             )
             val repository = options.file("repository").canonicalFile
             assemblePromotedCandidate(PromotedCandidateInputs(
                 promotedArtifacts = options.file("promoted"),
                 signedMavenRepository = options.file("signed-maven"),
-                version = options.required("version"),
+                versions = ProductVersions(
+                    options.required("contract-version"),
+                    options.required("runtime-version"),
+                    options.required("sdk-version"),
+                ),
                 releaseTag = options.required("tag"),
                 commit = options.required("commit"),
                 tree = options.required("tree"),
@@ -214,7 +226,8 @@ fun main(arguments: Array<String>) {
         }
         "verify-candidate" -> {
             options.requireOnly(
-                "repository", "manifest", "payload", "version", "tag", "commit",
+                "repository", "manifest", "payload", "contract-version", "runtime-version", "sdk-version",
+                "tag", "commit",
                 "verification-output", "github-output",
             )
             val repository = options.file("repository").canonicalFile
@@ -251,7 +264,11 @@ fun main(arguments: Array<String>) {
                 ),
             )
             val result = verifyCandidatePayload(
-                manifestFile, payload, options.required("version"), options.required("tag"),
+                manifestFile, payload, ProductVersions(
+                    options.required("contract-version"),
+                    options.required("runtime-version"),
+                    options.required("sdk-version"),
+                ), options.required("tag"),
                 options.required("commit"), policies,
             )
             verifyPublicationReadiness(

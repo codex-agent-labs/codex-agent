@@ -273,7 +273,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 project(":core").tasks.matching {
                     it.name == "invalidateCrossLanguageBindingParityOutputs"
                 }.configureEach {
-                    dependsOn(preflight)
+                    mustRunAfter(preflight)
                 }
                 val link = tasks.register("linkReleaseSharedMacosArm64")
                 val nativeTest = tasks.register("macosArm64Test")
@@ -299,6 +299,16 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 writeText("stale compiler state")
             }
 
+            val coreOnly = GradleRunner.create()
+                .withProjectDir(root)
+                .withArguments(":core:verifyCrossLanguageApiCoverage", "--stacktrace")
+                .buildAndFail()
+
+            assertTrue(coreOnly.task(":desktop:invalidateCodexAgentCAbiBootstrapEvidence") == null)
+            assertEquals(TaskOutcome.FAILED, coreOnly.task(":core:failingCanonicalCoverage")?.outcome)
+            assertTrue(staleEvidence.exists())
+            assertTrue(staleConsumer.exists())
+
             val result = GradleRunner.create()
                 .withProjectDir(root)
                 .withArguments(":desktop:generateCodexAgentCAbiBootstrapEvidence", "--stacktrace")
@@ -313,6 +323,12 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             assertTrue("intentional canonical coverage failure" in result.output)
             assertFalse(staleEvidence.exists())
             assertFalse(staleConsumer.exists())
+            val executedTasks = result.tasks.map { it.path }
+            assertTrue(
+                executedTasks.indexOf(":desktop:invalidateCodexAgentCAbiBootstrapEvidence") <
+                    executedTasks.indexOf(":core:invalidateCrossLanguageBindingParityOutputs"),
+                executedTasks.joinToString(),
+            )
 
             val wiring = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
             val generator = wiring.substringAfter(
@@ -325,10 +341,15 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
                 "delete(cAbiBootstrapEvidenceFile, cAbiBootstrapConsumerOutput)",
                 "mustRunAfter(invalidateCAbiBootstrapEvidence)",
                 "rootProject.findProject(\":codex-agent-core\")",
-                "dependsOn(invalidateCAbiBootstrapEvidence)",
+                "rootProject.tasks.matching { it.name == \"prepareContractInputs\" }",
             ).forEach { contract ->
                 assertTrue(contract in wiring, "Missing C bootstrap preflight contract: $contract")
             }
+            val corePreflightOrdering = wiring.substringAfter(
+                "rootProject.findProject(\":codex-agent-core\")?.tasks?.matching {",
+            ).substringBefore("val generateCAbiBootstrapEvidence")
+            assertTrue("mustRunAfter(invalidateCAbiBootstrapEvidence)" in corePreflightOrdering)
+            assertFalse("dependsOn(invalidateCAbiBootstrapEvidence)" in corePreflightOrdering)
             listOf(
                 "invalidateCAbiBootstrapEvidence",
                 "\":codex-agent-core:verifyCrossLanguageApiCoverage\"",
@@ -442,8 +463,6 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             ).forEach { contract ->
                 assertTrue(contract in producer, "Missing D104 C bootstrap producer contract: $contract")
             }
-            val coreWiring = File("src/main/kotlin/codexagent.core-verification.gradle.kts").readText()
-            assertTrue("\"invalidateCodexAgentCAbiBootstrapEvidence\"" in coreWiring)
         } finally {
             root.deleteRecursively()
         }

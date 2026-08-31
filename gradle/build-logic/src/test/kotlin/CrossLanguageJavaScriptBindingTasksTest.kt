@@ -96,7 +96,7 @@ class CrossLanguageJavaScriptBindingTasksTest {
                 project(":core").tasks.matching {
                     it.name == "invalidateCrossLanguageBindingParityOutputs"
                 }.configureEach {
-                    dependsOn(preflight)
+                    mustRunAfter(preflight)
                 }
                 tasks.register("verifyJavaScriptTypeScriptBindingParity") {
                     dependsOn(preflight, ":core:verifyCrossLanguageApiCoverage")
@@ -127,10 +127,16 @@ class CrossLanguageJavaScriptBindingTasksTest {
                 "tasks.configureEach",
                 "mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)",
                 "it.name == \"invalidateCrossLanguageBindingParityOutputs\"",
+                "rootProject.tasks.matching { it.name == \"prepareContractInputs\" }",
+                ":codex-agent-core:verifyCrossLanguageApiCoverage",
                 "dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput)",
             ).forEach { contract ->
                 assertTrue(contract in wiring, "Missing JavaScript/TypeScript preflight contract: $contract")
             }
+            val coreOrdering = wiring.substringAfter("project(\":codex-agent-core\").tasks.matching {")
+                .substringBefore("tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>")
+            assertTrue("mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)" in coreOrdering)
+            assertFalse("dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput)" in coreOrdering)
         } finally {
             root.deleteRecursively()
         }

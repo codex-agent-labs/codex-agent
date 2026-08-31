@@ -15,6 +15,7 @@ class ProductVersionOwnershipTest {
                 mapOf(
                     ":" to "3.4.5",
                     ":codex-agent-core" to "1.2.3",
+                    ":codex-agent-sdk" to "3.4.5",
                     ":codex-agent-runtime-desktop" to "2.3.4",
                     ":codex-agent-runtime-android" to "3.4.5",
                     ":codex-agent-runtime-ios" to "3.4.5",
@@ -30,7 +31,10 @@ class ProductVersionOwnershipTest {
                 Triple(
                     "sdk.txt",
                     "3.4.6",
-                    setOf(":", ":codex-agent-runtime-android", ":codex-agent-runtime-ios"),
+                    setOf(
+                        ":", ":codex-agent-sdk", ":codex-agent-runtime-android",
+                        ":codex-agent-runtime-ios",
+                    ),
                 ),
             ).forEach { (fileName, version, expectedChanged) ->
                 writeVersions(repository, ProductVersions("1.2.3", "2.3.4", "3.4.5"))
@@ -63,6 +67,7 @@ class ProductVersionOwnershipTest {
     private fun projectGraph() = ProjectBuilder.builder().withName("codex-agent").build().also { root ->
         listOf(
             "codex-agent-core",
+            "codex-agent-sdk",
             "codex-agent-runtime-android",
             "codex-agent-runtime-desktop",
             "codex-agent-runtime-ios",

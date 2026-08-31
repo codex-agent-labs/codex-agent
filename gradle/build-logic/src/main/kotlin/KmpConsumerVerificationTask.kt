@@ -44,7 +44,8 @@ internal fun stagedConsumerOutcomeInitScript(buildTasks: List<String>): String {
 internal fun stagedConsumerArguments(
     consumer: File,
     repository: File,
-    version: String,
+    sdkVersion: String,
+    runtimeVersion: String,
     target: String,
     buildTasks: List<String>,
     outcomeInitScript: File? = null,
@@ -53,7 +54,8 @@ internal fun stagedConsumerArguments(
     "--no-daemon",
     "--no-configuration-cache",
     "-PCENTRAL_STAGING=${repository.absolutePath}",
-    "-PcodexAgent.version=$version",
+    "-PcodexAgent.sdkVersion=$sdkVersion",
+    "-PcodexAgent.runtimeVersion=$runtimeVersion",
     "-PcodexAgent.consumerTarget=$target",
 ) + outcomeInitScript?.let { listOf("--init-script", it.absolutePath) }.orEmpty() +
     buildTasks + outcomeInitScript?.let { listOf(stagedConsumerOutcomeTask) }.orEmpty()

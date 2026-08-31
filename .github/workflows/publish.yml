@@ -110,7 +110,7 @@ jobs:
           test "$(jq -r .promotionRunAttempt "$promotion_receipt")" = "$promotion_run_attempt"
           manifest="$PAYLOAD/candidate-manifest.json"
           jq -e '
-            .schemaVersion == 16 and
+            .schemaVersion == 17 and
             (.evidence.releaseTooling | keys | sort) == ["bytes", "fileName", "sha256"]
           ' "$manifest" >/dev/null
           release_tool_name=$(jq -r .evidence.releaseTooling.fileName "$manifest")
@@ -143,7 +143,9 @@ jobs:
             --repository "$GITHUB_WORKSPACE" \
             --manifest "$PAYLOAD/candidate-manifest.json" \
             --payload "$PAYLOAD" \
-            --version "${RELEASE_TAG#v}" \
+            --contract-version "$(cat gradle/release/versions/contract.txt)" \
+            --runtime-version "$(cat gradle/release/versions/runtime.txt)" \
+            --sdk-version "$(cat gradle/release/versions/sdk.txt)" \
             --tag "$RELEASE_TAG" \
             --commit "$CANDIDATE_COMMIT" \
             --verification-output "$VERIFICATION" \

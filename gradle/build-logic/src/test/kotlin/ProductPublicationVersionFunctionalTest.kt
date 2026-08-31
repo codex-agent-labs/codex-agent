@@ -13,8 +13,14 @@ class ProductPublicationVersionFunctionalTest {
             root.resolve("settings.gradle.kts").writeText(
                 """
                 rootProject.name = "product-version-fixture"
+                dependencyResolutionManagement {
+                    versionCatalogs {
+                        create("libs") { version("kotlin", "2.2.0") }
+                    }
+                }
                 include(
                     ":codex-agent-core",
+                    ":codex-agent-sdk",
                     ":codex-agent-runtime-desktop",
                     ":codex-agent-runtime-android",
                     ":codex-agent-runtime-ios",
@@ -23,7 +29,35 @@ class ProductPublicationVersionFunctionalTest {
                 include(":tooling:protocol-generator")
                 """.trimIndent() + "\n",
             )
-            root.resolve("build.gradle.kts").writeText("plugins { id(\"codexagent.root-release\") }\n")
+            root.resolve("build.gradle.kts").writeText(
+                """
+                plugins { `java-platform`; `maven-publish`; id("codexagent.root-release") }
+                val contractVersion = file("gradle/release/versions/contract.txt").readText().trim()
+                val runtimeVersion = file("gradle/release/versions/runtime.txt").readText().trim()
+                val sdkVersion = file("gradle/release/versions/sdk.txt").readText().trim()
+                dependencies {
+                    constraints {
+                        api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent:${'$'}sdkVersion")
+                        api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent-core:${'$'}contractVersion")
+                        api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent-runtime-desktop:${'$'}runtimeVersion")
+                        api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent-runtime-android:${'$'}sdkVersion")
+                        api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent-runtime-ios:${'$'}sdkVersion")
+                    }
+                }
+                publishing {
+                    publications {
+                        create<MavenPublication>("maven") {
+                            from(components["javaPlatform"])
+                            artifactId = "codex-agent-bom"
+                        }
+                    }
+                    repositories.maven {
+                        name = "FIXTURE"
+                        url = layout.buildDirectory.dir("fixture-maven").get().asFile.toURI()
+                    }
+                }
+                """.trimIndent() + "\n",
+            )
             writeVersions(root, "1.2.3", "2.3.4", "3.4.5")
             modules.forEach { (project, artifact) ->
                 val directory = root.resolve(project.removePrefix(":"))
@@ -80,6 +114,7 @@ class ProductPublicationVersionFunctionalTest {
         .withPluginClasspath()
         .withArguments(
             modules.keys.map { "$it:publishMavenPublicationToFIXTURERepository" } + listOf(
+                ":publishMavenPublicationToFIXTURERepository",
                 "--configuration-cache",
                 "--configuration-cache-problems=fail",
                 "--stacktrace",
@@ -90,7 +125,8 @@ class ProductPublicationVersionFunctionalTest {
 
     private fun assertVersions(root: File, contract: String, runtime: String, sdk: String) {
         val versions = mapOf(
-            "codex-agent" to contract,
+            "codex-agent-core" to contract,
+            "codex-agent" to sdk,
             "codex-agent-runtime-desktop" to runtime,
             "codex-agent-runtime-android" to sdk,
             "codex-agent-runtime-ios" to sdk,
@@ -100,20 +136,36 @@ class ProductPublicationVersionFunctionalTest {
             assertTrue(path.isFile, path.path)
             assertTrue("<version>$version</version>" in path.readText(), path.path)
         }
-        assertEquals(setOf("1.2.3", contract), versionDirectories(root, "codex-agent"))
+        assertEquals(setOf("1.2.3", contract), versionDirectories(root, "codex-agent-core"))
+        assertEquals(setOf("3.4.5", sdk), versionDirectories(root, "codex-agent"))
         assertEquals(setOf("2.3.4", runtime), versionDirectories(root, "codex-agent-runtime-desktop"))
         assertEquals(setOf("3.4.5", sdk), versionDirectories(root, "codex-agent-runtime-android"))
         assertEquals(setOf("3.4.5", sdk), versionDirectories(root, "codex-agent-runtime-ios"))
+        assertEquals(setOf("3.4.5", sdk), versionDirectories(root, "codex-agent-bom"))
+        val bom = maven(root).resolve("codex-agent-bom/$sdk/codex-agent-bom-$sdk.pom").readText()
+        mapOf(
+            "codex-agent" to sdk,
+            "codex-agent-core" to contract,
+            "codex-agent-runtime-desktop" to runtime,
+            "codex-agent-runtime-android" to sdk,
+            "codex-agent-runtime-ios" to sdk,
+        ).forEach { (artifact, version) ->
+            assertTrue(
+                "<artifactId>$artifact</artifactId>" in bom && "<version>$version</version>" in bom,
+                artifact,
+            )
+        }
     }
 
     private fun assertDependencies(root: File, contract: String, runtime: String, sdk: String) {
         mapOf(
+            "codex-agent" to sdk,
             "codex-agent-runtime-desktop" to runtime,
             "codex-agent-runtime-android" to sdk,
             "codex-agent-runtime-ios" to sdk,
         ).forEach { (artifact, version) ->
             val pom = maven(root).resolve("$artifact/$version/$artifact-$version.pom").readText()
-            assertTrue("<artifactId>codex-agent</artifactId>" in pom, artifact)
+            assertTrue("<artifactId>codex-agent-core</artifactId>" in pom, artifact)
             assertTrue("<version>$contract</version>" in pom, artifact)
         }
     }
@@ -133,7 +185,8 @@ class ProductPublicationVersionFunctionalTest {
 
     private companion object {
         val modules = linkedMapOf(
-            ":codex-agent-core" to "codex-agent",
+            ":codex-agent-core" to "codex-agent-core",
+            ":codex-agent-sdk" to "codex-agent",
             ":codex-agent-runtime-desktop" to "codex-agent-runtime-desktop",
             ":codex-agent-runtime-android" to "codex-agent-runtime-android",
             ":codex-agent-runtime-ios" to "codex-agent-runtime-ios",

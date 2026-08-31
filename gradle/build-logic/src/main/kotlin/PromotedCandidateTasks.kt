@@ -10,13 +10,13 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 
-internal const val PROMOTED_CANDIDATE_SCHEMA = 16
+internal const val PROMOTED_CANDIDATE_SCHEMA = 17
 internal const val RELEASE_TOOLING_FILE_NAME = "codex-agent-release-tooling.jar"
 
 internal fun aggregateReleaseSbomFileName(version: String) = "codex-agent-$version.cdx.json"
 
 internal fun buildAggregateReleaseSbom(
-    version: String,
+    versions: ProductVersions,
     releaseTag: String,
     commit: String,
     tree: String,
@@ -27,6 +27,7 @@ internal fun buildAggregateReleaseSbom(
     desktopBundledLicense: File,
     desktopBundledNotice: File,
 ): JsonObject {
+    val version = versions.sdk
     check(releaseTag == "v$version" && version.matches(Regex("[A-Za-z0-9._-]+"))) {
         "Aggregate SBOM release identity is invalid"
     }
@@ -40,18 +41,22 @@ internal fun buildAggregateReleaseSbom(
     }
     val maven = mavenInventory.readReleaseObject()
     check(maven.keys == setOf(
-        "schemaVersion", "groupId", "version", "artifactIds", "primaryArtifactCount", "signaturesRequired", "files",
-    ) && maven.releaseInt("schemaVersion") == 3 &&
+        "schemaVersion", "groupId", "contractVersion", "runtimeVersion", "sdkVersion",
+        "artifactIds", "primaryArtifactCount", "signaturesRequired", "files",
+    ) && maven.releaseInt("schemaVersion") == 4 &&
         maven.releaseString("groupId") == CodexAgentBuild.MAVEN_GROUP &&
-        maven.releaseString("version") == version && maven.releaseBoolean("signaturesRequired")) {
+        maven.releaseString("contractVersion") == versions.contract &&
+        maven.releaseString("runtimeVersion") == versions.runtime &&
+        maven.releaseString("sdkVersion") == versions.sdk &&
+        maven.releaseBoolean("signaturesRequired")) {
         "Aggregate SBOM Maven inventory identity is invalid"
     }
     val groupPath = CodexAgentBuild.MAVEN_GROUP.replace('.', '/')
-    val artifactIds = expectedMavenPrimaryPaths(version).mapTo(sortedSetOf()) { it.substringBefore('/') }
+    val artifactIds = expectedMavenPrimaryPaths(versions).mapTo(sortedSetOf()) { it.substringBefore('/') }
     check(maven.releaseArray("artifactIds").map { (it as? JsonPrimitive)?.content } == artifactIds.toList()) {
         "Aggregate SBOM Maven coordinate set is invalid"
     }
-    val primaryPaths = expectedMavenPrimaryPaths(version).mapTo(sortedSetOf()) { "$groupPath/$it" }
+    val primaryPaths = expectedMavenPrimaryPaths(versions).mapTo(sortedSetOf()) { "$groupPath/$it" }
     check(maven.releaseInt("primaryArtifactCount") == primaryPaths.size) {
         "Aggregate SBOM Maven primary count is invalid"
     }
@@ -91,15 +96,16 @@ internal fun buildAggregateReleaseSbom(
 
     val representedPrimaries = mutableSetOf<String>()
     val mavenComponents = artifactIds.map { artifactId ->
-        val ref = "pkg:maven/${CodexAgentBuild.MAVEN_GROUP}/$artifactId@$version"
-        val paths = primaryPaths.filter { it.startsWith("$groupPath/$artifactId/$version/") }.sorted()
+        val artifactVersion = mavenArtifactVersion(artifactId, versions)
+        val ref = "pkg:maven/${CodexAgentBuild.MAVEN_GROUP}/$artifactId@$artifactVersion"
+        val paths = primaryPaths.filter { it.startsWith("$groupPath/$artifactId/$artifactVersion/") }.sorted()
         check(paths.isNotEmpty() && paths.all(representedPrimaries::add)) {
             "Aggregate SBOM Maven primary ownership is invalid for $artifactId"
         }
         buildJsonObject {
             put("type", JsonPrimitive("library")); put("bom-ref", JsonPrimitive(ref))
             put("group", JsonPrimitive(CodexAgentBuild.MAVEN_GROUP)); put("name", JsonPrimitive(artifactId))
-            put("version", JsonPrimitive(version)); put("purl", JsonPrimitive(ref)); put("licenses", license("GPL-3.0-or-later"))
+            put("version", JsonPrimitive(artifactVersion)); put("purl", JsonPrimitive(ref)); put("licenses", license("GPL-3.0-or-later"))
             put("externalReferences", buildJsonArray { paths.forEach { path ->
                 add(distributionReference(
                     "https://repo1.maven.org/maven2/$path",
@@ -212,7 +218,7 @@ internal fun buildAggregateReleaseSbom(
 
 internal fun verifyAggregateReleaseSbom(
     sbom: File,
-    version: String,
+    versions: ProductVersions,
     releaseTag: String,
     commit: String,
     tree: String,
@@ -223,9 +229,10 @@ internal fun verifyAggregateReleaseSbom(
     desktopBundledLicense: File,
     desktopBundledNotice: File,
 ) {
+    val version = versions.sdk
     check(sbom.name == aggregateReleaseSbomFileName(version)) { "Aggregate SBOM file name is invalid" }
     val expected = buildAggregateReleaseSbom(
-        version, releaseTag, commit, tree, mavenInventory, swiftArchive, nativeWrapperPackages,
+        versions, releaseTag, commit, tree, mavenInventory, swiftArchive, nativeWrapperPackages,
         desktopDistributionManifest,
         desktopBundledLicense, desktopBundledNotice,
     )
@@ -256,30 +263,34 @@ private val promotedInputFiles = linkedMapOf(
 private val promotedSidecarSuffixes = listOf(".asc", ".md5", ".sha1", ".sha256", ".sha512")
 internal val promotedMavenArtifactOwnership = linkedMapOf(
     "common" to setOf(
-        "codex-agent", "codex-agent-jvm",
+        "codex-agent", "codex-agent-jvm", "codex-agent-bom", "codex-agent-core", "codex-agent-core-jvm",
     ),
     "android" to setOf(
-        "codex-agent-android", "codex-agent-runtime-android",
+        "codex-agent-android", "codex-agent-core-android", "codex-agent-runtime-android",
     ),
     "desktop" to setOf(
         "codex-agent-linuxarm64", "codex-agent-linuxx64",
         "codex-agent-macosarm64", "codex-agent-macosx64", "codex-agent-mingwx64",
+        "codex-agent-core-linuxarm64", "codex-agent-core-linuxx64",
+        "codex-agent-core-macosarm64", "codex-agent-core-macosx64", "codex-agent-core-mingwx64",
         "codex-agent-runtime-desktop", "codex-agent-runtime-desktop-jvm",
         "codex-agent-runtime-desktop-linuxarm64", "codex-agent-runtime-desktop-linuxx64",
         "codex-agent-runtime-desktop-macosarm64", "codex-agent-runtime-desktop-macosx64",
         "codex-agent-runtime-desktop-mingwx64",
     ),
     "ios-device" to setOf(
-        "codex-agent-iosarm64", "codex-agent-runtime-ios", "codex-agent-runtime-ios-iosarm64",
+        "codex-agent-iosarm64", "codex-agent-core-iosarm64",
+        "codex-agent-runtime-ios", "codex-agent-runtime-ios-iosarm64",
     ),
     "ios-simulator" to setOf(
-        "codex-agent-iossimulatorarm64", "codex-agent-runtime-ios-iossimulatorarm64",
+        "codex-agent-iossimulatorarm64", "codex-agent-core-iossimulatorarm64",
+        "codex-agent-runtime-ios-iossimulatorarm64",
     ),
     "node-js" to setOf(
-        "codex-agent-js", "codex-agent-runtime-desktop-js",
+        "codex-agent-js", "codex-agent-core-js", "codex-agent-runtime-desktop-js",
     ),
     "node-wasm" to setOf(
-        "codex-agent-wasm-js", "codex-agent-runtime-desktop-wasm-js",
+        "codex-agent-wasm-js", "codex-agent-core-wasm-js", "codex-agent-runtime-desktop-wasm-js",
     ),
 )
 internal val promotedCandidateLaneNames = setOf(
@@ -398,7 +409,7 @@ private data class PromotedNativeWrapperPackages(
 internal data class PromotedCandidateInputs(
     val promotedArtifacts: File,
     val signedMavenRepository: File,
-    val version: String,
+    val versions: ProductVersions,
     val releaseTag: String,
     val commit: String,
     val tree: String,
@@ -420,7 +431,9 @@ internal data class PromotedCandidateInputs(
 )
 
 internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
-        val version = inputs.version
+        val versions = inputs.versions
+        val version = versions.sdk
+        val runtimeVersion = versions.runtime
         val commit = inputs.commit
         val tree = inputs.tree
         check(inputs.releaseTag == "v$version") { "Candidate release tag/version mismatch" }
@@ -469,12 +482,12 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         }
         val releaseTooling = copyToPayload(declaredReleaseTooling, payload, RELEASE_TOOLING_FILE_NAME)
 
-        verifyCanonicalUnsignedPrimaryParity(lanes, inputs.signedMavenRepository, version)
+        verifyCanonicalUnsignedPrimaryParity(lanes, inputs.signedMavenRepository, versions)
         val signedRepository = inputs.signedMavenRepository
         val mavenInventory = payload.resolve("maven-inventory.json")
-        verifyMavenRepository(signedRepository, CodexAgentBuild.MAVEN_GROUP, version, true, mavenInventory)
-        verifyPromotedPublicationBytes(lanes, signedRepository, version)
-        verifyPromotedConsumers(lanes, version)
+        verifyMavenRepository(signedRepository, CodexAgentBuild.MAVEN_GROUP, versions, true, mavenInventory)
+        verifyPromotedPublicationBytes(lanes, signedRepository, versions)
+        verifyPromotedConsumers(lanes, versions)
 
         val centralInventory = payload.resolve("central-bundle.json")
         val centralBundles = buildCentralBundles(
@@ -546,7 +559,7 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         )
         val sbom = payload.resolve(aggregateReleaseSbomFileName(version))
         sbom.atomicWriteJson(buildAggregateReleaseSbom(
-            version,
+            versions,
             inputs.releaseTag,
             commit,
             tree,
@@ -561,6 +574,9 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         val manifest = buildJsonObject {
             put("schemaVersion", JsonPrimitive(PROMOTED_CANDIDATE_SCHEMA))
             put("version", JsonPrimitive(version))
+            put("contractVersion", JsonPrimitive(versions.contract))
+            put("runtimeVersion", JsonPrimitive(versions.runtime))
+            put("sdkVersion", JsonPrimitive(versions.sdk))
             put("releaseTag", JsonPrimitive(inputs.releaseTag))
             put("candidateCommit", JsonPrimitive(commit))
             put("candidateTree", JsonPrimitive(tree))
@@ -621,7 +637,7 @@ internal fun assemblePromotedCandidate(inputs: PromotedCandidateInputs) {
         verifyCandidateManifestStructure(manifest)
         payload.resolve("candidate-manifest.json").atomicWriteJson(manifest)
         verifyCandidatePayload(
-            payload.resolve("candidate-manifest.json"), payload, version, inputs.releaseTag, commit, policies,
+            payload.resolve("candidate-manifest.json"), payload, versions, inputs.releaseTag, commit, policies,
         )
 }
 
@@ -1042,7 +1058,7 @@ internal fun canonicalPromotedMavenOwners(
             "Duplicate canonical Maven ownership for $artifactId"
         }
     } }
-    val expectedArtifactIds = expectedMavenPrimaryPaths("VERSION").mapTo(sortedSetOf()) {
+    val expectedArtifactIds = expectedMavenPrimaryPaths(ProductVersions("C", "R", "S")).mapTo(sortedSetOf()) {
         it.substringBefore('/')
     }
     check(owners.keys == expectedArtifactIds) { "Canonical Maven artifact ownership set is incomplete" }
@@ -1051,13 +1067,13 @@ internal fun canonicalPromotedMavenOwners(
 
 internal fun canonicalPromotedMavenPrimarySources(
     repositories: Map<String, File>,
-    version: String,
+    versions: ProductVersions,
     ownership: Map<String, Set<String>> = promotedMavenArtifactOwnership,
 ): Map<String, File> {
     val owners = canonicalPromotedMavenOwners(ownership)
     check(repositories.keys == ownership.keys) { "Promoted consumer Maven repository set is incomplete" }
     val groupPrefix = "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/"
-    val expectedPaths = expectedMavenPrimaryPaths(version).mapTo(sortedSetOf()) { "$groupPrefix$it" }
+    val expectedPaths = expectedMavenPrimaryPaths(versions).mapTo(sortedSetOf()) { "$groupPrefix$it" }
     val sources = linkedMapOf<String, File>()
     val duplicates = mutableListOf<Triple<String, String, File>>()
     repositories.forEach { (target, repository) -> safeRegularFiles(repository).forEach { file ->
@@ -1070,7 +1086,8 @@ internal fun canonicalPromotedMavenPrimarySources(
         val owner = owners[artifactId] ?: error("Canonical Maven owner is missing for $artifactId")
         if (target == owner) {
             check(sources.put(relative, file) == null) { "Duplicate canonical Maven ownership for $relative" }
-        } else if (relative in expectedPaths) {
+        } else {
+            check(relative in expectedPaths) { "Unexpected promoted $target Maven primary: $relative" }
             duplicates += Triple(target, relative, file)
         }
     } }
@@ -1089,7 +1106,7 @@ internal fun canonicalPromotedMavenPrimarySources(
 internal fun stageCanonicalPromotedMavenPrimaries(
     promotedArtifacts: File,
     commit: String,
-    version: String,
+    versions: ProductVersions,
     output: File,
 ) {
     check(commit.matches(Regex("[0-9a-f]{40}"))) { "Promoted Maven commit is not immutable" }
@@ -1100,7 +1117,7 @@ internal fun stageCanonicalPromotedMavenPrimaries(
     val repositories = promotedMavenArtifactOwnership.keys.associateWith { target ->
         promotedArtifacts.resolve("codex-agent-promoted-consumer-$target-$commit/payload/maven")
     }
-    val sources = canonicalPromotedMavenPrimarySources(repositories, version)
+    val sources = canonicalPromotedMavenPrimarySources(repositories, versions)
     check(output.mkdirs() || output.isDirectory) { "Cannot create canonical Maven output: $output" }
     sources.toSortedMap().forEach { (relative, source) ->
         val destination = output.resolve(relative)
@@ -1114,12 +1131,12 @@ internal fun stageCanonicalPromotedMavenPrimaries(
 private fun verifyCanonicalUnsignedPrimaryParity(
     lanes: Map<String, PromotedLane>,
     signed: File,
-    version: String,
+    versions: ProductVersions,
 ) {
     val repositories = promotedMavenArtifactOwnership.keys.associateWith { target ->
         lanes.getValue("consumer-$target").root.resolve("payload/maven")
     }
-    val canonicalRecords = canonicalPromotedMavenPrimarySources(repositories, version)
+    val canonicalRecords = canonicalPromotedMavenPrimarySources(repositories, versions)
         .mapValues { (_, file) -> file.releaseDigest() }
     val signedFiles = safeRegularFiles(signed)
     val signedRecords = signedFiles.associate { it.relativeTo(signed).invariantSeparatorsPath to it.releaseDigest() }
@@ -1137,17 +1154,23 @@ private fun verifyCanonicalUnsignedPrimaryParity(
     }
 }
 
-private fun verifyPromotedPublicationBytes(lanes: Map<String, PromotedLane>, maven: File, version: String) {
+private fun verifyPromotedPublicationBytes(
+    lanes: Map<String, PromotedLane>,
+    maven: File,
+    versions: ProductVersions,
+) {
+    val sdkVersion = versions.sdk
+    val runtimeVersion = versions.runtime
     val android = lanes.getValue("android").one("aar")
     val mavenAndroid = maven.resolve(
-        "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-android/$version/" +
-            "codex-agent-runtime-android-$version.aar",
+        "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-android/$sdkVersion/" +
+            "codex-agent-runtime-android-$sdkVersion.aar",
     )
     check(android.releaseDigest() == mavenAndroid.releaseDigest()) {
         "Promoted Android AAR and Maven publication differ"
     }
     val mavenDesktop = maven.resolve(
-        "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-desktop/$version",
+        "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-desktop/$runtimeVersion",
     )
     check(promotedDesktopLanes.keys == desktopRuntimeEvidenceTargets.keys &&
         promotedDesktopLanes.keys == crossLanguageCAbiTargetSpecs.keys) {
@@ -1157,13 +1180,13 @@ private fun verifyPromotedPublicationBytes(lanes: Map<String, PromotedLane>, mav
         val lane = lanes.getValue(laneName)
         val classifier = lane.one("classifier")
         val expectedClassifier =
-            "codex-agent-runtime-desktop-$version-${desktopRuntimeEvidenceTargets.getValue(target).classifier}.zip"
+            "codex-agent-runtime-desktop-$runtimeVersion-${desktopRuntimeEvidenceTargets.getValue(target).classifier}.zip"
         check(classifier.name == expectedClassifier &&
             classifier.releaseDigest() == mavenDesktop.resolve(expectedClassifier).releaseDigest()) {
             "Promoted desktop classifier and Maven publication differ: $expectedClassifier"
         }
         val cAbiSdk = lane.one("c-abi-sdk")
-        val expectedCAbiSdk = crossLanguageCAbiArchiveFileName(version, target)
+        val expectedCAbiSdk = crossLanguageCAbiArchiveFileName(runtimeVersion, target)
         check(cAbiSdk.name == expectedCAbiSdk &&
             cAbiSdk.releaseDigest() == mavenDesktop.resolve(expectedCAbiSdk).releaseDigest()) {
             "Promoted C ABI SDK and Maven publication differ: $expectedCAbiSdk"
@@ -1188,25 +1211,52 @@ private fun verifyPromotedSwiftMetadata(packageSwift: File, remoteConsumer: File
     check(remoteVersion == version) { "RemoteConsumer exact dependency version must equal $version" }
 }
 
-private fun verifyPromotedConsumers(lanes: Map<String, PromotedLane>, version: String) {
+internal fun verifyPromotedConsumerReport(
+    report: JsonObject,
+    laneName: String,
+    expectedSdkVersion: String,
+    expectedRuntimeVersion: String,
+): String {
+    check(report.keys == setOf(
+        "schemaVersion", "result", "sdkVersion", "runtimeVersion", "repository", "mavenGroup", "target", "tasks",
+    ) && report.releaseInt("schemaVersion") == 6 && report.releaseString("result") == "passed" &&
+        report.releaseString("sdkVersion") == expectedSdkVersion &&
+        report.releaseString("runtimeVersion") == expectedRuntimeVersion &&
+        report.releaseString("repository") == "CENTRAL_STAGING-only" &&
+        report.releaseString("mavenGroup") == CodexAgentBuild.MAVEN_GROUP) {
+        "Promoted $laneName consumer identity is invalid"
+    }
+    val target = report.releaseString("target")
+    val expectedTasks = stagedConsumerBuildTasks[target]
+        ?: error("Promoted $laneName consumer target is unsupported: $target")
+    val tasks = report.releaseArray("tasks").map { value ->
+        (value as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content
+            ?: error("Promoted $laneName consumer task is invalid")
+    }
+    check(tasks == expectedTasks) { "Promoted $laneName consumer task evidence is invalid" }
+    return target
+}
+
+private fun verifyPromotedConsumers(
+    lanes: Map<String, PromotedLane>,
+    versions: ProductVersions,
+) {
+    val sdkVersion = versions.sdk
+    val runtimeVersion = versions.runtime
     val targets = lanes.filterKeys { it.startsWith("consumer-") }.values.map { lane ->
         val report = lane.one("consumer-report").readReleaseObject()
-        val target = report.releaseString("target")
-        check(report.keys == setOf(
-            "schemaVersion", "result", "version", "repository", "mavenGroup", "target", "tasks",
-        ) && report.releaseInt("schemaVersion") == 5 && report.releaseString("result") == "passed" &&
-            report.releaseString("version") == version && report.releaseString("repository") == "CENTRAL_STAGING-only" &&
-            report.releaseString("mavenGroup") == CodexAgentBuild.MAVEN_GROUP &&
-            report.releaseArray("tasks").map { (it as? JsonPrimitive)?.content } ==
-            stagedConsumerBuildTasks.getValue(target)) {
-            "Promoted ${lane.name} consumer did not pass for $version"
-        }
+        val target = verifyPromotedConsumerReport(report, lane.name, sdkVersion, runtimeVersion)
         val repository = lane.root.resolve("payload/maven")
         val inventory = lane.one("maven-inventory").readReleaseObject()
-        check(inventory.keys == setOf("schemaVersion", "groupId", "version", "target", "files") &&
+        check(inventory.keys == setOf(
+            "schemaVersion", "groupId", "contractVersion", "runtimeVersion", "sdkVersion", "target", "files",
+        ) &&
             inventory.releaseInt("schemaVersion") == 1 &&
             inventory.releaseString("groupId") == CodexAgentBuild.MAVEN_GROUP &&
-            inventory.releaseString("version") == version && inventory.releaseString("target") == target) {
+            inventory.releaseString("contractVersion") == versions.contract &&
+            inventory.releaseString("runtimeVersion") == versions.runtime &&
+            inventory.releaseString("sdkVersion") == versions.sdk &&
+            inventory.releaseString("target") == target) {
             "Promoted $target Maven inventory identity is invalid"
         }
         val inventoryEntries = inventory.releaseArray("files")

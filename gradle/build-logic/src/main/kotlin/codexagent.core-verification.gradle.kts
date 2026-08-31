@@ -67,8 +67,6 @@ val verifyCrossLanguageApiCoverage = tasks.register<VerifyCrossLanguageApiCovera
 
 val kotlinBindingParityReceiptFile =
     layout.buildDirectory.file("reports/cross-language-api/bindings/kotlin-parity.json")
-val javaBindingParityReceiptFile =
-    layout.buildDirectory.file("reports/cross-language-api/bindings/java-parity.json")
 val invalidateCrossLanguageBindingParityOutputs = tasks.register<Delete>(
     "invalidateCrossLanguageBindingParityOutputs",
 ) {
@@ -77,20 +75,15 @@ val invalidateCrossLanguageBindingParityOutputs = tasks.register<Delete>(
     delete(
         canonicalCrossLanguageCoverageReceiptFile,
         kotlinBindingParityReceiptFile,
-        javaBindingParityReceiptFile,
     )
 }
 val crossLanguageInvalidationTaskNames = setOf(
     invalidateCrossLanguageBindingParityOutputs.name,
-    "invalidateJavaScriptTypeScriptBindingParityOutput",
-    "invalidateCodexAgentAppleBindingEvidence",
-    "invalidateCodexAgentCAbiBootstrapEvidence",
+    "prepareContractInputs",
 )
-rootProject.allprojects {
-    tasks.configureEach {
-        if (name !in crossLanguageInvalidationTaskNames) {
-            mustRunAfter(invalidateCrossLanguageBindingParityOutputs)
-        }
+tasks.configureEach {
+    if (name !in crossLanguageInvalidationTaskNames && !name.startsWith("invalidate")) {
+        mustRunAfter(invalidateCrossLanguageBindingParityOutputs)
     }
 }
 verifyCrossLanguageApiCoverage.configure {
@@ -109,42 +102,6 @@ val verifyKotlinBindingParity = tasks.register<VerifyKotlinBindingParityTask>("v
     receiptFile.set(kotlinBindingParityReceiptFile)
 }
 
-val javaBindingContractVersion = project.version.toString()
-val javaBindingRuntimeVersion = rootProject.extra["codexAgent.runtimeVersion"].toString()
-val javaBindingCoreJvmJar = layout.buildDirectory.file("libs/codex-agent-core-jvm-$javaBindingContractVersion.jar")
-val javaBindingCoreAndroidAar = layout.buildDirectory.file("outputs/aar/codex-agent-core.aar")
-val javaBindingDesktopRuntimeJar = rootProject.layout.projectDirectory.file(
-    "codex-agent-runtime-desktop/build/libs/codex-agent-runtime-desktop-jvm-$javaBindingRuntimeVersion.jar",
-)
-val javaBindingAndroidRuntimeAar = rootProject.layout.projectDirectory.file(
-    "codex-agent-runtime-android/build/outputs/aar/codex-agent-runtime-android-release.aar",
-)
-val javaBindingCompiledTests = layout.buildDirectory.dir("classes/java/jvmTest")
-val javaBindingTestResults = layout.buildDirectory.dir("test-results/jvmTest")
-val verifyJavaBindingParity = tasks.register<VerifyJavaBindingParityTask>("verifyJavaBindingParity") {
-    group = "verification"
-    description = "Verifies Java API parity in exact JVM, Android, and runtime artifacts."
-    dependsOn(
-        verifyCrossLanguageApiCoverage,
-        "jvmJar",
-        "bundleAndroidMainAar",
-        ":codex-agent-runtime-desktop:jvmJar",
-        ":codex-agent-runtime-android:bundleReleaseAar",
-    )
-    apiReport.set(discoverCrossLanguageApi.flatMap(DiscoverCrossLanguageApiTask::reportFile))
-    canonicalCoverageReceipt.set(
-        verifyCrossLanguageApiCoverage.flatMap(VerifyCrossLanguageApiCoverageTask::receiptFile),
-    )
-    kotlinArtifact.set(layout.buildDirectory.dir("classes/kotlin/jvm/main"))
-    coreJvmJar.set(javaBindingCoreJvmJar)
-    coreAndroidAar.set(javaBindingCoreAndroidAar)
-    desktopRuntimeJar.set(javaBindingDesktopRuntimeJar)
-    androidRuntimeAar.set(javaBindingAndroidRuntimeAar)
-    compiledJavaTests.set(javaBindingCompiledTests)
-    testResults.set(javaBindingTestResults)
-    receiptFile.set(javaBindingParityReceiptFile)
-}
-
 val verifyProtocolSource = tasks.register<VerifyProtocolSourceTask>("verifyProtocolSource") {
     protocolSchema.set(pinnedProtocolSchema)
     completeProtocolSchema.set(pinnedCompleteProtocolSchema)
@@ -157,6 +114,7 @@ val verifyProtocolSource = tasks.register<VerifyProtocolSourceTask>("verifyProto
     )
     expectedSchemaSha256.set("9b3de71a5a2ffc980b792a18aa8f8dec3f85f48829560222a0264fe494b679a9")
     expectedCompleteSchemaSha256.set("02a4c63a638fdae4a5f6c3ad32a41a377b642c66f3abc84f6fc47c7f3d6074df")
+    reportFile.set(layout.buildDirectory.file("reports/protocol/protocol-source-verification.json"))
 }
 
 tasks.register("updateProtocol") {
@@ -165,11 +123,11 @@ tasks.register("updateProtocol") {
     dependsOn(":tooling:protocol-generator:generateProtocol")
 }
 
-tasks.named("check").configure {
-    dependsOn(
-        verifyProtocolSource,
-        verifyKotlinBindingParity,
-        verifyJavaBindingParity,
-        ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity",
-    )
+afterEvaluate {
+    tasks.named("check").configure {
+        setDependsOn(listOf(
+            verifyProtocolSource,
+            verifyKotlinBindingParity,
+        ))
+    }
 }

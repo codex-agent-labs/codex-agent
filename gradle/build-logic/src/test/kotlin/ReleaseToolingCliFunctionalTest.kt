@@ -34,6 +34,8 @@ class ReleaseToolingCliFunctionalTest {
             ZipFile(jar).use { archive ->
                 val entries = archive.entries().asSequence().map { it.name }.toList()
                 assertTrue("ReleaseToolingCliKt.class" in entries)
+                assertTrue("ProductVersions.class" in entries)
+                assertFalse("ProductVersionsKt.class" in entries)
                 assertFalse("ReleaseToolingGradleTasksKt.class" in entries)
                 listOf(
                     "GenerateCrossLanguageCAbiScenarioProofTask",
@@ -64,7 +66,7 @@ class ReleaseToolingCliFunctionalTest {
         val root = createTempDirectory("release-tooling-maven").toFile()
         try {
             val commit = "0123456789abcdef0123456789abcdef01234567"
-            val version = "0.2.0"
+            val versions = ProductVersions(contract = "1.2.3", runtime = "2.3.4", sdk = "3.4.5")
             val promoted = root.resolve("promoted")
             val output = root.resolve("output")
             val repositories = promotedMavenArtifactOwnership.keys.associateWith { target ->
@@ -72,7 +74,20 @@ class ReleaseToolingCliFunctionalTest {
             }
             val owners = canonicalPromotedMavenOwners()
             val group = CodexAgentBuild.MAVEN_GROUP.replace('.', '/')
-            expectedMavenPrimaryPaths(version).forEach { relative ->
+            val primaryPaths = expectedMavenPrimaryPaths(versions)
+            assertEquals(38, owners.size)
+            assertEquals(220, primaryPaths.size)
+            assertTrue(primaryPaths.containsAll(setOf(
+                "codex-agent-core-jvm/${versions.contract}/codex-agent-core-jvm-${versions.contract}.jar",
+                "codex-agent-runtime-desktop/${versions.runtime}/" +
+                    "codex-agent-runtime-desktop-${versions.runtime}-c-abi-linux-x64.zip",
+                "codex-agent-bom/${versions.sdk}/codex-agent-bom-${versions.sdk}.pom",
+                "codex-agent/${versions.sdk}/codex-agent-${versions.sdk}.jar",
+                "codex-agent-runtime-android/${versions.sdk}/codex-agent-runtime-android-${versions.sdk}.aar",
+                "codex-agent-runtime-ios-iosarm64/${versions.sdk}/" +
+                    "codex-agent-runtime-ios-iosarm64-${versions.sdk}.klib",
+            )))
+            primaryPaths.forEach { relative ->
                 val source = repositories.getValue(owners.getValue(relative.substringBefore('/')))
                     .resolve("$group/$relative")
                 source.parentFile.mkdirs()
@@ -84,14 +99,27 @@ class ReleaseToolingCliFunctionalTest {
                 "stage-promoted-maven",
                 "--promoted", promoted.absolutePath,
                 "--commit", commit,
-                "--version", version,
+                "--contract-version", versions.contract,
+                "--runtime-version", versions.runtime,
+                "--sdk-version", versions.sdk,
                 "--output", output.absolutePath,
             )
             assertEquals(0, result.first, result.second)
-            assertEquals(
-                expectedMavenPrimaryPaths(version).size,
-                output.walkTopDown().count(File::isFile),
+            assertEquals(220, output.walkTopDown().count(File::isFile))
+
+            val wrongOutput = root.resolve("wrong-output")
+            val swapped = runTool(
+                root,
+                "stage-promoted-maven",
+                "--promoted", promoted.absolutePath,
+                "--commit", commit,
+                "--contract-version", versions.runtime,
+                "--runtime-version", versions.contract,
+                "--sdk-version", versions.sdk,
+                "--output", wrongOutput.absolutePath,
             )
+            assertTrue(swapped.first != 0, swapped.second)
+            assertTrue(!wrongOutput.exists() || wrongOutput.listFiles().isNullOrEmpty())
         } finally {
             root.deleteRecursively()
         }

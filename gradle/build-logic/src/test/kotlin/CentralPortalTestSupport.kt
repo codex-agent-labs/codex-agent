@@ -94,8 +94,8 @@ internal class CentralFixture(directory: File, bundleBytes: ByteArray) {
     val name = "codex-agent-0.2.0-$CENTRAL_COMMIT-${bundle.releaseDigest()}"
 
     init {
-        candidate.atomicWriteJson(schema16CandidateManifest(
-            "0.2.0",
+        candidate.atomicWriteJson(schema17CandidateManifest(
+            ProductVersions("0.2.0", "0.2.0", "0.2.0"),
             CENTRAL_COMMIT,
             mapOf(CENTRAL_MAIN_SHARD to bundle),
         ))

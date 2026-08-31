@@ -7,10 +7,16 @@ internal fun verifyCandidateManifestStructure(manifest: JsonObject) {
         "Candidate manifest schema must be $PROMOTED_CANDIDATE_SCHEMA"
     }
     check(manifest.keys == setOf(
-        "schemaVersion", "version", "releaseTag", "candidateCommit", "candidateTree", "protectedCandidate",
-        "artifacts", "evidence", "policies",
+        "schemaVersion", "version", "contractVersion", "runtimeVersion", "sdkVersion",
+        "releaseTag", "candidateCommit", "candidateTree", "protectedCandidate", "artifacts", "evidence", "policies",
     )) { "Promoted candidate manifest has unexpected top-level fields" }
     val version = manifest.releaseString("version")
+    val versions = ProductVersions(
+        manifest.releaseString("contractVersion"),
+        manifest.releaseString("runtimeVersion"),
+        manifest.releaseString("sdkVersion"),
+    )
+    check(version == versions.sdk) { "Candidate aggregate version must equal the SDK version" }
     check(manifest.releaseString("releaseTag") == "v$version") { "Candidate release tag/version mismatch" }
     listOf("candidateCommit", "candidateTree").forEach { field ->
         check(manifest.releaseString(field).matches(Regex("[0-9a-f]{40}"))) {

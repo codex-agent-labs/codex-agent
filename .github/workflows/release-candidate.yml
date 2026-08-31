@@ -193,7 +193,9 @@ jobs:
           java -jar "$RELEASE_TOOL" stage-promoted-maven \
             --promoted "$PROMOTED" \
             --commit "$CANDIDATE_COMMIT" \
-            --version "${RELEASE_TAG#v}" \
+            --contract-version "$(cat gradle/release/versions/contract.txt)" \
+            --runtime-version "$(cat gradle/release/versions/runtime.txt)" \
+            --sdk-version "$(cat gradle/release/versions/sdk.txt)" \
             --output "$SIGNED_MAVEN"
           mkdir -p "$RUNNER_TEMP/gnupg"
           chmod 700 "$RUNNER_TEMP/gnupg"
@@ -231,7 +233,9 @@ jobs:
             --repository "$GITHUB_WORKSPACE" \
             --promoted "$PROMOTED" \
             --signed-maven "$SIGNED_MAVEN" \
-            --version "${RELEASE_TAG#v}" \
+            --contract-version "$(cat gradle/release/versions/contract.txt)" \
+            --runtime-version "$(cat gradle/release/versions/runtime.txt)" \
+            --sdk-version "$(cat gradle/release/versions/sdk.txt)" \
             --tag "$RELEASE_TAG" \
             --commit "$CANDIDATE_COMMIT" \
             --tree "$CANDIDATE_TREE" \

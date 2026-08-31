@@ -10,6 +10,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import org.gradle.testfixtures.ProjectBuilder
+import org.gradle.testkit.runner.GradleRunner
+import org.gradle.testkit.runner.TaskOutcome
 
 class CrossLanguageNativeWrapperBindingEvidenceTest {
     private val releaseToolingJar = File(checkNotNull(System.getProperty("codexAgent.releaseToolingJar")))
@@ -59,6 +61,52 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
         task.generate()
 
         assertEquals(CrossLanguageBinding.CSHARP, readCrossLanguageBindingReceipt(fixture.receipt).language)
+    }
+
+    @Test
+    fun `aggregate clears every stale receipt and reports every missing language input`() {
+        val root = createTempDirectory("native-wrapper-preflight").toFile()
+        try {
+            NodeRuntimeEvidenceFixture(root)
+            root.resolve("settings.gradle.kts").writeText("rootProject.name = \"native-wrapper-preflight\"\n")
+            root.resolve("build.gradle.kts").writeText(
+                """
+                plugins {
+                    id("org.jetbrains.kotlin.multiplatform")
+                    id("maven-publish")
+                    id("codexagent.desktop-runtime")
+                }
+                group = "io.github.codex-agent-labs"
+                version = "0.2.0"
+                """.trimIndent(),
+            )
+            val languages = listOf("python", "csharp", "rust", "cpp", "dart")
+            val receipts = languages.map { language ->
+                root.resolve("build/reports/cross-language-api/bindings/$language-parity.json").apply {
+                    parentFile.mkdirs()
+                    writeText("stale passed receipt")
+                }
+            }
+
+            val result = GradleRunner.create()
+                .withProjectDir(root)
+                .withPluginClasspath()
+                .withArguments("verifyNativeWrapperBindingParity", "--continue", "--stacktrace")
+                .buildAndFail()
+
+            assertEquals(
+                TaskOutcome.SUCCESS,
+                result.task(":invalidateNativeWrapperBindingParityOutputs")?.outcome,
+                result.output,
+            )
+            listOf("Python", "CSharp", "Rust", "Cpp", "Dart").forEach { language ->
+                assertEquals(TaskOutcome.FAILED, result.task(":verify${language}BindingParity")?.outcome, result.output)
+            }
+            assertTrue(result.task(":verifyNativeWrapperBindingParity")?.outcome != TaskOutcome.SUCCESS)
+            assertTrue(receipts.none(File::exists))
+        } finally {
+            root.deleteRecursively()
+        }
     }
 
     @Test

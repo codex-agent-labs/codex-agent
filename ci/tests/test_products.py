@@ -6,15 +6,21 @@ import shutil
 import stat
 import tempfile
 import unittest
+from unittest import mock
 import warnings
 import zipfile
 
+import ci.products.aggregate as aggregate_product
+import ci.products.inventory as inventory_product
 from ci.products.aggregate import (
+    CONTRACT_CHECKSUM_SUFFIXES,
     CONTRACT_COMPONENTS,
     RUNTIME_MAVEN_COMPONENTS,
     RUNTIME_TARGETS,
     contract_component_digest,
     contract_digest,
+    contract_maven_identity,
+    contract_required_primary_paths,
     runtime_component_id,
     validate_contract_manifest,
     validate_product_index,
@@ -23,6 +29,7 @@ from ci.products.aggregate import (
     validate_sdk_compatibility,
     verify_contract_bundle,
     verify_immutable_product_indexes,
+    verify_repository_evidence,
     verify_runtime_aggregate_artifacts,
 )
 from ci.products.inventory import (
@@ -30,10 +37,12 @@ from ci.products.inventory import (
     load_canonical_json,
     load_canonical_json_bytes,
     regular_file_inventory,
+    read_regular_file_bytes,
     require_relative_path,
     require_sha256,
     sha256_bytes,
     sha256_file,
+    verified_zip_contents,
     verified_zip_inventory,
     verify_regular_file_inventory,
     write_canonical_json,
@@ -140,6 +149,129 @@ def phase_receipt(trust: str = "development"):
     return value
 
 
+def repository_receipt(
+    product: str,
+    component: str,
+    target: str,
+    version: str,
+    payload: bytes,
+    upstream: list[dict] | None = None,
+    trust: str = "development",
+    producer_value: dict | None = None,
+):
+    output_record = {
+        "kind": "product-evidence",
+        "relativePath": f"{product}.bin",
+        "bytes": len(payload),
+        "sha256": sha256_bytes(payload),
+    }
+    inputs = {
+        "inventory": [{"relativePath": f"source/{product}.txt", "bytes": 1, "sha256": DIGEST_A}],
+        "phaseInputDigest": DIGEST_A,
+        "versionIdentity": version,
+        "upstreamArtifacts": sorted(
+            upstream or [],
+            key=lambda value: (
+                value["product"], value["component"], value["phase"],
+                value["target"], value["buildKey"],
+            ),
+        ),
+        "toolchainProfileDigest": DIGEST_B,
+        "flagsDigest": DIGEST_C,
+        "outputSchemaVersion": 1,
+    }
+    value = {
+        "schemaVersion": 1,
+        "product": product,
+        "component": component,
+        "phase": "metadata",
+        "target": target,
+        "productVersion": version,
+        "buildKey": "",
+        "inputs": inputs,
+        "outputs": [output_record],
+        "producer": copy.deepcopy(producer_value or producer()),
+        "trustDomain": trust,
+        "result": "success",
+    }
+    value["buildKey"] = compute_build_key(
+        product=product,
+        component=component,
+        phase="metadata",
+        target=target,
+        inputs=inputs,
+    )
+    return value
+
+
+def repository_reference(receipt: dict):
+    return {
+        "product": receipt["product"],
+        "component": receipt["component"],
+        "phase": receipt["phase"],
+        "target": receipt["target"],
+        "buildKey": receipt["buildKey"],
+        "outputsDigest": output_inventory_digest(receipt["outputs"]),
+    }
+
+
+def rewrite_repository_receipt(path: Path, receipt: dict):
+    receipt["inputs"]["upstreamArtifacts"].sort(key=lambda value: (
+        value["product"], value["component"], value["phase"], value["target"], value["buildKey"],
+    ))
+    receipt["buildKey"] = compute_build_key(
+        product=receipt["product"],
+        component=receipt["component"],
+        phase=receipt["phase"],
+        target=receipt["target"],
+        inputs=receipt["inputs"],
+    )
+    write_canonical_json(path / "phase-receipt.json", receipt)
+
+
+def repository_evidence_fixture(root: Path, trust: str = "development"):
+    versions = {"contract": "1.2.3", "runtime": "2.3.4", "sdk": "3.4.5"}
+    producers = []
+    for character in "123":
+        value = producer()
+        value["commit"] = character * 40
+        value["tree"] = chr(ord(character) + 3) * 40
+        producers.append(value)
+    contract = repository_receipt(
+        "contract", "contract", "common", versions["contract"], b"contract", producer_value=producers[0],
+        trust=trust,
+    )
+    runtime = repository_receipt(
+        "runtime", "runtime-aggregate", "aggregate", versions["runtime"], b"runtime",
+        upstream=[repository_reference(contract)], producer_value=producers[1], trust=trust,
+    )
+    sdk = repository_receipt(
+        "sdk", "sdk-core", "common", versions["sdk"], b"sdk",
+        upstream=[repository_reference(contract), repository_reference(runtime)],
+        producer_value=producers[2], trust=trust,
+    )
+    receipts = {"contract": contract, "runtime": runtime, "sdk": sdk}
+    directories = {}
+    for product, receipt in receipts.items():
+        directory = root / product
+        outputs = directory / "outputs"
+        outputs.mkdir(parents=True)
+        payload = product.encode()
+        (outputs / f"{product}.bin").write_bytes(payload)
+        write_canonical_json(directory / "phase-receipt.json", receipt)
+        write_canonical_json(outputs / "output-manifest.json", {
+            "schemaVersion": 1,
+            "product": receipt["product"],
+            "component": receipt["component"],
+            "phase": receipt["phase"],
+            "target": receipt["target"],
+            "productVersion": receipt["productVersion"],
+            "outputs": receipt["outputs"],
+        })
+        directories[product] = directory
+    return versions, directories, receipts
+
+
 def artifact(path: str, *, role: str = "runtime-resolution", component: str | None = None,
              target: str | None = None, digest: str = DIGEST_A):
     value = {"path": path, "role": role, "bytes": 1, "sha256": digest}
@@ -151,21 +283,35 @@ def artifact(path: str, *, role: str = "runtime-resolution", component: str | No
 
 
 def contract_manifest():
-    maven = [
-        artifact(f"maven/{component}/artifact.jar", component=component)
-        for component in sorted(CONTRACT_COMPONENTS)
-    ]
+    version = "0.2.0"
+    primary = contract_required_primary_paths(version)
+    paths = primary | {path + suffix for path in primary for suffix in CONTRACT_CHECKSUM_SUFFIXES}
+    maven = []
+    for path in sorted(paths):
+        identity = contract_maven_identity(path, version)
+        maven.append(artifact(path, role=identity["role"], component=identity["component"]))
     components = {}
     for component in CONTRACT_COMPONENTS:
-        records = [record for record in maven if record["component"] == component]
+        owners = ("common",) if component == "common" else ("common", component)
+        records = sorted(
+            [
+                record for record in maven
+                if record["component"] in owners and (
+                    record["role"] == "runtime-resolution" or
+                    (record["role"] == "module-metadata" and
+                     contract_maven_identity(record["path"], version)["kind"] in {"pom", "gradle-module"})
+                )
+            ],
+            key=lambda record: record["path"],
+        )
         components[component] = {
             "mavenPaths": [record["path"] for record in records],
-            "sha256": contract_component_digest(records),
+            "sha256": DIGEST_A,
         }
     value = {
         "schemaVersion": 1,
         "product": "contract",
-        "contractVersion": "0.2.0",
+        "contractVersion": version,
         "contractDigest": "",
         "canonicalApiDigest": DIGEST_A,
         "canonicalCoverageDigest": DIGEST_B,
@@ -176,14 +322,17 @@ def contract_manifest():
         "evidenceFiles": [
             artifact("evidence/canonical-api.json", role="canonical-api"),
             artifact("evidence/canonical-coverage.json", role="canonical-coverage"),
+            artifact("evidence/codex_app_server_protocol.schemas.json", role="protocol-schema"),
+            artifact("evidence/codex_app_server_protocol.v2.schemas.json", role="protocol-schema"),
+            artifact("evidence/descriptors.json", role="protocol-descriptor"),
             artifact("evidence/kotlin-parity.json", role="kotlin-parity"),
-            artifact("evidence/protocol-descriptor.bin", role="protocol-descriptor"),
-            artifact("evidence/protocol-provenance.json", role="protocol-provenance"),
-            artifact("evidence/protocol-schema.json", role="protocol-schema"),
             artifact("evidence/protocol-source-verification.json", role="protocol-source-verification"),
-            artifact("inventories/contract-inputs.git-tree", role="inventory"),
+            artifact("evidence/provenance.json", role="protocol-provenance"),
+            artifact("inventories/contract-binary-inputs.git-tree", role="inventory"),
+            artifact("inventories/contract-validation-inputs.git-tree", role="inventory"),
         ],
         "signing": signing(),
+        "producer": producer(),
     }
     value["contractDigest"] = contract_digest(DIGEST_A, DIGEST_C, components["common"]["sha256"])
     return value
@@ -613,6 +762,66 @@ class ProductInventoryTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verified_zip_inventory(nul)
 
+    def test_zip_inventory_can_hash_all_members_without_retaining_payloads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive_path = Path(temporary) / "selective.zip"
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("manifest.json", b"{}\n")
+                archive.writestr("payload.bin", b"x" * (2 * 1024 * 1024))
+
+            records, contents, _ = verified_zip_contents(
+                archive_path,
+                retained_paths={"manifest.json"},
+                max_retained_bytes=3,
+            )
+            self.assertEqual(["manifest.json", "payload.bin"], [record["relativePath"] for record in records])
+            self.assertEqual({"manifest.json": b"{}\n"}, contents)
+            with self.assertRaisesRegex(ValueError, "Retained ZIP member contents are too large"):
+                verified_zip_contents(
+                    archive_path,
+                    retained_paths={"manifest.json"},
+                    max_retained_bytes=2,
+                )
+
+    def test_file_and_zip_snapshots_reject_concurrent_growth_and_reparse_points(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = root / "value.json"
+            value.write_bytes(b"a")
+            original_open = inventory_product._open_regular_file
+
+            def open_then_append(path, label):
+                descriptor, metadata = original_open(path, label)
+                with Path(path).open("ab") as target:
+                    target.write(b"x" * (1024 * 1024))
+                return descriptor, metadata
+
+            with mock.patch.object(
+                inventory_product,
+                "_open_regular_file",
+                side_effect=open_then_append,
+            ), self.assertRaisesRegex(ValueError, "changed"):
+                read_regular_file_bytes(value, max_bytes=1)
+
+            archive = root / "archive.zip"
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as output_archive:
+                output_archive.writestr("value", b"a")
+            with mock.patch.object(
+                inventory_product,
+                "_open_regular_file",
+                side_effect=open_then_append,
+            ), self.assertRaisesRegex(ValueError, "changed"):
+                verified_zip_contents(archive, max_archive_bytes=archive.stat().st_size)
+
+            metadata = mock.Mock(st_mode=stat.S_IFREG, st_file_attributes=0x400)
+            with mock.patch.object(Path, "lstat", return_value=metadata), mock.patch.object(
+                inventory_product.stat,
+                "FILE_ATTRIBUTE_REPARSE_POINT",
+                0x400,
+                create=True,
+            ), self.assertRaisesRegex(ValueError, "unsafe"):
+                read_regular_file_bytes(value)
+
 
 class ProductReceiptTest(unittest.TestCase):
     def test_output_manifest_and_receipt_validate_exact_shapes_and_identity(self):
@@ -674,6 +883,231 @@ class ProductReceiptTest(unittest.TestCase):
         self.assertEqual(first["buildKey"], second["buildKey"])
         self.assertEqual(first["outputs"], second["outputs"])
 
+    def test_repository_evidence_aggregates_exact_products_edges_and_unequal_versions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            versions, directories, _ = repository_evidence_fixture(root)
+            first = root / "repository-a.json"
+            report = verify_repository_evidence(
+                contract_evidence=directories["contract"],
+                runtime_evidence=directories["runtime"],
+                sdk_evidence=directories["sdk"],
+                contract_version=versions["contract"],
+                runtime_version=versions["runtime"],
+                sdk_version=versions["sdk"],
+                trust_domain="development",
+                output=first,
+            )
+            self.assertEqual(["contract", "runtime", "sdk"], [value["product"] for value in report["products"]])
+            self.assertEqual(
+                [("contract", "runtime"), ("contract", "sdk"), ("runtime", "sdk")],
+                [(value["producerProduct"], value["consumerProduct"]) for value in report["edges"]],
+            )
+            self.assertEqual(report, load_canonical_json(first))
+            second = root / "repository-b.json"
+            self.assertEqual(0, aggregate_product.main([
+                "verify-repository",
+                "--contract-evidence", str(directories["contract"]),
+                "--runtime-evidence", str(directories["runtime"]),
+                "--sdk-evidence", str(directories["sdk"]),
+                "--contract-version", versions["contract"],
+                "--runtime-version", versions["runtime"],
+                "--sdk-version", versions["sdk"],
+                "--trust-domain", "development",
+                "--output", str(second),
+            ]))
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+
+            release_root = root / "release"
+            release_versions, release_directories, _ = repository_evidence_fixture(release_root, "release")
+            release = verify_repository_evidence(
+                contract_evidence=release_directories["contract"],
+                runtime_evidence=release_directories["runtime"],
+                sdk_evidence=release_directories["sdk"],
+                contract_version=release_versions["contract"],
+                runtime_version=release_versions["runtime"],
+                sdk_version=release_versions["sdk"],
+                trust_domain="release",
+                output=root / "release.json",
+            )
+            self.assertEqual("release", release["trustDomain"])
+
+    def test_repository_evidence_rejects_stale_reverse_missing_and_unsafe_inputs_without_stale_success(self):
+        def verify(root, versions, directories, output):
+            return verify_repository_evidence(
+                contract_evidence=directories["contract"],
+                runtime_evidence=directories["runtime"],
+                sdk_evidence=directories["sdk"],
+                contract_version=versions["contract"],
+                runtime_version=versions["runtime"],
+                sdk_version=versions["sdk"],
+                trust_domain="development",
+                output=output,
+            )
+
+        mutations = (
+            "stale", "reverse", "missing", "mixed-trust", "extra", "empty-directory", "manifest", "version",
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                versions, directories, receipts = repository_evidence_fixture(root)
+                report = root / "repository.json"
+                report.write_text("stale passed report\n")
+                if mutation == "stale":
+                    stale = copy.deepcopy(repository_reference(receipts["contract"]))
+                    stale["buildKey"] = DIGEST_C
+                    receipts["runtime"]["inputs"]["upstreamArtifacts"] = [stale]
+                    rewrite_repository_receipt(directories["runtime"], receipts["runtime"])
+                elif mutation == "reverse":
+                    receipts["contract"]["inputs"]["upstreamArtifacts"] = [
+                        repository_reference(receipts["runtime"]),
+                    ]
+                    rewrite_repository_receipt(directories["contract"], receipts["contract"])
+                elif mutation == "missing":
+                    receipts["sdk"]["inputs"]["upstreamArtifacts"] = [
+                        repository_reference(receipts["contract"]),
+                    ]
+                    rewrite_repository_receipt(directories["sdk"], receipts["sdk"])
+                elif mutation == "mixed-trust":
+                    receipts["sdk"]["trustDomain"] = "release"
+                    rewrite_repository_receipt(directories["sdk"], receipts["sdk"])
+                elif mutation == "extra":
+                    (directories["runtime"] / "unexpected.txt").write_text("unexpected\n")
+                elif mutation == "empty-directory":
+                    (directories["runtime"] / "outputs/unexpected").mkdir()
+                elif mutation == "manifest":
+                    manifest = load_canonical_json(directories["sdk"] / "outputs/output-manifest.json")
+                    manifest["productVersion"] = "3.4.6"
+                    write_canonical_json(directories["sdk"] / "outputs/output-manifest.json", manifest)
+                else:
+                    versions["contract"] = "1.2.4"
+                with self.assertRaises(ValueError):
+                    verify(root, versions, directories, report)
+                self.assertFalse(report.exists())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            versions, directories, _ = repository_evidence_fixture(root)
+            report = root / "repository.json"
+            report.write_text("stale passed report\n")
+            nested = directories["contract"] / "nested-runtime"
+            nested.mkdir()
+            with self.assertRaisesRegex(ValueError, "distinct and non-nested"):
+                verify_repository_evidence(
+                    contract_evidence=directories["contract"],
+                    runtime_evidence=nested,
+                    sdk_evidence=directories["sdk"],
+                    contract_version=versions["contract"],
+                    runtime_version=versions["runtime"],
+                    sdk_version=versions["sdk"],
+                    trust_domain="development",
+                    output=report,
+                )
+            self.assertFalse(report.exists())
+
+            report.write_text("stale passed report\n")
+            with self.assertRaisesRegex(ValueError, "trust domain"):
+                verify_repository_evidence(
+                    contract_evidence=directories["contract"],
+                    runtime_evidence=directories["runtime"],
+                    sdk_evidence=directories["sdk"],
+                    contract_version=versions["contract"],
+                    runtime_version=versions["runtime"],
+                    sdk_version=versions["sdk"],
+                    trust_domain="invalid",
+                    output=report,
+                )
+            self.assertFalse(report.exists())
+
+            linked_root = root / "linked-sdk"
+            directories["sdk"].rename(root / "real-sdk")
+            linked_root.symlink_to(root / "real-sdk", target_is_directory=True)
+            report.write_text("stale passed report\n")
+            with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+                verify_repository_evidence(
+                    contract_evidence=directories["contract"],
+                    runtime_evidence=directories["runtime"],
+                    sdk_evidence=linked_root,
+                    contract_version=versions["contract"],
+                    runtime_version=versions["runtime"],
+                    sdk_version=versions["sdk"],
+                    trust_domain="development",
+                    output=report,
+                )
+            self.assertFalse(report.exists())
+
+    def test_repository_evidence_rejects_output_overlap_and_payload_swap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            versions, directories, _ = repository_evidence_fixture(root)
+            receipt = directories["contract"] / "phase-receipt.json"
+            original_receipt = receipt.read_bytes()
+            outside = root / "outside.json"
+            outside.write_text("outside\n")
+            linked_output = directories["contract"] / "report.json"
+            linked_output.symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "overlaps"):
+                verify_repository_evidence(
+                    contract_evidence=directories["contract"],
+                    runtime_evidence=directories["runtime"],
+                    sdk_evidence=directories["sdk"],
+                    contract_version=versions["contract"],
+                    runtime_version=versions["runtime"],
+                    sdk_version=versions["sdk"],
+                    trust_domain="development",
+                    output=linked_output,
+                )
+            self.assertTrue(linked_output.is_symlink())
+            self.assertEqual(b"outside\n", outside.read_bytes())
+            self.assertEqual(original_receipt, receipt.read_bytes())
+            linked_output.unlink()
+
+            real_parent = root / "real-reports"
+            real_parent.mkdir()
+            linked_parent = root / "linked-reports"
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "parent is unsafe"):
+                verify_repository_evidence(
+                    contract_evidence=directories["contract"],
+                    runtime_evidence=directories["runtime"],
+                    sdk_evidence=directories["sdk"],
+                    contract_version=versions["contract"],
+                    runtime_version=versions["runtime"],
+                    sdk_version=versions["sdk"],
+                    trust_domain="development",
+                    output=linked_parent / "repository.json",
+                )
+            self.assertFalse((real_parent / "repository.json").exists())
+
+            output = root / "repository.json"
+            original_inventory = aggregate_product.regular_file_inventory
+            changed = False
+
+            def mutate_then_inventory(path, *arguments, **keywords):
+                nonlocal changed
+                if Path(path) == directories["contract"] and not changed:
+                    changed = True
+                    (directories["contract"] / "outputs/contract.bin").write_bytes(b"changed")
+                return original_inventory(path, *arguments, **keywords)
+
+            with mock.patch.object(
+                aggregate_product,
+                "regular_file_inventory",
+                side_effect=mutate_then_inventory,
+            ), self.assertRaisesRegex(ValueError, "file set"):
+                verify_repository_evidence(
+                    contract_evidence=directories["contract"],
+                    runtime_evidence=directories["runtime"],
+                    sdk_evidence=directories["sdk"],
+                    contract_version=versions["contract"],
+                    runtime_version=versions["runtime"],
+                    sdk_version=versions["sdk"],
+                    trust_domain="development",
+                    output=output,
+                )
+            self.assertFalse(output.exists())
+
 
 class ProductAggregateTest(unittest.TestCase):
     def test_contract_manifest_is_complete_and_coverage_is_not_runtime_identity(self):
@@ -689,9 +1123,9 @@ class ProductAggregateTest(unittest.TestCase):
             if mutation == "capabilities":
                 invalid["capabilityCount"] = 555
             elif mutation == "component":
-                invalid["components"]["common"]["sha256"] = DIGEST_A
+                invalid["components"]["common"]["sha256"] = DIGEST_B
             else:
-                invalid["producer"] = producer()
+                invalid["producer"]["commit"] = "invalid"
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 validate_contract_manifest(invalid)
 
@@ -706,42 +1140,50 @@ class ProductAggregateTest(unittest.TestCase):
                 validate_contract_manifest(invalid)
 
     def test_contract_bundle_verifies_complete_declared_tree(self):
-        manifest = contract_manifest()
+        from ci.products.contract import build_contract_bundle
+        from ci.tests.test_contract_bundle import (
+            PRODUCER,
+            VERSION,
+            _write_staging,
+            _write_zip,
+            _zip_entries,
+        )
+
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            write_canonical_json(root / "contract-manifest.json", manifest)
-            (root / "contract-manifest.sig").write_bytes(b"signature")
-            for record in manifest["mavenFiles"] + manifest["evidenceFiles"]:
-                path = root / record["path"]
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(b"a")
-            verify_contract_bundle(root, manifest)
-
-            extra = root / "evidence/extra.json"
-            extra.write_bytes(b"a")
-            with self.assertRaises(ValueError):
-                verify_contract_bundle(root, manifest)
-            extra.unlink()
-
-            declared = root / manifest["evidenceFiles"][0]["path"]
-            declared.write_bytes(b"b")
-            with self.assertRaises(ValueError):
-                verify_contract_bundle(root, manifest)
-            declared.write_bytes(b"a")
-
-            missing = root / manifest["evidenceFiles"][1]["path"]
-            missing.unlink()
-            with self.assertRaises(ValueError):
-                verify_contract_bundle(root, manifest)
-            missing.write_bytes(b"a")
-
-            link = root / "evidence/link"
-            try:
-                link.symlink_to(declared)
-            except OSError:
-                return
-            with self.assertRaises(ValueError):
-                verify_contract_bundle(root, manifest)
+            staging = root / "staging"
+            _write_staging(staging)
+            private_key, public_key, signing_metadata = generate_development_key(root / "key")
+            archive = root / f"codex-agent-contract-{VERSION}.zip"
+            build_contract_bundle(
+                staging,
+                archive,
+                VERSION,
+                PRODUCER,
+                private_key,
+                public_key,
+                signing_metadata,
+            )
+            verify_contract_bundle(archive, public_key, expected_trust_domain="development")
+            entries = _zip_entries(archive)
+            declared = next(entry for entry in entries if entry[0].startswith("maven/"))
+            variants = {
+                "extra": sorted(entries + [("evidence/extra.json", b"a", 0o644 << 16)]),
+                "changed": [
+                    (name, b"changed" if name == declared[0] else contents, attributes)
+                    for name, contents, attributes in entries
+                ],
+                "missing": [entry for entry in entries if entry[0] != declared[0]],
+                "symlink": [
+                    (name, contents, (stat.S_IFLNK | 0o777) << 16 if name == declared[0] else attributes)
+                    for name, contents, attributes in entries
+                ],
+            }
+            for name, mutated_entries in variants.items():
+                mutated = root / f"{name}.zip"
+                _write_zip(mutated, mutated_entries)
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    verify_contract_bundle(mutated, public_key, expected_trust_domain="development")
 
     def test_runtime_variant_excludes_aggregate_and_self_identity(self):
         variant = runtime_variant()
@@ -1103,6 +1545,116 @@ class ProductSigningTest(unittest.TestCase):
                     variant["inputs"]["binaryOutputInventoryDigest"] = sha256_bytes(b"wrong-outputs")
 
             assert_invalid_artifacts("wrong-binary-outputs", variant_mutator=wrong_output_inventory)
+
+    def test_runtime_variant_zip_limits_are_mandatory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private_key, public_key, metadata = generate_development_key(root / "keys")
+            aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
+                root / "variants", private_key, public_key, metadata,
+            )
+            arguments = {
+                "contract_manifest": contract,
+                "variant_bundles": bundles,
+                "metadata_receipts": receipts,
+                "trusted_public_keys": public_keys,
+                "required_trust_domain": "development",
+            }
+            for limit in (
+                "max_archive_bytes",
+                "max_central_directory_bytes",
+                "max_members",
+                "max_entry_bytes",
+                "max_total_bytes",
+                "max_compression_ratio",
+            ):
+                with self.subTest(limit=limit), mock.patch.dict(
+                    aggregate_product.RUNTIME_VARIANT_ZIP_LIMITS,
+                    {limit: 0},
+                ), self.assertRaises(ValueError):
+                    verify_runtime_aggregate_artifacts(aggregate, **arguments)
+
+    def test_runtime_metadata_receipt_uses_one_immutable_byte_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private_key, public_key, metadata = generate_development_key(root / "keys")
+            aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
+                root / "variants", private_key, public_key, metadata,
+            )
+            target = RUNTIME_TARGETS[0]
+            receipt_path = receipts[target]
+            valid_bytes = receipt_path.read_bytes()
+            invalid = load_canonical_json_bytes(valid_bytes)
+            invalid["inputs"]["flagsDigest"] = DIGEST_B
+            invalid["productVersion"] = "9.9.9"
+            invalid["buildKey"] = compute_build_key(
+                product=invalid["product"],
+                component=invalid["component"],
+                phase=invalid["phase"],
+                target=invalid["target"],
+                inputs=invalid["inputs"],
+            )
+            invalid_bytes = canonical_json_bytes(invalid)
+            receipt_path.write_bytes(invalid_bytes)
+            next(record for record in aggregate["variants"] if record["target"] == target)[
+                "receiptSha256"
+            ] = sha256_bytes(invalid_bytes)
+            original = aggregate_product.read_regular_file_bytes
+
+            def read_then_replace(path, **keywords):
+                contents = original(path, **keywords)
+                if Path(path) == receipt_path:
+                    receipt_path.write_bytes(valid_bytes)
+                return contents
+
+            with mock.patch.object(
+                aggregate_product,
+                "read_regular_file_bytes",
+                side_effect=read_then_replace,
+            ), self.assertRaises(ValueError):
+                verify_runtime_aggregate_artifacts(
+                    aggregate,
+                    contract_manifest=contract,
+                    variant_bundles=bundles,
+                    metadata_receipts=receipts,
+                    trusted_public_keys=public_keys,
+                    required_trust_domain="development",
+                )
+
+    def test_runtime_variant_retains_only_authentication_material_before_signature_check(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private_key, public_key, metadata = generate_development_key(root / "keys")
+            aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
+                root / "variants", private_key, public_key, metadata,
+            )
+            observed: list[tuple[set[str], set[str]]] = []
+            original = aggregate_product.verified_zip_contents
+
+            def record_retained_paths(*arguments, **keywords):
+                records, contents, archive_identity = original(*arguments, **keywords)
+                observed.append((set(keywords["retained_paths"]), set(contents)))
+                return records, contents, archive_identity
+
+            with mock.patch.object(
+                aggregate_product,
+                "verified_zip_contents",
+                side_effect=record_retained_paths,
+            ), mock.patch.object(
+                aggregate_product,
+                "verify_manifest_signature",
+                side_effect=ValueError("stop-after-authentication-material"),
+            ), self.assertRaisesRegex(ValueError, "stop-after-authentication-material"):
+                verify_runtime_aggregate_artifacts(
+                    aggregate,
+                    contract_manifest=contract,
+                    variant_bundles=bundles,
+                    metadata_receipts=receipts,
+                    trusted_public_keys=public_keys,
+                    required_trust_domain="development",
+                )
+            expected = {"runtime-variant-manifest.json", "runtime-variant-manifest.sig"}
+            self.assertEqual([(expected, expected)], observed)
 
     def test_keyring_is_fail_closed_and_retired_keys_are_verify_only(self):
         with tempfile.TemporaryDirectory() as temporary:

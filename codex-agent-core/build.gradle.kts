@@ -72,7 +72,7 @@ mavenPublishing {
             sourcesJar = SourcesJar.Sources(),
         ),
     )
-    coordinates(project.group.toString(), "codex-agent", project.version.toString())
+    coordinates(project.group.toString(), "codex-agent-core", project.version.toString())
     if (
         providers.gradleProperty("signingInMemoryKey").isPresent ||
         providers.gradleProperty("signing.secretKeyRingFile").isPresent
@@ -80,7 +80,7 @@ mavenPublishing {
         signAllPublications()
     }
     pom {
-        name.set("Codex Agent")
+        name.set("Codex Agent Contract")
         description.set("Portable Kotlin Multiplatform core for Codex agents.")
         inceptionYear.set("2026")
         url.set(codexAgentRepositoryUrl)

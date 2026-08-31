@@ -307,7 +307,10 @@ tasks.configureEach {
 rootProject.findProject(":codex-agent-core")?.tasks?.matching {
     it.name == "invalidateCrossLanguageBindingParityOutputs"
 }?.configureEach {
-    dependsOn(invalidateCAbiBootstrapEvidence)
+    mustRunAfter(invalidateCAbiBootstrapEvidence)
+}
+rootProject.tasks.matching { it.name == "prepareContractInputs" }.configureEach {
+    mustRunAfter(invalidateCAbiBootstrapEvidence)
 }
 val generateCAbiBootstrapEvidence =
     tasks.register<GenerateCAbiBootstrapEvidenceTask>("generateCodexAgentCAbiBootstrapEvidence") {
@@ -688,18 +691,33 @@ val nativeWrapperCoverageReceipt = providers.gradleProperty(
 val nativeWrapperBootstrapEvidence = providers.gradleProperty(
     "codexAgent.nativeWrapperBootstrapEvidence",
 ).map(::file)
-val nativeWrapperReceiptTasks: Map<String, TaskProvider<out Task>> = listOf(
+val nativeWrapperBindingSpecs = listOf(
     Triple("Python", "python", "M9_PYTHON"),
     Triple("CSharp", "csharp", "M9_CSHARP"),
     Triple("Rust", "rust", "M9_RUST"),
     Triple("Cpp", "cpp", "M9_CPP"),
     Triple("Dart", "dart", "M9_DART"),
-).associate { (title, language, phase) ->
+)
+val nativeWrapperReceiptFiles = nativeWrapperBindingSpecs.associate { (_, language, _) ->
+    language to layout.buildDirectory.file(
+        "reports/cross-language-api/bindings/$language-parity.json",
+    )
+}
+val invalidateNativeWrapperBindingParityOutputs = tasks.register<Delete>(
+    "invalidateNativeWrapperBindingParityOutputs",
+) {
+    group = "verification"
+    description = "Deletes all stale native-wrapper parity receipts before evidence verification."
+    delete(nativeWrapperReceiptFiles.values)
+}
+val nativeWrapperReceiptTasks: Map<String, TaskProvider<out Task>> = nativeWrapperBindingSpecs.associate {
+    (title, language, phase) ->
     language to tasks.register<GenerateCrossLanguageNativeWrapperBindingReceiptTask>(
         "verify${title}BindingParity",
     ) {
         group = "verification"
         description = "Verifies exact compiler, behavior, package, and five-host $language binding parity."
+        dependsOn(invalidateNativeWrapperBindingParityOutputs)
         this.phase.set(phase)
         this.language.set(language)
         apiReport.set(layout.file(nativeWrapperApiReport))
@@ -718,27 +736,13 @@ val nativeWrapperReceiptTasks: Map<String, TaskProvider<out Task>> = listOf(
         packageArtifacts.set(layout.dir(nativeWrapperReleaseDirectory.map { it.resolve("packages/$language") }))
         hostEvidenceDirectory.set(layout.dir(nativeWrapperHostEvidenceDirectory.map { it.resolve(language) }))
         stagedCAbiSdks.set(layout.dir(nativeWrapperReleaseDirectory.map { it.resolve("sdks") }))
-        receipt.set(layout.buildDirectory.file(
-            "reports/cross-language-api/bindings/$language-parity.json",
-        ))
+        receipt.set(nativeWrapperReceiptFiles.getValue(language))
     }
 }
 tasks.register("verifyNativeWrapperBindingParity") {
     group = "verification"
-    description = "Runs native-wrapper parity when authoritative five-host evidence is supplied."
-    val inputs = listOf(
-        nativeWrapperReleaseDirectory,
-        nativeWrapperHostEvidenceDirectory,
-        nativeWrapperApiReport,
-        nativeWrapperCoverageReceipt,
-        nativeWrapperBootstrapEvidence,
-    )
-    if (inputs.any { it.isPresent }) {
-        check(inputs.all { it.isPresent }) {
-            "Native-wrapper parity requires release, host, API, coverage, and bootstrap evidence together"
-        }
-        dependsOn(nativeWrapperReceiptTasks.values)
-    }
+    description = "Verifies all five native-wrapper language projections from authoritative evidence."
+    dependsOn(nativeWrapperReceiptTasks.values)
 }
 
 pluginManager.withPlugin("maven-publish") {

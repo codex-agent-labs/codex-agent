@@ -4,11 +4,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
-internal fun schema16CandidateManifest(
-    version: String,
+internal fun schema17CandidateManifest(
+    versions: ProductVersions,
     commit: String,
     centralBundles: Map<String, File> = emptyMap(),
 ): JsonObject {
+    val version = versions.sdk
     fun record(name: String) = buildJsonObject {
         put("fileName", JsonPrimitive(name))
         put("bytes", JsonPrimitive(1))
@@ -36,6 +37,9 @@ internal fun schema16CandidateManifest(
     return buildJsonObject {
         put("schemaVersion", JsonPrimitive(PROMOTED_CANDIDATE_SCHEMA))
         put("version", JsonPrimitive(version))
+        put("contractVersion", JsonPrimitive(versions.contract))
+        put("runtimeVersion", JsonPrimitive(versions.runtime))
+        put("sdkVersion", JsonPrimitive(versions.sdk))
         put("releaseTag", JsonPrimitive("v$version"))
         put("candidateCommit", JsonPrimitive(commit))
         put("candidateTree", JsonPrimitive("d".repeat(40)))

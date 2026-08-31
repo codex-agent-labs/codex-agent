@@ -31,10 +31,14 @@ internal fun readProductVersions(root: Project): ProductVersions {
 internal fun applyProductVersions(root: Project, versions: ProductVersions) {
     check(root == root.rootProject) { "Product versions must be applied from the root project" }
     root.version = versions.sdk
-    root.project(":codex-agent-core").version = versions.contract
-    root.project(":codex-agent-runtime-desktop").version = versions.runtime
-    listOf(":codex-agent-runtime-android", ":codex-agent-runtime-ios").forEach { path ->
-        root.project(path).version = versions.sdk
+    mapOf(
+        ":codex-agent-core" to versions.contract,
+        ":codex-agent-runtime-desktop" to versions.runtime,
+        ":codex-agent-sdk" to versions.sdk,
+        ":codex-agent-runtime-android" to versions.sdk,
+        ":codex-agent-runtime-ios" to versions.sdk,
+    ).forEach { (path, version) ->
+        root.findProject(path)?.version = version
     }
     root.extensions.extraProperties.apply {
         set("codexAgent.contractVersion", versions.contract)

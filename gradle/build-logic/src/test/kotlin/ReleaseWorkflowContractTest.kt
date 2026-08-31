@@ -193,6 +193,40 @@ class ReleaseWorkflowContractTest {
         assertEquals(1, candidate.lineSequence().count {
             "java -jar \"${'$'}RELEASE_TOOL\" assemble-promoted-candidate" in it
         })
+        val stageMaven = candidate.substringAfter(
+            "java -jar \"${'$'}RELEASE_TOOL\" stage-promoted-maven",
+        ).substringBefore("mkdir -p \"${'$'}RUNNER_TEMP/gnupg\"")
+        val assemble = candidate.substringAfter(
+            "java -jar \"${'$'}RELEASE_TOOL\" assemble-promoted-candidate",
+        ).substringBefore("Record the immutable candidate identity")
+        val versionFlags = mapOf(
+            "contract" to "--contract-version \"${'$'}(cat gradle/release/versions/contract.txt)\"",
+            "runtime" to "--runtime-version \"${'$'}(cat gradle/release/versions/runtime.txt)\"",
+            "sdk" to "--sdk-version \"${'$'}(cat gradle/release/versions/sdk.txt)\"",
+        )
+        versionFlags.forEach { (product, flag) ->
+            assertEquals(1, stageMaven.lineSequence().count { flag in it }, "stage $product version")
+            assertEquals(1, assemble.lineSequence().count { flag in it }, "assemble $product version")
+        }
+        assertFalse(Regex("(?m)^\\s+--version(?:\\s|$)").containsMatchIn(stageMaven + assemble))
+        val publish = workflows.getValue("publish.yml")
+        val verifyCandidate = publish.substringAfter(
+            "java -jar \"${'$'}RELEASE_TOOL\" verify-candidate",
+        ).substringBefore("Prepare or recover every exact Central deployment")
+        versionFlags.forEach { (product, flag) ->
+            assertEquals(1, verifyCandidate.lineSequence().count { flag in it }, "verify $product version")
+        }
+        assertFalse(Regex("(?m)^\\s+--version(?:\\s|$)").containsMatchIn(verifyCandidate))
+        val rootRelease = repository.resolve(
+            "gradle/build-logic/src/main/kotlin/codexagent.root-release.gradle.kts",
+        ).readText()
+        mapOf(
+            "candidateContractVersion.set(contractVersion)" to "Contract",
+            "candidateRuntimeVersion.set(runtimeProductVersion)" to "Runtime",
+            "candidateSdkVersion.set(sdkProductVersion)" to "SDK",
+        ).forEach { (wiring, product) ->
+            assertEquals(2, Regex(Regex.escape(wiring)).findAll(rootRelease).count(), "$product release wiring")
+        }
         assertEquals(1, Regex("(?m)^    environment: release-candidate$").findAll(candidate).count())
         assertTrue("name: codex-agent-candidate-identity-${'$'}{{ github.run_attempt }}" in candidate)
         assertTrue("name: codex-agent-protected-candidate-${'$'}{{ github.run_attempt }}" in candidate)
@@ -324,10 +358,22 @@ class ReleaseWorkflowContractTest {
         assertTrue("maven-inventory-${'$'}target.json" in targetTasks)
         assertTrue("root.dir(\"payload/maven\")" in plugin)
         assertFalse("Maven" + "Relocation" in plugin)
-        val commonPublications = plugin.substringAfter("\"common\" to listOf(")
+        assertTrue(
+            "fun rootPublicationTask(publication: String, target: String) =" in plugin &&
+                "\":publish${'$'}{publication}PublicationTo${'$'}{stagedConsumerRepositoryNames.getValue(target)}Repository\"" in
+                plugin,
+        )
+        val publicationTasks = plugin.substringAfter("val stagedConsumerPublicationTasks = mapOf(")
+            .substringBefore("\n)\nval stagedConsumerGroupId")
+        val commonPublications = publicationTasks.substringAfter("\"common\" to listOf(")
             .substringBefore("\n    ),")
         assertTrue("publicationTask(\"codex-agent-core\", \"KotlinMultiplatform\", \"common\")" in commonPublications)
         assertTrue("publicationTask(\"codex-agent-core\", \"Jvm\", \"common\")" in commonPublications)
+        assertTrue("publicationTask(\"codex-agent-sdk\", \"KotlinMultiplatform\", \"common\")" in commonPublications)
+        assertTrue("publicationTask(\"codex-agent-sdk\", \"Jvm\", \"common\")" in commonPublications)
+        assertTrue("rootPublicationTask(\"Maven\", \"common\")" in commonPublications)
+        assertEquals(1, Regex("rootPublicationTask\\(\"Maven\", \"common\"\\)").findAll(plugin).count())
+        assertFalse("rootPublicationTask(\"Maven\"" in publicationTasks.substringAfter("\"android\" to listOf("))
         assertFalse("allPublicationTask" in commonPublications)
         listOf(
             "verifyStagedKmpConsumerCommon", "verifyStagedKmpConsumerAndroid",
@@ -361,7 +407,10 @@ class ReleaseWorkflowContractTest {
         val action = registration.substringAfter("doLast {")
         assertTrue("inputs.property(\"repositoryPath\", repository.map" in registration)
         assertTrue("inputs.property(\"groupId\", stagedConsumerGroupId)" in registration)
-        assertTrue("inputs.property(\"version\", stagedConsumerVersion)" in registration)
+        assertTrue("inputs.property(\"contractVersion\", stagedConsumerContractVersion)" in registration)
+        assertTrue("inputs.property(\"runtimeVersion\", stagedConsumerRuntimeVersion)" in registration)
+        assertTrue("inputs.property(\"sdkVersion\", stagedConsumerSdkVersion)" in registration)
+        assertFalse("inputs.property(\"version\"" in registration)
         assertTrue("inputs.property(\"target\", target)" in registration)
         assertFalse("project." in action)
         assertFalse("repository.get()" in action)

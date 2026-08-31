@@ -187,7 +187,10 @@ tasks.configureEach {
 project(":codex-agent-core").tasks.matching {
     it.name == "invalidateCrossLanguageBindingParityOutputs"
 }.configureEach {
-    dependsOn(invalidateAppleBindingEvidence)
+    mustRunAfter(invalidateAppleBindingEvidence)
+}
+rootProject.tasks.matching { it.name == "prepareContractInputs" }.configureEach {
+    mustRunAfter(invalidateAppleBindingEvidence)
 }
 val appleCompilerEvidence = tasks.register<AppleCompilerEvidenceTask>("generateCodexAgentAppleCompilerEvidence") {
     group = "verification"

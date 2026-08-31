@@ -5,16 +5,48 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 
 class KmpConsumerVerificationTaskTest {
+    @Test
+    fun `promoted consumer report binds exact SDK Runtime target and tasks`() {
+        val valid = promotedConsumerReport()
+        assertEquals("android", verifyPromotedConsumerReport(valid, "consumer-android", "1.2.3", "2.3.4"))
+
+        val invalid = buildList {
+            add(JsonObject(valid - "runtimeVersion"))
+            add(JsonObject(valid + ("extra" to JsonPrimitive(true))))
+            add(JsonObject(valid + ("schemaVersion" to JsonPrimitive(5)) - "sdkVersion" - "runtimeVersion" +
+                ("version" to JsonPrimitive("1.2.3"))))
+            add(JsonObject(valid + ("sdkVersion" to JsonPrimitive("9.9.9"))))
+            add(JsonObject(valid + ("runtimeVersion" to JsonPrimitive("9.9.9"))))
+            add(JsonObject(valid + ("target" to JsonPrimitive("unknown"))))
+            add(JsonObject(valid + ("tasks" to buildJsonArray { add(JsonPrimitive("wrong")) })))
+            add(JsonObject(valid + ("tasks" to JsonArray(valid.getValue("tasks").let { it as JsonArray }.reversed()))))
+            add(JsonObject(valid + ("tasks" to JsonArray(
+                (valid.getValue("tasks") as JsonArray) + JsonPrimitive("compileAndroidMain"),
+            ))))
+        }
+        invalid.forEach { report ->
+            assertFailsWith<IllegalStateException> {
+                verifyPromotedConsumerReport(report, "consumer-android", "1.2.3", "2.3.4")
+            }
+        }
+    }
+
     @Test
     fun `consumer commands bind exact staged repository version and only their target`() {
         val tasks = stagedConsumerBuildTasks.getValue("node-js")
         val arguments = stagedConsumerArguments(
-            java.io.File("/consumer"), java.io.File("/staging"), "0.2.0", "node-js", tasks,
+            java.io.File("/consumer"), java.io.File("/staging"), "0.2.0", "1.2.3", "node-js", tasks,
         )
         assertTrue("-PCENTRAL_STAGING=/staging" in arguments)
-        assertTrue("-PcodexAgent.version=0.2.0" in arguments)
+        assertTrue("-PcodexAgent.sdkVersion=0.2.0" in arguments)
+        assertTrue("-PcodexAgent.runtimeVersion=1.2.3" in arguments)
         assertTrue("-PcodexAgent.consumerTarget=node-js" in arguments)
         assertEquals(listOf("compileKotlinJs"), tasks)
         assertFalse("compileKotlinWasmJs" in arguments)
@@ -22,7 +54,7 @@ class KmpConsumerVerificationTaskTest {
         assertEquals(tasks, arguments.takeLast(tasks.size))
         assertTrue("--no-configuration-cache" in arguments)
         val verifiedArguments = stagedConsumerArguments(
-            java.io.File("/consumer"), java.io.File("/staging"), "0.2.0", "node-js", tasks,
+            java.io.File("/consumer"), java.io.File("/staging"), "0.2.0", "1.2.3", "node-js", tasks,
             java.io.File("/outcomes.init.gradle.kts"),
         )
         assertTrue(listOf("--init-script", "/outcomes.init.gradle.kts") in verifiedArguments.windowed(2))
@@ -98,5 +130,18 @@ class KmpConsumerVerificationTaskTest {
             assertEquals("settings", consumer.resolve("settings.gradle.kts").readText())
             assertEquals("sdk.dir=/sdk\n", consumer.resolve("local.properties").readText())
         } finally { root.deleteRecursively() }
+    }
+
+    private fun promotedConsumerReport() = buildJsonObject {
+        put("schemaVersion", JsonPrimitive(6))
+        put("result", JsonPrimitive("passed"))
+        put("sdkVersion", JsonPrimitive("1.2.3"))
+        put("runtimeVersion", JsonPrimitive("2.3.4"))
+        put("repository", JsonPrimitive("CENTRAL_STAGING-only"))
+        put("mavenGroup", JsonPrimitive(CodexAgentBuild.MAVEN_GROUP))
+        put("target", JsonPrimitive("android"))
+        put("tasks", buildJsonArray {
+            stagedConsumerBuildTasks.getValue("android").forEach { add(JsonPrimitive(it)) }
+        })
     }
 }

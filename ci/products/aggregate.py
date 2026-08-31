@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
+import argparse
+import os
+from pathlib import Path, PurePosixPath
 import re
+import stat
 import tempfile
 from typing import Any
-import zipfile
 
 from .inventory import (
     canonical_json_bytes,
-    load_canonical_json,
     load_canonical_json_bytes,
+    read_regular_file_bytes,
     regular_file_inventory,
     require_array,
     require_boolean,
@@ -22,27 +24,34 @@ from .inventory import (
     require_sha256,
     require_string,
     sha256_bytes,
-    sha256_file,
-    verified_zip_inventory,
+    verified_zip_contents,
+    write_canonical_json,
 )
-from .receipt import output_inventory_digest, validate_phase_receipt, validate_producer
+from .receipt import (
+    output_inventory_digest,
+    validate_output_manifest,
+    validate_phase_receipt,
+    validate_producer,
+    verify_output_manifest,
+)
 from .signatures import validate_signing_metadata, verify_manifest_signature
-
-
-CONTRACT_COMPONENTS = (
-    "common",
-    "android",
-    "jvm",
-    "ios-arm64",
-    "ios-simulator-arm64",
-    "macos-arm64",
-    "macos-x64",
-    "linux-arm64",
-    "linux-x64",
-    "windows-x64",
-    "node-js",
-    "node-wasm",
+from .contract_model import (
+    CONTRACT_ARTIFACT_COMPONENTS,
+    CONTRACT_CHECKSUM_SUFFIXES,
+    CONTRACT_COMPONENTS,
+    CONTRACT_MAVEN_ROLES,
+    contract_component_digest,
+    contract_digest,
+    contract_evidence_identity,
+    contract_maven_identity,
+    contract_required_primary_paths,
+    validate_contract_manifest,
+    validate_contract_maven_inventory,
+    verify_contract_bundle,
+    verify_contract_git_inventories,
 )
+
+
 RUNTIME_TARGETS = ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64")
 RUNTIME_ADAPTERS = ("jvm", "node-js", "node-wasm")
 RUNTIME_MAVEN_COMPONENTS = (
@@ -55,26 +64,289 @@ RUNTIME_MAVEN_COMPONENTS = (
     "node-wasm",
     "windows-x64",
 )
-CONTRACT_MAVEN_ROLES = {"runtime-resolution", "sources", "javadoc", "signature", "checksum"}
-CONTRACT_EVIDENCE_ROLES = {
-    "canonical-api",
-    "canonical-coverage",
-    "inventory",
-    "kotlin-parity",
-    "protocol-descriptor",
-    "protocol-provenance",
-    "protocol-schema",
-    "protocol-source-verification",
+RUNTIME_VARIANT_ZIP_LIMITS = {
+    "max_archive_bytes": 512 * 1024 * 1024,
+    "max_central_directory_bytes": 32 * 1024 * 1024,
+    "max_members": 4096,
+    "max_entry_bytes": 256 * 1024 * 1024,
+    "max_total_bytes": 1024 * 1024 * 1024,
+    "max_compression_ratio": 200,
 }
 COMPATIBLE_RANGE = re.compile(
     r">=(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*) "
     r"<(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 )
+REPOSITORY_EVIDENCE_IDENTITIES = {
+    "contract": ("contract", "metadata", "common"),
+    "runtime": ("runtime-aggregate", "metadata", "aggregate"),
+    "sdk": ("sdk-core", "metadata", "common"),
+}
+REPOSITORY_EDGES = (
+    ("contract", "runtime"),
+    ("contract", "sdk"),
+    ("runtime", "sdk"),
+)
+REPOSITORY_JSON_LIMIT = 16 * 1024 * 1024
 
 
 def _sorted_unique(values: list[str], label: str) -> None:
     if values != sorted(values) or len(values) != len(set(values)):
         raise ValueError(f"{label} must be sorted and unique")
+
+
+def _repository_evidence_root(value: Any, label: str) -> Path:
+    root = Path(value)
+    try:
+        metadata = root.lstat()
+        reparse = getattr(metadata, "st_file_attributes", 0) & getattr(
+            stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0,
+        )
+        if stat.S_ISLNK(metadata.st_mode) or reparse or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"{label} is missing or unsafe")
+        return root.resolve(strict=True)
+    except ValueError:
+        raise
+    except OSError as error:
+        raise ValueError(f"{label} is missing or unsafe") from error
+
+
+def _reject_repository_report_parent(path: Path) -> None:
+    parent = path.parent
+    for ancestor in (parent, *parent.parents):
+        try:
+            metadata = ancestor.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise ValueError("Repository evidence report parent is unsafe") from error
+        reparse = getattr(metadata, "st_file_attributes", 0) & getattr(
+            stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0,
+        )
+        if stat.S_ISLNK(metadata.st_mode) or reparse or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("Repository evidence report parent is unsafe")
+
+
+def _invalidate_repository_report(output: Any, evidence_values: tuple[Any, ...]) -> Path:
+    output_path = Path(os.path.abspath(output))
+    output_candidates = {output_path, output_path.resolve(strict=False)}
+    evidence_candidates = {
+        candidate
+        for value in evidence_values
+        for candidate in {
+            Path(os.path.abspath(value)),
+            Path(os.path.abspath(value)).resolve(strict=False),
+        }
+    }
+    if any(
+        output_candidate == evidence_candidate
+        or output_candidate.is_relative_to(evidence_candidate)
+        or evidence_candidate.is_relative_to(output_candidate)
+        for output_candidate in output_candidates
+        for evidence_candidate in evidence_candidates
+    ):
+        raise ValueError("Repository evidence report overlaps an evidence directory")
+    _reject_repository_report_parent(output_path)
+    try:
+        metadata = output_path.lstat()
+    except FileNotFoundError:
+        return output_path
+    except OSError as error:
+        raise ValueError("Repository evidence report is unsafe") from error
+    reparse = getattr(metadata, "st_file_attributes", 0) & getattr(
+        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0,
+    )
+    if stat.S_ISLNK(metadata.st_mode) or reparse or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("Repository evidence report is unsafe")
+    output_path.unlink()
+    return output_path
+
+
+def _repository_directory_paths(root: Path) -> set[str]:
+    result = set()
+    for current, directories, _ in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        for name in directories:
+            path = current_path / name
+            metadata = path.lstat()
+            reparse = getattr(metadata, "st_file_attributes", 0) & getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0,
+            )
+            if stat.S_ISLNK(metadata.st_mode) or reparse or not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError("Repository evidence contains an unsafe directory")
+            result.add(path.relative_to(root).as_posix())
+    return result
+
+
+def _repository_reference(receipt: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "product": receipt["product"],
+        "component": receipt["component"],
+        "phase": receipt["phase"],
+        "target": receipt["target"],
+        "buildKey": receipt["buildKey"],
+        "outputsDigest": output_inventory_digest(receipt["outputs"]),
+    }
+
+
+def _verify_repository_product_evidence(
+    root: Path,
+    product: str,
+    version: str,
+    trust_domain: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    receipt_path = root / "phase-receipt.json"
+    outputs_root = root / "outputs"
+    manifest_path = outputs_root / "output-manifest.json"
+    receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=REPOSITORY_JSON_LIMIT)
+    manifest_bytes = read_regular_file_bytes(manifest_path, max_bytes=REPOSITORY_JSON_LIMIT)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    manifest = validate_output_manifest(load_canonical_json_bytes(manifest_bytes))
+    component, phase, target = REPOSITORY_EVIDENCE_IDENTITIES[product]
+    identity = (product, component, phase, target, version)
+    if (
+        receipt["product"],
+        receipt["component"],
+        receipt["phase"],
+        receipt["target"],
+        receipt["productVersion"],
+    ) != identity:
+        raise ValueError(f"{product} repository receipt identity is invalid")
+    if receipt["inputs"]["versionIdentity"] != version:
+        raise ValueError(f"{product} repository receipt version identity is invalid")
+    if receipt["trustDomain"] != trust_domain:
+        raise ValueError(f"{product} repository receipt trust domain is invalid")
+    if (
+        manifest["product"],
+        manifest["component"],
+        manifest["phase"],
+        manifest["target"],
+        manifest["productVersion"],
+    ) != identity:
+        raise ValueError(f"{product} repository output manifest identity is invalid")
+    if receipt["outputs"] != manifest["outputs"]:
+        raise ValueError(f"{product} repository receipt and output manifest disagree")
+    verify_output_manifest(outputs_root, manifest)
+    files = regular_file_inventory(root)
+    expected_files = [
+        {
+            "relativePath": "phase-receipt.json",
+            "bytes": len(receipt_bytes),
+            "sha256": sha256_bytes(receipt_bytes),
+        },
+        {
+            "relativePath": "outputs/output-manifest.json",
+            "bytes": len(manifest_bytes),
+            "sha256": sha256_bytes(manifest_bytes),
+        },
+        *[
+            {
+                "relativePath": f"outputs/{output['relativePath']}",
+                "bytes": output["bytes"],
+                "sha256": output["sha256"],
+            }
+            for output in manifest["outputs"]
+        ],
+    ]
+    expected_files.sort(key=lambda record: record["relativePath"])
+    expected_directories = {"outputs"}
+    for output in manifest["outputs"]:
+        path = PurePosixPath("outputs") / output["relativePath"]
+        expected_directories.update(
+            str(parent) for parent in path.parents if str(parent) not in {".", ""}
+        )
+    if files != expected_files or _repository_directory_paths(root) != expected_directories:
+        raise ValueError(f"{product} repository evidence file set is incomplete or unexpected")
+    if (
+        read_regular_file_bytes(receipt_path, max_bytes=REPOSITORY_JSON_LIMIT) != receipt_bytes
+        or read_regular_file_bytes(manifest_path, max_bytes=REPOSITORY_JSON_LIMIT) != manifest_bytes
+    ):
+        raise ValueError(f"{product} repository evidence changed during verification")
+    return receipt, {
+        "product": product,
+        "component": component,
+        "phase": phase,
+        "target": target,
+        "productVersion": version,
+        "buildKey": receipt["buildKey"],
+        "outputsDigest": output_inventory_digest(receipt["outputs"]),
+        "receiptSha256": sha256_bytes(receipt_bytes),
+        "outputManifestSha256": sha256_bytes(manifest_bytes),
+        "files": files,
+    }
+
+
+def verify_repository_evidence(
+    *,
+    contract_evidence: Any,
+    runtime_evidence: Any,
+    sdk_evidence: Any,
+    contract_version: Any,
+    runtime_version: Any,
+    sdk_version: Any,
+    trust_domain: Any,
+    output: Any,
+) -> dict[str, Any]:
+    evidence_values = (contract_evidence, runtime_evidence, sdk_evidence)
+    output_path = _invalidate_repository_report(output, evidence_values)
+    if trust_domain not in {"development", "release"}:
+        raise ValueError("Repository evidence trust domain is invalid")
+    versions = {
+        "contract": require_semver(contract_version, "Contract version"),
+        "runtime": require_semver(runtime_version, "Runtime version"),
+        "sdk": require_semver(sdk_version, "SDK version"),
+    }
+    roots = {
+        "contract": _repository_evidence_root(contract_evidence, "Contract evidence directory"),
+        "runtime": _repository_evidence_root(runtime_evidence, "Runtime evidence directory"),
+        "sdk": _repository_evidence_root(sdk_evidence, "SDK evidence directory"),
+    }
+    for product, root in roots.items():
+        for other_product, other_root in roots.items():
+            if product != other_product and (root == other_root or root.is_relative_to(other_root)):
+                raise ValueError("Repository evidence directories must be distinct and non-nested")
+    receipts: dict[str, dict[str, Any]] = {}
+    product_records = []
+    for product in ("contract", "runtime", "sdk"):
+        receipt, record = _verify_repository_product_evidence(
+            roots[product], product, versions[product], trust_domain,
+        )
+        receipts[product] = receipt
+        product_records.append(record)
+    references = {product: _repository_reference(receipt) for product, receipt in receipts.items()}
+    for consumer in ("contract", "runtime", "sdk"):
+        actual = [
+            reference
+            for reference in receipts[consumer]["inputs"]["upstreamArtifacts"]
+            if reference["product"] != consumer
+        ]
+        expected = [
+            references[producer]
+            for producer, expected_consumer in REPOSITORY_EDGES
+            if expected_consumer == consumer
+        ]
+        expected.sort(key=lambda reference: (
+            reference["product"], reference["component"], reference["phase"],
+            reference["target"], reference["buildKey"],
+        ))
+        if actual != expected:
+            raise ValueError(f"{consumer} repository receipt has invalid cross-product references")
+    report = {
+        "schemaVersion": 1,
+        "result": "passed",
+        "trustDomain": trust_domain,
+        "products": product_records,
+        "edges": [
+            {
+                "producerProduct": producer,
+                "consumerProduct": consumer,
+                "buildKey": references[producer]["buildKey"],
+                "outputsDigest": references[producer]["outputsDigest"],
+            }
+            for producer, consumer in REPOSITORY_EDGES
+        ],
+    }
+    write_canonical_json(output_path, report)
+    return report
 
 
 def _stable_semver_tuple(value: Any, label: str) -> tuple[int, int, int]:
@@ -130,121 +402,6 @@ def _artifact_records(
     if nonempty and not records:
         raise ValueError(f"{label} must not be empty")
     return records
-
-
-def contract_component_digest(records: list[dict[str, Any]]) -> str:
-    return sha256_bytes(canonical_json_bytes(records))
-
-
-def contract_digest(canonical_api_digest: str, protocol_digest: str, common_component_digest: str) -> str:
-    for value, label in (
-        (canonical_api_digest, "canonical API digest"),
-        (protocol_digest, "protocol digest"),
-        (common_component_digest, "common Contract component digest"),
-    ):
-        require_sha256(value, label)
-    return sha256_bytes(canonical_json_bytes({
-        "canonicalApiDigest": canonical_api_digest,
-        "commonComponentDigest": common_component_digest,
-        "protocolDigest": protocol_digest,
-    }))
-
-
-def validate_contract_manifest(value: Any) -> dict[str, Any]:
-    manifest = require_exact_keys(
-        value,
-        {
-            "schemaVersion",
-            "product",
-            "contractVersion",
-            "contractDigest",
-            "canonicalApiDigest",
-            "canonicalCoverageDigest",
-            "protocolDigest",
-            "capabilityCount",
-            "components",
-            "mavenFiles",
-            "evidenceFiles",
-            "signing",
-        },
-        "Contract manifest",
-    )
-    if require_integer(manifest["schemaVersion"], "Contract manifest.schemaVersion", 1) != 1:
-        raise ValueError("Unsupported Contract manifest schemaVersion")
-    if manifest["product"] != "contract":
-        raise ValueError("Contract manifest product must be contract")
-    require_semver(manifest["contractVersion"], "Contract manifest.contractVersion")
-    require_sha256(manifest["contractDigest"], "Contract manifest.contractDigest")
-    require_sha256(manifest["canonicalApiDigest"], "Contract manifest.canonicalApiDigest")
-    require_sha256(manifest["canonicalCoverageDigest"], "Contract manifest.canonicalCoverageDigest")
-    require_sha256(manifest["protocolDigest"], "Contract manifest.protocolDigest")
-    if require_integer(manifest["capabilityCount"], "Contract manifest.capabilityCount", 1) != 556:
-        raise ValueError("Contract manifest capabilityCount must be exactly 556")
-
-    components = require_exact_keys(manifest["components"], CONTRACT_COMPONENTS, "Contract manifest.components")
-    maven_files = _artifact_records(manifest["mavenFiles"], "Contract manifest.mavenFiles", component=True)
-    evidence_files = _artifact_records(manifest["evidenceFiles"], "Contract manifest.evidenceFiles")
-    if set(record["component"] for record in maven_files) - set(CONTRACT_COMPONENTS):
-        raise ValueError("Contract Maven file names an unsupported component")
-    if set(record["path"] for record in maven_files) & set(record["path"] for record in evidence_files):
-        raise ValueError("Contract Maven and evidence file paths overlap")
-    if any(not record["path"].startswith("maven/") or record["role"] not in CONTRACT_MAVEN_ROLES
-           for record in maven_files):
-        raise ValueError("Contract Maven files must use the maven/ scope and a supported role")
-    for record in evidence_files:
-        prefix = record["path"].split("/", 1)[0]
-        if prefix not in {"evidence", "inventories"} or record["role"] not in CONTRACT_EVIDENCE_ROLES:
-            raise ValueError("Contract evidence files must use a supported scope and role")
-        if (prefix == "inventories") != (record["role"] == "inventory"):
-            raise ValueError("Contract inventory role and inventories/ scope must agree")
-    evidence_roles = {record["role"] for record in evidence_files}
-    if evidence_roles != CONTRACT_EVIDENCE_ROLES:
-        raise ValueError("Contract evidence roles are incomplete")
-    for component_name in CONTRACT_COMPONENTS:
-        component = require_exact_keys(
-            components[component_name], {"mavenPaths", "sha256"}, f"Contract component {component_name}",
-        )
-        paths = [
-            require_relative_path(path, f"Contract component {component_name}.mavenPaths[]")
-            for path in require_array(component["mavenPaths"], f"Contract component {component_name}.mavenPaths")
-        ]
-        _sorted_unique(paths, f"Contract component {component_name}.mavenPaths")
-        resolution_records = [
-            record for record in maven_files
-            if record["component"] == component_name and record["role"] == "runtime-resolution"
-        ]
-        if not resolution_records or paths != [record["path"] for record in resolution_records]:
-            raise ValueError(f"Contract component {component_name} runtime-resolution closure is incomplete")
-        if require_sha256(component["sha256"], f"Contract component {component_name}.sha256") != \
-                contract_component_digest(resolution_records):
-            raise ValueError(f"Contract component {component_name} digest mismatch")
-    expected_contract_digest = contract_digest(
-        manifest["canonicalApiDigest"],
-        manifest["protocolDigest"],
-        components["common"]["sha256"],
-    )
-    if manifest["contractDigest"] != expected_contract_digest:
-        raise ValueError("Contract manifest contractDigest mismatch")
-    validate_signing_metadata(manifest["signing"])
-    return manifest
-
-
-def verify_contract_bundle(root: Path, value: Any) -> dict[str, Any]:
-    manifest = validate_contract_manifest(value)
-    root = Path(root)
-    if load_canonical_json(root / "contract-manifest.json") != manifest:
-        raise ValueError("Contract Bundle manifest bytes do not match the supplied manifest")
-    actual = {record["relativePath"]: record for record in regular_file_inventory(root)}
-    declared = {
-        record["path"]: {"relativePath": record["path"], "bytes": record["bytes"], "sha256": record["sha256"]}
-        for record in manifest["mavenFiles"] + manifest["evidenceFiles"]
-    }
-    special = {"contract-manifest.json", "contract-manifest.sig"}
-    if set(actual) != special | set(declared):
-        raise ValueError("Contract Bundle file set differs from its complete allow-list")
-    if any(actual[path] != record for path, record in declared.items()):
-        raise ValueError("Contract Bundle declared file bytes or digest differ")
-    return manifest
 
 
 def _contract_reference(value: Any, label: str, *, with_component: bool) -> dict[str, Any]:
@@ -542,17 +699,24 @@ def verify_runtime_aggregate_artifacts(
         record = records[target]
         bundle = Path(variant_bundles[target])
         expected_name = _runtime_variant_bundle_name(target, record["componentId"])
-        if bundle.name != expected_name or sha256_file(bundle) != record["bundleSha256"]:
+        if bundle.name != expected_name:
             raise ValueError(f"Runtime variant bundle identity mismatch: {target}")
 
-        inventory = {member["relativePath"]: member for member in verified_zip_inventory(bundle)}
         manifest_name = "runtime-variant-manifest.json"
         signature_name = "runtime-variant-manifest.sig"
+        zip_records, authenticated_contents, archive_identity = verified_zip_contents(
+            bundle,
+            **RUNTIME_VARIANT_ZIP_LIMITS,
+            retained_paths={manifest_name, signature_name},
+            max_retained_bytes=2 * 1024 * 1024,
+        )
+        if archive_identity["sha256"] != record["bundleSha256"]:
+            raise ValueError(f"Runtime variant bundle identity mismatch: {target}")
+        inventory = {member["relativePath"]: member for member in zip_records}
         if manifest_name not in inventory or signature_name not in inventory:
             raise ValueError(f"Runtime variant bundle lacks its manifest or signature: {target}")
-        with zipfile.ZipFile(bundle) as archive:
-            manifest_bytes = archive.read(manifest_name)
-            signature_bytes = archive.read(signature_name)
+        manifest_bytes = authenticated_contents[manifest_name]
+        signature_bytes = authenticated_contents[signature_name]
         if sha256_bytes(manifest_bytes) != record["manifestSha256"]:
             raise ValueError(f"Runtime variant manifest digest mismatch: {target}")
         variant = validate_runtime_variant(load_canonical_json_bytes(manifest_bytes))
@@ -584,15 +748,28 @@ def verify_runtime_aggregate_artifacts(
         if variant["signing"]["trustDomain"] != required_trust_domain:
             raise ValueError(f"Runtime variant signing trust domain mismatch: {target}")
         role_records = {member["role"]: member for member in variant["innerArtifacts"]}
-        with zipfile.ZipFile(bundle) as archive:
-            phase_receipts = {
-                phase: validate_phase_receipt(load_canonical_json_bytes(archive.read(role_records[role]["path"])))
-                for phase, role in (
-                    ("binary", "binary-receipt"),
-                    ("package", "package-receipt"),
-                    ("validation", "validation-receipt"),
-                )
-            }
+        receipt_paths = {
+            role_records[role]["path"]
+            for role in ("binary-receipt", "package-receipt", "validation-receipt")
+        }
+        receipt_zip_records, receipt_contents, receipt_archive_identity = verified_zip_contents(
+            bundle,
+            **RUNTIME_VARIANT_ZIP_LIMITS,
+            retained_paths=receipt_paths,
+            max_retained_bytes=16 * 1024 * 1024,
+        )
+        if receipt_zip_records != zip_records or receipt_archive_identity != archive_identity:
+            raise ValueError(f"Runtime variant bundle changed during verification: {target}")
+        phase_receipts = {
+            phase: validate_phase_receipt(
+                load_canonical_json_bytes(receipt_contents[role_records[role]["path"]])
+            )
+            for phase, role in (
+                ("binary", "binary-receipt"),
+                ("package", "package-receipt"),
+                ("validation", "validation-receipt"),
+            )
+        }
         for phase, receipt in phase_receipts.items():
             if (
                 receipt["product"] != "runtime"
@@ -638,13 +815,14 @@ def verify_runtime_aggregate_artifacts(
             raise ValueError(f"Runtime variant manifest disagrees with its aggregate: {target}")
 
         receipt_path = Path(metadata_receipts[target])
-        if sha256_file(receipt_path) != record["receiptSha256"]:
+        receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024)
+        if sha256_bytes(receipt_bytes) != record["receiptSha256"]:
             raise ValueError(f"Runtime variant metadata receipt digest mismatch: {target}")
-        receipt = validate_phase_receipt(load_canonical_json(receipt_path))
+        receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
         bundle_output = {
             "kind": "runtime-variant",
             "relativePath": bundle.name,
-            "bytes": bundle.stat().st_size,
+            "bytes": archive_identity["bytes"],
             "sha256": record["bundleSha256"],
         }
         if (
@@ -923,3 +1101,38 @@ def verify_immutable_product_indexes(existing: Any, candidate: Any) -> None:
         if _release_output_projection(prior_releases[identity]) != \
                 _release_output_projection(proposed_releases[identity]):
             raise ValueError("Stable product identity has different asset names or output bytes")
+
+
+def main(arguments: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Verify aggregate product evidence")
+    commands = parser.add_subparsers(dest="command", required=True)
+    repository = commands.add_parser(
+        "verify-repository",
+        help="Verify independently supplied Contract, Runtime, and SDK evidence",
+    )
+    repository.add_argument("--contract-evidence", required=True)
+    repository.add_argument("--runtime-evidence", required=True)
+    repository.add_argument("--sdk-evidence", required=True)
+    repository.add_argument("--contract-version", required=True)
+    repository.add_argument("--runtime-version", required=True)
+    repository.add_argument("--sdk-version", required=True)
+    repository.add_argument("--trust-domain", required=True)
+    repository.add_argument("--output", required=True)
+    values = parser.parse_args(arguments)
+    if values.command == "verify-repository":
+        verify_repository_evidence(
+            contract_evidence=values.contract_evidence,
+            runtime_evidence=values.runtime_evidence,
+            sdk_evidence=values.sdk_evidence,
+            contract_version=values.contract_version,
+            runtime_version=values.runtime_version,
+            sdk_version=values.sdk_version,
+            trust_domain=values.trust_domain,
+            output=values.output,
+        )
+        return 0
+    parser.error("Unsupported aggregate command")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

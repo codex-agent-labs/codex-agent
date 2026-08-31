@@ -1665,9 +1665,11 @@ tasks.configureEach {
 project(":codex-agent-core").tasks.matching {
     it.name == "invalidateCrossLanguageBindingParityOutputs"
 }.configureEach {
-    dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput)
+    mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)
 }
-
+rootProject.tasks.matching { it.name == "prepareContractInputs" }.configureEach {
+    mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)
+}
 tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>("verifyJavaScriptTypeScriptBindingParity") {
     group = "verification"
     description = "Verifies the exact packed JavaScript/TypeScript API and shared projection behavior parity."

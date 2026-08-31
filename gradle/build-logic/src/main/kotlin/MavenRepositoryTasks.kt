@@ -4,7 +4,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
-private data class MavenArtifactSpec(val artifactId: String, val suffixes: List<String>)
+private enum class MavenProduct { CONTRACT, RUNTIME, SDK }
+
+private data class MavenArtifactSpec(
+    val artifactId: String,
+    val suffixes: List<String>,
+    val product: MavenProduct = MavenProduct.SDK,
+)
 
 private val mavenArtifactSpecs = listOf(
     MavenArtifactSpec("codex-agent", listOf("-javadoc.jar", "-kotlin-tooling-metadata.json", "-sources.jar", ".jar", ".module", ".pom")),
@@ -19,6 +25,62 @@ private val mavenArtifactSpecs = listOf(
     MavenArtifactSpec("codex-agent-macosx64", listOf("-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom")),
     MavenArtifactSpec("codex-agent-mingwx64", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom")),
     MavenArtifactSpec("codex-agent-wasm-js", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom")),
+    MavenArtifactSpec(
+        "codex-agent-bom", listOf(".module", ".pom"),
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core",
+        listOf("-javadoc.jar", "-kotlin-tooling-metadata.json", "-sources.jar", ".jar", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-android", listOf("-javadoc.jar", "-sources.jar", ".aar", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-iosarm64",
+        listOf("-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-iossimulatorarm64",
+        listOf("-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-js", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-jvm", listOf("-javadoc.jar", "-sources.jar", ".jar", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-linuxarm64", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-linuxx64", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-macosarm64",
+        listOf("-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-macosx64",
+        listOf("-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-mingwx64", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
+    MavenArtifactSpec(
+        "codex-agent-core-wasm-js", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"),
+        MavenProduct.CONTRACT,
+    ),
     MavenArtifactSpec("codex-agent-runtime-android", listOf("-javadoc.jar", "-sources.jar", ".aar", ".module", ".pom")),
     MavenArtifactSpec(
         "codex-agent-runtime-desktop",
@@ -39,19 +101,19 @@ private val mavenArtifactSpecs = listOf(
             ".jar",
             ".module",
             ".pom",
-        ),
+        ), MavenProduct.RUNTIME,
     ),
-    MavenArtifactSpec("codex-agent-runtime-desktop-jvm", listOf("-javadoc.jar", "-sources.jar", ".jar", ".module", ".pom")),
-    MavenArtifactSpec("codex-agent-runtime-desktop-linuxarm64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom")),
-    MavenArtifactSpec("codex-agent-runtime-desktop-linuxx64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom")),
-    MavenArtifactSpec("codex-agent-runtime-desktop-macosarm64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom")),
-    MavenArtifactSpec("codex-agent-runtime-desktop-macosx64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom")),
-    MavenArtifactSpec("codex-agent-runtime-desktop-mingwx64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom")),
+    MavenArtifactSpec("codex-agent-runtime-desktop-jvm", listOf("-javadoc.jar", "-sources.jar", ".jar", ".module", ".pom"), MavenProduct.RUNTIME),
+    MavenArtifactSpec("codex-agent-runtime-desktop-linuxarm64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"), MavenProduct.RUNTIME),
+    MavenArtifactSpec("codex-agent-runtime-desktop-linuxx64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"), MavenProduct.RUNTIME),
+    MavenArtifactSpec("codex-agent-runtime-desktop-macosarm64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom"), MavenProduct.RUNTIME),
+    MavenArtifactSpec("codex-agent-runtime-desktop-macosx64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom"), MavenProduct.RUNTIME),
+    MavenArtifactSpec("codex-agent-runtime-desktop-mingwx64", listOf("-cinterop-codexDesktop.klib", "-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"), MavenProduct.RUNTIME),
     MavenArtifactSpec("codex-agent-runtime-ios", listOf("-javadoc.jar", "-kotlin-tooling-metadata.json", "-sources.jar", ".jar", ".module", ".pom")),
     MavenArtifactSpec("codex-agent-runtime-ios-iosarm64", listOf("-cinterop-codexAgentIos.klib", "-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom")),
     MavenArtifactSpec("codex-agent-runtime-ios-iossimulatorarm64", listOf("-cinterop-codexAgentIos.klib", "-javadoc.jar", "-metadata.jar", "-sources.jar", ".klib", ".module", ".pom")),
-    MavenArtifactSpec("codex-agent-runtime-desktop-js", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom")),
-    MavenArtifactSpec("codex-agent-runtime-desktop-wasm-js", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom")),
+    MavenArtifactSpec("codex-agent-runtime-desktop-js", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"), MavenProduct.RUNTIME),
+    MavenArtifactSpec("codex-agent-runtime-desktop-wasm-js", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"), MavenProduct.RUNTIME),
 )
 
 private val checksumAlgorithms = linkedMapOf(
@@ -61,7 +123,15 @@ private val checksumAlgorithms = linkedMapOf(
     ".sha512" to "SHA-512",
 )
 
-internal fun expectedMavenPrimaryPaths(version: String): Set<String> = mavenArtifactSpecs.flatMap { spec ->
+internal fun mavenArtifactVersion(artifactId: String, versions: ProductVersions): String =
+    when (mavenArtifactSpecs.single { it.artifactId == artifactId }.product) {
+        MavenProduct.CONTRACT -> versions.contract
+        MavenProduct.RUNTIME -> versions.runtime
+        MavenProduct.SDK -> versions.sdk
+    }
+
+internal fun expectedMavenPrimaryPaths(versions: ProductVersions): Set<String> = mavenArtifactSpecs.flatMap { spec ->
+    val version = mavenArtifactVersion(spec.artifactId, versions)
     spec.suffixes.map { suffix ->
         "${spec.artifactId}/$version/${spec.artifactId}-$version$suffix"
     }
@@ -70,7 +140,7 @@ internal fun expectedMavenPrimaryPaths(version: String): Set<String> = mavenArti
 internal fun verifyMavenRepository(
     repository: File,
     groupId: String,
-    version: String,
+    versions: ProductVersions,
     requireSignatures: Boolean,
     inventory: File,
 ) {
@@ -82,8 +152,9 @@ internal fun verifyMavenRepository(
     val actualIds = groupRoot.listFiles().orEmpty().filter(File::isDirectory).mapTo(sortedSetOf(), File::getName)
     check(actualIds == expectedIds) { "Maven publication set mismatch: expected=$expectedIds actual=$actualIds" }
 
-    val expectedPrimary = expectedMavenPrimaryPaths(version)
+    val expectedPrimary = expectedMavenPrimaryPaths(versions)
     val actualPrimary = actualIds.flatMap { artifactId ->
+        val version = mavenArtifactVersion(artifactId, versions)
         val versionDirectory = groupRoot.resolve("$artifactId/$version")
         check(versionDirectory.isDirectory) { "$artifactId version $version is missing" }
         versionDirectory.listFiles().orEmpty().filter { it.isFile && !it.isMavenSidecar() }.map {
@@ -135,9 +206,11 @@ internal fun verifyMavenRepository(
     }
     val files = expectedFiles.map(repository::resolve)
     inventory.atomicWriteJson(buildJsonObject {
-        put("schemaVersion", JsonPrimitive(3))
+        put("schemaVersion", JsonPrimitive(4))
         put("groupId", JsonPrimitive(groupId))
-        put("version", JsonPrimitive(version))
+        put("contractVersion", JsonPrimitive(versions.contract))
+        put("runtimeVersion", JsonPrimitive(versions.runtime))
+        put("sdkVersion", JsonPrimitive(versions.sdk))
         put("artifactIds", buildJsonArray { expectedIds.forEach { add(JsonPrimitive(it)) } })
         put("primaryArtifactCount", JsonPrimitive(expectedRootPrimary.size))
         put("signaturesRequired", JsonPrimitive(requireSignatures))

@@ -127,10 +127,12 @@ val releaseToolingClasses = listOf(
     "JvmRuntimeEvidenceValues",
     "KmpConsumerVerificationTaskKt",
     "MavenArtifactSpec",
+    "MavenProduct",
     "MavenRepositoryTasksKt",
     "NodeRuntimeEvidenceModelKt",
     "NodeRuntimeEvidenceValues",
     "PrivacyReleaseVerificationTasksKt",
+    "ProductVersions",
     "PromotedCandidateInputs",
     "PromotedCandidateTasksKt",
     "PromotedIosEvidence",
@@ -160,6 +162,7 @@ val releaseToolingJar = tasks.register<Jar>("releaseToolingJar") {
     manifest.attributes["Main-Class"] = "ReleaseToolingCliKt"
     from(sourceSets.main.get().output) {
         include(releaseToolingClasses.map { "$it*.class" })
+        exclude("ProductVersionsKt.class")
     }
     from(provider {
         releaseToolingRuntime.filter { dependency ->
