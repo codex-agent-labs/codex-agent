@@ -35,7 +35,7 @@ jobs:
       contents: read
       deployments: read
       id-token: write
-    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@4f4c11a2a717678a0b86d5b20745583e1ce4077b
+    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@ad7e39c7712b85a4a58e4def2bbf5a55066ac60f
     with:
       baseCommit: ${{ inputs.baseCommit || '' }}
       validationCommit: ${{ inputs.validationCommit || '' }}

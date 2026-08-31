@@ -53,7 +53,7 @@ class RunLaneContractTest(unittest.TestCase):
         caller = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(
             encoding="utf-8"
         )
-        reviewed = "4f4c11a2a717678a0b86d5b20745583e1ce4077b"
+        reviewed = "ad7e39c7712b85a4a58e4def2bbf5a55066ac60f"
         references = re.findall(
             r"uses: codex-agent-labs/codex-agent/\.github/workflows/product-validation\.yml@([^\s]+)",
             caller,
