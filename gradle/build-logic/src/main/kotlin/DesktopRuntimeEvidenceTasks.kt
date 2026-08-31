@@ -34,12 +34,16 @@ internal fun desktopRuntimeEvidenceTestTask(target: String) = if (target == "lin
     ":codex-agent-runtime-desktop:${target}Test"
 }
 
+internal fun importedDesktopRuntimeEvidenceTestTask(target: String) =
+    ":codex-agent-runtime-desktop:executeImported${target.replaceFirstChar(Char::uppercase)}NativeRuntimeEvidence"
+
 internal data class DesktopRuntimeEvidenceValues(
     val candidateCommit: String,
     val target: String,
     val binarySha256: String,
     val supervisorSha256: String,
     val classifierArchiveSha256: String,
+    val testTask: String = desktopRuntimeEvidenceTestTask(target),
 )
 
 internal fun buildDesktopRuntimeEvidence(values: DesktopRuntimeEvidenceValues) = buildJsonObject {
@@ -50,7 +54,7 @@ internal fun buildDesktopRuntimeEvidence(values: DesktopRuntimeEvidenceValues) =
     put("classifier", JsonPrimitive(expected.classifier))
     put("runnerOs", JsonPrimitive(expected.runnerOs))
     put("runnerArch", JsonPrimitive(expected.runnerArch))
-    put("testTask", JsonPrimitive(desktopRuntimeEvidenceTestTask(values.target)))
+    put("testTask", JsonPrimitive(values.testTask))
     put("testClass", JsonPrimitive(DESKTOP_RUNTIME_TEST_CLASS))
     put("testMethods", buildJsonArray { desktopRuntimeTestMethods.forEach { add(JsonPrimitive(it)) } })
     put("tests", JsonPrimitive(desktopRuntimeTestMethods.size))
@@ -132,7 +136,10 @@ internal fun validateDesktopRuntimeEvidence(
             check(report.releaseString("classifier") == expected.classifier) { "classifier mismatch" }
             check(report.releaseString("runnerOs") == expected.runnerOs) { "runner OS mismatch" }
             check(report.releaseString("runnerArch") == expected.runnerArch) { "runner architecture mismatch" }
-            check(report.releaseString("testTask") == desktopRuntimeEvidenceTestTask(target)) {
+            check(report.releaseString("testTask") in setOf(
+                    desktopRuntimeEvidenceTestTask(target),
+                    importedDesktopRuntimeEvidenceTestTask(target),
+                )) {
                 "test task mismatch"
             }
             check(report.releaseString("testClass") == DESKTOP_RUNTIME_TEST_CLASS) { "test class mismatch" }

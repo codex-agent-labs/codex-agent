@@ -18,7 +18,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
-import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.MapProperty
@@ -28,7 +27,6 @@ import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.OutputFile
-import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -574,7 +572,25 @@ fun portableVerifyCrossLanguageCAbiPackageEvidence(
     notice: File,
     exportPolicy: File,
     consumerSources: List<File>,
-): JsonObject {
+): JsonObject = withPortableVerifiedCrossLanguageCAbiPackageEvidence(
+    target, libraryVersion, producerCommit, producerTree, archive, evidence,
+    reviewedHeader, license, notice, exportPolicy, consumerSources,
+) { report, _, _ -> report }
+
+private fun <T> withPortableVerifiedCrossLanguageCAbiPackageEvidence(
+    target: String,
+    libraryVersion: String,
+    producerCommit: String,
+    producerTree: String,
+    archive: File,
+    evidence: File,
+    reviewedHeader: File,
+    license: File,
+    notice: File,
+    exportPolicy: File,
+    consumerSources: List<File>,
+    consume: (JsonObject, File, ByteArray) -> T,
+): T {
     val spec = crossLanguageCAbiTargetSpecs[target] ?: error("Unsupported C ABI package target: $target")
     check(evidence.isFile && !Files.isSymbolicLink(evidence.toPath())) {
         "C ABI package evidence is missing, non-regular, or symbolic: $evidence"
@@ -591,17 +607,17 @@ fun portableVerifyCrossLanguageCAbiPackageEvidence(
         val input = extractedCAbiPackageInput(
             spec, libraryVersion, producerCommit, producerTree, reviewedHeader, license, notice, exportPolicy, root,
         )
-        val contents = evidence.readText()
+        val evidenceBytes = evidence.readBytes()
+        val contents = evidenceBytes.toString(Charsets.UTF_8)
         val report = releaseJson.parseToJsonElement(contents).jsonObject
         check(contents == releaseJson.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), report) + "\n") {
             "C ABI package evidence is not canonically encoded"
         }
-        return report.also {
-            verifyCrossLanguageCAbiPackageEvidence(
-                it, archive, input, spec.runnerOs, spec.runnerArch,
-                sources.associate { it.name to it.releaseDigest() },
-            )
-        }
+        verifyCrossLanguageCAbiPackageEvidence(
+            report, archive, input, spec.runnerOs, spec.runnerArch,
+            sources.associate { it.name to it.releaseDigest() },
+        )
+        return consume(report, root, evidenceBytes)
     } finally {
         temporary.deleteRecursively()
     }
@@ -613,10 +629,14 @@ data class CrossLanguageNativeWrapperSdkInput(
     val producerTree: String,
     val archives: Map<String, File>,
     val evidence: Map<String, File>,
+    val references: Map<String, CrossLanguageNativeWrapperSdkReferenceInput>,
+)
+
+data class CrossLanguageNativeWrapperSdkReferenceInput(
     val reviewedHeader: File,
     val license: File,
     val notice: File,
-    val exportPolicies: Map<String, File>,
+    val exportPolicy: File,
     val consumerSources: List<File>,
 )
 
@@ -638,12 +658,10 @@ fun stageCrossLanguageNativeWrapperSdks(
     outputDirectory: File,
 ) {
     val targets = crossLanguageCAbiTargetSpecs.keys
-    check(input.archives.keys == targets && input.evidence.keys == targets && input.exportPolicies.keys == targets) {
+    check(input.archives.keys == targets && input.evidence.keys == targets && input.references.keys == targets) {
         "Native wrapper C ABI SDK staging requires exactly all five targets"
     }
-    check(!Files.isSymbolicLink(outputDirectory.toPath())) {
-        "Native wrapper C ABI SDK staging output must not be a symlink"
-    }
+    check(!outputDirectory.exists()) { "Native wrapper C ABI SDK output is immutable: $outputDirectory" }
     val parent = outputDirectory.absoluteFile.parentFile.also(File::mkdirs)
     val temporary = Files.createTempDirectory(parent.toPath(), ".native-wrapper-sdks-").toFile()
     try {
@@ -653,38 +671,42 @@ fun stageCrossLanguageNativeWrapperSdks(
                 val spec = crossLanguageCAbiTargetSpecs.getValue(target)
                 val archive = input.archives.getValue(target)
                 val proof = input.evidence.getValue(target)
-                val report = portableVerifyCrossLanguageCAbiPackageEvidence(
+                check(regularCAbiFile(proof)) {
+                    "Imported native wrapper C ABI evidence is missing or symbolic: $target"
+                }
+                checkIdentity(input.libraryVersion, input.producerCommit, input.producerTree)
+                val reference = input.references.getValue(target)
+                withPortableVerifiedCrossLanguageCAbiPackageEvidence(
                     target,
                     input.libraryVersion,
                     input.producerCommit,
                     input.producerTree,
                     archive,
                     proof,
-                    input.reviewedHeader,
-                    input.license,
-                    input.notice,
-                    input.exportPolicies.getValue(target),
-                    input.consumerSources,
-                )
-                val classifier = spec.classifier.removePrefix("c-abi-")
-                val targetRoot = staged.resolve(classifier)
-                extractCAbiPackage(archive, targetRoot)
-                val manifest = targetRoot.resolve("codex-agent-c-abi-manifest.json")
-                check(regularCAbiFile(manifest)) { "Staged native wrapper C ABI manifest is missing: $target" }
-                Files.copy(
-                    proof.toPath(),
-                    targetRoot.resolve("codex-agent-c-abi-evidence.json").toPath(),
-                    StandardCopyOption.REPLACE_EXISTING,
-                )
-                add(buildJsonObject {
-                    put("target", target)
-                    put("classifier", classifier)
-                    put("archiveSha256", report.strictSha256("archiveSha256"))
-                    put("evidenceSha256", proof.releaseDigest())
-                    put("libraryPath", spec.libraryPath)
-                    put("librarySha256", report.strictSha256("librarySha256"))
-                    put("manifestSha256", manifest.releaseDigest())
-                })
+                    reference.reviewedHeader,
+                    reference.license,
+                    reference.notice,
+                    reference.exportPolicy,
+                    reference.consumerSources,
+                ) { report, verifiedRoot, evidenceBytes ->
+                    val classifier = spec.classifier.removePrefix("c-abi-")
+                    val targetRoot = staged.resolve(classifier)
+                    check(verifiedRoot.copyRecursively(targetRoot)) {
+                        "Failed to retain the verified native wrapper C ABI SDK: $target"
+                    }
+                    val manifest = targetRoot.resolve("codex-agent-c-abi-manifest.json")
+                    check(regularCAbiFile(manifest)) { "Staged native wrapper C ABI manifest is missing: $target" }
+                    targetRoot.resolve("codex-agent-c-abi-evidence.json").writeBytes(evidenceBytes)
+                    add(buildJsonObject {
+                        put("target", target)
+                        put("classifier", classifier)
+                        put("archiveSha256", report.strictSha256("archiveSha256"))
+                        put("evidenceSha256", evidenceBytes.inputStream().releaseDigest())
+                        put("libraryPath", spec.libraryPath)
+                        put("librarySha256", report.strictSha256("librarySha256"))
+                        put("manifestSha256", manifest.releaseDigest())
+                    })
+                }
             }
         }
         staged.resolve("codex-agent-native-wrapper-sdks.json").atomicWriteJson(buildJsonObject {
@@ -694,7 +716,6 @@ fun stageCrossLanguageNativeWrapperSdks(
             put("producerTree", input.producerTree)
             put("targets", indexTargets)
         })
-        outputDirectory.deleteRecursively()
         try {
             Files.move(staged.toPath(), outputDirectory.toPath(), StandardCopyOption.ATOMIC_MOVE)
         } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
@@ -705,67 +726,13 @@ fun stageCrossLanguageNativeWrapperSdks(
     }
 }
 
-@CacheableTask
-abstract class StageCrossLanguageNativeWrapperSdksTask : DefaultTask() {
-    @get:Input abstract val libraryVersion: Property<String>
-    @get:Input abstract val producerCommit: Property<String>
-    @get:Input abstract val producerTree: Property<String>
-    @get:InputFiles @get:PathSensitive(PathSensitivity.NONE) abstract val archives: ConfigurableFileCollection
-    @get:InputFiles @get:PathSensitive(PathSensitivity.NONE) abstract val evidence: ConfigurableFileCollection
-    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE) abstract val reviewedHeader: RegularFileProperty
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val license: RegularFileProperty
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val notice: RegularFileProperty
-    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE) abstract val macosExportPolicy: RegularFileProperty
-    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE) abstract val linuxExportPolicy: RegularFileProperty
-    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE) abstract val windowsExportPolicy: RegularFileProperty
-    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val consumerSources: ConfigurableFileCollection
-    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
-
-    @TaskAction
-    fun stage() {
-        val archiveByName = archives.files.associateBy(File::getName)
-        val evidenceByName = evidence.files.associateBy(File::getName)
-        check(archiveByName.size == archives.files.size && evidenceByName.size == evidence.files.size) {
-            "Native wrapper C ABI SDK inputs contain duplicate file names"
-        }
-        stageCrossLanguageNativeWrapperSdks(
-            CrossLanguageNativeWrapperSdkInput(
-                libraryVersion.get(),
-                producerCommit.get(),
-                producerTree.get(),
-                crossLanguageCAbiTargetSpecs.keys.associateWith { target ->
-                    archiveByName.getValue(crossLanguageCAbiArchiveFileName(libraryVersion.get(), target))
-                }.also { check(it.size == archiveByName.size) { "Unexpected native wrapper C ABI SDK archive" } },
-                crossLanguageCAbiTargetSpecs.keys.associateWith { target ->
-                    evidenceByName.getValue(crossLanguageCAbiPackageEvidenceFileName(target))
-                }.also { check(it.size == evidenceByName.size) { "Unexpected native wrapper C ABI SDK evidence" } },
-                reviewedHeader.get().asFile,
-                license.get().asFile,
-                notice.get().asFile,
-                crossLanguageCAbiTargetSpecs.mapValues { (_, spec) ->
-                    when (spec.format) {
-                        "mach-o" -> macosExportPolicy.get().asFile
-                        "elf" -> linuxExportPolicy.get().asFile
-                        "pe" -> windowsExportPolicy.get().asFile
-                        else -> error("Unsupported native wrapper C ABI SDK format: ${spec.format}")
-                    }
-                },
-                consumerSources.files.toList(),
-            ),
-            outputDirectory.get().asFile,
-        )
-    }
-}
-
 fun materializeCrossLanguageNativeWrapperPackageAssets(
     stagedSdkDirectory: File,
     outputDirectory: File,
 ) {
     val indexFile = stagedSdkDirectory.resolve("codex-agent-native-wrapper-sdks.json")
     val index = readCrossLanguageNativeWrapperSdkIndex(stagedSdkDirectory)
-    check(!Files.isSymbolicLink(outputDirectory.toPath())) {
-        "Native wrapper package asset output must not be a symlink"
-    }
+    check(!outputDirectory.exists()) { "Native wrapper package asset output is immutable: $outputDirectory" }
     val parent = outputDirectory.absoluteFile.parentFile.also(File::mkdirs)
     val temporary = Files.createTempDirectory(parent.toPath(), ".native-wrapper-package-assets-").toFile()
     try {
@@ -800,7 +767,6 @@ fun materializeCrossLanguageNativeWrapperPackageAssets(
             }
         }
         Files.copy(indexFile.toPath(), staged.resolve(indexFile.name).toPath())
-        outputDirectory.deleteRecursively()
         try {
             Files.move(staged.toPath(), outputDirectory.toPath(), StandardCopyOption.ATOMIC_MOVE)
         } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
@@ -817,7 +783,26 @@ internal fun readCrossLanguageNativeWrapperSdkIndex(
     check(stagedSdkDirectory.isDirectory && !Files.isSymbolicLink(stagedSdkDirectory.toPath())) {
         "Native wrapper SDK staging root is missing or symbolic"
     }
-    verifiedRegularFiles(stagedSdkDirectory)
+    val stagedFiles = verifiedRegularFiles(stagedSdkDirectory)
+    val expectedFiles = buildSet {
+        add("codex-agent-native-wrapper-sdks.json")
+        crossLanguageCAbiTargetSpecs.values.forEach { spec ->
+            val classifier = spec.classifier.removePrefix("c-abi-")
+            listOf(
+                C_ABI_HEADER_PATH,
+                "LICENSE.txt",
+                "THIRD_PARTY_NOTICES.md",
+                spec.libraryPath,
+                C_ABI_PACKAGE_MANIFEST,
+                "codex-agent-c-abi-evidence.json",
+            ).forEach { add("$classifier/$it") }
+            if (spec.format == "elf") add("$classifier/lib/${spec.loaderIdentity}")
+            spec.importLibraryPaths.forEach { add("$classifier/$it") }
+        }
+    }
+    check(stagedFiles.keys == expectedFiles) {
+        "Native wrapper SDK staging inventory is incomplete or unexpected"
+    }
     val indexFile = stagedSdkDirectory.resolve("codex-agent-native-wrapper-sdks.json")
     check(regularCAbiFile(indexFile)) { "Native wrapper SDK index is missing" }
     val contents = indexFile.readText()
@@ -872,20 +857,6 @@ internal fun readCrossLanguageNativeWrapperSdkIndex(
             CrossLanguageNativeWrapperSdkRecord(target, classifier, spec.libraryPath, librarySha256)
         },
     )
-}
-
-@CacheableTask
-abstract class MaterializeCrossLanguageNativeWrapperPackageAssetsTask : DefaultTask() {
-    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
-    abstract val stagedSdkDirectory: ConfigurableFileCollection
-    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
-
-    @TaskAction
-    fun materialize() {
-        val roots = stagedSdkDirectory.files
-        check(roots.size == 1) { "Native wrapper package assets require one staged SDK root" }
-        materializeCrossLanguageNativeWrapperPackageAssets(roots.single(), outputDirectory.get().asFile)
-    }
 }
 
 @CacheableTask

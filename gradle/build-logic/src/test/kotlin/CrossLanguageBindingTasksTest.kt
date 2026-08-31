@@ -170,7 +170,7 @@ class CrossLanguageBindingTasksTest {
             assertTrue("sdkFacadeProject.tasks.register<Delete>(" in sdkWiring)
             assertTrue("dependsOn(\n        invalidateJavaBindingParityOutput," in sdkWiring)
             assertFalse("\"prepareContractInputs\"," in sdkWiring)
-            val javaScriptWiring = File("../../codex-agent-runtime-desktop/build.gradle.kts").readText()
+            val javaScriptWiring = File("src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText()
             assertTrue("rootProject.tasks.matching { it.name == \"prepareContractInputs\" }" in javaScriptWiring)
             assertTrue("mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)" in javaScriptWiring)
             val appleWiring = File("src/main/kotlin/codexagent.ios-runtime.gradle.kts").readText()

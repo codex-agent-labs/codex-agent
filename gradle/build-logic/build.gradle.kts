@@ -75,6 +75,7 @@ val releaseToolingClasses = listOf(
     "CrossLanguageBindingAuditRecord",
     "CrossLanguageBindingAuditSummary",
     "CrossLanguageBindingCanonicalIdentity",
+    "CrossLanguageBindingHostConsumerProof",
     "CrossLanguageBindingObligation",
     "CrossLanguageBindingObligationState",
     "CrossLanguageBindingParityInput",
@@ -100,7 +101,14 @@ val releaseToolingClasses = listOf(
     "CrossLanguageObligationStatus",
     "CrossLanguageProjectionClaim",
     "CrossLanguageScenarioEvidence",
-    "CrossLanguageNativeWrapper",
+    "CrossLanguageNativeWrapperBindingEvidenceKt",
+    "CrossLanguageNativeWrapperClaim",
+    "CrossLanguageNativeWrapperCompilerEvidence",
+    "CrossLanguageNativeWrapperEvidenceInput",
+    "CrossLanguageNativeWrapperHostConsumerEvidence",
+    "CrossLanguageNativeWrapperLaneIdentity",
+    "CrossLanguageNativeWrapperSdkIndex",
+    "CrossLanguageNativeWrapperSdkRecord",
     "DeploymentTargetRecord",
     "DesktopClassifierInspectionKt",
     "DesktopClassifierProof",
@@ -161,7 +169,7 @@ val releaseToolingJar = tasks.register<Jar>("releaseToolingJar") {
     isReproducibleFileOrder = true
     manifest.attributes["Main-Class"] = "ReleaseToolingCliKt"
     from(sourceSets.main.get().output) {
-        include(releaseToolingClasses.map { "$it*.class" })
+        include(releaseToolingClasses.flatMap { listOf("$it.class", "${it}\$*.class") })
         exclude("ProductVersionsKt.class")
     }
     from(provider {

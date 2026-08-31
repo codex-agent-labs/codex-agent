@@ -2,12 +2,23 @@ import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
 class DesktopRuntimeEvidenceTasksTest {
+    @Test
+    fun `record task is owned only by desktop runtime evidence build logic`() {
+        val taskType = "RecordDesktopRuntimeEvidenceTask"
+        val releaseTooling = File("src/main/kotlin/ReleaseToolingGradleTasks.kt").readText()
+        val desktopRuntime = File("src/main/kotlin/DesktopRuntimeEvidenceGradleTasks.kt").readText()
+
+        assertFalse(taskType in releaseTooling)
+        assertTrue(taskType in desktopRuntime)
+    }
+
     @Test
     fun `test report requires the exact class and four exact methods`() = withDirectory { root ->
         val report = root.resolve("TEST-desktop.xml")

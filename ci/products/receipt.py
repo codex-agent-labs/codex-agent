@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 from .inventory import (
@@ -13,13 +15,17 @@ from .inventory import (
     require_integer,
     require_object,
     require_relative_path,
+    require_regular_directory,
     require_semver,
     require_sha256,
     require_sorted_unique_records,
     require_string,
+    regular_file_inventory,
     sha256_bytes,
+    snapshot_regular_tree,
     validate_file_record,
     verify_regular_file_inventory,
+    write_canonical_json,
 )
 
 
@@ -28,6 +34,15 @@ PHASES = {"binary", "package", "validation", "metadata"}
 TRUST_DOMAINS = {"development", "release"}
 EVENTS = {"pull_request", "merge_group", "workflow_dispatch", "push"}
 OUTPUT_MANIFEST_NAME = "output-manifest.json"
+OUTPUT_MANIFEST_KEYS = {
+    "schemaVersion",
+    "product",
+    "component",
+    "phase",
+    "target",
+    "productVersion",
+    "outputs",
+}
 
 
 def _product(value: Any, label: str) -> str:
@@ -55,15 +70,7 @@ def _records(values: Any, label: str, *, with_kind: bool) -> list[dict[str, Any]
 def validate_output_manifest(value: Any) -> dict[str, Any]:
     manifest = require_exact_keys(
         value,
-        {
-            "schemaVersion",
-            "product",
-            "component",
-            "phase",
-            "target",
-            "productVersion",
-            "outputs",
-        },
+        OUTPUT_MANIFEST_KEYS,
         "output manifest",
     )
     if require_integer(manifest["schemaVersion"], "output manifest.schemaVersion", 1) != 1:
@@ -81,9 +88,83 @@ def validate_output_manifest(value: Any) -> dict[str, Any]:
     return manifest
 
 
+def _remove_output_manifest(root: Path) -> None:
+    manifest = root / OUTPUT_MANIFEST_NAME
+    try:
+        manifest.unlink()
+    except FileNotFoundError:
+        pass
+    except IsADirectoryError as error:
+        raise ValueError("Output manifest path must not be a directory") from error
+
+
+def write_output_manifest(
+    root: Any,
+    product: Any,
+    component: Any,
+    phase: Any,
+    target: Any,
+    product_version: Any,
+    output_roots: Any,
+) -> dict[str, Any]:
+    root = require_regular_directory(Path(root), "Output-manifest root")
+    _remove_output_manifest(root)
+    try:
+        if type(output_roots) is not dict or not output_roots:
+            raise ValueError("Output roots must be a non-empty kind-to-path object")
+        roots = {
+            require_identifier(kind, "output root kind"):
+                require_relative_path(path, f"output root {kind}")
+            for kind, path in output_roots.items()
+        }
+        if len(roots) != len(output_roots):
+            raise ValueError("Output root kinds must be unique")
+        paths = sorted(roots.values())
+        if len(paths) != len(set(paths)):
+            raise ValueError("Output root paths must be unique")
+        parsed = {path: PurePosixPath(path) for path in paths}
+        for path, value in parsed.items():
+            if any(other_path != path and other in value.parents for other_path, other in parsed.items()):
+                raise ValueError("Output root paths must not overlap")
+
+        kinds_by_path = {path: kind for kind, path in roots.items()}
+
+        records = regular_file_inventory(root, excluded_paths={OUTPUT_MANIFEST_NAME})
+        counts = {path: 0 for path in paths}
+        outputs = []
+        for record in records:
+            relative = PurePosixPath(record["relativePath"])
+            matches = [path for path, value in parsed.items() if value in relative.parents]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"Staged output must belong to exactly one declared output root: {relative}"
+                )
+            path = matches[0]
+            counts[path] += 1
+            outputs.append({**record, "kind": kinds_by_path[path]})
+        if any(count == 0 for count in counts.values()):
+            raise ValueError("Every declared output root must contain at least one regular file")
+
+        manifest = validate_output_manifest({
+            "schemaVersion": 1,
+            "product": product,
+            "component": component,
+            "phase": phase,
+            "target": target,
+            "productVersion": product_version,
+            "outputs": outputs,
+        })
+        write_canonical_json(root / OUTPUT_MANIFEST_NAME, manifest)
+        verify_output_manifest(root, manifest)
+        return manifest
+    except Exception:
+        _remove_output_manifest(root)
+        raise
+
+
 def verify_output_manifest(root: Any, value: Any) -> dict[str, Any]:
     manifest = validate_output_manifest(value)
-    root = Path(root)
+    root = require_regular_directory(Path(root), "Output-manifest root")
     if load_canonical_json(root / OUTPUT_MANIFEST_NAME) != manifest:
         raise ValueError("Staged output-manifest.json does not match the supplied manifest")
     verify_regular_file_inventory(
@@ -92,6 +173,29 @@ def verify_output_manifest(root: Any, value: Any) -> dict[str, Any]:
         with_kind=True,
         excluded_paths={OUTPUT_MANIFEST_NAME},
     )
+    return manifest
+
+
+def verify_output_manifest_identity(
+    root: Any,
+    product: Any,
+    component: Any,
+    phase: Any,
+    target: Any,
+    product_version: Any,
+) -> dict[str, Any]:
+    root = Path(root)
+    manifest = verify_output_manifest(root, load_canonical_json(root / OUTPUT_MANIFEST_NAME))
+    expected = {
+        "product": _product(product, "expected product"),
+        "component": require_identifier(component, "expected component"),
+        "phase": _phase(phase, "expected phase"),
+        "target": require_identifier(target, "expected target"),
+        "productVersion": require_semver(product_version, "expected productVersion"),
+    }
+    for field, value in expected.items():
+        if manifest[field] != value:
+            raise ValueError(f"Output manifest {field} does not match the expected identity")
     return manifest
 
 
@@ -260,3 +364,68 @@ def require_release_receipt(value: Any) -> dict[str, Any]:
     if receipt["trustDomain"] != "release":
         raise ValueError("Promotion requires a release-trust phase receipt")
     return receipt
+
+
+def _parse_output_roots(values: list[str]) -> dict[str, str]:
+    roots: dict[str, str] = {}
+    for value in values:
+        kind, separator, path = value.partition("=")
+        if not separator or kind in roots:
+            raise ValueError("Each --output-root must be a unique kind=relative/path value")
+        roots[kind] = path
+    return roots
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python3 -m ci.products.receipt")
+    subcommands = parser.add_subparsers(dest="command", required=True)
+    writer = subcommands.add_parser("write-output-manifest")
+    writer.add_argument("--root", required=True)
+    writer.add_argument("--product", required=True)
+    writer.add_argument("--component", required=True)
+    writer.add_argument("--phase", required=True)
+    writer.add_argument("--target", required=True)
+    writer.add_argument("--product-version", required=True)
+    writer.add_argument("--output-root", action="append", required=True)
+    verifier = subcommands.add_parser("verify-output-manifest")
+    verifier.add_argument("--root", required=True)
+    verifier.add_argument("--product", required=True)
+    verifier.add_argument("--component", required=True)
+    verifier.add_argument("--phase", required=True)
+    verifier.add_argument("--target", required=True)
+    verifier.add_argument("--product-version", required=True)
+    snapshot = subcommands.add_parser("snapshot-tree")
+    snapshot.add_argument("--source", required=True)
+    snapshot.add_argument("--destination", required=True)
+    arguments = parser.parse_args(argv)
+    try:
+        if arguments.command == "write-output-manifest":
+            write_output_manifest(
+                arguments.root,
+                arguments.product,
+                arguments.component,
+                arguments.phase,
+                arguments.target,
+                arguments.product_version,
+                _parse_output_roots(arguments.output_root),
+            )
+        elif arguments.command == "verify-output-manifest":
+            verify_output_manifest_identity(
+                arguments.root,
+                arguments.product,
+                arguments.component,
+                arguments.phase,
+                arguments.target,
+                arguments.product_version,
+            )
+        else:
+            snapshot_regular_tree(Path(arguments.source), Path(arguments.destination))
+    except ValueError as error:
+        if arguments.command == "write-output-manifest":
+            _remove_output_manifest(Path(arguments.root))
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -336,10 +336,25 @@ class RunLaneContractTest(unittest.TestCase):
         )[0]
         consumers = workflow.split("\n  native-wrapper-host-consumers:", 1)[1]
 
-        self.assertEqual(1, workflow.count("name: Reassemble and verify the exact five C SDKs"))
+        self.assertEqual(1, workflow.count("name: Reassemble and verify the exact five Runtime product stages"))
         self.assertEqual(1, workflow.count("prepareNativeWrapperPackageSources"))
+        self.assertIn("-PcodexAgent.nativeWrapperRuntimeStageRoot=\"$PWD/$stages\"", stage)
+        self.assertNotIn("-PcodexAgent.cAbiPackageEvidenceDirectory=", stage)
+        self.assertNotIn("-PcodexAgent.desktopClassifierDirectory=", stage)
+        self.assertIn(
+            "for component in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do",
+            stage,
+        )
+        self.assertIn(
+            "*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/$component",
+            stage,
+        )
+        self.assertEqual(2, stage.count('output-manifest.json"'))
         self.assertIn("name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}", stage)
         self.assertIn("retention-days: 1", stage)
+        versioned_sdk_root = "native-wrapper-c-abi-sdks/${{ inputs.validationTree }}"
+        self.assertEqual(4, workflow.count(versioned_sdk_root))
+        self.assertNotIn("native-wrapper-c-abi-sdks/linux-x64", workflow)
 
         self.assertIn("needs: native-wrapper-sdk-stage", language)
         self.assertIn("fail-fast: false", language)
@@ -2340,6 +2355,27 @@ class StageArchiveTest(unittest.TestCase):
                 expected_proofs.add((lane, proof))
                 self.assertEqual(1, OUTPUTS[lane].count(sdk))
                 self.assertEqual(1, OUTPUTS[lane].count(proof))
+                package_stage = (
+                    "build",
+                    "codex-agent-runtime-desktop/build/product-stage/runtime/"
+                    f"{classifier}/package/**/*",
+                    "runtime-package-stage-member",
+                )
+                validation_stage = (
+                    "test",
+                    "codex-agent-runtime-desktop/build/product-stage/runtime/"
+                    f"{classifier}/validation/**/*",
+                    "runtime-validation-stage-member",
+                )
+                binary_stage = (
+                    "build",
+                    "codex-agent-runtime-desktop/build/product-stage/runtime/"
+                    f"{classifier}/binary/**/*",
+                    "runtime-binary-stage-member",
+                )
+                self.assertEqual(1, OUTPUTS[lane].count(binary_stage))
+                self.assertEqual(1, OUTPUTS[lane].count(package_stage))
+                self.assertEqual(1, OUTPUTS[lane].count(validation_stage))
 
                 with tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
@@ -2610,6 +2646,12 @@ class StageProductionRestoreTest(unittest.TestCase):
             with self.subTest(lane=lane), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 sdk = (f"payload/runtime-{classifier}.zip", "c-abi-sdk")
+                binary_stage = (f"payload/{classifier}/binary/output-manifest.json", "runtime-binary-stage-member")
+                package_stage = (f"payload/{classifier}/package/output-manifest.json", "runtime-package-stage-member")
+                validation_stage = (
+                    f"payload/{classifier}/validation/output-manifest.json",
+                    "runtime-validation-stage-member",
+                )
                 proof = (f"payload/proof-{classifier}.json", "c-abi-package-proof")
                 test_evidence = [proof]
                 if lane == "desktop-macos-arm64":
@@ -2617,13 +2659,20 @@ class StageProductionRestoreTest(unittest.TestCase):
                         ("payload/bootstrap-evidence.json", "cross-language-c-abi-bootstrap-evidence"),
                         ("payload/c-abi-scenarios.json", "cross-language-c-abi-scenario-proof"),
                     ))
-                source = self.source(root, [sdk], test_evidence)
+                source = self.source(root, [sdk, binary_stage, package_stage], [validation_stage, *test_evidence])
 
                 artifacts, evidence = restore_production_files(source, root / "output", lane)
 
-                self.assertEqual({sdk[0]: sdk[1]}, artifacts)
+                self.assertEqual({
+                    sdk[0]: sdk[1],
+                    binary_stage[0]: binary_stage[1],
+                    package_stage[0]: package_stage[1],
+                }, artifacts)
                 self.assertEqual({}, evidence)
                 self.assertTrue((root / "output" / sdk[0]).is_file())
+                self.assertTrue((root / "output" / binary_stage[0]).is_file())
+                self.assertTrue((root / "output" / package_stage[0]).is_file())
+                self.assertFalse((root / "output" / validation_stage[0]).exists())
                 for relative, _ in test_evidence:
                     self.assertFalse((root / "output" / relative).exists())
 

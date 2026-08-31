@@ -23,6 +23,7 @@ abstract class RecordJvmRuntimeEvidenceTask : DefaultTask() {
     @get:Input abstract val runnerOs: Property<String>
     @get:Input abstract val runnerArch: Property<String>
     @get:Input abstract val javaExecutable: Property<String>
+    @get:Input abstract val testTask: Property<String>
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val distributionManifest: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
@@ -44,6 +45,7 @@ abstract class RecordJvmRuntimeEvidenceTask : DefaultTask() {
         classifierArchive.get().asFile,
         compiledJvmTestRuntime.get().asFile,
         evidenceFile.get().asFile,
+        testTask = testTask.get(),
     )
 }
 

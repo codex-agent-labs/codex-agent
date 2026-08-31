@@ -105,6 +105,10 @@ class AppleReleaseCheckTasksTest {
                 "\"python3\", \"-m\", \"ci.products.aggregate\"",
             "codexagent.contract-product.gradle.kts" to
                 "\"python3\", \"-m\", \"ci.products.contract\"",
+            "ProductOutputManifestGradleTask.kt" to
+                "pythonExecutable.convention(\"python3\")",
+            "CrossLanguageNativeWrapperGradleTasks.kt" to
+                "pythonExecutable.convention(\"python3\")",
         )
         val nonProductPythonSource = sources
             .filterKeys { it !in productPythonOwners }

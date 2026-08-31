@@ -3,6 +3,7 @@ build.gradle.kts
 ci/impact.py
 ci/lanes/contract-product.production.pathspec
 ci/products/__init__.py
+ci/products/__main__.py
 ci/products/contract.py
 ci/products/contract_model.py
 ci/products/inventory.py
@@ -30,6 +31,7 @@ gradle/build-logic/src/main/kotlin/CrossLanguageBindingTasks.kt
 gradle/build-logic/src/main/kotlin/CrossLanguageCAbiPackageEvidence.kt
 gradle/build-logic/src/main/kotlin/CrossLanguageKotlinBindingEvidence.kt
 gradle/build-logic/src/main/kotlin/DesktopRuntimeZipModes.kt
+gradle/build-logic/src/main/kotlin/ProductOutputManifestGradleTask.kt
 gradle/build-logic/src/main/kotlin/ProductVersions.kt
 gradle/build-logic/src/main/kotlin/ReleaseIo.kt
 gradle/build-logic/src/main/kotlin/VerifyProtocolSourceTask.kt

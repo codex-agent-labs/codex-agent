@@ -35,6 +35,7 @@ fun Project.registerJvmRuntimeEvidenceTask(
         runnerOs.set(providers.environmentVariable("RUNNER_OS"))
         runnerArch.set(providers.environmentVariable("RUNNER_ARCH"))
         javaExecutable.set(providers.gradleProperty("codexAgent.javaExecutable").orElse("java"))
+        testTask.set(jvmRuntimeEvidenceTestTask(distribution.target))
         this.distributionManifest.set(distributionManifest)
         classifierArchive.set(classifier)
         compiledJvmTestRuntime.set(runner)

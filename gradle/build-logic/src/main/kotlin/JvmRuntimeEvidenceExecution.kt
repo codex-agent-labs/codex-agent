@@ -17,6 +17,7 @@ internal fun executeJvmRuntimeEvidence(
     compiledJvmTestRuntime: File,
     evidenceFile: File,
     runner: (List<String>, Map<String, String>) -> JvmEvidenceProcessResult = ::runJvmEvidenceProcess,
+    testTask: String = jvmRuntimeEvidenceTestTask(target),
 ) {
     evidenceFile.delete()
     check(candidateCommit.matches(Regex("[0-9a-f]{40}"))) { "JVM evidence commit is not immutable" }
@@ -63,6 +64,7 @@ internal fun executeJvmRuntimeEvidence(
             target,
             classifier,
             compiledJvmTestRuntime,
+            testTask,
         )))
     } finally {
         temporary.deleteRecursively()

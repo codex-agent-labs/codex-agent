@@ -133,6 +133,10 @@ def _is_reparse_point(value: os.stat_result) -> bool:
     )
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _open_regular_file(path: Path, label: str) -> tuple[int, os.stat_result]:
     path = Path(path)
     try:
@@ -170,6 +174,313 @@ def read_regular_file_bytes(path: Path, *, max_bytes: int | None = None) -> byte
         raise ValueError(f"File is missing or unsafe: {path}") from error
     finally:
         os.close(descriptor)
+
+
+def _open_directory(path: Path, label: str, *, create: bool = False) -> int:
+    absolute = Path(os.path.abspath(path))
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(absolute.anchor, flags)
+    try:
+        for part in absolute.parts[1:]:
+            try:
+                metadata = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                metadata = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISLNK(metadata.st_mode) or _is_reparse_point(metadata) or not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError(f"{label} contains an unsafe directory: {absolute}")
+            child = os.open(part, flags, dir_fd=descriptor)
+            opened = os.fstat(child)
+            if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+                os.close(child)
+                raise ValueError(f"{label} changed while opening: {absolute}")
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_created_directory(parent: int, name: str, mode: int, label: str) -> int:
+    os.mkdir(name, mode, dir_fd=parent)
+    metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if stat.S_ISLNK(metadata.st_mode) or _is_reparse_point(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{label} is unsafe: {name}")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(name, flags, dir_fd=parent)
+    opened = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or _is_reparse_point(opened)
+        or (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino)
+    ):
+        os.close(descriptor)
+        raise ValueError(f"{label} changed while opening: {name}")
+    return descriptor
+
+
+def _copy_directory_descriptor(source: int, destination: int) -> None:
+    before = os.fstat(source)
+    names = sorted(os.listdir(source))
+    for name in names:
+        metadata = os.stat(name, dir_fd=source, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode) or _is_reparse_point(metadata):
+            raise ValueError(f"Snapshot source contains an unsafe entry: {name}")
+        if stat.S_ISDIR(metadata.st_mode):
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            child = os.open(name, flags, dir_fd=source)
+            try:
+                target = _open_created_directory(
+                    destination,
+                    name,
+                    stat.S_IMODE(metadata.st_mode),
+                    "Snapshot destination directory",
+                )
+                try:
+                    opened = os.fstat(child)
+                    if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+                        raise ValueError(f"Snapshot directory changed while opening: {name}")
+                    _copy_directory_descriptor(child, target)
+                finally:
+                    os.close(target)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0:
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            file_descriptor = os.open(name, flags, dir_fd=source)
+            try:
+                output_descriptor = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                    stat.S_IMODE(metadata.st_mode),
+                    dir_fd=destination,
+                )
+                try:
+                    opened = os.fstat(file_descriptor)
+                    if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+                        raise ValueError(f"Snapshot file changed while opening: {name}")
+                    with (
+                        os.fdopen(file_descriptor, "rb", closefd=False) as input_file,
+                        os.fdopen(output_descriptor, "wb", closefd=False) as output,
+                    ):
+                        remaining = opened.st_size
+                        while remaining:
+                            chunk = input_file.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                raise ValueError(f"Snapshot file was truncated: {name}")
+                            output.write(chunk)
+                            remaining -= len(chunk)
+                        if input_file.read(1) or _stat_identity(opened) != _stat_identity(os.fstat(file_descriptor)):
+                            raise ValueError(f"Snapshot file changed while reading: {name}")
+                        output.flush()
+                        os.fchmod(output_descriptor, stat.S_IMODE(metadata.st_mode))
+                finally:
+                    os.close(output_descriptor)
+            finally:
+                os.close(file_descriptor)
+        else:
+            raise ValueError(f"Snapshot source contains an unsafe or empty entry: {name}")
+    if _stat_identity(before) != _stat_identity(os.fstat(source)) or names != sorted(os.listdir(source)):
+        raise ValueError("Snapshot source directory changed while copying")
+
+
+def _validate_snapshot_source(source: int) -> None:
+    for name in sorted(os.listdir(source)):
+        metadata = os.stat(name, dir_fd=source, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode) or _is_reparse_point(metadata):
+            raise ValueError(f"Snapshot source contains an unsafe entry: {name}")
+        if stat.S_ISDIR(metadata.st_mode):
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            child = os.open(name, flags, dir_fd=source)
+            try:
+                opened = os.fstat(child)
+                if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise ValueError(f"Snapshot directory changed while opening: {name}")
+                _validate_snapshot_source(child)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=source,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                if _stat_identity(metadata) != _stat_identity(opened):
+                    raise ValueError(f"Snapshot file changed while opening: {name}")
+            finally:
+                os.close(descriptor)
+        else:
+            raise ValueError(f"Snapshot source contains an unsafe or empty entry: {name}")
+
+
+def _windows_directory_path(path: Path, label: str, *, create: bool = False) -> Path:
+    absolute = Path(os.path.abspath(path))
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            if not create:
+                raise ValueError(f"{label} is missing or unsafe: {absolute}")
+            try:
+                current.mkdir()
+            except FileExistsError:
+                pass
+            metadata = current.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or _is_reparse_point(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"{label} contains an unsafe directory: {absolute}")
+    return absolute
+
+
+def _windows_snapshot_inventory(
+    root: Path,
+) -> tuple[dict[str, tuple[int, int, int, int, int]], dict[str, tuple[int, int, int, int, int]]]:
+    root = _windows_directory_path(root, "Snapshot tree")
+    directories: dict[str, tuple[int, int, int, int, int]] = {}
+    files: dict[str, tuple[int, int, int, int, int]] = {}
+
+    def scan(directory: Path, relative: Path) -> None:
+        before = directory.lstat()
+        if stat.S_ISLNK(before.st_mode) or _is_reparse_point(before) or not stat.S_ISDIR(before.st_mode):
+            raise ValueError(f"Snapshot tree contains an unsafe directory: {directory}")
+        directories[relative.as_posix()] = _stat_identity(before)
+        names = sorted(os.listdir(directory))
+        for name in names:
+            child = directory / name
+            child_relative = relative / name
+            metadata = child.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or _is_reparse_point(metadata):
+                raise ValueError(f"Snapshot tree contains an unsafe entry: {child_relative.as_posix()}")
+            if stat.S_ISDIR(metadata.st_mode):
+                scan(child, child_relative)
+            elif stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0:
+                files[child_relative.as_posix()] = _stat_identity(metadata)
+            else:
+                raise ValueError(
+                    f"Snapshot tree contains an unsafe or empty entry: {child_relative.as_posix()}",
+                )
+        after = directory.lstat()
+        if _stat_identity(before) != _stat_identity(after) or names != sorted(os.listdir(directory)):
+            raise ValueError(f"Snapshot directory changed while reading: {directory}")
+
+    scan(root, Path("."))
+    return directories, files
+
+
+def _copy_windows_snapshot_file(source: Path, destination: Path, expected: tuple[int, int, int, int, int]) -> str:
+    source_descriptor, opened = _open_regular_file(source, "Snapshot source file")
+    if _stat_identity(opened) != expected:
+        os.close(source_descriptor)
+        raise ValueError(f"Snapshot source file changed before copying: {source}")
+    destination_descriptor: int | None = None
+    try:
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
+        digest = hashlib.sha256()
+        remaining = opened.st_size
+        with (
+            os.fdopen(source_descriptor, "rb", closefd=False) as input_file,
+            os.fdopen(destination_descriptor, "wb", closefd=False) as output,
+        ):
+            while remaining:
+                chunk = input_file.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise ValueError(f"Snapshot source file was truncated: {source}")
+                output.write(chunk)
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if input_file.read(1) or _stat_identity(opened) != _stat_identity(os.fstat(source_descriptor)):
+                raise ValueError(f"Snapshot source file changed while copying: {source}")
+            output.flush()
+            os.fsync(destination_descriptor)
+        return f"sha256:{digest.hexdigest()}"
+    finally:
+        os.close(source_descriptor)
+        if destination_descriptor is not None:
+            os.close(destination_descriptor)
+
+
+def _snapshot_regular_tree_windows(source: Path, destination: Path) -> None:
+    source = _windows_directory_path(source, "Snapshot source")
+    destination = Path(os.path.abspath(destination))
+    parent = _windows_directory_path(destination.parent, "Snapshot destination", create=True)
+    resolved_source = source.resolve(strict=True)
+    resolved_destination = parent.resolve(strict=True) / destination.name
+    for left, right in ((source, destination), (resolved_source, resolved_destination)):
+        if left == right or left in right.parents or right in left.parents:
+            raise ValueError("Snapshot source and destination must not overlap")
+    source_directories, source_files = _windows_snapshot_inventory(source)
+    with tempfile.TemporaryDirectory(prefix=f".{destination.name}-snapshot-", dir=parent) as wrapper_name:
+        staged = Path(wrapper_name) / "tree"
+        staged.mkdir(mode=0o700)
+        for relative in sorted(source_directories, key=lambda value: (value.count("/"), value)):
+            if relative != ".":
+                (staged / relative).mkdir(mode=0o700)
+        copied = {
+            relative: _copy_windows_snapshot_file(source / relative, staged / relative, identity)
+            for relative, identity in sorted(source_files.items())
+        }
+        if _windows_snapshot_inventory(source) != (source_directories, source_files):
+            raise ValueError("Snapshot source tree changed while copying")
+        staged_directories, staged_files = _windows_snapshot_inventory(staged)
+        if set(staged_directories) != set(source_directories) or set(staged_files) != set(source_files):
+            raise ValueError("Snapshot destination inventory does not match the source")
+        for relative, expected_digest in copied.items():
+            if _regular_file_digest(staged / relative)[1] != expected_digest:
+                raise ValueError(f"Snapshot destination file changed before publication: {relative}")
+        try:
+            os.rename(staged, destination)
+        except OSError as error:
+            if destination.exists():
+                raise ValueError(f"Snapshot destination must not exist: {destination}") from error
+            raise
+
+
+def snapshot_regular_tree(source: Path, destination: Path) -> None:
+    if _is_windows():
+        _snapshot_regular_tree_windows(Path(source), Path(destination))
+        return
+    source = Path(os.path.abspath(source))
+    destination = Path(os.path.abspath(destination))
+    resolved_source = source.resolve(strict=True)
+    resolved_destination = destination.parent.resolve(strict=False) / destination.name
+    for left, right in ((source, destination), (resolved_source, resolved_destination)):
+        if left == right or left in right.parents or right in left.parents:
+            raise ValueError("Snapshot source and destination must not overlap")
+    source_descriptor = _open_directory(source, "Snapshot source")
+    parent_descriptor: int | None = None
+    destination_descriptor: int | None = None
+    try:
+        _validate_snapshot_source(source_descriptor)
+        parent_descriptor = _open_directory(destination.parent, "Snapshot destination", create=True)
+        try:
+            destination_descriptor = _open_created_directory(
+                parent_descriptor,
+                destination.name,
+                0o700,
+                "Snapshot destination",
+            )
+        except FileExistsError as error:
+            raise ValueError(f"Snapshot destination must not exist: {destination}") from error
+        _copy_directory_descriptor(source_descriptor, destination_descriptor)
+    finally:
+        os.close(source_descriptor)
+        if destination_descriptor is not None:
+            os.close(destination_descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
 
 
 def _regular_file_digest(path: Path) -> tuple[int, str]:
@@ -295,19 +606,24 @@ def require_sorted_unique_records(records: Any, label: str, *, path_field: str =
     return values
 
 
+def require_regular_directory(root: Path, label: str = "Directory") -> Path:
+    root = Path(root)
+    try:
+        root_stat = root.lstat()
+    except OSError as error:
+        raise ValueError(f"{label} is missing or unsafe: {root}") from error
+    if stat.S_ISLNK(root_stat.st_mode) or _is_reparse_point(root_stat) or not stat.S_ISDIR(root_stat.st_mode):
+        raise ValueError(f"{label} is missing or unsafe: {root}")
+    return root
+
+
 def regular_file_inventory(
     root: Path,
     *,
     kind: str | None = None,
     excluded_paths: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
-    root = Path(root)
-    try:
-        root_stat = root.lstat()
-    except OSError as error:
-        raise ValueError(f"Inventory root is missing or unsafe: {root}") from error
-    if stat.S_ISLNK(root_stat.st_mode) or _is_reparse_point(root_stat) or not stat.S_ISDIR(root_stat.st_mode):
-        raise ValueError(f"Inventory root is missing or unsafe: {root}")
+    root = require_regular_directory(Path(root), "Inventory root")
     excluded = {require_relative_path(path, "excluded inventory path") for path in excluded_paths}
     files: list[Path] = []
     for current, directories, names in os.walk(root, topdown=True, followlinks=False):

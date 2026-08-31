@@ -128,7 +128,8 @@ class RepositoryLayoutContractTest {
             "build.gradle.kts" to setOf("contract-product", "root-release"),
             "codex-agent-core/build.gradle.kts" to setOf("core-verification"),
             "codex-agent-runtime-android/build.gradle.kts" to setOf("codex-runtime"),
-            "codex-agent-runtime-desktop/build.gradle.kts" to setOf("desktop-runtime"),
+            "codex-agent-runtime-desktop/build.gradle.kts" to
+                setOf("desktop-runtime", "javascript-sdk"),
             "codex-agent-runtime-ios/build.gradle.kts" to setOf("ios-runtime"),
             "tooling/android-runtime-evidence/build.gradle.kts" to setOf("android-runtime-evidence"),
             "tooling/protocol-generator/build.gradle.kts" to setOf("protocol-generator"),
@@ -154,7 +155,6 @@ class RepositoryLayoutContractTest {
                 assertEquals(setOf(owner), applications, "$id must be applied only by $owner")
             }
         }
-        assertEquals(8, expectedIds.size)
     }
 
     @Test

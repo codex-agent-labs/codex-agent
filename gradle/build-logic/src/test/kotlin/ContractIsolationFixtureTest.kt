@@ -32,6 +32,7 @@ class ContractIsolationFixtureTest {
         "CrossLanguageCAbiPackageEvidence.kt",
         "CrossLanguageKotlinBindingEvidence.kt",
         "DesktopRuntimeZipModes.kt",
+        "ProductOutputManifestGradleTask.kt",
         "ProductVersions.kt",
         "ReleaseIo.kt",
         "VerifyProtocolSourceTask.kt",

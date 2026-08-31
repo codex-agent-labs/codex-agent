@@ -122,7 +122,7 @@ class CrossLanguageJavaScriptBindingTasksTest {
             assertEquals(TaskOutcome.FAILED, result.task(":core:failingCanonicalTest")?.outcome)
             assertTrue("intentional canonical prerequisite failure" in result.output)
             assertFalse(stale.exists())
-            val wiring = File("../../codex-agent-runtime-desktop/build.gradle.kts").readText()
+            val wiring = File("src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText()
             listOf(
                 "tasks.configureEach",
                 "mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)",

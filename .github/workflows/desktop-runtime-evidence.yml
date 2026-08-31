@@ -216,7 +216,7 @@ jobs:
         with:
           name: codex-agent-arm64-production-transport-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-production
-      - name: Restore only the verified production classifiers
+      - name: Restore the verified production classifiers and binary stage
         if: needs.linux-arm64-reuse.outputs.production_reused == 'true'
         shell: bash
         run: |
@@ -226,11 +226,15 @@ jobs:
           shopt -s nullglob
           archives=(build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/distributions/*-app-server-linux-arm64.zip)
           c_abi_archives=(build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip)
+          binary_stage=build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/product-stage/runtime/linux-arm64/binary
           test "${#archives[@]}" -eq 1
           test "${#c_abi_archives[@]}" -eq 1
-          mkdir -p codex-agent-runtime-desktop/build/distributions
+          test -d "$binary_stage"
+          test -f "$binary_stage/output-manifest.json"
+          mkdir -p codex-agent-runtime-desktop/build/distributions build/linux-arm64-inputs
           cp "${archives[0]}" codex-agent-runtime-desktop/build/distributions/
           cp "${c_abi_archives[0]}" codex-agent-runtime-desktop/build/distributions/
+          cp -R "$binary_stage" build/linux-arm64-inputs/runtime-binary-stage
       - if: inputs.linuxArm64Test
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -281,6 +285,22 @@ jobs:
           mkdir -p build/linux-arm64-inputs
           cp "${archives[0]}" build/linux-arm64-inputs/
           cp "${c_abi_archives[0]}" build/linux-arm64-inputs/
+      - name: Stage the authoritative Linux Arm64 Runtime binary handoff
+        if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
+        run: >-
+          ./gradlew ciProductPhase
+          -PcodexAgent.product=runtime
+          -PcodexAgent.component=linux-arm64
+          -PcodexAgent.phase=binary
+          -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}"
+          -PcodexAgent.candidateTree="${{ inputs.validationTree }}"
+          -PcodexAgent.desktopSupervisorDirectory="$PWD/build/desktop-supervisors"
+          --stacktrace
+      - name: Preserve the authoritative Linux Arm64 Runtime binary stage
+        if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
+        run: >-
+          cp -R codex-agent-runtime-desktop/build/product-stage/runtime/linux-arm64/binary
+          build/linux-arm64-inputs/runtime-binary-stage
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -307,6 +327,14 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
+      - if: inputs.linuxArm64Test
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-ci-portable-${{ inputs.validationTree }}
+          path: build/ci/portable
+      - if: inputs.linuxArm64Test
+        shell: bash
+        run: cp -R build/ci/portable/payload/. .
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-agent-linux-arm64-producer-identities-${{ inputs.validationTree }}
@@ -341,6 +369,7 @@ jobs:
           producer-identities: build/ci/linux-arm64-producer-identities
           production-prepared: "true"
           reuse-disabled: "true"
+          runtime-binary-stage: ${{ github.workspace }}/build/ci/linux-arm64-input/runtime-binary-stage
 
   native-wrapper-sdk-stage:
     if: >-
@@ -366,7 +395,7 @@ jobs:
       - uses: ./.github/actions/setup-kmp
         with:
           cache-read-only: "true"
-      - name: Reassemble and verify the exact five C SDKs
+      - name: Reassemble and verify the exact five Runtime product stages
         shell: bash
         run: |
           set -euo pipefail
@@ -375,17 +404,19 @@ jobs:
             test "${#matches[@]}" -eq 1
             printf '%s\n' "${matches[0]}"
           }
-          classifiers=build/ci/native-wrapper-classifiers
-          proofs=build/ci/native-wrapper-proofs
-          mkdir -p "$classifiers" "$proofs" \
+          stages=build/ci/native-wrapper-runtime-stages
+          mkdir -p "$stages" \
             codex-agent-core/build/reports/cross-language-api \
             codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi
-          mapfile -t archives < <(find build/ci/desktop-lanes -type f -name '*-c-abi-*.zip' -print)
-          mapfile -t package_proofs < <(find build/ci/desktop-lanes -type f -name 'c-abi-package-*.json' -print)
-          test "${#archives[@]}" -eq 5
-          test "${#package_proofs[@]}" -eq 5
-          cp "${archives[@]}" "$classifiers/"
-          cp "${package_proofs[@]}" "$proofs/"
+          for component in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
+            mapfile -t roots < <(find build/ci/desktop-lanes -type d \
+              -path "*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/$component" -print)
+            test "${#roots[@]}" -eq 1
+            test -f "${roots[0]}/package/output-manifest.json"
+            test -f "${roots[0]}/validation/output-manifest.json"
+            mkdir -p "$stages/$component"
+            cp -R "${roots[0]}/package" "${roots[0]}/validation" "$stages/$component/"
+          done
           cp "$(one_file build/ci/contracts canonical-api.json)" \
             codex-agent-core/build/reports/cross-language-api/canonical-api.json
           cp "$(one_file build/ci/contracts canonical-coverage.json)" \
@@ -393,8 +424,7 @@ jobs:
           cp "$(one_file build/ci/desktop-lanes bootstrap-evidence.json)" \
             codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json
           ./gradlew :codex-agent-runtime-desktop:prepareNativeWrapperPackageSources \
-            -PcodexAgent.desktopClassifierDirectory="$PWD/$classifiers" \
-            -PcodexAgent.cAbiPackageEvidenceDirectory="$PWD/$proofs" \
+            -PcodexAgent.nativeWrapperRuntimeStageRoot="$PWD/$stages" \
             -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}" \
             -PcodexAgent.candidateTree="${{ inputs.validationTree }}" \
             --stacktrace
@@ -455,7 +485,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdk="$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/linux-x64/lib/libcodex_agent.so"
+          sdk="$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}/linux-x64/lib/libcodex_agent.so"
           binding="$PWD/codex-agent-runtime-desktop/bindings"
           evidence="build/native-wrapper-evidence/${{ matrix.language }}"
           mkdir -p "$evidence"
@@ -488,7 +518,7 @@ jobs:
               ;;
             cpp)
               cmake -S "$binding/cpp" -B build/native-wrapper-cpp-tests \
-                -DCodexAgent_C_SDK_ROOT="$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/linux-x64" \
+                -DCodexAgent_C_SDK_ROOT="$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}/linux-x64" \
                 -DCodexAgent_NATIVE_CLASSIFIER=linux-x64 -DCMAKE_BUILD_TYPE=Release \
                 -DCODEX_AGENT_CPP_BUILD_TESTS=ON
               cmake --build build/native-wrapper-cpp-tests --config Release --parallel 2
@@ -562,9 +592,9 @@ jobs:
           python ci/native_wrappers.py package \
             --repository "$PWD" \
             --sources "$PWD/codex-agent-runtime-desktop/build/native-wrapper-package-sources" \
-            --sdks "$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks" \
+            --sdks "$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" \
             --output "$PWD/$release/packages"
-          cp -R codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks "$release/sdks"
+          cp -R "codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" "$release/sdks"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error

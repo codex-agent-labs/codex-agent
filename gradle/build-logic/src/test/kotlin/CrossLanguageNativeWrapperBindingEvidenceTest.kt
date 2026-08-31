@@ -366,6 +366,21 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
                     val manifest = targetRoot.resolve("codex-agent-c-abi-manifest.json")
                     val evidence = targetRoot.resolve("codex-agent-c-abi-evidence.json")
                     library.writeText("native-$classifier")
+                    targetRoot.resolve("include/codex_agent.h").apply {
+                        parentFile.mkdirs()
+                        writeText("header-$classifier")
+                    }
+                    targetRoot.resolve("LICENSE.txt").writeText("license-$classifier")
+                    targetRoot.resolve("THIRD_PARTY_NOTICES.md").writeText("notice-$classifier")
+                    if (spec.format == "elf") {
+                        targetRoot.resolve("lib/${spec.loaderIdentity}").writeText("native-$classifier")
+                    }
+                    spec.importLibraryPaths.forEach { path ->
+                        targetRoot.resolve(path).apply {
+                            parentFile.mkdirs()
+                            writeText("import-$classifier-$path")
+                        }
+                    }
                     manifest.writeText("manifest-$classifier")
                     evidence.writeText("evidence-$classifier")
                     add(buildJsonObject {

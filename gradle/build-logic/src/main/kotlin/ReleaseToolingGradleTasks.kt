@@ -234,48 +234,6 @@ fun Project.registerCentralPortalTasks() {
     }
 }
 
-@DisableCachingByDefault(because = "Platform smoke evidence must execute for every immutable candidate")
-abstract class RecordDesktopRuntimeEvidenceTask : DefaultTask() {
-    @get:Input abstract val target: Property<String>
-    @get:Input abstract val classifier: Property<String>
-    @get:Input abstract val binarySha256: Property<String>
-    @get:Input abstract val candidateCommit: Property<String>
-    @get:Input abstract val runnerOs: Property<String>
-    @get:Input abstract val runnerArch: Property<String>
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val classifierArchive: RegularFileProperty
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val distributionManifest: RegularFileProperty
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val testReport: RegularFileProperty
-    @get:OutputFile abstract val evidenceFile: RegularFileProperty
-
-    init { outputs.upToDateWhen { false } }
-
-    @TaskAction
-    fun record() {
-        val targetName = target.get()
-        val commit = candidateCommit.get()
-        check(commit.matches(Regex("[0-9a-f]{40}"))) { "Desktop evidence commit is not immutable" }
-        verifyDesktopRuntimeTestReport(testReport.get().asFile, targetName)
-        val expected = desktopRuntimeEvidenceTargets.getValue(targetName)
-        check(classifier.get() == expected.classifier) { "Desktop evidence classifier mismatch" }
-        check(runnerOs.get() == expected.runnerOs && runnerArch.get() == expected.runnerArch) {
-            "Desktop evidence runner does not match $targetName"
-        }
-        val proof = inspectDesktopClassifier(
-            targetName,
-            readDesktopCodexManifest(distributionManifest.get().asFile),
-            classifierArchive.get().asFile,
-        )
-        check(binarySha256.get() == proof.binarySha256) { "Desktop evidence App Server hash mismatch" }
-        evidenceFile.get().asFile.atomicWriteJson(buildDesktopRuntimeEvidence(DesktopRuntimeEvidenceValues(
-            commit,
-            targetName,
-            proof.binarySha256,
-            proof.supervisorSha256,
-            proof.archiveSha256,
-        )))
-    }
-}
-
 @CacheableTask
 abstract class VerifyCandidatePayloadTask : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val manifestFile: RegularFileProperty

@@ -8,4 +8,10 @@ gradle/build-logic/build.gradle.kts
 gradle/build-logic/settings.gradle.kts
 gradle/build-logic/src/main/kotlin/CodexAgentBuild.kt
 gradle/build-logic/src/main/kotlin/ReleaseIo.kt
+gradle/build-logic/src/main/kotlin/ProductVersions.kt
+gradle/build-logic/src/main/kotlin/ProductOutputManifestGradleTask.kt
+gradle/build-logic/src/main/kotlin/CrossLanguageNativeWrapperGradleTasks.kt
+gradle/build-logic/src/main/kotlin/DesktopRuntimeEvidenceGradleTasks.kt
+gradle/build-logic/src/main/kotlin/codexagent.contract-product.gradle.kts
+ci/products/**
 **/gradle.lockfile

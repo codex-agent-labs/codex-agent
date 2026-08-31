@@ -18,6 +18,9 @@ internal fun jvmRuntimeEvidenceTestTask(target: String) = if (target == "linuxAr
     JVM_RUNTIME_TEST_TASK
 }
 
+internal const val IMPORTED_JVM_RUNTIME_EVIDENCE_TASK =
+    ":codex-agent-runtime-desktop:executeImportedJvmRuntimeEvidence"
+
 fun jvmRuntimeEvidenceFileName(target: String) = "jvm-runtime-$target.json"
 
 internal data class JvmRuntimeEvidenceValues(
@@ -25,6 +28,7 @@ internal data class JvmRuntimeEvidenceValues(
     val target: String,
     val classifier: DesktopClassifierProof,
     val compiledJvmTestRuntime: File,
+    val testTask: String = jvmRuntimeEvidenceTestTask(target),
 )
 
 internal fun buildJvmRuntimeEvidence(values: JvmRuntimeEvidenceValues): JsonObject {
@@ -41,7 +45,7 @@ internal fun buildJvmRuntimeEvidence(values: JvmRuntimeEvidenceValues): JsonObje
         put("classifier", JsonPrimitive(expected.classifier))
         put("runnerOs", JsonPrimitive(expected.runnerOs))
         put("runnerArch", JsonPrimitive(expected.runnerArch))
-        put("testTask", JsonPrimitive(jvmRuntimeEvidenceTestTask(values.target)))
+        put("testTask", JsonPrimitive(values.testTask))
         put("testClass", JsonPrimitive(DESKTOP_RUNTIME_TEST_CLASS))
         put("testMethods", buildJsonArray { desktopRuntimeTestMethods.forEach { add(JsonPrimitive(it)) } })
         put("tests", JsonPrimitive(desktopRuntimeTestMethods.size))
@@ -121,7 +125,10 @@ internal fun validateJvmRuntimeEvidence(
             check(report.releaseString("classifier") == expected.classifier) { "classifier mismatch" }
             check(report.releaseString("runnerOs") == expected.runnerOs) { "runner OS mismatch" }
             check(report.releaseString("runnerArch") == expected.runnerArch) { "runner architecture mismatch" }
-            check(report.releaseString("testTask") == jvmRuntimeEvidenceTestTask(target)) { "test task mismatch" }
+            check(report.releaseString("testTask") in setOf(
+                jvmRuntimeEvidenceTestTask(target),
+                IMPORTED_JVM_RUNTIME_EVIDENCE_TASK,
+            )) { "test task mismatch" }
             check(report.releaseString("testClass") == DESKTOP_RUNTIME_TEST_CLASS) { "test class mismatch" }
             check(report.releaseArray("testMethods").map { it.jsonPrimitive.content }.toSet() ==
                 desktopRuntimeTestMethods) { "test methods mismatch" }

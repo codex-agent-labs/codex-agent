@@ -35,6 +35,9 @@ inputs:
   production-prepared:
     description: Trust already transported production bytes in the current workspace.
     default: "false"
+  runtime-binary-stage:
+    description: Optional exact imported Runtime binary stage for compiler-free Desktop packaging.
+    default: ""
   record-producer-role:
     description: Optional producer role to capture into producer-identities before reuse.
     default: ""
@@ -364,10 +367,93 @@ runs:
         CI_VALIDATION_TREE: ${{ inputs.validation-tree }}
       shell: bash
       run: ci/run-lane.sh "${{ inputs.lane }}"
+    - id: portable-runtime-products
+      name: Stage the exact portable Runtime binary and package products
+      if: >-
+        inputs.lane == 'portable' && inputs.reuse-only != 'true' &&
+        inputs.production-prepared != 'true' && steps.reuse.outputs.reused != 'true' &&
+        steps.production.outputs.reused != 'true' && steps.production-execution.outcome == 'success'
+      continue-on-error: true
+      env:
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        for component in jvm node-js node-wasm; do
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=runtime \
+            -PcodexAgent.component="$component" \
+            -PcodexAgent.phase=binary \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+          binary=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$component/binary
+          test -f "$binary/output-manifest.json"
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=runtime \
+            -PcodexAgent.component="$component" \
+            -PcodexAgent.phase=package \
+            -PcodexAgent.runtimeBinaryStage="$binary" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+        done
+    - name: Stage the exact Desktop Runtime binary product
+      if: >-
+        startsWith(inputs.lane, 'desktop-') && inputs.reuse-only != 'true' &&
+        inputs.production-prepared != 'true' && steps.reuse.outputs.reused != 'true' &&
+        steps.production.outputs.reused != 'true' && steps.production-execution.outcome == 'success'
+      env:
+        LANE: ${{ inputs.lane }}
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        component=${LANE#desktop-}
+        ./gradlew ciProductPhase \
+          -PcodexAgent.product=runtime \
+          -PcodexAgent.component="$component" \
+          -PcodexAgent.phase=binary \
+          -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+          -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+          --stacktrace
+    - name: Stage the exact Desktop Runtime package handoff
+      if: >-
+        startsWith(inputs.lane, 'desktop-') && inputs.reuse-only != 'true' &&
+        steps.reuse.outputs.reused != 'true' &&
+        (inputs.production-prepared == 'true' ||
+        (steps.production.outputs.reused != 'true' && steps.production-execution.outcome == 'success')) &&
+        (inputs.force-build == 'true' || steps.selection.outputs.build == 'true' ||
+        steps.selection.outputs.test == 'true')
+      env:
+        LANE: ${{ inputs.lane }}
+        RUNTIME_BINARY_STAGE: ${{ inputs.runtime-binary-stage }}
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        component=${LANE#desktop-}
+        binary=${RUNTIME_BINARY_STAGE:-$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$component/binary}
+        canonical=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$component/binary
+        test -f "$binary/output-manifest.json"
+        if [[ "$binary" != "$canonical" ]]; then
+          PYTHONDONTWRITEBYTECODE=1 python3 -m ci.products receipt snapshot-tree \
+            --source "$binary" --destination "$canonical"
+          binary=$canonical
+        fi
+        ./gradlew ciProductPhase \
+          -PcodexAgent.product=runtime \
+          -PcodexAgent.component="$component" \
+          -PcodexAgent.phase=package \
+          -PcodexAgent.runtimeBinaryStage="$binary" \
+          -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+          -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+          --stacktrace
     - id: execution
       if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         steps.production-execution.outcome != 'failure' &&
+        steps.portable-runtime-products.outcome != 'failure' &&
         (inputs.force-build == 'true' || steps.selection.outputs.test == 'true' ||
         steps.selection.outputs.metadata == 'true' ||
         (steps.selection.outputs.build != 'true' && steps.production.outputs.reused != 'true'))
@@ -383,11 +469,59 @@ runs:
         CI_VALIDATION_TREE: ${{ inputs.validation-tree }}
       shell: bash
       run: ci/run-lane.sh "${{ inputs.lane }}"
+    - id: runtime-validation-handoff
+      name: Stage the exact Desktop Runtime validation handoff
+      if: >-
+        startsWith(inputs.lane, 'desktop-') && inputs.reuse-only != 'true' &&
+        steps.reuse.outputs.reused != 'true' &&
+        steps.production-execution.outcome != 'failure' && steps.execution.outcome == 'success' &&
+        (inputs.force-build == 'true' || steps.selection.outputs.test == 'true')
+      continue-on-error: true
+      env:
+        LANE: ${{ inputs.lane }}
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        component=${LANE#desktop-}
+        package=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$component/package
+        test -f "$package/output-manifest.json"
+        ./gradlew ciProductPhase \
+          -PcodexAgent.product=runtime \
+          -PcodexAgent.component="$component" \
+          -PcodexAgent.phase=validation \
+          -PcodexAgent.runtimePackageStage="$package" \
+          -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+          -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+          --stacktrace
+        case "$component" in
+          macos-arm64) target=macosArm64 ;;
+          macos-x64) target=macosX64 ;;
+          linux-arm64) target=linuxArm64 ;;
+          linux-x64) target=linuxX64 ;;
+          windows-x64) target=mingwX64 ;;
+          *) exit 2 ;;
+        esac
+        for adapter in jvm node-js node-wasm; do
+          adapter_package=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$adapter/package
+          test -f "$adapter_package/output-manifest.json"
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=runtime \
+            -PcodexAgent.component="$adapter" \
+            -PcodexAgent.phase=validation \
+            -PcodexAgent.runtimePackageStage="$adapter_package" \
+            -PcodexAgent.runtimeNativePackageStage="$package" \
+            -PcodexAgent.desktopEvidenceTarget="$target" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+        done
     - name: Stage reusable production after a later validation failure
       if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         (inputs.production-prepared == 'true' || steps.production-execution.outcome == 'success') &&
-        steps.execution.outcome == 'failure'
+        (steps.execution.outcome == 'failure' ||
+        steps.runtime-validation-handoff.outcome == 'failure')
       env:
         LANE: ${{ inputs.lane }}
         TREE: ${{ inputs.validation-tree }}
@@ -405,7 +539,8 @@ runs:
       if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         (inputs.production-prepared == 'true' || steps.production-execution.outcome == 'success') &&
-        steps.execution.outcome == 'failure'
+        (steps.execution.outcome == 'failure' ||
+        steps.runtime-validation-handoff.outcome == 'failure')
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         if-no-files-found: error
@@ -432,7 +567,10 @@ runs:
         printf '%s\n' "Apply: \`perl -0pi -e 's/(?<=checksum: \")[0-9a-f]{64}(?=\")/$checksum/' Package.swift\`" >> "$GITHUB_STEP_SUMMARY"
     - if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
-        steps.production-execution.outcome != 'failure' && steps.execution.outcome != 'failure'
+        steps.production-execution.outcome != 'failure' &&
+        steps.portable-runtime-products.outcome != 'failure' &&
+        steps.execution.outcome != 'failure' &&
+        steps.runtime-validation-handoff.outcome != 'failure'
       env:
         LANE: ${{ inputs.lane }}
         PREPARED_PRODUCTION: ${{ inputs.production-prepared }}
@@ -467,7 +605,10 @@ runs:
       if: >-
         steps.reuse.outputs.reused == 'true' ||
         (inputs.reuse-only != 'true' &&
-        steps.production-execution.outcome != 'failure' && steps.execution.outcome != 'failure')
+        steps.production-execution.outcome != 'failure' &&
+        steps.portable-runtime-products.outcome != 'failure' &&
+        steps.execution.outcome != 'failure' &&
+        steps.runtime-validation-handoff.outcome != 'failure')
       env:
         REUSED: ${{ steps.reuse.outputs.reused }}
         REUSED_NAME: ${{ steps.reuse.outputs.artifact_name }}
@@ -483,7 +624,10 @@ runs:
     - if: >-
         steps.reuse.outputs.reused == 'true' ||
         (inputs.reuse-only != 'true' &&
-        steps.production-execution.outcome != 'failure' && steps.execution.outcome != 'failure')
+        steps.production-execution.outcome != 'failure' &&
+        steps.portable-runtime-products.outcome != 'failure' &&
+        steps.execution.outcome != 'failure' &&
+        steps.runtime-validation-handoff.outcome != 'failure')
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         if-no-files-found: error
@@ -559,6 +703,9 @@ runs:
     - name: Fail after preserving reusable production and diagnostics
       if: >-
         inputs.reuse-only != 'true' && always() && steps.reuse.outputs.reused != 'true' &&
-        (steps.production-execution.outcome == 'failure' || steps.execution.outcome == 'failure')
+        (steps.production-execution.outcome == 'failure' ||
+        steps.portable-runtime-products.outcome == 'failure' ||
+        steps.execution.outcome == 'failure' ||
+        steps.runtime-validation-handoff.outcome == 'failure')
       shell: bash
       run: exit 1

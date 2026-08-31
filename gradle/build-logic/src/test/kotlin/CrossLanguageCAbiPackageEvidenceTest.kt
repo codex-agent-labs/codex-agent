@@ -58,12 +58,13 @@ class CrossLanguageCAbiPackageEvidenceTest {
             "artifact(cAbiArchiveFiles.getValue(target))",
             "tasks.register<StageCrossLanguageNativeWrapperSdksTask>",
             "tasks.register<MaterializeCrossLanguageNativeWrapperPackageAssetsTask>",
-            "codexAgent.cAbiPackageEvidenceDirectory",
+            "codexAgent.nativeWrapperRuntimeStageRoot",
+            "c-abi-reference",
             "native-wrapper-c-abi-sdks",
             "native-wrapper-package-assets",
             "prepareNativeWrapperPackageSources",
             "native-wrapper-package-sources/",
-            "\"dart\" to listOf(\"build/**\"",
+            "\"dart\" to (\"Dart\" to listOf(\"build/**\"",
         ).forEach { contract -> assertTrue(contract in wiring, "Missing desktop C ABI wiring: $contract") }
         assertEquals(1, Regex("artifact\\(cAbiArchiveFiles\\.getValue\\(target\\)\\)").findAll(wiring).count())
         assertTrue(
@@ -78,6 +79,20 @@ class CrossLanguageCAbiPackageEvidenceTest {
         assertFalse("libraryVersion.set(project.version" in wiring)
         assertFalse("crossLanguageCAbiArchiveFileName(project.version" in wiring)
         assertFalse("codex-agent-runtime-desktop-${'$'}{project.version" in wiring)
+    }
+
+    @Test
+    fun `native wrapper Gradle task types are SDK owned`() {
+        val runtimeSource = File("src/main/kotlin/CrossLanguageCAbiPackageEvidence.kt").readText()
+        val sdkSource = File("src/main/kotlin/CrossLanguageNativeWrapperGradleTasks.kt").readText()
+        listOf(
+            "StageCrossLanguageNativeWrapperSdksTask",
+            "MaterializeCrossLanguageNativeWrapperPackageAssetsTask",
+        ).forEach { taskType ->
+            val declaration = "abstract class $taskType"
+            assertFalse(declaration in runtimeSource, "Runtime C ABI source still owns $taskType")
+            assertTrue(declaration in sdkSource, "SDK Gradle source does not own $taskType")
+        }
     }
 
     @Test
@@ -278,13 +293,15 @@ class CrossLanguageCAbiPackageEvidenceTest {
             "b".repeat(40),
             archives,
             evidence,
-            fixture.header,
-            fixture.license,
-            fixture.notice,
             crossLanguageCAbiTargetSpecs.mapValues { (_, spec) ->
-                if (spec.format == "elf") fixture.linuxPolicy else fixture.policy
+                CrossLanguageNativeWrapperSdkReferenceInput(
+                    reviewedHeader = fixture.header,
+                    license = fixture.license,
+                    notice = fixture.notice,
+                    exportPolicy = if (spec.format == "elf") fixture.linuxPolicy else fixture.policy,
+                    consumerSources = fixture.consumers.values.toList(),
+                )
             },
-            fixture.consumers.values.toList(),
         )
 
         stageCrossLanguageNativeWrapperSdks(input, output)
@@ -341,6 +358,17 @@ class CrossLanguageCAbiPackageEvidenceTest {
             packageAssets.resolve("codex-agent-native-wrapper-sdks.json").readText(),
         )
 
+        output.resolve("macos-arm64/unexpected.txt").writeText("unexpected\n")
+        assertFailsWith<IllegalStateException> {
+            materializeCrossLanguageNativeWrapperPackageAssets(
+                output,
+                fixture.root.resolve("unexpected-assets"),
+            )
+        }
+        assertFailsWith<IllegalStateException> { stageCrossLanguageNativeWrapperSdks(input, output) }
+        output.deleteRecursively()
+        stageCrossLanguageNativeWrapperSdks(input, output)
+
         assertFailsWith<IllegalStateException> {
             stageCrossLanguageNativeWrapperSdks(
                 input.copy(archives = input.archives - "linuxArm64"),
@@ -359,10 +387,24 @@ class CrossLanguageCAbiPackageEvidenceTest {
                 fixture.root.resolve("stale-proof"),
             )
         }
+        val selfAssertedProducer = fixture.root.resolve("self-asserted-producer.json").apply {
+            atomicWriteJson(evidence.getValue("macosArm64").readReleaseObject().with(
+                "producerCommit",
+                JsonPrimitive("c".repeat(40)),
+            ))
+        }
+        assertFailsWith<IllegalStateException> {
+            stageCrossLanguageNativeWrapperSdks(
+                input.copy(evidence = input.evidence + ("macosArm64" to selfAssertedProducer)),
+                fixture.root.resolve("self-asserted-producer"),
+            )
+        }
         output.resolve("macos-arm64/lib/libcodex_agent.dylib").appendText("tampered")
         assertFailsWith<IllegalStateException> {
             materializeCrossLanguageNativeWrapperPackageAssets(output, fixture.root.resolve("tampered-assets"))
         }
+        assertFailsWith<IllegalStateException> { stageCrossLanguageNativeWrapperSdks(input, output) }
+        output.deleteRecursively()
         stageCrossLanguageNativeWrapperSdks(input, output)
         output.resolve("macos-arm64/codex-agent-c-abi-manifest.json").appendText("tampered")
         assertFailsWith<IllegalStateException> {

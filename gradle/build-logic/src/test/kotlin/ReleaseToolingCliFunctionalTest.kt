@@ -37,6 +37,7 @@ class ReleaseToolingCliFunctionalTest {
                 assertTrue("ProductVersions.class" in entries)
                 assertFalse("ProductVersionsKt.class" in entries)
                 assertFalse("ReleaseToolingGradleTasksKt.class" in entries)
+                assertFalse("CrossLanguageNativeWrapperGradleTasksKt.class" in entries)
                 listOf(
                     "GenerateCrossLanguageCAbiScenarioProofTask",
                     "PackageCrossLanguageCAbiSdkTask",
