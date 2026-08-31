@@ -304,8 +304,6 @@ def evaluate_remote_build_authorization(
             raise ValueError("Malformed pull-request draft state")
         if github_ref != f"refs/pull/{number}/merge":
             raise ValueError("Pull-request ref does not match its number")
-        if require_oid(request.get("merge_commit_sha"), "pull-request merge commit") != validation_commit:
-            raise ValueError("Pull-request merge commit does not match the validation commit")
 
         base = require_object(request.get("base"), "pull-request base")
         head = require_object(request.get("head"), "pull-request head")

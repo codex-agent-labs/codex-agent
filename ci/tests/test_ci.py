@@ -148,11 +148,11 @@ class RunLaneContractTest(unittest.TestCase):
             "contains(github.event.pull_request.labels.*.name, 'ci:remote-final')",
             "github.event.pull_request.head.repo.full_name == github.repository",
             "github.event.pull_request.head.repo.fork == false",
-            "github.sha == github.event.pull_request.merge_commit_sha",
             "needs.dispatch-authorization.outputs.approved == 'true'",
             "github.sha == inputs.validationCommit",
         ):
             self.assertIn(condition, event_authorization)
+        self.assertNotIn("merge_commit_sha", event_authorization)
 
         event_guard = "needs.plan.outputs.event_authorized == 'true'"
         planner_guard = "needs.plan.outputs.remote_build_authorized == 'true'"
@@ -1424,6 +1424,7 @@ class ImpactPlanTest(GitFixture):
         validation = self.git("rev-parse", "HEAD")
         payload = self.pull_request_event(base=self.base, target=validation)
         payload["pull_request"]["head"]["sha"] = head
+        payload["pull_request"]["merge_commit_sha"] = head
         arguments = {
             "root": self.root,
             "base": self.base,
@@ -1452,6 +1453,26 @@ class ImpactPlanTest(GitFixture):
             plan(
                 **{**arguments, "event_payload": wrong_head},
                 output=self.root / "build/ci/wrong-pr-head.json",
+            )
+
+        wrong_base = json.loads(json.dumps(payload))
+        wrong_base["pull_request"]["base"]["sha"] = head
+        with self.assertRaisesRegex(ValueError, "base SHA"):
+            plan(
+                **{**arguments, "event_payload": wrong_base},
+                output=self.root / "build/ci/wrong-pr-base.json",
+            )
+
+        with self.assertRaisesRegex(ValueError, "Pull-request ref"):
+            plan(
+                **{**arguments, "github_ref": "refs/pull/8/merge"},
+                output=self.root / "build/ci/wrong-pr-ref.json",
+            )
+
+        with self.assertRaisesRegex(ValueError, "GitHub SHA"):
+            plan(
+                **{**arguments, "github_sha": head},
+                output=self.root / "build/ci/wrong-pr-runner-sha.json",
             )
 
     def test_merge_group_requires_the_exact_checks_requested_event(self) -> None:
