@@ -72,7 +72,7 @@ val packageNodeRuntimeEvidenceRunner = tasks.register<Zip>(
 }
 
 val npmEntryModule = "codex-agent-codex-agent-runtime-desktop"
-val npmVersion = version.toString()
+val npmVersion = rootProject.extra["codexAgent.sdkVersion"].toString()
 val npmSourceDirectory = layout.projectDirectory.dir("npm/package")
 val npmConsumerSourceDirectory = layout.projectDirectory.dir("npm/consumer")
 val npmCompiledDirectory = layout.buildDirectory.dir("compileSync/js/main/productionExecutable/kotlin")

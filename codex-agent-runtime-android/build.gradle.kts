@@ -37,6 +37,7 @@ extensions.configure<LibraryExtension> {
             useLegacyPackaging = true
         }
     }
+    sourceSets.getByName("main").assets.srcDir(rootProject.layout.projectDirectory.dir("legal/openai-codex"))
 }
 
 kotlin {

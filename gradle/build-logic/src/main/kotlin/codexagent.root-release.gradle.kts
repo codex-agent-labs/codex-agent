@@ -40,10 +40,8 @@ subprojects {
         }
     }
 }
-allprojects {
-    group = CodexAgentBuild.MAVEN_GROUP
-    version = "0.2.0"
-}
+allprojects { group = CodexAgentBuild.MAVEN_GROUP }
+applyProductVersions(rootProject, readProductVersions(rootProject))
 rootProject.extensions.extraProperties["codexAgent.repositoryUrl"] =
     "https://github.com/${CodexAgentBuild.REPOSITORY}"
 registerRepositoryVerificationTasks()
@@ -66,9 +64,9 @@ val privacyRequiredReasonReviewOverride =
 val desktopDistributionManifestFile =
     layout.projectDirectory.file("codex-agent-runtime-desktop/codex-app-server-distributions.json")
 val desktopBundledLicenseFile =
-    layout.projectDirectory.file("codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt")
+    layout.projectDirectory.file("legal/openai-codex/openai-codex-LICENSE.txt")
 val desktopBundledNoticeFile =
-    layout.projectDirectory.file("codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt")
+    layout.projectDirectory.file("legal/openai-codex/openai-codex-NOTICE.txt")
 val promotedArtifactsInput = layout.dir(
     providers.gradleProperty("codexAgent.promotedArtifactsDirectory").map(::file),
 )

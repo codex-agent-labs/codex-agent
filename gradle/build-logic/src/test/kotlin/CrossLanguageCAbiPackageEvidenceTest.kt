@@ -32,7 +32,9 @@ class CrossLanguageCAbiPackageEvidenceTest {
             "codexAgent.candidateCommit",
             "codexAgent.candidateTree",
             "codexAgent.desktopClassifierDirectory",
-            "crossLanguageCAbiArchiveFileName(project.version.toString(), target)",
+            "val desktopRuntimeCompatibilityVersion = providers.provider {",
+            "runtimeCompatibilityVersion(project.version.toString())",
+            "crossLanguageCAbiArchiveFileName(version, target)",
             "crossLanguageCAbiPackageEvidenceFileName(distribution.target)",
             "tasks.register<GenerateCrossLanguageCAbiScenarioProofTask>",
             "native/c-api/include/codex_agent.h",
@@ -73,6 +75,9 @@ class CrossLanguageCAbiPackageEvidenceTest {
         assertFalse("../../../LICENSE" in cppCmake)
         assertFalse("tasks.named<KotlinNativeTest>(testTaskName)" in wiring)
         assertFalse("runtime-python" in wiring)
+        assertFalse("libraryVersion.set(project.version" in wiring)
+        assertFalse("crossLanguageCAbiArchiveFileName(project.version" in wiring)
+        assertFalse("codex-agent-runtime-desktop-${'$'}{project.version" in wiring)
     }
 
     @Test

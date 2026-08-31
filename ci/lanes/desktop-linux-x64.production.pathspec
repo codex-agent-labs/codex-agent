@@ -12,8 +12,9 @@ codex-agent-core/build.gradle.kts
 codex-agent-core/src/commonMain/**
 codex-agent-core/src/nativeMain/**
 codex-agent-runtime-desktop/src/desktopMain/**
-codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt
-codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt
+legal/openai-codex/openai-codex-LICENSE.txt
+legal/openai-codex/openai-codex-NOTICE.txt
+gradle/release/versions/runtime.txt
 gradle/build-logic/src/main/kotlin/*Desktop*.kt
 gradle/build-logic/src/main/kotlin/CrossLanguageCAbiPackageEvidence.kt
 gradle/build-logic/src/main/kotlin/RuntimeBundleEvidence.kt

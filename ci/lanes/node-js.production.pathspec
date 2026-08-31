@@ -1,5 +1,7 @@
 codex-agent-runtime-desktop/build.gradle.kts
 codex-agent-runtime-desktop/npm/**
+gradle/release/versions/runtime.txt
+gradle/release/versions/sdk.txt
 codex-agent-runtime-desktop/src/webMain/**
 codex-agent-runtime-desktop/src/jsMain/**
 codex-agent-core/build.gradle.kts

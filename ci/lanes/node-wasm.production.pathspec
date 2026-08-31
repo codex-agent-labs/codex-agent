@@ -1,4 +1,5 @@
 codex-agent-runtime-desktop/build.gradle.kts
+gradle/release/versions/runtime.txt
 codex-agent-runtime-desktop/src/webMain/**
 codex-agent-runtime-desktop/src/wasmJsMain/**
 codex-agent-core/build.gradle.kts

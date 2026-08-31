@@ -540,24 +540,42 @@ class GitFixture(unittest.TestCase):
         for lane in LANES:
             self.write(f"configured/{lane}.txt", "configured\n")
             platform = "desktop-linux-x64-only/**\n" if lane == "desktop-linux-x64" else ""
+            runtime_version = (
+                "gradle/release/versions/runtime.txt\n"
+                if lane.startswith("desktop-") else ""
+            )
             self.write(
                 f"ci/lanes/{lane}.production.pathspec",
-                f"configured/{lane}.txt\n{platform}",
+                f"configured/{lane}.txt\n{platform}{runtime_version}",
             )
         inventories = {
             "shared.production": "common/**\n.gitattributes\n",
-            "android.production": "android/**\nconfigured/android.txt\n",
+            "android.production": (
+                "android/**\nconfigured/android.txt\nlegal/openai-codex/**\n"
+                "gradle/release/versions/contract.txt\n"
+                "gradle/release/versions/sdk.txt\n"
+            ),
             "android.test": "android-tests/**\n",
             "android.metadata": "android-metadata/**\n",
-            "node-js.production": "js/**\nconfigured/node-js.txt\n",
-            "node-wasm.production": "wasm/**\nconfigured/node-wasm.txt\n",
+            "node-js.production": (
+                "js/**\nconfigured/node-js.txt\n"
+                "gradle/release/versions/runtime.txt\n"
+                "gradle/release/versions/sdk.txt\n"
+            ),
+            "node-wasm.production": (
+                "wasm/**\nconfigured/node-wasm.txt\n"
+                "gradle/release/versions/runtime.txt\n"
+            ),
             "portable.production": (
                 "desktop-runtime/**\njs/**\nwasm/**\n"
                 "codex-agent-core/src/jvmMain/**\nconfigured/portable.txt\n"
+                "gradle/release/versions/runtime.txt\n"
             ),
             "contracts.production": "configured/contracts.txt\n",
             "contracts.test": "binding-contract-tests/**\n",
-            "contracts.metadata": "Package.swift\n.github/workflows/promote.yml\n",
+            "contracts.metadata": (
+                "Package.swift\n.github/workflows/promote.yml\ngradle/release/**\n"
+            ),
             "node-js.test": "binding-node-tests/**\n",
             "consumer-common.production": (
                 "codex-agent-core/src/jvmMain/**\nconfigured/consumer-common.txt\n"
@@ -593,6 +611,8 @@ class GitFixture(unittest.TestCase):
             "ios-package.production": (
                 "configured/ios-package.txt\n"
                 "codex-agent-runtime-ios/apple/Sources/**\n"
+                "gradle/release/versions/contract.txt\n"
+                "gradle/release/versions/sdk.txt\n"
             ),
         }
         for name, contents in inventories.items():
@@ -894,6 +914,47 @@ class ImpactPlanTest(GitFixture):
         self.assertTrue(result["lanes"]["consumer-android"]["build"])
         for lane in ("node-js", "node-wasm", "desktop-macos-arm64", "ios-framework-device"):
             self.assertFalse(result["lanes"][lane]["build"])
+
+    def test_neutral_legal_change_retains_android_runtime_ownership(self) -> None:
+        result, _, _ = self.make_plan(
+            "legal/openai-codex/openai-codex-LICENSE.txt",
+            "license\n",
+        )
+        self.assertEqual([], result["unknownPaths"])
+        self.assertTrue(result["lanes"]["android"]["build"])
+        self.assertTrue(result["lanes"]["consumer-android"]["build"])
+
+    def test_contract_and_sdk_versions_select_android_and_ios_package_owners(self) -> None:
+        base = self.base
+        for product in ("contract", "sdk"):
+            with self.subTest(product=product):
+                result, _, target = self.make_plan(
+                    f"gradle/release/versions/{product}.txt",
+                    "0.2.1\n",
+                    base=base,
+                )
+                base = target
+                self.assertEqual([], result["unknownPaths"])
+                self.assertTrue(result["lanes"]["android"]["build"])
+                self.assertTrue(result["lanes"]["consumer-android"]["build"])
+                self.assertTrue(result["lanes"]["ios-package"]["build"])
+                if product == "sdk":
+                    self.assertTrue(result["lanes"]["node-js"]["build"])
+                    self.assertTrue(result["lanes"]["consumer-node-js"]["build"])
+
+    def test_runtime_version_selects_every_current_runtime_owner(self) -> None:
+        result, _, _ = self.make_plan(
+            "gradle/release/versions/runtime.txt",
+            "0.3.0\n",
+        )
+        self.assertEqual([], result["unknownPaths"])
+        expected = {
+            "portable", "node-js", "node-wasm",
+            "desktop-macos-arm64", "desktop-macos-x64",
+            "desktop-linux-arm64", "desktop-linux-x64", "desktop-windows-x64",
+            "consumer-desktop", "consumer-node-js", "consumer-node-wasm",
+        }
+        self.assertTrue(all(result["lanes"][lane]["build"] for lane in expected))
 
     def test_queue_disabled_bootstrap_full_plan_requires_android_evidence(self) -> None:
         result, _, _ = self.make_plan(
@@ -1652,6 +1713,64 @@ class ImpactPlanTest(GitFixture):
 
 
 class RealImpactPlanTest(unittest.TestCase):
+    def test_version_authorities_have_runtime_and_npm_owners(self) -> None:
+        root = CI_ROOT.parent
+
+        def owners(path: str) -> set[str]:
+            return {
+                lane
+                for lane in LANES
+                if any(
+                    fnmatch.fnmatchcase(path, spec)
+                    for spec in effective_pathspecs(root, lane, "production")
+                )
+            }
+
+        self.assertTrue({"node-js", "consumer-node-js"}.issubset(
+            owners("gradle/release/versions/sdk.txt"),
+        ))
+        self.assertTrue({
+            "portable", "node-js", "node-wasm",
+            "desktop-macos-arm64", "desktop-macos-x64",
+            "desktop-linux-arm64", "desktop-linux-x64", "desktop-windows-x64",
+            "consumer-desktop", "consumer-node-js", "consumer-node-wasm",
+        }.issubset(owners("gradle/release/versions/runtime.txt")))
+
+    def test_product_version_authorities_have_current_platform_owners(self) -> None:
+        root = CI_ROOT.parent
+        for product in ("contract", "sdk"):
+            path = f"gradle/release/versions/{product}.txt"
+            with self.subTest(product=product):
+                owners = {
+                    lane
+                    for lane in LANES
+                    if any(
+                        fnmatch.fnmatchcase(path, spec)
+                        for spec in effective_pathspecs(root, lane, "production")
+                    )
+                }
+                self.assertIn("android", owners)
+                self.assertIn("consumer-android", owners)
+                self.assertIn("ios-package", owners)
+
+    def test_neutral_legal_inputs_have_android_runtime_owners(self) -> None:
+        root = CI_ROOT.parent
+        for path in (
+            "legal/openai-codex/openai-codex-LICENSE.txt",
+            "legal/openai-codex/openai-codex-NOTICE.txt",
+        ):
+            with self.subTest(path=path):
+                owners = {
+                    lane
+                    for lane in LANES
+                    if any(
+                        fnmatch.fnmatchcase(path, spec)
+                        for spec in effective_pathspecs(root, lane, "production")
+                    )
+                }
+                self.assertIn("android", owners)
+                self.assertIn("consumer-android", owners)
+
     def test_c_abi_bootstrap_inputs_have_exact_desktop_owners(self) -> None:
         root = CI_ROOT.parent
 

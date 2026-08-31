@@ -269,6 +269,8 @@ class AppleDistributionTasksTest {
         assertEquals("inputs/Package.swift", packageRoot.resolve("Package.swift").readText())
         assertEquals("Sources", packageRoot.resolve("Sources/content").readText())
         assertEquals("Framework", packageRoot.resolve("CodexAgent.xcframework/content").readText())
+        assertEquals("codex-license", packageRoot.resolve("openai-codex-LICENSE.txt").readText())
+        assertEquals("codex-notice", packageRoot.resolve("openai-codex-NOTICE.txt").readText())
         assertEquals("TestApp", output.resolve("CodexAgentTestApp/content").readText())
     }
 

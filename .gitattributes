@@ -1,5 +1,5 @@
-codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt text eol=lf
-codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt text eol=lf
+legal/openai-codex/openai-codex-LICENSE.txt text eol=lf
+legal/openai-codex/openai-codex-NOTICE.txt text eol=lf
 LICENSE text eol=lf
 THIRD_PARTY_NOTICES.md text eol=lf
 codex-agent-runtime-desktop/native/c-api/include/** text eol=lf

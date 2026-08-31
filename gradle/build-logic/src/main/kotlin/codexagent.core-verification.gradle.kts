@@ -109,11 +109,12 @@ val verifyKotlinBindingParity = tasks.register<VerifyKotlinBindingParityTask>("v
     receiptFile.set(kotlinBindingParityReceiptFile)
 }
 
-val javaBindingVersion = project.version.toString()
-val javaBindingCoreJvmJar = layout.buildDirectory.file("libs/codex-agent-core-jvm-$javaBindingVersion.jar")
+val javaBindingContractVersion = project.version.toString()
+val javaBindingRuntimeVersion = rootProject.extra["codexAgent.runtimeVersion"].toString()
+val javaBindingCoreJvmJar = layout.buildDirectory.file("libs/codex-agent-core-jvm-$javaBindingContractVersion.jar")
 val javaBindingCoreAndroidAar = layout.buildDirectory.file("outputs/aar/codex-agent-core.aar")
 val javaBindingDesktopRuntimeJar = rootProject.layout.projectDirectory.file(
-    "codex-agent-runtime-desktop/build/libs/codex-agent-runtime-desktop-jvm-$javaBindingVersion.jar",
+    "codex-agent-runtime-desktop/build/libs/codex-agent-runtime-desktop-jvm-$javaBindingRuntimeVersion.jar",
 )
 val javaBindingAndroidRuntimeAar = rootProject.layout.projectDirectory.file(
     "codex-agent-runtime-android/build/outputs/aar/codex-agent-runtime-android-release.aar",

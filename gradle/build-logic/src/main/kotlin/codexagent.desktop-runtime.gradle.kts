@@ -13,11 +13,14 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
 
 val desktopManifestFile = layout.projectDirectory.file("codex-app-server-distributions.json")
+val desktopRuntimeCompatibilityVersion = providers.provider {
+    runtimeCompatibilityVersion(project.version.toString())
+}
 val generateDesktopDistributionSource = tasks.register<GenerateDesktopDistributionSourceTask>(
     "generateDesktopDistributionSource",
 ) {
     manifestFile.set(desktopManifestFile)
-    libraryVersion.set(project.version.toString())
+    libraryVersion.set(desktopRuntimeCompatibilityVersion)
     outputDirectory.set(layout.buildDirectory.dir("generated/distributions/kotlin"))
 }
 val desktopManifest = readDesktopCodexManifest(desktopManifestFile.asFile)
@@ -61,7 +64,7 @@ val desktopPackageTasks = desktopManifest.distributions.associateWith { distribu
         group = "distribution"
         description = "Packages the verified ${distribution.target} Codex app server."
         releaseTag.set(desktopManifest.releaseTag)
-        libraryVersion.set(project.version.toString())
+        libraryVersion.set(desktopRuntimeCompatibilityVersion)
         appServerVersion.set(desktopManifest.version)
         target.set(distribution.target)
         classifier.set(distribution.classifier)
@@ -78,7 +81,10 @@ val desktopPackageTasks = desktopManifest.distributions.associateWith { distribu
             }))
         }
         prebuiltPackage.set(layout.file(importedClassifierDirectory.map { directory ->
-            file("$directory/codex-agent-runtime-desktop-${project.version}-${distribution.classifier}.zip")
+            file(
+                "$directory/codex-agent-runtime-desktop-${desktopRuntimeCompatibilityVersion.get()}-" +
+                    "${distribution.classifier}.zip",
+            )
         }))
         if (!importedClassifierDirectory.isPresent &&
             !providers.gradleProperty("codexAgent.desktopSupervisorDirectory").isPresent &&
@@ -87,14 +93,14 @@ val desktopPackageTasks = desktopManifest.distributions.associateWith { distribu
         }
         localArchive.set(layout.file(localArchiveDirectory.map { file("$it/${distribution.asset}") }))
         licenseFile.set(rootProject.layout.projectDirectory.file(
-            "codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt",
+            "legal/openai-codex/openai-codex-LICENSE.txt",
         ))
         noticeFile.set(rootProject.layout.projectDirectory.file(
-            "codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt",
+            "legal/openai-codex/openai-codex-NOTICE.txt",
         ))
-        outputFile.set(layout.buildDirectory.file(
-            "distributions/codex-agent-runtime-desktop-${project.version}-${distribution.classifier}.zip",
-        ))
+        outputFile.set(layout.buildDirectory.file(desktopRuntimeCompatibilityVersion.map { version ->
+            "distributions/codex-agent-runtime-desktop-$version-${distribution.classifier}.zip"
+        }))
     }
 }
 tasks.register("packageDesktopAppServers") {
@@ -245,7 +251,7 @@ val cAbiPackageTasks = crossLanguageCAbiTargetSpecs.mapValues { (target, spec) -
             tasks.named("linkReleaseShared${target.replaceFirstChar(Char::uppercase)}"))
         this.target.set(target)
         classifier.set(spec.classifier)
-        libraryVersion.set(project.version.toString())
+        libraryVersion.set(desktopRuntimeCompatibilityVersion)
         producerCommit.set(cAbiCandidateCommit)
         producerTree.set(cAbiCandidateTree)
         reviewedHeader.set(cAbiReviewedHeader)
@@ -257,15 +263,17 @@ val cAbiPackageTasks = crossLanguageCAbiTargetSpecs.mapValues { (target, spec) -
             gnuImportLibrary.set(mingwGnuImportLibrary)
             msvcImportLibrary.set(mingwMsvcImportLibrary)
         }
-        outputFile.set(layout.buildDirectory.file(
-            "distributions/${crossLanguageCAbiArchiveFileName(project.version.toString(), target)}",
-        ))
+        outputFile.set(layout.buildDirectory.file(desktopRuntimeCompatibilityVersion.map { version ->
+            "distributions/${crossLanguageCAbiArchiveFileName(version, target)}"
+        }))
     }
 }
 val cAbiArchiveFiles = crossLanguageCAbiTargetSpecs.mapValues { (target, _) ->
     if (importedClassifierDirectory.isPresent) {
-        layout.file(importedClassifierDirectory.map { directory ->
-            file("$directory/${crossLanguageCAbiArchiveFileName(project.version.toString(), target)}")
+        layout.file(importedClassifierDirectory.flatMap { directory ->
+            desktopRuntimeCompatibilityVersion.map { version ->
+                file("$directory/${crossLanguageCAbiArchiveFileName(version, target)}")
+            }
         })
     } else {
         cAbiPackageTasks.getValue(target).flatMap { it.outputFile }
@@ -538,7 +546,7 @@ desktopManifest.distributions.forEach { distribution ->
         if (!importedClassifierDirectory.isPresent) dependsOn(cAbiPackageTasks.getValue(distribution.target))
         target.set(distribution.target)
         classifier.set(crossLanguageCAbiTargetSpecs.getValue(distribution.target).classifier)
-        libraryVersion.set(project.version.toString())
+        libraryVersion.set(desktopRuntimeCompatibilityVersion)
         producerCommit.set(cAbiCandidateCommit)
         producerTree.set(cAbiCandidateTree)
         runnerOs.set(providers.environmentVariable("RUNNER_OS")
@@ -613,7 +621,7 @@ val stageNativeWrapperCAbiSdks = tasks.register<StageCrossLanguageNativeWrapperS
 ) {
     group = "distribution"
     description = "Verifies and stages the exact five C ABI SDK packages for first-class native wrappers."
-    libraryVersion.set(project.version.toString())
+    libraryVersion.set(desktopRuntimeCompatibilityVersion)
     producerCommit.set(cAbiCandidateCommit)
     producerTree.set(cAbiCandidateTree)
     archives.from(cAbiArchiveFiles.values)

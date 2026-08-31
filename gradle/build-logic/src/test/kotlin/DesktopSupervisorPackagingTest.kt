@@ -7,6 +7,7 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -19,10 +20,11 @@ class DesktopSupervisorPackagingTest {
         try {
             val manifest = root.resolve("manifest.json").apply { writeText(testManifest()) }
             val output = root.resolve("generated")
-            ProjectBuilder.builder().withProjectDir(root).build().tasks
+            val tasks = ProjectBuilder.builder().withProjectDir(root).build().tasks
+            tasks
                 .register("generate", GenerateDesktopDistributionSourceTask::class.java).get().apply {
                     manifestFile.set(manifest)
-                    libraryVersion.set("0.2.0")
+                    libraryVersion.set(runtimeCompatibilityVersion("0.2.0"))
                     outputDirectory.set(output)
                     generate()
                 }
@@ -31,6 +33,18 @@ class DesktopSupervisorPackagingTest {
             assertTrue("desktopCodexDistribution(target: String)" in source)
             assertTrue("supervisorExecutableName" in source)
             assertFalse("kotlin.native" in source)
+
+            val patchOutput = root.resolve("generated-patch")
+            tasks.register("generatePatch", GenerateDesktopDistributionSourceTask::class.java).get().apply {
+                manifestFile.set(manifest)
+                libraryVersion.set(runtimeCompatibilityVersion("0.2.1"))
+                outputDirectory.set(patchOutput)
+                generate()
+            }
+            assertContentEquals(
+                output.walkTopDown().single { it.isFile }.readBytes(),
+                patchOutput.walkTopDown().single { it.isFile }.readBytes(),
+            )
         } finally {
             root.deleteRecursively()
         }
@@ -81,6 +95,20 @@ class DesktopSupervisorPackagingTest {
             assertEquals(0x81a4, packaged.unixModes().getValue("openai-codex-LICENSE.txt"))
             assertEquals(0x81a4, packaged.unixModes().getValue("openai-codex-NOTICE.txt"))
             assertEquals(0x81a4, packaged.unixModes().getValue("codex-runtime-manifest.json"))
+
+            val aggregatePatch = root.resolve("runtime-aggregate-patch.zip")
+            ProjectBuilder.builder().withProjectDir(root).build().tasks
+                .register("packageAggregatePatch", PackageDesktopCodexRuntimeTask::class.java).get().apply {
+                    releaseTag.set("rust-v0.145.0"); asset.set(upstream.name)
+                    libraryVersion.set(runtimeCompatibilityVersion("0.2.1")); appServerVersion.set("0.145.0")
+                    target.set("macosArm64"); classifier.set("app-server-macos-arm64")
+                    archiveSha256.set(upstream.sha256()); archiveEntry.set(runtime.name)
+                    binarySha256.set(runtime.sha256()); executableName.set(runtime.name)
+                    supervisorExecutableName.set(supervisor.name); supervisorExecutable.set(supervisor)
+                    localArchive.set(upstream); licenseFile.set(license); noticeFile.set(notice)
+                    outputFile.set(aggregatePatch); packageRuntime()
+                }
+            assertContentEquals(packaged.readBytes(), aggregatePatch.readBytes())
 
             val imported = root.resolve("imported.zip")
             ProjectBuilder.builder().withProjectDir(root).build().tasks

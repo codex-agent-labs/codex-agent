@@ -202,10 +202,10 @@ fun main(arguments: Array<String>) {
                     "codex-agent-runtime-desktop/codex-app-server-distributions.json",
                 ),
                 desktopBundledLicense = repository.resolve(
-                    "codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt",
+                    "legal/openai-codex/openai-codex-LICENSE.txt",
                 ),
                 desktopBundledNotice = repository.resolve(
-                    "codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt",
+                    "legal/openai-codex/openai-codex-NOTICE.txt",
                 ),
                 releaseTooling = options.file("release-tool"),
                 repository = repository,
@@ -244,10 +244,10 @@ fun main(arguments: Array<String>) {
                     "codex-agent-runtime-desktop/codex-app-server-distributions.json",
                 ),
                 "desktopBundledLicense" to repository.resolve(
-                    "codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt",
+                    "legal/openai-codex/openai-codex-LICENSE.txt",
                 ),
                 "desktopBundledNotice" to repository.resolve(
-                    "codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt",
+                    "legal/openai-codex/openai-codex-NOTICE.txt",
                 ),
             )
             val result = verifyCandidatePayload(
