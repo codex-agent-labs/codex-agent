@@ -680,6 +680,11 @@ jobs:
           cp "$m11_receipts"/*.json "$binding_root/m11/"
           cp "$m11_audit" "$binding_root/m11/"
           test "$(find "$binding_root/m11" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 14
+          ./gradlew verifySdkBindingParity \
+            -PcodexAgent.sdkBindingEvidenceDirectory="$PWD/$binding_root/m11" \
+            -PcodexAgent.sdkCanonicalApiReport="$PWD/$api_report" \
+            -PcodexAgent.sdkCanonicalCoverageReceipt="$PWD/$coverage_receipt" \
+            --stacktrace
       - name: Stage the exact reusable validation artifact
         env:
           M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}

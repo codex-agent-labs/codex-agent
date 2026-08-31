@@ -352,8 +352,14 @@ report. The current focused gates are:
   :codex-agent-sdk:verifyRustBindingParity \
   :codex-agent-sdk:verifyCppBindingParity \
   :codex-agent-sdk:verifyDartBindingParity
+./gradlew verifySdkBindingParity \
+  -PcodexAgent.sdkBindingEvidenceDirectory=<exact-m11-evidence-directory> \
+  -PcodexAgent.sdkCanonicalApiReport=<exact-contract-canonical-api.json> \
+  -PcodexAgent.sdkCanonicalCoverageReceipt=<exact-contract-canonical-coverage.json>
 ./gradlew verifySdk \
-  -PcodexAgent.sdkBindingEvidenceDirectory=<exact-m11-evidence-directory>
+  -PcodexAgent.sdkBindingEvidenceDirectory=<exact-m11-evidence-directory> \
+  -PcodexAgent.sdkCanonicalApiReport=<exact-contract-canonical-api.json> \
+  -PcodexAgent.sdkCanonicalCoverageReceipt=<exact-contract-canonical-coverage.json>
 ./gradlew verifyRepository \
   -PcodexAgent.repositoryContractEvidenceDirectory=<contract-evidence-directory> \
   -PcodexAgent.repositoryRuntimeEvidenceDirectory=<runtime-evidence-directory> \
@@ -365,8 +371,9 @@ report. The current focused gates are:
 ```
 
 `verifyContract` produces only canonical Contract and Kotlin evidence.
-`verifySdk` verifies the facade and an exact imported eleven-language receipt
-set whose canonical API and coverage identities match that Contract;
+`verifySdkBindingParity` verifies only the exact imported eleven-language
+receipt set against separately supplied Contract API and coverage evidence;
+`verifySdk` includes that gate plus facade publication and consumer checks;
 `verifyRepository` aggregates independently supplied product receipts without
 rebuilding their owners. Native-wrapper parity requires all authoritative five-host release and consumer inputs together;
 missing inputs fail the gate instead of producing a no-op success. On macOS,

@@ -507,6 +507,22 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("--phase M8", merge_gate)
         self.assertIn("phases=(M9_PYTHON M9_CSHARP M9_RUST M9_CPP M9_DART)", merge_gate)
         self.assertIn("--phase M11", merge_gate)
+        parity_gate = "./gradlew verifySdkBindingParity"
+        self.assertEqual(1, merge_gate.count(parity_gate))
+        for argument in (
+            '-PcodexAgent.sdkBindingEvidenceDirectory="$PWD/$binding_root/m11"',
+            '-PcodexAgent.sdkCanonicalApiReport="$PWD/$api_report"',
+            '-PcodexAgent.sdkCanonicalCoverageReceipt="$PWD/$coverage_receipt"',
+        ):
+            self.assertEqual(1, merge_gate.count(argument))
+        self.assertLess(
+            merge_gate.index("--phase M11"),
+            merge_gate.index(parity_gate),
+        )
+        self.assertLess(
+            merge_gate.index(parity_gate),
+            merge_gate.index("name: Stage the exact reusable validation artifact"),
+        )
         for task in (
             "verifyPythonBindingParity", "verifyCSharpBindingParity", "verifyRustBindingParity",
             "verifyCppBindingParity", "verifyDartBindingParity",

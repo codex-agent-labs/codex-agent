@@ -72,26 +72,52 @@ class SdkVerificationTaskGraphTest {
             .substringBefore("fun publicationTask")
 
         assertTrue("providers.gradleProperty(SDK_BINDING_EVIDENCE_DIRECTORY_PROPERTY)" in wiring)
+        assertTrue("providers.gradleProperty(SDK_CANONICAL_API_REPORT_PROPERTY)" in wiring)
+        assertTrue("providers.gradleProperty(SDK_CANONICAL_COVERAGE_RECEIPT_PROPERTY)" in wiring)
         assertTrue("sdkFacadeProject.tasks.register<Delete>(" in wiring)
         assertTrue("\"invalidateImportedSdkBindingParityOutput\"" in wiring)
         assertTrue("rootProject.tasks.matching { it.name == \"prepareContractInputs\" }" in wiring)
         assertTrue("mustRunAfter(invalidateImportedSdkBindingParityOutput)" in wiring)
-        assertTrue("dependsOn(invalidateImportedSdkBindingParityOutput," in wiring)
-        assertTrue("\":codex-agent-core:verifyCrossLanguageApiCoverage\"" in wiring)
+        assertTrue("dependsOn(invalidateImportedSdkBindingParityOutput)" in wiring)
+        assertFalse("\":codex-agent-core:verifyCrossLanguageApiCoverage\"" in wiring)
         assertTrue("canonicalApiReport.set(" in wiring)
         assertTrue("canonicalCoverageReceipt.set(" in wiring)
         assertTrue(
-            "verifySdkFacadePublicationMetadata.configure { dependsOn(verifyImportedSdkBindingParity) }" in
+            "verifySdkFacadePublicationMetadata.configure { dependsOn(verifySdkBindingParity) }" in
                 wiring,
         )
         assertTrue(
-            "verifySdkFacadeConsumers.configure { dependsOn(verifyImportedSdkBindingParity) }" in wiring,
+            "verifySdkFacadeConsumers.configure { dependsOn(verifySdkBindingParity) }" in wiring,
         )
         assertFalse("gradle.startParameter" in wiring)
         assertFalse("SDK verification rejects --continue" in wiring)
 
+        val forbiddenProductEdges = listOf(
+            "codex-agent-core",
+            "codex-agent-runtime",
+            "verifySdkFacade",
+            "publish",
+            "compile",
+            "ciProductPhase",
+        )
+        val importedParity = wiring.substringAfter("val verifyImportedSdkBindingParity =")
+            .substringBefore("val verifySdkBindingParity =")
+        assertEquals(1, Regex("dependsOn\\(").findAll(importedParity).count())
+        assertTrue("dependsOn(invalidateImportedSdkBindingParityOutput)" in importedParity)
+        assertFalse("dependsOn(invalidateImportedSdkBindingParityOutput," in importedParity)
+        for (forbidden in forbiddenProductEdges) {
+            assertFalse(forbidden in importedParity, "Imported parity selects a product owner: $forbidden")
+        }
+        val parityOnly = wiring.substringAfter("val verifySdkBindingParity =")
+            .substringBefore("verifySdkFacadePublicationMetadata.configure")
+        assertEquals(1, Regex("dependsOn\\(").findAll(parityOnly).count())
+        assertTrue("dependsOn(verifyImportedSdkBindingParity)" in parityOnly)
+        for (forbidden in forbiddenProductEdges) {
+            assertFalse(forbidden in parityOnly, "Parity-only gate selects a product owner: $forbidden")
+        }
+
         val verifySdk = wiring.substringAfter("tasks.register(\"verifySdk\")")
-        assertTrue("verifyImportedSdkBindingParity" in verifySdk)
+        assertTrue("verifySdkBindingParity" in verifySdk)
         assertTrue("verifySdkFacadePublicationMetadata" in verifySdk)
         assertTrue("verifySdkFacadeConsumers" in verifySdk)
 
@@ -139,8 +165,28 @@ class SdkVerificationTaskGraphTest {
         assertTrue("verifyKotlinBindingParity" in coreCheck)
         val verifySdk = sdkSource.substringAfter("tasks.register(\"verifySdk\")")
             .substringBefore("fun publicationTask")
-        assertTrue("verifyImportedSdkBindingParity" in verifySdk)
+        assertTrue("verifySdkBindingParity" in verifySdk)
         assertFalse("verifyJavaBindingParity" in verifySdk)
+    }
+
+    @Test
+    fun `parity-only lifecycle selects no product owner task`() {
+        withFixture { root, _ ->
+            val result = runner(root, "verifySdkBindingParity", "--dry-run").build()
+            val selected = Regex("^(:\\S+) SKIPPED$", RegexOption.MULTILINE)
+                .findAll(result.output)
+                .map { it.groupValues[1] }
+                .toSet()
+            assertEquals(
+                setOf(
+                    ":invalidateImportedSdkBindingParityOutput",
+                    ":verifyImportedSdkBindingParity",
+                    ":verifySdkBindingParity",
+                ),
+                selected,
+                result.output,
+            )
+        }
     }
 
     private fun withFixture(block: (File, File) -> Unit) {
@@ -152,33 +198,44 @@ class SdkVerificationTaskGraphTest {
                 plugins { id("codexagent.codex-runtime") }
 
                 val evidenceProperty = "codexAgent.sdkBindingEvidenceDirectory"
+                val apiProperty = "codexAgent.sdkCanonicalApiReport"
+                val coverageProperty = "codexAgent.sdkCanonicalCoverageReceipt"
                 val report = layout.buildDirectory.file("reports/sdk/imported-binding-parity.json")
                 val preflight = tasks.register<Delete>("invalidateImportedSdkBindingParityOutput") {
                     delete(report)
                 }
                 val importedEvidence = layout.dir(providers.gradleProperty(evidenceProperty).map(::file))
+                val importedApi = layout.file(providers.gradleProperty(apiProperty).map(::file))
+                val importedCoverage = layout.file(providers.gradleProperty(coverageProperty).map(::file))
                 val verifyImportedEvidence = tasks.register<VerifyImportedSdkBindingParityTask>(
                     "verifyImportedSdkBindingParity",
                 ) {
                     dependsOn(preflight)
+                    canonicalApiReport.set(importedApi)
+                    canonicalCoverageReceipt.set(importedCoverage)
                     evidenceDirectory.set(importedEvidence)
                     resultFile.set(report)
                 }
-                val verifySdkFacadePublicationMetadata = tasks.register("verifySdkFacadePublicationMetadata") {
+                val verifySdkBindingParity = tasks.register("verifySdkBindingParity") {
                     dependsOn(verifyImportedEvidence)
                 }
+                val verifySdkFacadePublicationMetadata = tasks.register("verifySdkFacadePublicationMetadata") {
+                    dependsOn(verifySdkBindingParity)
+                }
                 val verifySdkFacadeConsumers = tasks.register("verifySdkFacadeConsumers") {
-                    dependsOn(verifyImportedEvidence)
+                    dependsOn(verifySdkBindingParity)
                 }
                 tasks.register("verifySdk") {
                     dependsOn(
-                        verifyImportedEvidence,
+                        verifySdkBindingParity,
                         verifySdkFacadePublicationMetadata,
                         verifySdkFacadeConsumers,
                     )
                 }
                 """.trimIndent() + "\n",
             )
+            root.resolve("canonical-api.json").writeText("{}\n")
+            root.resolve("canonical-coverage.json").writeText("{}\n")
             block(root, root.resolve("build/reports/sdk/imported-binding-parity.json"))
         } finally {
             root.deleteRecursively()
@@ -190,6 +247,8 @@ class SdkVerificationTaskGraphTest {
         .withPluginClasspath()
         .withArguments(
             *tasks,
+            "-PcodexAgent.sdkCanonicalApiReport=${root.resolve("canonical-api.json")}",
+            "-PcodexAgent.sdkCanonicalCoverageReceipt=${root.resolve("canonical-coverage.json")}",
             "--configuration-cache",
             "--configuration-cache-problems=fail",
             "--console=plain",

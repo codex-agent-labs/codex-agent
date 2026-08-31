@@ -327,6 +327,12 @@ val verifySdkFacadeConsumers = tasks.register("verifySdkFacadeConsumers") {
 val importedSdkBindingEvidence = layout.dir(
     providers.gradleProperty(SDK_BINDING_EVIDENCE_DIRECTORY_PROPERTY).map(::file),
 )
+val importedSdkCanonicalApiReport = layout.file(
+    providers.gradleProperty(SDK_CANONICAL_API_REPORT_PROPERTY).map(::file),
+)
+val importedSdkCanonicalCoverageReceipt = layout.file(
+    providers.gradleProperty(SDK_CANONICAL_COVERAGE_RECEIPT_PROPERTY).map(::file),
+)
 val importedSdkBindingParityReport =
     layout.buildDirectory.file("reports/sdk/imported-binding-parity.json")
 val invalidateImportedSdkBindingParityOutput = sdkFacadeProject.tasks.register<Delete>(
@@ -344,25 +350,26 @@ val verifyImportedSdkBindingParity = tasks.register<VerifyImportedSdkBindingPari
 ) {
     group = "verification"
     description = "Verifies the exact imported M11 evidence for all 11 first-class SDK languages."
-    dependsOn(invalidateImportedSdkBindingParityOutput, ":codex-agent-core:verifyCrossLanguageApiCoverage")
-    canonicalApiReport.set(sdkCoreProject.layout.buildDirectory.file(
-        "reports/cross-language-api/canonical-api.json",
-    ))
-    canonicalCoverageReceipt.set(sdkCoreProject.layout.buildDirectory.file(
-        "reports/cross-language-api/canonical-coverage.json",
-    ))
+    dependsOn(invalidateImportedSdkBindingParityOutput)
+    canonicalApiReport.set(importedSdkCanonicalApiReport)
+    canonicalCoverageReceipt.set(importedSdkCanonicalCoverageReceipt)
     evidenceDirectory.set(importedSdkBindingEvidence)
     resultFile.set(importedSdkBindingParityReport)
 }
-verifySdkFacadePublicationMetadata.configure { dependsOn(verifyImportedSdkBindingParity) }
-verifySdkFacadeConsumers.configure { dependsOn(verifyImportedSdkBindingParity) }
+val verifySdkBindingParity = tasks.register("verifySdkBindingParity") {
+    group = "verification"
+    description = "Verifies exact imported cross-language SDK parity without rebuilding product owners."
+    dependsOn(verifyImportedSdkBindingParity)
+}
+verifySdkFacadePublicationMetadata.configure { dependsOn(verifySdkBindingParity) }
+verifySdkFacadeConsumers.configure { dependsOn(verifySdkBindingParity) }
 tasks.register("verifySdk") {
     group = "verification"
     description = "Verifies the SDK facade and exact imported cross-language parity evidence."
     dependsOn(
         verifySdkFacadePublicationMetadata,
         verifySdkFacadeConsumers,
-        verifyImportedSdkBindingParity,
+        verifySdkBindingParity,
     )
 }
 fun publicationTask(module: String, publication: String, target: String) =

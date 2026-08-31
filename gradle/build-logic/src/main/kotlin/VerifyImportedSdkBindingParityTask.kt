@@ -15,6 +15,10 @@ import org.gradle.api.tasks.TaskAction
 
 internal const val SDK_BINDING_EVIDENCE_DIRECTORY_PROPERTY =
     "codexAgent.sdkBindingEvidenceDirectory"
+internal const val SDK_CANONICAL_API_REPORT_PROPERTY =
+    "codexAgent.sdkCanonicalApiReport"
+internal const val SDK_CANONICAL_COVERAGE_RECEIPT_PROPERTY =
+    "codexAgent.sdkCanonicalCoverageReceipt"
 
 @CacheableTask
 abstract class VerifyImportedSdkBindingParityTask : DefaultTask() {
