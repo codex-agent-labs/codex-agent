@@ -384,7 +384,10 @@ def evaluate_remote_build_authorization(
             raise ValueError("Workflow dispatch must not claim a pull-request number")
         inputs = require_object(payload.get("inputs"), "workflow-dispatch inputs")
         dispatch_ref = require_string(payload.get("ref"), "workflow-dispatch ref")
-        if github_ref not in {f"refs/heads/{dispatch_ref}", f"refs/tags/{dispatch_ref}"}:
+        if (
+            dispatch_ref != github_ref
+            or not github_ref.startswith(("refs/heads/", "refs/tags/"))
+        ):
             raise ValueError("Workflow-dispatch ref does not match the runner ref")
         expected_base = require_oid(inputs.get("baseCommit"), "dispatch base commit")
         expected_commit = require_oid(inputs.get("validationCommit"), "dispatch validation commit")

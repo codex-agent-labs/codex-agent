@@ -1481,7 +1481,7 @@ class ImpactPlanTest(GitFixture):
         tree = self.git("rev-parse", f"{target}^{{tree}}")
         payload = {
             "repository": {"full_name": "codex-agent-labs/codex-agent"},
-            "ref": "architecture/codex-agent-core",
+            "ref": "refs/heads/architecture/codex-agent-core",
             "inputs": {
                 "baseCommit": self.base,
                 "validationCommit": target,
@@ -1522,7 +1522,7 @@ class ImpactPlanTest(GitFixture):
         self.assertEqual("protected-dispatch", authorized["remoteBuildAuthorizationReason"])
 
         tag_payload = json.loads(json.dumps(payload))
-        tag_payload["ref"] = "v0.2.0"
+        tag_payload["ref"] = "refs/tags/v0.2.0"
         tag = plan(
             **{
                 **arguments,
@@ -1535,7 +1535,7 @@ class ImpactPlanTest(GitFixture):
         self.assertTrue(tag["remoteBuildAuthorized"])
 
         bad_ref = json.loads(json.dumps(payload))
-        bad_ref["ref"] = "other"
+        bad_ref["ref"] = "refs/heads/other"
         bad_ref_output = self.root / "build/ci/dispatch-ref-mismatch.json"
         with self.assertRaisesRegex(ValueError, "runner ref"):
             plan(
