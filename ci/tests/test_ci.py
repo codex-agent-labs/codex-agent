@@ -38,7 +38,7 @@ from reuse import (  # noqa: E402
     promoted_artifacts,
     restore,
 )
-from stage import OUTPUTS, archive_tree, copy_matches, restore_production_files, safe_extract_tar  # noqa: E402
+from stage import OUTPUTS, archive_tree, copy_matches, restore_production_files, safe_extract_tar, selected_output  # noqa: E402
 from validation_reuse import (  # noqa: E402
     M8_FILES,
     M11_FILES,
@@ -266,7 +266,7 @@ class RunLaneContractTest(unittest.TestCase):
             "\n  native-wrapper-package-validation:", 1
         )[0]
         pubspec = (
-            root / "codex-agent-runtime-desktop/bindings/dart/pubspec.yaml"
+            root / "codex-agent-bindings/dart/pubspec.yaml"
         ).read_text(encoding="utf-8")
         floor = re.search(r'^  sdk: ">=([0-9.]+) <4\.0\.0"$', pubspec, re.MULTILINE)
         action = language.split("uses: dart-lang/setup-dart@", 1)[1].split(
@@ -338,6 +338,8 @@ class RunLaneContractTest(unittest.TestCase):
 
         self.assertEqual(1, workflow.count("name: Reassemble and verify the exact five Runtime product stages"))
         self.assertEqual(1, workflow.count("prepareNativeWrapperPackageSources"))
+        self.assertIn(":codex-agent-sdk:prepareNativeWrapperPackageSources", stage)
+        self.assertNotIn(":codex-agent-runtime-desktop:prepareNativeWrapperPackageSources", stage)
         self.assertIn("-PcodexAgent.nativeWrapperRuntimeStageRoot=\"$PWD/$stages\"", stage)
         self.assertNotIn("-PcodexAgent.cAbiPackageEvidenceDirectory=", stage)
         self.assertNotIn("-PcodexAgent.desktopClassifierDirectory=", stage)
@@ -353,7 +355,7 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}", stage)
         self.assertIn("retention-days: 1", stage)
         versioned_sdk_root = "native-wrapper-c-abi-sdks/${{ inputs.validationTree }}"
-        self.assertEqual(4, workflow.count(versioned_sdk_root))
+        self.assertEqual(3, workflow.count(versioned_sdk_root))
         self.assertNotIn("native-wrapper-c-abi-sdks/linux-x64", workflow)
 
         self.assertIn("needs: native-wrapper-sdk-stage", language)
@@ -390,12 +392,19 @@ class RunLaneContractTest(unittest.TestCase):
             "name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}",
             package,
         )
-        self.assertIn("python ci/native_wrappers.py package", package)
+        self.assertIn('python "$tool/ci/native_wrappers.py" package', package)
+        self.assertNotIn('--repository "$PWD"', package)
+        self.assertIn('cp -R ci/products "$tool/ci/"', package)
+        self.assertIn('test ! -e "$tool/codex-agent-runtime-desktop"', package)
+        self.assertIn('--sdk-version-file "$PWD/gradle/release/versions/sdk.txt"', package)
+        self.assertIn("codex-agent-sdk/build/native-wrapper-package-sources", package)
+        self.assertIn("codex-agent-sdk/build/native-wrapper-c-abi-sdks", package)
         self.assertIn(
             "name: codex-agent-native-wrapper-package-validation-${{ inputs.validationTree }}",
             package,
         )
         self.assertIn("retention-days: 1", package)
+        self.assertIn('--sdk-version-file "$PWD/gradle/release/versions/sdk.txt"', consumers)
 
         self.assertIn("if: always() && inputs.nativeWrappers", assembly)
         self.assertIn(
@@ -461,13 +470,12 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertNotIn(":codex-agent-core:auditCrossLanguageBindingParity", contracts)
         self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", contracts)
 
-    def test_node_js_runs_one_strict_binding_gate_for_build_or_test(self) -> None:
+    def test_node_js_stages_only_Runtime_binding_validation(self) -> None:
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
         node_js = driver.split("  node-js)", 1)[1].split("  node-wasm)", 1)[0]
-        strict = ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity"
-
         self.assertIn('if [ "$build" = true ] || [ "$test_lane" = true ]; then', node_js)
-        self.assertEqual(1, node_js.count(strict))
+        self.assertEqual(1, node_js.count(":codex-agent-runtime-desktop:writeNodeJsBindingValidationOutputManifest"))
+        self.assertNotIn(":codex-agent-sdk:", node_js)
         self.assertNotIn(":codex-agent-runtime-desktop:verifyPackedNpmConsumers", node_js)
         self.assertNotIn(":codex-agent-runtime-desktop:jsNodeTest", node_js)
 
@@ -503,7 +511,8 @@ class RunLaneContractTest(unittest.TestCase):
             "verifyPythonBindingParity", "verifyCSharpBindingParity", "verifyRustBindingParity",
             "verifyCppBindingParity", "verifyDartBindingParity",
         ):
-            self.assertEqual(1, merge_gate.count(f":codex-agent-runtime-desktop:{task}"))
+            self.assertEqual(1, merge_gate.count(f":codex-agent-sdk:{task}"))
+            self.assertNotIn(f":codex-agent-runtime-desktop:{task}", merge_gate)
         self.assertNotIn("--phase M7_5", merge_gate)
         self.assertLess(merge_gate.index("lane_ios_swift_tests_test"), merge_gate.index(assemble))
         self.assertLess(merge_gate.index(assemble), merge_gate.index(audit))
@@ -613,7 +622,7 @@ class GitFixture(unittest.TestCase):
                 "codex-agent-core/src/jvmAndAndroidMain/**\n"
                 "codex-agent-core/src/jvmTest/**\n"
                 "codex-agent-runtime-desktop/build.gradle.kts\n"
-                "codex-agent-runtime-desktop/npm/**\n"
+                "codex-agent-bindings/javascript/**\n"
                 "codex-agent-runtime-desktop/src/commonMain/**\n"
                 "codex-agent-runtime-desktop/src/commonTest/**\n"
                 "codex-agent-runtime-desktop/src/webMain/**\n"
@@ -1038,15 +1047,15 @@ class ImpactPlanTest(GitFixture):
         self.assertFalse(matches("node-wasm", "production", js))
         self.assertTrue(matches("node-wasm", "production", wasm))
         for npm in (
-            "codex-agent-runtime-desktop/npm/package/index.cjs",
-            "codex-agent-runtime-desktop/npm/consumer/smoke.ts",
+            "codex-agent-bindings/javascript/package/index.cjs",
+            "codex-agent-bindings/javascript/consumer/smoke.ts",
         ):
             self.assertEqual(
                 {"contracts", "node-js", "consumer-node-js"},
                 {lane for lane in LANES if matches(lane, "production", npm)},
             )
             self.assertEqual(
-                {"ios-swift-tests"},
+                set(),
                 {lane for lane in LANES if matches(lane, "test", npm)},
             )
             self.assertFalse(any(matches(lane, "metadata", npm) for lane in LANES))
@@ -1191,7 +1200,7 @@ class ImpactPlanTest(GitFixture):
             self.assertEqual(2, workflow.count(f"matrix.lane == '{consumer}'"))
         gate = workflow[workflow.index("\n  merge-gate:"):]
         self.assertIn(
-            "needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple, consumers]",
+            "needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]",
             gate,
         )
         self.assertIn("pattern: codex-agent-ci-*", gate)
@@ -1238,7 +1247,7 @@ class ImpactPlanTest(GitFixture):
 
     def test_native_wrapper_changes_select_all_five_build_and_test_owners(self) -> None:
         result, _, _ = self.make_plan(
-            "codex-agent-runtime-desktop/bindings/python/src/codex_agent/_ffi.py",
+            "codex-agent-bindings/python/src/codex_agent/_ffi.py",
             "wrapper changed\n",
         )
         self.assertTrue(all(
@@ -1811,6 +1820,7 @@ class RealImpactPlanTest(unittest.TestCase):
             "gradle/build-logic/src/main/kotlin/CrossLanguageApiCoverage.kt",
             "gradle/build-logic/src/main/kotlin/CrossLanguageBindingReceipt.kt",
             "gradle/build-logic/src/main/kotlin/CrossLanguageCAbiBootstrapEvidence.kt",
+            "gradle/build-logic/src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts",
         ):
             with self.subTest(path=path):
                 self.assertEqual(
@@ -1944,6 +1954,13 @@ class RealImpactPlanTest(unittest.TestCase):
             {"contracts"},
             matching_lanes("test", prefix + "ReleaseIo.kt"),
         )
+        javascript_sdk = prefix + "codexagent.javascript-sdk.gradle.kts"
+        self.assertEqual(
+            {"contracts", "node-js", "consumer-node-js"},
+            matching_lanes("production", javascript_sdk),
+        )
+        self.assertEqual({"node-js"}, matching_lanes("test", javascript_sdk))
+        self.assertEqual(set(), matching_lanes("metadata", javascript_sdk))
         common_desktop_test = (
             "codex-agent-runtime-desktop/src/commonTest/kotlin/"
             "io/github/codex_agent_labs/codexagent/appserver/runtime/ExternalProcessCodexRuntimeTest.kt"
@@ -1983,7 +2000,7 @@ class RealImpactPlanTest(unittest.TestCase):
             "io/github/codex_agent_labs/codexagent/appserver/runtime/NodeHostFilesSecurityTest.kt"
         )
         self.assertEqual(
-            {"contracts", "portable", "node-js", "node-wasm", "ios-swift-tests"},
+            {"portable", "node-js", "node-wasm"},
             matching_lanes("test", web_host_files_test),
         )
         for test_path in (shared_host_policy_test, desktop_host_files_test, web_host_files_test):
@@ -2430,24 +2447,56 @@ class StageArchiveTest(unittest.TestCase):
     def test_contracts_stages_the_exact_binding_parity_prerequisites(self) -> None:
         self.assertEqual((
             ("build", "gradle/build-logic/build/libs/codex-agent-release-tooling.jar", "release-tooling"),
-            ("test", "codex-agent-core/build/reports/cross-language-api/canonical-api.json", "cross-language-api-report-evidence"),
-            ("test", "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json", "cross-language-coverage-receipt-evidence"),
-            ("test", "codex-agent-core/build/reports/cross-language-api/bindings/kotlin-parity.json", "cross-language-kotlin-binding-receipt-evidence"),
+            ("build", "build/product-stage/contract/contract/binary/**/*", "contract-binary-stage-member"),
             ("test", "codex-agent-core/build/reports/cross-language-api/bindings/java-parity.json", "cross-language-java-binding-receipt-evidence"),
         ), OUTPUTS["contracts"])
 
-    def test_node_js_stages_exact_packed_consumer_evidence_and_rejects_missing_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "staged"
+            for relative in (
+                "gradle/build-logic/build/libs/codex-agent-release-tooling.jar",
+                "build/product-stage/contract/contract/binary/output-manifest.json",
+                "build/product-stage/contract/contract/binary/outputs/evidence/canonical-api.json",
+                "build/product-stage/contract/contract/binary/outputs/evidence/canonical-coverage.json",
+                "build/product-stage/contract/contract/binary/outputs/evidence/kotlin-parity.json",
+                "codex-agent-core/build/reports/cross-language-api/bindings/java-parity.json",
+            ):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}\n", encoding="utf-8")
+            for _, pattern, _ in OUTPUTS["contracts"]:
+                copy_matches(root, output, pattern)
+            names = [path.name for path in (output / "payload").rglob("*.json")]
+            for name in (
+                "canonical-api.json",
+                "canonical-coverage.json",
+                "kotlin-parity.json",
+                "java-parity.json",
+            ):
+                self.assertEqual(1, names.count(name), name)
+
+    def test_node_js_stages_exact_Runtime_binding_validation_and_rejects_missing_outputs(self) -> None:
         expected = (
-            ("build", "codex-agent-runtime-desktop/build/npm/consumer/public-api.json", "npm-public-api-report"),
-            ("build", "codex-agent-runtime-desktop/build/npm/consumer/packed-tests.xml", "npm-packed-test-report"),
+            (
+                "build",
+                "codex-agent-runtime-desktop/build/product-stage/runtime/"
+                "node-js/package/**/*",
+                "runtime-package-stage-member",
+            ),
             (
                 "test",
-                "codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/"
-                "javascript-typescript-parity.json",
-                "cross-language-javascript-typescript-binding-receipt-evidence",
+                "codex-agent-runtime-desktop/build/product-stage/runtime/"
+                "node-js-binding/validation/**/*",
+                "runtime-binding-validation-stage-member",
             ),
         )
         self.assertEqual(expected, OUTPUTS["node-js"])
+        for build, test in ((True, False), (False, True)):
+            state = {"build": build, "test": test, "metadata": False}
+            with self.subTest(build=build, test=test):
+                self.assertTrue(selected_output("node-js", state, *expected[0][::2]))
+                self.assertTrue(selected_output("node-js", state, expected[1][0], expected[1][2]))
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2620,18 +2669,17 @@ class StageProductionRestoreTest(unittest.TestCase):
             self.assertEqual({}, evidence)
             self.assertFalse((root / "output/payload").exists())
 
-    def test_restored_node_js_production_drops_binding_receipt(self) -> None:
+    def test_restored_node_js_production_drops_Runtime_binding_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            build_evidence = ("payload/public-api.json", "npm-public-api-report")
             binding_receipt = (
                 "payload/javascript-typescript-parity.json",
                 "cross-language-javascript-typescript-binding-receipt-evidence",
             )
-            source = self.source(root, [], [build_evidence, binding_receipt])
+            source = self.source(root, [], [binding_receipt])
             artifacts, evidence = restore_production_files(source, root / "output", "node-js")
             self.assertEqual({}, artifacts)
-            self.assertEqual({build_evidence[0]: build_evidence[1]}, evidence)
+            self.assertEqual({}, evidence)
             self.assertFalse((root / "output" / binding_receipt[0]).exists())
 
     def test_restored_desktop_production_keeps_c_abi_sdk_and_drops_host_proof(self) -> None:

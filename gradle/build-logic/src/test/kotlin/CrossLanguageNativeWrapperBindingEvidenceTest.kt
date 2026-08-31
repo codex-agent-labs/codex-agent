@@ -72,9 +72,7 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             root.resolve("build.gradle.kts").writeText(
                 """
                 plugins {
-                    id("org.jetbrains.kotlin.multiplatform")
-                    id("maven-publish")
-                    id("codexagent.desktop-runtime")
+                    id("codexagent.native-wrapper-sdk")
                 }
                 group = "io.github.codex-agent-labs"
                 version = "0.2.0"

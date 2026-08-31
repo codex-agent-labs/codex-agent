@@ -15,13 +15,8 @@ codex-agent-core/src/commonTest/**
 codex-agent-core/src/jvmAndAndroidMain/**
 codex-agent-core/src/jvmTest/**
 codex-agent-runtime-desktop/build.gradle.kts
-codex-agent-runtime-desktop/npm/**
 codex-agent-runtime-desktop/src/commonMain/**
 codex-agent-runtime-desktop/src/commonTest/**
-codex-agent-runtime-desktop/src/webMain/**
-codex-agent-runtime-desktop/src/webTest/**
-codex-agent-runtime-desktop/src/jsMain/**
-codex-agent-runtime-desktop/src/jsTest/**
 codex-agent-runtime-desktop/native/c-api/**
 codex-agent-runtime-desktop/src/nativeMain/**/capi/**
 codex-agent-runtime-desktop/src/nativeTest/**/capi/**

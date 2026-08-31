@@ -319,7 +319,7 @@ The core tasks write content-hash-bound evidence under
 - `bindings/kotlin-parity.json` is the Contract-owned Kotlin receipt;
   `bindings/java-parity.json` is the SDK-owned Java receipt retained at the
   established report path.
-- `codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/javascript-typescript-parity.json`
+- `codex-agent-sdk/build/reports/cross-language-api/bindings/javascript-typescript-parity.json`
   is the verified JavaScript/TypeScript receipt.
 - `codex-agent-runtime-ios/build/reports/cross-language-api/bindings/swift-parity.json`
   and `codex-agent-runtime-ios/build/reports/cross-language-api/bindings/objective-c-parity.json`
@@ -346,12 +346,12 @@ report. The current focused gates are:
 ```shell
 ./gradlew :codex-agent-core:verifyKotlinBindingParity \
   :codex-agent-core:verifyJavaBindingParity \
-  :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity \
-  :codex-agent-runtime-desktop:verifyPythonBindingParity \
-  :codex-agent-runtime-desktop:verifyCSharpBindingParity \
-  :codex-agent-runtime-desktop:verifyRustBindingParity \
-  :codex-agent-runtime-desktop:verifyCppBindingParity \
-  :codex-agent-runtime-desktop:verifyDartBindingParity
+  :codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity \
+  :codex-agent-sdk:verifyPythonBindingParity \
+  :codex-agent-sdk:verifyCSharpBindingParity \
+  :codex-agent-sdk:verifyRustBindingParity \
+  :codex-agent-sdk:verifyCppBindingParity \
+  :codex-agent-sdk:verifyDartBindingParity
 ./gradlew verifySdk \
   -PcodexAgent.sdkBindingEvidenceDirectory=<exact-m11-evidence-directory>
 ./gradlew verifyRepository \

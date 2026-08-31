@@ -2,7 +2,11 @@ codex-agent-runtime-desktop/src/commonTest/**
 codex-agent-runtime-desktop/src/desktopTest/**
 codex-agent-runtime-desktop/src/nativeTest/**
 codex-agent-runtime-desktop/native/**
-codex-agent-runtime-desktop/bindings/**
+codex-agent-bindings/python/**
+codex-agent-bindings/csharp/**
+codex-agent-bindings/rust/**
+codex-agent-bindings/cpp/**
+codex-agent-bindings/dart/**
 codex-agent-runtime-desktop/src/nativeMain/**
 codex-agent-runtime-desktop/src/nativeInterop/**
 codex-agent-runtime-desktop/src/jvmMain/**
@@ -27,3 +31,4 @@ gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt
 gradle/build-logic/src/test/kotlin/CrossLanguage*.kt
 gradle/build-logic/src/test/**/*Desktop*
 .github/workflows/desktop-runtime-evidence.yml
+gradle/build-logic/src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts

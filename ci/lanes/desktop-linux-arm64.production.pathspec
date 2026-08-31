@@ -3,7 +3,11 @@ THIRD_PARTY_NOTICES.md
 codex-agent-runtime-desktop/build.gradle.kts
 codex-agent-runtime-desktop/codex-app-server-distributions.json
 codex-agent-runtime-desktop/native/**
-codex-agent-runtime-desktop/bindings/**
+codex-agent-bindings/python/**
+codex-agent-bindings/csharp/**
+codex-agent-bindings/rust/**
+codex-agent-bindings/cpp/**
+codex-agent-bindings/dart/**
 codex-agent-runtime-desktop/src/commonMain/**
 codex-agent-runtime-desktop/src/nativeMain/**
 codex-agent-runtime-desktop/src/nativeInterop/**
@@ -20,3 +24,4 @@ gradle/build-logic/src/main/kotlin/CrossLanguageCAbiPackageEvidence.kt
 gradle/build-logic/src/main/kotlin/LinuxArm64RuntimeEvidenceBundle.kt
 gradle/build-logic/src/main/kotlin/RuntimeBundleEvidence.kt
 gradle/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts
+gradle/build-logic/src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts

@@ -102,7 +102,7 @@ jobs:
         if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true'
         run: >-
           ./gradlew :build-logic:test
-          :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity
+          :codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity
           :codex-agent-runtime-desktop:generateMingwX64MsvcImportLibrary
           --dry-run --configuration-cache --configuration-cache-problems=fail --no-build-cache
       - if: github.event_name == 'pull_request' && steps.actionlint-cache.outputs.cache-hit != 'true'
@@ -134,6 +134,7 @@ jobs:
       lane_android_build: ${{ steps.impact.outputs.lane_android_build }}
       lane_android_test: ${{ steps.impact.outputs.lane_android_test }}
       lane_android_metadata: ${{ steps.impact.outputs.lane_android_metadata }}
+      lane_node_js: ${{ steps.impact.outputs.lane_node_js }}
       lane_desktop_linux_arm64: ${{ steps.impact.outputs.lane_desktop_linux_arm64 }}
       lane_desktop_linux_arm64_build: ${{ steps.impact.outputs.lane_desktop_linux_arm64_build }}
       lane_desktop_linux_arm64_test: ${{ steps.impact.outputs.lane_desktop_linux_arm64_test }}
@@ -345,10 +346,77 @@ jobs:
           metadata: ${{ matrix.metadata }}
           node-version: ${{ contains(matrix.lane, 'node') && '24.18.0' || 'none' }}
 
+  sdk-javascript:
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.validation_reused != 'true' &&
+      needs.plan.outputs.lane_node_js == 'true' &&
+      needs.product.result == 'success'
+    needs: [workflow-lint, plan, product]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-ci-contracts-${{ needs.plan.outputs.validation_tree }}
+          path: build/ci/sdk-contract
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-ci-node-js-${{ needs.plan.outputs.validation_tree }}
+          path: build/ci/sdk-runtime
+      - uses: ./.github/actions/setup-kmp
+        with:
+          cache-read-only: "true"
+          node-version: "24.18.0"
+      - name: Verify JavaScript and TypeScript from exact Contract and Runtime stages
+        env:
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          one_directory() {
+            mapfile -t matches < <(find "$1" -type d -path "$2" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          contract=$(one_directory build/ci/sdk-contract '*/payload/build/product-stage/contract/contract/binary')
+          package=$(one_directory build/ci/sdk-runtime '*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/node-js/package')
+          validation=$(one_directory build/ci/sdk-runtime '*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/node-js-binding/validation')
+          product_args=(
+            -PcodexAgent.contractBinaryStage="$PWD/$contract"
+            -PcodexAgent.runtimePackageStage="$PWD/$package"
+            -PcodexAgent.runtimeBindingValidationStage="$PWD/$validation"
+            -PcodexAgent.candidateTree="$VALIDATION_TREE"
+          )
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=sdk \
+            -PcodexAgent.component=javascript \
+            -PcodexAgent.phase=package \
+            "${product_args[@]}" \
+            --stacktrace
+          ./gradlew :codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity \
+            "${product_args[@]}" \
+            --stacktrace
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          name: codex-agent-sdk-javascript-parity-${{ needs.plan.outputs.validation_tree }}
+          path: |
+            codex-agent-sdk/build/product-stage/sdk/javascript/package
+            codex-agent-sdk/build/reports/cross-language-api/bindings/javascript-typescript-parity.json
+          compression-level: 0
+          retention-days: 1
+
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple, consumers]
+    needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -386,6 +454,11 @@ jobs:
         with:
           pattern: codex-agent-ci-*
           path: build/ci/receipts
+      - if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_node_js == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-sdk-javascript-parity-${{ needs.plan.outputs.validation_tree }}
+          path: build/ci/receipts/sdk-javascript
       - if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -534,11 +607,11 @@ jobs:
             done
           done
           ./gradlew \
-            :codex-agent-runtime-desktop:verifyPythonBindingParity \
-            :codex-agent-runtime-desktop:verifyCSharpBindingParity \
-            :codex-agent-runtime-desktop:verifyRustBindingParity \
-            :codex-agent-runtime-desktop:verifyCppBindingParity \
-            :codex-agent-runtime-desktop:verifyDartBindingParity \
+            :codex-agent-sdk:verifyPythonBindingParity \
+            :codex-agent-sdk:verifyCSharpBindingParity \
+            :codex-agent-sdk:verifyRustBindingParity \
+            :codex-agent-sdk:verifyCppBindingParity \
+            :codex-agent-sdk:verifyDartBindingParity \
             -PcodexAgent.nativeWrapperReleaseDirectory="$PWD/$release" \
             -PcodexAgent.nativeWrapperHostEvidenceDirectory="$PWD/$binding_root/host" \
             -PcodexAgent.nativeWrapperApiReport="$PWD/$api_report" \
@@ -561,7 +634,7 @@ jobs:
               java -jar "$release_tool" advance-cross-language-binding-receipt \
                 --phase "$phase" --source "$source" --output "$receipts/$(basename "$source")"
             done
-            cp "codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/$language-parity.json" \
+            cp "codex-agent-sdk/build/reports/cross-language-api/bindings/$language-parity.json" \
               "$receipts/$language-parity.json"
             audit="$phase_root/binding-obligations-${phase,,}.json"
             java -jar "$release_tool" audit-cross-language-bindings \

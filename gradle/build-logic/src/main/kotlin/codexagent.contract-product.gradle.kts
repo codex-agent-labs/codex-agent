@@ -155,6 +155,11 @@ val desktopRuntime = providers.provider {
         "Runtime and SDK product phases require :codex-agent-runtime-desktop"
     }
 }
+val sdk = providers.provider {
+    checkNotNull(findProject(":codex-agent-sdk")) {
+        "SDK product phases require :codex-agent-sdk"
+    }
+}
 tasks.register("ciProductPhase") {
     group = "build"
     description = "Executes one exact product/component/phase lifecycle mapping."
@@ -211,17 +216,17 @@ tasks.register("ciProductPhase") {
             Triple("runtime", "node-wasm", "validation") ->
                 desktopRuntime.get().tasks.named("writeNodeWasmRuntimeValidationOutputManifest")
             Triple("sdk", "javascript", "package") ->
-                desktopRuntime.get().tasks.named("writeJavaScriptSdkPackageOutputManifest")
+                sdk.get().tasks.named("writeJavaScriptSdkPackageOutputManifest")
             Triple("sdk", "python", "package") ->
-                desktopRuntime.get().tasks.named("writePythonNativeWrapperSdkPackageOutputManifest")
+                sdk.get().tasks.named("writePythonNativeWrapperSdkPackageOutputManifest")
             Triple("sdk", "csharp", "package") ->
-                desktopRuntime.get().tasks.named("writeCSharpNativeWrapperSdkPackageOutputManifest")
+                sdk.get().tasks.named("writeCSharpNativeWrapperSdkPackageOutputManifest")
             Triple("sdk", "rust", "package") ->
-                desktopRuntime.get().tasks.named("writeRustNativeWrapperSdkPackageOutputManifest")
+                sdk.get().tasks.named("writeRustNativeWrapperSdkPackageOutputManifest")
             Triple("sdk", "cpp", "package") ->
-                desktopRuntime.get().tasks.named("writeCppNativeWrapperSdkPackageOutputManifest")
+                sdk.get().tasks.named("writeCppNativeWrapperSdkPackageOutputManifest")
             Triple("sdk", "dart", "package") ->
-                desktopRuntime.get().tasks.named("writeDartNativeWrapperSdkPackageOutputManifest")
+                sdk.get().tasks.named("writeDartNativeWrapperSdkPackageOutputManifest")
             else -> error("Unsupported product phase: ${selection.first}/${selection.second}/${selection.third}")
         }
     })

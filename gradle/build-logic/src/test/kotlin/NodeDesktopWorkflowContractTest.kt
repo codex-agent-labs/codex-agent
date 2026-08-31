@@ -36,16 +36,30 @@ class NodeDesktopWorkflowContractTest {
     }
 
     @Test
-    fun `Node JS runs the strict binding gate once and contracts receive pinned Node`() {
+    fun `Node JS stages Runtime validation and the SDK job owns the strict binding gate`() {
         val nodeJs = driver.substringAfter("  node-js)").substringBefore("  node-wasm)")
         val nodeWasm = driver.substringAfter("  node-wasm)").substringBefore("  desktop-macos-arm64)")
-        val strictTask = ":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity"
+        val strictTask = ":codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity"
         val ci = workflows.getValue("product-validation.yml")
 
-        assertEquals(1, Regex(Regex.escape(strictTask)).findAll(nodeJs).count())
+        assertFalse(strictTask in nodeJs)
+        assertEquals(
+            1,
+            Regex(Regex.escape(":codex-agent-runtime-desktop:writeNodeJsBindingValidationOutputManifest"))
+                .findAll(nodeJs).count(),
+        )
         assertFalse(":codex-agent-runtime-desktop:verifyPackedNpmConsumers" in nodeJs)
         assertFalse(":codex-agent-runtime-desktop:jsNodeTest" in nodeJs)
         assertFalse(strictTask in nodeWasm)
+        val sdkJavaScript = ci.substringAfter("  sdk-javascript:").substringBefore("  merge-gate:")
+        assertEquals(1, Regex(Regex.escape(strictTask)).findAll(sdkJavaScript).count())
+        assertTrue("-PcodexAgent.product=sdk" in sdkJavaScript)
+        assertTrue("-PcodexAgent.component=javascript" in sdkJavaScript)
+        assertTrue("codex-agent-sdk/build/product-stage/sdk/javascript/package" in sdkJavaScript)
+        assertTrue("needs.plan.outputs.lane_node_js == 'true'" in sdkJavaScript)
+        assertTrue("name: codex-agent-ci-node-js-${'$'}{{ needs.plan.outputs.validation_tree }}" in sdkJavaScript)
+        assertTrue("build/ci/sdk-runtime" in sdkJavaScript)
+        assertFalse("codex-agent-ci-portable-" in sdkJavaScript)
         assertEquals(
             1,
             Regex(Regex.escape(":codex-agent-runtime-desktop:wasmJsNodeTest")).findAll(nodeWasm).count(),

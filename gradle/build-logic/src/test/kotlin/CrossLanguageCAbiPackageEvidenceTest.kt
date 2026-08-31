@@ -56,22 +56,27 @@ class CrossLanguageCAbiPackageEvidenceTest {
             ".orElse(localCAbiRunner?.runnerOs ?: \"unsupported\")",
             ".orElse(localCAbiRunner?.runnerArch ?: \"unsupported\")",
             "artifact(cAbiArchiveFiles.getValue(target))",
+            "c-abi-reference",
+        ).forEach { contract -> assertTrue(contract in wiring, "Missing desktop C ABI wiring: $contract") }
+        val sdkWiring = File("src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts").readText()
+        listOf(
             "tasks.register<StageCrossLanguageNativeWrapperSdksTask>",
             "tasks.register<MaterializeCrossLanguageNativeWrapperPackageAssetsTask>",
             "codexAgent.nativeWrapperRuntimeStageRoot",
-            "c-abi-reference",
             "native-wrapper-c-abi-sdks",
             "native-wrapper-package-assets",
             "prepareNativeWrapperPackageSources",
             "native-wrapper-package-sources/",
             "\"dart\" to (\"Dart\" to listOf(\"build/**\"",
-        ).forEach { contract -> assertTrue(contract in wiring, "Missing desktop C ABI wiring: $contract") }
+        ).forEach { contract -> assertTrue(contract in sdkWiring, "Missing SDK wrapper wiring: $contract") }
+        assertFalse("StageCrossLanguageNativeWrapperSdksTask" in wiring)
+        assertFalse("MaterializeCrossLanguageNativeWrapperPackageAssetsTask" in wiring)
         assertEquals(1, Regex("artifact\\(cAbiArchiveFiles\\.getValue\\(target\\)\\)").findAll(wiring).count())
         assertTrue(
             "check(runnerOs.get() == spec.runnerOs && runnerArch.get() == spec.runnerArch)" in
                 File("src/main/kotlin/CrossLanguageCAbiPackageEvidence.kt").readText(),
         )
-        val cppCmake = File("../../codex-agent-runtime-desktop/bindings/cpp/CMakeLists.txt").readText()
+        val cppCmake = File("../../codex-agent-bindings/cpp/CMakeLists.txt").readText()
         assertTrue("\"${'$'}{CodexAgent_C_SDK_ROOT}/LICENSE.txt\"" in cppCmake)
         assertFalse("../../../LICENSE" in cppCmake)
         assertFalse("tasks.named<KotlinNativeTest>(testTaskName)" in wiring)

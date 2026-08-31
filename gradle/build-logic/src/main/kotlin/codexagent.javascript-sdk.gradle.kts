@@ -10,11 +10,14 @@ val npmEntryModule = "codex-agent-codex-agent-runtime-desktop"
 val npmPackageName = "@codex-agent-labs" + "/codex-agent"
 val npmVersion = rootProject.extra["codexAgent.sdkVersion"].toString()
 val npmContractVersion = rootProject.extra["codexAgent.contractVersion"].toString()
-val npmSourceDirectory = layout.projectDirectory.dir("npm/package")
-val npmConsumerSourceDirectory = layout.projectDirectory.dir("npm/consumer")
+val npmSourceDirectory = rootProject.layout.projectDirectory.dir("codex-agent-bindings/javascript/package")
+val npmConsumerSourceDirectory = rootProject.layout.projectDirectory.dir("codex-agent-bindings/javascript/consumer")
 val importedNpmContractBinaryStage = providers.gradleProperty("codexAgent.contractBinaryStage").map(::file)
 val importedNpmRuntimePackageStage = providers.gradleProperty("codexAgent.runtimePackageStage").map(::file)
+val importedNpmRuntimeValidationStage =
+    providers.gradleProperty("codexAgent.runtimeBindingValidationStage").map(::file)
 val npmCandidateTree = providers.gradleProperty("codexAgent.candidateTree")
+val npmRuntimeVersion = rootProject.extra["codexAgent.runtimeVersion"].toString()
 val importedNpmContractSnapshotRoot = layout.buildDirectory.dir(
     npmCandidateTree.map { "imported-sdk-product-stages/$it/contract" },
 )
@@ -37,22 +40,22 @@ val snapshotImportedNpmRuntimePackageStage = tasks.register<SnapshotImportedProd
     producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
     repositoryRoot.set(rootProject.layout.projectDirectory)
 }
-val npmCompiledDirectory = if (importedNpmRuntimePackageStage.isPresent) {
-    importedNpmRuntimeSnapshotRoot.map { it.dir("outputs/adapter") }
-} else {
-    layout.buildDirectory.dir("compileSync/js/main/productionExecutable/kotlin")
+val importedNpmRuntimeValidationSnapshotRoot = layout.buildDirectory.dir(
+    npmCandidateTree.map { "imported-sdk-product-stages/$it/node-js-binding-validation" },
+)
+val snapshotImportedNpmRuntimeValidationStage = tasks.register<SnapshotImportedProductStageTask>(
+    "snapshotImportedNpmRuntimeValidationStage",
+) {
+    sourceDirectory.set(layout.dir(importedNpmRuntimeValidationStage))
+    outputDirectory.set(importedNpmRuntimeValidationSnapshotRoot)
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
 }
+val npmCompiledDirectory = importedNpmRuntimeSnapshotRoot.map { it.dir("outputs/adapter") }
 val npmGeneratedDeclaration = npmCompiledDirectory.map { it.file("$npmEntryModule.d.ts") }
 val npmReviewedDeclaration = npmSourceDirectory.file("index.d.ts")
-val crossLanguageApiReport = if (importedNpmContractBinaryStage.isPresent) {
+val crossLanguageApiReport =
     importedNpmContractSnapshotRoot.map { it.file("outputs/evidence/canonical-api.json") }
-} else {
-    providers.provider {
-        rootProject.layout.projectDirectory.file(
-            "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
-        )
-    }
-}
 val npmGeneratedEnumDeclarations =
     layout.buildDirectory.file("generated/cross-language-js/canonical-enums.d.ts")
 val npmDeclarationReport = layout.buildDirectory.file("reports/npm/generated-index.d.ts")
@@ -90,21 +93,31 @@ val verifyImportedNpmRuntimePackageOutputManifest = tasks.register<VerifyImporte
     component.set("node-js")
     phase.set("package")
     target.set("node-js")
-    productVersion.set(project.version.toString())
+    productVersion.set(npmRuntimeVersion)
     dependsOn(snapshotImportedNpmRuntimePackageStage)
     stageRoot.set(importedNpmRuntimeSnapshotRoot)
     producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
     repositoryRoot.set(rootProject.layout.projectDirectory)
 }
+val verifyImportedNpmRuntimeValidationOutputManifest =
+    tasks.register<VerifyImportedProductOutputManifestTask>(
+        "verifyImportedNpmRuntimeValidationOutputManifest",
+    ) {
+        product.set("runtime")
+        component.set("node-js-binding")
+        phase.set("validation")
+        target.set("node-js")
+        productVersion.set(npmRuntimeVersion)
+        dependsOn(snapshotImportedNpmRuntimeValidationStage)
+        stageRoot.set(importedNpmRuntimeValidationSnapshotRoot)
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
 
 val generateJavaScriptEnumDeclarations = tasks.register<GenerateJavaScriptEnumDeclarationsTask>(
     "generateJavaScriptEnumDeclarations",
 ) {
-    dependsOn(if (importedNpmContractBinaryStage.isPresent) {
-        verifyImportedNpmContractBinaryOutputManifest
-    } else {
-        ":codex-agent-core:discoverCrossLanguageApi"
-    })
+    dependsOn(verifyImportedNpmContractBinaryOutputManifest)
     apiReport.set(crossLanguageApiReport)
     declarationsFile.set(npmGeneratedEnumDeclarations)
 }
@@ -113,11 +126,7 @@ val verifyNpmDeclarationGolden = tasks.register("verifyNpmDeclarationGolden") {
     group = "verification"
     description = "Verifies the reviewed Node SDK declaration against the Kotlin compiler output."
     dependsOn(generateJavaScriptEnumDeclarations)
-    dependsOn(if (importedNpmRuntimePackageStage.isPresent) {
-        verifyImportedNpmRuntimePackageOutputManifest
-    } else {
-        "jsProductionExecutableCompileSync"
-    })
+    dependsOn(verifyImportedNpmRuntimePackageOutputManifest)
     inputs.file(npmGeneratedDeclaration)
     inputs.file(npmReviewedDeclaration)
     inputs.file(npmGeneratedEnumDeclarations)
@@ -1521,7 +1530,7 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
         output.parentFile.mkdirs()
         output.writeText(actual)
         check(actual == reviewedGoldenDeclaration.readText().replace("\r\n", "\n")) {
-            "Generated Node SDK declarations differ from npm/package/index.d.ts"
+            "Generated Node SDK declarations differ from codex-agent-bindings/javascript/package/index.d.ts"
         }
     }
 }
@@ -1686,18 +1695,11 @@ val verifyPackedNpmConsumers = tasks.register<Exec>("verifyPackedNpmConsumers") 
     }
 }
 
-val jsNodeTest = tasks.named("jsNodeTest")
 verifyPackedNpmConsumers.configure { dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput) }
-jsNodeTest.configure { dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput) }
 tasks.configureEach {
     if (name != invalidateJavaScriptTypeScriptBindingParityOutput.name) {
         mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)
     }
-}
-project(":codex-agent-core").tasks.matching {
-    it.name == "invalidateCrossLanguageBindingParityOutputs"
-}.configureEach {
-    mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)
 }
 rootProject.tasks.matching { it.name == "prepareContractInputs" }.configureEach {
     mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)
@@ -1707,16 +1709,16 @@ tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>("verifyJavaScriptTyp
     description = "Verifies the exact packed JavaScript/TypeScript API and shared projection behavior parity."
     dependsOn(
         invalidateJavaScriptTypeScriptBindingParityOutput,
-        ":codex-agent-core:verifyCrossLanguageApiCoverage",
+        verifyImportedNpmContractBinaryOutputManifest,
+        verifyImportedNpmRuntimeValidationOutputManifest,
         verifyPackedNpmConsumers,
-        jsNodeTest,
     )
-    apiReport.set(rootProject.layout.projectDirectory.file(
-        "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
-    ))
-    coverage.set(rootProject.layout.projectDirectory.file(
-        "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json",
-    ))
+    apiReport.set(importedNpmContractSnapshotRoot.map {
+        it.file("outputs/evidence/canonical-api.json")
+    })
+    coverage.set(importedNpmContractSnapshotRoot.map {
+        it.file("outputs/evidence/canonical-coverage.json")
+    })
     packedApiReport.set(npmPublicApiReport)
     npmTarball.set(npmArchiveFile)
     installedPackage.set(npmConsumerDirectory.map {
@@ -1724,11 +1726,11 @@ tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>("verifyJavaScriptTyp
     })
     packedConsumerProgram.set(npmConsumerSourceDirectory)
     compiledJsNodeTestProgram.set(
-        layout.buildDirectory.dir("compileSync/js/test/testDevelopmentExecutable/kotlin"),
+        importedNpmRuntimeValidationSnapshotRoot.map { it.dir("outputs/test-program") },
     )
     packedJUnit.set(npmPackedTestReport)
-    jsNodeJUnit.set(layout.buildDirectory.file(
-        "test-results/jsNodeTest/TEST-jsNodeTest.CodexNodeApiTest.xml",
-    ))
+    jsNodeJUnit.set(importedNpmRuntimeValidationSnapshotRoot.map {
+        it.file("outputs/test-report/TEST-jsNodeTest.CodexNodeApiTest.xml")
+    })
     receiptFile.set(javaScriptBindingParityReceipt)
 }

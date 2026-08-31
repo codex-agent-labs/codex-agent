@@ -60,11 +60,11 @@ The executable consumer examples are the source of truth; package and CI tests
 compile or analyze every file below so documentation cannot drift into
 pseudocode:
 
-- [Python](../codex-agent-runtime-desktop/bindings/python/consumer/lifecycle_example.py)
-- [C#](../codex-agent-runtime-desktop/bindings/csharp/samples/CodexAgent.Consumer/Program.cs)
-- [Rust](../codex-agent-runtime-desktop/bindings/rust/consumer/src/bin/lifecycle_smoke.rs)
-- [C++](../codex-agent-runtime-desktop/bindings/cpp/consumer/lifecycle_example.cpp)
-- [Dart](../codex-agent-runtime-desktop/bindings/dart/example/main.dart)
+- [Python](../codex-agent-bindings/python/consumer/lifecycle_example.py)
+- [C#](../codex-agent-bindings/csharp/samples/CodexAgent.Consumer/Program.cs)
+- [Rust](../codex-agent-bindings/rust/consumer/src/bin/lifecycle_smoke.rs)
+- [C++](../codex-agent-bindings/cpp/consumer/lifecycle_example.cpp)
+- [Dart](../codex-agent-bindings/dart/example/main.dart)
 
 Examples need an authenticated matching-host runtime bundle to start the real
 App Server. Deterministic CI compiles or analyzes every example and exercises

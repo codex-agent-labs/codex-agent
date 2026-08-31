@@ -406,8 +406,8 @@ jobs:
           }
           stages=build/ci/native-wrapper-runtime-stages
           mkdir -p "$stages" \
-            codex-agent-core/build/reports/cross-language-api \
-            codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi
+            build/ci/sdk-contract-evidence \
+            build/ci/sdk-runtime-evidence
           for component in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
             mapfile -t roots < <(find build/ci/desktop-lanes -type d \
               -path "*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/$component" -print)
@@ -418,12 +418,12 @@ jobs:
             cp -R "${roots[0]}/package" "${roots[0]}/validation" "$stages/$component/"
           done
           cp "$(one_file build/ci/contracts canonical-api.json)" \
-            codex-agent-core/build/reports/cross-language-api/canonical-api.json
+            build/ci/sdk-contract-evidence/canonical-api.json
           cp "$(one_file build/ci/contracts canonical-coverage.json)" \
-            codex-agent-core/build/reports/cross-language-api/canonical-coverage.json
+            build/ci/sdk-contract-evidence/canonical-coverage.json
           cp "$(one_file build/ci/desktop-lanes bootstrap-evidence.json)" \
-            codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json
-          ./gradlew :codex-agent-runtime-desktop:prepareNativeWrapperPackageSources \
+            build/ci/sdk-runtime-evidence/bootstrap-evidence.json
+          ./gradlew :codex-agent-sdk:prepareNativeWrapperPackageSources \
             -PcodexAgent.nativeWrapperRuntimeStageRoot="$PWD/$stages" \
             -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}" \
             -PcodexAgent.candidateTree="${{ inputs.validationTree }}" \
@@ -435,11 +435,10 @@ jobs:
           include-hidden-files: true
           name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}
           path: |
-            codex-agent-core/build/reports/cross-language-api/canonical-api.json
-            codex-agent-core/build/reports/cross-language-api/canonical-coverage.json
-            codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks
-            codex-agent-runtime-desktop/build/native-wrapper-package-sources
-            codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json
+            build/ci/sdk-contract-evidence
+            build/ci/sdk-runtime-evidence
+            codex-agent-sdk/build/native-wrapper-c-abi-sdks
+            codex-agent-sdk/build/native-wrapper-package-sources
           compression-level: 0
           retention-days: 1
 
@@ -485,8 +484,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdk="$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}/linux-x64/lib/libcodex_agent.so"
-          binding="$PWD/codex-agent-runtime-desktop/bindings"
+          sdk_root="$PWD/codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}/linux-x64"
+          sdk="$sdk_root/lib/libcodex_agent.so"
+          binding="$PWD/codex-agent-bindings"
+          canonical_api="$PWD/build/ci/sdk-contract-evidence/canonical-api.json"
+          bootstrap="$PWD/build/ci/sdk-runtime-evidence/bootstrap-evidence.json"
+          export CODEX_AGENT_CANONICAL_API_REPORT="$canonical_api"
+          export CODEX_AGENT_C_ABI_BOOTSTRAP_EVIDENCE="$bootstrap"
+          export CODEX_AGENT_C_SDK_ROOT="$sdk_root"
           evidence="build/native-wrapper-evidence/${{ matrix.language }}"
           mkdir -p "$evidence"
           case "${{ matrix.language }}" in
@@ -497,7 +502,10 @@ jobs:
               ;;
             csharp)
               dotnet build "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
-                --configuration Release -p:CodexAgentRealSdkPath="$sdk"
+                --configuration Release -p:CodexAgentRealSdkPath="$sdk" \
+                -p:CodexAgentCanonicalApiReport="$canonical_api" \
+                -p:CodexAgentCAbiBootstrapEvidence="$bootstrap" \
+                -p:CodexAgentCSdkRoot="$sdk_root"
               dotnet run --project "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
                 --configuration Release --no-build -- --real-mcp-values "$sdk"
               dotnet run --project "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
@@ -518,7 +526,9 @@ jobs:
               ;;
             cpp)
               cmake -S "$binding/cpp" -B build/native-wrapper-cpp-tests \
-                -DCodexAgent_C_SDK_ROOT="$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}/linux-x64" \
+                -DCodexAgent_C_SDK_ROOT="$sdk_root" \
+                -DCodexAgent_CANONICAL_API_REPORT="$canonical_api" \
+                -DCodexAgent_C_ABI_BOOTSTRAP_EVIDENCE="$bootstrap" \
                 -DCodexAgent_NATIVE_CLASSIFIER=linux-x64 -DCMAKE_BUILD_TYPE=Release \
                 -DCODEX_AGENT_CPP_BUILD_TESTS=ON
               cmake --build build/native-wrapper-cpp-tests --config Release --parallel 2
@@ -587,14 +597,19 @@ jobs:
           set -euo pipefail
           release=build/native-wrapper-package-payload
           cargo fetch \
-            --manifest-path codex-agent-runtime-desktop/build/native-wrapper-package-sources/rust/Cargo.toml \
+            --manifest-path codex-agent-sdk/build/native-wrapper-package-sources/rust/Cargo.toml \
             --locked
-          python ci/native_wrappers.py package \
-            --repository "$PWD" \
-            --sources "$PWD/codex-agent-runtime-desktop/build/native-wrapper-package-sources" \
-            --sdks "$PWD/codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" \
-            --output "$PWD/$release/packages"
-          cp -R "codex-agent-runtime-desktop/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" "$release/sdks"
+          tool=build/native-wrapper-package-tool
+          mkdir -p "$tool/ci"
+          cp ci/native_wrappers.py "$tool/ci/"
+          cp -R ci/products "$tool/ci/"
+          test ! -e "$tool/codex-agent-runtime-desktop"
+          python "$tool/ci/native_wrappers.py" package \
+            --sources "$PWD/codex-agent-sdk/build/native-wrapper-package-sources" \
+            --sdks "$PWD/codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" \
+            --output "$PWD/$release/packages" \
+            --sdk-version-file "$PWD/gradle/release/versions/sdk.txt"
+          cp -R "codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" "$release/sdks"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -716,6 +731,7 @@ jobs:
           --sdks "$PWD/build/native-wrapper-release/sdks"
           --plan "$PWD/build/ci/plan/impact-plan.json"
           --output "$PWD/build/native-wrapper-host/${{ matrix.classifier }}"
+          --sdk-version-file "$PWD/gradle/release/versions/sdk.txt"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error

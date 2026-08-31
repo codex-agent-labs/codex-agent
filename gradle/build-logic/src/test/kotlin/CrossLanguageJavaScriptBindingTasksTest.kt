@@ -60,29 +60,15 @@ class CrossLanguageJavaScriptBindingTasksTest {
     }
 
     @Test
-    fun `transitive core prerequisite failure deletes a stale receipt first`() {
+    fun `transitive imported prerequisite failure deletes a stale receipt first`() {
         val root = createTempDirectory("javascript-binding-preflight").toFile()
         try {
             root.resolve("settings.gradle.kts").writeText("""
                 rootProject.name = "javascript-binding-preflight"
-                include(":core", ":desktop")
+                include(":sdk")
             """.trimIndent())
-            root.resolve("core").mkdirs()
-            root.resolve("core/build.gradle.kts").writeText("""
-                plugins { base }
-                val preflight = tasks.register<Delete>("invalidateCrossLanguageBindingParityOutputs")
-                tasks.configureEach {
-                    if (name != preflight.name) mustRunAfter(preflight)
-                }
-                val failingPrerequisite = tasks.register("failingCanonicalTest") {
-                    doLast { throw GradleException("intentional canonical prerequisite failure") }
-                }
-                tasks.register("verifyCrossLanguageApiCoverage") {
-                    dependsOn(preflight, failingPrerequisite)
-                }
-            """.trimIndent())
-            root.resolve("desktop").mkdirs()
-            root.resolve("desktop/build.gradle.kts").writeText("""
+            root.resolve("sdk").mkdirs()
+            root.resolve("sdk/build.gradle.kts").writeText("""
                 plugins { base }
                 val receipt = layout.buildDirectory.file(
                     "reports/cross-language-api/bindings/javascript-typescript-parity.json",
@@ -93,17 +79,15 @@ class CrossLanguageJavaScriptBindingTasksTest {
                 tasks.configureEach {
                     if (name != preflight.name) mustRunAfter(preflight)
                 }
-                project(":core").tasks.matching {
-                    it.name == "invalidateCrossLanguageBindingParityOutputs"
-                }.configureEach {
-                    mustRunAfter(preflight)
+                val failingPrerequisite = tasks.register("verifyImportedRuntimeManifest") {
+                    doLast { throw GradleException("intentional imported manifest failure") }
                 }
                 tasks.register("verifyJavaScriptTypeScriptBindingParity") {
-                    dependsOn(preflight, ":core:verifyCrossLanguageApiCoverage")
+                    dependsOn(preflight, failingPrerequisite)
                 }
             """.trimIndent())
             val stale = root.resolve(
-                "desktop/build/reports/cross-language-api/bindings/javascript-typescript-parity.json",
+                "sdk/build/reports/cross-language-api/bindings/javascript-typescript-parity.json",
             ).apply {
                 parentFile.mkdirs()
                 writeText("stale passed receipt")
@@ -111,32 +95,30 @@ class CrossLanguageJavaScriptBindingTasksTest {
 
             val result = GradleRunner.create()
                 .withProjectDir(root)
-                .withArguments(":desktop:verifyJavaScriptTypeScriptBindingParity", "--stacktrace")
+                .withArguments(":sdk:verifyJavaScriptTypeScriptBindingParity", "--stacktrace")
                 .buildAndFail()
 
             assertEquals(
                 TaskOutcome.SUCCESS,
-                result.task(":desktop:invalidateJavaScriptTypeScriptBindingParityOutput")?.outcome,
+                result.task(":sdk:invalidateJavaScriptTypeScriptBindingParityOutput")?.outcome,
                 result.output,
             )
-            assertEquals(TaskOutcome.FAILED, result.task(":core:failingCanonicalTest")?.outcome)
-            assertTrue("intentional canonical prerequisite failure" in result.output)
+            assertEquals(TaskOutcome.FAILED, result.task(":sdk:verifyImportedRuntimeManifest")?.outcome)
+            assertTrue("intentional imported manifest failure" in result.output)
             assertFalse(stale.exists())
             val wiring = File("src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText()
             listOf(
                 "tasks.configureEach",
                 "mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)",
-                "it.name == \"invalidateCrossLanguageBindingParityOutputs\"",
                 "rootProject.tasks.matching { it.name == \"prepareContractInputs\" }",
-                ":codex-agent-core:verifyCrossLanguageApiCoverage",
+                "verifyImportedNpmContractBinaryOutputManifest",
+                "verifyImportedNpmRuntimePackageOutputManifest",
+                "verifyImportedNpmRuntimeValidationOutputManifest",
                 "dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput)",
             ).forEach { contract ->
                 assertTrue(contract in wiring, "Missing JavaScript/TypeScript preflight contract: $contract")
             }
-            val coreOrdering = wiring.substringAfter("project(\":codex-agent-core\").tasks.matching {")
-                .substringBefore("tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>")
-            assertTrue("mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)" in coreOrdering)
-            assertFalse("dependsOn(invalidateJavaScriptTypeScriptBindingParityOutput)" in coreOrdering)
+            assertFalse(":codex-agent-core:" in wiring)
         } finally {
             root.deleteRecursively()
         }

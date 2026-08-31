@@ -398,6 +398,25 @@ runs:
             -PcodexAgent.candidateTree="$VALIDATION_TREE" \
             --stacktrace
         done
+    - id: contract-product
+      name: Stage the exact Contract binary product
+      if: >-
+        inputs.lane == 'contracts' && inputs.reuse-only != 'true' &&
+        steps.reuse.outputs.reused != 'true' && steps.production.outputs.reused != 'true' &&
+        steps.production-execution.outcome == 'success'
+      continue-on-error: true
+      env:
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+      shell: bash
+      run: |
+        ./gradlew ciProductPhase \
+          -PcodexAgent.product=contract \
+          -PcodexAgent.component=contract \
+          -PcodexAgent.phase=binary \
+          -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+          -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+          --stacktrace
     - name: Stage the exact Desktop Runtime binary product
       if: >-
         startsWith(inputs.lane, 'desktop-') && inputs.reuse-only != 'true' &&
@@ -453,6 +472,7 @@ runs:
       if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         steps.production-execution.outcome != 'failure' &&
+        steps.contract-product.outcome != 'failure' &&
         steps.portable-runtime-products.outcome != 'failure' &&
         (inputs.force-build == 'true' || steps.selection.outputs.test == 'true' ||
         steps.selection.outputs.metadata == 'true' ||

@@ -8,6 +8,7 @@ class ProductPhaseMappingContractTest {
     private val contract = File("src/main/kotlin/codexagent.contract-product.gradle.kts").readText()
     private val desktop = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
     private val javascript = File("src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText()
+    private val nativeWrappers = File("src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts").readText()
     private val node = File("../../codex-agent-runtime-desktop/build.gradle.kts").readText()
     private val manifestTask = File("src/main/kotlin/ProductOutputManifestGradleTask.kt").readText()
 
@@ -135,6 +136,10 @@ class ProductPhaseMappingContractTest {
         assertTrue(
             "tasks.register<WriteProductOutputManifestTask>(" +
                 "\"writeJavaScriptSdkPackageOutputManifest\")" in javascriptPackage(),
+        )
+        assertEquals(
+            1,
+            Regex("tasks\\.register<WriteProductOutputManifestTask>").findAll(nativeWrapperPackage()).count(),
         )
         assertEquals(1, Regex("abstract class WriteProductOutputManifestTask").findAll(manifestTask).count())
     }
@@ -382,7 +387,7 @@ class ProductPhaseMappingContractTest {
     fun JavaScript_package_consumes_verified_Contract_and_Runtime_artifacts_only() {
         val imported = javascriptImportedHandoff()
         assertEquals(
-            2,
+            3,
             Regex("tasks\\.register<VerifyImportedProductOutputManifestTask>")
                 .findAll(imported).count(),
         )
@@ -402,6 +407,11 @@ class ProductPhaseMappingContractTest {
         val runtimeManifest = between(
             imported,
             "val verifyImportedNpmRuntimePackageOutputManifest =",
+            "val verifyImportedNpmRuntimeValidationOutputManifest =",
+        )
+        val behaviorManifest = between(
+            imported,
+            "val verifyImportedNpmRuntimeValidationOutputManifest =",
             "val generateJavaScriptEnumDeclarations =",
         )
         listOf(
@@ -411,19 +421,21 @@ class ProductPhaseMappingContractTest {
             "target.set(\"node-js\")",
             "stageRoot.set(importedNpmRuntimeSnapshotRoot)",
         ).forEach { contract -> assertTrue(contract in runtimeManifest, contract) }
+        listOf(
+            "product.set(\"runtime\")",
+            "component.set(\"node-js-binding\")",
+            "phase.set(\"validation\")",
+            "target.set(\"node-js\")",
+            "stageRoot.set(importedNpmRuntimeValidationSnapshotRoot)",
+        ).forEach { contract -> assertTrue(contract in behaviorManifest, contract) }
 
         assertTrue("it.file(\"outputs/evidence/canonical-api.json\")" in imported)
         assertTrue("it.dir(\"outputs/adapter\")" in imported)
-        assertTrue(
-            "dependsOn(if (importedNpmContractBinaryStage.isPresent)" in imported &&
-                "verifyImportedNpmContractBinaryOutputManifest" in imported &&
-                "\":codex-agent-core:discoverCrossLanguageApi\"" in imported,
-        )
-        assertTrue(
-            "dependsOn(if (importedNpmRuntimePackageStage.isPresent)" in imported &&
-                "verifyImportedNpmRuntimePackageOutputManifest" in imported &&
-                "\"jsProductionExecutableCompileSync\"" in imported,
-        )
+        assertTrue("dependsOn(verifyImportedNpmContractBinaryOutputManifest)" in imported)
+        assertTrue("dependsOn(verifyImportedNpmRuntimePackageOutputManifest)" in imported)
+        assertTrue("verifyImportedNpmRuntimeValidationOutputManifest" in imported)
+        assertFalse(":codex-agent-core:" in imported)
+        assertFalse("jsProductionExecutableCompileSync" in imported)
 
         val sdkPackage = javascriptPackage()
         assertEquals(mapOf("package" to "outputs/package"), outputRoots(sdkPackage))
@@ -457,6 +469,7 @@ class ProductPhaseMappingContractTest {
             nodeValidation(),
             javascriptImportedHandoff(),
             javascriptPackage(),
+            nativeWrapperPackage(),
             manifestTask,
         ).joinToString("\n")
         listOf(
@@ -487,19 +500,25 @@ class ProductPhaseMappingContractTest {
     private fun nativeValidation(): String = between(
         desktop,
         "val validationPhaseRoot =",
-        "val nativeWrapperRuntimeStageRoot =",
+        "val jvmValidationTarget =",
     )
 
     private fun nativeValidationHandoff(): String = between(
         desktop,
         "val productPhaseEvidenceTarget =",
-        "val nativeWrapperRuntimeStageRoot =",
+        "val jvmValidationTarget =",
     )
 
     private fun jvmValidation(): String = between(
         desktop,
         "val jvmValidationTarget =",
+        "pluginManager.withPlugin(\"maven-publish\")",
+    )
+
+    private fun nativeWrapperPackage(): String = between(
+        nativeWrappers,
         "val nativeWrapperRuntimeStageRoot =",
+        "val nativeWrapperReleaseDirectory =",
     )
 
     private fun nodeValidation(): String = between(

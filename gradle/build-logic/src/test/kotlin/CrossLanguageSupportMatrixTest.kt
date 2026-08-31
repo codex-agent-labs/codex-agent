@@ -31,7 +31,7 @@ class CrossLanguageSupportMatrixTest {
             "cpp/consumer/lifecycle_example.cpp",
             "dart/example/main.dart",
         ).forEach { path ->
-            assertTrue(File("../../codex-agent-runtime-desktop/bindings/$path").isFile, path)
+            assertTrue(File("../../codex-agent-bindings/$path").isFile, path)
         }
     }
 }

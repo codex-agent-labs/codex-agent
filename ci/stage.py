@@ -30,9 +30,7 @@ RUNTIME_ADAPTER_VALIDATION_OUTPUTS = tuple(
 OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
     "contracts": (
         ("build", "gradle/build-logic/build/libs/codex-agent-release-tooling.jar", "release-tooling"),
-        ("test", "codex-agent-core/build/reports/cross-language-api/canonical-api.json", "cross-language-api-report-evidence"),
-        ("test", "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json", "cross-language-coverage-receipt-evidence"),
-        ("test", "codex-agent-core/build/reports/cross-language-api/bindings/kotlin-parity.json", "cross-language-kotlin-binding-receipt-evidence"),
+        ("build", "build/product-stage/contract/contract/binary/**/*", "contract-binary-stage-member"),
         ("test", "codex-agent-core/build/reports/cross-language-api/bindings/java-parity.json", "cross-language-java-binding-receipt-evidence"),
     ),
     "portable": (
@@ -48,13 +46,17 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("metadata", "codex-agent-runtime-android/build/reports/lint-results-release.xml", "lint-report"),
     ),
     "node-js": (
-        ("build", "codex-agent-runtime-desktop/build/npm/consumer/public-api.json", "npm-public-api-report"),
-        ("build", "codex-agent-runtime-desktop/build/npm/consumer/packed-tests.xml", "npm-packed-test-report"),
+        (
+            "build",
+            "codex-agent-runtime-desktop/build/product-stage/runtime/"
+            "node-js/package/**/*",
+            "runtime-package-stage-member",
+        ),
         (
             "test",
-            "codex-agent-runtime-desktop/build/reports/cross-language-api/bindings/"
-            "javascript-typescript-parity.json",
-            "cross-language-javascript-typescript-binding-receipt-evidence",
+            "codex-agent-runtime-desktop/build/product-stage/runtime/"
+            "node-js-binding/validation/**/*",
+            "runtime-binding-validation-stage-member",
         ),
     ),
     "desktop-macos-arm64": (
@@ -366,6 +368,21 @@ def restore_production_files(
     return artifacts, evidence
 
 
+def selected_output(lane: str, state: dict[str, object], action: str, kind: str) -> bool:
+    return bool(
+        state[action]
+        or (
+            lane == "node-js"
+            and kind in {"runtime-package-stage-member", "runtime-binding-validation-stage-member"}
+            and (state["build"] or state["test"])
+        )
+        or (lane == "ios-swift-build" and action == "build" and state["test"])
+        or (lane == "ios-privacy-metrics" and action == "metadata" and state["test"])
+        or (lane.startswith("consumer-") and any(state[name] for name in ("build", "test", "metadata")))
+        or (lane == "ios-privacy-metrics" and action == "test" and state["metadata"])
+    )
+
+
 def main() -> None:
     if sys.argv[1:2] == ["extract-tar"]:
         parser = argparse.ArgumentParser()
@@ -416,22 +433,7 @@ def main() -> None:
         restored = arguments.restored_production.resolve()
         artifact_map, evidence_map = restore_production_files(restored, output, arguments.lane)
     for action, pattern, kind in OUTPUTS.get(arguments.lane, ()):
-        selected = state[action] or (
-            arguments.lane == "ios-swift-build"
-            and action == "build"
-            and state["test"]
-        ) or (
-            arguments.lane == "ios-privacy-metrics"
-            and action == "metadata"
-            and state["test"]
-        ) or (
-            arguments.lane.startswith("consumer-")
-            and any(state[name] for name in ("build", "test", "metadata"))
-        ) or (
-            arguments.lane == "ios-privacy-metrics"
-            and action == "test"
-            and state["metadata"]
-        )
+        selected = selected_output(arguments.lane, state, action, kind)
         if selected:
             if kind == "node-runtime-evidence" and os.environ.get("CI_NODE_JS_REQUIRED", "true") != "true":
                 continue

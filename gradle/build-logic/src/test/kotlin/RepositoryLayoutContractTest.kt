@@ -129,7 +129,8 @@ class RepositoryLayoutContractTest {
             "codex-agent-core/build.gradle.kts" to setOf("core-verification"),
             "codex-agent-runtime-android/build.gradle.kts" to setOf("codex-runtime"),
             "codex-agent-runtime-desktop/build.gradle.kts" to
-                setOf("desktop-runtime", "javascript-sdk"),
+                setOf("desktop-runtime"),
+            "codex-agent-sdk/build.gradle.kts" to setOf("javascript-sdk", "native-wrapper-sdk"),
             "codex-agent-runtime-ios/build.gradle.kts" to setOf("ios-runtime"),
             "tooling/android-runtime-evidence/build.gradle.kts" to setOf("android-runtime-evidence"),
             "tooling/protocol-generator/build.gradle.kts" to setOf("protocol-generator"),

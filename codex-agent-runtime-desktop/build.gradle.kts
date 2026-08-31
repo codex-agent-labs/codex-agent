@@ -14,7 +14,6 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.maven.publish)
     id("codexagent.desktop-runtime")
-    id("codexagent.javascript-sdk")
 }
 
 val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toString()
@@ -494,6 +493,43 @@ registerNodeRuntimeValidation(
     "writeNodeWasmRuntimePackageOutputManifest",
     "nodeWasmRuntime",
 )
+
+val nodeJsBindingValidationRoot =
+    layout.buildDirectory.dir("product-stage/runtime/node-js-binding/validation")
+val nodeJsBindingValidationOutputs = nodeJsBindingValidationRoot.map { it.dir("outputs") }
+val stageNodeJsBindingValidation = tasks.register<Sync>("stageNodeJsBindingValidation") {
+    group = "verification"
+    description = "Stages the exact compiler-backed Node binding behavior evidence for SDK parity."
+    dependsOn("jsNodeTest")
+    into(nodeJsBindingValidationOutputs)
+    from(layout.buildDirectory.dir("compileSync/js/test/testDevelopmentExecutable/kotlin")) {
+        into("test-program")
+    }
+    from(layout.buildDirectory.file(
+        "test-results/jsNodeTest/TEST-jsNodeTest.CodexNodeApiTest.xml",
+    )) { into("test-report") }
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
+tasks.register<WriteProductOutputManifestTask>("writeNodeJsBindingValidationOutputManifest") {
+    group = "verification"
+    description = "Writes and verifies the exact Node binding validation handoff manifest."
+    dependsOn(stageNodeJsBindingValidation)
+    product.set("runtime")
+    component.set("node-js-binding")
+    phase.set("validation")
+    target.set("node-js")
+    productVersion.set(project.version.toString())
+    outputRoots.set(mapOf(
+        "test-program" to "outputs/test-program",
+        "test-report" to "outputs/test-report",
+    ))
+    outputsDirectory.set(nodeJsBindingValidationOutputs)
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+    stageRoot.set(nodeJsBindingValidationRoot)
+    manifestFile.set(nodeJsBindingValidationRoot.map { it.file("output-manifest.json") })
+}
 
 mavenPublishing {
     configure(

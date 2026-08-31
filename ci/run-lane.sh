@@ -110,7 +110,29 @@ case "$lane" in
     ;;
   node-js)
     if [ "$build" = true ] || [ "$test_lane" = true ]; then
-      ./gradlew :codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity "${args[@]}"
+      commit=${CI_VALIDATION_COMMIT:?}
+      tree=${CI_VALIDATION_TREE:?}
+      ./gradlew ciProductPhase \
+        -PcodexAgent.product=contract \
+        -PcodexAgent.component=contract \
+        -PcodexAgent.phase=binary \
+        -PcodexAgent.candidateCommit="$commit" \
+        -PcodexAgent.candidateTree="$tree" "${args[@]}"
+      ./gradlew ciProductPhase \
+        -PcodexAgent.product=runtime \
+        -PcodexAgent.component=node-js \
+        -PcodexAgent.phase=binary \
+        -PcodexAgent.candidateCommit="$commit" \
+        -PcodexAgent.candidateTree="$tree" "${args[@]}"
+      runtime_binary=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/node-js/binary
+      ./gradlew ciProductPhase \
+        -PcodexAgent.product=runtime \
+        -PcodexAgent.component=node-js \
+        -PcodexAgent.phase=package \
+        -PcodexAgent.runtimeBinaryStage="$runtime_binary" \
+        -PcodexAgent.candidateCommit="$commit" \
+        -PcodexAgent.candidateTree="$tree" "${args[@]}"
+      ./gradlew :codex-agent-runtime-desktop:writeNodeJsBindingValidationOutputManifest "${args[@]}"
     fi
     ;;
   node-wasm)

@@ -6,6 +6,7 @@ codex-agent-core/src/commonTest/**
 codex-agent-core/src/jvmTest/**
 gradle/build-logic/src/main/kotlin/CrossLanguage*.kt
 gradle/build-logic/src/main/kotlin/codexagent.core-verification.gradle.kts
+gradle/build-logic/src/main/kotlin/codexagent.javascript-sdk.gradle.kts
 gradle/build-logic/src/test/**/*Node*
 codex-agent-runtime-desktop/native/c-api/**
 codex-agent-runtime-desktop/src/nativeMain/**/capi/**

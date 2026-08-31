@@ -224,7 +224,11 @@ class ReleaseToolingCliFunctionalTest {
             "packageNodeRuntimeEvidenceRunner",
             "packageNodeWasmRuntimeEvidenceRunner",
         ).forEach { task -> assertEquals(1, Regex(Regex.escape(task)).findAll(driver).count(), task) }
-        assertTrue(":codex-agent-runtime-desktop:verifyJavaScriptTypeScriptBindingParity" in driver)
+        assertFalse(":codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity" in driver)
+        assertTrue(
+            ":codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity" in
+                repository.resolve(".github/workflows/product-validation.yml").readText(),
+        )
         assertTrue(":codex-agent-runtime-desktop:wasmJsNodeTest" in driver)
         listOf(
             "codex-agent-jvm-runtime-evidence-runner.zip",

@@ -16,8 +16,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
+
+from products.inventory import require_semver
 
 
 HOSTS = {
@@ -296,13 +300,182 @@ def write_package_toolchains(output: Path) -> None:
         )
 
 
-def package_once(repository: Path, sources: Path, sdks: Path, output: Path) -> None:
-    for classifier in HOSTS:
+def require_source_sdk_version(sources: Path, sdk_version: str) -> None:
+    expected = require_semver(sdk_version, "SDK version")
+
+    def regular(relative: str) -> Path:
+        path = sources / relative
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"missing or symbolic SDK package manifest: {relative}")
+        return path
+
+    rust_lock = regular("rust/Cargo.lock").read_text(encoding="utf-8")
+    versions = {
+        "python": tomllib.loads(regular("python/pyproject.toml").read_text(encoding="utf-8"))["project"]["version"],
+        "csharp": ET.parse(regular("csharp/src/CodexAgent/CodexAgent.csproj")).findtext(".//VersionPrefix"),
+        "rust": tomllib.loads(regular("rust/Cargo.toml").read_text(encoding="utf-8"))["package"]["version"],
+        "rust-lock": require_match(
+            re.search(r'(?m)^name = "codex-agent"\nversion = "([^"]+)"$', rust_lock),
+            "Rust lockfile does not declare the package version",
+        ).group(1),
+        "cpp": require_match(
+            re.search(
+                r"(?m)^project\(CodexAgent VERSION ([^ ]+) LANGUAGES CXX\)$",
+                regular("cpp/CMakeLists.txt").read_text(encoding="utf-8"),
+            ),
+            "C++ package manifest does not declare the CodexAgent project version",
+        ).group(1),
+        "dart": require_match(
+            re.search(r"(?m)^version: (\S+)$", regular("dart/pubspec.yaml").read_text(encoding="utf-8")),
+            "Dart package manifest does not declare one version",
+        ).group(1),
+    }
+    mismatches = {language: version for language, version in versions.items() if version != expected}
+    if mismatches:
+        raise ValueError(f"SDK package manifest versions do not match {expected}: {mismatches}")
+
+
+def replace_once(path: Path, pattern: str, replacement: str, label: str) -> None:
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"missing or symbolic SDK package manifest: {path}")
+    contents = path.read_text(encoding="utf-8")
+    updated, count = re.subn(pattern, replacement, contents, flags=re.MULTILINE)
+    if count != 1:
+        raise ValueError(f"{label} must contain exactly one package version")
+    path.write_text(updated, encoding="utf-8")
+
+
+def set_source_sdk_version(sources: Path, sdk_version: str) -> None:
+    version = require_semver(sdk_version, "SDK version")
+    replace_once(
+        sources / "python/pyproject.toml",
+        r'^(version = ")[^"]+("\s*)$',
+        rf"\g<1>{version}\g<2>",
+        "Python manifest",
+    )
+    replace_once(
+        sources / "csharp/src/CodexAgent/CodexAgent.csproj",
+        r"(<VersionPrefix>)[^<]+(</VersionPrefix>)",
+        rf"\g<1>{version}\g<2>",
+        "C# manifest",
+    )
+    replace_once(
+        sources / "rust/Cargo.toml",
+        r'^(version = ")[^"]+("\s*)$',
+        rf"\g<1>{version}\g<2>",
+        "Rust manifest",
+    )
+    replace_once(
+        sources / "rust/Cargo.lock",
+        r'(?m)(^name = "codex-agent"\nversion = ")[^"]+("$)',
+        rf"\g<1>{version}\g<2>",
+        "Rust lockfile",
+    )
+    replace_once(
+        sources / "cpp/CMakeLists.txt",
+        r"^project\(CodexAgent VERSION \S+ LANGUAGES CXX\)$",
+        f"project(CodexAgent VERSION {version} LANGUAGES CXX)",
+        "C++ manifest",
+    )
+    replace_once(
+        sources / "dart/pubspec.yaml",
+        r"^version: \S+$",
+        f"version: {version}",
+        "Dart manifest",
+    )
+    require_source_sdk_version(sources, version)
+
+
+def require_prepared_native_assets(sources: Path, sdks: Path) -> None:
+    expected_sdk_entries = {*HOSTS, "codex-agent-native-wrapper-sdks.json"}
+    if (
+        not sdks.is_dir()
+        or sdks.is_symlink()
+        or {path.name for path in sdks.iterdir()} != expected_sdk_entries
+        or not (sdks / "codex-agent-native-wrapper-sdks.json").is_file()
+        or (sdks / "codex-agent-native-wrapper-sdks.json").is_symlink()
+    ):
+        raise ValueError("staged SDK root inventory mismatch")
+    parent_specs = {
+        sources / "python/src/codex_agent/native": (set(HOSTS), set()),
+        sources / "csharp/native": (set(PACKAGE_CLASSIFIERS.values()), {"README.md"}),
+        sources / "rust/native": (set(PACKAGE_CLASSIFIERS.values()), set()),
+        sources / "cpp/native": (set(HOSTS), set()),
+        sources / "dart/lib/src/native": (set(HOSTS), {"README.md"}),
+    }
+    for parent, (directories, regular_files) in parent_specs.items():
+        if not parent.is_dir() or parent.is_symlink():
+            raise ValueError(f"prepared native root is missing or symbolic: {parent}")
+        entries = {path.name: path for path in parent.iterdir()}
+        if set(entries) != directories | regular_files:
+            raise ValueError(f"prepared native classifier inventory mismatch: {parent}")
+        if any(not entries[name].is_dir() or entries[name].is_symlink() for name in directories):
+            raise ValueError(f"prepared native classifier is missing or symbolic: {parent}")
+        if any(not entries[name].is_file() or entries[name].is_symlink() for name in regular_files):
+            raise ValueError(f"prepared native metadata is missing or symbolic: {parent}")
+    for classifier, host in HOSTS.items():
         sdk = sdks / classifier
-        library = sdk / HOSTS[classifier][4]
+        if not sdk.is_dir() or sdk.is_symlink():
+            raise ValueError(f"missing or symbolic staged SDK: {classifier}")
+        library = sdk / host[4]
         if not library.is_file() or library.is_symlink():
             raise ValueError(f"missing staged native library: {classifier}")
+        package_classifier = PACKAGE_CLASSIFIERS[classifier]
+        roots = {
+            "Python": sources / f"python/src/codex_agent/native/{classifier}",
+            "C#": sources / f"csharp/native/{package_classifier}",
+            "Rust": sources / f"rust/native/{package_classifier}",
+            "Dart": sources / f"dart/lib/src/native/{classifier}",
+        }
+        expected = {
+            library.name,
+            "codex-agent-c-abi-manifest.json",
+            "codex-agent-c-abi-evidence.json",
+        }
+        for language, root in roots.items():
+            inventory = {path.relative_to(root).as_posix() for path in files(root)}
+            if inventory != expected:
+                raise ValueError(f"{language} prepared native inventory mismatch: {classifier}")
+            require_matching_native(root, library.name, library, language)
+            require_matching_proofs(root, sdk, language)
+        cpp = sources / f"cpp/native/{classifier}"
+        if package_inventory(cpp) != package_inventory(sdk):
+            raise ValueError(f"C++ prepared native inventory mismatch: {classifier}")
+
+
+def require_match(value: re.Match[str] | None, message: str) -> re.Match[str]:
+    if value is None:
+        raise ValueError(message)
+    return value
+
+
+def require_sdk_version_file(path: Path) -> str:
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"missing or symbolic SDK version file: {path}")
+    contents = path.read_bytes()
+    try:
+        value = contents.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise ValueError("SDK version file must be ASCII") from error
+    if not value.endswith("\n") or value.count("\n") != 1:
+        raise ValueError("SDK version file must contain one SemVer and one final LF")
+    version = require_semver(value[:-1], "SDK version")
+    if contents != f"{version}\n".encode("ascii"):
+        raise ValueError("SDK version file is not canonical")
+    return version
+
+
+def invalidate_output(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError(f"unsafe output: {path}")
+    shutil.rmtree(path)
+
+
+def package_once(sources: Path, sdks: Path, output: Path, sdk_version: str) -> None:
     clean_output(output)
+    require_prepared_native_assets(sources, sdks)
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-package-") as temporary:
         work = Path(temporary)
         for language in LANGUAGES:
@@ -311,6 +484,7 @@ def package_once(repository: Path, sources: Path, sdks: Path, output: Path) -> N
         isolated_sources = work / "sources"
         shutil.copytree(sources, isolated_sources)
         sources = isolated_sources
+        set_source_sdk_version(sources, sdk_version)
 
         python_output = output / "python"
         python_output.mkdir()
@@ -322,9 +496,10 @@ def package_once(repository: Path, sources: Path, sdks: Path, output: Path) -> N
         run(
             "dotnet", "pack", "src/CodexAgent/CodexAgent.csproj", "--configuration", "Release",
             "--output", csharp_output, "-p:CodexAgentRequireNativeAssets=true",
+            f"-p:Version={sdk_version}",
             f"-p:PathMap={csharp_source}=/_/csharp", cwd=csharp_source,
         )
-        normalize_nupkg(require_one(csharp_output, "CodexAgent.*.nupkg"), work)
+        normalize_nupkg(require_one(csharp_output, f"CodexAgent.{sdk_version}.nupkg"), work)
 
         rust_source = sources / "rust"
         rust_target = work / "rust-target"
@@ -334,7 +509,7 @@ def package_once(repository: Path, sources: Path, sdks: Path, output: Path) -> N
         )
         rust_output = output / "rust"
         rust_output.mkdir()
-        shutil.copy2(require_one(rust_target / "package", "codex-agent-*.crate"), rust_output)
+        shutil.copy2(require_one(rust_target / "package", f"codex-agent-{sdk_version}.crate"), rust_output)
 
         dart_source = sources / "dart"
         run("dart", "pub", "get", "--enforce-lockfile", cwd=dart_source)
@@ -343,8 +518,8 @@ def package_once(repository: Path, sources: Path, sdks: Path, output: Path) -> N
         stage_dart_release(dart_source, dart_release)
         deterministic_tar(
             dart_release,
-            output / "dart/codex-agent-dart-0.2.0.tar.gz",
-            "codex_agent-0.2.0",
+            output / f"dart/codex-agent-dart-{sdk_version}.tar.gz",
+            f"codex_agent-{sdk_version}",
         )
 
         cpp_source = sources / "cpp"
@@ -358,32 +533,39 @@ def package_once(repository: Path, sources: Path, sdks: Path, output: Path) -> N
                 f"-DCodexAgent_C_SDK_ROOT={cpp_source / 'native' / classifier}",
                 f"-DCodexAgent_NATIVE_CLASSIFIER={classifier}",
                 "-DCMAKE_BUILD_TYPE=Release", "-DCODEX_AGENT_CPP_BUILD_TESTS=OFF",
-                "-DCODEX_AGENT_CPP_INSTALL_PACKAGE=ON", cwd=repository,
+                "-DCODEX_AGENT_CPP_INSTALL_PACKAGE=ON", cwd=work,
             )
-            run("cmake", "--install", build, "--prefix", install, "--config", "Release", cwd=repository)
+            run("cmake", "--install", build, "--prefix", install, "--config", "Release", cwd=work)
             deterministic_zip(
                 install,
-                cpp_output / f"codex-agent-cpp-0.2.0-{classifier}.zip",
-                f"codex-agent-cpp-0.2.0-{classifier}",
+                cpp_output / f"codex-agent-cpp-{sdk_version}-{classifier}.zip",
+                f"codex-agent-cpp-{sdk_version}-{classifier}",
             )
         write_package_toolchains(output)
+        require_embedded_package_versions(output, sdk_version)
 
 
-def package_all(repository: Path, sources: Path, sdks: Path, output: Path) -> None:
-    package_once(repository, sources, sdks, output)
-    with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-reproducibility-") as temporary:
-        second = Path(temporary) / "packages"
-        package_once(repository, sources, sdks, second)
-        first_inventory = dict(package_inventory(output))
-        second_inventory = dict(package_inventory(second))
-        if first_inventory != second_inventory:
-            differences = sorted(first_inventory.keys() | second_inventory.keys())
-            details = [
-                f"{path} (first={first_inventory.get(path, 'missing')}, "
-                f"second={second_inventory.get(path, 'missing')})"
-                for path in differences if first_inventory.get(path) != second_inventory.get(path)
-            ]
-            raise ValueError("native wrapper release packages are not reproducible:\n" + "\n".join(details))
+def package_all(sources: Path, sdks: Path, output: Path, sdk_version: str) -> None:
+    invalidate_output(output)
+    try:
+        sdk_version = require_semver(sdk_version, "SDK version")
+        package_once(sources, sdks, output, sdk_version)
+        with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-reproducibility-") as temporary:
+            second = Path(temporary) / "packages"
+            package_once(sources, sdks, second, sdk_version)
+            first_inventory = dict(package_inventory(output))
+            second_inventory = dict(package_inventory(second))
+            if first_inventory != second_inventory:
+                differences = sorted(first_inventory.keys() | second_inventory.keys())
+                details = [
+                    f"{path} (first={first_inventory.get(path, 'missing')}, "
+                    f"second={second_inventory.get(path, 'missing')})"
+                    for path in differences if first_inventory.get(path) != second_inventory.get(path)
+                ]
+                raise ValueError("native wrapper release packages are not reproducible:\n" + "\n".join(details))
+    except Exception:
+        invalidate_output(output)
+        raise
 
 
 def host_classifier() -> str:
@@ -414,28 +596,190 @@ def version(*command: str, allowed_return_codes: tuple[int, ...] = (0,)) -> str:
     return value
 
 
-def consume(repository: Path, packages: Path, sdks: Path, plan: Path, output: Path) -> None:
+def select_packages(packages: Path, classifier: str, sdk_version: str) -> dict[str, Path]:
+    version_value = require_semver(sdk_version, "SDK version")
+    expected = {
+        "python": {
+            f"codex_agent-{version_value}.tar.gz",
+            *(f"codex_agent-{version_value}-py3-none-{tag}.whl" for tag in PYTHON_TAGS.values()),
+            "codex-agent-python-package-toolchain.tsv",
+        },
+        "csharp": {f"CodexAgent.{version_value}.nupkg", "codex-agent-csharp-package-toolchain.tsv"},
+        "rust": {f"codex-agent-{version_value}.crate", "codex-agent-rust-package-toolchain.tsv"},
+        "cpp": {
+            *(f"codex-agent-cpp-{version_value}-{target}.zip" for target in HOSTS),
+            "codex-agent-cpp-package-toolchain.tsv",
+        },
+        "dart": {f"codex-agent-dart-{version_value}.tar.gz", "codex-agent-dart-package-toolchain.tsv"},
+    }
+    for language, names in expected.items():
+        root = packages / language
+        actual = {path.relative_to(root).as_posix() for path in files(root)}
+        if actual != names:
+            raise ValueError(f"{language} package inventory does not match SDK {version_value}")
+    return {
+        "python": packages / "python" / f"codex_agent-{version_value}-py3-none-{PYTHON_TAGS[classifier]}.whl",
+        "csharp": packages / "csharp" / f"CodexAgent.{version_value}.nupkg",
+        "rust": packages / "rust" / f"codex-agent-{version_value}.crate",
+        "cpp": packages / "cpp" / f"codex-agent-cpp-{version_value}-{classifier}.zip",
+        "dart": packages / "dart" / f"codex-agent-dart-{version_value}.tar.gz",
+    }
+
+
+def require_embedded_package_versions(packages: Path, sdk_version: str) -> None:
+    version_value = require_semver(sdk_version, "SDK version")
+    select_packages(packages, "linux-x64", version_value)
+
+    def require_version(actual: str | None, label: str) -> None:
+        if actual != version_value:
+            raise ValueError(f"{label} embeds SDK version {actual!r}, expected {version_value}")
+
+    with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-version-") as temporary:
+        work = Path(temporary)
+        for index, wheel in enumerate(sorted((packages / "python").glob("*.whl"))):
+            extracted = work / f"python-wheel-{index}"
+            safe_extract_zip(wheel, extracted)
+            metadata = require_one(extracted, "**/*.dist-info/METADATA").read_text(encoding="utf-8")
+            versions = re.findall(r"(?m)^Version: (\S+)$", metadata)
+            require_version(versions[0] if len(versions) == 1 else None, f"Python wheel {wheel.name}")
+
+        python_sdist = packages / "python" / f"codex_agent-{version_value}.tar.gz"
+        extracted = work / "python-sdist"
+        safe_extract_tar(python_sdist, extracted)
+        metadata = require_one(extracted, "**/PKG-INFO").read_text(encoding="utf-8")
+        versions = re.findall(r"(?m)^Version: (\S+)$", metadata)
+        require_version(versions[0] if len(versions) == 1 else None, "Python sdist")
+
+        csharp = packages / "csharp" / f"CodexAgent.{version_value}.nupkg"
+        extracted = work / "csharp"
+        safe_extract_zip(csharp, extracted)
+        nuspec = ET.parse(require_one(extracted, "*.nuspec")).getroot()
+        versions = [
+            element.text
+            for element in nuspec.iter()
+            if element.tag.rsplit("}", 1)[-1] == "version"
+        ]
+        require_version(versions[0] if len(versions) == 1 else None, "C# package")
+
+        rust = packages / "rust" / f"codex-agent-{version_value}.crate"
+        extracted = work / "rust"
+        safe_extract_tar(rust, extracted)
+        rust_manifest = tomllib.loads(require_one(extracted, "**/Cargo.toml").read_text(encoding="utf-8"))
+        require_version(rust_manifest.get("package", {}).get("version"), "Rust package")
+
+        for classifier in HOSTS:
+            cpp = packages / "cpp" / f"codex-agent-cpp-{version_value}-{classifier}.zip"
+            extracted = work / f"cpp-{classifier}"
+            safe_extract_zip(cpp, extracted)
+            contents = require_one(extracted, "**/CodexAgentConfigVersion.cmake").read_text(encoding="utf-8")
+            versions = re.findall(r'(?m)^set\(PACKAGE_VERSION "([^"]+)"\)$', contents)
+            require_version(versions[0] if len(versions) == 1 else None, f"C++ package {classifier}")
+
+        dart = packages / "dart" / f"codex-agent-dart-{version_value}.tar.gz"
+        extracted = work / "dart"
+        safe_extract_tar(dart, extracted)
+        contents = require_one(extracted, "**/pubspec.yaml").read_text(encoding="utf-8")
+        versions = re.findall(r"(?m)^version: (\S+)$", contents)
+        require_version(versions[0] if len(versions) == 1 else None, "Dart package")
+
+
+def set_consumer_sdk_version(csharp: Path, rust: Path, dart: Path, sdk_version: str) -> None:
+    version_value = require_semver(sdk_version, "SDK version")
+    replace_once(
+        csharp / "CodexAgent.Consumer.csproj",
+        r'(<PackageReference Include="CodexAgent" Version=")[^"]+(" />)',
+        rf"\g<1>{version_value}\g<2>",
+        "C# consumer",
+    )
+    replace_once(
+        rust / "Cargo.lock",
+        r'(?m)(^name = "codex-agent"\nversion = ")[^"]+("$)',
+        rf"\g<1>{version_value}\g<2>",
+        "Rust consumer lockfile",
+    )
+    replace_once(
+        dart / "pubspec.lock",
+        r'(?m)(^  codex_agent:\n(?:.*\n){5}    version: ")[^"]+("$)',
+        rf"\g<1>{version_value}\g<2>",
+        "Dart consumer lockfile",
+    )
+
+
+def set_dart_consumer_path(consumer: Path, package: Path) -> None:
+    relative = Path(os.path.relpath(package, consumer)).as_posix()
+    replace_once(
+        consumer / "pubspec.yaml",
+        r"^(    path: )\S+$",
+        rf"\g<1>{relative}",
+        "Dart consumer manifest path",
+    )
+    replace_once(
+        consumer / "pubspec.lock",
+        r'(?m)(^  codex_agent:\n(?:.*\n){2}      path: ")[^"]+("$)',
+        rf"\g<1>{relative}\g<2>",
+        "Dart consumer lockfile path",
+    )
+
+
+def consume(
+    repository: Path,
+    packages: Path,
+    sdks: Path,
+    plan: Path,
+    output: Path,
+    sdk_version: str,
+) -> None:
+    invalidate_output(output)
+    try:
+        _consume(repository, packages, sdks, plan, output, sdk_version)
+    except Exception:
+        invalidate_output(output)
+        raise
+
+
+def _consume(
+    repository: Path,
+    packages: Path,
+    sdks: Path,
+    plan: Path,
+    output: Path,
+    sdk_version: str,
+) -> None:
+    sdk_version = require_semver(sdk_version, "SDK version")
     classifier = host_classifier()
     sdk_library = (sdks / classifier / HOSTS[classifier][4]).resolve()
     if not sdk_library.is_file() or sdk_library.is_symlink():
         raise ValueError(f"missing matching-host SDK: {sdk_library}")
     clean_output(output)
-    selected: dict[str, Path] = {
-        "python": require_one(packages / "python", f"*-{PYTHON_TAGS[classifier]}.whl"),
-        "csharp": require_one(packages / "csharp", "CodexAgent.*.nupkg"),
-        "rust": require_one(packages / "rust", "codex-agent-*.crate"),
-        "cpp": require_one(packages / "cpp", f"*-{classifier}.zip"),
-        "dart": require_one(packages / "dart", "codex-agent-dart-*.tar.gz"),
-    }
+    selected = select_packages(packages, classifier, sdk_version)
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-consumer-") as temporary:
         work = Path(temporary)
+        csharp_consumer = work / "csharp-consumer"
+        rust_consumer = work / "rust-consumer"
+        dart_consumer = work / "dart-consumer"
+        shutil.copytree(
+            repository / "codex-agent-bindings/csharp/samples/CodexAgent.Consumer",
+            csharp_consumer,
+            ignore=shutil.ignore_patterns("bin", "obj"),
+        )
+        shutil.copytree(
+            repository / "codex-agent-bindings/rust/consumer",
+            rust_consumer,
+            ignore=shutil.ignore_patterns("target"),
+        )
+        shutil.copytree(
+            repository / "codex-agent-bindings/dart/consumer",
+            dart_consumer,
+            ignore=shutil.ignore_patterns(".dart_tool"),
+        )
+        set_consumer_sdk_version(csharp_consumer, rust_consumer, dart_consumer, sdk_version)
 
         venv = work / "python-venv"
         run(sys.executable, "-m", "venv", venv, cwd=repository)
         python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         run(python, "-m", "pip", "install", "--no-deps", "--no-index", selected["python"], cwd=work)
-        python_smoke = repository / "codex-agent-runtime-desktop/bindings/python/consumer/host_smoke.py"
-        python_example = repository / "codex-agent-runtime-desktop/bindings/python/consumer/lifecycle_example.py"
+        python_smoke = repository / "codex-agent-bindings/python/consumer/host_smoke.py"
+        python_example = repository / "codex-agent-bindings/python/consumer/lifecycle_example.py"
         run(python, "-c", "import runpy,sys; runpy.run_path(sys.argv[1])", python_example, cwd=work)
         native_name = Path(HOSTS[classifier][4]).name
         python_library = require_matching_native(
@@ -449,9 +793,6 @@ def consume(repository: Path, packages: Path, sdks: Path, plan: Path, output: Pa
         nuget = work / "nuget"
         nuget.mkdir()
         shutil.copy2(selected["csharp"], nuget)
-        csharp_consumer = work / "csharp-consumer"
-        shutil.copytree(repository / "codex-agent-runtime-desktop/bindings/csharp/samples/CodexAgent.Consumer",
-                        csharp_consumer, ignore=shutil.ignore_patterns("bin", "obj"))
         config = work / "NuGet.Config"
         config.write_text(
             '<?xml version="1.0" encoding="utf-8"?><configuration><packageSources><clear/>'
@@ -485,9 +826,6 @@ def consume(repository: Path, packages: Path, sdks: Path, plan: Path, output: Pa
         rust_root = work / "rust-package"
         safe_extract_tar(selected["rust"], rust_root)
         rust_package = require_one(rust_root, "codex-agent-*/Cargo.toml").parent
-        rust_consumer = work / "rust-consumer"
-        shutil.copytree(repository / "codex-agent-runtime-desktop/bindings/rust/consumer", rust_consumer,
-                        ignore=shutil.ignore_patterns("target"))
         cargo_toml = rust_consumer / "Cargo.toml"
         cargo_toml.write_text(
             cargo_toml.read_text(encoding="utf-8").replace('path = ".."', f'path = "{rust_package.as_posix()}"'),
@@ -522,7 +860,7 @@ def consume(repository: Path, packages: Path, sdks: Path, plan: Path, output: Pa
             run(
                 *compiler,
                 *flags,
-                repository / "codex-agent-runtime-desktop/bindings/rust/tests/fixtures/mock_codex_agent.c",
+                repository / "codex-agent-bindings/rust/tests/fixtures/mock_codex_agent.c",
                 "-o", fixture,
                 cwd=work,
             )
@@ -536,7 +874,7 @@ def consume(repository: Path, packages: Path, sdks: Path, plan: Path, output: Pa
         safe_extract_zip(selected["cpp"], cpp_root)
         cpp_prefix = next(path for path in cpp_root.iterdir() if path.is_dir())
         cpp_build = work / "cpp-consumer-build"
-        run("cmake", "-S", repository / "codex-agent-runtime-desktop/bindings/cpp/consumer", "-B", cpp_build,
+        run("cmake", "-S", repository / "codex-agent-bindings/cpp/consumer", "-B", cpp_build,
             f"-DCMAKE_PREFIX_PATH={cpp_prefix}", "-DCMAKE_BUILD_TYPE=Release", cwd=work)
         run("cmake", "--build", cpp_build, "--config", "Release", "--target", "codex_agent_host_smoke",
             cwd=work)
@@ -562,14 +900,7 @@ def consume(repository: Path, packages: Path, sdks: Path, plan: Path, output: Pa
         dart_root = work / "dart-package"
         safe_extract_tar(selected["dart"], dart_root)
         dart_package = require_one(dart_root, "codex_agent-*/pubspec.yaml").parent
-        dart_consumer = work / "dart-consumer"
-        shutil.copytree(repository / "codex-agent-runtime-desktop/bindings/dart/consumer", dart_consumer,
-                        ignore=shutil.ignore_patterns(".dart_tool"))
-        pubspec = dart_consumer / "pubspec.yaml"
-        pubspec.write_text(
-            pubspec.read_text(encoding="utf-8").replace("    path: ..", f"    path: {dart_package.as_posix()}"),
-            encoding="utf-8",
-        )
+        set_dart_consumer_path(dart_consumer, dart_package)
         run("dart", "pub", "get", "--enforce-lockfile", cwd=dart_consumer)
         dart_library = require_matching_native(
             dart_package,
@@ -651,27 +982,30 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
     package = commands.add_parser("package")
-    package.add_argument("--repository", type=Path, required=True)
     package.add_argument("--sources", type=Path, required=True)
     package.add_argument("--sdks", type=Path, required=True)
     package.add_argument("--output", type=Path, required=True)
+    package.add_argument("--sdk-version-file", type=Path, required=True)
     consumer = commands.add_parser("consume")
     consumer.add_argument("--repository", type=Path, required=True)
     consumer.add_argument("--packages", type=Path, required=True)
     consumer.add_argument("--sdks", type=Path, required=True)
     consumer.add_argument("--plan", type=Path, required=True)
     consumer.add_argument("--output", type=Path, required=True)
+    consumer.add_argument("--sdk-version-file", type=Path, required=True)
     return parser.parse_args()
 
 
 def main() -> None:
     arguments = parse_args()
+    output = arguments.output.resolve()
+    invalidate_output(output)
+    sdk_version = require_sdk_version_file(arguments.sdk_version_file.resolve())
     if arguments.command == "package":
-        package_all(arguments.repository.resolve(), arguments.sources.resolve(),
-                    arguments.sdks.resolve(), arguments.output.resolve())
+        package_all(arguments.sources.resolve(), arguments.sdks.resolve(), output, sdk_version)
     else:
         consume(arguments.repository.resolve(), arguments.packages.resolve(), arguments.sdks.resolve(),
-                arguments.plan.resolve(), arguments.output.resolve())
+                arguments.plan.resolve(), output, sdk_version)
 
 
 if __name__ == "__main__":
