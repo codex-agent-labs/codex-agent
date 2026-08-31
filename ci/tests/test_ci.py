@@ -49,6 +49,38 @@ from validation_reuse import (  # noqa: E402
 
 
 class RunLaneContractTest(unittest.TestCase):
+    def test_ci_caller_pins_the_reviewed_product_workflow(self) -> None:
+        caller = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        )
+        reviewed = "4f4c11a2a717678a0b86d5b20745583e1ce4077b"
+        references = re.findall(
+            r"uses: codex-agent-labs/codex-agent/\.github/workflows/product-validation\.yml@([^\s]+)",
+            caller,
+        )
+        self.assertEqual([reviewed], references)
+        self.assertRegex(references[0], r"^[0-9a-f]{40}$")
+        self.assertIn("workflow_dispatch:", caller)
+        for value in ("baseCommit", "validationCommit", "validationTree"):
+            self.assertIn(f"      {value}:\n", caller)
+            self.assertIn(f"      {value}: ${{{{ inputs.{value} || '' }}}}", caller)
+        for permission in (
+            "      actions: read",
+            "      contents: read",
+            "      deployments: read",
+            "      id-token: write",
+        ):
+            self.assertIn(permission, caller)
+        self.assertEqual(1, caller.count("\n  product-validation:\n"))
+        self.assertEqual(1, caller.count("\n  merge-gate:\n"))
+        gate = caller.split("\n  merge-gate:\n", 1)[1]
+        self.assertIn("name: CI / merge-gate", gate)
+        self.assertIn("if: always()", gate)
+        self.assertIn("needs: product-validation", gate)
+        self.assertIn('run: test "$PRODUCT_VALIDATION_RESULT" = success', gate)
+        self.assertNotIn("actions/checkout@", caller)
+        self.assertNotIn("./gradlew", caller)
+
     def test_remote_product_jobs_are_guarded_before_materialization(self) -> None:
         workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text(
             encoding="utf-8"

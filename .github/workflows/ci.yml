@@ -5,36 +5,49 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, labeled, unlabeled]
   merge_group:
     types: [checks_requested]
+  workflow_dispatch:
+    inputs:
+      baseCommit:
+        description: Exact base commit SHA
+        required: true
+        type: string
+      validationCommit:
+        description: Exact candidate commit SHA
+        required: true
+        type: string
+      validationTree:
+        description: Exact candidate tree SHA
+        required: true
+        type: string
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-merge-group-{0}', github.ref) }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && format('ci-merge-group-{0}', github.ref) || format('ci-dispatch-{0}', github.sha) }}
   cancel-in-progress: true
 
 jobs:
-  workflow-lint:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.26.3"
-          cache: false
-      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      - run: '"$HOME/go/bin/actionlint"'
-      - run: python3 -m unittest discover -s ci/tests -v
+  product-validation:
+    permissions:
+      actions: read
+      contents: read
+      deployments: read
+      id-token: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@4f4c11a2a717678a0b86d5b20745583e1ce4077b
+    with:
+      baseCommit: ${{ inputs.baseCommit || '' }}
+      validationCommit: ${{ inputs.validationCommit || '' }}
+      validationTree: ${{ inputs.validationTree || '' }}
 
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: workflow-lint
+    needs: product-validation
     runs-on: ubuntu-24.04
     steps:
-      - run: |
-          echo 'Trusted product validation is disabled during the immutable-workflow bootstrap.' >&2
-          exit 1
+      - name: Require the trusted product workflow
+        env:
+          PRODUCT_VALIDATION_RESULT: ${{ needs.product-validation.result }}
+        run: test "$PRODUCT_VALIDATION_RESULT" = success
