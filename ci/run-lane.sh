@@ -6,7 +6,8 @@ build=${CI_LANE_BUILD:-false}
 test_lane=${CI_LANE_TEST:-false}
 metadata=${CI_LANE_METADATA:-false}
 commit=${CI_VALIDATION_COMMIT:?validation commit is required}
-args=(--build-cache --parallel --stacktrace -PcodexAgent.candidateCommit="$commit")
+tree=${CI_VALIDATION_TREE:?validation tree is required}
+args=(--build-cache --parallel --stacktrace -PcodexAgent.candidateCommit="$commit" -PcodexAgent.candidateTree="$tree")
 [ -z "${IOS_NATIVE_EVIDENCE:-}" ] || args+=(-PcodexAgent.iosNativeEvidenceDirectory="$IOS_NATIVE_EVIDENCE")
 [ -z "${IOS_DEVICE_FRAMEWORK:-}" ] || args+=(-PcodexAgent.iosDeviceFrameworkDirectory="$IOS_DEVICE_FRAMEWORK")
 [ -z "${IOS_SIMULATOR_FRAMEWORK:-}" ] || args+=(-PcodexAgent.iosSimulatorFrameworkDirectory="$IOS_SIMULATOR_FRAMEWORK")
@@ -17,69 +18,94 @@ args=(--build-cache --parallel --stacktrace -PcodexAgent.candidateCommit="$commi
 [ -z "${ANDROID_RELEASE_AAR:-}" ] || args+=(-PcodexAgent.importedAndroidReleaseAar="$ANDROID_RELEASE_AAR")
 [ -z "${ANDROID_EVIDENCE:-}" ] || args+=(-PcodexAgent.androidRuntimeEvidenceDirectory="$ANDROID_EVIDENCE")
 
+runtime_gradle() {
+  local target=$1
+  shift
+  ./gradlew -p runtime "$@" "${args[@]}" \
+    -PcodexAgent.contractRepository="${RUNTIME_CONTRACT_REPOSITORY:?standalone Runtime Contract repository is required}" \
+    -PcodexAgent.contractManifest="${RUNTIME_CONTRACT_MANIFEST:?standalone Runtime Contract manifest is required}" \
+    -PcodexAgent.contractPublicKey="${RUNTIME_CONTRACT_PUBLIC_KEY:?standalone Runtime Contract public key is required}" \
+    -PcodexAgent.contractVersion="${CONTRACT_VERSION:?Contract version is required}" \
+    -PcodexAgent.runtimeVersion="${RUNTIME_VERSION:?Runtime version is required}" \
+    -PcodexAgent.target="$target"
+}
+
 run_desktop() {
-  local target=$1 native_task=$2 jvm_task=$3 node_task=$4 wasm_task=$5 classifier=$6
+  local target=$1 native_task=$2 jvm_task=$3 node_task=$4 wasm_task=$5 classifier=$6 evidence_task=${7:-} scenario_task=${8:-}
   local imported=(codex-agent-runtime-desktop/build/distributions/codex-agent-runtime-desktop-*-${classifier}.zip)
-  if [ "${#imported[@]}" -eq 1 ] && [ -f "${imported[0]}" ]; then
-    args+=(-PcodexAgent.desktopClassifierDirectory="$PWD/codex-agent-runtime-desktop/build/distributions")
-  fi
-  local package_task
+  local c_abi_classifier package_task c_abi_package_task c_abi_evidence_task runtime_target
   case "$target" in
-    macosArm64) package_task=packageMacosArm64AppServer ;;
-    macosX64) package_task=packageMacosX64AppServer ;;
-    linuxX64) package_task=packageLinuxX64AppServer ;;
-    mingwX64) package_task=packageMingwX64AppServer ;;
+    macosArm64) runtime_target=macos-arm64; package_task=packageMacosArm64AppServer; c_abi_classifier=c-abi-macos-arm64; c_abi_package_task=packageMacosArm64CAbiSdk; c_abi_evidence_task=generateMacosArm64CAbiPackageEvidence ;;
+    macosX64) runtime_target=macos-x64; package_task=packageMacosX64AppServer; c_abi_classifier=c-abi-macos-x64; c_abi_package_task=packageMacosX64CAbiSdk; c_abi_evidence_task=generateMacosX64CAbiPackageEvidence ;;
+    linuxX64) runtime_target=linux-x64; package_task=packageLinuxX64AppServer; c_abi_classifier=c-abi-linux-x64; c_abi_package_task=packageLinuxX64CAbiSdk; c_abi_evidence_task=generateLinuxX64CAbiPackageEvidence ;;
+    mingwX64) runtime_target=windows-x64; package_task=packageMingwX64AppServer; c_abi_classifier=c-abi-windows-x64; c_abi_package_task=packageMingwX64CAbiSdk; c_abi_evidence_task=generateMingwX64CAbiPackageEvidence ;;
     *) echo "Unsupported direct desktop target: $target" >&2; return 2 ;;
   esac
+  local imported_c_abi=(codex-agent-runtime-desktop/build/distributions/codex-agent-runtime-desktop-*-${c_abi_classifier}.zip)
+  if [ "${#imported[@]}" -eq 1 ] && [ -f "${imported[0]}" ] && \
+      [ "${#imported_c_abi[@]}" -eq 1 ] && [ -f "${imported_c_abi[0]}" ]; then
+    args+=(-PcodexAgent.desktopClassifierDirectory="$PWD/codex-agent-runtime-desktop/build/distributions")
+  fi
   if [ "$test_lane" = true ]; then
     args+=(-PcodexAgent.desktopEvidenceTarget="$target")
-    ./gradlew ":codex-agent-runtime-desktop:$native_task" "${args[@]}"
+    local native_tasks=(":codex-agent-runtime-desktop:$native_task" ":codex-agent-runtime-desktop:$c_abi_evidence_task")
+    [ -z "$evidence_task" ] || native_tasks+=("$evidence_task")
+    [ -z "$scenario_task" ] || native_tasks+=("$scenario_task")
+    runtime_gradle "$runtime_target" "${native_tasks[@]}"
   elif [ "$build" = true ]; then
-    ./gradlew ":codex-agent-runtime-desktop:$package_task" "${args[@]}"
+    runtime_gradle "$runtime_target" ":codex-agent-runtime-desktop:$package_task" \
+      ":codex-agent-runtime-desktop:$c_abi_package_task"
   fi
   if [ "$test_lane" = true ]; then
     local archives=(codex-agent-runtime-desktop/build/distributions/*-"$classifier".zip)
+    local c_abi_archives=(codex-agent-runtime-desktop/build/distributions/*-"$c_abi_classifier".zip)
     if [ ! -f "${archives[0]}" ]; then
-      ./gradlew ":codex-agent-runtime-desktop:$native_task" "${args[@]}"
+      runtime_gradle "$runtime_target" ":codex-agent-runtime-desktop:$native_task"
       archives=(codex-agent-runtime-desktop/build/distributions/*-"$classifier".zip)
     fi
     test "${#archives[@]}" -eq 1
+    test "${#c_abi_archives[@]}" -eq 1
     test -f codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip
-    test -f codex-agent-runtime-node/build/distributions/codex-agent-node-runtime-evidence-runner.zip
-    test -f codex-agent-runtime-node/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip
+    test -f codex-agent-runtime-desktop/build/distributions/codex-agent-node-runtime-evidence-runner.zip
+    test -f codex-agent-runtime-desktop/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip
     local tasks=(":codex-agent-runtime-desktop:$jvm_task")
-    [ "${CI_NODE_JS_REQUIRED:-true}" != true ] || tasks+=(":codex-agent-runtime-node:$node_task")
-    [ "${CI_NODE_WASM_REQUIRED:-true}" != true ] || tasks+=(":codex-agent-runtime-node:$wasm_task")
-    ./gradlew "${tasks[@]}" \
+    [ "${CI_NODE_JS_REQUIRED:-true}" != true ] || tasks+=(":codex-agent-runtime-desktop:$node_task")
+    [ "${CI_NODE_WASM_REQUIRED:-true}" != true ] || tasks+=(":codex-agent-runtime-desktop:$wasm_task")
+    runtime_gradle "$runtime_target" "${tasks[@]}" \
       -PcodexAgent.jvmClassifierArchive="$PWD/${archives[0]}" \
       -PcodexAgent.jvmRuntimeEvidenceRunner="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip" \
       -PcodexAgent.nodeClassifierArchive="$PWD/${archives[0]}" \
-      -PcodexAgent.nodeRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-node/build/distributions/codex-agent-node-runtime-evidence-runner.zip" \
-      -PcodexAgent.nodeWasmRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-node/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip" \
-      -PcodexAgent.desktopDistributionManifest="$PWD/codex-agent-runtime-desktop/codex-app-server-distributions.json" \
-      "${args[@]}"
+      -PcodexAgent.nodeRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-node-runtime-evidence-runner.zip" \
+      -PcodexAgent.nodeWasmRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip" \
+      -PcodexAgent.desktopDistributionManifest="$PWD/codex-agent-runtime-desktop/codex-app-server-distributions.json"
   fi
 }
 
 case "$lane" in
   contracts)
-    if [ "$build" = true ]; then
-      ./gradlew :codex-agent-client:verifyProtocolSource "${args[@]}"
-      ./gradlew -p gradle/build-logic releaseToolingJar --stacktrace
+    if [ "$build" = true ] || [ "$test_lane" = true ]; then
+      contract_tasks=(
+        :codex-agent-core:verifyKotlinBindingParity
+      )
+      [ "$build" != true ] || contract_tasks=(:codex-agent-core:verifyProtocolSource "${contract_tasks[@]}")
+      ./gradlew "${contract_tasks[@]}" "${args[@]}"
     fi
+    [ "$build" != true ] || ./gradlew :build-logic:releaseToolingJar --stacktrace
     if [ "$test_lane" = true ]; then
-      ./gradlew :codex-agent-client:jvmTest :tooling:protocol-generator:test "${args[@]}"
-      ./gradlew -p gradle/build-logic test --parallel --stacktrace
+      ./gradlew :codex-agent-core:jvmTest :tooling:protocol-generator:test "${args[@]}"
+      ./gradlew :build-logic:test --parallel --stacktrace
     fi
-    [ "$metadata" != true ] || ./gradlew -p gradle/build-logic test --tests '*WorkflowContractTest' --parallel --stacktrace
+    [ "$metadata" != true ] || ./gradlew :build-logic:test --tests '*WorkflowContractTest' --parallel --stacktrace
     ;;
   portable)
-    [ "$build" != true ] || ./gradlew :codex-agent-runtime-desktop:packageJvmRuntimeEvidenceRunner \
-        :codex-agent-runtime-node:packageNodeRuntimeEvidenceRunner \
-        :codex-agent-runtime-node:packageNodeWasmRuntimeEvidenceRunner "${args[@]}"
+    if [ "$build" = true ]; then
+      runtime_gradle jvm :codex-agent-runtime-desktop:packageJvmRuntimeEvidenceRunner
+      runtime_gradle node-js :codex-agent-runtime-desktop:packageNodeRuntimeEvidenceRunner
+      runtime_gradle node-wasm :codex-agent-runtime-desktop:packageNodeWasmRuntimeEvidenceRunner
+    fi
     if [ "$test_lane" = true ]; then
-      ./gradlew :codex-agent-runtime-desktop:jvmTest "${args[@]}"
-      ./gradlew -p gradle/build-logic test --tests '*RuntimeEvidence*' --parallel --stacktrace
+      runtime_gradle jvm :codex-agent-runtime-desktop:jvmTest
+      ./gradlew :build-logic:test --tests '*RuntimeEvidence*' --parallel --stacktrace
     fi
     ;;
   android)
@@ -95,31 +121,66 @@ case "$lane" in
     ./gradlew "${tasks[@]}" "${args[@]}"
     ;;
   node-js)
-    [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-node:jsNodeTest "${args[@]}"
+    if [ "$build" = true ] || [ "$test_lane" = true ]; then
+      commit=${CI_VALIDATION_COMMIT:?}
+      tree=${CI_VALIDATION_TREE:?}
+      ./gradlew ciProductPhase \
+        -PcodexAgent.product=contract \
+        -PcodexAgent.component=contract \
+        -PcodexAgent.phase=binary \
+        -PcodexAgent.candidateCommit="$commit" \
+        -PcodexAgent.candidateTree="$tree" "${args[@]}"
+      runtime_gradle node-js ciProductPhase \
+        -PcodexAgent.product=runtime \
+        -PcodexAgent.component=node-js \
+        -PcodexAgent.phase=binary \
+        -PcodexAgent.candidateCommit="$commit" \
+        -PcodexAgent.candidateTree="$tree"
+      runtime_binary=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/node-js/binary
+      runtime_gradle node-js ciProductPhase \
+        -PcodexAgent.product=runtime \
+        -PcodexAgent.component=node-js \
+        -PcodexAgent.phase=package \
+        -PcodexAgent.runtimeBinaryStage="$runtime_binary" \
+        -PcodexAgent.candidateCommit="$commit" \
+        -PcodexAgent.candidateTree="$tree"
+      runtime_gradle node-js :codex-agent-runtime-desktop:writeNodeJsBindingValidationOutputManifest
+    fi
     ;;
   node-wasm)
-    [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-node:wasmJsNodeTest "${args[@]}"
+    [ "$test_lane" != true ] || runtime_gradle node-wasm :codex-agent-runtime-desktop:wasmJsNodeTest
     ;;
   desktop-macos-arm64)
     run_desktop macosArm64 recordMacosArm64DesktopRuntimeEvidence recordJvmRuntimeMacosArm64Evidence \
-      nodeRuntimeMacosArm64Test nodeWasmRuntimeMacosArm64Test app-server-macos-arm64
+      nodeRuntimeMacosArm64Test nodeWasmRuntimeMacosArm64Test app-server-macos-arm64 \
+      :codex-agent-runtime-desktop:generateCodexAgentCAbiBootstrapEvidence \
+      :codex-agent-runtime-desktop:generateCodexAgentCAbiScenarioProof
     ;;
   desktop-macos-x64)
     run_desktop macosX64 recordMacosX64DesktopRuntimeEvidence recordJvmRuntimeMacosX64Evidence \
       nodeRuntimeMacosX64Test nodeWasmRuntimeMacosX64Test app-server-macos-x64
     ;;
   desktop-linux-arm64)
-    [ "$build" != true ] || test -f codex-agent-runtime-desktop/build/distributions/codex-agent-*-app-server-linux-arm64.zip
+    if [ "$build" = true ]; then
+      test -f codex-agent-runtime-desktop/build/distributions/codex-agent-*-app-server-linux-arm64.zip
+      test -f codex-agent-runtime-desktop/build/distributions/codex-agent-*-c-abi-linux-arm64.zip
+    fi
     if [ "$test_lane" = true ]; then
       test -n "${LINUX_ARM64_RUNTIME_BUNDLE:-}"
-      ./gradlew -p gradle/build-logic executeLinuxArm64RuntimeEvidenceBundle \
+      ./gradlew :build-logic:executeLinuxArm64RuntimeEvidenceBundle \
         -PcodexAgent.candidateCommit="$commit" \
+        -PcodexAgent.candidateTree="$tree" \
         -PcodexAgent.linuxArm64RuntimeEvidenceBundle="$LINUX_ARM64_RUNTIME_BUNDLE" \
         -PcodexAgent.desktopEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/desktop-runtime-evidence/desktop-runtime-linuxArm64.json" \
         -PcodexAgent.jvmEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/jvm-runtime-evidence/jvm-runtime-linuxArm64.json" \
-        -PcodexAgent.nodeEvidenceOutput="$PWD/codex-agent-runtime-node/build/reports/node-runtime-evidence/node-runtime-linuxArm64.json" \
-        -PcodexAgent.nodeWasmEvidenceOutput="$PWD/codex-agent-runtime-node/build/reports/node-runtime-evidence/node-wasm-runtime-linuxArm64.json" \
+        -PcodexAgent.nodeEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-runtime-linuxArm64.json" \
+        -PcodexAgent.nodeWasmEvidenceOutput="$PWD/codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-wasm-runtime-linuxArm64.json" \
         -PcodexAgent.javaExecutable=java --parallel --stacktrace
+      c_abi_archives=(codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip)
+      test "${#c_abi_archives[@]}" -eq 1
+      runtime_gradle linux-arm64 :codex-agent-runtime-desktop:generateLinuxArm64CAbiPackageEvidence \
+        -PcodexAgent.desktopClassifierDirectory="$PWD/codex-agent-runtime-desktop/build/distributions" \
+        -PcodexAgent.desktopEvidenceTarget=linuxArm64
     fi
     ;;
   desktop-linux-x64)
@@ -155,7 +216,8 @@ case "$lane" in
     [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-ios:verifyCodexAgentSwiftSimulatorCompilation "${args[@]}"
     ;;
   ios-swift-tests)
-    [ "$test_lane" != true ] || ./gradlew :codex-agent-runtime-ios:verifyCodexAgentSwiftAuthenticationTests "${args[@]}"
+    [ "$test_lane" != true ] || ./gradlew \
+      :codex-agent-runtime-ios:generateCodexAgentAppleBindingEvidence "${args[@]}"
     ;;
   ios-package)
     tasks=()

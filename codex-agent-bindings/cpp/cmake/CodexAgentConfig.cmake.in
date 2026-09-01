@@ -1,0 +1,121 @@
+@PACKAGE_INIT@
+
+set(CodexAgent_NATIVE_CLASSIFIER "@CodexAgent_NATIVE_CLASSIFIER@")
+set(CodexAgent_C_SDK_INCLUDE_DIR "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
+set(CodexAgent_C_SDK_LIBRARY "${PACKAGE_PREFIX_DIR}/@CODEX_AGENT_C_SDK_LIBRARY_RELATIVE@")
+set(CodexAgent_SDK_COMPATIBILITY
+    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/native/sdk-compatibility.json")
+set(CodexAgent_CPP_LOADER
+    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/@CMAKE_STATIC_LIBRARY_PREFIX@CodexAgentLoader@CMAKE_STATIC_LIBRARY_SUFFIX@")
+
+if(NOT CodexAgent_C_SDK_INCLUDE_DIR OR NOT EXISTS "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h")
+    set(CodexAgent_FOUND FALSE)
+    set(CodexAgent_NOT_FOUND_MESSAGE "CodexAgent package is missing its verified C SDK header")
+    return()
+endif()
+if(NOT CodexAgent_C_SDK_LIBRARY OR NOT EXISTS "${CodexAgent_C_SDK_LIBRARY}")
+    set(CodexAgent_FOUND FALSE)
+    set(CodexAgent_NOT_FOUND_MESSAGE "CodexAgent package is missing its verified native C SDK library")
+    return()
+endif()
+if(NOT EXISTS "${CodexAgent_CPP_LOADER}")
+    set(CodexAgent_FOUND FALSE)
+    set(CodexAgent_NOT_FOUND_MESSAGE "CodexAgent package is missing its native loader")
+    return()
+endif()
+
+set(_codex_agent_verified_files
+    "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h|@CODEX_AGENT_C_SDK_HEADER_SHA256@"
+    "${CodexAgent_C_SDK_LIBRARY}|@CODEX_AGENT_C_SDK_LIBRARY_SHA256@"
+    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/native/codex-agent-c-abi-manifest.json|@CODEX_AGENT_C_SDK_MANIFEST_SHA256@"
+    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/native/codex-agent-c-abi-evidence.json|@CODEX_AGENT_C_SDK_EVIDENCE_SHA256@"
+    "${CodexAgent_SDK_COMPATIBILITY}|@CODEX_AGENT_SDK_COMPATIBILITY_SHA256@"
+)
+if(CodexAgent_NATIVE_CLASSIFIER MATCHES "^linux-")
+    list(APPEND _codex_agent_verified_files
+        "${PACKAGE_PREFIX_DIR}/lib/libcodex_agent.so.1|@CODEX_AGENT_C_SDK_SONAME_SHA256@")
+elseif(CodexAgent_NATIVE_CLASSIFIER STREQUAL "windows-x64")
+    list(APPEND _codex_agent_verified_files
+        "${PACKAGE_PREFIX_DIR}/lib/libcodex_agent.dll.a|@CODEX_AGENT_C_SDK_GNU_IMPORT_SHA256@"
+        "${PACKAGE_PREFIX_DIR}/lib/codex_agent.lib|@CODEX_AGENT_C_SDK_MSVC_IMPORT_SHA256@")
+endif()
+foreach(_codex_agent_verified_file IN LISTS _codex_agent_verified_files)
+    string(REPLACE "|" ";" _codex_agent_verified_parts "${_codex_agent_verified_file}")
+    list(GET _codex_agent_verified_parts 0 _codex_agent_verified_path)
+    list(GET _codex_agent_verified_parts 1 _codex_agent_expected_sha256)
+    if(NOT EXISTS "${_codex_agent_verified_path}")
+        set(CodexAgent_FOUND FALSE)
+        set(CodexAgent_NOT_FOUND_MESSAGE "CodexAgent verified package member is missing: ${_codex_agent_verified_path}")
+        return()
+    endif()
+    file(SHA256 "${_codex_agent_verified_path}" _codex_agent_actual_sha256)
+    if(NOT _codex_agent_actual_sha256 STREQUAL _codex_agent_expected_sha256)
+        set(CodexAgent_FOUND FALSE)
+        set(CodexAgent_NOT_FOUND_MESSAGE "CodexAgent verified package member hash mismatch: ${_codex_agent_verified_path}")
+        return()
+    endif()
+endforeach()
+
+if(APPLE)
+    set(_codex_agent_host "macos-${CMAKE_SYSTEM_PROCESSOR}")
+elseif(WIN32)
+    set(_codex_agent_host "windows-${CMAKE_SYSTEM_PROCESSOR}")
+elseif(UNIX)
+    set(_codex_agent_host "linux-${CMAKE_SYSTEM_PROCESSOR}")
+else()
+    set(_codex_agent_host "unsupported")
+endif()
+string(REPLACE "aarch64" "arm64" _codex_agent_host "${_codex_agent_host}")
+string(REPLACE "x86_64" "x64" _codex_agent_host "${_codex_agent_host}")
+string(REPLACE "AMD64" "x64" _codex_agent_host "${_codex_agent_host}")
+if(NOT _codex_agent_host STREQUAL CodexAgent_NATIVE_CLASSIFIER)
+    set(CodexAgent_FOUND FALSE)
+    set(CodexAgent_NOT_FOUND_MESSAGE
+        "CodexAgent package classifier ${CodexAgent_NATIVE_CLASSIFIER} does not match ${_codex_agent_host}"
+    )
+    return()
+endif()
+
+if(NOT TARGET CodexAgent::Loader)
+    add_library(CodexAgent::Loader STATIC IMPORTED)
+    set_target_properties(
+        CodexAgent::Loader
+        PROPERTIES
+            IMPORTED_LOCATION "${CodexAgent_CPP_LOADER}"
+            INTERFACE_INCLUDE_DIRECTORIES "${CodexAgent_C_SDK_INCLUDE_DIR}"
+    )
+    if(CMAKE_DL_LIBS)
+        set_property(TARGET CodexAgent::Loader PROPERTY INTERFACE_LINK_LIBRARIES "${CMAKE_DL_LIBS}")
+    endif()
+endif()
+
+if(NOT TARGET CodexAgent::C)
+    add_library(CodexAgent::C UNKNOWN IMPORTED)
+    set_target_properties(
+        CodexAgent::C
+        PROPERTIES
+            IMPORTED_LOCATION "${CodexAgent_C_SDK_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${CodexAgent_C_SDK_INCLUDE_DIR}"
+    )
+    if(WIN32)
+        if(MSVC)
+            set_property(TARGET CodexAgent::C PROPERTY IMPORTED_IMPLIB "${PACKAGE_PREFIX_DIR}/lib/codex_agent.lib")
+        else()
+            set_property(TARGET CodexAgent::C PROPERTY IMPORTED_IMPLIB "${PACKAGE_PREFIX_DIR}/lib/libcodex_agent.dll.a")
+        endif()
+    endif()
+endif()
+
+if(NOT TARGET CodexAgent::CodexAgent)
+    add_library(CodexAgent::CodexAgent INTERFACE IMPORTED)
+    set_target_properties(
+        CodexAgent::CodexAgent
+        PROPERTIES
+            INTERFACE_COMPILE_FEATURES cxx_std_20
+            INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@;${CodexAgent_C_SDK_INCLUDE_DIR}"
+            INTERFACE_COMPILE_DEFINITIONS "CODEX_AGENT_CPP_DEFAULT_LIBRARY_PATH=\"${CodexAgent_C_SDK_LIBRARY}\";CODEX_AGENT_CPP_COMPATIBILITY_PATH=\"${CodexAgent_SDK_COMPATIBILITY}\""
+            INTERFACE_LINK_LIBRARIES CodexAgent::Loader
+    )
+endif()
+
+check_required_components(CodexAgent)

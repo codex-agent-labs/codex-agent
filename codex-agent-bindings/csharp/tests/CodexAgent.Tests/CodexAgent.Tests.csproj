@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CodexAgent.Tests</AssemblyName>
+    <RollForward>Major</RollForward>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/CodexAgent/CodexAgent.csproj" />
+    <None Include="../../parity/capability-claims.tsv" Link="parity/capability-claims.tsv" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(CodexAgentCanonicalApiReport)" Link="parity/canonical-api.json" CopyToOutputDirectory="PreserveNewest" Condition="'$(CodexAgentCanonicalApiReport)' != ''" />
+    <None Include="$(CodexAgentCAbiBootstrapEvidence)" Link="parity/c-abi-bootstrap-evidence.json" CopyToOutputDirectory="PreserveNewest" Condition="'$(CodexAgentCAbiBootstrapEvidence)' != ''" />
+    <None Include="$(CodexAgentCSdkRoot)/include/codex_agent.h" Link="parity/codex_agent.h" CopyToOutputDirectory="PreserveNewest" Condition="'$(CodexAgentCSdkRoot)' != ''" />
+  </ItemGroup>
+
+  <Target Name="ValidateDeclaredArtifactInputs" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(CodexAgentCanonicalApiReport)' == ''" Text="CodexAgentCanonicalApiReport must name a declared canonical API report." />
+    <Error Condition="'$(CodexAgentCanonicalApiReport)' != '' and !Exists('$(CodexAgentCanonicalApiReport)')" Text="CodexAgentCanonicalApiReport does not exist: $(CodexAgentCanonicalApiReport)" />
+    <Error Condition="'$(CodexAgentCAbiBootstrapEvidence)' == ''" Text="CodexAgentCAbiBootstrapEvidence must name declared C ABI bootstrap evidence." />
+    <Error Condition="'$(CodexAgentCAbiBootstrapEvidence)' != '' and !Exists('$(CodexAgentCAbiBootstrapEvidence)')" Text="CodexAgentCAbiBootstrapEvidence does not exist: $(CodexAgentCAbiBootstrapEvidence)" />
+    <Error Condition="'$(CodexAgentCSdkRoot)' == ''" Text="CodexAgentCSdkRoot must name a declared C SDK root." />
+    <Error Condition="'$(CodexAgentCSdkRoot)' != '' and !Exists('$(CodexAgentCSdkRoot)/include/codex_agent.h')" Text="CodexAgentCSdkRoot must contain include/codex_agent.h: $(CodexAgentCSdkRoot)" />
+    <Error Condition="'$(CodexAgentRealSdkPath)' != '' and !Exists('$(CodexAgentRealSdkPath)')" Text="CodexAgentRealSdkPath does not exist: $(CodexAgentRealSdkPath)" />
+  </Target>
+
+  <Target Name="BuildFakeCodexAgentNativeLibraryMacos" AfterTargets="Build" Condition="$([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('osx-'))">
+    <Exec Command="clang -std=c11 -Wall -Wextra -Werror -dynamiclib -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent.dylib&quot;" />
+    <Exec Command="clang -std=c11 -Wall -Wextra -Werror -dynamiclib -DCODEX_AGENT_TEST_OMIT_RUNTIME_IDENTITY=1 -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent_missing_identity.dylib&quot;" />
+    <Exec Command="clang -std=c11 -Wall -Wextra -Werror -dynamiclib -DCODEX_AGENT_TEST_ABI_VERSION=0x010E0000 -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent_abi_mismatch.dylib&quot;" />
+  </Target>
+  <Target Name="BuildFakeCodexAgentNativeLibraryLinux" AfterTargets="Build" Condition="$([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('linux-'))">
+    <Exec Command="cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent.so&quot;" />
+    <Exec Command="cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -DCODEX_AGENT_TEST_OMIT_RUNTIME_IDENTITY=1 -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent_missing_identity.so&quot;" />
+    <Exec Command="cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -DCODEX_AGENT_TEST_ABI_VERSION=0x010E0000 -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent_abi_mismatch.so&quot;" />
+  </Target>
+
+  <Target Name="BuildRealMcpValueFixtureMacos" AfterTargets="Build" Condition="'$(CodexAgentRealSdkPath)' != '' and $([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('osx-'))">
+    <Exec Command="clang -std=c11 -Wall -Wextra -Werror -dynamiclib -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/real_mcp_value_fixture.c &quot;$(CodexAgentRealSdkPath)&quot; -Wl,-rpath,&quot;$([System.IO.Path]::GetDirectoryName('$(CodexAgentRealSdkPath)'))&quot; -o &quot;$(TargetDir)libcodex_agent_csharp_fixture.dylib&quot;" />
+  </Target>
+  <Target Name="BuildRealMcpValueFixtureLinux" AfterTargets="Build" Condition="'$(CodexAgentRealSdkPath)' != '' and $([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('linux-'))">
+    <Exec Command="cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/real_mcp_value_fixture.c &quot;$(CodexAgentRealSdkPath)&quot; -Wl,-rpath,&quot;$([System.IO.Path]::GetDirectoryName('$(CodexAgentRealSdkPath)'))&quot; -o &quot;$(TargetDir)libcodex_agent_csharp_fixture.so&quot;" />
+  </Target>
+</Project>

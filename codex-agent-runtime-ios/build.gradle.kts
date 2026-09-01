@@ -15,7 +15,7 @@ kotlin {
     explicitApi()
     sourceSets {
         commonMain.dependencies {
-            api(project(":codex-agent-client"))
+            api(project(":codex-agent-core"))
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
         }

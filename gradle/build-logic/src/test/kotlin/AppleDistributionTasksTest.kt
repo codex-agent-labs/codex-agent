@@ -5,10 +5,62 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import org.gradle.api.tasks.CacheableTask
 
 class AppleDistributionTasksTest {
+    @Test
+    fun `Swift and Objective-C consumers have four separately identified XCTest methods`() {
+        val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .first { it.resolve("build.gradle.kts").isFile && it.resolve("codex-agent-runtime-ios").isDirectory }
+        val apple = repository.resolve("codex-agent-runtime-ios/apple")
+        val manifest = apple.resolve("Package.swift").readText()
+        val registration = repository.resolve(
+            "gradle/build-logic/src/main/kotlin/codexagent.ios-runtime.gradle.kts",
+        ).readText()
+        val simulatorTask = repository.resolve(
+            "gradle/build-logic/src/main/kotlin/SwiftAuthenticationTestTask.kt",
+        ).readText()
+        val objectiveCConsumer = apple.resolve(
+            "Tests/CodexAgentObjectiveCConsumer/CodexAgentObjectiveCConsumer.m",
+        ).readText()
+        val swiftConsumer = apple.resolve(
+            "Tests/CodexAgentObservationTests/CodexAgentObservationTests.swift",
+        ).readText()
+        val swiftTestCount = Files.walk(apple.resolve("Tests").toPath()).use { paths ->
+            paths.filter { it.toString().endsWith(".swift") }
+                .mapToInt { path -> Regex("""\bfunc\s+test\w*\s*\(""").findAll(path.toFile().readText()).count() }
+                .sum()
+        }
+
+        assertTrue("name: \"CodexAgentObjectiveCConsumer\"" in manifest)
+        assertTrue("path: \"Tests/CodexAgentObjectiveCConsumer\"" in manifest)
+        assertTrue("publicHeadersPath: \"include\"" in manifest)
+        assertTrue("testsDirectory.set(layout.projectDirectory.dir(\"apple/Tests\"))" in registration)
+        val expectedIdentifiers = listOf(
+            "CodexAgentObservationTests/testBufferingCancellationAndDroppedStreamReleaseTheObservation()",
+            "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()",
+            "CodexAgentObservationTests/testObjectiveCConsumerExposesStructuredFailure()",
+            "CodexAuthorizationBrowserTests/testGenericBrowserOpensTypedExternalURLAndCancelsPresentation()",
+        )
+        expectedIdentifiers.forEach { identifier -> assertTrue("\"$identifier\"" in registration) }
+        assertTrue("\"build-for-testing\"" in simulatorTask)
+        assertTrue("Files.deleteIfExists(summaryFile.get().asFile.toPath())" in simulatorTask)
+        assertTrue("#import <CodexAgent/CodexAgent.h>" in objectiveCConsumer)
+        listOf(
+            "startWithCompletion", "selectWorkspaceURL", "observeStateWithHandler", "disposeWithCompletion",
+            "openConversationWithCompletion", "observeActiveConversationWithHandler",
+            "sendPrompt", "cancelTurnWithCompletion",
+        ).forEach { selector -> assertTrue(selector in objectiveCConsumer, "missing Objective-C selector $selector") }
+        listOf("operation_failed", "Codex operation failed", "failure.isRecoverable").forEach { value ->
+            assertTrue(value in objectiveCConsumer, "missing exact Objective-C failure assertion $value")
+        }
+        assertTrue("func testObjectiveCConsumerExposesStructuredFailure() async" in swiftConsumer)
+        assertTrue("CDXRunObjectiveCConsumer" in swiftConsumer)
+        assertEquals(4, swiftTestCount)
+    }
+
     @Test
     fun `structured simulator JSON selects exact available runtime and device`() {
         val selection = selectSimulator(
@@ -46,12 +98,64 @@ class AppleDistributionTasksTest {
     }
 
     @Test
-    fun `xcresult summary requires exactly 26 nonfailing tests`() {
-        val summary = parseSwiftTestSummary("""{"totalTestCount":26,"failedTests":0}""")
-        assertEquals(SwiftTestSummary(26, 0), summary)
-        verifySwiftTestSummary(summary, 26)
-        assertFailsWith<IllegalStateException> { verifySwiftTestSummary(SwiftTestSummary(25, 0), 26) }
-        assertFailsWith<IllegalStateException> { verifySwiftTestSummary(SwiftTestSummary(26, 1), 26) }
+    fun `xcresult validation binds exact test identities statuses and bundle digest`() = withRoot { root ->
+        val expected = listOf("Suite/testOne()", "Suite/testTwo()")
+        fun tests(secondIdentifier: String = expected[1], secondStatus: String = "Passed") = """
+            {
+              "devices": [],
+              "testNodes": [{
+                "name": "Suite",
+                "nodeType": "Test Suite",
+                "children": [
+                  {"name":"testOne()","nodeType":"Test Case","nodeIdentifier":"${expected[0]}","result":"Passed"},
+                  {"name":"${secondIdentifier.substringAfter('/')}","nodeType":"Test Case","nodeIdentifier":"$secondIdentifier","result":"$secondStatus"}
+                ]
+              }],
+              "testPlanConfigurations": []
+            }
+        """.trimIndent()
+        val summary = parseSwiftTestSummary("""{"totalTestCount":2,"failedTests":0}""")
+        assertEquals(SwiftTestSummary(2, 0), parseSwiftTestSummary("""{"totalTestCount":2}"""))
+        assertFailsWith<IllegalStateException> {
+            parseSwiftTestSummary("""{"totalTestCount":2,"failedTests":"zero"}""")
+        }
+        val results = parseSwiftTestCaseResults(tests())
+        assertEquals(expected.map { SwiftTestCaseResult(it, "Passed") }, results)
+        verifySwiftTestCaseResults(summary, results, expected)
+        assertFailsWith<IllegalStateException> {
+            verifySwiftTestCaseResults(summary, parseSwiftTestCaseResults(tests("Suite/testOther()")), expected)
+        }
+        assertFailsWith<IllegalStateException> {
+            verifySwiftTestCaseResults(summary, parseSwiftTestCaseResults(tests(secondStatus = "Failed")), expected)
+        }
+        assertFailsWith<IllegalStateException> {
+            verifySwiftTestCaseResults(SwiftTestSummary(1, 0), results, expected)
+        }
+        assertFailsWith<IllegalStateException> { parseSwiftTestCaseResults(tests(expected[0])) }
+        assertFailsWith<IllegalStateException> {
+            parseSwiftTestCaseResults("""
+                {
+                  "devices": [],
+                  "testNodes": [
+                    {"name":"testOne()","nodeType":"Test Case","nodeIdentifier":"Suite/testOne()","result":"Passed"},
+                    {"name":"Suite","nodeType":"Test Suite","children":{}}
+                  ],
+                  "testPlanConfigurations": []
+                }
+            """.trimIndent())
+        }
+
+        val bundle = root.resolve("tests.xcresult").apply { mkdirs() }
+        val payload = bundle.resolve("result").apply { writeText("passed") }
+        val digest = bundle.crossLanguageTreeDigest()
+        val evidence = swiftTestEvidence(summary, results, digest)
+        assertEquals("codex-agent-apple-xctest-v1", evidence.releaseString("protocol"))
+        assertEquals(digest, evidence.releaseString("xcresultSha256"))
+        assertEquals(2, evidence.releaseArray("tests").size)
+        payload.writeText("changed")
+        assertNotEquals(digest, bundle.crossLanguageTreeDigest())
+
+        assertFailsWith<IllegalStateException> { verifySwiftTestSummary(SwiftTestSummary(2, 1), 2) }
         assertFailsWith<IllegalStateException> { verifySwiftTestSummary(SwiftTestSummary(0, 0), 0) }
     }
 
@@ -165,6 +269,8 @@ class AppleDistributionTasksTest {
         assertEquals("inputs/Package.swift", packageRoot.resolve("Package.swift").readText())
         assertEquals("Sources", packageRoot.resolve("Sources/content").readText())
         assertEquals("Framework", packageRoot.resolve("CodexAgent.xcframework/content").readText())
+        assertEquals("codex-license", packageRoot.resolve("openai-codex-LICENSE.txt").readText())
+        assertEquals("codex-notice", packageRoot.resolve("openai-codex-NOTICE.txt").readText())
         assertEquals("TestApp", output.resolve("CodexAgentTestApp/content").readText())
     }
 

@@ -37,6 +37,7 @@ extensions.configure<LibraryExtension> {
             useLegacyPackaging = true
         }
     }
+    sourceSets.getByName("main").assets.srcDir(rootProject.layout.projectDirectory.dir("legal/openai-codex"))
 }
 
 kotlin {
@@ -44,7 +45,7 @@ kotlin {
 }
 
 dependencies {
-    api(project(":codex-agent-client"))
+    api(project(":codex-agent-core"))
     implementation(libs.androidx.browser)
     implementation(libs.androidx.sqlite)
     implementation(libs.androidx.sqlite.framework)

@@ -19,12 +19,13 @@ class NodeDesktopWorkflowContractTest {
             "packageNodeWasmRuntimeEvidenceRunner",
         ).forEach { assertTrue(it in driver, it) }
         assertFalse("setup-sccache" in desktop)
-        assertEquals(1, Regex("(?m)^    strategy:$").findAll(desktop).count())
+        assertEquals(3, Regex("(?m)^    strategy:$").findAll(desktop).count())
+        assertTrue("  native-wrapper-host-consumers:" in desktop)
     }
 
     @Test
     fun `desktop lanes publish strict receipts and consumers import all classifiers`() {
-        val ci = workflows.getValue("ci.yml")
+        val ci = workflows.getValue("product-validation.yml")
         val desktop = workflows.getValue("desktop-runtime-evidence.yml")
         assertTrue("uses: ./.github/actions/run-ci-lane" in desktop)
         assertTrue("pattern: codex-agent-ci-desktop-*-" in ci)
@@ -35,12 +36,65 @@ class NodeDesktopWorkflowContractTest {
     }
 
     @Test
+    fun `Node JS stages Runtime validation and the SDK job owns the strict binding gate`() {
+        val nodeJs = driver.substringAfter("  node-js)").substringBefore("  node-wasm)")
+        val nodeWasm = driver.substringAfter("  node-wasm)").substringBefore("  desktop-macos-arm64)")
+        val strictTask = ":codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity"
+        val ci = workflows.getValue("product-validation.yml")
+
+        assertFalse(strictTask in nodeJs)
+        assertEquals(
+            1,
+            Regex(Regex.escape(":codex-agent-runtime-desktop:writeNodeJsBindingValidationOutputManifest"))
+                .findAll(nodeJs).count(),
+        )
+        assertFalse(":codex-agent-runtime-desktop:verifyPackedNpmConsumers" in nodeJs)
+        assertFalse(":codex-agent-runtime-desktop:jsNodeTest" in nodeJs)
+        assertFalse(strictTask in nodeWasm)
+        val sdkJavaScript = ci.substringAfter("  sdk-javascript:").substringBefore("  merge-gate:")
+        assertEquals(1, Regex(Regex.escape(strictTask)).findAll(sdkJavaScript).count())
+        assertTrue("-PcodexAgent.product=sdk" in sdkJavaScript)
+        assertTrue("-PcodexAgent.component=javascript" in sdkJavaScript)
+        assertTrue("codex-agent-sdk/build/product-stage/sdk/javascript/package" in sdkJavaScript)
+        assertTrue("needs.plan.outputs.lane_node_js == 'true'" in sdkJavaScript)
+        assertTrue("name: codex-agent-ci-node-js-${'$'}{{ needs.plan.outputs.validation_tree }}" in sdkJavaScript)
+        assertTrue("build/ci/sdk-runtime" in sdkJavaScript)
+        assertFalse("codex-agent-ci-portable-" in sdkJavaScript)
+        assertEquals(
+            1,
+            Regex(Regex.escape(":codex-agent-runtime-desktop:wasmJsNodeTest")).findAll(nodeWasm).count(),
+        )
+        assertTrue(
+            "(matrix.lane == 'contracts' || contains(matrix.lane, 'node')) && '24.18.0'" in ci,
+        )
+    }
+
+    @Test
     fun `every direct desktop Gradle invocation receives its evidence target`() {
         val directDesktop = driver.substringAfter("run_desktop() {").substringBefore("\n}\n\ncase ")
         val targetArgument = "args+=(-PcodexAgent.desktopEvidenceTarget=\"${'$'}target\")"
+        val invocation = "runtime_gradle \"${'$'}runtime_target\" \"${'$'}{native_tasks[@]}\""
 
         assertEquals(1, Regex(Regex.escape(targetArgument)).findAll(directDesktop).count())
-        assertTrue(directDesktop.indexOf(targetArgument) < directDesktop.indexOf("./gradlew"))
+        assertTrue(directDesktop.indexOf(targetArgument) < directDesktop.indexOf(invocation))
+    }
+
+    @Test
+    fun `macOS Arm64 runs C bootstrap evidence in its existing native invocation only`() {
+        val macosArm64 = driver.substringAfter("  desktop-macos-arm64)")
+            .substringBefore("  desktop-macos-x64)")
+        val otherDesktop = driver.substringAfter("  desktop-macos-x64)")
+            .substringBefore("  ios-native-tests)")
+        val runDesktop = driver.substringAfter("run_desktop() {").substringBefore("\n}\n\ncase ")
+        val task = ":codex-agent-runtime-desktop:generateCodexAgentCAbiBootstrapEvidence"
+        val append = "native_tasks+=(\"${'$'}evidence_task\")"
+        val invocation = "runtime_gradle \"${'$'}runtime_target\" \"${'$'}{native_tasks[@]}\""
+
+        assertEquals(1, Regex(Regex.escape(task)).findAll(driver).count())
+        assertEquals(1, Regex(Regex.escape(task)).findAll(macosArm64).count())
+        assertFalse(task in otherDesktop)
+        assertEquals(1, Regex(Regex.escape(append)).findAll(runDesktop).count())
+        assertTrue(runDesktop.indexOf(append) < runDesktop.indexOf(invocation))
     }
 
     @Test
@@ -53,13 +107,15 @@ class NodeDesktopWorkflowContractTest {
         assertTrue(":codex-agent-runtime-desktop:packageLinuxArm64AppServer" in desktop)
         assertEquals(1, Regex("stageLinuxArm64RuntimeEvidenceBundle").findAll(combined).count())
         assertEquals(1, Regex("executeLinuxArm64RuntimeEvidenceBundle").findAll(combined).count())
+        assertTrue("./gradlew :build-logic:executeLinuxArm64RuntimeEvidenceBundle" in driver)
+        assertFalse("./gradlew -p gradle/build-logic executeLinuxArm64RuntimeEvidenceBundle" in driver)
         assertTrue("RUNNER_OS: Linux" in desktop && "RUNNER_ARCH: ARM64" in desktop)
         assertFalse("recordJvmRuntimeLinuxArm64Evidence" in combined)
     }
 
     @Test
     fun `Linux ARM exact reuse gates every expensive job and preserves miss paths`() {
-        val ci = workflows.getValue("ci.yml")
+        val ci = workflows.getValue("product-validation.yml")
         val desktop = workflows.getValue("desktop-runtime-evidence.yml")
         val lane = repository.resolve(".github/actions/run-ci-lane/action.yml").readText()
         val stage = repository.resolve("ci/stage.py").readText()
@@ -107,10 +163,19 @@ class NodeDesktopWorkflowContractTest {
         assertTrue(cross.indexOf("verify-one") < cross.indexOf("packageLinuxArm64AppServer"))
         assertTrue("name: codex-agent-arm64-production-transport-" in lane)
         assertFalse("name: codex-agent-ci-arm64-production-transport-" in lane)
-        assertTrue("Restore only the verified production classifier" in cross)
+        assertTrue("Restore the verified production classifiers and binary stage" in cross)
+        assertTrue("test -f \"${'$'}binary_stage/output-manifest.json\"" in cross)
+        assertTrue("cp -R \"${'$'}binary_stage\" build/linux-arm64-inputs/runtime-binary-stage" in cross)
         assertFalse("receipt.py validate" in cross)
         assertFalse("cp -R build/ci/linux-arm64-production/payload/. ." in cross)
-        assertTrue("Cross-build one classifier\n        if: needs.linux-arm64-reuse.outputs.production_reused != 'true'" in cross)
+        assertTrue("Cross-build the two Linux Arm64 classifiers\n        if: needs.linux-arm64-reuse.outputs.production_reused != 'true'" in cross)
+        assertTrue(":codex-agent-runtime-desktop:packageLinuxArm64AppServer" in cross)
+        assertTrue(":codex-agent-runtime-desktop:packageLinuxArm64CAbiSdk" in cross)
+        assertTrue("-PcodexAgent.desktopSupervisorDirectory=\"${'$'}PWD/build/desktop-supervisors\"" in cross)
+        assertTrue("Stage the authoritative Linux Arm64 Runtime binary handoff\n        if: " +
+            "needs.linux-arm64-reuse.outputs.production_reused != 'true'" in cross)
+        assertTrue("Preserve the authoritative Linux Arm64 Runtime binary stage\n        if: " +
+            "needs.linux-arm64-reuse.outputs.production_reused != 'true'" in cross)
         assertTrue("Cross-build the native test executable\n        if: inputs.linuxArm64Test" in cross)
         assertTrue("Stage one strict ARM execution bundle\n        if: inputs.linuxArm64Test" in cross)
         assertTrue("needs: [linux-arm64-reuse, linux-arm64-cross-build]" in runtime)
@@ -144,6 +209,10 @@ class NodeDesktopWorkflowContractTest {
     fun `candidate downloads exact promoted lanes and never invokes desktop evidence`() {
         val candidate = workflows.getValue("release-candidate.yml")
         assertTrue("codex-agent-promoted-validation-${'$'}{{ needs.identity.outputs.candidate_commit }}" in candidate)
+        assertTrue(
+            "codex-agent-promoted-native-wrapper-packages-${'$'}{{ needs.identity.outputs.candidate_commit }}" in
+                candidate,
+        )
         assertTrue("codex-agent-promoted-${'$'}lane-${'$'}CANDIDATE_COMMIT" in candidate)
         assertTrue("java -jar \"${'$'}RELEASE_TOOL\" assemble-promoted-candidate" in candidate)
         assertFalse("./gradlew" in candidate)

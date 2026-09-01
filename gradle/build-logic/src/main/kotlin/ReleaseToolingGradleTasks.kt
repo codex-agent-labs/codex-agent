@@ -1,4 +1,3 @@
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.file.Files
 import javax.inject.Inject
@@ -25,29 +24,6 @@ import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
-
-internal fun ExecOperations.captureReleaseProcess(
-    command: List<String>,
-    workingDirectory: File? = null,
-    environmentVariables: Map<String, String> = mapOf("LC_ALL" to "C", "LANG" to "C"),
-): String {
-    val output = ByteArrayOutputStream()
-    val errors = ByteArrayOutputStream()
-    val result = exec {
-        commandLine(command)
-        workingDirectory?.let(::workingDir)
-        environment(environmentVariables)
-        standardOutput = output
-        errorOutput = errors
-        isIgnoreExitValue = true
-    }
-    return requireSuccessfulReleaseProcess(
-        command,
-        result.exitValue,
-        output.toString(Charsets.UTF_8.name()),
-        errors.toString(Charsets.UTF_8.name()),
-    )
-}
 
 @DisableCachingByDefault(because = "Verifies the installed Apple toolchain")
 abstract class VerifyAppleToolchainTask @Inject constructor(private val processes: ExecOperations) : DefaultTask() {
@@ -234,53 +210,13 @@ fun Project.registerCentralPortalTasks() {
     }
 }
 
-@DisableCachingByDefault(because = "Platform smoke evidence must execute for every immutable candidate")
-abstract class RecordDesktopRuntimeEvidenceTask : DefaultTask() {
-    @get:Input abstract val target: Property<String>
-    @get:Input abstract val classifier: Property<String>
-    @get:Input abstract val binarySha256: Property<String>
-    @get:Input abstract val candidateCommit: Property<String>
-    @get:Input abstract val runnerOs: Property<String>
-    @get:Input abstract val runnerArch: Property<String>
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val classifierArchive: RegularFileProperty
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val distributionManifest: RegularFileProperty
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val testReport: RegularFileProperty
-    @get:OutputFile abstract val evidenceFile: RegularFileProperty
-
-    init { outputs.upToDateWhen { false } }
-
-    @TaskAction
-    fun record() {
-        val targetName = target.get()
-        val commit = candidateCommit.get()
-        check(commit.matches(Regex("[0-9a-f]{40}"))) { "Desktop evidence commit is not immutable" }
-        verifyDesktopRuntimeTestReport(testReport.get().asFile, targetName)
-        val expected = desktopRuntimeEvidenceTargets.getValue(targetName)
-        check(classifier.get() == expected.classifier) { "Desktop evidence classifier mismatch" }
-        check(runnerOs.get() == expected.runnerOs && runnerArch.get() == expected.runnerArch) {
-            "Desktop evidence runner does not match $targetName"
-        }
-        val proof = inspectDesktopClassifier(
-            targetName,
-            readDesktopCodexManifest(distributionManifest.get().asFile),
-            classifierArchive.get().asFile,
-        )
-        check(binarySha256.get() == proof.binarySha256) { "Desktop evidence App Server hash mismatch" }
-        evidenceFile.get().asFile.atomicWriteJson(buildDesktopRuntimeEvidence(DesktopRuntimeEvidenceValues(
-            commit,
-            targetName,
-            proof.binarySha256,
-            proof.supervisorSha256,
-            proof.archiveSha256,
-        )))
-    }
-}
-
 @CacheableTask
 abstract class VerifyCandidatePayloadTask : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val manifestFile: RegularFileProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val payloadDirectory: DirectoryProperty
-    @get:Input abstract val expectedVersion: Property<String>
+    @get:Input abstract val expectedContractVersion: Property<String>
+    @get:Input abstract val expectedRuntimeVersion: Property<String>
+    @get:Input abstract val expectedSdkVersion: Property<String>
     @get:Input abstract val expectedTag: Property<String>
     @get:Input abstract val expectedCommit: Property<String>
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val approvalsFile: RegularFileProperty
@@ -308,7 +244,9 @@ abstract class VerifyCandidatePayloadTask : DefaultTask() {
         val result = verifyCandidatePayload(
             manifestFile.get().asFile,
             payload,
-            expectedVersion.get(),
+            ProductVersions(
+                expectedContractVersion.get(), expectedRuntimeVersion.get(), expectedSdkVersion.get(),
+            ),
             expectedTag.get(),
             expectedCommit.get(),
             buildMap {
@@ -336,14 +274,18 @@ abstract class StagePromotedMavenPrimariesTask : DefaultTask() {
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val promotedArtifactsDirectory: DirectoryProperty
     @get:Input abstract val candidateCommit: Property<String>
-    @get:Input abstract val candidateVersion: Property<String>
+    @get:Input abstract val candidateContractVersion: Property<String>
+    @get:Input abstract val candidateRuntimeVersion: Property<String>
+    @get:Input abstract val candidateSdkVersion: Property<String>
     @get:OutputDirectory abstract val mavenRepository: DirectoryProperty
 
     @TaskAction
     fun stage() = stageCanonicalPromotedMavenPrimaries(
         promotedArtifactsDirectory.get().asFile,
         candidateCommit.get(),
-        candidateVersion.get(),
+        ProductVersions(
+            candidateContractVersion.get(), candidateRuntimeVersion.get(), candidateSdkVersion.get(),
+        ),
         mavenRepository.get().asFile,
     )
 }
@@ -354,7 +296,9 @@ abstract class AssemblePromotedCandidateTask : DefaultTask() {
     abstract val promotedArtifactsDirectory: DirectoryProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val signedMavenRepository: DirectoryProperty
-    @get:Input abstract val candidateVersion: Property<String>
+    @get:Input abstract val candidateContractVersion: Property<String>
+    @get:Input abstract val candidateRuntimeVersion: Property<String>
+    @get:Input abstract val candidateSdkVersion: Property<String>
     @get:Input abstract val releaseTag: Property<String>
     @get:Input abstract val candidateCommit: Property<String>
     @get:Input abstract val candidateTree: Property<String>
@@ -380,7 +324,9 @@ abstract class AssemblePromotedCandidateTask : DefaultTask() {
     fun assemble() = assemblePromotedCandidate(PromotedCandidateInputs(
         promotedArtifactsDirectory.get().asFile,
         signedMavenRepository.get().asFile,
-        candidateVersion.get(),
+        ProductVersions(
+            candidateContractVersion.get(), candidateRuntimeVersion.get(), candidateSdkVersion.get(),
+        ),
         releaseTag.get(),
         candidateCommit.get(),
         candidateTree.get(),
@@ -414,7 +360,8 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
     abstract val mavenInventory: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val gradleWrapper: RegularFileProperty
-    @get:Input abstract val projectVersion: Property<String>
+    @get:Input abstract val sdkVersion: Property<String>
+    @get:Input abstract val runtimeVersion: Property<String>
     @get:Input abstract val androidSdkDirectory: Property<String>
     @get:Input abstract val targetName: Property<String>
     @get:Input abstract val buildTasks: ListProperty<String>
@@ -431,7 +378,8 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
             writeText(stagedConsumerOutcomeInitScript(requestedTasks))
         }
         val arguments = stagedConsumerArguments(
-            consumer, repository, projectVersion.get(), targetName.get(), requestedTasks, outcomeInitScript,
+            consumer, repository, sdkVersion.get(), runtimeVersion.get(), targetName.get(), requestedTasks,
+            outcomeInitScript,
         )
         exec.exec {
             workingDir(consumer)
@@ -440,9 +388,10 @@ abstract class VerifyStagedKmpConsumerTask @Inject constructor(
         }.assertNormalExitValue()
         resultFile.get().asFile.atomicWriteJson(buildJsonObject {
             val inventory = mavenInventory.get().asFile.readReleaseObject()
-            put("schemaVersion", JsonPrimitive(5))
+            put("schemaVersion", JsonPrimitive(6))
             put("result", JsonPrimitive("passed"))
-            put("version", JsonPrimitive(projectVersion.get()))
+            put("sdkVersion", JsonPrimitive(sdkVersion.get()))
+            put("runtimeVersion", JsonPrimitive(runtimeVersion.get()))
             put("repository", JsonPrimitive("CENTRAL_STAGING-only"))
             put("mavenGroup", JsonPrimitive(inventory.releaseString("groupId")))
             put("target", JsonPrimitive(targetName.get()))

@@ -1,5 +1,4 @@
 import java.io.File
-import java.nio.file.Files
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -134,19 +133,6 @@ internal fun verifyAppleVerifiedDistribution(
     val checksum = artifacts.getValue("CodexAgent-${identity.version}.xcframework.zip.sha256").readText().trim()
     check(checksum == swiftArchive.releaseDigest()) { "Verified Apple distribution Swift checksum mismatch" }
     return AppleVerifiedDistributionInventory(artifacts, reports, toolchain, proofFile)
-}
-
-internal fun verifiedRegularFiles(root: File): Map<String, File> {
-    check(root.isDirectory && !Files.isSymbolicLink(root.toPath())) { "Verified evidence directory is missing or unsafe" }
-    val entries = Files.walk(root.toPath()).use { it.toList() }
-    entries.filter { it != root.toPath() }.forEach { path ->
-        check(!Files.isSymbolicLink(path) && (Files.isDirectory(path) || Files.isRegularFile(path))) {
-            "Verified evidence contains an unsafe entry: $path"
-        }
-    }
-    return entries.filter(Files::isRegularFile).associate { path ->
-        root.toPath().relativize(path).joinToString("/") to path.toFile()
-    }
 }
 
 private fun releaseRecords(files: Map<String, File>) = buildJsonArray {

@@ -9,6 +9,7 @@ internal object ReleaseWorkflowFixture {
         .first { it.resolve(".github/workflows/release-candidate.yml").isFile }
     val workflows = listOf(
         "ci.yml",
+        "product-validation.yml",
         "promote.yml",
         "android-runtime-evidence.yml",
         "apple-runtime-evidence.yml",
@@ -86,11 +87,13 @@ class ReleaseWorkflowContractTest {
 
     @Test
     fun `merge validation is promoted on main without rebuilding it`() {
-        val ci = workflows.getValue("ci.yml")
+        val caller = workflows.getValue("ci.yml")
+        val ci = workflows.getValue("product-validation.yml")
         val promote = workflows.getValue("promote.yml")
-        assertTrue("pull_request:" in ci && "merge_group:" in ci)
+        assertTrue("pull_request:" in caller && "merge_group:" in caller)
+        assertTrue("workflow_call:" in ci)
         assertTrue("  merge-gate:\n    name: CI / merge-gate\n" in ci)
-        assertFalse(Regex("(?m)^  push:$").containsMatchIn(ci))
+        assertFalse(Regex("(?m)^  push:$").containsMatchIn(caller + ci))
         assertTrue("python3 ci/receipt.py aggregate" in ci)
         assertTrue("name: codex-agent-ci-validation-${'$'}{{ needs.plan.outputs.validation_tree }}" in ci)
         assertTrue("branches: [main]" in promote)
@@ -99,10 +102,11 @@ class ReleaseWorkflowContractTest {
         assertTrue("python3 ci/promote.py receipt" in promote)
         assertTrue("name: ${'$'}{{ matrix.promotedArtifactName }}" in promote)
         assertTrue("name: ${'$'}{{ needs.discover.outputs.promoted_aggregate }}" in promote)
+        assertTrue("name: codex-agent-promoted-native-wrapper-packages-${'$'}{{ github.sha }}" in promote)
         assertFalse("\nconcurrency:\n" in promote)
         val android = workflows.getValue("android-runtime-evidence.yml")
-        assertTrue("MERGE_READY: ${'$'}{{ !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'merge-ready') }}" in android)
-        assertTrue("[[ \"${'$'}GITHUB_EVENT_NAME\" = merge_group || \"${'$'}MERGE_READY\" = true ]]" in android)
+        assertTrue("PR_REMOTE_FINAL:" in android)
+        assertTrue("\"${'$'}GITHUB_EVENT_NAME\" = workflow_dispatch" in android)
         assertFalse("--test-targets=" in android)
         assertTrue("--format=none 2>&1 | tee \"${'$'}matrix_status\"" in android)
         assertTrue("Test \\[(matrix-[A-Za-z0-9_-]+)\\] has been created in the Google Cloud" in android)
@@ -115,7 +119,7 @@ class ReleaseWorkflowContractTest {
         assertTrue("matrix[\"resultStorage\"][\"googleCloudStorage\"][\"gcsPath\"].rstrip(\"/\")" in android)
         assertTrue("gcloud storage cp \"${'$'}results_uri/**/*.xml\"" in android)
         assertFalse("mapfile -t result_uris" in android)
-        assertFalse("curl " in android)
+        assertTrue("environments/product-attestation" in android)
         assertFalse("urllib.request" in android)
         listOf("./gradlew", "setup-kmp", "setup-android", "cargo ", "xcodebuild", "firebase").forEach {
             assertFalse(it.lowercase() in promote.lowercase(), it)
@@ -124,7 +128,7 @@ class ReleaseWorkflowContractTest {
 
     @Test
     fun `full Android lane reuse does not suppress trusted evidence`() {
-        val job = workflows.getValue("ci.yml")
+        val job = workflows.getValue("product-validation.yml")
             .substringAfter("\n  android-runtime-evidence:")
             .substringBefore("\n\n  desktop:")
         assertTrue("needs.plan.outputs.validation_reused != 'true'" in job)
@@ -144,6 +148,17 @@ class ReleaseWorkflowContractTest {
         assertFalse("ci/promote.py" in bootstrap || "uses:" in bootstrap)
         assertTrue("vars.CI_MERGE_QUEUE_ENABLED == 'true'" in discover)
         assertTrue("needs.discover.result == 'success'" in aggregate)
+        listOf(
+            "canonical-api.json", "canonical-coverage.json", "kotlin-parity.json",
+            "java-parity.json", "javascript-typescript-parity.json", "swift-parity.json",
+            "objective-c-parity.json", "c-abi-parity.json", "python-parity.json",
+            "csharp-parity.json", "rust-parity.json", "cpp-parity.json", "dart-parity.json",
+            "binding-obligations-m11.json",
+        ).forEach { evidence ->
+            assertEquals(1, aggregate.lineSequence().count {
+                "build/promotion/source/$evidence" in it
+            }, evidence)
+        }
     }
 
     @Test
@@ -156,6 +171,10 @@ class ReleaseWorkflowContractTest {
         listOf(".path", ".event", ".head_branch", ".head_sha", ".head_repository.full_name", ".conclusion", ".run_attempt")
             .forEach { assertTrue(it in resolver, it) }
         assertTrue("name: codex-agent-promoted-validation-${'$'}{{ needs.identity.outputs.candidate_commit }}" in candidate)
+        assertTrue(
+            "name: codex-agent-promoted-native-wrapper-packages-${'$'}{{ needs.identity.outputs.candidate_commit }}" in
+                candidate,
+        )
         assertFalse("pattern: codex-agent-promoted-*" in candidate)
         assertFalse("promoted-inventories" in candidate)
         listOf(
@@ -174,6 +193,40 @@ class ReleaseWorkflowContractTest {
         assertEquals(1, candidate.lineSequence().count {
             "java -jar \"${'$'}RELEASE_TOOL\" assemble-promoted-candidate" in it
         })
+        val stageMaven = candidate.substringAfter(
+            "java -jar \"${'$'}RELEASE_TOOL\" stage-promoted-maven",
+        ).substringBefore("mkdir -p \"${'$'}RUNNER_TEMP/gnupg\"")
+        val assemble = candidate.substringAfter(
+            "java -jar \"${'$'}RELEASE_TOOL\" assemble-promoted-candidate",
+        ).substringBefore("Record the immutable candidate identity")
+        val versionFlags = mapOf(
+            "contract" to "--contract-version \"${'$'}(cat gradle/release/versions/contract.txt)\"",
+            "runtime" to "--runtime-version \"${'$'}(cat gradle/release/versions/runtime.txt)\"",
+            "sdk" to "--sdk-version \"${'$'}(cat gradle/release/versions/sdk.txt)\"",
+        )
+        versionFlags.forEach { (product, flag) ->
+            assertEquals(1, stageMaven.lineSequence().count { flag in it }, "stage $product version")
+            assertEquals(1, assemble.lineSequence().count { flag in it }, "assemble $product version")
+        }
+        assertFalse(Regex("(?m)^\\s+--version(?:\\s|$)").containsMatchIn(stageMaven + assemble))
+        val publish = workflows.getValue("publish.yml")
+        val verifyCandidate = publish.substringAfter(
+            "java -jar \"${'$'}RELEASE_TOOL\" verify-candidate",
+        ).substringBefore("Prepare or recover every exact Central deployment")
+        versionFlags.forEach { (product, flag) ->
+            assertEquals(1, verifyCandidate.lineSequence().count { flag in it }, "verify $product version")
+        }
+        assertFalse(Regex("(?m)^\\s+--version(?:\\s|$)").containsMatchIn(verifyCandidate))
+        val rootRelease = repository.resolve(
+            "gradle/build-logic/src/main/kotlin/codexagent.root-release.gradle.kts",
+        ).readText()
+        mapOf(
+            "candidateContractVersion.set(contractVersion)" to "Contract",
+            "candidateRuntimeVersion.set(runtimeProductVersion)" to "Runtime",
+            "candidateSdkVersion.set(sdkProductVersion)" to "SDK",
+        ).forEach { (wiring, product) ->
+            assertEquals(2, Regex(Regex.escape(wiring)).findAll(rootRelease).count(), "$product release wiring")
+        }
         assertEquals(1, Regex("(?m)^    environment: release-candidate$").findAll(candidate).count())
         assertTrue("name: codex-agent-candidate-identity-${'$'}{{ github.run_attempt }}" in candidate)
         assertTrue("name: codex-agent-protected-candidate-${'$'}{{ github.run_attempt }}" in candidate)
@@ -305,10 +358,22 @@ class ReleaseWorkflowContractTest {
         assertTrue("maven-inventory-${'$'}target.json" in targetTasks)
         assertTrue("root.dir(\"payload/maven\")" in plugin)
         assertFalse("Maven" + "Relocation" in plugin)
-        val commonPublications = plugin.substringAfter("\"common\" to listOf(")
+        assertTrue(
+            "fun rootPublicationTask(publication: String, target: String) =" in plugin &&
+                "\":publish${'$'}{publication}PublicationTo${'$'}{stagedConsumerRepositoryNames.getValue(target)}Repository\"" in
+                plugin,
+        )
+        val publicationTasks = plugin.substringAfter("val stagedConsumerPublicationTasks = mapOf(")
+            .substringBefore("\n)\nval stagedConsumerGroupId")
+        val commonPublications = publicationTasks.substringAfter("\"common\" to listOf(")
             .substringBefore("\n    ),")
-        assertTrue("publicationTask(\"codex-agent-client\", \"KotlinMultiplatform\", \"common\")" in commonPublications)
-        assertTrue("publicationTask(\"codex-agent-client\", \"Jvm\", \"common\")" in commonPublications)
+        assertTrue("publicationTask(\"codex-agent-core\", \"KotlinMultiplatform\", \"common\")" in commonPublications)
+        assertTrue("publicationTask(\"codex-agent-core\", \"Jvm\", \"common\")" in commonPublications)
+        assertTrue("publicationTask(\"codex-agent-sdk\", \"KotlinMultiplatform\", \"common\")" in commonPublications)
+        assertTrue("publicationTask(\"codex-agent-sdk\", \"Jvm\", \"common\")" in commonPublications)
+        assertTrue("rootPublicationTask(\"Maven\", \"common\")" in commonPublications)
+        assertEquals(1, Regex("rootPublicationTask\\(\"Maven\", \"common\"\\)").findAll(plugin).count())
+        assertFalse("rootPublicationTask(\"Maven\"" in publicationTasks.substringAfter("\"android\" to listOf("))
         assertFalse("allPublicationTask" in commonPublications)
         listOf(
             "verifyStagedKmpConsumerCommon", "verifyStagedKmpConsumerAndroid",
@@ -342,7 +407,10 @@ class ReleaseWorkflowContractTest {
         val action = registration.substringAfter("doLast {")
         assertTrue("inputs.property(\"repositoryPath\", repository.map" in registration)
         assertTrue("inputs.property(\"groupId\", stagedConsumerGroupId)" in registration)
-        assertTrue("inputs.property(\"version\", stagedConsumerVersion)" in registration)
+        assertTrue("inputs.property(\"contractVersion\", stagedConsumerContractVersion)" in registration)
+        assertTrue("inputs.property(\"runtimeVersion\", stagedConsumerRuntimeVersion)" in registration)
+        assertTrue("inputs.property(\"sdkVersion\", stagedConsumerSdkVersion)" in registration)
+        assertFalse("inputs.property(\"version\"" in registration)
         assertTrue("inputs.property(\"target\", target)" in registration)
         assertFalse("project." in action)
         assertFalse("repository.get()" in action)
@@ -376,11 +444,14 @@ class ReleaseWorkflowContractTest {
         listOf(
             "${'$'}SWIFT_ASSET|${'$'}PAYLOAD/${'$'}SWIFT_ASSET",
             "${'$'}SWIFT_ASSET.sha256|${'$'}PAYLOAD/${'$'}SWIFT_ASSET.sha256",
+            "${'$'}SBOM_ASSET|${'$'}PAYLOAD/${'$'}SBOM_ASSET",
             "candidate-manifest.json|${'$'}PAYLOAD/candidate-manifest.json",
             "central-deployment.json|${'$'}RECORD",
         ).forEach { asset -> assertTrue(asset in publish, asset) }
         assertTrue("release_json=${'$'}(gh api" in publish)
-        assertTrue("test \"${'$'}(jq '.assets | length' <<<\"${'$'}release_json\")\" -eq 4" in publish)
+        assertTrue("NATIVE_WRAPPER_ASSETS: ${'$'}{{ steps.candidate.outputs.nativeWrapperAssets }}" in publish)
+        assertTrue("\"${'$'}PAYLOAD/candidate-manifest.json\" \"${'$'}{native_paths[@]}\"" in publish)
+        assertTrue("5 + ${'$'}{#native_assets[@]}" in publish)
         assertTrue("test \"${'$'}asset_count\" -eq 1" in publish)
         assertTrue("test \"${'$'}api_digest\" = \"${'$'}expected_digest\"" in publish)
     }

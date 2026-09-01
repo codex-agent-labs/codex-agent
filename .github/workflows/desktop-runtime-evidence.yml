@@ -27,6 +27,9 @@ on:
       linuxArm64Metadata:
         required: true
         type: boolean
+      nativeWrappers:
+        required: true
+        type: boolean
 
 permissions:
   actions: read
@@ -213,7 +216,7 @@ jobs:
         with:
           name: codex-agent-arm64-production-transport-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-production
-      - name: Restore only the verified production classifier
+      - name: Restore the verified production classifiers and binary stage
         if: needs.linux-arm64-reuse.outputs.production_reused == 'true'
         shell: bash
         run: |
@@ -222,9 +225,16 @@ jobs:
             --actual build/ci/linux-arm64-production/payload/build/ci/linux-arm64-producer-identities
           shopt -s nullglob
           archives=(build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/distributions/*-app-server-linux-arm64.zip)
+          c_abi_archives=(build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip)
+          binary_stage=build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/product-stage/runtime/linux-arm64/binary
           test "${#archives[@]}" -eq 1
-          mkdir -p codex-agent-runtime-desktop/build/distributions
+          test "${#c_abi_archives[@]}" -eq 1
+          test -d "$binary_stage"
+          test -f "$binary_stage/output-manifest.json"
+          mkdir -p codex-agent-runtime-desktop/build/distributions build/linux-arm64-inputs
           cp "${archives[0]}" codex-agent-runtime-desktop/build/distributions/
+          cp "${c_abi_archives[0]}" codex-agent-runtime-desktop/build/distributions/
+          cp -R "$binary_stage" build/linux-arm64-inputs/runtime-binary-stage
       - if: inputs.linuxArm64Test
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -237,12 +247,15 @@ jobs:
         with:
           name: codex-agent-ci-linux-arm64-supervisor-${{ inputs.validationTree }}
           path: build/desktop-supervisors
-      - name: Cross-build one classifier
+      - name: Cross-build the two Linux Arm64 classifiers
         if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
         run: >-
           ./gradlew
           :codex-agent-runtime-desktop:packageLinuxArm64AppServer
+          :codex-agent-runtime-desktop:packageLinuxArm64CAbiSdk
           -PcodexAgent.desktopSupervisorDirectory="$PWD/build/desktop-supervisors"
+          -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}"
+          -PcodexAgent.candidateTree="${{ inputs.validationTree }}"
           --parallel --stacktrace
       - name: Cross-build the native test executable
         if: inputs.linuxArm64Test
@@ -252,22 +265,42 @@ jobs:
         run: >-
           ./gradlew -p gradle/build-logic stageLinuxArm64RuntimeEvidenceBundle
           -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}"
+          -PcodexAgent.candidateTree="${{ inputs.validationTree }}"
           -PcodexAgent.linuxArm64TestExecutable="$PWD/codex-agent-runtime-desktop/build/bin/linuxArm64/debugTest/test.kexe"
           -PcodexAgent.linuxArm64DistributionsDirectory="$PWD/codex-agent-runtime-desktop/build/distributions"
           -PcodexAgent.jvmRuntimeEvidenceRunner="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip"
-          -PcodexAgent.nodeRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-node/build/distributions/codex-agent-node-runtime-evidence-runner.zip"
-          -PcodexAgent.nodeWasmRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-node/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip"
+          -PcodexAgent.nodeRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-node-runtime-evidence-runner.zip"
+          -PcodexAgent.nodeWasmRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip"
           -PcodexAgent.desktopDistributionManifest="$PWD/codex-agent-runtime-desktop/codex-app-server-distributions.json"
           -PcodexAgent.linuxArm64RuntimeEvidenceBundle="$PWD/build/linux-arm64-inputs/runtime.zip"
           --parallel --stacktrace
-      - name: Preserve the exact classifier with the execution bundle
+      - name: Preserve the exact classifiers with the execution bundle
         shell: bash
         run: |
           shopt -s nullglob
           archives=(codex-agent-runtime-desktop/build/distributions/*-app-server-linux-arm64.zip)
+          c_abi_archives=(codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip)
           test "${#archives[@]}" -eq 1
+          test "${#c_abi_archives[@]}" -eq 1
           mkdir -p build/linux-arm64-inputs
           cp "${archives[0]}" build/linux-arm64-inputs/
+          cp "${c_abi_archives[0]}" build/linux-arm64-inputs/
+      - name: Stage the authoritative Linux Arm64 Runtime binary handoff
+        if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
+        run: >-
+          ./gradlew ciProductPhase
+          -PcodexAgent.product=runtime
+          -PcodexAgent.component=linux-arm64
+          -PcodexAgent.phase=binary
+          -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}"
+          -PcodexAgent.candidateTree="${{ inputs.validationTree }}"
+          -PcodexAgent.desktopSupervisorDirectory="$PWD/build/desktop-supervisors"
+          --stacktrace
+      - name: Preserve the authoritative Linux Arm64 Runtime binary stage
+        if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
+        run: >-
+          cp -R codex-agent-runtime-desktop/build/product-stage/runtime/linux-arm64/binary
+          build/linux-arm64-inputs/runtime-binary-stage
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -294,6 +327,14 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
+      - if: inputs.linuxArm64Test
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-ci-portable-${{ inputs.validationTree }}
+          path: build/ci/portable
+      - if: inputs.linuxArm64Test
+        shell: bash
+        run: cp -R build/ci/portable/payload/. .
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-agent-linux-arm64-producer-identities-${{ inputs.validationTree }}
@@ -306,9 +347,12 @@ jobs:
         run: |
           shopt -s nullglob
           archives=(build/ci/linux-arm64-input/*-app-server-linux-arm64.zip)
+          c_abi_archives=(build/ci/linux-arm64-input/*-c-abi-linux-arm64.zip)
           test "${#archives[@]}" -eq 1
+          test "${#c_abi_archives[@]}" -eq 1
           mkdir -p codex-agent-runtime-desktop/build/distributions
           cp "${archives[0]}" codex-agent-runtime-desktop/build/distributions/
+          cp "${c_abi_archives[0]}" codex-agent-runtime-desktop/build/distributions/
           if [ -f build/ci/linux-arm64-input/runtime.zip ]; then
             printf 'LINUX_ARM64_RUNTIME_BUNDLE=%s/build/ci/linux-arm64-input/runtime.zip\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           fi
@@ -325,3 +369,374 @@ jobs:
           producer-identities: build/ci/linux-arm64-producer-identities
           production-prepared: "true"
           reuse-disabled: "true"
+          runtime-binary-stage: ${{ github.workspace }}/build/ci/linux-arm64-input/runtime-binary-stage
+
+  native-wrapper-sdk-stage:
+    if: >-
+      always() && inputs.nativeWrappers &&
+      needs.runtime.result == 'success' &&
+      (needs.linux-arm64-runtime.result == 'success' || needs.linux-arm64-reuse.outputs.reused == 'true')
+    needs: [runtime, linux-arm64-reuse, linux-arm64-runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-ci-contracts-${{ inputs.validationTree }}
+          path: build/ci/contracts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-ci-desktop-*-${{ inputs.validationTree }}
+          path: build/ci/desktop-lanes
+      - uses: ./.github/actions/setup-kmp
+        with:
+          cache-read-only: "true"
+      - name: Reassemble and verify the exact five Runtime product stages
+        shell: bash
+        run: |
+          set -euo pipefail
+          one_file() {
+            mapfile -t matches < <(find "$1" -type f -name "$2" -print)
+            test "${#matches[@]}" -eq 1
+            printf '%s\n' "${matches[0]}"
+          }
+          stages=build/ci/native-wrapper-runtime-stages
+          mkdir -p "$stages" \
+            build/ci/sdk-contract-evidence \
+            build/ci/sdk-runtime-evidence
+          for component in macos-arm64 macos-x64 linux-arm64 linux-x64 windows-x64; do
+            mapfile -t roots < <(find build/ci/desktop-lanes -type d \
+              -path "*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/$component" -print)
+            test "${#roots[@]}" -eq 1
+            test -f "${roots[0]}/package/output-manifest.json"
+            test -f "${roots[0]}/validation/output-manifest.json"
+            mkdir -p "$stages/$component"
+            cp -R "${roots[0]}/package" "${roots[0]}/validation" "$stages/$component/"
+          done
+          cp "$(one_file build/ci/contracts canonical-api.json)" \
+            build/ci/sdk-contract-evidence/canonical-api.json
+          cp "$(one_file build/ci/contracts canonical-coverage.json)" \
+            build/ci/sdk-contract-evidence/canonical-coverage.json
+          cp "$(one_file build/ci/desktop-lanes bootstrap-evidence.json)" \
+            build/ci/sdk-runtime-evidence/bootstrap-evidence.json
+          ./gradlew :codex-agent-sdk:prepareNativeWrapperPackageSources \
+            -PcodexAgent.nativeWrapperRuntimeStageRoot="$PWD/$stages" \
+            -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}" \
+            -PcodexAgent.candidateTree="${{ inputs.validationTree }}" \
+            --stacktrace
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          include-hidden-files: true
+          name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}
+          path: |
+            build/ci/sdk-contract-evidence
+            build/ci/sdk-runtime-evidence
+            codex-agent-sdk/build/native-wrapper-c-abi-sdks
+            codex-agent-sdk/build/native-wrapper-package-sources
+          compression-level: 0
+          retention-days: 1
+
+  native-wrapper-language:
+    needs: native-wrapper-sdk-stage
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+          - language: csharp
+          - language: rust
+          - language: cpp
+          - language: dart
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}
+          path: .
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: matrix.language == 'python'
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        if: matrix.language == 'csharp'
+        with:
+          dotnet-version: "8.0.419"
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        if: matrix.language == 'rust'
+        with:
+          components: rustfmt,clippy
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        if: matrix.language == 'dart'
+        with:
+          sdk: "3.6.0"
+      - name: Execute the wrapper behavior and parity suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_root="$PWD/codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}/linux-x64"
+          sdk="$sdk_root/lib/libcodex_agent.so"
+          binding="$PWD/codex-agent-bindings"
+          canonical_api="$PWD/build/ci/sdk-contract-evidence/canonical-api.json"
+          bootstrap="$PWD/build/ci/sdk-runtime-evidence/bootstrap-evidence.json"
+          export CODEX_AGENT_CANONICAL_API_REPORT="$canonical_api"
+          export CODEX_AGENT_C_ABI_BOOTSTRAP_EVIDENCE="$bootstrap"
+          export CODEX_AGENT_C_SDK_ROOT="$sdk_root"
+          evidence="build/native-wrapper-evidence/${{ matrix.language }}"
+          mkdir -p "$evidence"
+          case "${{ matrix.language }}" in
+            python)
+              CODEX_AGENT_LIBRARY="$sdk" python -m unittest discover -s "$binding/python/tests" -v
+              cp "$binding/python/build/cross-language-evidence"/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp "$binding/python/tests/test_enum_parity.py" "$evidence/test-program"
+              ;;
+            csharp)
+              dotnet build "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
+                --configuration Release -p:CodexAgentRealSdkPath="$sdk" \
+                -p:CodexAgentCanonicalApiReport="$canonical_api" \
+                -p:CodexAgentCAbiBootstrapEvidence="$bootstrap" \
+                -p:CodexAgentCSdkRoot="$sdk_root"
+              dotnet run --project "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
+                --configuration Release --no-build -- --real-mcp-values "$sdk"
+              dotnet run --project "$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \
+                --configuration Release --no-build
+              csharp="$binding/csharp/tests/CodexAgent.Tests/bin/Release/net8.0"
+              cp "$csharp/artifacts"/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp "$csharp/CodexAgent.Tests.dll" "$evidence/test-program"
+              ;;
+            rust)
+              cargo fetch --manifest-path "$binding/rust/Cargo.toml" --locked
+              cargo fmt --manifest-path "$binding/rust/Cargo.toml" -- --check
+              cargo clippy --manifest-path "$binding/rust/Cargo.toml" --all-targets --locked --offline -- -D warnings
+              CODEX_AGENT_LIBRARY="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" --all-targets --release --locked --offline
+              CODEX_AGENT_REAL_SDK="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" \
+                --all-targets --release --locked --offline -- --ignored --test-threads=1
+              cp "$binding/rust/target/cross-language-evidence"/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp "$binding/rust/tests/enum_parity.rs" "$evidence/test-program"
+              ;;
+            cpp)
+              cmake -S "$binding/cpp" -B build/native-wrapper-cpp-tests \
+                -DCodexAgent_C_SDK_ROOT="$sdk_root" \
+                -DCodexAgent_CANONICAL_API_REPORT="$canonical_api" \
+                -DCodexAgent_C_ABI_BOOTSTRAP_EVIDENCE="$bootstrap" \
+                -DCodexAgent_NATIVE_CLASSIFIER=linux-x64 -DCMAKE_BUILD_TYPE=Release \
+                -DCODEX_AGENT_CPP_BUILD_TESTS=ON
+              cmake --build build/native-wrapper-cpp-tests --config Release --parallel 2
+              ctest --test-dir build/native-wrapper-cpp-tests --build-config Release --output-on-failure -j2
+              cp build/native-wrapper-cpp-tests/parity/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp build/native-wrapper-cpp-tests/tests/codex_agent_cpp_value_test "$evidence/test-program"
+              ;;
+            dart)
+              pushd "$binding/dart"
+              dart pub get --enforce-lockfile
+              dart format --output=none --set-exit-if-changed .
+              dart analyze
+              CODEX_AGENT_LIBRARY="$sdk" CODEX_AGENT_REAL_LIBRARY="$sdk" dart test
+              popd
+              cp "$binding/dart/build/parity"/{compiler-evidence.tsv,executed-tests.tsv} "$evidence/"
+              cp "$binding/dart/test/enum_parity_test.dart" "$evidence/test-program"
+              ;;
+          esac
+          expected_files=(compiler-evidence.tsv executed-tests.tsv test-program)
+          test -d "$evidence"
+          test ! -L "$evidence"
+          mapfile -t actual_files < <(find "$evidence" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+          test "${actual_files[*]}" = "${expected_files[*]}"
+          for file in "${expected_files[@]}"; do
+            test -f "$evidence/$file"
+            test -s "$evidence/$file"
+            test ! -L "$evidence/$file"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          include-hidden-files: true
+          name: codex-agent-native-wrapper-evidence-${{ matrix.language }}-${{ inputs.validationTree }}
+          path: build/native-wrapper-evidence
+          compression-level: 0
+          retention-days: 1
+
+  native-wrapper-package-validation:
+    needs: native-wrapper-sdk-stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}
+          path: .
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.419"
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        with:
+          sdk: "3.13.2"
+      - run: python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1
+      - name: Build and validate the exact reproducible release packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=build/native-wrapper-package-payload
+          cargo fetch \
+            --manifest-path codex-agent-sdk/build/native-wrapper-package-sources/rust/Cargo.toml \
+            --locked
+          tool=build/native-wrapper-package-tool
+          mkdir -p "$tool/ci"
+          cp ci/native_wrappers.py "$tool/ci/"
+          cp -R ci/products "$tool/ci/"
+          test ! -e "$tool/codex-agent-runtime-desktop"
+          python "$tool/ci/native_wrappers.py" package \
+            --sources "$PWD/codex-agent-sdk/build/native-wrapper-package-sources" \
+            --sdks "$PWD/codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" \
+            --output "$PWD/$release/packages" \
+            --sdk-version-file "$PWD/gradle/release/versions/sdk.txt"
+          cp -R "codex-agent-sdk/build/native-wrapper-c-abi-sdks/${{ inputs.validationTree }}" "$release/sdks"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          include-hidden-files: true
+          name: codex-agent-native-wrapper-package-validation-${{ inputs.validationTree }}
+          path: build/native-wrapper-package-payload
+          compression-level: 0
+          retention-days: 1
+
+  native-wrapper-release-assembly:
+    if: always() && inputs.nativeWrappers
+    needs: [native-wrapper-sdk-stage, native-wrapper-language, native-wrapper-package-validation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require every parallel native-wrapper validation
+        env:
+          SDK_STAGE_RESULT: ${{ needs.native-wrapper-sdk-stage.result }}
+          LANGUAGE_RESULT: ${{ needs.native-wrapper-language.result }}
+          PACKAGE_RESULT: ${{ needs.native-wrapper-package-validation.result }}
+        run: |
+          printf 'SDK stage: %s\nLanguage matrix: %s\nPackage validation: %s\n' \
+            "$SDK_STAGE_RESULT" "$LANGUAGE_RESULT" "$PACKAGE_RESULT"
+          test "$SDK_STAGE_RESULT" = success
+          test "$LANGUAGE_RESULT" = success
+          test "$PACKAGE_RESULT" = success
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-package-validation-${{ inputs.validationTree }}
+          path: build/native-wrapper-release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-native-wrapper-evidence-*-${{ inputs.validationTree }}
+          path: build/native-wrapper-release/evidence
+          merge-multiple: true
+      - name: Require the exact per-language evidence inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=build/native-wrapper-release/evidence
+          expected_languages=(cpp csharp dart python rust)
+          expected_files=(compiler-evidence.tsv executed-tests.tsv test-program)
+          mapfile -t actual_languages < <(find "$root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+          test "${actual_languages[*]}" = "${expected_languages[*]}"
+          for language in "${expected_languages[@]}"; do
+            directory="$root/$language"
+            test -d "$directory"
+            test ! -L "$directory"
+            mapfile -t actual_files < <(find "$directory" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+            test "${actual_files[*]}" = "${expected_files[*]}"
+            for file in "${expected_files[@]}"; do
+              test -f "$directory/$file"
+              test -s "$directory/$file"
+              test ! -L "$directory/$file"
+            done
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}
+          path: build/native-wrapper-release
+          compression-level: 0
+          retention-days: 90
+
+  native-wrapper-host-consumers:
+    needs: native-wrapper-release-assembly
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - classifier: macos-arm64
+            runner: macos-26
+          - classifier: macos-x64
+            runner: macos-26-intel
+          - classifier: linux-arm64
+            runner: ubuntu-24.04-arm
+          - classifier: linux-x64
+            runner: ubuntu-24.04
+          - classifier: windows-x64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      CI_VALIDATION_TREE: ${{ inputs.validationTree }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.planArtifact }}
+          path: build/ci/plan
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}
+          path: build/native-wrapper-release
+      - if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.419"
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        with:
+          toolchain: "1.95.0"
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        with:
+          sdk: "3.13.2"
+      - shell: bash
+        run: >-
+          python ci/native_wrappers.py consume
+          --repository "$PWD"
+          --packages "$PWD/build/native-wrapper-release/packages"
+          --sdks "$PWD/build/native-wrapper-release/sdks"
+          --plan "$PWD/build/ci/plan/impact-plan.json"
+          --output "$PWD/build/native-wrapper-host/${{ matrix.classifier }}"
+          --sdk-version-file "$PWD/gradle/release/versions/sdk.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          name: codex-agent-native-wrapper-host-${{ matrix.classifier }}-${{ inputs.validationTree }}
+          path: build/native-wrapper-host/${{ matrix.classifier }}
+          compression-level: 0
+          retention-days: 90

@@ -19,7 +19,7 @@ data class IosAppleDistributionTasks(
 )
 
 fun Project.registerIosAppleDistributionTasks(
-    expectedSwiftTestCount: Int,
+    expectedSwiftTestIdentifiers: List<String>,
     pinnedRustToolchain: String,
     appleFrameworkToolchainIdentity: Provider<String>,
     importedDeviceFramework: TaskProvider<ImportCodexAgentFrameworkTask>?,
@@ -32,10 +32,10 @@ fun Project.registerIosAppleDistributionTasks(
     val licenseFile = rootProject.layout.projectDirectory.file("LICENSE")
     val thirdPartyNotices = rootProject.layout.projectDirectory.file("THIRD_PARTY_NOTICES.md")
     val codexLicense = rootProject.layout.projectDirectory.file(
-        "codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt",
+        "legal/openai-codex/openai-codex-LICENSE.txt",
     )
     val codexNotice = rootProject.layout.projectDirectory.file(
-        "codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt",
+        "legal/openai-codex/openai-codex-NOTICE.txt",
     )
 
     val assembleDependency: Any = if (importedDeviceFramework != null && importedSimulatorFramework != null) {
@@ -102,7 +102,7 @@ fun Project.registerIosAppleDistributionTasks(
             }
             runtimeName.set("iOS 26.5")
             deviceTypeIdentifier.set("com.apple.CoreSimulator.SimDeviceType.iPhone-17")
-            this.expectedTestCount.set(expectedSwiftTestCount)
+            this.expectedTestIdentifiers.set(expectedSwiftTestIdentifiers)
             derivedDataDirectory.set(layout.buildDirectory.dir("swift-simulator-compilation-derived-data"))
             simulatorDevicesFile.set(layout.buildDirectory.file("simulator-devices.json"))
             resultBundleDirectory.set(layout.buildDirectory.dir("swift-authentication-tests.xcresult"))

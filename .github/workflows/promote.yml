@@ -224,10 +224,33 @@ jobs:
           if-no-files-found: error
           overwrite: true
           include-hidden-files: true
+          name: codex-agent-promoted-native-wrapper-packages-${{ github.sha }}
+          path: build/promotion/native-wrapper-packages
+          compression-level: 0
+          retention-days: 90
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: true
+          include-hidden-files: true
           name: ${{ needs.discover.outputs.promoted_aggregate }}
           path: |
             build/promotion/source/impact-plan.json
             build/promotion/source/validation-receipt.json
             build/promotion/source/promotion-receipt.json
+            build/promotion/source/canonical-api.json
+            build/promotion/source/canonical-coverage.json
+            build/promotion/source/kotlin-parity.json
+            build/promotion/source/java-parity.json
+            build/promotion/source/javascript-typescript-parity.json
+            build/promotion/source/swift-parity.json
+            build/promotion/source/objective-c-parity.json
+            build/promotion/source/c-abi-parity.json
+            build/promotion/source/python-parity.json
+            build/promotion/source/csharp-parity.json
+            build/promotion/source/rust-parity.json
+            build/promotion/source/cpp-parity.json
+            build/promotion/source/dart-parity.json
+            build/promotion/source/binding-obligations-m11.json
           compression-level: 0
           retention-days: 90

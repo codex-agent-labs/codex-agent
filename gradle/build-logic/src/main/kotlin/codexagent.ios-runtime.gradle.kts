@@ -1,4 +1,5 @@
 import java.io.File
+import org.gradle.api.tasks.Delete
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
@@ -15,7 +16,12 @@ private val expectedPatchedSqliteSourceSha256 = "a0b50ae286c86c1890c214464168282
 private val pinnedRustToolchain = "1.95.0"
 private val rustLibrary = "libcodex_agent_ios_bridge.a"
 private val minimumIosVersion = "15.0"
-private val expectedSwiftTestCount = 3
+private val expectedSwiftTestIdentifiers = listOf(
+    "CodexAgentObservationTests/testBufferingCancellationAndDroppedStreamReleaseTheObservation()",
+    "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()",
+    "CodexAgentObservationTests/testObjectiveCConsumerExposesStructuredFailure()",
+    "CodexAuthorizationBrowserTests/testGenericBrowserOpensTypedExternalURLAndCancelsPresentation()",
+)
 private val pinnedSqliteArchiveSha256 = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
 private val sqliteArchiveBytes = 5_295_554L
 private val pinnedReleaseLto = "thin"
@@ -87,7 +93,7 @@ extensions.configure<KotlinMultiplatformExtension> {
         target.binaries.framework {
             baseName = "CodexAgent"
             isStatic = true
-            export(project(":codex-agent-client"))
+            export(project(":codex-agent-core"))
             xcframework.add(this)
         }
     }
@@ -155,12 +161,104 @@ tasks.register<VerifySwiftSimulatorCompilationTask>("verifyCodexAgentSwiftSimula
     reportFile.set(layout.buildDirectory.file("reports/ios-development/swift-simulator-compilation.json"))
 }
 val appleDistributionTasks = registerIosAppleDistributionTasks(
-    expectedSwiftTestCount,
+    expectedSwiftTestIdentifiers,
     pinnedRustToolchain,
     nativeTasks.appleFrameworkToolchainIdentity,
     importedDeviceFramework,
     importedSimulatorFramework,
 )
+val appleCompilerMinimumIosVersion = minimumIosVersion
+val appleBindingEvidenceFile =
+    layout.buildDirectory.file("reports/cross-language-api/apple/binding-evidence.json")
+val swiftBindingReceiptFile =
+    layout.buildDirectory.file("reports/cross-language-api/bindings/swift-parity.json")
+val objectiveCBindingReceiptFile =
+    layout.buildDirectory.file("reports/cross-language-api/bindings/objective-c-parity.json")
+val invalidateAppleBindingEvidence = tasks.register<Delete>("invalidateCodexAgentAppleBindingEvidence") {
+    group = "verification"
+    description = "Deletes partial Apple binding evidence and receipts before their prerequisites run."
+    delete(appleBindingEvidenceFile, swiftBindingReceiptFile, objectiveCBindingReceiptFile)
+}
+tasks.configureEach {
+    if (name != invalidateAppleBindingEvidence.name) {
+        mustRunAfter(invalidateAppleBindingEvidence)
+    }
+}
+project(":codex-agent-core").tasks.matching {
+    it.name == "invalidateCrossLanguageBindingParityOutputs"
+}.configureEach {
+    mustRunAfter(invalidateAppleBindingEvidence)
+}
+rootProject.tasks.matching { it.name == "prepareContractInputs" }.configureEach {
+    mustRunAfter(invalidateAppleBindingEvidence)
+}
+val appleCompilerEvidence = tasks.register<AppleCompilerEvidenceTask>("generateCodexAgentAppleCompilerEvidence") {
+    group = "verification"
+    description = "Extracts compiler-authored Swift and Objective-C evidence for the CodexFailure slice."
+    dependsOn(
+        invalidateAppleBindingEvidence,
+        verifyAppleToolchain,
+        appleDistributionTasks.prepareCodexAgentReleaseXCFramework,
+        ":codex-agent-core:verifyCrossLanguageApiCoverage",
+    )
+    xcframeworkDirectory.set(appleDistributionTasks.releaseXCFrameworkDirectory)
+    canonicalApiReport.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
+    ))
+    canonicalCoverageReceipt.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json",
+    ))
+    swiftConsumer.set(layout.projectDirectory.file("apple/CompilerEvidence/CodexFailureSwiftConsumer.swift"))
+    objectiveCConsumer.set(layout.projectDirectory.file("apple/CompilerEvidence/CodexFailureObjectiveCConsumer.m"))
+    minimumIosVersion.set(appleCompilerMinimumIosVersion)
+    expectedXcodeVersion.set(pinnedXcodeVersion)
+    expectedXcodeBuild.set(pinnedXcodeBuild)
+    expectedSwiftVersion.set(pinnedSwiftVersion)
+    evidenceFile.set(layout.buildDirectory.file("reports/cross-language-api/apple/compiler-evidence.json"))
+}
+appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests.configure {
+    dependsOn(invalidateAppleBindingEvidence)
+}
+val appleBindingEvidence = tasks.register<GenerateAppleBindingEvidenceTask>(
+    "generateCodexAgentAppleBindingEvidence",
+) {
+    group = "verification"
+    description = "Matches Apple bindings and emits independently verified Swift and Objective-C receipts."
+    dependsOn(
+        invalidateAppleBindingEvidence,
+        appleCompilerEvidence,
+        appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests,
+        ":codex-agent-core:verifyCrossLanguageApiCoverage",
+    )
+    canonicalApiReport.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
+    ))
+    canonicalCoverageReceipt.set(rootProject.layout.projectDirectory.file(
+        "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json",
+    ))
+    compilerEvidence.set(appleCompilerEvidence.flatMap(AppleCompilerEvidenceTask::evidenceFile))
+    xcframeworkDirectory.set(appleDistributionTasks.releaseXCFrameworkDirectory)
+    swiftConsumer.set(layout.projectDirectory.file("apple/CompilerEvidence/CodexFailureSwiftConsumer.swift"))
+    objectiveCConsumer.set(layout.projectDirectory.file("apple/CompilerEvidence/CodexFailureObjectiveCConsumer.m"))
+    xctestEvidence.set(
+        appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests.flatMap(
+            VerifySwiftAuthenticationTestsTask::summaryFile,
+        ),
+    )
+    xcresultDirectory.set(
+        appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests.flatMap(
+            VerifySwiftAuthenticationTestsTask::resultBundleDirectory,
+        ),
+    )
+    xctestPackageDirectory.set(
+        appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests.flatMap(
+            VerifySwiftAuthenticationTestsTask::packageDirectory,
+        ),
+    )
+    evidenceFile.set(appleBindingEvidenceFile)
+    swiftReceiptFile.set(swiftBindingReceiptFile)
+    objectiveCReceiptFile.set(objectiveCBindingReceiptFile)
+}
 val appleReleaseTasks = registerIosAppleReleaseVerificationTasks(
     appleDistributionTasks,
     minimumIosVersion,
@@ -175,6 +273,7 @@ private val verifiedDistributionTasks = registerIosVerifiedDistributionTasks(
 tasks.register("verifyIosRuntime") {
     group = "verification"
     description = "Builds and tests the embedded iOS runtime and clean Swift Package consumer."
+    dependsOn(appleBindingEvidence)
     val imported = verifiedDistributionTasks.validateImported
     if (imported != null) dependsOn(imported) else {
         if (!providers.gradleProperty("codexAgent.iosNativeEvidenceDirectory").isPresent) {

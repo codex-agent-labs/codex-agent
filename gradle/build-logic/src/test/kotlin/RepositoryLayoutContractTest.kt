@@ -11,15 +11,23 @@ class RepositoryLayoutContractTest {
     @Test
     fun `explicit build logic and release inputs use the Gradle layout`() {
         val settings = repository.resolve("settings.gradle.kts").readText()
+        val runtimeSettings = repository.resolve("runtime/settings.gradle.kts").readText()
         val rootBuild = repository.resolve("build.gradle.kts").readText()
         val androidBuild = repository.resolve("codex-agent-runtime-android/build.gradle.kts").readText()
 
         assertTrue("includeBuild(\"gradle/build-logic\")" in settings)
+        assertFalse(":codex-agent-runtime-desktop" in settings)
+        assertTrue("includeBuild(runtimeBuildLogic.toFile())" in runtimeSettings)
+        assertFalse("includeBuild(\"build-logic\")" in runtimeSettings)
+        assertTrue("include(\":codex-agent-runtime-desktop\")" in runtimeSettings)
         assertTrue("id(\"codexagent.root-release\")" in rootBuild)
         assertTrue("id(\"codexagent.codex-runtime\")" in androidBuild)
         assertTrue(repository.resolve("gradle/build-logic/src/main/kotlin/codexagent.root-release.gradle.kts").isFile)
         assertTrue(repository.resolve("gradle/build-logic/src/main/kotlin/PromotedCandidateTasks.kt").isFile)
         assertTrue(repository.resolve("gradle/build-logic/src/main/kotlin/codexagent.codex-runtime.gradle.kts").isFile)
+        assertTrue(repository.resolve(
+            "runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
+        ).isFile)
         assertTrue(repository.resolve("gradle/release/kmp-consumer-template").isDirectory)
         assertTrue(repository.resolve("gradle/kotlin-js-store/package-lock.json").isFile)
         assertTrue(repository.resolve("gradle/kotlin-js-store/wasm/package-lock.json").isFile)
@@ -37,6 +45,64 @@ class RepositoryLayoutContractTest {
         val consumer = repository.resolve("gradle/release/kmp-consumer-template/build.gradle.kts").readText()
         assertTrue("kotlin(\"multiplatform\") version \"${version("kotlin")}\"" in consumer)
         assertTrue("id(\"com.android.kotlin.multiplatform.library\") version \"${version("agp")}\"" in consumer)
+        assertTrue("withJava()" in consumer)
+        assertTrue(repository.resolve("gradle/release/kmp-consumer-template/src/androidMain/java").isDirectory)
+        assertTrue(repository.resolve("gradle/release/kmp-consumer-template/src/desktopMain/java").isDirectory)
+    }
+
+    @Test
+    fun `platform adapters expose the root Core project and Desktop consumes the Contract coordinate`() {
+        val coreApi = Regex("""(?m)^\s*api\(project\(":codex-agent-core"\)\)\s*$""")
+        listOf("android", "ios").forEach { runtime ->
+            val build = repository.resolve("codex-agent-runtime-$runtime/build.gradle.kts").readText()
+            assertEquals(1, coreApi.findAll(build).count(), runtime)
+        }
+        val desktop = repository.resolve("codex-agent-runtime-desktop/build.gradle.kts").readText()
+        assertEquals(0, coreApi.findAll(desktop).count())
+        assertTrue("io.github.codex-agent-labs:codex-agent-core:" in desktop)
+        assertTrue("providers.gradleProperty(\"codexAgent.contractVersion\")" in desktop)
+        assertFalse("project(\":codex-agent-core\")" in desktop)
+    }
+
+    @Test
+    fun `public SDK facade exports Core without duplicating declarations`() {
+        val facade = repository.resolve("codex-agent-sdk")
+        val build = facade.resolve("build.gradle.kts").readText()
+        assertEquals(
+            1,
+            Regex("""(?m)^\s*api\(project\(\":codex-agent-core\"\)\)\s*$""").findAll(build).count(),
+        )
+        val sources = facade.resolve("src").walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .toList()
+        assertEquals(1, sources.size)
+        assertEquals("package io.github.codex_agent_labs.codexagent\n", sources.single().readText())
+    }
+
+    @Test
+    fun `SDK facade consumers cover every target without Runtime access`() {
+        val fixture = repository.resolve("gradle/release/sdk-facade-consumer-template")
+        val build = fixture.resolve("build.gradle.kts").readText()
+        val targets = build.substringAfter("check(consumerTarget in setOf(")
+            .substringBefore("))")
+            .lineSequence()
+            .map(String::trim)
+            .filter { it.startsWith('"') }
+            .map { it.removePrefix("\"").removeSuffix("\",") }
+            .toSet()
+        assertEquals(
+            setOf(
+                "android", "jvm", "ios-arm64", "ios-simulator-arm64", "macos-arm64", "macos-x64",
+                "linux-arm64", "linux-x64", "windows-x64", "node-js", "node-wasm",
+            ),
+            targets,
+        )
+        assertEquals(1, Regex("io\\.github\\.codex-agent-labs:codex-agent:").findAll(build).count())
+        assertFalse("codex-agent-core" in build)
+        assertFalse("codex-agent-runtime" in build)
+        val source = fixture.resolve("src/commonMain/kotlin/Consumer.kt").readText()
+        assertFalse("CodexPlatform" in source)
+        assertFalse(".runtime." in source)
     }
 
     @Test
@@ -55,8 +121,8 @@ class RepositoryLayoutContractTest {
     @Test
     fun `Central publishing has one verified transport path`() {
         listOf(
-            "codex-agent-client", "codex-agent-runtime-android", "codex-agent-runtime-desktop",
-            "codex-agent-runtime-ios", "codex-agent-runtime-node",
+            "codex-agent-core", "codex-agent-sdk", "codex-agent-runtime-android", "codex-agent-runtime-desktop",
+            "codex-agent-runtime-ios",
         ).forEach { module ->
             assertFalse("publishToMavenCentral(" in repository.resolve("$module/build.gradle.kts").readText(), module)
         }
@@ -72,32 +138,44 @@ class RepositoryLayoutContractTest {
     @Test
     fun `all internal plugins are explicit and applied only by their owners`() {
         val owners = linkedMapOf(
-            "build.gradle.kts" to "root-release",
-            "codex-agent-client/build.gradle.kts" to "client-verification",
-            "codex-agent-runtime-android/build.gradle.kts" to "codex-runtime",
-            "codex-agent-runtime-desktop/build.gradle.kts" to "desktop-runtime",
-            "codex-agent-runtime-ios/build.gradle.kts" to "ios-runtime",
-            "codex-agent-runtime-node/build.gradle.kts" to "node-runtime",
-            "tooling/android-runtime-evidence/build.gradle.kts" to "android-runtime-evidence",
-            "tooling/protocol-generator/build.gradle.kts" to "protocol-generator",
+            "build.gradle.kts" to setOf("contract-product", "root-release"),
+            "codex-agent-core/build.gradle.kts" to setOf("core-verification"),
+            "codex-agent-runtime-android/build.gradle.kts" to setOf("codex-runtime"),
+            "codex-agent-runtime-desktop/build.gradle.kts" to
+                setOf("desktop-runtime"),
+            "codex-agent-sdk/build.gradle.kts" to setOf("javascript-sdk", "native-wrapper-sdk"),
+            "codex-agent-runtime-ios/build.gradle.kts" to setOf("ios-runtime"),
+            "tooling/android-runtime-evidence/build.gradle.kts" to setOf("android-runtime-evidence"),
+            "tooling/protocol-generator/build.gradle.kts" to setOf("protocol-generator"),
         )
-        val expectedIds = owners.values.mapTo(sortedSetOf()) { "codexagent.$it" }
-        val pluginDirectory = repository.resolve("gradle/build-logic/src/main/kotlin")
-        val registeredIds = pluginDirectory.listFiles().orEmpty()
+        val expectedIds = owners.values.flatten().mapTo(sortedSetOf()) { "codexagent.$it" }
+        val rootPluginDirectory = repository.resolve("gradle/build-logic/src/main/kotlin")
+        val runtimePluginDirectory = repository.resolve("runtime/build-logic/src/main/kotlin")
+        val registeredIdList = sequenceOf(rootPluginDirectory, runtimePluginDirectory)
+            .flatMap { it.listFiles().orEmpty().asSequence() }
             .filter { it.name.startsWith("codexagent.") && it.name.endsWith(".gradle.kts") }
-            .mapTo(sortedSetOf()) { it.name.removeSuffix(".gradle.kts") }
+            .map { it.name.removeSuffix(".gradle.kts") }
+            .toList()
+        assertEquals(registeredIdList.size, registeredIdList.toSet().size, "Duplicate internal plugin IDs")
+        val registeredIds = registeredIdList.toSortedSet()
         assertEquals(expectedIds, registeredIds)
+        assertFalse(rootPluginDirectory.resolve("codexagent.desktop-runtime.gradle.kts").exists())
+        assertTrue(runtimePluginDirectory.resolve("codexagent.desktop-runtime.gradle.kts").isFile)
 
         val buildScripts = repository.walkTopDown()
             .onEnter { it == repository || it.name !in setOf(".git", ".gradle", ".codex", ".agents", "build") }
-            .filter { it.isFile && it.name.endsWith(".gradle.kts") }
+            .filter {
+                it.isFile && it.name.endsWith(".gradle.kts") &&
+                    !it.relativeTo(repository).invariantSeparatorsPath.startsWith("gradle/release/")
+            }
             .associate { it.relativeTo(repository).invariantSeparatorsPath to it.readText() }
-        owners.forEach { (owner, suffix) ->
-            val id = "codexagent.$suffix"
-            val applications = buildScripts.filterValues { "id(\"$id\")" in it }.keys
-            assertEquals(setOf(owner), applications, "$id must be applied only by $owner")
+        owners.forEach { (owner, suffixes) ->
+            suffixes.forEach { suffix ->
+                val id = "codexagent.$suffix"
+                val applications = buildScripts.filterValues { "id(\"$id\")" in it }.keys
+                assertEquals(setOf(owner), applications, "$id must be applied only by $owner")
+            }
         }
-        assertEquals(8, owners.size)
     }
 
     @Test
@@ -114,14 +192,15 @@ class RepositoryLayoutContractTest {
                 """(?:\./)?$rootReleaseName(?=[\"'\s,}]|\z))""",
         )
         val rootJsStorePath = Regex("""(?<!gradle/)${Regex.escape(oldJsStore)}(?:/|\b)""")
-        val ignoredDirectories = setOf(".git", ".gradle", ".codex", ".agents", "build")
+        val ignoredDirectories = setOf(".git", ".gradle", ".codex", ".agents", "build", "target")
         val liveExtensions = setOf("kt", "kts", "java", "md", "yml", "yaml", "json", "toml", "properties")
         val failures = repository.walkTopDown()
             .onEnter { it == repository || it.name !in ignoredDirectories }
             .filter { file ->
                 val path = file.relativeTo(repository).invariantSeparatorsPath
                 file.isFile && file.extension in liveExtensions && !file.name.endsWith(".local.md") &&
-                    !path.startsWith("gradle/build-logic/src/test/")
+                    !path.startsWith("gradle/build-logic/src/test/") &&
+                    !path.startsWith("runtime/build-logic/src/test/")
             }
             .flatMap { file ->
                 file.readLines().asSequence().mapIndexedNotNull { index, line ->
@@ -147,7 +226,7 @@ class RepositoryLayoutContractTest {
         val verification = repository.resolve(
             "gradle/build-logic/src/main/kotlin/RepositoryVerificationTasks.kt",
         ).readText()
-        assertTrue(":codex-agent-runtime-node:jsNodeTest" in verification)
-        assertTrue(":codex-agent-runtime-node:wasmJsNodeTest" in verification)
+        assertFalse(":codex-agent-runtime-desktop" in verification)
+        assertTrue("REPOSITORY_SDK_EVIDENCE_DIRECTORY_PROPERTY" in verification)
     }
 }

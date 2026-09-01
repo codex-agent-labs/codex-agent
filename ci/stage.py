@@ -16,15 +16,28 @@ from receipt import VALIDATION_ACTIONS_KEY, create_receipt
 from runner_identity import bound_toolchain
 
 
+PORTABLE_RUNTIME_PRODUCT_OUTPUTS = tuple(
+    ("build", f"codex-agent-runtime-desktop/build/product-stage/runtime/{component}/{phase}/**/*", kind)
+    for component in ("jvm", "node-js", "node-wasm")
+    for phase, kind in (("binary", "runtime-binary-stage-member"), ("package", "runtime-package-stage-member"))
+)
+RUNTIME_ADAPTER_VALIDATION_OUTPUTS = tuple(
+    ("test", f"codex-agent-runtime-desktop/build/product-stage/runtime/{component}/validation/**/*", "runtime-validation-stage-member")
+    for component in ("jvm", "node-js", "node-wasm")
+)
+
+
 OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
     "contracts": (
         ("build", "gradle/build-logic/build/libs/codex-agent-release-tooling.jar", "release-tooling"),
+        ("build", "build/product-stage/contract/contract/binary/**/*", "contract-binary-stage-member"),
+        ("test", "codex-agent-core/build/reports/cross-language-api/bindings/java-parity.json", "cross-language-java-binding-receipt-evidence"),
     ),
     "portable": (
         ("build", "codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip", "jvm-runner"),
-        ("build", "codex-agent-runtime-node/build/distributions/codex-agent-node-runtime-evidence-runner.zip", "node-js-runner"),
-        ("build", "codex-agent-runtime-node/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip", "node-wasm-runner"),
-    ),
+        ("build", "codex-agent-runtime-desktop/build/distributions/codex-agent-node-runtime-evidence-runner.zip", "node-js-runner"),
+        ("build", "codex-agent-runtime-desktop/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip", "node-wasm-runner"),
+    ) + PORTABLE_RUNTIME_PRODUCT_OUTPUTS,
     "android": (
         ("build", "codex-agent-runtime-android/build/outputs/aar/codex-agent-runtime-android-release.aar", "aar"),
         ("build", "tooling/android-runtime-evidence/build/outputs/apk/debug/android-runtime-evidence-debug.apk", "application-apk"),
@@ -32,43 +45,84 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("test", "codex-agent-runtime-android/build/test-results/**/*.xml", "test-report"),
         ("metadata", "codex-agent-runtime-android/build/reports/lint-results-release.xml", "lint-report"),
     ),
+    "node-js": (
+        (
+            "build",
+            "codex-agent-runtime-desktop/build/product-stage/runtime/"
+            "node-js/package/**/*",
+            "runtime-package-stage-member",
+        ),
+        (
+            "test",
+            "codex-agent-runtime-desktop/build/product-stage/runtime/"
+            "node-js-binding/validation/**/*",
+            "runtime-binding-validation-stage-member",
+        ),
+    ),
     "desktop-macos-arm64": (
         ("build", "codex-agent-runtime-desktop/build/distributions/*-app-server-macos-arm64.zip", "classifier"),
+        ("build", "codex-agent-runtime-desktop/build/distributions/*-c-abi-macos-arm64.zip", "c-abi-sdk"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/macos-arm64/binary/**/*", "runtime-binary-stage-member"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/macos-arm64/package/**/*", "runtime-package-stage-member"),
+        ("test", "codex-agent-runtime-desktop/build/product-stage/runtime/macos-arm64/validation/**/*", "runtime-validation-stage-member"),
         ("test", "codex-agent-runtime-desktop/build/reports/desktop-runtime-evidence/desktop-runtime-macosArm64.json", "runtime-evidence"),
         ("test", "codex-agent-runtime-desktop/build/reports/jvm-runtime-evidence/jvm-runtime-macosArm64.json", "jvm-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-runtime-macosArm64.json", "node-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-wasm-runtime-macosArm64.json", "node-wasm-runtime-evidence"),
-    ),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-runtime-macosArm64.json", "node-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-wasm-runtime-macosArm64.json", "node-wasm-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json", "cross-language-c-abi-bootstrap-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/c-abi-scenarios.json", "cross-language-c-abi-scenario-proof"),
+        ("test", "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/packages/c-abi-package-macos-arm64.json", "c-abi-package-proof"),
+    ) + RUNTIME_ADAPTER_VALIDATION_OUTPUTS,
     "desktop-macos-x64": (
         ("build", "codex-agent-runtime-desktop/build/distributions/*-app-server-macos-x64.zip", "classifier"),
+        ("build", "codex-agent-runtime-desktop/build/distributions/*-c-abi-macos-x64.zip", "c-abi-sdk"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/macos-x64/binary/**/*", "runtime-binary-stage-member"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/macos-x64/package/**/*", "runtime-package-stage-member"),
+        ("test", "codex-agent-runtime-desktop/build/product-stage/runtime/macos-x64/validation/**/*", "runtime-validation-stage-member"),
         ("test", "codex-agent-runtime-desktop/build/reports/desktop-runtime-evidence/desktop-runtime-macosX64.json", "runtime-evidence"),
         ("test", "codex-agent-runtime-desktop/build/reports/jvm-runtime-evidence/jvm-runtime-macosX64.json", "jvm-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-runtime-macosX64.json", "node-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-wasm-runtime-macosX64.json", "node-wasm-runtime-evidence"),
-    ),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-runtime-macosX64.json", "node-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-wasm-runtime-macosX64.json", "node-wasm-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/packages/c-abi-package-macos-x64.json", "c-abi-package-proof"),
+    ) + RUNTIME_ADAPTER_VALIDATION_OUTPUTS,
     "desktop-linux-arm64": (
         ("build", "codex-agent-runtime-desktop/build/distributions/*-app-server-linux-arm64.zip", "classifier"),
+        ("build", "codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip", "c-abi-sdk"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/linux-arm64/binary/**/*", "runtime-binary-stage-member"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/linux-arm64/package/**/*", "runtime-package-stage-member"),
+        ("test", "codex-agent-runtime-desktop/build/product-stage/runtime/linux-arm64/validation/**/*", "runtime-validation-stage-member"),
         ("build", "build/ci/linux-arm64-producer-identities/linux-arm64-supervisor.json", "arm-supervisor-identity"),
         ("build", "build/ci/linux-arm64-producer-identities/linux-x64-cross-builder.json", "x64-cross-builder-identity"),
         ("test", "codex-agent-runtime-desktop/build/reports/desktop-runtime-evidence/desktop-runtime-linuxArm64.json", "runtime-evidence"),
         ("test", "codex-agent-runtime-desktop/build/reports/jvm-runtime-evidence/jvm-runtime-linuxArm64.json", "jvm-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-runtime-linuxArm64.json", "node-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-wasm-runtime-linuxArm64.json", "node-wasm-runtime-evidence"),
-    ),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-runtime-linuxArm64.json", "node-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-wasm-runtime-linuxArm64.json", "node-wasm-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/packages/c-abi-package-linux-arm64.json", "c-abi-package-proof"),
+    ) + RUNTIME_ADAPTER_VALIDATION_OUTPUTS,
     "desktop-linux-x64": (
         ("build", "codex-agent-runtime-desktop/build/distributions/*-app-server-linux-x64.zip", "classifier"),
+        ("build", "codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-x64.zip", "c-abi-sdk"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/linux-x64/binary/**/*", "runtime-binary-stage-member"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/linux-x64/package/**/*", "runtime-package-stage-member"),
+        ("test", "codex-agent-runtime-desktop/build/product-stage/runtime/linux-x64/validation/**/*", "runtime-validation-stage-member"),
         ("test", "codex-agent-runtime-desktop/build/reports/desktop-runtime-evidence/desktop-runtime-linuxX64.json", "runtime-evidence"),
         ("test", "codex-agent-runtime-desktop/build/reports/jvm-runtime-evidence/jvm-runtime-linuxX64.json", "jvm-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-runtime-linuxX64.json", "node-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-wasm-runtime-linuxX64.json", "node-wasm-runtime-evidence"),
-    ),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-runtime-linuxX64.json", "node-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-wasm-runtime-linuxX64.json", "node-wasm-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/packages/c-abi-package-linux-x64.json", "c-abi-package-proof"),
+    ) + RUNTIME_ADAPTER_VALIDATION_OUTPUTS,
     "desktop-windows-x64": (
         ("build", "codex-agent-runtime-desktop/build/distributions/*-app-server-windows-x64.zip", "classifier"),
+        ("build", "codex-agent-runtime-desktop/build/distributions/*-c-abi-windows-x64.zip", "c-abi-sdk"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/windows-x64/binary/**/*", "runtime-binary-stage-member"),
+        ("build", "codex-agent-runtime-desktop/build/product-stage/runtime/windows-x64/package/**/*", "runtime-package-stage-member"),
+        ("test", "codex-agent-runtime-desktop/build/product-stage/runtime/windows-x64/validation/**/*", "runtime-validation-stage-member"),
         ("test", "codex-agent-runtime-desktop/build/reports/desktop-runtime-evidence/desktop-runtime-mingwX64.json", "runtime-evidence"),
         ("test", "codex-agent-runtime-desktop/build/reports/jvm-runtime-evidence/jvm-runtime-mingwX64.json", "jvm-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-runtime-mingwX64.json", "node-runtime-evidence"),
-        ("test", "codex-agent-runtime-node/build/reports/node-runtime-evidence/node-wasm-runtime-mingwX64.json", "node-wasm-runtime-evidence"),
-    ),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-runtime-mingwX64.json", "node-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/node-runtime-evidence/node-wasm-runtime-mingwX64.json", "node-wasm-runtime-evidence"),
+        ("test", "codex-agent-runtime-desktop/build/reports/cross-language-api/c-abi/packages/c-abi-package-windows-x64.json", "c-abi-package-proof"),
+    ) + RUNTIME_ADAPTER_VALIDATION_OUTPUTS,
     "ios-native-tests": (("test", "codex-agent-runtime-ios/build/apple-slice-exports/native-tests/native-tests-proof.json", "native-test-proof"),),
     "ios-rust-device": (
         ("build", "codex-agent-runtime-ios/build/apple-slice-exports/codex-agent-ios-arm64.a", "rust-archive"),
@@ -91,6 +145,18 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
     "ios-swift-tests": (
         ("test", "codex-agent-runtime-ios/build/swift-authentication-tests-summary.json", "xctest-summary"),
         ("test", "codex-agent-runtime-ios/build/swift-authentication-tests.xcresult/**/*", "xctest-result"),
+        ("test", "codex-agent-runtime-ios/build/reports/cross-language-api/apple/compiler-evidence.json", "apple-compiler-evidence"),
+        ("test", "codex-agent-runtime-ios/build/reports/cross-language-api/apple/binding-evidence.json", "apple-binding-evidence"),
+        (
+            "test",
+            "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/swift-parity.json",
+            "cross-language-swift-binding-receipt-evidence",
+        ),
+        (
+            "test",
+            "codex-agent-runtime-ios/build/reports/cross-language-api/bindings/objective-c-parity.json",
+            "cross-language-objective-c-binding-receipt-evidence",
+        ),
     ),
     "ios-package": (
         ("build", "codex-agent-runtime-ios/build/distributions/CodexAgent-*.xcframework.zip", "swift-package-binary"),
@@ -302,6 +368,21 @@ def restore_production_files(
     return artifacts, evidence
 
 
+def selected_output(lane: str, state: dict[str, object], action: str, kind: str) -> bool:
+    return bool(
+        state[action]
+        or (
+            lane == "node-js"
+            and kind in {"runtime-package-stage-member", "runtime-binding-validation-stage-member"}
+            and (state["build"] or state["test"])
+        )
+        or (lane == "ios-swift-build" and action == "build" and state["test"])
+        or (lane == "ios-privacy-metrics" and action == "metadata" and state["test"])
+        or (lane.startswith("consumer-") and any(state[name] for name in ("build", "test", "metadata")))
+        or (lane == "ios-privacy-metrics" and action == "test" and state["metadata"])
+    )
+
+
 def main() -> None:
     if sys.argv[1:2] == ["extract-tar"]:
         parser = argparse.ArgumentParser()
@@ -352,22 +433,7 @@ def main() -> None:
         restored = arguments.restored_production.resolve()
         artifact_map, evidence_map = restore_production_files(restored, output, arguments.lane)
     for action, pattern, kind in OUTPUTS.get(arguments.lane, ()):
-        selected = state[action] or (
-            arguments.lane == "ios-swift-build"
-            and action == "build"
-            and state["test"]
-        ) or (
-            arguments.lane == "ios-privacy-metrics"
-            and action == "metadata"
-            and state["test"]
-        ) or (
-            arguments.lane.startswith("consumer-")
-            and any(state[name] for name in ("build", "test", "metadata"))
-        ) or (
-            arguments.lane == "ios-privacy-metrics"
-            and action == "test"
-            and state["metadata"]
-        )
+        selected = selected_output(arguments.lane, state, action, kind)
         if selected:
             if kind == "node-runtime-evidence" and os.environ.get("CI_NODE_JS_REQUIRED", "true") != "true":
                 continue

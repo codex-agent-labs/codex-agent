@@ -81,16 +81,49 @@ class AppleReleaseCheckTasksTest {
     fun `live release tasks contain no compound shell implementation`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { it.resolve("gradle/build-logic/src/main/kotlin/IosAppleReleaseVerificationTasks.kt").isFile }
-        val source = Files.walk(repository.resolve("gradle/build-logic/src/main/kotlin").toPath()).use { paths ->
-            paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".kt") }
-                .sorted().map(Files::readString).toList().joinToString("\n")
+        val sources = linkedMapOf<String, String>()
+        listOf(repository.resolve("gradle/build-logic/src/main/kotlin").toPath()).forEach { sourceRoot ->
+            Files.walk(sourceRoot).use { paths ->
+                paths.filter {
+                    Files.isRegularFile(it) &&
+                        (it.fileName.toString().endsWith(".kt") || it.fileName.toString().endsWith(".kts"))
+                }
+                    .sorted().forEach {
+                        sources[sourceRoot.relativize(it).toString().replace(File.separatorChar, '/')] =
+                            Files.readString(it)
+                    }
+                }
         }
+        val source = sources.values.joinToString("\n")
         listOf(
-            "/bin/bash", "\"bash\", \"-c\"", "\"sh\", \"-c\"", "python3", "\"python\",",
+            "/bin/bash", "\"bash\", \"-c\"", "\"sh\", \"-c\"",
             "\"jq\"", "\"find\"", "\"awk\"", "\"stat\"",
         ).forEach { forbidden ->
             assertFalse(forbidden in source, forbidden)
         }
+        val productPythonOwners = mapOf(
+            "RepositoryVerificationTasks.kt" to
+                "\"python3\", \"-m\", \"ci.products.aggregate\"",
+            "codexagent.contract-product.gradle.kts" to
+                "\"python3\", \"-m\", \"ci.products.contract\"",
+            "ProductOutputManifestGradleTask.kt" to
+                "pythonExecutable.convention(\"python3\")",
+            "ProductPythonTooling.kt" to
+                "ProcessBuilder(listOf(\"python3\", \"-m\", \"ci.products.\$module\") + arguments)",
+            "CrossLanguageNativeWrapperGradleTasks.kt" to
+                "pythonExecutable.convention(\"python3\")",
+        )
+        val nonProductPythonSource = sources
+            .filterKeys { it !in productPythonOwners }
+            .values.joinToString("\n")
+        assertFalse("python3" in nonProductPythonSource)
+        productPythonOwners.forEach { (owner, invocation) ->
+            val productSource = requireNotNull(sources[owner])
+            assertTrue(invocation in productSource, owner)
+            assertFalse("python3" in productSource.replace(invocation, ""), owner)
+        }
+        assertFalse("commandLine(\"python\"" in source)
+        assertFalse("executable(\"python\"" in source)
         assertTrue("VerifyIosReleaseBudgetsTask" in source)
         assertTrue("xcodebuild" in source && "/usr/bin/xcrun" in source)
     }

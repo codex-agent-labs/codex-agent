@@ -69,16 +69,34 @@ not publication authority.
    Node, and Apple slice and records its Git inputs, toolchain identity,
    artifacts, tests, and evidence in a lane receipt.
 2. Desktop runtime evidence covers macOS Arm64/x64, Linux Arm64/x64, and
-   Windows x64. Apple host, device, simulator, framework, Swift, privacy, and
-   package stages remain independently reusable.
+   Windows x64. Each matching host also consumes the installed Python, C#,
+   Rust, C++, and Dart package for that host and contributes its exact
+   package/native/toolchain hashes to the M11 receipts. Apple host, device,
+   simulator, framework, Swift, privacy, and package stages remain
+   independently reusable.
 3. Firebase Test Lab evidence runs before merge against the exact Android APKs
    and AAR through the trusted workflow pinned to `main`; a candidate never
    repeats it and no connected physical phone is required.
 4. Main promotion forwards equal-tree receipts and the exact bytes uploaded by
-   the producing jobs. Candidate assembly verifies those promoted inputs,
-   signs the unsigned Maven primaries, generates mandated sidecars, and
-   assembles the Central bundle and release manifest without compiling,
-   linking, or running platform tests.
+   the producing jobs, including all native-wrapper packages. Candidate
+   assembly verifies each wrapper filename and SHA-256 against its schema-4 M11
+   receipt, signs the unsigned Maven primaries, generates mandated sidecars,
+   and assembles the Central bundle, aggregate SBOM, and schema-16 release
+   manifest without compiling, linking, or running platform tests.
+
+## Native-wrapper release assets
+
+The candidate contains exactly 14 wrapper packages: five Python wheels and one
+sdist, one `CodexAgent.0.2.0.nupkg`, one `codex-agent-0.2.0.crate`, one
+`codex-agent-dart-0.2.0.tar.gz`, and five target-specific
+`codex-agent-cpp-0.2.0-<classifier>.zip` files. Five package-toolchain TSVs stay
+as candidate evidence rather than public SDK packages.
+
+The publication workflow uploads those 14 packages as GitHub release assets
+and verifies GitHub's recorded digest for each one. It does not upload them to
+PyPI, NuGet.org, crates.io, a CMake registry, or pub.dev. Adding a registry is a
+separate release-policy and credentials change, not an implication of the
+language-support matrix.
 
 Git commit, tree, blob, and explicit toolchain identity decide reuse. Checksums
 remain for SwiftPM, Maven Central, signatures, pinned external inputs, GitHub
@@ -96,9 +114,9 @@ build/protected-candidate/<candidate-commit>/payload/
 
 The aggregate verifies the imported evidence, iOS runtime, Swift package,
 privacy declarations, Maven inventories, pre-merge consumer receipts, Central
-bundle, and canonical candidate manifest. Candidate tasks may inspect,
-inventory, sign, and assemble promoted files; they may not compile, link, run
-Xcode, boot a simulator, or execute a platform test.
+bundle, and canonical candidate manifest. Candidate tasks may
+inspect, inventory, sign, and assemble promoted files; they may not compile,
+link, run Xcode, boot a simulator, or execute a platform test.
 
 Candidate output is immutable. A rerun reuses an already successful candidate;
 it never silently deletes or replaces one with the same identity.
@@ -176,9 +194,10 @@ bytes and never rebuilds Maven, native, or runtime artifacts. It:
 3. Waits for protected release-environment approval, then uses an Ubuntu job to
    create or reuse the matching Maven Central deployment and GitHub draft
    release.
-4. Promotes only the recorded Central bundle and exact Swift package/candidate
-   assets, comparing the official GitHub asset digest with the manifest-bound
-   artifact without downloading it again.
+4. Promotes only the recorded Central bundle, exact Swift package/candidate
+   assets, and 14 receipt-bound native-wrapper packages, comparing every
+   official GitHub asset digest with the manifest-bound artifact without
+   downloading it again.
 5. Runs one downstream macOS job whose only public asset download is the clean
    Swift Package resolution check.
 6. On rerun, reuses matching validated or published records and fails closed on

@@ -34,7 +34,18 @@ class ReleaseToolingCliFunctionalTest {
             ZipFile(jar).use { archive ->
                 val entries = archive.entries().asSequence().map { it.name }.toList()
                 assertTrue("ReleaseToolingCliKt.class" in entries)
+                assertTrue("ProductVersions.class" in entries)
+                assertFalse("ProductVersionsKt.class" in entries)
                 assertFalse("ReleaseToolingGradleTasksKt.class" in entries)
+                assertFalse("CrossLanguageNativeWrapperGradleTasksKt.class" in entries)
+                listOf(
+                    "GenerateCrossLanguageCAbiScenarioProofTask",
+                    "PackageCrossLanguageCAbiSdkTask",
+                    "GenerateCrossLanguageCAbiPackageEvidenceTask",
+                    "VerifyCrossLanguageCAbiPackageEvidenceTask",
+                    "GenerateCrossLanguageNativeWrapperBindingReceiptTask",
+                    "AdvanceCrossLanguageBindingReceiptPhaseTask",
+                ).forEach { task -> assertFalse(entries.any { it.startsWith(task) }, task) }
                 assertFalse(entries.any { it.startsWith("org/gradle/") || it.startsWith("com/android/") })
                 assertFalse(entries.any { it.startsWith("gradle/kotlin/dsl/") })
             }
@@ -56,7 +67,7 @@ class ReleaseToolingCliFunctionalTest {
         val root = createTempDirectory("release-tooling-maven").toFile()
         try {
             val commit = "0123456789abcdef0123456789abcdef01234567"
-            val version = "0.2.0"
+            val versions = ProductVersions(contract = "1.2.3", runtime = "2.3.4", sdk = "3.4.5")
             val promoted = root.resolve("promoted")
             val output = root.resolve("output")
             val repositories = promotedMavenArtifactOwnership.keys.associateWith { target ->
@@ -64,7 +75,20 @@ class ReleaseToolingCliFunctionalTest {
             }
             val owners = canonicalPromotedMavenOwners()
             val group = CodexAgentBuild.MAVEN_GROUP.replace('.', '/')
-            expectedMavenPrimaryPaths(version).forEach { relative ->
+            val primaryPaths = expectedMavenPrimaryPaths(versions)
+            assertEquals(38, owners.size)
+            assertEquals(220, primaryPaths.size)
+            assertTrue(primaryPaths.containsAll(setOf(
+                "codex-agent-core-jvm/${versions.contract}/codex-agent-core-jvm-${versions.contract}.jar",
+                "codex-agent-runtime-desktop/${versions.runtime}/" +
+                    "codex-agent-runtime-desktop-${versions.runtime}-c-abi-linux-x64.zip",
+                "codex-agent-bom/${versions.sdk}/codex-agent-bom-${versions.sdk}.pom",
+                "codex-agent/${versions.sdk}/codex-agent-${versions.sdk}.jar",
+                "codex-agent-runtime-android/${versions.sdk}/codex-agent-runtime-android-${versions.sdk}.aar",
+                "codex-agent-runtime-ios-iosarm64/${versions.sdk}/" +
+                    "codex-agent-runtime-ios-iosarm64-${versions.sdk}.klib",
+            )))
+            primaryPaths.forEach { relative ->
                 val source = repositories.getValue(owners.getValue(relative.substringBefore('/')))
                     .resolve("$group/$relative")
                 source.parentFile.mkdirs()
@@ -76,14 +100,59 @@ class ReleaseToolingCliFunctionalTest {
                 "stage-promoted-maven",
                 "--promoted", promoted.absolutePath,
                 "--commit", commit,
-                "--version", version,
+                "--contract-version", versions.contract,
+                "--runtime-version", versions.runtime,
+                "--sdk-version", versions.sdk,
                 "--output", output.absolutePath,
             )
             assertEquals(0, result.first, result.second)
-            assertEquals(
-                expectedMavenPrimaryPaths(version).size,
-                output.walkTopDown().count(File::isFile),
+            assertEquals(220, output.walkTopDown().count(File::isFile))
+
+            val wrongOutput = root.resolve("wrong-output")
+            val swapped = runTool(
+                root,
+                "stage-promoted-maven",
+                "--promoted", promoted.absolutePath,
+                "--commit", commit,
+                "--contract-version", versions.runtime,
+                "--runtime-version", versions.contract,
+                "--sdk-version", versions.sdk,
+                "--output", wrongOutput.absolutePath,
             )
+            assertTrue(swapped.first != 0, swapped.second)
+            assertTrue(!wrongOutput.exists() || wrongOutput.listFiles().isNullOrEmpty())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `packaged tool runs the exact binding audit without Gradle and fails incomplete parity`() {
+        val root = createTempDirectory("release-tooling-binding-audit").toFile()
+        try {
+            val fixture = CrossLanguageBindingCliFixture(root)
+            val passed = runTool(root, *fixture.cliArguments())
+            assertEquals(0, passed.first, passed.second)
+            assertEquals("complete", fixture.output.readReleaseObject().releaseString("result"))
+            assertFalse("NoClassDefFoundError" in passed.second || "ClassNotFoundException" in passed.second)
+
+            val invalidPhaseArguments = fixture.cliArguments().also { arguments ->
+                arguments[arguments.indexOf("--phase") + 1] = "UNKNOWN"
+            }
+            val invalidPhase = runTool(root, *invalidPhaseArguments)
+            assertTrue(invalidPhase.first != 0, invalidPhase.second)
+            assertTrue("Unknown cross-language binding phase" in invalidPhase.second)
+            assertFalse(fixture.output.exists())
+
+            fixture.writeReceipt(
+                CrossLanguageBinding.JAVASCRIPT_TYPESCRIPT,
+                claimedMembers = fixture.members.dropLast(1),
+            )
+            val failed = runTool(root, *fixture.cliArguments())
+            assertTrue(failed.first != 0, failed.second)
+            assertTrue("Missing active binding projection javascript-typescript:" in failed.second)
+            assertEquals("incomplete", fixture.output.readReleaseObject().releaseString("result"))
+            assertFalse("NoClassDefFoundError" in failed.second || "ClassNotFoundException" in failed.second)
         } finally {
             root.deleteRecursively()
         }
@@ -94,6 +163,10 @@ class ReleaseToolingCliFunctionalTest {
         val workingDirectory = createTempDirectory("release-tooling-commands").toFile()
         try {
             listOf(
+                "assemble-c-abi-binding-receipt",
+                "assemble-native-wrapper-binding-receipt",
+                "advance-cross-language-binding-receipt",
+                "audit-cross-language-bindings",
                 "stage-promoted-maven",
                 "assemble-promoted-candidate",
                 "verify-candidate",
@@ -151,8 +224,28 @@ class ReleaseToolingCliFunctionalTest {
             "packageNodeRuntimeEvidenceRunner",
             "packageNodeWasmRuntimeEvidenceRunner",
         ).forEach { task -> assertEquals(1, Regex(Regex.escape(task)).findAll(driver).count(), task) }
-        assertTrue(":codex-agent-runtime-node:jsNodeTest" in driver)
-        assertTrue(":codex-agent-runtime-node:wasmJsNodeTest" in driver)
+        assertFalse(":codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity" in driver)
+        assertTrue(
+            ":codex-agent-sdk:verifyJavaScriptTypeScriptBindingParity" in
+                repository.resolve(".github/workflows/product-validation.yml").readText(),
+        )
+        assertTrue(":codex-agent-runtime-desktop:wasmJsNodeTest" in driver)
+        val portable = driver.substringAfter("  portable)").substringBefore("  android)")
+        val nodeWasm = driver.substringAfter("  node-wasm)").substringBefore("  desktop-macos-arm64)")
+        val runtimeDriver = driver.substringAfter("runtime_gradle() {").substringBefore("\n}")
+        assertTrue("./gradlew -p runtime" in runtimeDriver)
+        listOf(
+            "codexAgent.contractRepository",
+            "codexAgent.contractManifest",
+            "codexAgent.contractPublicKey",
+            "codexAgent.contractVersion",
+            "codexAgent.runtimeVersion",
+            "codexAgent.target",
+        ).forEach { property -> assertEquals(1, Regex(Regex.escape(property)).findAll(runtimeDriver).count(), property) }
+        assertTrue("runtime_gradle jvm" in portable)
+        assertTrue("runtime_gradle node-js" in portable)
+        assertTrue("runtime_gradle node-wasm" in nodeWasm)
+        assertFalse(Regex("\\./gradlew[^\\n]*:codex-agent-runtime-desktop").containsMatchIn(driver))
         listOf(
             "codex-agent-jvm-runtime-evidence-runner.zip",
             "codex-agent-node-runtime-evidence-runner.zip",

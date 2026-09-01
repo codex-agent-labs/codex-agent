@@ -1,13 +1,16 @@
-# Node runtimes
+# Desktop/Host Node adapter
 
-`codex-agent-runtime-node` provides a local Codex App Server runtime to both
-Kotlin/JS and Kotlin/WasmJS applications running on Node.js. It implements the
-existing `CodexRuntimeFactory` boundary. Applications use the public
+`codex-agent-runtime-desktop` provides the Node adapter for the same verified
+external-process Desktop/Host execution model used by JVM and Kotlin/Native.
+Kotlin/JS and Kotlin/WasmJS applications running on Node.js use the canonical
 `CodexHost` -> `CodexAgent` -> `CodexConversation` lifecycle; the raw runtime
 and protocol handshake remain internal.
 
-It is a Kotlin Maven dependency, not an npm JavaScript API. Browser JavaScript,
-browser Wasm, and WASI are unsupported.
+After publication, Kotlin consumers use the Maven dependency and JavaScript or
+TypeScript consumers use `@codex-agent-labs/codex-agent@0.2.0` on Node.js
+`>=24.18.0 <25`. Version `0.2.0` is not published yet; use locally built
+artifacts before release. Browser JavaScript, browser Wasm, and WASI are
+unsupported.
 
 ## Supported hosts
 
@@ -24,12 +27,13 @@ combinations are rejected.
 
 ## Configuration
 
-Add the client and runtime to a Kotlin/JS or Kotlin/WasmJS Node application:
+After publication, add the core and Desktop/Host runtime to a Kotlin/JS or
+Kotlin/WasmJS Node application:
 
 ```kotlin
 dependencies {
-    implementation("io.github.codex-agent-labs:codex-agent-client:0.2.0")
-    implementation("io.github.codex-agent-labs:codex-agent-runtime-node:0.2.0")
+    implementation("io.github.codex-agent-labs:codex-agent:0.2.0")
+    implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:0.2.0")
 }
 ```
 
@@ -52,18 +56,32 @@ it is not synthesized from the Codex Agent artifact version. Each optional
 agent resource exposes `isAvailable`, and rejects an unavailable operation
 before RPC.
 
-There is no separate public Node operational layer or Windows supervisor
-classifier; applications use `NodeCodexPlatform` with `CodexHost`.
+Node is not a separate execution model. `NodeCodexPlatform` and the
+JavaScript/TypeScript `createCodexHost` entry point use the same Desktop/Host
+lifecycle, package verification, installation, storage, and process supervision
+as the JVM and Native adapters.
 
 ## Security and lifecycle
 
-Before starting, the runtime requires canonical absolute paths, rejects
-symbolic links, verifies the workspace and file names, and checks the packaged
-binary identities against the pinned distribution manifest.
+Before starting, the runtime requires absolute paths, captures canonical bundle
+and data roots, rejects symbolic links for the classifier ZIP, managed runtime
+directories, and persisted selection entry, canonicalizes the selected
+workspace, verifies file names, checks the App Server against the compiled
+distribution pin, and checks every packaged member against the internal
+manifest.
 
-The supervisor launches only the configured App Server and owns its complete
-process tree. Closing or restarting the runtime therefore cannot leave an App
-Server child behind. Newline-delimited JSON is forwarded to the internal
+The caller establishes the bundle directory as an authenticated-delivery
+boundary: verify the signed Maven classifier artifact (or independently
+authenticate those exact bytes) before copying it, and keep the directory
+non-attacker-writable. The runtime does not verify the artifact signature. The
+compiled library pins the App Server hash; authenticated classifier delivery
+authenticates the supervisor and legal files, while the strict internal
+manifest binds and re-verifies every member. A self-consistent manifest alone
+does not authenticate a replacement classifier.
+
+The supervisor launches only the configured App Server. Windows assigns it to a
+kill-on-close Job Object; POSIX sends `TERM` and then `KILL` to its process group
+with bounded waits. Newline-delimited JSON is forwarded to the internal
 connection owned by the prepared `CodexAgent`, which performs the sole
 initialize/initialized handshake.
 
@@ -81,13 +99,21 @@ receive nor store OAuth tokens and do not require `OPENAI_API_KEY`.
 
 ## Release evidence
 
-One portable evidence bundle is reused by a five-host GitHub Actions matrix.
-Every host executes the native desktop, JVM, Kotlin/JS-on-Node, and
-Kotlin/WasmJS-on-Node lifecycle checks through the bundle installer with its
-matching classifier. Each report
-binds the candidate commit, actual OS and architecture, exact compiled runners,
-classifier ZIP, App Server, supervisor, and test outcomes.
+The merge-ready workflow is configured to reuse one portable evidence bundle in
+a five-host GitHub Actions matrix. Each host executes the native desktop, JVM,
+Kotlin/JS-on-Node, and Kotlin/WasmJS-on-Node lifecycle checks through the bundle
+installer with its matching classifier. Each report binds the candidate commit,
+actual OS and architecture, exact compiled runners, classifier ZIP, App Server,
+supervisor, and test outcomes. A release claim requires those completed
+five-host receipts for the exact candidate.
 
 Linux Arm64 is compiled on a supported x64 host and executed on the real Arm64
 runner. Candidate assembly downloads the completed matrix evidence and does not
 repeat the host smokes.
+
+When the five C SDK classifiers are staged, matching-host consumer jobs install
+and exercise the Python, C#, Rust, C++, and Dart packages. The configured final
+M11 audit requires the Node/JavaScript receipt, the C ABI receipt, all five
+native-wrapper receipts, and the Kotlin/Java/Apple receipts for the same
+candidate identity. See the
+[language and platform support matrix](SUPPORT_MATRIX.md).

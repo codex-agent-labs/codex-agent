@@ -1,0 +1,17 @@
+ci/lanes/contract-product.test.pathspec
+ci/tests/test_contract_bundle.py
+ci/tests/test_contract_output_containment.py
+codex-agent-core/src/commonTest/**
+codex-agent-core/src/jvmTest/java/**
+codex-agent-core/src/jvmTest/kotlin/**
+gradle/build-logic/src/test/kotlin/ContractIsolationFixtureTest.kt
+gradle/build-logic/src/test/kotlin/ContractTaskGraphTest.kt
+gradle/build-logic/src/test/kotlin/CrossLanguageApiCoverageTest.kt
+gradle/build-logic/src/test/kotlin/CrossLanguageApiDiscoveryTest.kt
+gradle/build-logic/src/test/kotlin/CrossLanguageApiReportCodecTest.kt
+gradle/build-logic/src/test/kotlin/CrossLanguageApiTasksTest.kt
+gradle/build-logic/src/test/kotlin/CrossLanguageKotlinBindingEvidenceTest.kt
+gradle/build-logic/src/test/kotlin/ProductPublicationVersionFunctionalTest.kt
+gradle/build-logic/src/test/kotlin/ProductVersionOwnershipTest.kt
+gradle/build-logic/src/test/kotlin/ProductVersionsTest.kt
+gradle/release/contract-isolation-fixture/**

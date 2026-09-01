@@ -11,7 +11,7 @@ CI_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = CI_ROOT.parent
 sys.path.insert(0, str(CI_ROOT))
 
-from stage import RUNNER_IDENTITY, TOOLCHAIN_IDENTITY, recorded_identity  # noqa: E402
+from stage import OUTPUTS, RUNNER_IDENTITY, TOOLCHAIN_IDENTITY, recorded_identity  # noqa: E402
 
 
 class CacheIdentityContractTest(unittest.TestCase):
@@ -74,16 +74,65 @@ class CacheIdentityContractTest(unittest.TestCase):
     def test_failed_validation_preserves_only_successful_production_then_fails(self) -> None:
         lane = (REPOSITORY / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
         stage = (REPOSITORY / "ci/stage.py").read_text(encoding="utf-8")
-        workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        workflow = (REPOSITORY / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
         self.assertIn("id: production-execution", lane)
         self.assertIn("id: execution", lane)
+        self.assertIn("id: portable-runtime-products", lane)
+        self.assertIn("id: runtime-validation-handoff", lane)
         self.assertIn("steps.production-execution.outcome == 'success'", lane)
         self.assertIn("steps.execution.outcome == 'failure'", lane)
+        self.assertGreaterEqual(lane.count("steps.runtime-validation-handoff.outcome == 'failure'"), 3)
         self.assertIn("--production-only", lane)
         self.assertIn("VALIDATION_ACTIONS_KEY", stage)
         self.assertIn("codex-agent-ci-${{ inputs.lane }}-production-", lane)
         self.assertIn("Fail after preserving reusable production and diagnostics", lane)
         self.assertIn("runs-on: ${{ matrix.runner }}", workflow)
+        binary = lane.index("Stage the exact Desktop Runtime binary product")
+        package = lane.index("Stage the exact Desktop Runtime package handoff")
+        validation = lane.index("Stage the exact Desktop Runtime validation handoff")
+        execution = lane.index("- id: execution")
+        preservation = lane.index("Stage reusable production after a later validation failure")
+        self.assertLess(binary, package)
+        self.assertLess(package, execution)
+        self.assertLess(execution, validation)
+        self.assertLess(validation, preservation)
+        self.assertIn("-PcodexAgent.phase=binary", lane[binary:package])
+        self.assertIn("-PcodexAgent.phase=package", lane[package:execution])
+        self.assertIn("-PcodexAgent.runtimeBinaryStage=\"$binary\"", lane[package:execution])
+        self.assertIn("python3 -m ci.products receipt snapshot-tree", lane[package:execution])
+        self.assertIn("-PcodexAgent.phase=validation", lane[validation:preservation])
+        self.assertIn("-PcodexAgent.runtimePackageStage=\"$package\"", lane[validation:preservation])
+        self.assertIn("-PcodexAgent.runtimeNativePackageStage=\"$package\"", lane[validation:preservation])
+        for desktop in (
+            "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
+            "desktop-linux-x64", "desktop-windows-x64",
+        ):
+            for component in ("jvm", "node-js", "node-wasm"):
+                self.assertIn(
+                    (
+                        "test",
+                        f"codex-agent-runtime-desktop/build/product-stage/runtime/{component}/validation/**/*",
+                        "runtime-validation-stage-member",
+                    ),
+                    OUTPUTS[desktop],
+                )
+
+        portable = lane.index("Stage the exact portable Runtime binary and package products")
+        desktop_binary = lane.index("Stage the exact Desktop Runtime binary product")
+        portable_step = lane[portable:desktop_binary]
+        self.assertIn("for component in jvm node-js node-wasm", portable_step)
+        self.assertIn("-PcodexAgent.phase=binary", portable_step)
+        self.assertIn("-PcodexAgent.phase=package", portable_step)
+        for component in ("jvm", "node-js", "node-wasm"):
+            for phase in ("binary", "package"):
+                self.assertIn(
+                    (
+                        "build",
+                        f"codex-agent-runtime-desktop/build/product-stage/runtime/{component}/{phase}/**/*",
+                        f"runtime-{phase}-stage-member",
+                    ),
+                    OUTPUTS["portable"],
+                )
 
     def test_ios_checksum_repair_is_reported_after_preserving_production(self) -> None:
         lane = (REPOSITORY / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
