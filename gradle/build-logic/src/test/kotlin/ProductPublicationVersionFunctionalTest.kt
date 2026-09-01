@@ -21,7 +21,6 @@ class ProductPublicationVersionFunctionalTest {
                 include(
                     ":codex-agent-core",
                     ":codex-agent-sdk",
-                    ":codex-agent-runtime-desktop",
                     ":codex-agent-runtime-android",
                     ":codex-agent-runtime-ios",
                     ":tooling",
@@ -88,14 +87,14 @@ class ProductPublicationVersionFunctionalTest {
             val first = run(root)
             assertTrue("Configuration cache entry stored" in first)
             assertVersions(root, "1.2.3", "2.3.4", "3.4.5")
-            assertDependencies(root, "1.2.3", "2.3.4", "3.4.5")
+            assertDependencies(root, "1.2.3", "3.4.5")
             val second = run(root)
             assertTrue("Reusing configuration cache" in second)
 
             writeVersions(root, "1.2.4", "2.3.4", "3.4.5")
             run(root)
             assertVersions(root, "1.2.4", "2.3.4", "3.4.5")
-            assertDependencies(root, "1.2.4", "2.3.4", "3.4.5")
+            assertDependencies(root, "1.2.4", "3.4.5")
 
             writeVersions(root, "1.2.4", "2.3.5", "3.4.5")
             run(root)
@@ -127,7 +126,6 @@ class ProductPublicationVersionFunctionalTest {
         val versions = mapOf(
             "codex-agent-core" to contract,
             "codex-agent" to sdk,
-            "codex-agent-runtime-desktop" to runtime,
             "codex-agent-runtime-android" to sdk,
             "codex-agent-runtime-ios" to sdk,
         )
@@ -138,7 +136,6 @@ class ProductPublicationVersionFunctionalTest {
         }
         assertEquals(setOf("1.2.3", contract), versionDirectories(root, "codex-agent-core"))
         assertEquals(setOf("3.4.5", sdk), versionDirectories(root, "codex-agent"))
-        assertEquals(setOf("2.3.4", runtime), versionDirectories(root, "codex-agent-runtime-desktop"))
         assertEquals(setOf("3.4.5", sdk), versionDirectories(root, "codex-agent-runtime-android"))
         assertEquals(setOf("3.4.5", sdk), versionDirectories(root, "codex-agent-runtime-ios"))
         assertEquals(setOf("3.4.5", sdk), versionDirectories(root, "codex-agent-bom"))
@@ -157,10 +154,9 @@ class ProductPublicationVersionFunctionalTest {
         }
     }
 
-    private fun assertDependencies(root: File, contract: String, runtime: String, sdk: String) {
+    private fun assertDependencies(root: File, contract: String, sdk: String) {
         mapOf(
             "codex-agent" to sdk,
-            "codex-agent-runtime-desktop" to runtime,
             "codex-agent-runtime-android" to sdk,
             "codex-agent-runtime-ios" to sdk,
         ).forEach { (artifact, version) ->
@@ -187,7 +183,6 @@ class ProductPublicationVersionFunctionalTest {
         val modules = linkedMapOf(
             ":codex-agent-core" to "codex-agent-core",
             ":codex-agent-sdk" to "codex-agent",
-            ":codex-agent-runtime-desktop" to "codex-agent-runtime-desktop",
             ":codex-agent-runtime-android" to "codex-agent-runtime-android",
             ":codex-agent-runtime-ios" to "codex-agent-runtime-ios",
         )

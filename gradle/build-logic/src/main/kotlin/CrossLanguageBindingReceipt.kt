@@ -11,11 +11,6 @@ import kotlinx.serialization.json.intOrNull
 
 internal const val CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA = 4
 
-internal data class CrossLanguageBindingCanonicalIdentity(
-    val apiReportSha256: String,
-    val coverageReceiptSha256: String,
-)
-
 internal data class CrossLanguageBindingArtifactIdentity(
     val id: String,
     val sha256: String,

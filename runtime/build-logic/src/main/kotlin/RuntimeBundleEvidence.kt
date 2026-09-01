@@ -6,10 +6,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-internal const val RUNTIME_BUNDLE_DIRECTORY_ENV = "CODEX_AGENT_RUNTIME_BUNDLE_DIRECTORY"
-internal const val RUNTIME_DATA_DIRECTORY_ENV = "CODEX_AGENT_RUNTIME_DATA_DIRECTORY"
-internal const val RUNTIME_WORKSPACE_ENV = "CODEX_AGENT_WORKSPACE"
-
 internal data class RuntimeEvidenceDirectories(
     val bundle: File,
     val data: File,

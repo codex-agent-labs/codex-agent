@@ -17,12 +17,17 @@ plugins {
 }
 
 val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toString()
+val repositoryRootFile = rootProject.extra["codexAgent.repositoryRoot"] as File
+val productTooling = layout.dir(providers.provider { repositoryRootFile.resolve("ci/products") })
+val repositoryRootDirectory = layout.dir(providers.provider { repositoryRootFile })
+val runtimeProductTooling = files(productTooling)
+val runtimeProductVersion = providers.provider { project.version.toString() }
 
 kotlin {
     explicitApi()
     sourceSets {
         commonMain.dependencies {
-            api(project(":codex-agent-core"))
+            api("io.github.codex-agent-labs:codex-agent-core:${providers.gradleProperty("codexAgent.contractVersion").get()}")
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.okio)
         }
@@ -124,25 +129,25 @@ val stageNodeJsRuntimeBinaryOutputs = tasks.register<Sync>("stageNodeJsRuntimeBi
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
 val writeNodeJsRuntimeBinaryOutputManifest =
-    tasks.register<WriteProductOutputManifestTask>("writeNodeJsRuntimeBinaryOutputManifest") {
+    registerRuntimeOutputManifest(
+        "writeNodeJsRuntimeBinaryOutputManifest",
+        stageNodeJsRuntimeBinaryOutputs,
+        providers.provider { "node-js" },
+        "binary",
+        providers.provider { "node-js" },
+        runtimeProductVersion,
+        mapOf(
+            "adapter" to "outputs/adapter",
+            "validation-runner" to "outputs/validation-runner",
+        ),
+        nodeJsRuntimeBinaryOutputs,
+        nodeJsRuntimeBinaryPhaseRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).also { task -> task.configure {
     group = "distribution"
     description = "Writes and verifies the exact raw Node JS Runtime binary manifest."
-    dependsOn(stageNodeJsRuntimeBinaryOutputs)
-    product.set("runtime")
-    component.set("node-js")
-    phase.set("binary")
-    target.set("node-js")
-    productVersion.set(project.version.toString())
-    outputRoots.set(mapOf(
-        "adapter" to "outputs/adapter",
-        "validation-runner" to "outputs/validation-runner",
-    ))
-    outputsDirectory.set(nodeJsRuntimeBinaryOutputs)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-    stageRoot.set(nodeJsRuntimeBinaryPhaseRoot)
-    manifestFile.set(nodeJsRuntimeBinaryPhaseRoot.map { it.file("output-manifest.json") })
-}
+} }
 
 val nodeWasmRuntimeBinaryPhaseRoot = layout.buildDirectory.dir("product-stage/runtime/node-wasm/binary")
 val nodeWasmRuntimeBinaryOutputs = nodeWasmRuntimeBinaryPhaseRoot.map { it.dir("outputs") }
@@ -160,60 +165,58 @@ val stageNodeWasmRuntimeBinaryOutputs = tasks.register<Sync>("stageNodeWasmRunti
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
 val writeNodeWasmRuntimeBinaryOutputManifest =
-    tasks.register<WriteProductOutputManifestTask>("writeNodeWasmRuntimeBinaryOutputManifest") {
+    registerRuntimeOutputManifest(
+        "writeNodeWasmRuntimeBinaryOutputManifest",
+        stageNodeWasmRuntimeBinaryOutputs,
+        providers.provider { "node-wasm" },
+        "binary",
+        providers.provider { "node-wasm" },
+        runtimeProductVersion,
+        mapOf(
+            "adapter" to "outputs/adapter",
+            "validation-runner" to "outputs/validation-runner",
+        ),
+        nodeWasmRuntimeBinaryOutputs,
+        nodeWasmRuntimeBinaryPhaseRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).also { task -> task.configure {
     group = "distribution"
     description = "Writes and verifies the exact raw Node Wasm Runtime binary manifest."
-    dependsOn(stageNodeWasmRuntimeBinaryOutputs)
-    product.set("runtime")
-    component.set("node-wasm")
-    phase.set("binary")
-    target.set("node-wasm")
-    productVersion.set(project.version.toString())
-    outputRoots.set(mapOf(
-        "adapter" to "outputs/adapter",
-        "validation-runner" to "outputs/validation-runner",
-    ))
-    outputsDirectory.set(nodeWasmRuntimeBinaryOutputs)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-    stageRoot.set(nodeWasmRuntimeBinaryPhaseRoot)
-    manifestFile.set(nodeWasmRuntimeBinaryPhaseRoot.map { it.file("output-manifest.json") })
-}
+} }
 
 val importedNodeRuntimeBinaryStage = providers.gradleProperty("codexAgent.runtimeBinaryStage").map(::file)
 val nodeCandidateTree = providers.gradleProperty("codexAgent.candidateTree")
 
 fun registerImportedNodeBinarySnapshot(component: String, title: String) =
     layout.buildDirectory.dir(nodeCandidateTree.map { "imported-runtime-binary-stages/$it/$component" }).let { root ->
-        root to tasks.register<SnapshotImportedProductStageTask>(
+        root to registerRuntimeStageSnapshot(
             "snapshotImported${title}RuntimeBinaryStage",
-        ) {
-            sourceDirectory.set(layout.dir(importedNodeRuntimeBinaryStage))
-            outputDirectory.set(root)
-            producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-            repositoryRoot.set(rootProject.layout.projectDirectory)
-        }
+            layout.dir(importedNodeRuntimeBinaryStage),
+            root,
+            runtimeProductTooling,
+            repositoryRootFile,
+        )
     }
 
 val (importedNodeJsRuntimeBinarySnapshotRoot, snapshotImportedNodeJsRuntimeBinaryStage) =
     registerImportedNodeBinarySnapshot("node-js", "NodeJs")
 
 val verifyImportedNodeJsRuntimeBinaryOutputManifest =
-    tasks.register<VerifyImportedProductOutputManifestTask>(
+    registerRuntimeOutputVerification(
         "verifyImportedNodeJsRuntimeBinaryOutputManifest",
-    ) {
+        snapshotImportedNodeJsRuntimeBinaryStage,
+        providers.provider { "node-js" },
+        "binary",
+        providers.provider { "node-js" },
+        runtimeProductVersion,
+        importedNodeJsRuntimeBinarySnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).also { task -> task.configure {
         group = "verification"
         description = "Verifies the imported raw Node JS Runtime binary manifest and complete tree."
-        product.set("runtime")
-        component.set("node-js")
-        phase.set("binary")
-        target.set("node-js")
-        productVersion.set(project.version.toString())
-        dependsOn(snapshotImportedNodeJsRuntimeBinaryStage)
-        stageRoot.set(importedNodeJsRuntimeBinarySnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
+    } }
 val nodeJsPackageInput = if (importedNodeRuntimeBinaryStage.isPresent) {
     importedNodeJsRuntimeBinarySnapshotRoot
 } else {
@@ -237,44 +240,43 @@ val stageNodeJsRuntimePackage = tasks.register<Sync>("stageNodeJsRuntimePackage"
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
-tasks.register<WriteProductOutputManifestTask>("writeNodeJsRuntimePackageOutputManifest") {
-    group = "distribution"
-    description = "Writes and verifies the exact Node JS Runtime package manifest."
-    dependsOn(stageNodeJsRuntimePackage)
-    product.set("runtime")
-    component.set("node-js")
-    phase.set("package")
-    target.set("node-js")
-    productVersion.set(project.version.toString())
-    outputRoots.set(mapOf(
+registerRuntimeOutputManifest(
+    "writeNodeJsRuntimePackageOutputManifest",
+    stageNodeJsRuntimePackage,
+    providers.provider { "node-js" },
+    "package",
+    providers.provider { "node-js" },
+    runtimeProductVersion,
+    mapOf(
         "adapter" to "outputs/adapter",
         "validation-runner" to "outputs/validation-runner",
-    ))
-    outputsDirectory.set(nodeJsRuntimePackageOutputs)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-    stageRoot.set(nodeJsRuntimePackagePhaseRoot)
-    manifestFile.set(nodeJsRuntimePackagePhaseRoot.map { it.file("output-manifest.json") })
+    ),
+    nodeJsRuntimePackageOutputs,
+    nodeJsRuntimePackagePhaseRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+).configure {
+    group = "distribution"
+    description = "Writes and verifies the exact Node JS Runtime package manifest."
 }
 
 val (importedNodeWasmRuntimeBinarySnapshotRoot, snapshotImportedNodeWasmRuntimeBinaryStage) =
     registerImportedNodeBinarySnapshot("node-wasm", "NodeWasm")
 val verifyImportedNodeWasmRuntimeBinaryOutputManifest =
-    tasks.register<VerifyImportedProductOutputManifestTask>(
+    registerRuntimeOutputVerification(
         "verifyImportedNodeWasmRuntimeBinaryOutputManifest",
-    ) {
+        snapshotImportedNodeWasmRuntimeBinaryStage,
+        providers.provider { "node-wasm" },
+        "binary",
+        providers.provider { "node-wasm" },
+        runtimeProductVersion,
+        importedNodeWasmRuntimeBinarySnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).also { task -> task.configure {
         group = "verification"
         description = "Verifies the imported raw Node Wasm Runtime binary manifest and complete tree."
-        product.set("runtime")
-        component.set("node-wasm")
-        phase.set("binary")
-        target.set("node-wasm")
-        productVersion.set(project.version.toString())
-        dependsOn(snapshotImportedNodeWasmRuntimeBinaryStage)
-        stageRoot.set(importedNodeWasmRuntimeBinarySnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
+    } }
 val nodeWasmPackageInput = if (importedNodeRuntimeBinaryStage.isPresent) {
     importedNodeWasmRuntimeBinarySnapshotRoot
 } else {
@@ -298,36 +300,39 @@ val stageNodeWasmRuntimePackage = tasks.register<Sync>("stageNodeWasmRuntimePack
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
-tasks.register<WriteProductOutputManifestTask>("writeNodeWasmRuntimePackageOutputManifest") {
-    group = "distribution"
-    description = "Writes and verifies the exact Node Wasm Runtime package manifest."
-    dependsOn(stageNodeWasmRuntimePackage)
-    product.set("runtime")
-    component.set("node-wasm")
-    phase.set("package")
-    target.set("node-wasm")
-    productVersion.set(project.version.toString())
-    outputRoots.set(mapOf(
+registerRuntimeOutputManifest(
+    "writeNodeWasmRuntimePackageOutputManifest",
+    stageNodeWasmRuntimePackage,
+    providers.provider { "node-wasm" },
+    "package",
+    providers.provider { "node-wasm" },
+    runtimeProductVersion,
+    mapOf(
         "adapter" to "outputs/adapter",
         "validation-runner" to "outputs/validation-runner",
-    ))
-    outputsDirectory.set(nodeWasmRuntimePackageOutputs)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-    stageRoot.set(nodeWasmRuntimePackagePhaseRoot)
-    manifestFile.set(nodeWasmRuntimePackagePhaseRoot.map { it.file("output-manifest.json") })
+    ),
+    nodeWasmRuntimePackageOutputs,
+    nodeWasmRuntimePackagePhaseRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+).configure {
+    group = "distribution"
+    description = "Writes and verifies the exact Node Wasm Runtime package manifest."
 }
 
 val importedNodeRuntimePackageStage = providers.gradleProperty("codexAgent.runtimePackageStage").map(::file)
 val importedNodeRuntimeNativePackageStage =
     providers.gradleProperty("codexAgent.runtimeNativePackageStage").map(::file)
-val nodeValidationTarget = checkNotNull(crossLanguageCAbiHostTarget(
+val nodeCAbiCatalog = readRuntimeCAbiCatalog(
+    providers.of(RuntimeCAbiCatalogValueSource::class.java) {}.get(),
+)
+val nodeValidationTarget = checkNotNull(nodeCAbiCatalog.hostTarget(
     System.getProperty("os.name"),
     System.getProperty("os.arch"),
 )) { "Node Runtime validation requires a supported desktop host" }
 val nodeValidationTargetTitle = nodeValidationTarget.replaceFirstChar(Char::uppercase)
 val nodeValidationComponent =
-    crossLanguageCAbiTargetSpecs.getValue(nodeValidationTarget).classifier.removePrefix("c-abi-")
+    nodeCAbiCatalog.targets.getValue(nodeValidationTarget).classifier.removePrefix("c-abi-")
 val nodeValidationManifestFile = layout.projectDirectory.file("codex-app-server-distributions.json")
 val nodeValidationDistribution = readDesktopCodexManifest(nodeValidationManifestFile.asFile)
     .distributions.single { it.target == nodeValidationTarget }
@@ -347,14 +352,13 @@ val importedNodeNativePackageSnapshotRoot = layout.buildDirectory.dir(
         "imported-runtime-native-package-stages/$tree/$owner/$nodeValidationComponent"
     },
 )
-val snapshotImportedNodeNativeRuntimePackage = tasks.register<SnapshotImportedProductStageTask>(
+val snapshotImportedNodeNativeRuntimePackage = registerRuntimeStageSnapshot(
     "snapshotImportedNodeNativeRuntimePackageStage",
-) {
-    sourceDirectory.set(layout.dir(importedNodeRuntimeNativePackageStage))
-    outputDirectory.set(importedNodeNativePackageSnapshotRoot)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-}
+    layout.dir(importedNodeRuntimeNativePackageStage),
+    importedNodeNativePackageSnapshotRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+)
 val nodeValidationNativePackageRoot = if (importedNodeRuntimeNativePackageStage.isPresent) {
     importedNodeNativePackageSnapshotRoot
 } else {
@@ -372,14 +376,13 @@ fun registerNodeRuntimeValidation(
     val importedPackageSnapshotRoot = layout.buildDirectory.dir(
         nodeCandidateTree.map { "imported-runtime-package-stages/$it/$component" },
     )
-    val snapshotImportedPackage = tasks.register<SnapshotImportedProductStageTask>(
+    val snapshotImportedPackage = registerRuntimeStageSnapshot(
         "snapshotImported${title}RuntimePackageStage",
-    ) {
-        sourceDirectory.set(layout.dir(importedNodeRuntimePackageStage))
-        outputDirectory.set(importedPackageSnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
+        layout.dir(importedNodeRuntimePackageStage),
+        importedPackageSnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    )
     val packageRoot = if (importedNodeRuntimePackageStage.isPresent) {
         importedPackageSnapshotRoot
     } else {
@@ -398,34 +401,28 @@ fun registerNodeRuntimeValidation(
             evidenceTask.flatMap { it.testReport },
         )
     }
-    val verifyPackage = tasks.register<VerifyImportedProductOutputManifestTask>(
+    val verifyPackage = registerRuntimeOutputVerification(
         "verifyImported${title}RuntimePackageOutputManifest",
-    ) {
-        dependsOn(invalidate)
-        product.set("runtime")
-        this.component.set(component)
-        phase.set("package")
-        target.set(component)
-        productVersion.set(project.version.toString())
-        dependsOn(snapshotImportedPackage)
-        stageRoot.set(importedPackageSnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
-    val verifyNativePackage = tasks.register<VerifyImportedProductOutputManifestTask>(
+        listOf(invalidate, snapshotImportedPackage),
+        providers.provider { component },
+        "package",
+        providers.provider { component },
+        runtimeProductVersion,
+        importedPackageSnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    )
+    val verifyNativePackage = registerRuntimeOutputVerification(
         "verifyImported${title}ValidationNativePackageOutputManifest",
-    ) {
-        dependsOn(invalidate)
-        product.set("runtime")
-        this.component.set(nodeValidationComponent)
-        phase.set("package")
-        target.set(nodeValidationComponent)
-        productVersion.set(project.version.toString())
-        dependsOn(snapshotImportedNodeNativeRuntimePackage)
-        stageRoot.set(importedNodeNativePackageSnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
+        listOf(invalidate, snapshotImportedNodeNativeRuntimePackage),
+        providers.provider { nodeValidationComponent },
+        "package",
+        providers.provider { nodeValidationComponent },
+        runtimeProductVersion,
+        importedNodeNativePackageSnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    )
     val packagePrerequisite: Any = if (importedNodeRuntimePackageStage.isPresent) {
         verifyPackage
     } else {
@@ -459,23 +456,23 @@ fun registerNodeRuntimeValidation(
         includeEmptyDirs = false
         duplicatesStrategy = DuplicatesStrategy.FAIL
     }
-    tasks.register<WriteProductOutputManifestTask>("write${title}RuntimeValidationOutputManifest") {
-        group = "verification"
-        dependsOn(stage)
-        product.set("runtime")
-        this.component.set(component)
-        phase.set("validation")
-        target.set(nodeValidationComponent)
-        productVersion.set(project.version.toString())
-        outputRoots.set(mapOf(
+    registerRuntimeOutputManifest(
+        "write${title}RuntimeValidationOutputManifest",
+        stage,
+        providers.provider { component },
+        "validation",
+        providers.provider { nodeValidationComponent },
+        runtimeProductVersion,
+        mapOf(
             "node-evidence" to "outputs/node-evidence",
             "test-report" to "outputs/test-report",
-        ))
-        outputsDirectory.set(phaseOutputs)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-        stageRoot.set(phaseRoot)
-        manifestFile.set(phaseRoot.map { it.file("output-manifest.json") })
+        ),
+        phaseOutputs,
+        phaseRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).configure {
+        group = "verification"
     }
 }
 
@@ -511,24 +508,76 @@ val stageNodeJsBindingValidation = tasks.register<Sync>("stageNodeJsBindingValid
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
-tasks.register<WriteProductOutputManifestTask>("writeNodeJsBindingValidationOutputManifest") {
-    group = "verification"
-    description = "Writes and verifies the exact Node binding validation handoff manifest."
-    dependsOn(stageNodeJsBindingValidation)
-    product.set("runtime")
-    component.set("node-js-binding")
-    phase.set("validation")
-    target.set("node-js")
-    productVersion.set(project.version.toString())
-    outputRoots.set(mapOf(
+registerRuntimeOutputManifest(
+    "writeNodeJsBindingValidationOutputManifest",
+    stageNodeJsBindingValidation,
+    providers.provider { "node-js-binding" },
+    "validation",
+    providers.provider { "node-js" },
+    runtimeProductVersion,
+    mapOf(
         "test-program" to "outputs/test-program",
         "test-report" to "outputs/test-report",
-    ))
-    outputsDirectory.set(nodeJsBindingValidationOutputs)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-    stageRoot.set(nodeJsBindingValidationRoot)
-    manifestFile.set(nodeJsBindingValidationRoot.map { it.file("output-manifest.json") })
+    ),
+    nodeJsBindingValidationOutputs,
+    nodeJsBindingValidationRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+).configure {
+    group = "verification"
+    description = "Writes and verifies the exact Node binding validation handoff manifest."
+}
+
+val runtimeValidationManifestTasks = linkedMapOf(
+    "macos-arm64" to ("MacosArm64" to "writeMacosArm64RuntimeValidationOutputManifest"),
+    "macos-x64" to ("MacosX64" to "writeMacosX64RuntimeValidationOutputManifest"),
+    "linux-arm64" to ("LinuxArm64" to "writeLinuxArm64RuntimeValidationOutputManifest"),
+    "linux-x64" to ("LinuxX64" to "writeLinuxX64RuntimeValidationOutputManifest"),
+    "windows-x64" to ("MingwX64" to "writeMingwX64RuntimeValidationOutputManifest"),
+    "jvm" to ("Jvm" to "writeJvmRuntimeValidationOutputManifest"),
+    "node-js" to ("NodeJs" to "writeNodeJsRuntimeValidationOutputManifest"),
+    "node-wasm" to ("NodeWasm" to "writeNodeWasmRuntimeValidationOutputManifest"),
+)
+runtimeValidationManifestTasks.forEach { (component, registration) ->
+    val (title, validationTaskName) = registration
+    val phaseRoot = layout.buildDirectory.dir("product-stage/runtime/$component/metadata")
+    val outputsRoot = phaseRoot.map { it.dir("outputs") }
+    val invalidate = tasks.register<Delete>("invalidate${title}RuntimeMetadataOutputs") {
+        group = "verification"
+        delete(phaseRoot)
+    }
+    val validation = tasks.named(validationTaskName) {
+        mustRunAfter(invalidate)
+    }
+    val stage = tasks.register<Sync>("stage${title}RuntimeMetadata") {
+        group = "verification"
+        description = "Stages the exact $component validation inventory for Runtime metadata aggregation."
+        dependsOn(invalidate, validation)
+        into(outputsRoot)
+        from(layout.buildDirectory.file(
+            "product-stage/runtime/$component/validation/output-manifest.json",
+        )) {
+            rename { "validation-output-manifest.json" }
+        }
+        includeEmptyDirs = false
+        duplicatesStrategy = DuplicatesStrategy.FAIL
+    }
+    registerRuntimeOutputManifest(
+        "write${title}RuntimeMetadataOutputManifest",
+        stage,
+        providers.provider { component },
+        "metadata",
+        providers.provider { component },
+        runtimeProductVersion,
+        mapOf("validation-manifest" to "outputs"),
+        outputsRoot,
+        phaseRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).configure {
+        group = "verification"
+        description = "Writes the exact $component Runtime metadata handoff manifest."
+    }
 }
 
 mavenPublishing {

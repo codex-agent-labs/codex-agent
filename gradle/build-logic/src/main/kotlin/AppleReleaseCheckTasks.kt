@@ -105,14 +105,3 @@ internal fun verifyAppleArtifactBudgets(metrics: AppleArtifactMetrics, policy: F
         "Sample application exceeds its release budget"
     }
 }
-
-internal fun requireSuccessfulReleaseProcess(
-    command: List<String>,
-    exitCode: Int,
-    output: String,
-    errors: String,
-): String {
-    val details = listOf(output.trim(), errors.trim()).filter(String::isNotEmpty).joinToString("\n")
-    check(exitCode == 0) { "${command.joinToString(" ")} failed ($exitCode): $details" }
-    return output
-}

@@ -67,7 +67,6 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
     fun `aggregate clears every stale receipt and reports every missing language input`() {
         val root = createTempDirectory("native-wrapper-preflight").toFile()
         try {
-            NodeRuntimeEvidenceFixture(root)
             root.resolve("settings.gradle.kts").writeText("rootProject.name = \"native-wrapper-preflight\"\n")
             root.resolve("build.gradle.kts").writeText(
                 """

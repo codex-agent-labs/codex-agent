@@ -1,5 +1,6 @@
 import java.io.File
 import java.nio.file.Files
+import java.security.MessageDigest
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -7,6 +8,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+
+internal data class CrossLanguageBindingCanonicalIdentity(
+    val apiReportSha256: String,
+    val coverageReceiptSha256: String,
+)
 
 internal data class CrossLanguageCanonicalApiEvidence(
     val memberKeys: List<String>,
@@ -196,4 +202,31 @@ private fun requireExactApiRecord(value: String, label: String) {
     check(value.isNotBlank() && value == value.trim() && '*' !in value && value.none(Char::isISOControl)) {
         "$label is blank, wildcarded, or malformed: $value"
     }
+}
+
+internal fun File.crossLanguageTreeDigest(): String {
+    check(isDirectory) { "Cross-language input directory is missing: $this" }
+    val files = walkTopDown().onEnter { directory ->
+        check(!Files.isSymbolicLink(directory.toPath())) { "Cross-language input contains a symlink: $directory" }
+        true
+    }.filter { file ->
+        check(!Files.isSymbolicLink(file.toPath())) { "Cross-language input contains a symlink: $file" }
+        file.isFile
+    }.sortedBy { it.relativeTo(this).invariantSeparatorsPath }.toList()
+    check(files.isNotEmpty()) { "Cross-language input directory is empty: $this" }
+    val digest = MessageDigest.getInstance("SHA-256")
+    files.forEach { file ->
+        val relative = file.relativeTo(this).invariantSeparatorsPath
+        digest.update(relative.encodeToByteArray())
+        digest.update(byteArrayOf(0))
+        file.inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
 }

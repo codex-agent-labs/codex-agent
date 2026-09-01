@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any
 import zipfile
@@ -25,8 +26,11 @@ from .contract_model import (
     validate_contract_manifest,
     verify_contract_git_inventories,
     verify_contract_bundle,
+    verify_extracted_contract_directory,
+    verify_extracted_contract_directory_projection,
 )
 from .inventory import (
+    canonical_json_bytes,
     load_canonical_json,
     regular_file_inventory,
     require_semver,
@@ -550,7 +554,36 @@ def main(argv: list[str] | None = None) -> int:
     verify = commands.add_parser("verify")
     verify.add_argument("--archive", type=Path, required=True)
     verify.add_argument("--public-key", type=Path, required=True)
+    verify_directory = commands.add_parser("verify-directory")
+    verify_directory.add_argument("--directory", type=Path, required=True)
+    verify_directory.add_argument("--public-key", type=Path, required=True)
+    verify_directory.add_argument(
+        "--expected-trust-domain",
+        choices=("development", "release"),
+        required=True,
+    )
+    verify_directory.add_argument("--expected-contract-version")
+    verify_directory.add_argument(
+        "--required-component",
+        action="append",
+        default=[],
+        choices=CONTRACT_COMPONENTS,
+    )
+    verify_directory.add_argument("--keyring", type=Path)
+    verify_directory.add_argument("--keys-directory", type=Path)
+    verify_directory.add_argument("--print-canonical-api", action="store_true")
+    verify_directory.add_argument("--output-directory", type=Path)
+    verify_directory.add_argument("--reuse-output-directory", action="store_true")
     arguments = parser.parse_args(argv)
+    if arguments.command == "verify-directory":
+        release = arguments.expected_trust_domain == "release"
+        has_keyring = arguments.keyring is not None or arguments.keys_directory is not None
+        if release and (arguments.keyring is None or arguments.keys_directory is None):
+            parser.error("verify-directory release trust requires --keyring and --keys-directory")
+        if not release and has_keyring:
+            parser.error("verify-directory development trust rejects --keyring and --keys-directory")
+        if arguments.reuse_output_directory and arguments.output_directory is None:
+            parser.error("verify-directory --reuse-output-directory requires --output-directory")
     if arguments.command == "development-key":
         _development_key(arguments.directory)
     elif arguments.command == "prepare":
@@ -582,8 +615,34 @@ def main(argv: list[str] | None = None) -> int:
             arguments.contract_version,
             load_canonical_json(arguments.producer),
         )
-    else:
+    elif arguments.command == "verify":
         verify_contract_bundle(arguments.archive, arguments.public_key, expected_trust_domain="development")
+    else:
+        if arguments.print_canonical_api:
+            if arguments.output_directory is not None or arguments.reuse_output_directory:
+                parser.error("verify-directory --print-canonical-api rejects output-directory options")
+            projection = verify_extracted_contract_directory_projection(
+                arguments.directory,
+                arguments.public_key,
+                expected_trust_domain=arguments.expected_trust_domain,
+                expected_contract_version=arguments.expected_contract_version,
+                required_components=arguments.required_component,
+                keyring=arguments.keyring,
+                keys_directory=arguments.keys_directory,
+            )
+            sys.stdout.write(canonical_json_bytes(projection).decode())
+        else:
+            verify_extracted_contract_directory(
+                arguments.directory,
+                arguments.public_key,
+                expected_trust_domain=arguments.expected_trust_domain,
+                expected_contract_version=arguments.expected_contract_version,
+                required_components=arguments.required_component,
+                keyring=arguments.keyring,
+                keys_directory=arguments.keys_directory,
+                output_directory=arguments.output_directory,
+                reuse_output_directory=arguments.reuse_output_directory,
+            )
     return 0
 
 

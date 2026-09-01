@@ -178,9 +178,13 @@ class CrossLanguageBindingTasksTest {
             assertTrue("mustRunAfter(invalidateAppleBindingEvidence)" in appleWiring)
             assertTrue("rootProject.tasks.matching { it.name == \"prepareContractInputs\" }" in appleWiring)
             assertTrue("dependsOn(appleBindingEvidence)" in appleWiring)
-            val cAbiWiring = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
-            assertTrue("rootProject.tasks.matching { it.name == \"prepareContractInputs\" }" in cAbiWiring)
+            val cAbiWiring = File(
+                "../../runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
+            ).readText()
+            assertTrue("providers.gradleProperty(\"codexAgent.contractManifest\")" in cAbiWiring)
             assertTrue("mustRunAfter(invalidateCAbiBootstrapEvidence)" in cAbiWiring)
+            assertFalse("prepareContractInputs" in cAbiWiring)
+            assertFalse(":codex-agent-core" in cAbiWiring)
         } finally {
             root.deleteRecursively()
         }
@@ -193,7 +197,7 @@ class CrossLanguageBindingTasksTest {
             root.resolve("settings.gradle.kts").writeText(
                 """
                 rootProject.name = "binding-contract-preflight"
-                include(":core", ":sdk", ":js", ":ios", ":cabi")
+                include(":core", ":sdk", ":js", ":ios")
                 """.trimIndent(),
             )
             root.resolve("build.gradle.kts").writeText(
@@ -209,7 +213,6 @@ class CrossLanguageBindingTasksTest {
                         "verifyImportedSdkBindingParity",
                         ":js:verifyJavaScriptTypeScriptBindingParity",
                         ":ios:generateCodexAgentAppleBindingEvidence",
-                        ":cabi:generateCodexAgentCAbiBootstrapEvidence",
                     )
                 }
                 val importedReceipt = layout.buildDirectory.file(
@@ -253,12 +256,10 @@ class CrossLanguageBindingTasksTest {
                     "javascript-typescript-parity.json",
                 ),
                 Triple("ios", "invalidateCodexAgentAppleBindingEvidence", "swift-parity.json"),
-                Triple("cabi", "invalidateCodexAgentCAbiBootstrapEvidence", "c-abi-parity.json"),
             )
             val producerNames = mapOf(
                 "js" to "verifyJavaScriptTypeScriptBindingParity",
                 "ios" to "generateCodexAgentAppleBindingEvidence",
-                "cabi" to "generateCodexAgentCAbiBootstrapEvidence",
             )
             families.forEach { (projectName, preflightName, receiptName) ->
                 root.resolve(projectName).mkdir()

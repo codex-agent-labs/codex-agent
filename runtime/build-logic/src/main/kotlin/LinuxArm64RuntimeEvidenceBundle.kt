@@ -14,7 +14,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
 private const val ARM_TARGET = "linuxArm64"
-internal const val LINUX_ARM64_RUNTIME_EVIDENCE_TASK = ":build-logic:executeLinuxArm64RuntimeEvidenceBundle"
 private const val ARM_METADATA = "execution.json"
 private const val ARM_TEST = "linuxArm64-test.kexe"
 private const val ARM_MANIFEST = "codex-app-server-distributions.json"

@@ -844,7 +844,7 @@ class DesktopCAbiExportPolicyTest {
         )
 
         val plugin = repository.resolve(
-            "gradle/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
+            "runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
         ).readText()
         listOf(
             "target.name.startsWith(\"macos\")",

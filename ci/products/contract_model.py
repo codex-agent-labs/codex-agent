@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any
+from typing import Any, Iterable
 from xml.etree import ElementTree
 
 from .inventory import (
@@ -13,6 +14,8 @@ from .inventory import (
     load_canonical_json_bytes,
     load_json,
     load_json_bytes,
+    read_regular_file_bytes,
+    regular_file_inventory,
     require_array,
     require_boolean,
     require_exact_keys,
@@ -25,10 +28,16 @@ from .inventory import (
     require_string,
     sha256_bytes,
     sha256_file,
+    snapshot_regular_tree,
     verified_zip_contents,
 )
 from .receipt import validate_producer
-from .signatures import validate_signing_metadata, verify_manifest_signature
+from .signatures import (
+    load_keyring,
+    public_key_for_metadata,
+    validate_signing_metadata,
+    verify_manifest_signature,
+)
 
 CONTRACT_COMPONENTS = (
     "common",
@@ -1098,6 +1107,34 @@ def contract_evidence_identity(root: Path) -> dict[str, Any]:
     }
 
 
+def _canonical_api_projection(contents: dict[str, bytes]) -> dict[str, Any]:
+    """Project only the exact evidence bytes already accepted by Contract verification."""
+    api_bytes = contents["evidence/canonical-api.json"]
+    coverage_bytes = contents["evidence/canonical-coverage.json"]
+    api = load_json_bytes(api_bytes)
+    coverage = load_json_bytes(coverage_bytes)
+    member_keys = sorted(
+        member
+        for owner in api["owners"]
+        for member in owner["capabilities"]
+    )
+    return {
+        "schemaVersion": 1,
+        "memberKeys": member_keys,
+        "canonical": {
+            "apiReportSha256": sha256_bytes(api_bytes).removeprefix("sha256:"),
+            "coverageReceiptSha256": sha256_bytes(coverage_bytes).removeprefix("sha256:"),
+        },
+        "targetSha256": {
+            target["kind"]: target["sha256"]
+            for target in api["targets"]
+        },
+        "compiledTestsSha256": coverage["compiledTestsSha256"],
+        "testResultsSha256": coverage["testResultsSha256"],
+        "coveredTestIds": sorted(claim["testId"] for claim in coverage["claims"]),
+    }
+
+
 def verify_contract_git_inventories(root: Path, producer: dict[str, Any]) -> None:
     validate_producer(producer, "Contract inventory producer")
     for relative in (
@@ -1145,19 +1182,228 @@ def verify_contract_bundle(
         max_compression_ratio=200,
         canonical_stored=True,
     )
-    if set(contents) < {"contract-manifest.json", "contract-manifest.sig"}:
+    with tempfile.TemporaryDirectory(prefix="codex-agent-contract-bundle-") as temporary:
+        root = Path(temporary)
+        for path, member_contents in contents.items():
+            target = root.joinpath(*path.split("/"))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(member_contents)
+        return _verify_contract_tree(
+            root,
+            zip_records,
+            contents,
+            Path(public_key),
+            expected_trust_domain=expected_trust_domain,
+            archive_name=archive.name,
+        )
+
+
+def _verify_extracted_contract_directory(
+    directory: Path,
+    public_key: Path,
+    *,
+    expected_trust_domain: str,
+    expected_contract_version: str | None = None,
+    required_components: Iterable[str] = (),
+    keyring: Path | None = None,
+    keys_directory: Path | None = None,
+    include_canonical_api_projection: bool = False,
+    output_directory: Path | None = None,
+    reuse_output_directory: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Verify an exact extracted Contract Bundle tree without recreating an archive."""
+    if expected_trust_domain not in {"development", "release"}:
+        raise ValueError("Expected Contract trust domain must be development or release")
+    if expected_contract_version is not None:
+        require_semver(expected_contract_version, "Expected Contract version")
+    components = tuple(required_components)
+    if any(type(component) is not str or component not in CONTRACT_COMPONENTS for component in components):
+        raise ValueError("Required Contract components contain an unsupported component")
+    if len(components) != len(set(components)):
+        raise ValueError("Required Contract components must be unique")
+    if expected_trust_domain == "release":
+        if keyring is None or keys_directory is None:
+            raise ValueError("Release Contract verification requires a keyring and keys directory")
+    elif keyring is not None or keys_directory is not None:
+        raise ValueError("Development Contract verification must not receive release keyring inputs")
+    output = Path(output_directory).resolve(strict=False) if output_directory is not None else None
+    output_exists = False
+    if output is not None:
+        try:
+            output.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if not reuse_output_directory:
+                raise ValueError("Verified Contract output directory must not exist")
+            if not output.is_dir() or output.is_symlink():
+                raise ValueError("Existing verified Contract output directory is unsafe")
+            output_exists = True
+        raw_parent = output.parent
+        if not raw_parent.is_dir() or raw_parent.is_symlink():
+            raise ValueError("Verified Contract output parent is unsafe")
+        parent = raw_parent.resolve(strict=True)
+    else:
+        parent = None
+    public_key_bytes = read_regular_file_bytes(
+        Path(public_key),
+        reject_symlink_parents=True,
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="codex-agent-contract-directory-",
+        dir=parent,
+    ) as temporary:
+        root = Path(temporary).resolve() / "snapshot"
+        snapshot_regular_tree(Path(directory), root)
+        public_key_snapshot = Path(temporary).resolve() / "public-key.pub"
+        public_key_snapshot.write_bytes(public_key_bytes)
+        records = regular_file_inventory(root)
+        paths = [record["relativePath"] for record in records]
+        expected_directories = {
+            parent.as_posix()
+            for path in paths
+            for parent in Path(path).parents
+            if parent != Path(".")
+        }
+        actual_directories = {
+            Path(current).relative_to(root).as_posix()
+            for current, _, _ in os.walk(root, topdown=True, followlinks=False)
+            if Path(current) != root
+        }
+        if actual_directories != expected_directories:
+            raise ValueError("Extracted Contract directory set differs from its complete file tree")
+        contents = {path: (root / path).read_bytes() for path in paths}
+        manifest = _verify_contract_tree(
+            root,
+            records,
+            contents,
+            public_key_snapshot,
+            expected_trust_domain=expected_trust_domain,
+        )
+        if expected_contract_version is not None and manifest["contractVersion"] != expected_contract_version:
+            raise ValueError("Contract manifest version does not match the expected Contract version")
+        if any(component not in manifest["components"] for component in components):
+            raise ValueError("Contract manifest is missing a required component")
+        if expected_trust_domain == "release":
+            tracked = public_key_for_metadata(
+                manifest["signing"],
+                load_keyring(Path(keyring), Path(keys_directory)),
+                Path(keys_directory),
+                allow_retired=True,
+            )
+            if read_regular_file_bytes(tracked, reject_symlink_parents=True) != public_key_bytes:
+                raise ValueError("Supplied Contract public key does not match its tracked release key")
+        projection = _canonical_api_projection(contents) if include_canonical_api_projection else None
+        if output is not None:
+            if regular_file_inventory(root) != records:
+                raise ValueError("Verified Contract snapshot changed before publication")
+            if output_exists:
+                existing = Path(temporary).resolve() / "existing"
+                snapshot_regular_tree(output, existing)
+                existing_records = regular_file_inventory(existing)
+                existing_paths = [record["relativePath"] for record in existing_records]
+                existing_directories = {
+                    Path(current).relative_to(existing).as_posix()
+                    for current, _, _ in os.walk(existing, topdown=True, followlinks=False)
+                    if Path(current) != existing
+                }
+                expected_existing_directories = {
+                    parent.as_posix()
+                    for path in existing_paths
+                    for parent in Path(path).parents
+                    if parent != Path(".")
+                }
+                if existing_directories != expected_existing_directories or existing_records != records:
+                    raise ValueError("Existing verified Contract output differs from the authenticated snapshot")
+            else:
+                try:
+                    os.rename(root, output)
+                except OSError as error:
+                    if output.exists() or output.is_symlink():
+                        raise ValueError("Verified Contract output directory already exists") from error
+                    raise ValueError("Verified Contract snapshot could not be published") from error
+        return manifest, projection
+
+
+def verify_extracted_contract_directory(
+    directory: Path,
+    public_key: Path,
+    *,
+    expected_trust_domain: str,
+    expected_contract_version: str | None = None,
+    required_components: Iterable[str] = (),
+    keyring: Path | None = None,
+    keys_directory: Path | None = None,
+    output_directory: Path | None = None,
+    reuse_output_directory: bool = False,
+) -> dict[str, Any]:
+    manifest, _ = _verify_extracted_contract_directory(
+        directory,
+        public_key,
+        expected_trust_domain=expected_trust_domain,
+        expected_contract_version=expected_contract_version,
+        required_components=required_components,
+        keyring=keyring,
+        keys_directory=keys_directory,
+        output_directory=output_directory,
+        reuse_output_directory=reuse_output_directory,
+    )
+    return manifest
+
+
+def verify_extracted_contract_directory_projection(
+    directory: Path,
+    public_key: Path,
+    *,
+    expected_trust_domain: str,
+    expected_contract_version: str | None = None,
+    required_components: Iterable[str] = (),
+    keyring: Path | None = None,
+    keys_directory: Path | None = None,
+) -> dict[str, Any]:
+    _, projection = _verify_extracted_contract_directory(
+        directory,
+        public_key,
+        expected_trust_domain=expected_trust_domain,
+        expected_contract_version=expected_contract_version,
+        required_components=required_components,
+        keyring=keyring,
+        keys_directory=keys_directory,
+        include_canonical_api_projection=True,
+    )
+    assert projection is not None
+    return projection
+
+
+def _verify_contract_tree(
+    root: Path,
+    records: list[dict[str, Any]],
+    contents: dict[str, bytes],
+    public_key: Path,
+    *,
+    expected_trust_domain: str,
+    archive_name: str | None = None,
+) -> dict[str, Any]:
+    if expected_trust_domain not in {"development", "release"}:
+        raise ValueError("Expected Contract trust domain must be development or release")
+    if not {"contract-manifest.json", "contract-manifest.sig"} <= set(contents):
         raise ValueError("Contract Bundle is missing its manifest or signature")
     manifest = validate_contract_manifest(
         load_canonical_json_bytes(contents["contract-manifest.json"]),
         {path: contents[path] for path in contents if path.startswith("maven/")},
     )
-    expected_name = f"codex-agent-contract-{manifest['contractVersion']}.zip"
-    if archive.name != expected_name:
-        raise ValueError(f"Contract Bundle must be named {expected_name}")
+    if archive_name is not None:
+        expected_name = f"codex-agent-contract-{manifest['contractVersion']}.zip"
+        if archive_name != expected_name:
+            raise ValueError(f"Contract Bundle must be named {expected_name}")
     validate_signing_metadata(manifest["signing"], trust_domain=expected_trust_domain)
-    actual = {record["relativePath"]: record for record in zip_records}
+    actual = {record["relativePath"]: record for record in records}
     declared = {
-        record["path"]: {"relativePath": record["path"], "bytes": record["bytes"], "sha256": record["sha256"]}
+        record["path"]: {
+            "relativePath": record["path"],
+            "bytes": record["bytes"],
+            "sha256": record["sha256"],
+        }
         for record in manifest["mavenFiles"] + manifest["evidenceFiles"]
     }
     special = {"contract-manifest.json", "contract-manifest.sig"}
@@ -1165,17 +1411,11 @@ def verify_contract_bundle(
         raise ValueError("Contract Bundle file set differs from its complete allow-list")
     if any(actual[path] != record for path, record in declared.items()):
         raise ValueError("Contract Bundle declared file bytes or digest differ")
-    with tempfile.TemporaryDirectory(prefix="codex-agent-contract-bundle-") as temporary:
-        root = Path(temporary)
-        for path, member_contents in contents.items():
-            target = root.joinpath(*path.split("/"))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(member_contents)
-        verify_manifest_signature(
-            root / "contract-manifest.json",
-            root / "contract-manifest.sig",
-            Path(public_key),
-            manifest["signing"],
-        )
-        _verify_contract_evidence(root, manifest)
+    verify_manifest_signature(
+        root / "contract-manifest.json",
+        root / "contract-manifest.sig",
+        public_key,
+        manifest["signing"],
+    )
+    _verify_contract_evidence(root, manifest)
     return manifest

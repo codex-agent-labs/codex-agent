@@ -150,11 +150,6 @@ val writeContractBinaryOutputManifest = tasks.register<WriteProductOutputManifes
 val requestedProduct = providers.gradleProperty("codexAgent.product")
 val requestedComponent = providers.gradleProperty("codexAgent.component")
 val requestedPhase = providers.gradleProperty("codexAgent.phase")
-val desktopRuntime = providers.provider {
-    checkNotNull(findProject(":codex-agent-runtime-desktop")) {
-        "Runtime and SDK product phases require :codex-agent-runtime-desktop"
-    }
-}
 val sdk = providers.provider {
     checkNotNull(findProject(":codex-agent-sdk")) {
         "SDK product phases require :codex-agent-sdk"
@@ -167,54 +162,6 @@ tasks.register("ciProductPhase") {
         val selection = Triple(requestedProduct.get(), requestedComponent.get(), requestedPhase.get())
         when (selection) {
             Triple("contract", "contract", "binary") -> writeContractBinaryOutputManifest
-            Triple("runtime", "macos-arm64", "binary") ->
-                desktopRuntime.get().tasks.named("writeMacosArm64RuntimeBinaryOutputManifest")
-            Triple("runtime", "macos-x64", "binary") ->
-                desktopRuntime.get().tasks.named("writeMacosX64RuntimeBinaryOutputManifest")
-            Triple("runtime", "linux-arm64", "binary") ->
-                desktopRuntime.get().tasks.named("writeLinuxArm64RuntimeBinaryOutputManifest")
-            Triple("runtime", "linux-x64", "binary") ->
-                desktopRuntime.get().tasks.named("writeLinuxX64RuntimeBinaryOutputManifest")
-            Triple("runtime", "windows-x64", "binary") ->
-                desktopRuntime.get().tasks.named("writeMingwX64RuntimeBinaryOutputManifest")
-            Triple("runtime", "jvm", "binary") ->
-                desktopRuntime.get().tasks.named("writeJvmRuntimeBinaryOutputManifest")
-            Triple("runtime", "node-js", "binary") ->
-                desktopRuntime.get().tasks.named("writeNodeJsRuntimeBinaryOutputManifest")
-            Triple("runtime", "node-wasm", "binary") ->
-                desktopRuntime.get().tasks.named("writeNodeWasmRuntimeBinaryOutputManifest")
-            Triple("runtime", "macos-arm64", "package") ->
-                desktopRuntime.get().tasks.named("writeMacosArm64RuntimePackageOutputManifest")
-            Triple("runtime", "macos-x64", "package") ->
-                desktopRuntime.get().tasks.named("writeMacosX64RuntimePackageOutputManifest")
-            Triple("runtime", "linux-arm64", "package") ->
-                desktopRuntime.get().tasks.named("writeLinuxArm64RuntimePackageOutputManifest")
-            Triple("runtime", "linux-x64", "package") ->
-                desktopRuntime.get().tasks.named("writeLinuxX64RuntimePackageOutputManifest")
-            Triple("runtime", "windows-x64", "package") ->
-                desktopRuntime.get().tasks.named("writeMingwX64RuntimePackageOutputManifest")
-            Triple("runtime", "jvm", "package") ->
-                desktopRuntime.get().tasks.named("writeJvmRuntimePackageOutputManifest")
-            Triple("runtime", "node-js", "package") ->
-                desktopRuntime.get().tasks.named("writeNodeJsRuntimePackageOutputManifest")
-            Triple("runtime", "node-wasm", "package") ->
-                desktopRuntime.get().tasks.named("writeNodeWasmRuntimePackageOutputManifest")
-            Triple("runtime", "macos-arm64", "validation") ->
-                desktopRuntime.get().tasks.named("writeMacosArm64RuntimeValidationOutputManifest")
-            Triple("runtime", "macos-x64", "validation") ->
-                desktopRuntime.get().tasks.named("writeMacosX64RuntimeValidationOutputManifest")
-            Triple("runtime", "linux-arm64", "validation") ->
-                desktopRuntime.get().tasks.named("writeLinuxArm64RuntimeValidationOutputManifest")
-            Triple("runtime", "linux-x64", "validation") ->
-                desktopRuntime.get().tasks.named("writeLinuxX64RuntimeValidationOutputManifest")
-            Triple("runtime", "windows-x64", "validation") ->
-                desktopRuntime.get().tasks.named("writeMingwX64RuntimeValidationOutputManifest")
-            Triple("runtime", "jvm", "validation") ->
-                desktopRuntime.get().tasks.named("writeJvmRuntimeValidationOutputManifest")
-            Triple("runtime", "node-js", "validation") ->
-                desktopRuntime.get().tasks.named("writeNodeJsRuntimeValidationOutputManifest")
-            Triple("runtime", "node-wasm", "validation") ->
-                desktopRuntime.get().tasks.named("writeNodeWasmRuntimeValidationOutputManifest")
             Triple("sdk", "javascript", "package") ->
                 sdk.get().tasks.named("writeJavaScriptSdkPackageOutputManifest")
             Triple("sdk", "python", "package") ->

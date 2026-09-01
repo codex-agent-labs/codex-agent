@@ -137,14 +137,30 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def _open_regular_file(path: Path, label: str) -> tuple[int, os.stat_result]:
+def _open_regular_file(
+    path: Path,
+    label: str,
+    *,
+    reject_symlink_parents: bool = False,
+) -> tuple[int, os.stat_result]:
     path = Path(path)
+    parent_descriptor: int | None = None
     try:
-        path_stat = path.lstat()
+        if reject_symlink_parents:
+            absolute = Path(os.path.abspath(path))
+            parent_descriptor = _open_directory(absolute.parent, f"{label} parent")
+            path_stat = os.stat(absolute.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        else:
+            absolute = path
+            path_stat = path.lstat()
         if stat.S_ISLNK(path_stat.st_mode) or _is_reparse_point(path_stat) or not stat.S_ISREG(path_stat.st_mode):
             raise ValueError(f"{label} is missing or unsafe: {path}")
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
+        descriptor = os.open(
+            absolute.name if parent_descriptor is not None else absolute,
+            flags,
+            dir_fd=parent_descriptor,
+        )
         opened_stat = os.fstat(descriptor)
         if not stat.S_ISREG(opened_stat.st_mode) or (
             path_stat.st_dev, path_stat.st_ino
@@ -156,11 +172,23 @@ def _open_regular_file(path: Path, label: str) -> tuple[int, os.stat_result]:
         raise
     except OSError as error:
         raise ValueError(f"{label} is missing or unsafe: {path}") from error
+    finally:
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
 
 
-def read_regular_file_bytes(path: Path, *, max_bytes: int | None = None) -> bytes:
+def read_regular_file_bytes(
+    path: Path,
+    *,
+    max_bytes: int | None = None,
+    reject_symlink_parents: bool = False,
+) -> bytes:
     path = Path(path)
-    descriptor, before = _open_regular_file(path, "File")
+    descriptor, before = _open_regular_file(
+        path,
+        "File",
+        reject_symlink_parents=reject_symlink_parents,
+    )
     try:
         if max_bytes is not None and before.st_size > max_bytes:
             raise ValueError(f"File is too large: {path}")

@@ -18,6 +18,7 @@ class ContractIsolationFixtureTest {
         .first { it.resolve("settings.gradle.kts").isFile && it.resolve("codex-agent-core").isDirectory }
 
     private val contractBuildLogicSourceFiles = listOf(
+        "CanonicalTestResultsClient.kt",
         "CodexAgentBuild.kt",
         "CrossLanguageApiCoverage.kt",
         "CrossLanguageApiDiscovery.kt",
@@ -29,17 +30,16 @@ class ContractIsolationFixtureTest {
         "CrossLanguageBindingParity.kt",
         "CrossLanguageBindingReceipt.kt",
         "CrossLanguageBindingTasks.kt",
-        "CrossLanguageCAbiPackageEvidence.kt",
+        "CrossLanguageCAbiClient.kt",
         "CrossLanguageKotlinBindingEvidence.kt",
-        "DesktopRuntimeZipModes.kt",
         "ProductOutputManifestGradleTask.kt",
+        "ProductPythonTooling.kt",
         "ProductVersions.kt",
         "ReleaseIo.kt",
         "VerifyProtocolSourceTask.kt",
         "codexagent.contract-product.gradle.kts",
         "codexagent.core-verification.gradle.kts",
     )
-
     @Test
     fun `Contract production inputs cover the exact compiler closure`() {
         val matchers = repository.resolve("ci/lanes/contract-product.production.pathspec")
@@ -50,9 +50,8 @@ class ContractIsolationFixtureTest {
                     "glob:${pattern.replace('/', File.separatorChar)}",
                 )
             }
-        val missing = contractBuildLogicSourceFiles.map { source ->
-            "gradle/build-logic/src/main/kotlin/$source"
-        }.filterNot { relative ->
+        val inputs = contractBuildLogicSourceFiles.map { "gradle/build-logic/src/main/kotlin/$it" }
+        val missing = inputs.filterNot { relative ->
             val path = repository.toPath().fileSystem.getPath(relative.replace('/', File.separatorChar))
             matchers.any { it.matches(path) }
         }
@@ -132,7 +131,6 @@ class ContractIsolationFixtureTest {
                 copiedBuildLogicSources,
                 "Contract fixture build logic must be the exact dependency-closed allow-list",
             )
-
             runGit(fixture, "init")
             runGit(fixture, "config", "user.name", "Contract Isolation Fixture")
             runGit(fixture, "config", "user.email", "contract-isolation@example.invalid")

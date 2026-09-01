@@ -16,7 +16,6 @@ class ProductVersionOwnershipTest {
                     ":" to "3.4.5",
                     ":codex-agent-core" to "1.2.3",
                     ":codex-agent-sdk" to "3.4.5",
-                    ":codex-agent-runtime-desktop" to "2.3.4",
                     ":codex-agent-runtime-android" to "3.4.5",
                     ":codex-agent-runtime-ios" to "3.4.5",
                     ":tooling" to "unspecified",
@@ -27,7 +26,7 @@ class ProductVersionOwnershipTest {
 
             listOf(
                 Triple("contract.txt", "1.2.4", setOf(":codex-agent-core")),
-                Triple("runtime.txt", "2.3.5", setOf(":codex-agent-runtime-desktop")),
+                Triple("runtime.txt", "2.3.5", emptySet()),
                 Triple(
                     "sdk.txt",
                     "3.4.6",
@@ -69,7 +68,6 @@ class ProductVersionOwnershipTest {
             "codex-agent-core",
             "codex-agent-sdk",
             "codex-agent-runtime-android",
-            "codex-agent-runtime-desktop",
             "codex-agent-runtime-ios",
             "tooling",
         ).forEach { name -> ProjectBuilder.builder().withName(name).withParent(root).build() }

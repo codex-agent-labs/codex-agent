@@ -9,7 +9,7 @@ import org.gradle.kotlin.dsl.register
 fun Project.registerJvmRuntimeEvidenceTask(
     distribution: DesktopCodexDistributionSpec,
     packagedClassifier: TaskProvider<PackageDesktopCodexRuntimeTask>,
-    validateTarget: TaskProvider<Task>,
+    validateTarget: TaskProvider<out Task>,
     packagedRunner: TaskProvider<Zip>,
     distributionManifest: RegularFile,
 ) {

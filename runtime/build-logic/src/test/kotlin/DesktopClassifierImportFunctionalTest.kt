@@ -29,10 +29,11 @@ class DesktopClassifierImportFunctionalTest {
                 plugins {
                     id("org.jetbrains.kotlin.multiplatform")
                     id("maven-publish")
-                    id("codexagent.desktop-runtime")
                 }
                 group = "io.github.codex-agent-labs"
                 version = "0.2.1"
+                extensions.extraProperties["codexAgent.repositoryRoot"] = projectDir
+                apply(plugin = "codexagent.desktop-runtime")
                 """.trimIndent(),
             )
 

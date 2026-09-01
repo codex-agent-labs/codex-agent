@@ -81,16 +81,17 @@ class AppleReleaseCheckTasksTest {
     fun `live release tasks contain no compound shell implementation`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { it.resolve("gradle/build-logic/src/main/kotlin/IosAppleReleaseVerificationTasks.kt").isFile }
-        val sourceRoot = repository.resolve("gradle/build-logic/src/main/kotlin").toPath()
         val sources = linkedMapOf<String, String>()
-        Files.walk(sourceRoot).use { paths ->
-            paths.filter {
-                Files.isRegularFile(it) &&
-                    (it.fileName.toString().endsWith(".kt") || it.fileName.toString().endsWith(".kts"))
-            }
-                .sorted().forEach {
-                    sources[sourceRoot.relativize(it).toString().replace(File.separatorChar, '/')] =
-                        Files.readString(it)
+        listOf(repository.resolve("gradle/build-logic/src/main/kotlin").toPath()).forEach { sourceRoot ->
+            Files.walk(sourceRoot).use { paths ->
+                paths.filter {
+                    Files.isRegularFile(it) &&
+                        (it.fileName.toString().endsWith(".kt") || it.fileName.toString().endsWith(".kts"))
+                }
+                    .sorted().forEach {
+                        sources[sourceRoot.relativize(it).toString().replace(File.separatorChar, '/')] =
+                            Files.readString(it)
+                    }
                 }
         }
         val source = sources.values.joinToString("\n")
@@ -107,6 +108,8 @@ class AppleReleaseCheckTasksTest {
                 "\"python3\", \"-m\", \"ci.products.contract\"",
             "ProductOutputManifestGradleTask.kt" to
                 "pythonExecutable.convention(\"python3\")",
+            "ProductPythonTooling.kt" to
+                "ProcessBuilder(listOf(\"python3\", \"-m\", \"ci.products.\$module\") + arguments)",
             "CrossLanguageNativeWrapperGradleTasks.kt" to
                 "pythonExecutable.convention(\"python3\")",
         )

@@ -5,7 +5,6 @@ import org.jetbrains.org.objectweb.asm.ClassReader
 import org.jetbrains.org.objectweb.asm.ClassVisitor
 import org.jetbrains.org.objectweb.asm.MethodVisitor
 import org.jetbrains.org.objectweb.asm.Opcodes
-import org.w3c.dom.Element
 
 internal const val COVERS_API_ANNOTATION_DESCRIPTOR =
     "Lio/github/codex_agent_labs/codexagent/agent/CoversApi;"
@@ -22,13 +21,6 @@ internal data class CoveredApiClaim(
 internal data class ResolvedCoveredApiClaim(
     val testId: String,
     val memberKeys: List<String>,
-)
-
-internal enum class CanonicalTestStatus { PASSED, SKIPPED, FAILED }
-
-internal data class CanonicalTestResult(
-    val testId: String,
-    val status: CanonicalTestStatus,
 )
 
 internal data class CanonicalApiCoverage(
@@ -105,55 +97,6 @@ internal fun readCoveredApiClaims(
                 }
             }, ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
         }
-    }
-}
-
-internal fun readCanonicalTestResults(resultsDirectory: File): List<CanonicalTestResult> {
-    check(resultsDirectory.isDirectory) { "Canonical test results directory is missing" }
-    val reports = resultsDirectory.walkTopDown()
-        .onEnter { !Files.isSymbolicLink(it.toPath()) }
-        .filter {
-            it.isFile && !Files.isSymbolicLink(it.toPath()) &&
-                it.name.startsWith("TEST-") && it.extension == "xml"
-        }
-        .sortedBy { it.relativeTo(resultsDirectory).invariantSeparatorsPath }
-        .toList()
-    check(reports.isNotEmpty()) { "Canonical JUnit reports are missing" }
-
-    val results = reports.flatMap(::readCanonicalTestReport)
-    val duplicateTests = results.groupingBy(CanonicalTestResult::testId).eachCount()
-        .filterValues { it != 1 }.keys.sorted()
-    check(duplicateTests.isEmpty()) { "Canonical JUnit test identities are ambiguous: $duplicateTests" }
-    return results.sortedBy(CanonicalTestResult::testId)
-}
-
-internal fun readCanonicalTestReport(report: File): List<CanonicalTestResult> {
-    check(report.isFile && !Files.isSymbolicLink(report.toPath()) && report.extension == "xml") {
-        "Canonical JUnit report is missing, non-regular, or a symlink: $report"
-    }
-    val suite = secureDocumentBuilderFactory(namespaceAware = true)
-        .newDocumentBuilder().parse(report).documentElement
-    check(suite.tagName == "testsuite") { "Canonical JUnit report has no testsuite root: ${report.name}" }
-    val cases = suite.getElementsByTagName("testcase")
-    return (0 until cases.length).map { index ->
-        val case = cases.item(index) as Element
-        val className = case.getAttribute("classname")
-        val methodName = case.getAttribute("name").substringBefore('(')
-        check(className.isNotBlank() && methodName.isNotBlank()) {
-            "Canonical JUnit testcase identity is invalid: ${report.name}"
-        }
-        val terminalElements = (0 until case.childNodes.length).mapNotNull { childIndex ->
-            case.childNodes.item(childIndex) as? Element
-        }.map(Element::getTagName)
-        check(terminalElements.count { it in setOf("skipped", "failure", "error") } <= 1) {
-            "Canonical JUnit testcase has conflicting results: $className#$methodName"
-        }
-        val status = when {
-            terminalElements.any { it == "failure" || it == "error" } -> CanonicalTestStatus.FAILED
-            "skipped" in terminalElements -> CanonicalTestStatus.SKIPPED
-            else -> CanonicalTestStatus.PASSED
-        }
-        CanonicalTestResult("$className#$methodName", status)
     }
 }
 

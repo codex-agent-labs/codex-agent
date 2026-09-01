@@ -4,9 +4,90 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlin.io.path.createTempDirectory
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 internal const val NODE_EVIDENCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 internal val NODE_EVIDENCE_ARM_ENV = mapOf("RUNNER_OS" to "Linux", "RUNNER_ARCH" to "ARM64")
+
+internal fun writeTestDesktopDistributionManifest(file: File, binarySha256: String): File = file.apply {
+    atomicWriteJson(buildJsonObject {
+        put("version", JsonPrimitive("0.145.0"))
+        put("releaseTag", JsonPrimitive("rust-v0.145.0"))
+        put("distributions", buildJsonArray {
+            desktopRuntimeEvidenceTargets.forEach { (target, evidence) ->
+                add(buildJsonObject {
+                    put("target", JsonPrimitive(target))
+                    put("classifier", JsonPrimitive(evidence.classifier))
+                    put("asset", JsonPrimitive("$target.tar.gz"))
+                    put("archiveSha256", JsonPrimitive("a".repeat(64)))
+                    put("archiveEntry", JsonPrimitive("codex-app-server"))
+                    put("binarySha256", JsonPrimitive(binarySha256))
+                    put("executableName", JsonPrimitive(if (target == "mingwX64") "codex-app-server.exe" else "codex-app-server"))
+                    put("supervisorExecutableName", JsonPrimitive(
+                        if (target == "mingwX64") "codex-process-supervisor.exe" else "codex-process-supervisor",
+                    ))
+                })
+            }
+        })
+    })
+}
+
+internal fun runtimeManifestFixture(
+    libraryVersion: String,
+    target: String,
+    classifier: String,
+    payload: Map<String, ByteArray>,
+    executables: Set<String>,
+): ByteArray = buildJsonObject {
+    put("schemaVersion", 1)
+    put("libraryVersion", libraryVersion)
+    put("appServerVersion", "0.145.0")
+    put("target", target)
+    put("classifier", classifier)
+    putJsonArray("members") {
+        payload.forEach { (name, bytes) ->
+            add(buildJsonObject {
+                put("name", name)
+                put("size", bytes.size)
+                put("sha256", bytes.inputStream().releaseDigest())
+                put("executable", name in executables)
+            })
+        }
+    }
+}.toString().encodeToByteArray()
+
+internal fun assertRuntimeBundleEnvironment(environment: Map<String, String>, target: String) {
+    assertEquals(
+        setOf(
+            RUNTIME_BUNDLE_DIRECTORY_ENV,
+            RUNTIME_DATA_DIRECTORY_ENV,
+            RUNTIME_WORKSPACE_ENV,
+            "CODEX_HOME",
+            "CODEX_SQLITE_HOME",
+            "CODEX_AGENT_DESKTOP_TARGET",
+        ),
+        environment.keys,
+    )
+    assertEquals(target, environment["CODEX_AGENT_DESKTOP_TARGET"])
+    val bundle = File(environment.getValue(RUNTIME_BUNDLE_DIRECTORY_ENV))
+    assertTrue(bundle.isDirectory)
+    val data = File(environment.getValue(RUNTIME_DATA_DIRECTORY_ENV))
+    assertTrue(data.isDirectory)
+    assertEquals(data.absolutePath, environment["CODEX_HOME"])
+    assertEquals(data.absolutePath, environment["CODEX_SQLITE_HOME"])
+    assertTrue(File(environment.getValue(RUNTIME_WORKSPACE_ENV)).isDirectory)
+    assertTrue(
+        bundle.resolve(
+            "codex-agent-runtime-desktop-0.2.0-${desktopRuntimeEvidenceTargets.getValue(target).classifier}.zip",
+        ).isFile,
+    )
+}
 
 internal class NodeRuntimeEvidenceFixture(val root: File) {
     private val appServer = "official app server".encodeToByteArray()

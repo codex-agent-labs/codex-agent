@@ -31,6 +31,11 @@ fun main(arguments: Array<String>) {
     val command = arguments.firstOrNull() ?: error("Release-tooling command is required")
     val options = ReleaseToolingArguments(arguments.drop(1).toTypedArray())
     when (command) {
+        "inspect-runtime-manifest" -> {
+            options.requireOnly("manifest")
+            val manifest = readDesktopCodexManifest(options.file("manifest"))
+            println("${manifest.version} ${manifest.releaseTag} ${manifest.distributions.size}")
+        }
         "self-check" -> {
             options.requireOnly()
             check(canonicalPromotedMavenOwners().size ==

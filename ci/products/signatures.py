@@ -13,6 +13,7 @@ from typing import Any
 from .inventory import (
     load_canonical_json,
     public_key_fingerprint,
+    read_regular_file_bytes,
     require_array,
     require_exact_keys,
     require_integer,
@@ -86,9 +87,7 @@ def public_key_path(keys_directory: Path, key_id: str) -> Path:
 
 def _verify_public_key(record: dict[str, Any], keys_directory: Path) -> Path:
     path = public_key_path(keys_directory, record["keyId"])
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"Product public key is missing or unsafe: {path}")
-    contents = path.read_bytes()
+    contents = read_regular_file_bytes(path, reject_symlink_parents=True)
     if public_key_fingerprint(contents) != record["fingerprint"]:
         raise ValueError(f"Product public key fingerprint mismatch: {record['keyId']}")
     return path
@@ -239,15 +238,16 @@ def verify_manifest_signature(
     for path, label in ((manifest, "manifest"), (signature, "signature"), (public_key, "public key")):
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"Product {label} is missing or unsafe")
+    public_key_bytes = read_regular_file_bytes(public_key, reject_symlink_parents=True)
     _require_canonical_sshsig(signature.read_bytes())
     manifest_value = load_canonical_json(manifest)
     if type(manifest_value) is not dict or manifest_value.get("signing") != signing:
         raise ValueError("Manifest signing metadata does not match the verifier metadata")
-    if public_key_fingerprint(public_key.read_bytes()) != signing["fingerprint"]:
+    if public_key_fingerprint(public_key_bytes) != signing["fingerprint"]:
         raise ValueError("Product signature metadata/public-key fingerprint mismatch")
     with tempfile.TemporaryDirectory(prefix="codex-agent-signature-") as temporary:
         allowed_signers = Path(temporary) / "allowed-signers"
-        allowed_signers.write_bytes(b"codex-agent-product " + public_key.read_bytes())
+        allowed_signers.write_bytes(b"codex-agent-product " + public_key_bytes)
         result = subprocess.run(
             [
                 "ssh-keygen",

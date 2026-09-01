@@ -167,7 +167,7 @@ internal fun validateDesktopRuntimeEvidence(
                 check(proof.archiveSha256 == archiveHash) { "classifier archive hash mismatch" }
             }
             if (version != null && mavenInventory != null) {
-                val path = "${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-desktop/$version/" +
+                val path = "${CODEX_AGENT_MAVEN_GROUP.replace('.', '/')}/codex-agent-runtime-desktop/$version/" +
                     "codex-agent-runtime-desktop-$version-${expected.classifier}.zip"
                 check(inventoryFiles[path] == archiveHash) { "classifier hash is not bound to Maven inventory" }
             }
@@ -195,3 +195,6 @@ internal fun verifyDesktopRuntimeTestReport(file: File, target: String) {
         "Desktop smoke test methods are incomplete or unexpected"
     }
 }
+internal const val RUNTIME_BUNDLE_DIRECTORY_ENV = "CODEX_AGENT_RUNTIME_BUNDLE_DIRECTORY"
+internal const val RUNTIME_DATA_DIRECTORY_ENV = "CODEX_AGENT_RUNTIME_DATA_DIRECTORY"
+internal const val RUNTIME_WORKSPACE_ENV = "CODEX_AGENT_WORKSPACE"

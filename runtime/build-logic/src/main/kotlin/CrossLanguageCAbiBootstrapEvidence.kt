@@ -11,6 +11,8 @@ import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.LocalState
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
@@ -3438,11 +3440,15 @@ private fun normalizedCodexSymbols(output: String): Set<String> {
 abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
     private val processes: ExecOperations,
 ) : DefaultTask() {
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
-    abstract val canonicalApiReport: RegularFileProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val contractDirectory: DirectoryProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
-    abstract val canonicalCoverageReceipt: RegularFileProperty
+    abstract val contractPublicKey: RegularFileProperty
+
+    @get:Input abstract val contractVersion: org.gradle.api.provider.Property<String>
+    @get:Input abstract val contractComponent: org.gradle.api.provider.Property<String>
+    @get:Internal abstract val repositoryRoot: DirectoryProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val reviewedHeader: RegularFileProperty
@@ -3575,9 +3581,13 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             "C ABI bootstrap evidence requires a macOS Arm64 host"
         }
 
-        val canonical = readCrossLanguageCanonicalApiEvidence(
-            canonicalApiReport.get().asFile,
-            canonicalCoverageReceipt.get().asFile,
+        val canonical = verifiedRuntimeCanonicalApiProjection(
+            processes,
+            repositoryRoot.get().asFile,
+            contractDirectory.get().asFile,
+            contractPublicKey.get().asFile,
+            contractVersion.get(),
+            contractComponent.get(),
         )
         val header = reviewedHeader.get().asFile.also {
             check(it.releaseDigest() == C_ABI_HEADER_SHA256) { "Reviewed C ABI header drift" }
@@ -3758,12 +3768,12 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
         val work = consumerOutputDirectory.get().asFile
         check(work.deleteRecursively() || !work.exists()) { "Could not clear C ABI consumer work directory" }
         check(work.mkdirs()) { "Could not create C ABI consumer work directory" }
-        val clang = processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "--find", "clang")).trim()
-        val clangCpp = processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "--find", "clang++")).trim()
-        val sdk = processes.captureReleaseProcess(
+        val clang = processes.captureRuntimeProcess(listOf("/usr/bin/xcrun", "--find", "clang")).trim()
+        val clangCpp = processes.captureRuntimeProcess(listOf("/usr/bin/xcrun", "--find", "clang++")).trim()
+        val sdk = processes.captureRuntimeProcess(
             listOf("/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"),
         ).trim()
-        val clangVersion = processes.captureReleaseProcess(listOf(clang, "--version")).trim()
+        val clangVersion = processes.captureRuntimeProcess(listOf(clang, "--version")).trim()
         val include = header.parentFile.absolutePath
         val rpath = library.parentFile.absolutePath
         val consumers = listOf(
@@ -3884,33 +3894,33 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
         )
 
         val defined = normalizedCodexSymbols(
-            processes.captureReleaseProcess(listOf("/usr/bin/nm", "-gU", library.absolutePath)),
+            processes.captureRuntimeProcess(listOf("/usr/bin/nm", "-gU", library.absolutePath)),
         )
         check(defined == exports) { "Dylib/export-policy mismatch: missing=${exports - defined} extra=${defined - exports}" }
         val cConsumerImports = consumers.filter { it.source.extension == "c" }
             .flatMapTo(sortedSetOf()) { consumer ->
                 normalizedCodexSymbols(
-                    processes.captureReleaseProcess(listOf("/usr/bin/nm", "-u", consumer.artifact.absolutePath)),
+                    processes.captureRuntimeProcess(listOf("/usr/bin/nm", "-u", consumer.artifact.absolutePath)),
                 )
             }
         check(cConsumerImports == exports) {
             "C consumer import union mismatch: missing=${exports - cConsumerImports} " +
                 "extra=${cConsumerImports - exports}"
         }
-        val fileIdentity = processes.captureReleaseProcess(
+        val fileIdentity = processes.captureRuntimeProcess(
             listOf("/usr/bin/file", "-b", library.absolutePath),
         ).trim()
         check(fileIdentity == "Mach-O 64-bit dynamically linked shared library arm64") {
             "C ABI release library is not Mach-O Arm64: $fileIdentity"
         }
-        val installNames = processes.captureReleaseProcess(
+        val installNames = processes.captureRuntimeProcess(
             listOf("/usr/bin/otool", "-D", library.absolutePath),
         )
             .lineSequence().map(String::trim).filter(String::isNotEmpty).drop(1).toList()
         check(installNames == listOf("@rpath/libcodex_agent.dylib")) {
             "Unexpected C ABI dylib install name: $installNames"
         }
-        val linkedIdentity = processes.captureReleaseProcess(
+        val linkedIdentity = processes.captureRuntimeProcess(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
@@ -3991,9 +4001,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
                 put("generatedHeaderSha256", JsonPrimitive(generated.releaseDigest()))
                 put("releaseLibrarySha256", JsonPrimitive(library.releaseDigest()))
                 put("nativeTestExecutableSha256", JsonPrimitive(nativeExecutable.releaseDigest()))
-                put("nativeMainSourcesSha256", JsonPrimitive(nativeMainSources.get().asFile.crossLanguageTreeDigest()))
-                put("nativeTestSourcesSha256", JsonPrimitive(nativeTestSources.get().asFile.crossLanguageTreeDigest()))
-                put("nativeTestResultsSha256", JsonPrimitive(nativeTestResults.get().asFile.crossLanguageTreeDigest()))
+                put("nativeMainSourcesSha256", JsonPrimitive(nativeMainSources.get().asFile.runtimeEvidenceTreeDigest()))
+                put("nativeTestSourcesSha256", JsonPrimitive(nativeTestSources.get().asFile.runtimeEvidenceTreeDigest()))
+                put("nativeTestResultsSha256", JsonPrimitive(nativeTestResults.get().asFile.runtimeEvidenceTreeDigest()))
                 put("fileIdentity", JsonPrimitive(fileIdentity))
                 put("installName", JsonPrimitive(installNames.single()))
             })
@@ -4066,9 +4076,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
         } else {
             command += listOf("-c", "-o", artifact.absolutePath)
         }
-        processes.captureReleaseProcess(command)
+        processes.captureRuntimeProcess(command)
         check(artifact.isFile && artifact.length() > 0L) { "C ABI consumer artifact is empty: $id" }
-        if (execute) processes.captureReleaseProcess(listOf(artifact.absolutePath))
+        if (execute) processes.captureRuntimeProcess(listOf(artifact.absolutePath))
         return CompiledCAbiConsumer(id, source, artifact, execute)
     }
 }

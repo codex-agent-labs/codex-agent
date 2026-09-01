@@ -1,22 +1,6 @@
-import java.io.File as JavaFile
-import java.io.Serializable
 import org.gradle.api.file.DuplicatesStrategy
-import org.gradle.api.provider.Provider
 import org.gradle.jvm.tasks.Jar
 import org.gradle.api.tasks.testing.Test
-import org.gradle.process.CommandLineArgumentProvider
-
-class DesktopEvidenceArgumentProvider(
-    private val action: String,
-    private val values: List<Provider<out Any>>,
-) : CommandLineArgumentProvider, Serializable {
-    override fun asArguments() = listOf(action) + values.map { provider ->
-        when (val value = provider.get()) {
-            is JavaFile -> value.absolutePath
-            else -> value.toString()
-        }
-    }
-}
 
 plugins { `kotlin-dsl` }
 repositories { google(); mavenCentral(); gradlePluginPortal() }
@@ -31,6 +15,19 @@ dependencies {
     testImplementation("org.jetbrains.kotlin:kotlin-klib-abi-reader:${libs.versions.kotlin.get()}")
 }
 tasks.withType<Test>().configureEach { maxParallelForks = 2 }
+
+tasks.processResources {
+    from(layout.projectDirectory.dir("../../ci")) {
+        include(
+            "products/__init__.py",
+            "products/inventory.py",
+            "products/test_results.py",
+            "products/runtime_evidence.py",
+            "products/c_abi.py",
+        )
+        into("python/ci")
+    }
+}
 
 val releaseToolingRuntime by configurations.creating {
     isCanBeConsumed = false
@@ -90,11 +87,10 @@ val releaseToolingClasses = listOf(
     "CrossLanguageCanonicalApiEvidence",
     "CrossLanguageCAbiBindingEvidenceInput",
     "CrossLanguageCAbiBindingEvidenceKt",
-    "CrossLanguageCAbiConsumerProof",
-    "CrossLanguageCAbiEvidenceValues",
-    "CrossLanguageCAbiPackageEvidenceKt",
-    "CrossLanguageCAbiPackageInput",
-    "CrossLanguageCAbiPackageSnapshot",
+    "CrossLanguageCAbiClientKt",
+    "CrossLanguageCAbiClientCatalog",
+    "CrossLanguageCAbiClientTarget",
+    "CrossLanguageCAbiHostMapping",
     "CrossLanguageCAbiScenarioMapping",
     "CrossLanguageCAbiScenarioProof",
     "CrossLanguageCAbiTargetSpec",
@@ -107,22 +103,16 @@ val releaseToolingClasses = listOf(
     "CrossLanguageNativeWrapperEvidenceInput",
     "CrossLanguageNativeWrapperHostConsumerEvidence",
     "CrossLanguageNativeWrapperLaneIdentity",
+    "CrossLanguageNativeWrapperSdkStagingKt",
     "CrossLanguageNativeWrapperSdkIndex",
     "CrossLanguageNativeWrapperSdkRecord",
     "DeploymentTargetRecord",
-    "DesktopClassifierInspectionKt",
-    "DesktopClassifierProof",
     "DesktopCodexDistributionSpec",
     "DesktopCodexManifest",
     "DesktopRuntimeEvidenceTarget",
-    "DesktopRuntimeEvidenceTasksKt",
-    "DesktopRuntimeEvidenceValues",
-    "DesktopRuntimeExecutables",
-    "DesktopRuntimePackageTaskKt",
     "FirebaseAndroidEvidenceValues",
     "FirebaseAndroidRuntimeEvidenceModelKt",
     "FirebaseTestMatrix",
-    "InspectedDesktopClassifier",
     "IosPrivacyAuditVerificationKt",
     "IosPrivacyCategory",
     "IosPrivacyHit",
@@ -131,16 +121,14 @@ val releaseToolingClasses = listOf(
     "IosPrivacyReviewBindingKt",
     "IosPrivacySignals",
     "JdkCentralPortalSender",
-    "JvmRuntimeEvidenceModelKt",
-    "JvmRuntimeEvidenceValues",
     "KmpConsumerVerificationTaskKt",
     "MavenArtifactSpec",
     "MavenProduct",
     "MavenRepositoryTasksKt",
-    "NodeRuntimeEvidenceModelKt",
-    "NodeRuntimeEvidenceValues",
     "PrivacyReleaseVerificationTasksKt",
     "ProductVersions",
+    "ProductPythonToolingKt",
+    "ProductPythonToolingMarker",
     "PromotedCandidateInputs",
     "PromotedCandidateTasksKt",
     "PromotedIosEvidence",
@@ -150,14 +138,13 @@ val releaseToolingClasses = listOf(
     "ReleaseIoKt",
     "ReleaseToolingArguments",
     "ReleaseToolingCliKt",
+    "RuntimeEvidenceClientKt",
     "ReviewedPrivacyApi",
     "TransportProducerIdentity",
     "TransportedRuntimeEvidence",
     "CAbiBindingBootstrapClaim",
     "CAbiBindingBootstrapEvidence",
     "CAbiBindingBootstrapTest",
-    "CAbiBinaryInspection",
-    "CAbiPackageMember",
 )
 val releaseToolingJar = tasks.register<Jar>("releaseToolingJar") {
     group = "build"
@@ -172,6 +159,7 @@ val releaseToolingJar = tasks.register<Jar>("releaseToolingJar") {
         include(releaseToolingClasses.flatMap { listOf("$it.class", "${it}\$*.class") })
         exclude("ProductVersionsKt.class")
     }
+    from(layout.buildDirectory.dir("resources/main")) { include("python/**") }
     from(provider {
         releaseToolingRuntime.filter { dependency ->
             dependency.name.startsWith("kotlin-stdlib-") ||
@@ -187,64 +175,4 @@ val releaseToolingJar = tasks.register<Jar>("releaseToolingJar") {
 tasks.withType<Test>().configureEach {
     dependsOn(releaseToolingJar)
     systemProperty("codexAgent.releaseToolingJar", releaseToolingJar.flatMap { it.archiveFile }.get().asFile)
-}
-
-val candidateCommit = providers.gradleProperty("codexAgent.candidateCommit")
-val bundle = providers.gradleProperty("codexAgent.linuxArm64RuntimeEvidenceBundle").map(::JavaFile)
-    .orElse(layout.buildDirectory.file("linux-arm64-runtime-evidence/linux-arm64-runtime-evidence.zip").map { it.asFile })
-val manifest = providers.gradleProperty("codexAgent.desktopDistributionManifest").map(::JavaFile)
-    .orElse(layout.projectDirectory.file("../../codex-agent-runtime-desktop/codex-app-server-distributions.json").asFile)
-val classifierArchive = providers.gradleProperty("codexAgent.linuxArm64ClassifierArchive").map(::JavaFile)
-val classifierDirectory = providers.gradleProperty("codexAgent.linuxArm64DistributionsDirectory").map(::JavaFile)
-val classifier = classifierArchive.orElse(classifierDirectory)
-tasks.register<JavaExec>("stageLinuxArm64RuntimeEvidenceBundle") {
-    group = "verification"
-    description = "Stages one hash-manifested Linux ARM64 runtime evidence bundle."
-    val test = providers.gradleProperty("codexAgent.linuxArm64TestExecutable").map(::JavaFile)
-    val jvm = providers.gradleProperty("codexAgent.jvmRuntimeEvidenceRunner").map(::JavaFile)
-    val js = providers.gradleProperty("codexAgent.nodeRuntimeEvidenceRunnerArchive").map(::JavaFile)
-    val wasm = providers.gradleProperty("codexAgent.nodeWasmRuntimeEvidenceRunnerArchive").map(::JavaFile)
-    dependsOn(tasks.named("classes")); classpath = sourceSets.main.get().runtimeClasspath
-    mainClass.set("LinuxArm64RuntimeEvidenceBundleKt")
-    inputs.property("candidateCommit", candidateCommit); inputs.file(test); inputs.files(classifier)
-    inputs.file(manifest); inputs.file(jvm); inputs.file(js); inputs.file(wasm); outputs.file(bundle)
-    argumentProviders.add(DesktopEvidenceArgumentProvider(
-        "stage", listOf(candidateCommit, test, classifier, manifest, jvm, js, wasm, bundle),
-    ))
-}
-
-tasks.register<JavaExec>("executeLinuxArm64RuntimeEvidenceBundle") {
-    group = "verification"
-    description = "Executes all four Linux ARM64 runtime backends from one extracted bundle."
-    val java = providers.gradleProperty("codexAgent.javaExecutable")
-    val node = providers.gradleProperty("codexAgent.nodeExecutable").orElse("node")
-    val desktopEvidence = providers.gradleProperty("codexAgent.desktopEvidenceOutput").map(::JavaFile).orElse(
-        layout.buildDirectory.file("reports/desktop-runtime-evidence/desktop-runtime-linuxArm64.json").map { it.asFile })
-    val desktopReport = providers.gradleProperty("codexAgent.desktopTestReportOutput").map(::JavaFile).orElse(
-        layout.buildDirectory.file("test-results/linuxArm64SplitTest/TEST-linuxArm64Test." +
-            "io.github.codex_agent_labs.codexagent.appserver.runtime.DesktopCodexRuntimeTest.xml").map { it.asFile })
-    val jvmEvidence = providers.gradleProperty("codexAgent.jvmEvidenceOutput").map(::JavaFile).orElse(
-        layout.buildDirectory.file("reports/jvm-runtime-evidence/jvm-runtime-linuxArm64.json").map { it.asFile })
-    val nodeEvidence = providers.gradleProperty("codexAgent.nodeEvidenceOutput").map(::JavaFile).orElse(
-        layout.buildDirectory.file("reports/node-runtime-evidence/node-runtime-linuxArm64.json").map { it.asFile })
-    val nodeReport = providers.gradleProperty("codexAgent.nodeTestReportOutput").map(::JavaFile).orElse(
-        layout.buildDirectory.file("test-results/linuxArm64NodeSplitTest/TEST-nodeRuntimeLinuxArm64Test." +
-            "io.github.codex_agent_labs.codexagent.appserver.runtime.NodeCodexRuntimeTest.xml").map { it.asFile })
-    val wasmEvidence = providers.gradleProperty("codexAgent.nodeWasmEvidenceOutput").map(::JavaFile).orElse(
-        layout.buildDirectory.file("reports/node-runtime-evidence/node-wasm-runtime-linuxArm64.json").map { it.asFile })
-    val wasmReport = providers.gradleProperty("codexAgent.nodeWasmTestReportOutput").map(::JavaFile).orElse(
-        layout.buildDirectory.file("test-results/linuxArm64NodeWasmSplitTest/TEST-nodeWasmRuntimeLinuxArm64Test." +
-            "io.github.codex_agent_labs.codexagent.appserver.runtime.NodeCodexRuntimeTest.xml").map { it.asFile })
-    dependsOn(tasks.named("classes")); classpath = sourceSets.main.get().runtimeClasspath
-    mainClass.set("LinuxArm64RuntimeEvidenceBundleKt")
-    inputs.property("candidateCommit", candidateCommit); inputs.file(bundle)
-    inputs.property("javaExecutable", java); inputs.property("nodeExecutable", node)
-    inputs.property("runnerOs", providers.environmentVariable("RUNNER_OS"))
-    inputs.property("runnerArch", providers.environmentVariable("RUNNER_ARCH"))
-    outputs.files(desktopEvidence, desktopReport, jvmEvidence, nodeEvidence, nodeReport, wasmEvidence, wasmReport)
-    outputs.upToDateWhen { false }
-    argumentProviders.add(DesktopEvidenceArgumentProvider(
-        "execute", listOf(candidateCommit, bundle, java, node, desktopEvidence, desktopReport,
-            jvmEvidence, nodeEvidence, nodeReport, wasmEvidence, wasmReport),
-    ))
 }

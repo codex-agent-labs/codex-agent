@@ -672,7 +672,7 @@ class ContractBundleTest(unittest.TestCase):
             raise unittest.SkipTest("ssh-keygen is required for Contract Bundle tests")
         cls._key_directory = tempfile.TemporaryDirectory(prefix="contract-bundle-key-")
         cls.private_key, cls.public_key, cls.signing = generate_development_key(
-            Path(cls._key_directory.name)
+            Path(cls._key_directory.name).resolve()
         )
 
     @classmethod
@@ -746,7 +746,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_development_build_keeps_only_public_verification_material(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             staging = root / "staging"
             _write_staging(staging)
             staging_before = regular_file_inventory(staging)
@@ -775,7 +775,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_development_build_verifies_pair_before_replacing_prior_output(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             staging = root / "staging"
             output = root / "output"
             _write_staging(staging)
@@ -806,7 +806,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_build_is_deterministic_and_component_closures_are_exact(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             _, first_archive, first = self._build(root, "first")
             _, second_archive, second = self._build(root, "second")
 
@@ -834,7 +834,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_real_primary_inventory_is_exact(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             staging, _, manifest = self._build(root, "valid")
             expected = {
                 (
@@ -921,7 +921,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_unverified_maven_signatures_are_rejected_before_manifest_signing(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             staging = root / "staging"
             _write_staging(staging)
             for artifact, suffixes in PRIMARY_SUFFIXES.items():
@@ -947,7 +947,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_dependency_semantics_change_identity_but_self_version_does_not(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             _, _, baseline = self._build(root, "baseline")
             _, _, dependency = self._build(
                 root,
@@ -973,7 +973,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_semantic_api_ignores_target_hashes_but_changes_for_capabilities(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             _, _, baseline = self._build(root, "baseline")
             _, _, target_hash = self._build(root, "target-hash", target_hash_salt=b"changed")
             _, _, capability = self._build(root, "capability", mutate_capability=True)
@@ -989,7 +989,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_ancillary_files_do_not_change_components_but_resolution_files_do(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             _, _, baseline = self._build(root, "baseline")
 
             ancillary_stage = root / "ancillary-staging"
@@ -1055,7 +1055,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_maven_version_role_component_and_publication_completeness_fail(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             _, archive, _ = self._build(root, "valid")
             entries = _zip_entries(archive)
             manifest_bytes = next(contents for path, contents, _ in entries if path == "contract-manifest.json")
@@ -1153,7 +1153,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_maven_checksums_module_files_and_pom_resolution_semantics_fail(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
 
             bad_checksum = root / "bad-checksum-staging"
             _write_staging(bad_checksum)
@@ -1240,7 +1240,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_archive_structure_metadata_size_evidence_and_signature_mutations_fail(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             _, archive, _ = self._build(root, "valid")
             entries = _zip_entries(archive)
 
@@ -1464,7 +1464,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_existing_different_output_is_not_overwritten_and_failed_build_can_retry(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             _, archive, _ = self._build(root, "published")
             original = archive.read_bytes()
 
@@ -1506,7 +1506,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_bundle_rejects_symlinked_output_ancestor_without_writing_through_it(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             staging = root / "staging"
             _write_staging(staging)
             external = root / "external"
@@ -1533,7 +1533,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_prepared_git_provenance_rejects_dirty_inputs_and_stale_inventories(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             repository = root / "repository"
             repository.mkdir()
             _git(repository, "init", "--quiet")
@@ -1713,7 +1713,7 @@ class ContractBundleTest(unittest.TestCase):
 
     def test_prepared_git_provenance_uses_commit_bound_pathspec_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             repository = root / "repository"
             repository.mkdir()
             _git(repository, "init", "--quiet")

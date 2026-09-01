@@ -9,6 +9,47 @@ import org.gradle.testkit.runner.TaskOutcome
 
 class SdkVerificationTaskGraphTest {
     @Test
+    fun `root checkout configures no Desktop Runtime project or task`() {
+        val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .first { it.resolve("settings.gradle.kts").isFile && it.resolve("codex-agent-core").isDirectory }
+        val initScript = createTempDirectory("root-project-task-graph").toFile().resolve("graph.gradle")
+        try {
+            initScript.writeText(
+                """
+                gradle.projectsEvaluated {
+                    println("CODEX_AGENT_PROJECT_GRAPH=" + gradle.rootProject.allprojects*.path.sort().join(","))
+                    println("CODEX_AGENT_TASK_GRAPH=" + gradle.rootProject.allprojects.collectMany {
+                        project -> project.tasks*.path
+                    }.sort().join(","))
+                }
+                """.trimIndent() + "\n",
+            )
+            val result = GradleRunner.create()
+                .withProjectDir(repository)
+                .withArguments(
+                    "help",
+                    "--init-script", initScript.absolutePath,
+                    "--offline",
+                    "--no-configuration-cache",
+                    "--console=plain",
+                )
+                .build()
+            val projects = result.output.lineSequence().single {
+                it.startsWith("CODEX_AGENT_PROJECT_GRAPH=") && ":codex-agent-core" in it
+            }
+            val tasks = result.output.lineSequence().single {
+                it.startsWith("CODEX_AGENT_TASK_GRAPH=") && ":verifyRepository" in it
+            }
+            assertTrue(":codex-agent-core" in projects, projects)
+            assertTrue(":verifyRepository" in tasks, tasks)
+            assertFalse(":codex-agent-runtime-desktop" in projects, projects)
+            assertFalse(":codex-agent-runtime-desktop:" in tasks, tasks)
+        } finally {
+            initScript.parentFile.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `missing imported evidence deletes stale success before input validation fails`() {
         withFixture { root, report ->
             report.parentFile.mkdirs()
@@ -141,11 +182,13 @@ class SdkVerificationTaskGraphTest {
             ":codex-agent-core:verifyCrossLanguageApiCoverage",
             ":codex-agent-core:jvmJar",
             ":codex-agent-core:bundleAndroidMainAar",
-            ":codex-agent-runtime-desktop:jvmJar",
+            "codexAgent.desktopRuntimeJvmJar",
             ":codex-agent-runtime-android:bundleReleaseAar",
         ).forEach { contract ->
             assertTrue(contract in sdkSource, "Missing SDK-owned Java contract: $contract")
         }
+        assertFalse(":codex-agent-runtime-desktop:jvmJar" in sdkSource)
+        assertFalse("codex-agent-runtime-desktop/build/libs" in sdkSource)
         listOf(
             "VerifyJavaBindingParityTask",
             "verifyJavaBindingParity",

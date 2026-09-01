@@ -14,6 +14,14 @@ import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
 
+val repositoryRootFile = rootProject.extra["codexAgent.repositoryRoot"] as File
+val repositoryRootDirectory = layout.dir(providers.provider { repositoryRootFile })
+val productTooling = layout.dir(providers.provider { repositoryRootFile.resolve("ci/products") })
+val runtimeProductTooling = files(productTooling)
+val runtimeProductVersion = providers.provider { project.version.toString() }
+val contractBundleRoot = providers.gradleProperty("codexAgent.contractManifest")
+    .map(::File)
+    .map { it.parentFile }
 val desktopManifestFile = layout.projectDirectory.file("codex-app-server-distributions.json")
 val desktopRuntimeCompatibilityVersion = providers.provider {
     runtimeCompatibilityVersion(project.version.toString())
@@ -35,11 +43,18 @@ val importedRuntimeNativePackageStage = providers.gradleProperty("codexAgent.run
 val supervisorDirectory = providers.gradleProperty("codexAgent.desktopSupervisorDirectory")
     .map(::file)
     .orElse(layout.buildDirectory.dir("supervisor").map { it.asFile })
-val hostTarget = crossLanguageCAbiHostTarget(
+private val cAbiCatalog = readRuntimeCAbiCatalog(
+    providers.of(RuntimeCAbiCatalogValueSource::class.java) {}.get(),
+)
+private val cAbiTargetSpecs = cAbiCatalog.targets
+fun cAbiArchiveFileName(libraryVersion: String, target: String): String =
+    cAbiTargetSpecs.getValue(target).archiveFileNameTemplate.replace("{libraryVersion}", libraryVersion)
+fun cAbiPackageEvidenceFileName(target: String): String = cAbiTargetSpecs.getValue(target).evidenceFileName
+val hostTarget = cAbiCatalog.hostTarget(
     System.getProperty("os.name"),
     System.getProperty("os.arch"),
 )
-val localCAbiRunner = hostTarget?.let(crossLanguageCAbiTargetSpecs::getValue)
+val localCAbiRunner = hostTarget?.let(cAbiTargetSpecs::getValue)
 val hostSupervisorName = if (hostTarget == "mingwX64") {
     "codex-process-supervisor.exe"
 } else {
@@ -96,12 +111,12 @@ val desktopPackageTasks = desktopManifest.distributions.associateWith { distribu
             dependsOn(compileDesktopProcessSupervisor)
         }
         localArchive.set(layout.file(localArchiveDirectory.map { file("$it/${distribution.asset}") }))
-        licenseFile.set(rootProject.layout.projectDirectory.file(
-            "legal/openai-codex/openai-codex-LICENSE.txt",
-        ))
-        noticeFile.set(rootProject.layout.projectDirectory.file(
-            "legal/openai-codex/openai-codex-NOTICE.txt",
-        ))
+        licenseFile.set(layout.file(providers.provider {
+            repositoryRootFile.resolve("legal/openai-codex/openai-codex-LICENSE.txt")
+        }))
+        noticeFile.set(layout.file(providers.provider {
+            repositoryRootFile.resolve("legal/openai-codex/openai-codex-NOTICE.txt")
+        }))
         outputFile.set(layout.buildDirectory.file(desktopRuntimeCompatibilityVersion.map { version ->
             "distributions/codex-agent-runtime-desktop-$version-${distribution.classifier}.zip"
         }))
@@ -207,8 +222,8 @@ extensions.configure<KotlinMultiplatformExtension> {
 val cAbiCandidateCommit = providers.gradleProperty("codexAgent.candidateCommit")
 val cAbiCandidateTree = providers.gradleProperty("codexAgent.candidateTree")
 val cAbiReviewedHeader = layout.projectDirectory.file("native/c-api/include/codex_agent.h")
-val cAbiLicense = rootProject.layout.projectDirectory.file("LICENSE")
-val cAbiNotice = rootProject.layout.projectDirectory.file("THIRD_PARTY_NOTICES.md")
+val cAbiLicense = layout.file(providers.provider { repositoryRootFile.resolve("LICENSE") })
+val cAbiNotice = layout.file(providers.provider { repositoryRootFile.resolve("THIRD_PARTY_NOTICES.md") })
 fun cAbiExportPolicy(target: String) = layout.projectDirectory.file(
     when {
         target.startsWith("macos") -> "native/c-api/exports/macos.exports"
@@ -245,7 +260,7 @@ val generateMingwX64MsvcImportLibrary = tasks.register<Exec>("generateMingwX64Ms
         outputs.files.singleFile.parentFile.mkdirs()
     }
 }
-val cAbiPackageTasks = crossLanguageCAbiTargetSpecs.mapValues { (target, spec) ->
+val cAbiPackageTasks = cAbiTargetSpecs.mapValues { (target, spec) ->
     tasks.register<PackageCrossLanguageCAbiSdkTask>(
         "package${target.replaceFirstChar(Char::uppercase)}CAbiSdk",
     ) {
@@ -270,15 +285,15 @@ val cAbiPackageTasks = crossLanguageCAbiTargetSpecs.mapValues { (target, spec) -
             msvcImportLibrary.set(mingwMsvcImportLibrary)
         }
         outputFile.set(layout.buildDirectory.file(desktopRuntimeCompatibilityVersion.map { version ->
-            "distributions/${crossLanguageCAbiArchiveFileName(version, target)}"
+            "distributions/${cAbiArchiveFileName(version, target)}"
         }))
     }
 }
 val runtimeNativeBinaryManifestTasks = desktopManifest.distributions.associate { distribution ->
     val target = distribution.target
     val title = target.replaceFirstChar(Char::uppercase)
-    val component = crossLanguageCAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
-    val prepareAppServerArchive = tasks.register<PreparePinnedArchiveTask>(
+    val component = cAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
+    val prepareAppServerArchive = tasks.register<PrepareRuntimePinnedArchiveTask>(
         "prepare${title}AppServerArchive",
     ) {
         group = "distribution"
@@ -326,56 +341,52 @@ val runtimeNativeBinaryManifestTasks = desktopManifest.distributions.associate {
         includeEmptyDirs = false
         duplicatesStrategy = DuplicatesStrategy.FAIL
     }
-    val writeBinaryManifest = tasks.register<WriteProductOutputManifestTask>(
+    val writeBinaryManifest = registerRuntimeOutputManifest(
         "write${title}RuntimeBinaryOutputManifest",
-    ) {
-        group = "distribution"
-        description = "Writes and verifies the exact raw $component Runtime binary manifest."
-        dependsOn(stage)
-        product.set("runtime")
-        this.component.set(component)
-        phase.set("binary")
-        this.target.set(component)
-        productVersion.set(project.version.toString())
-        outputRoots.set(mapOf(
+        stage,
+        providers.provider { component },
+        "binary",
+        providers.provider { component },
+        runtimeProductVersion,
+        mapOf(
             "app-server" to "outputs/app-server",
             "c-abi" to "outputs/c-abi",
             "kmp-klib" to "outputs/kmp-klib",
             "supervisor" to "outputs/supervisor",
             "validation-runner" to "outputs/validation-runner",
-        ))
-        outputsDirectory.set(phaseOutputs)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-        stageRoot.set(phaseRoot)
-        manifestFile.set(phaseRoot.map { it.file("output-manifest.json") })
-    }
+        ),
+        phaseOutputs,
+        phaseRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).also { task -> task.configure {
+        group = "distribution"
+        description = "Writes and verifies the exact raw $component Runtime binary manifest."
+    } }
     val importedBinarySnapshotRoot = layout.buildDirectory.dir(
         cAbiCandidateTree.map { "imported-runtime-binary-stages/$it/$component" },
     )
-    val snapshotImportedBinary = tasks.register<SnapshotImportedProductStageTask>(
+    val snapshotImportedBinary = registerRuntimeStageSnapshot(
         "snapshotImported${title}RuntimeBinaryStage",
-    ) {
-        sourceDirectory.set(layout.dir(importedRuntimeBinaryStage))
-        outputDirectory.set(importedBinarySnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
-    val verifyImportedBinaryManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
+        layout.dir(importedRuntimeBinaryStage),
+        importedBinarySnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    )
+    val verifyImportedBinaryManifest = registerRuntimeOutputVerification(
         "verifyImported${title}RuntimeBinaryOutputManifest",
-    ) {
+        snapshotImportedBinary,
+        providers.provider { component },
+        "binary",
+        providers.provider { component },
+        runtimeProductVersion,
+        importedBinarySnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).also { task -> task.configure {
         group = "verification"
         description = "Verifies the imported raw $component Runtime binary manifest and complete tree."
-        product.set("runtime")
-        this.component.set(component)
-        phase.set("binary")
-        this.target.set(component)
-        productVersion.set(project.version.toString())
-        dependsOn(snapshotImportedBinary)
-        stageRoot.set(importedBinarySnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
+    } }
     if (importedRuntimeBinaryStage.isPresent) {
         desktopPackageTasks.getValue(distribution).configure {
             dependsOn(verifyImportedBinaryManifest)
@@ -422,39 +433,44 @@ val runtimeNativeBinaryManifestTasks = desktopManifest.distributions.associate {
         into(packagePhaseOutputs)
         from(desktopPackageTasks.getValue(distribution).flatMap { it.outputFile }) { into("app-server") }
         from(cAbiPackageTasks.getValue(target).flatMap { it.outputFile }) { into("c-abi") }
+        from(cAbiReviewedHeader) { into("c-abi-reference/include") }
+        from(cAbiLicense) { into("c-abi-reference/legal") }
+        from(cAbiNotice) { into("c-abi-reference/legal") }
+        from(cAbiExportPolicy(target)) { into("c-abi-reference/export-policy") }
         from(packageBinaryStageRoot.map { it.dir("outputs/validation-runner") }) {
             into("validation-runner")
         }
         includeEmptyDirs = false
         duplicatesStrategy = DuplicatesStrategy.FAIL
     }
-    tasks.register<WriteProductOutputManifestTask>("write${title}RuntimePackageOutputManifest") {
-        group = "distribution"
-        description = "Writes and verifies the exact $component Runtime package manifest."
-        dependsOn(stagePackages)
-        product.set("runtime")
-        this.component.set(component)
-        phase.set("package")
-        this.target.set(component)
-        productVersion.set(project.version.toString())
-        outputRoots.set(mapOf(
+    registerRuntimeOutputManifest(
+        "write${title}RuntimePackageOutputManifest",
+        stagePackages,
+        providers.provider { component },
+        "package",
+        providers.provider { component },
+        runtimeProductVersion,
+        mapOf(
             "app-server" to "outputs/app-server",
             "c-abi" to "outputs/c-abi",
+            "c-abi-reference" to "outputs/c-abi-reference",
             "validation-runner" to "outputs/validation-runner",
-        ))
-        outputsDirectory.set(packagePhaseOutputs)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-        stageRoot.set(packagePhaseRoot)
-        manifestFile.set(packagePhaseRoot.map { it.file("output-manifest.json") })
+        ),
+        packagePhaseOutputs,
+        packagePhaseRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).configure {
+        group = "distribution"
+        description = "Writes and verifies the exact $component Runtime package manifest."
     }
     component to writeBinaryManifest
 }
-val cAbiArchiveFiles = crossLanguageCAbiTargetSpecs.mapValues { (target, _) ->
+val cAbiArchiveFiles = cAbiTargetSpecs.mapValues { (target, _) ->
     if (importedClassifierDirectory.isPresent) {
         layout.file(importedClassifierDirectory.flatMap { directory ->
             desktopRuntimeCompatibilityVersion.map { version ->
-                file("$directory/${crossLanguageCAbiArchiveFileName(version, target)}")
+                file("$directory/${cAbiArchiveFileName(version, target)}")
             }
         })
     } else {
@@ -478,21 +494,9 @@ val invalidateCAbiBootstrapEvidence = tasks.register<Delete>(
     delete(cAbiBootstrapEvidenceFile, cAbiBootstrapConsumerOutput)
 }
 tasks.configureEach {
-    if (name !in setOf(
-            invalidateCAbiBootstrapEvidence.name,
-            "invalidateJavaScriptTypeScriptBindingParityOutput",
-        )
-    ) {
+    if (name != invalidateCAbiBootstrapEvidence.name) {
         mustRunAfter(invalidateCAbiBootstrapEvidence)
     }
-}
-rootProject.findProject(":codex-agent-core")?.tasks?.matching {
-    it.name == "invalidateCrossLanguageBindingParityOutputs"
-}?.configureEach {
-    mustRunAfter(invalidateCAbiBootstrapEvidence)
-}
-rootProject.tasks.matching { it.name == "prepareContractInputs" }.configureEach {
-    mustRunAfter(invalidateCAbiBootstrapEvidence)
 }
 val generateCAbiBootstrapEvidence =
     tasks.register<GenerateCAbiBootstrapEvidenceTask>("generateCodexAgentCAbiBootstrapEvidence") {
@@ -500,16 +504,14 @@ val generateCAbiBootstrapEvidence =
     description = "Emits observed macOS Arm64 evidence for the finite C ABI bootstrap slice."
     dependsOn(
         invalidateCAbiBootstrapEvidence,
-        ":codex-agent-core:verifyCrossLanguageApiCoverage",
         "linkReleaseSharedMacosArm64",
         "macosArm64Test",
     )
-    canonicalApiReport.set(rootProject.layout.projectDirectory.file(
-        "codex-agent-core/build/reports/cross-language-api/canonical-api.json",
-    ))
-    canonicalCoverageReceipt.set(rootProject.layout.projectDirectory.file(
-        "codex-agent-core/build/reports/cross-language-api/canonical-coverage.json",
-    ))
+    contractDirectory.set(layout.dir(contractBundleRoot))
+    contractPublicKey.set(layout.file(providers.gradleProperty("codexAgent.contractPublicKey").map(::File)))
+    contractVersion.set(providers.gradleProperty("codexAgent.contractVersion"))
+    contractComponent.set("macos-arm64")
+    repositoryRoot.set(repositoryRootDirectory)
     reviewedHeader.set(layout.projectDirectory.file("native/c-api/include/codex_agent.h"))
     cinteropDefinition.set(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_agent_c.def"))
     exportPolicy.set(layout.projectDirectory.file("native/c-api/exports/macos.exports"))
@@ -620,16 +622,6 @@ val generateCAbiBootstrapEvidence =
     consumerOutputDirectory.set(cAbiBootstrapConsumerOutput)
     evidenceFile.set(cAbiBootstrapEvidenceFile)
 }
-val cAbiScenarioProofFile =
-    layout.buildDirectory.file("reports/cross-language-api/c-abi/c-abi-scenarios.json")
-tasks.register<GenerateCrossLanguageCAbiScenarioProofTask>("generateCodexAgentCAbiScenarioProof") {
-    group = "verification"
-    description = "Emits the exact14-scenario C ABI behavior proof from observed Native evidence."
-    dependsOn(generateCAbiBootstrapEvidence)
-    bootstrapEvidence.set(cAbiBootstrapEvidenceFile)
-    proofFile.set(cAbiScenarioProofFile)
-}
-
 val nodeRuntimeEvidenceRunnerArchive = layout.file(
     providers.gradleProperty("codexAgent.nodeRuntimeEvidenceRunnerArchive").map(::File),
 )
@@ -699,58 +691,54 @@ val stageJvmRuntimeBinaryOutputs = tasks.register<Sync>("stageJvmRuntimeBinaryOu
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
-val writeJvmRuntimeBinaryOutputManifest = tasks.register<WriteProductOutputManifestTask>(
+val writeJvmRuntimeBinaryOutputManifest = registerRuntimeOutputManifest(
     "writeJvmRuntimeBinaryOutputManifest",
-) {
-    group = "distribution"
-    description = "Writes and verifies the exact raw JVM Runtime binary manifest."
-    dependsOn(stageJvmRuntimeBinaryOutputs)
-    product.set("runtime")
-    component.set("jvm")
-    phase.set("binary")
-    target.set("jvm")
-    productVersion.set(project.version.toString())
-    outputRoots.set(mapOf(
+    stageJvmRuntimeBinaryOutputs,
+    providers.provider { "jvm" },
+    "binary",
+    providers.provider { "jvm" },
+    runtimeProductVersion,
+    mapOf(
         "adapter" to "outputs/adapter",
         "validation-runner" to "outputs/validation-runner",
-    ))
-    outputsDirectory.set(jvmRuntimeBinaryOutputs)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-    stageRoot.set(jvmRuntimeBinaryPhaseRoot)
-    manifestFile.set(jvmRuntimeBinaryPhaseRoot.map { it.file("output-manifest.json") })
-}
+    ),
+    jvmRuntimeBinaryOutputs,
+    jvmRuntimeBinaryPhaseRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+).also { task -> task.configure {
+    group = "distribution"
+    description = "Writes and verifies the exact raw JVM Runtime binary manifest."
+} }
 val importedJvmRuntimeBinarySnapshotRoot = layout.buildDirectory.dir(
     cAbiCandidateTree.map { "imported-runtime-binary-stages/$it/jvm" },
 )
-val snapshotImportedJvmRuntimeBinaryStage = tasks.register<SnapshotImportedProductStageTask>(
+val snapshotImportedJvmRuntimeBinaryStage = registerRuntimeStageSnapshot(
     "snapshotImportedJvmRuntimeBinaryStage",
-) {
-    sourceDirectory.set(layout.dir(importedRuntimeBinaryStage))
-    outputDirectory.set(importedJvmRuntimeBinarySnapshotRoot)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-}
+    layout.dir(importedRuntimeBinaryStage),
+    importedJvmRuntimeBinarySnapshotRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+)
 val jvmRuntimeBinaryStageRoot = if (importedRuntimeBinaryStage.isPresent) {
     importedJvmRuntimeBinarySnapshotRoot
 } else {
     jvmRuntimeBinaryPhaseRoot
 }
-val verifyImportedJvmRuntimeBinaryOutputManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
+val verifyImportedJvmRuntimeBinaryOutputManifest = registerRuntimeOutputVerification(
     "verifyImportedJvmRuntimeBinaryOutputManifest",
-) {
+    snapshotImportedJvmRuntimeBinaryStage,
+    providers.provider { "jvm" },
+    "binary",
+    providers.provider { "jvm" },
+    runtimeProductVersion,
+    importedJvmRuntimeBinarySnapshotRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+).also { task -> task.configure {
     group = "verification"
     description = "Verifies the imported raw JVM Runtime binary manifest and complete tree."
-    product.set("runtime")
-    component.set("jvm")
-    phase.set("binary")
-    target.set("jvm")
-    productVersion.set(project.version.toString())
-    dependsOn(snapshotImportedJvmRuntimeBinaryStage)
-    stageRoot.set(importedJvmRuntimeBinarySnapshotRoot)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-}
+} }
 val jvmRuntimePackagePhaseRoot = layout.buildDirectory.dir("product-stage/runtime/jvm/package")
 val jvmRuntimePackageOutputs = jvmRuntimePackagePhaseRoot.map { it.dir("outputs") }
 val stageJvmRuntimePackage = tasks.register<Sync>("stageJvmRuntimePackage") {
@@ -769,37 +757,36 @@ val stageJvmRuntimePackage = tasks.register<Sync>("stageJvmRuntimePackage") {
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
-tasks.register<WriteProductOutputManifestTask>("writeJvmRuntimePackageOutputManifest") {
-    group = "distribution"
-    description = "Writes and verifies the exact JVM Runtime package manifest."
-    dependsOn(stageJvmRuntimePackage)
-    product.set("runtime")
-    component.set("jvm")
-    phase.set("package")
-    target.set("jvm")
-    productVersion.set(project.version.toString())
-    outputRoots.set(mapOf(
+registerRuntimeOutputManifest(
+    "writeJvmRuntimePackageOutputManifest",
+    stageJvmRuntimePackage,
+    providers.provider { "jvm" },
+    "package",
+    providers.provider { "jvm" },
+    runtimeProductVersion,
+    mapOf(
         "adapter" to "outputs/adapter",
         "validation-runner" to "outputs/validation-runner",
-    ))
-    outputsDirectory.set(jvmRuntimePackageOutputs)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-    stageRoot.set(jvmRuntimePackagePhaseRoot)
-    manifestFile.set(jvmRuntimePackagePhaseRoot.map { it.file("output-manifest.json") })
+    ),
+    jvmRuntimePackageOutputs,
+    jvmRuntimePackagePhaseRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+).configure {
+    group = "distribution"
+    description = "Writes and verifies the exact JVM Runtime package manifest."
 }
 check(desktopManifest.distributions.map { it.target }.toSet() == desktopRuntimeEvidenceTargets.keys) {
     "Desktop evidence target set does not match the distribution manifest"
 }
 val requestedEvidenceTarget = providers.gradleProperty("codexAgent.desktopEvidenceTarget").orNull
 requestedEvidenceTarget?.let { check(it in desktopRuntimeEvidenceTargets) { "Unknown desktop evidence target: $it" } }
-val productPhaseEvidenceTarget = providers.gradleProperty("codexAgent.desktopEvidenceTarget").orElse(
-    providers.gradleProperty("codexAgent.component").map { component ->
-        crossLanguageCAbiTargetSpecs.entries.single {
-            it.value.classifier.removePrefix("c-abi-") == component
-        }.key
-    },
-)
+val componentEvidenceTarget = providers.gradleProperty("codexAgent.component").orNull?.let { component ->
+    cAbiTargetSpecs.entries.singleOrNull {
+        it.value.classifier.removePrefix("c-abi-") == component
+    }?.key
+}
+val productPhaseEvidenceTarget = requestedEvidenceTarget ?: componentEvidenceTarget.orEmpty()
 val cAbiConsumerSources = layout.projectDirectory.dir("native/c-api/consumer").asFileTree.matching {
     include("*.c", "*.cpp")
 }
@@ -822,15 +809,11 @@ fun cAbiToolDefaults(target: String): Map<String, String> = when {
 desktopManifest.distributions.forEach { distribution ->
     val packageTask = desktopPackageTasks.getValue(distribution)
     val targetTitle = distribution.target.replaceFirstChar(Char::uppercase)
-    val validateEvidenceTarget = tasks.register("validate${targetTitle}DesktopEvidenceTarget") {
-        inputs.property("requestedTarget", productPhaseEvidenceTarget.orElse(""))
-        inputs.property("expectedTarget", distribution.target)
-        doLast {
-            check(inputs.properties.getValue("requestedTarget") == inputs.properties.getValue("expectedTarget")) {
-                "-PcodexAgent.desktopEvidenceTarget must equal ${distribution.target}"
-            }
-        }
-    }
+    val validateEvidenceTarget = registerRuntimeEvidenceTargetValidation(
+        "validate${targetTitle}DesktopEvidenceTarget",
+        productPhaseEvidenceTarget,
+        distribution.target,
+    )
     val cAbiPackageEvidence = tasks.register<GenerateCrossLanguageCAbiPackageEvidenceTask>(
         "generate${targetTitle}CAbiPackageEvidence",
     ) {
@@ -841,7 +824,7 @@ desktopManifest.distributions.forEach { distribution ->
             dependsOn(cAbiPackageTasks.getValue(distribution.target))
         }
         target.set(distribution.target)
-        classifier.set(crossLanguageCAbiTargetSpecs.getValue(distribution.target).classifier)
+        classifier.set(cAbiTargetSpecs.getValue(distribution.target).classifier)
         libraryVersion.set(desktopRuntimeCompatibilityVersion)
         producerCommit.set(cAbiCandidateCommit)
         producerTree.set(cAbiCandidateTree)
@@ -852,7 +835,7 @@ desktopManifest.distributions.forEach { distribution ->
         cAbiToolDefaults(distribution.target).forEach { (id, executable) ->
             tools.put(id, providers.gradleProperty("codexAgent.cAbiTool.$id").orElse(executable))
         }
-        compileOnlyConsumers.set(crossLanguageCAbiCompileOnlyConsumers.sorted())
+        compileOnlyConsumers.set(cAbiCatalog.compileOnlyConsumers.sorted())
         packageFile.set(cAbiArchiveFiles.getValue(distribution.target))
         reviewedHeader.set(cAbiReviewedHeader)
         license.set(cAbiLicense)
@@ -861,7 +844,7 @@ desktopManifest.distributions.forEach { distribution ->
         consumerSources.from(cAbiConsumerSources)
         evidenceFile.set(layout.buildDirectory.file(
             "reports/cross-language-api/c-abi/packages/" +
-                crossLanguageCAbiPackageEvidenceFileName(distribution.target),
+                cAbiPackageEvidenceFileName(distribution.target),
         ))
     }
     registerJvmRuntimeEvidenceTask(
@@ -910,19 +893,18 @@ desktopManifest.distributions.forEach { distribution ->
             "reports/desktop-runtime-evidence/${desktopRuntimeEvidenceFileName(distribution.target)}",
         ))
     }
-    val component = crossLanguageCAbiTargetSpecs.getValue(distribution.target).classifier.removePrefix("c-abi-")
+    val component = cAbiTargetSpecs.getValue(distribution.target).classifier.removePrefix("c-abi-")
     val localPackagePhaseRoot = layout.buildDirectory.dir("product-stage/runtime/$component/package")
     val importedPackageSnapshotRoot = layout.buildDirectory.dir(
         cAbiCandidateTree.map { "imported-runtime-package-stages/$it/$component" },
     )
-    val snapshotImportedPackage = tasks.register<SnapshotImportedProductStageTask>(
+    val snapshotImportedPackage = registerRuntimeStageSnapshot(
         "snapshotImported${targetTitle}RuntimePackageStage",
-    ) {
-        sourceDirectory.set(layout.dir(importedRuntimePackageStage))
-        outputDirectory.set(importedPackageSnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
+        layout.dir(importedRuntimePackageStage),
+        importedPackageSnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    )
     val validationPackageRoot = if (importedRuntimePackageStage.isPresent) {
         importedPackageSnapshotRoot
     } else {
@@ -947,22 +929,20 @@ desktopManifest.distributions.forEach { distribution ->
             cAbiPackageEvidence.flatMap { it.evidenceFile },
         )
     }
-    val verifyImportedPackageManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
+    val verifyImportedPackageManifest = registerRuntimeOutputVerification(
         "verifyImported${targetTitle}RuntimePackageOutputManifest",
-    ) {
+        listOf(invalidateValidationOutputs, snapshotImportedPackage),
+        providers.provider { component },
+        "package",
+        providers.provider { component },
+        runtimeProductVersion,
+        importedPackageSnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).also { task -> task.configure {
         group = "verification"
         description = "Verifies the imported $component Runtime package manifest and complete tree."
-        dependsOn(invalidateValidationOutputs)
-        product.set("runtime")
-        this.component.set(component)
-        phase.set("package")
-        this.target.set(component)
-        productVersion.set(project.version.toString())
-        dependsOn(snapshotImportedPackage)
-        stageRoot.set(importedPackageSnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
+    } }
     val packagePrerequisite: Any = if (importedRuntimePackageStage.isPresent) {
         verifyImportedPackageManifest
     } else {
@@ -971,8 +951,20 @@ desktopManifest.distributions.forEach { distribution ->
     cAbiPackageEvidence.configure {
         dependsOn(invalidateValidationOutputs, packagePrerequisite)
         packageFile.set(validationPackageRoot.zip(desktopRuntimeCompatibilityVersion) { root, version ->
-            root.file("outputs/c-abi/${crossLanguageCAbiArchiveFileName(version, distribution.target)}")
+            root.file("outputs/c-abi/${cAbiArchiveFileName(version, distribution.target)}")
         })
+        if (importedRuntimePackageStage.isPresent) {
+            reviewedHeader.set(validationPackageRoot.map {
+                it.file("outputs/c-abi-reference/include/codex_agent.h")
+            })
+            license.set(validationPackageRoot.map { it.file("outputs/c-abi-reference/legal/LICENSE") })
+            notice.set(validationPackageRoot.map {
+                it.file("outputs/c-abi-reference/legal/THIRD_PARTY_NOTICES.md")
+            })
+            exportPolicy.set(validationPackageRoot.map {
+                it.file("outputs/c-abi-reference/export-policy/${cAbiExportPolicy(distribution.target).asFile.name}")
+            })
+        }
     }
     val importedNativeEvidence = tasks.register<ExecuteImportedNativeRuntimeEvidenceTask>(
         "executeImported${targetTitle}NativeRuntimeEvidence",
@@ -1014,25 +1006,25 @@ desktopManifest.distributions.forEach { distribution ->
         includeEmptyDirs = false
         duplicatesStrategy = DuplicatesStrategy.FAIL
     }
-    tasks.register<WriteProductOutputManifestTask>("write${targetTitle}RuntimeValidationOutputManifest") {
-        group = "verification"
-        description = "Writes and verifies the exact $component Runtime validation manifest."
-        dependsOn(stageValidation)
-        product.set("runtime")
-        this.component.set(component)
-        phase.set("validation")
-        this.target.set(component)
-        productVersion.set(project.version.toString())
-        outputRoots.set(mapOf(
+    registerRuntimeOutputManifest(
+        "write${targetTitle}RuntimeValidationOutputManifest",
+        stageValidation,
+        providers.provider { component },
+        "validation",
+        providers.provider { component },
+        runtimeProductVersion,
+        mapOf(
             "c-abi" to "outputs/c-abi",
             "c-abi-reference" to "outputs/c-abi-reference",
             "native" to "outputs/native",
-        ))
-        outputsDirectory.set(validationPhaseOutputs)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-        stageRoot.set(validationPhaseRoot)
-        manifestFile.set(validationPhaseRoot.map { it.file("output-manifest.json") })
+        ),
+        validationPhaseOutputs,
+        validationPhaseRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).configure {
+        group = "verification"
+        description = "Writes and verifies the exact $component Runtime validation manifest."
     }
 }
 
@@ -1040,7 +1032,7 @@ val jvmValidationTarget = providers.provider {
     checkNotNull(hostTarget) { "JVM Runtime validation requires a supported desktop host" }
 }
 val jvmValidationComponent = jvmValidationTarget.map { target ->
-    crossLanguageCAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
+    cAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
 }
 val jvmValidationDistribution = jvmValidationTarget.map { target ->
     desktopManifest.distributions.single { it.target == target }
@@ -1048,27 +1040,25 @@ val jvmValidationDistribution = jvmValidationTarget.map { target ->
 val importedJvmPackageSnapshotRoot = layout.buildDirectory.dir(
     cAbiCandidateTree.map { "imported-runtime-package-stages/$it/jvm" },
 )
-val snapshotImportedJvmRuntimePackage = tasks.register<SnapshotImportedProductStageTask>(
+val snapshotImportedJvmRuntimePackage = registerRuntimeStageSnapshot(
     "snapshotImportedJvmRuntimePackageStage",
-) {
-    sourceDirectory.set(layout.dir(importedRuntimePackageStage))
-    outputDirectory.set(importedJvmPackageSnapshotRoot)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-}
+    layout.dir(importedRuntimePackageStage),
+    importedJvmPackageSnapshotRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+)
 val importedJvmNativePackageSnapshotRoot = layout.buildDirectory.dir(
     cAbiCandidateTree.zip(jvmValidationComponent) { tree, component ->
         "imported-runtime-native-package-stages/$tree/jvm/$component"
     },
 )
-val snapshotImportedJvmNativeRuntimePackage = tasks.register<SnapshotImportedProductStageTask>(
+val snapshotImportedJvmNativeRuntimePackage = registerRuntimeStageSnapshot(
     "snapshotImportedJvmNativeRuntimePackageStage",
-) {
-    sourceDirectory.set(layout.dir(importedRuntimeNativePackageStage))
-    outputDirectory.set(importedJvmNativePackageSnapshotRoot)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-}
+    layout.dir(importedRuntimeNativePackageStage),
+    importedJvmNativePackageSnapshotRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+)
 val jvmValidationPackageRoot = if (importedRuntimePackageStage.isPresent) {
     importedJvmPackageSnapshotRoot
 } else {
@@ -1086,35 +1076,29 @@ val invalidateJvmRuntimeValidationOutputs = tasks.register<Delete>("invalidateJv
         layout.buildDirectory.dir("reports/imported-jvm-runtime-evidence"),
     )
 }
-val verifyImportedJvmRuntimePackageOutputManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
+val verifyImportedJvmRuntimePackageOutputManifest = registerRuntimeOutputVerification(
     "verifyImportedJvmRuntimePackageOutputManifest",
-) {
-    dependsOn(invalidateJvmRuntimeValidationOutputs)
-    product.set("runtime")
-    component.set("jvm")
-    phase.set("package")
-    target.set("jvm")
-    productVersion.set(project.version.toString())
-    dependsOn(snapshotImportedJvmRuntimePackage)
-    stageRoot.set(importedJvmPackageSnapshotRoot)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-}
+    listOf(invalidateJvmRuntimeValidationOutputs, snapshotImportedJvmRuntimePackage),
+    providers.provider { "jvm" },
+    "package",
+    providers.provider { "jvm" },
+    runtimeProductVersion,
+    importedJvmPackageSnapshotRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+)
 val verifyImportedJvmValidationNativePackageOutputManifest =
-    tasks.register<VerifyImportedProductOutputManifestTask>(
+    registerRuntimeOutputVerification(
         "verifyImportedJvmValidationNativePackageOutputManifest",
-    ) {
-        dependsOn(invalidateJvmRuntimeValidationOutputs)
-        product.set("runtime")
-        component.set(jvmValidationComponent)
-        phase.set("package")
-        target.set(jvmValidationComponent)
-        productVersion.set(project.version.toString())
-        dependsOn(snapshotImportedJvmNativeRuntimePackage)
-        stageRoot.set(importedJvmNativePackageSnapshotRoot)
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
+        listOf(invalidateJvmRuntimeValidationOutputs, snapshotImportedJvmNativeRuntimePackage),
+        jvmValidationComponent,
+        "package",
+        jvmValidationComponent,
+        runtimeProductVersion,
+        importedJvmNativePackageSnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    )
 val jvmPackagePrerequisite: Any = if (importedRuntimePackageStage.isPresent) {
     verifyImportedJvmRuntimePackageOutputManifest
 } else {
@@ -1169,20 +1153,20 @@ val stageJvmRuntimeValidation = tasks.register<Sync>("stageJvmRuntimeValidation"
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
-tasks.register<WriteProductOutputManifestTask>("writeJvmRuntimeValidationOutputManifest") {
+registerRuntimeOutputManifest(
+    "writeJvmRuntimeValidationOutputManifest",
+    stageJvmRuntimeValidation,
+    providers.provider { "jvm" },
+    "validation",
+    jvmValidationComponent,
+    runtimeProductVersion,
+    mapOf("jvm-evidence" to "outputs/jvm-evidence"),
+    jvmRuntimeValidationOutputs,
+    jvmRuntimeValidationPhaseRoot,
+    runtimeProductTooling,
+    repositoryRootFile,
+).configure {
     group = "verification"
-    dependsOn(stageJvmRuntimeValidation)
-    product.set("runtime")
-    component.set("jvm")
-    phase.set("validation")
-    target.set(jvmValidationComponent)
-    productVersion.set(project.version.toString())
-    outputRoots.set(mapOf("jvm-evidence" to "outputs/jvm-evidence"))
-    outputsDirectory.set(jvmRuntimeValidationOutputs)
-    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-    repositoryRoot.set(rootProject.layout.projectDirectory)
-    stageRoot.set(jvmRuntimeValidationPhaseRoot)
-    manifestFile.set(jvmRuntimeValidationPhaseRoot.map { it.file("output-manifest.json") })
 }
 
 pluginManager.withPlugin("maven-publish") {
@@ -1196,7 +1180,7 @@ pluginManager.withPlugin("maven-publish") {
                         builtBy(packageTask)
                     }
                 }
-                crossLanguageCAbiTargetSpecs.forEach { (target, spec) ->
+                cAbiTargetSpecs.forEach { (target, spec) ->
                     artifact(cAbiArchiveFiles.getValue(target)) {
                         classifier = spec.classifier
                         extension = "zip"

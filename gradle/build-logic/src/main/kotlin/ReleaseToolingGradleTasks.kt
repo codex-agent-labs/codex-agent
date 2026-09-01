@@ -1,4 +1,3 @@
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.file.Files
 import javax.inject.Inject
@@ -25,29 +24,6 @@ import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
-
-internal fun ExecOperations.captureReleaseProcess(
-    command: List<String>,
-    workingDirectory: File? = null,
-    environmentVariables: Map<String, String> = mapOf("LC_ALL" to "C", "LANG" to "C"),
-): String {
-    val output = ByteArrayOutputStream()
-    val errors = ByteArrayOutputStream()
-    val result = exec {
-        commandLine(command)
-        workingDirectory?.let(::workingDir)
-        environment(environmentVariables)
-        standardOutput = output
-        errorOutput = errors
-        isIgnoreExitValue = true
-    }
-    return requireSuccessfulReleaseProcess(
-        command,
-        result.exitValue,
-        output.toString(Charsets.UTF_8.name()),
-        errors.toString(Charsets.UTF_8.name()),
-    )
-}
 
 @DisableCachingByDefault(because = "Verifies the installed Apple toolchain")
 abstract class VerifyAppleToolchainTask @Inject constructor(private val processes: ExecOperations) : DefaultTask() {

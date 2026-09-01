@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 import shutil
 import stat
@@ -12,6 +13,7 @@ import zipfile
 
 import ci.products.aggregate as aggregate_product
 import ci.products.inventory as inventory_product
+import ci.products.signatures as signatures_product
 from ci.products.aggregate import (
     CONTRACT_CHECKSUM_SUFFIXES,
     CONTRACT_COMPONENTS,
@@ -692,7 +694,7 @@ class ProductInventoryTest(unittest.TestCase):
 
     def test_complete_regular_file_inventory_rejects_drift_empty_and_symlinks(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             (root / "a").mkdir()
             (root / "a/value").write_bytes(b"a")
             (root / "z").write_bytes(b"b")
@@ -720,7 +722,7 @@ class ProductInventoryTest(unittest.TestCase):
 
     def test_zip_inventory_rejects_unsafe_duplicate_special_and_noncanonical_members(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             valid = root / "valid.zip"
             with zipfile.ZipFile(valid, "w") as archive:
                 archive.writestr("a/value", b"a")
@@ -785,13 +787,13 @@ class ProductInventoryTest(unittest.TestCase):
 
     def test_file_and_zip_snapshots_reject_concurrent_growth_and_reparse_points(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             value = root / "value.json"
             value.write_bytes(b"a")
             original_open = inventory_product._open_regular_file
 
-            def open_then_append(path, label):
-                descriptor, metadata = original_open(path, label)
+            def open_then_append(path, label, **kwargs):
+                descriptor, metadata = original_open(path, label, **kwargs)
                 with Path(path).open("ab") as target:
                     target.write(b"x" * (1024 * 1024))
                 return descriptor, metadata
@@ -848,7 +850,7 @@ class ProductReceiptTest(unittest.TestCase):
 
     def test_output_manifest_verifies_the_complete_staged_tree(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             path = root / "payload/value.bin"
             path.parent.mkdir()
             path.write_bytes(b"a")
@@ -1150,7 +1152,7 @@ class ProductAggregateTest(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             staging = root / "staging"
             _write_staging(staging)
             private_key, public_key, signing_metadata = generate_development_key(root / "key")
@@ -1383,12 +1385,39 @@ class ProductAggregateTest(unittest.TestCase):
 class ProductSigningTest(unittest.TestCase):
     def test_development_signing_and_all_cryptographic_negatives(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             private_key, public_key, metadata = generate_development_key(root / "keys")
             manifest = root / "manifest.json"
             write_canonical_json(manifest, {"schemaVersion": 1, "signing": metadata})
             signature = sign_manifest(manifest, private_key, metadata)
             verify_manifest_signature(manifest, signature, public_key, metadata)
+            if os.name != "nt":
+                linked_parent = root / "linked-keys"
+                linked_parent.symlink_to(public_key.parent, target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, "unsafe directory"):
+                    verify_manifest_signature(
+                        manifest,
+                        signature,
+                        linked_parent / public_key.name,
+                        metadata,
+                    )
+            public_key_bytes = public_key.read_bytes()
+            fingerprint = signatures_product.public_key_fingerprint
+
+            def replace_key_after_fingerprint(contents):
+                result = fingerprint(contents)
+                public_key.write_bytes(public_key_bytes + b" ")
+                return result
+
+            try:
+                with mock.patch.object(
+                    signatures_product,
+                    "public_key_fingerprint",
+                    side_effect=replace_key_after_fingerprint,
+                ):
+                    verify_manifest_signature(manifest, signature, public_key, metadata)
+            finally:
+                public_key.write_bytes(public_key_bytes)
             with self.assertRaises(ValueError):
                 require_release_signing_metadata(metadata)
 
@@ -1431,7 +1460,7 @@ class ProductSigningTest(unittest.TestCase):
 
     def test_runtime_aggregate_verifies_exact_signed_variant_artifacts_and_receipts(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             private_key, public_key, metadata = generate_development_key(root / "keys")
             aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
@@ -1548,7 +1577,7 @@ class ProductSigningTest(unittest.TestCase):
 
     def test_runtime_variant_zip_limits_are_mandatory(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             private_key, public_key, metadata = generate_development_key(root / "keys")
             aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
@@ -1576,7 +1605,7 @@ class ProductSigningTest(unittest.TestCase):
 
     def test_runtime_metadata_receipt_uses_one_immutable_byte_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             private_key, public_key, metadata = generate_development_key(root / "keys")
             aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
@@ -1623,7 +1652,7 @@ class ProductSigningTest(unittest.TestCase):
 
     def test_runtime_variant_retains_only_authentication_material_before_signature_check(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             private_key, public_key, metadata = generate_development_key(root / "keys")
             aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
@@ -1658,7 +1687,7 @@ class ProductSigningTest(unittest.TestCase):
 
     def test_keyring_is_fail_closed_and_retired_keys_are_verify_only(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             _, public_key, metadata = generate_development_key(root / "generated")
             keys = root / "keys"; keys.mkdir()
             key_id = "release-test"

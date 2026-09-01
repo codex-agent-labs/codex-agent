@@ -73,9 +73,10 @@ class NodeDesktopWorkflowContractTest {
     fun `every direct desktop Gradle invocation receives its evidence target`() {
         val directDesktop = driver.substringAfter("run_desktop() {").substringBefore("\n}\n\ncase ")
         val targetArgument = "args+=(-PcodexAgent.desktopEvidenceTarget=\"${'$'}target\")"
+        val invocation = "runtime_gradle \"${'$'}runtime_target\" \"${'$'}{native_tasks[@]}\""
 
         assertEquals(1, Regex(Regex.escape(targetArgument)).findAll(directDesktop).count())
-        assertTrue(directDesktop.indexOf(targetArgument) < directDesktop.indexOf("./gradlew"))
+        assertTrue(directDesktop.indexOf(targetArgument) < directDesktop.indexOf(invocation))
     }
 
     @Test
@@ -87,7 +88,7 @@ class NodeDesktopWorkflowContractTest {
         val runDesktop = driver.substringAfter("run_desktop() {").substringBefore("\n}\n\ncase ")
         val task = ":codex-agent-runtime-desktop:generateCodexAgentCAbiBootstrapEvidence"
         val append = "native_tasks+=(\"${'$'}evidence_task\")"
-        val invocation = "./gradlew \"${'$'}{native_tasks[@]}\""
+        val invocation = "runtime_gradle \"${'$'}runtime_target\" \"${'$'}{native_tasks[@]}\""
 
         assertEquals(1, Regex(Regex.escape(task)).findAll(driver).count())
         assertEquals(1, Regex(Regex.escape(task)).findAll(macosArm64).count())

@@ -1,13 +1,10 @@
 import java.io.File
 import java.security.MessageDigest
-import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import org.gradle.testkit.runner.GradleRunner
-import org.gradle.testkit.runner.TaskOutcome
 
 class CrossLanguageCAbiBootstrapEvidenceTest {
     @Test
@@ -224,247 +221,162 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
     }
 
     @Test
-    fun `canonical prerequisite failure deletes stale C bootstrap evidence first`() {
-        val root = createTempDirectory("c-abi-bootstrap-preflight").toFile()
-        try {
-            root.resolve("settings.gradle.kts").writeText("""
-                rootProject.name = "c-abi-bootstrap-preflight"
-                include(":core", ":desktop")
-            """.trimIndent())
-            root.resolve("core").mkdirs()
-            root.resolve("core/build.gradle.kts").writeText("""
-                plugins { base }
-                val preflight = tasks.register<Delete>("invalidateCrossLanguageBindingParityOutputs")
-                tasks.configureEach {
-                    if (name !in setOf(
-                            preflight.name,
-                            "invalidateCodexAgentCAbiBootstrapEvidence",
-                        )
-                    ) {
-                        mustRunAfter(preflight)
-                    }
-                }
-                val failingPrerequisite = tasks.register("failingCanonicalCoverage") {
-                    doLast { throw GradleException("intentional canonical coverage failure") }
-                }
-                tasks.register("verifyCrossLanguageApiCoverage") {
-                    dependsOn(preflight, failingPrerequisite)
-                }
-            """.trimIndent())
-            root.resolve("desktop").mkdirs()
-            root.resolve("desktop/build.gradle.kts").writeText("""
-                plugins { base }
-                val evidence = layout.buildDirectory.file(
-                    "reports/cross-language-api/c-abi/bootstrap-evidence.json",
-                )
-                val consumers = layout.buildDirectory.dir("c-abi-bootstrap/consumers")
-                val preflight = tasks.register<Delete>("invalidateCodexAgentCAbiBootstrapEvidence") {
-                    delete(evidence, consumers)
-                }
-                tasks.configureEach {
-                    if (name !in setOf(
-                            preflight.name,
-                            "invalidateJavaScriptTypeScriptBindingParityOutput",
-                        )
-                    ) {
-                        mustRunAfter(preflight)
-                    }
-                }
-                project(":core").tasks.matching {
-                    it.name == "invalidateCrossLanguageBindingParityOutputs"
-                }.configureEach {
-                    mustRunAfter(preflight)
-                }
-                val link = tasks.register("linkReleaseSharedMacosArm64")
-                val nativeTest = tasks.register("macosArm64Test")
-                tasks.register("generateCodexAgentCAbiBootstrapEvidence") {
-                    dependsOn(
-                        preflight,
-                        ":core:verifyCrossLanguageApiCoverage",
-                        link,
-                        nativeTest,
-                    )
-                }
-            """.trimIndent())
-            val staleEvidence = root.resolve(
-                "desktop/build/reports/cross-language-api/c-abi/bootstrap-evidence.json",
-            ).apply {
-                parentFile.mkdirs()
-                writeText("stale observed evidence")
-            }
-            val staleConsumer = root.resolve(
-                "desktop/build/c-abi-bootstrap/consumers/stale-consumer",
-            ).apply {
-                parentFile.mkdirs()
-                writeText("stale compiler state")
-            }
-
-            val coreOnly = GradleRunner.create()
-                .withProjectDir(root)
-                .withArguments(":core:verifyCrossLanguageApiCoverage", "--stacktrace")
-                .buildAndFail()
-
-            assertTrue(coreOnly.task(":desktop:invalidateCodexAgentCAbiBootstrapEvidence") == null)
-            assertEquals(TaskOutcome.FAILED, coreOnly.task(":core:failingCanonicalCoverage")?.outcome)
-            assertTrue(staleEvidence.exists())
-            assertTrue(staleConsumer.exists())
-
-            val result = GradleRunner.create()
-                .withProjectDir(root)
-                .withArguments(":desktop:generateCodexAgentCAbiBootstrapEvidence", "--stacktrace")
-                .buildAndFail()
-
-            assertEquals(
-                TaskOutcome.SUCCESS,
-                result.task(":desktop:invalidateCodexAgentCAbiBootstrapEvidence")?.outcome,
-                result.output,
-            )
-            assertEquals(TaskOutcome.FAILED, result.task(":core:failingCanonicalCoverage")?.outcome)
-            assertTrue("intentional canonical coverage failure" in result.output)
-            assertFalse(staleEvidence.exists())
-            assertFalse(staleConsumer.exists())
-            val executedTasks = result.tasks.map { it.path }
-            assertTrue(
-                executedTasks.indexOf(":desktop:invalidateCodexAgentCAbiBootstrapEvidence") <
-                    executedTasks.indexOf(":core:invalidateCrossLanguageBindingParityOutputs"),
-                executedTasks.joinToString(),
-            )
-
-            val wiring = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
-            val generator = wiring.substringAfter(
-                "tasks.register<GenerateCAbiBootstrapEvidenceTask>(\"generateCodexAgentCAbiBootstrapEvidence\")",
-            ).substringBefore("\n}\nval cAbiScenarioProofFile")
-            listOf(
-                "reports/cross-language-api/c-abi/bootstrap-evidence.json",
-                "c-abi-bootstrap/consumers",
-                "tasks.register<Delete>(",
-                "delete(cAbiBootstrapEvidenceFile, cAbiBootstrapConsumerOutput)",
-                "mustRunAfter(invalidateCAbiBootstrapEvidence)",
-                "rootProject.findProject(\":codex-agent-core\")",
-                "rootProject.tasks.matching { it.name == \"prepareContractInputs\" }",
-            ).forEach { contract ->
-                assertTrue(contract in wiring, "Missing C bootstrap preflight contract: $contract")
-            }
-            val corePreflightOrdering = wiring.substringAfter(
-                "rootProject.findProject(\":codex-agent-core\")?.tasks?.matching {",
-            ).substringBefore("val generateCAbiBootstrapEvidence")
-            assertTrue("mustRunAfter(invalidateCAbiBootstrapEvidence)" in corePreflightOrdering)
-            assertFalse("dependsOn(invalidateCAbiBootstrapEvidence)" in corePreflightOrdering)
-            listOf(
-                "invalidateCAbiBootstrapEvidence",
-                "\":codex-agent-core:verifyCrossLanguageApiCoverage\"",
-                "\"linkReleaseSharedMacosArm64\"",
-                "\"macosArm64Test\"",
-                "canonical-api.json",
-                "canonical-coverage.json",
-                "native/c-api/include/codex_agent.h",
-                "src/nativeInterop/cinterop/codex_agent_c.def",
-                "native/c-api/exports/macos.exports",
-                "native/c-api/consumer/codex_agent_abi_smoke.c",
-                "native/c-api/consumer/codex_agent_header_smoke.cpp",
-                "native/c-api/consumer/codex_agent_lifecycle_compile.c",
-                "native/c-api/consumer/codex_agent_lifecycle_compile.cpp",
-                "native/c-api/consumer/codex_agent_conversation_values_compile.c",
-                "native/c-api/consumer/codex_agent_configuration_values_compile.c",
-                "native/c-api/consumer/codex_agent_resource_values_compile.c",
-                "native/c-api/consumer/codex_agent_ordinary_enums_compile.c",
-                "native/c-api/consumer/codex_agent_form_hook_values_compile.c",
-                "native/c-api/consumer/codex_agent_invocation_auth_values_compile.c",
-                "native/c-api/consumer/codex_agent_progress_list_values_compile.c",
-                "native/c-api/consumer/codex_agent_resource_list_values_compile.c",
-                "native/c-api/consumer/codex_agent_list_leaf_values_compile.c",
-                "native/c-api/consumer/codex_agent_mcp_transport_values_compile.c",
-                "native/c-api/consumer/codex_agent_integration_values_compile.c",
-                "native/c-api/consumer/codex_agent_mcp_server_values_compile.c",
-                "native/c-api/consumer/codex_agent_mcp_server_configuration_values_compile.c",
-                "native/c-api/consumer/codex_agent_integration_mcp_values_compile.c",
-                "native/c-api/consumer/codex_agent_conversation_aggregate_values_compile.c",
-                "native/c-api/consumer/codex_agent_elicitation_interaction_values_compile.c",
-                "native/c-api/consumer/codex_agent_hook_catalog_values_compile.c",
-                "native/c-api/consumer/codex_agent_integration_state_values_compile.c",
-                "native/c-api/consumer/codex_agent_authentication_configuration_values_compile.c",
-                "native/c-api/consumer/codex_agent_elicitation_behavior_values_compile.c",
-                "native/c-api/consumer/codex_agent_sealed_base_property_values_compile.c",
-                "native/c-api/consumer/codex_agent_root_value_accessors_compile.c",
-                "native/c-api/consumer/codex_agent_suspend_operations_compile.c",
-                "native/c-api/consumer/codex_agent_state_flows_compile.c",
-                "bin/macosArm64/releaseShared/libcodex_agent.dylib",
-                "bin/macosArm64/releaseShared/libcodex_agent_api.h",
-                "bin/macosArm64/debugTest/test.kexe",
-                "test-results/macosArm64Test",
-                "consumerOutputDirectory.set(cAbiBootstrapConsumerOutput)",
-                "evidenceFile.set(cAbiBootstrapEvidenceFile)",
-            ).forEach { contract ->
-                assertTrue(contract in generator, "Missing C bootstrap generator contract: $contract")
-            }
-            listOf(
-                "ordinaryEnumsCConsumer" to "codex_agent_ordinary_enums_compile.c",
-                "formHookValuesCConsumer" to "codex_agent_form_hook_values_compile.c",
-                "invocationAuthValuesCConsumer" to "codex_agent_invocation_auth_values_compile.c",
-                "progressListValuesCConsumer" to "codex_agent_progress_list_values_compile.c",
-                "resourceListValuesCConsumer" to "codex_agent_resource_list_values_compile.c",
-                "listLeafValuesCConsumer" to "codex_agent_list_leaf_values_compile.c",
-                "mcpTransportValuesCConsumer" to "codex_agent_mcp_transport_values_compile.c",
-                "integrationValuesCConsumer" to "codex_agent_integration_values_compile.c",
-                "mcpServerValuesCConsumer" to "codex_agent_mcp_server_values_compile.c",
-                "mcpServerConfigurationValuesCConsumer" to
-                    "codex_agent_mcp_server_configuration_values_compile.c",
-                "integrationMcpValuesCConsumer" to "codex_agent_integration_mcp_values_compile.c",
-                "conversationAggregateValuesCConsumer" to
-                    "codex_agent_conversation_aggregate_values_compile.c",
-                "elicitationInteractionValuesCConsumer" to
-                    "codex_agent_elicitation_interaction_values_compile.c",
-                "hookCatalogValuesCConsumer" to "codex_agent_hook_catalog_values_compile.c",
-                "integrationStateValuesCConsumer" to "codex_agent_integration_state_values_compile.c",
-                "authenticationConfigurationValuesCConsumer" to
-                    "codex_agent_authentication_configuration_values_compile.c",
-                "elicitationBehaviorValuesCConsumer" to
-                    "codex_agent_elicitation_behavior_values_compile.c",
-                "sealedBasePropertyValuesCConsumer" to
-                    "codex_agent_sealed_base_property_values_compile.c",
-                "rootValueAccessorsCConsumer" to "codex_agent_root_value_accessors_compile.c",
-                "serviceHandlesCConsumer" to "codex_agent_service_handles_compile.c",
-                "suspendOperationsCConsumer" to "codex_agent_suspend_operations_compile.c",
-                "stateFlowsCConsumer" to "codex_agent_state_flows_compile.c",
-                "interactionIdentityCConsumer" to "codex_agent_interaction_identity_compile.c",
-            ).forEach { (property, fixture) ->
-                val assignment = generator.substringAfter("$property.set(").substringBefore("\n    )")
-                assertTrue(fixture in assignment, "C bootstrap $property is not wired to $fixture")
-            }
-            val producer = File("src/main/kotlin/CrossLanguageCAbiBootstrapEvidence.kt").readText()
-            listOf(
-                "\"c11-ordinary-enums\"",
-                "\"c11-form-hook-values\"",
-                "\"c11-invocation-auth-values\"",
-                "\"c11-progress-list-values\"",
-                "\"c11-resource-list-values\"",
-                "\"c11-list-leaf-values\"",
-                "\"c11-mcp-transport-values\"",
-                "\"c11-integration-values\"",
-                "\"c11-mcp-server-values\"",
-                "\"c11-mcp-server-configuration-values\"",
-                "\"c11-integration-mcp-values\"",
-                "\"c11-conversation-aggregate-values\"",
-                "\"c11-elicitation-interaction-values\"",
-                "\"c11-hook-catalog-values\"",
-                "\"c11-integration-state-values\"",
-                "\"c11-authentication-configuration-values\"",
-                "\"c11-elicitation-behavior-values\"",
-                "\"c11-sealed-base-property-values\"",
-                "\"c11-root-value-accessors\"",
-                "\"c11-service-handles\"",
-                "\"c11-suspend-operations\"",
-                "\"c11-state-flows\"",
-                "\"c11-interaction-identity\"",
-                "C_ELICITATION_BEHAVIOR_RECLAMATION_TEST in passedTests",
-                "C_HOST_FACTORY_INVALID_TEST in passedTests",
-                "rows.size == 777",
-                "put(\"milestone\", JsonPrimitive(\"D104\"))",
-            ).forEach { contract ->
-                assertTrue(contract in producer, "Missing D104 C bootstrap producer contract: $contract")
-            }
-        } finally {
-            root.deleteRecursively()
+    fun `standalone bootstrap consumes imported Contract evidence and preserves exact capability wiring`() {
+        val wiring = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
+        val generator = wiring.substringAfter(
+            "tasks.register<GenerateCAbiBootstrapEvidenceTask>(\"generateCodexAgentCAbiBootstrapEvidence\")",
+        ).substringBefore("\nval nodeRuntimeEvidenceRunnerArchive")
+        listOf(
+            "providers.gradleProperty(\"codexAgent.contractManifest\")",
+            "reports/cross-language-api/c-abi/bootstrap-evidence.json",
+            "c-abi-bootstrap/consumers",
+            "tasks.register<Delete>(",
+            "delete(cAbiBootstrapEvidenceFile, cAbiBootstrapConsumerOutput)",
+            "mustRunAfter(invalidateCAbiBootstrapEvidence)",
+        ).forEach { contract ->
+            assertTrue(contract in wiring, "Missing standalone C bootstrap contract: $contract")
+        }
+        listOf(
+            "invalidateCAbiBootstrapEvidence",
+            "contractDirectory.set(layout.dir(contractBundleRoot))",
+            "contractPublicKey.set(layout.file(providers.gradleProperty(\"codexAgent.contractPublicKey\").map(::File)))",
+            "contractVersion.set(providers.gradleProperty(\"codexAgent.contractVersion\"))",
+            "contractComponent.set(\"macos-arm64\")",
+            "repositoryRoot.set(repositoryRootDirectory)",
+            "\"linkReleaseSharedMacosArm64\"",
+            "\"macosArm64Test\"",
+            "native/c-api/include/codex_agent.h",
+            "src/nativeInterop/cinterop/codex_agent_c.def",
+            "native/c-api/exports/macos.exports",
+            "native/c-api/consumer/codex_agent_abi_smoke.c",
+            "native/c-api/consumer/codex_agent_header_smoke.cpp",
+            "native/c-api/consumer/codex_agent_lifecycle_compile.c",
+            "native/c-api/consumer/codex_agent_lifecycle_compile.cpp",
+            "native/c-api/consumer/codex_agent_conversation_values_compile.c",
+            "native/c-api/consumer/codex_agent_configuration_values_compile.c",
+            "native/c-api/consumer/codex_agent_resource_values_compile.c",
+            "native/c-api/consumer/codex_agent_ordinary_enums_compile.c",
+            "native/c-api/consumer/codex_agent_form_hook_values_compile.c",
+            "native/c-api/consumer/codex_agent_invocation_auth_values_compile.c",
+            "native/c-api/consumer/codex_agent_progress_list_values_compile.c",
+            "native/c-api/consumer/codex_agent_resource_list_values_compile.c",
+            "native/c-api/consumer/codex_agent_list_leaf_values_compile.c",
+            "native/c-api/consumer/codex_agent_mcp_transport_values_compile.c",
+            "native/c-api/consumer/codex_agent_integration_values_compile.c",
+            "native/c-api/consumer/codex_agent_mcp_server_values_compile.c",
+            "native/c-api/consumer/codex_agent_mcp_server_configuration_values_compile.c",
+            "native/c-api/consumer/codex_agent_integration_mcp_values_compile.c",
+            "native/c-api/consumer/codex_agent_conversation_aggregate_values_compile.c",
+            "native/c-api/consumer/codex_agent_elicitation_interaction_values_compile.c",
+            "native/c-api/consumer/codex_agent_hook_catalog_values_compile.c",
+            "native/c-api/consumer/codex_agent_integration_state_values_compile.c",
+            "native/c-api/consumer/codex_agent_authentication_configuration_values_compile.c",
+            "native/c-api/consumer/codex_agent_elicitation_behavior_values_compile.c",
+            "native/c-api/consumer/codex_agent_sealed_base_property_values_compile.c",
+            "native/c-api/consumer/codex_agent_root_value_accessors_compile.c",
+            "native/c-api/consumer/codex_agent_suspend_operations_compile.c",
+            "native/c-api/consumer/codex_agent_state_flows_compile.c",
+            "bin/macosArm64/releaseShared/libcodex_agent.dylib",
+            "bin/macosArm64/releaseShared/libcodex_agent_api.h",
+            "bin/macosArm64/debugTest/test.kexe",
+            "test-results/macosArm64Test",
+            "consumerOutputDirectory.set(cAbiBootstrapConsumerOutput)",
+            "evidenceFile.set(cAbiBootstrapEvidenceFile)",
+        ).forEach { contract ->
+            assertTrue(contract in generator, "Missing C bootstrap generator contract: $contract")
+        }
+        assertFalse("canonical-api.json" in generator)
+        assertFalse("canonical-coverage.json" in generator)
+        val projection = File("src/main/kotlin/RuntimeCanonicalApiProjection.kt").readText()
+        listOf(
+            "System.getenv(\"GITHUB_ACTIONS\") == \"true\"",
+            "\"release\" else \"development\"",
+            "\"python3\", \"-m\", \"ci.products.contract\", \"verify-directory\"",
+            "\"--directory\", contractDirectory.absolutePath",
+            "\"--public-key\", publicKey.absolutePath",
+            "\"--expected-trust-domain\", trustDomain",
+            "\"--expected-contract-version\", contractVersion",
+            "\"--required-component\", \"common\"",
+            "\"--required-component\", requiredComponent",
+            "\"--print-canonical-api\"",
+            "if (trustDomain == \"release\")",
+            "\"--keyring\", repositoryRoot.resolve(\"gradle/release/product-signing-keys.json\").absolutePath",
+            "\"--keys-directory\", repositoryRoot.resolve(\"gradle/release/keys\").absolutePath",
+            "\"PYTHONPATH\" to repositoryRoot.absolutePath",
+            "\"PYTHONNOUSERSITE\" to \"1\"",
+            "\"PYTHONSAFEPATH\" to \"1\"",
+            "setOf(\"PYTHONHOME\", \"PYTHONINSPECT\", \"PYTHONSTARTUP\")",
+            "root.keys == setOf(",
+            "memberKeys.size == 556",
+            "targets.keys == setOf(\"native\", \"wasm\", \"jvm-classes\")",
+        ).forEach { contract ->
+            assertTrue(contract in projection, "Missing authenticated Contract projection contract: $contract")
+        }
+        listOf(
+            "ordinaryEnumsCConsumer" to "codex_agent_ordinary_enums_compile.c",
+            "formHookValuesCConsumer" to "codex_agent_form_hook_values_compile.c",
+            "invocationAuthValuesCConsumer" to "codex_agent_invocation_auth_values_compile.c",
+            "progressListValuesCConsumer" to "codex_agent_progress_list_values_compile.c",
+            "resourceListValuesCConsumer" to "codex_agent_resource_list_values_compile.c",
+            "listLeafValuesCConsumer" to "codex_agent_list_leaf_values_compile.c",
+            "mcpTransportValuesCConsumer" to "codex_agent_mcp_transport_values_compile.c",
+            "integrationValuesCConsumer" to "codex_agent_integration_values_compile.c",
+            "mcpServerValuesCConsumer" to "codex_agent_mcp_server_values_compile.c",
+            "mcpServerConfigurationValuesCConsumer" to
+                "codex_agent_mcp_server_configuration_values_compile.c",
+            "integrationMcpValuesCConsumer" to "codex_agent_integration_mcp_values_compile.c",
+            "conversationAggregateValuesCConsumer" to
+                "codex_agent_conversation_aggregate_values_compile.c",
+            "elicitationInteractionValuesCConsumer" to
+                "codex_agent_elicitation_interaction_values_compile.c",
+            "hookCatalogValuesCConsumer" to "codex_agent_hook_catalog_values_compile.c",
+            "integrationStateValuesCConsumer" to "codex_agent_integration_state_values_compile.c",
+            "authenticationConfigurationValuesCConsumer" to
+                "codex_agent_authentication_configuration_values_compile.c",
+            "elicitationBehaviorValuesCConsumer" to
+                "codex_agent_elicitation_behavior_values_compile.c",
+            "sealedBasePropertyValuesCConsumer" to
+                "codex_agent_sealed_base_property_values_compile.c",
+            "rootValueAccessorsCConsumer" to "codex_agent_root_value_accessors_compile.c",
+            "serviceHandlesCConsumer" to "codex_agent_service_handles_compile.c",
+            "suspendOperationsCConsumer" to "codex_agent_suspend_operations_compile.c",
+            "stateFlowsCConsumer" to "codex_agent_state_flows_compile.c",
+            "interactionIdentityCConsumer" to "codex_agent_interaction_identity_compile.c",
+        ).forEach { (property, fixture) ->
+            val assignment = generator.substringAfter("$property.set(").substringBefore("\n    )")
+            assertTrue(fixture in assignment, "C bootstrap $property is not wired to $fixture")
+        }
+        val producer = File("src/main/kotlin/CrossLanguageCAbiBootstrapEvidence.kt").readText()
+        listOf(
+            "\"c11-ordinary-enums\"",
+            "\"c11-form-hook-values\"",
+            "\"c11-invocation-auth-values\"",
+            "\"c11-progress-list-values\"",
+            "\"c11-resource-list-values\"",
+            "\"c11-list-leaf-values\"",
+            "\"c11-mcp-transport-values\"",
+            "\"c11-integration-values\"",
+            "\"c11-mcp-server-values\"",
+            "\"c11-mcp-server-configuration-values\"",
+            "\"c11-integration-mcp-values\"",
+            "\"c11-conversation-aggregate-values\"",
+            "\"c11-elicitation-interaction-values\"",
+            "\"c11-hook-catalog-values\"",
+            "\"c11-integration-state-values\"",
+            "\"c11-authentication-configuration-values\"",
+            "\"c11-elicitation-behavior-values\"",
+            "\"c11-sealed-base-property-values\"",
+            "\"c11-root-value-accessors\"",
+            "\"c11-service-handles\"",
+            "\"c11-suspend-operations\"",
+            "\"c11-state-flows\"",
+            "\"c11-interaction-identity\"",
+            "C_ELICITATION_BEHAVIOR_RECLAMATION_TEST in passedTests",
+            "C_HOST_FACTORY_INVALID_TEST in passedTests",
+            "rows.size == 777",
+            "put(\"milestone\", JsonPrimitive(\"D104\"))",
+        ).forEach { contract ->
+            assertTrue(contract in producer, "Missing D104 C bootstrap producer contract: $contract")
         }
     }
 

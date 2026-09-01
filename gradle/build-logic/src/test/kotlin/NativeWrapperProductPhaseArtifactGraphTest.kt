@@ -7,7 +7,8 @@ import kotlin.test.assertTrue
 import org.gradle.testkit.runner.GradleRunner
 
 class NativeWrapperProductPhaseArtifactGraphTest {
-    private val desktop = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
+    private val desktop = File("../../runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts")
+        .readText()
     private val sdk = File("src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts").readText()
     private val contract = File("src/main/kotlin/codexagent.contract-product.gradle.kts").readText()
     private val nativeWrapperTasks = File("src/main/kotlin/CrossLanguageNativeWrapperGradleTasks.kt").readText()

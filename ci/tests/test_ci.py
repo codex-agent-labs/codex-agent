@@ -461,12 +461,12 @@ class RunLaneContractTest(unittest.TestCase):
             driver,
         )
 
-    def test_contracts_run_the_exact_portable_binding_receipt_gates(self) -> None:
+    def test_contracts_run_only_contract_owned_binding_receipt_gates(self) -> None:
         driver = (CI_ROOT / "run-lane.sh").read_text(encoding="utf-8")
         contracts = driver.split("  contracts)", 1)[1].split("  portable)", 1)[0]
         self.assertIn('if [ "$build" = true ] || [ "$test_lane" = true ]; then', contracts)
         self.assertEqual(1, contracts.count(":codex-agent-core:verifyKotlinBindingParity"))
-        self.assertEqual(1, contracts.count(":codex-agent-core:verifyJavaBindingParity"))
+        self.assertNotIn(":codex-agent-core:verifyJavaBindingParity", contracts)
         self.assertNotIn(":codex-agent-core:auditCrossLanguageBindingParity", contracts)
         self.assertNotIn(":codex-agent-core:verifyCrossLanguageApiCoverage", contracts)
 
@@ -1854,7 +1854,7 @@ class RealImpactPlanTest(unittest.TestCase):
             "codex-agent-core/src/jvmTest/kotlin/io/github/codex_agent_labs/"
             "codexagent/agent/CodexPublicApiAdoptionTest.kt",
             "gradle/build-logic/src/main/kotlin/codexagent.core-verification.gradle.kts",
-            "gradle/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
+            "runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
         ):
             with self.subTest(path=path):
                 self.assertEqual(
@@ -1869,7 +1869,7 @@ class RealImpactPlanTest(unittest.TestCase):
         native_interop = "codex-agent-runtime-desktop/src/nativeInterop/cinterop/codex_agent_c.def"
         self.assertEqual(
             {
-                "contracts", "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
+                "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
                 "desktop-linux-x64", "desktop-windows-x64", "consumer-desktop",
             },
             matching_lanes(native_interop, "production"),
@@ -1919,6 +1919,18 @@ class RealImpactPlanTest(unittest.TestCase):
                 )
             }
 
+        def direct_matching_lanes(category: str, path: str) -> set[str]:
+            owners = set()
+            for lane in LANES:
+                pathspec = root / "ci/lanes" / f"{lane}.{category}.pathspec"
+                if pathspec.is_file() and any(
+                    fnmatch.fnmatchcase(path, spec)
+                    for spec in pathspec.read_text(encoding="utf-8").splitlines()
+                    if spec
+                ):
+                    owners.add(lane)
+            return owners
+
         release_only_sources = (
             "CandidateCiProvenance.kt",
             "CandidateManifestValidation.kt",
@@ -1962,13 +1974,11 @@ class RealImpactPlanTest(unittest.TestCase):
             set(LANES),
             matching_lanes("production", "gradle/libs.versions.toml"),
         )
-        self.assertEqual(
-            set(LANES),
-            matching_lanes("production", prefix + "ReleaseIo.kt"),
-        )
+        shared_release_io = "gradle/build-logic/src/main/kotlin/ReleaseIo.kt"
+        self.assertEqual(set(LANES), matching_lanes("production", shared_release_io))
         self.assertEqual(
             {"contracts"},
-            matching_lanes("test", prefix + "ReleaseIo.kt"),
+            matching_lanes("test", shared_release_io),
         )
         javascript_sdk = prefix + "codexagent.javascript-sdk.gradle.kts"
         self.assertEqual(
@@ -1983,7 +1993,7 @@ class RealImpactPlanTest(unittest.TestCase):
         )
         self.assertEqual(
             {
-                "contracts", "portable", "node-js", "node-wasm",
+                "portable", "node-js", "node-wasm",
                 "desktop-macos-arm64", "desktop-macos-x64",
                 "desktop-linux-arm64", "desktop-linux-x64", "desktop-windows-x64",
                 "ios-swift-tests",
@@ -2045,7 +2055,7 @@ class RealImpactPlanTest(unittest.TestCase):
             matching_lanes("test", codex_java_source),
         )
         self.assertEqual(
-            {"contracts", "portable", "consumer-desktop"},
+            {"portable", "consumer-desktop"},
             matching_lanes(
                 "production",
                 "codex-agent-runtime-desktop/src/jvmMain/kotlin/"
@@ -2055,9 +2065,7 @@ class RealImpactPlanTest(unittest.TestCase):
 
         parity_inputs = (
             prefix + "CrossLanguageBindingAudit.kt",
-            prefix + "GenerateDesktopDistributionSourceTask.kt",
             prefix + "PrepareCodexRuntimeTask.kt",
-            prefix + "codexagent.desktop-runtime.gradle.kts",
             "gradle/build-logic/src/test/kotlin/CrossLanguageBindingAuditTest.kt",
             "codex-agent-core/src/commonMain/kotlin/sample/Canonical.kt",
             "codex-agent-core/src/commonTest/kotlin/sample/CanonicalTest.kt",
@@ -2067,15 +2075,89 @@ class RealImpactPlanTest(unittest.TestCase):
             "codex-agent-core/src/nativeMain/kotlin/sample/NativeProjection.kt",
             "codex-agent-core/src/wasmJsMain/kotlin/sample/WasmProjection.kt",
             "codex-agent-core/src/jvmTest/java/sample/CodexJavaApiTest.java",
-            "codex-agent-runtime-desktop/src/commonMain/kotlin/sample/DesktopCommon.kt",
-            "codex-agent-runtime-desktop/src/desktopMain/kotlin/sample/Desktop.kt",
-            "codex-agent-runtime-desktop/src/jvmMain/kotlin/sample/DesktopCodexJava.kt",
-            "codex-agent-runtime-desktop/codex-app-server-distributions.json",
             "codex-agent-runtime-android/src/main/kotlin/sample/AndroidCodexJava.kt",
         )
         for path in parity_inputs:
             with self.subTest(parity_input=path):
                 self.assertIn("contracts", matching_lanes("production", path))
+        for runtime_path in (
+            "runtime/build-logic/src/main/kotlin/GenerateDesktopDistributionSourceTask.kt",
+            "runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
+            "codex-agent-runtime-desktop/src/commonMain/kotlin/sample/DesktopCommon.kt",
+            "codex-agent-runtime-desktop/src/desktopMain/kotlin/sample/Desktop.kt",
+            "codex-agent-runtime-desktop/src/jvmMain/kotlin/sample/DesktopCodexJava.kt",
+            "codex-agent-runtime-desktop/codex-app-server-distributions.json",
+        ):
+            with self.subTest(runtime_input=runtime_path):
+                self.assertNotIn("contracts", direct_matching_lanes("production", runtime_path))
+
+        runtime_owners = {
+            "portable", "node-js", "node-wasm",
+            "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
+            "desktop-linux-x64", "desktop-windows-x64",
+        }
+        for runtime_path in (
+            "runtime/settings.gradle.kts",
+            "runtime/build.gradle.kts",
+            "runtime/gradle.properties",
+            "runtime/settings-gradle.lockfile",
+            "runtime/build-logic/build.gradle.kts",
+            "runtime/build-logic/settings.gradle.kts",
+            "runtime/build-logic/src/main/kotlin/DesktopRuntimeEvidenceGradleTasks.kt",
+            "runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
+        ):
+            with self.subTest(standalone_runtime_input=runtime_path):
+                self.assertEqual(
+                    runtime_owners,
+                    direct_matching_lanes("production", runtime_path),
+                )
+
+        self.assertEqual(
+            {"contracts"},
+            direct_matching_lanes("production", "ci/products/test_results.py"),
+        )
+        self.assertEqual(
+            runtime_owners,
+            direct_matching_lanes(
+                "production", "runtime/build-logic/src/main/kotlin/JvmRuntimeEvidenceModel.kt",
+            ),
+        )
+        self.assertEqual(
+            runtime_owners,
+            direct_matching_lanes(
+                "production", "runtime/build-logic/src/main/kotlin/NodeRuntimeEvidenceModel.kt",
+            ),
+        )
+        self.assertEqual(
+            {
+                "contracts", "desktop-macos-arm64", "desktop-macos-x64",
+                "desktop-linux-arm64", "desktop-linux-x64", "desktop-windows-x64",
+                "consumer-desktop",
+            },
+            direct_matching_lanes(
+                "production", "ci/products/c_abi.py",
+            ),
+        )
+
+        self.assertEqual(
+            {"node-js"},
+            direct_matching_lanes("production", javascript_sdk),
+        )
+        self.assertEqual(
+            {
+                "desktop-macos-arm64", "desktop-macos-x64", "desktop-linux-arm64",
+                "desktop-linux-x64", "desktop-windows-x64",
+            },
+            direct_matching_lanes(
+                "production", prefix + "codexagent.native-wrapper-sdk.gradle.kts",
+            ),
+        )
+        self.assertEqual(
+            {"contracts"},
+            direct_matching_lanes(
+                "production", prefix + "VerifyImportedSdkBindingParityTask.kt",
+            ),
+        )
         self.assertEqual(
             {"contracts"},
             matching_lanes("production", prefix + "CrossLanguageJavaBindingEvidence.kt"),

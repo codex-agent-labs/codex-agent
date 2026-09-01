@@ -45,6 +45,9 @@ allprojects { group = CodexAgentBuild.MAVEN_GROUP }
 applyProductVersions(rootProject, readProductVersions(rootProject))
 val contractVersion = rootProject.extra["codexAgent.contractVersion"].toString()
 val runtimeProductVersion = rootProject.extra["codexAgent.runtimeVersion"].toString()
+val importedDesktopRuntimeJvmJar = layout.file(
+    providers.gradleProperty("codexAgent.desktopRuntimeJvmJar").map(::file),
+)
 val sdkProductVersion = rootProject.extra["codexAgent.sdkVersion"].toString()
 val publicationKotlinVersion = rootProject.extensions.getByType<VersionCatalogsExtension>()
     .named("libs").findVersion("kotlin").get().requiredVersion
@@ -64,7 +67,6 @@ val javaBindingInvalidationTaskNames = setOf(
     invalidateJavaBindingParityOutput.name,
     "invalidateJavaScriptTypeScriptBindingParityOutput",
     "invalidateCodexAgentAppleBindingEvidence",
-    "invalidateCodexAgentCAbiBootstrapEvidence",
 )
 rootProject.allprojects {
     tasks.configureEach {
@@ -81,7 +83,6 @@ sdkCoreProject.tasks.register<VerifyJavaBindingParityTask>("verifyJavaBindingPar
         ":codex-agent-core:verifyCrossLanguageApiCoverage",
         ":codex-agent-core:jvmJar",
         ":codex-agent-core:bundleAndroidMainAar",
-        ":codex-agent-runtime-desktop:jvmJar",
         ":codex-agent-runtime-android:bundleReleaseAar",
     )
     apiReport.set(sdkCoreProject.layout.buildDirectory.file(
@@ -95,9 +96,7 @@ sdkCoreProject.tasks.register<VerifyJavaBindingParityTask>("verifyJavaBindingPar
         "libs/codex-agent-core-jvm-$contractVersion.jar",
     ))
     coreAndroidAar.set(sdkCoreProject.layout.buildDirectory.file("outputs/aar/codex-agent-core.aar"))
-    desktopRuntimeJar.set(layout.projectDirectory.file(
-        "codex-agent-runtime-desktop/build/libs/codex-agent-runtime-desktop-jvm-$runtimeProductVersion.jar",
-    ))
+    desktopRuntimeJar.set(importedDesktopRuntimeJvmJar)
     androidRuntimeAar.set(layout.projectDirectory.file(
         "codex-agent-runtime-android/build/outputs/aar/codex-agent-runtime-android-release.aar",
     ))
@@ -164,7 +163,7 @@ val privacyRequiredReasonReviewTemplate = layout.projectDirectory.file("gradle/r
 val privacyRequiredReasonReviewOverride =
     layout.file(providers.gradleProperty("codexAgent.privacyRequiredReasonReview").map { File(it) })
 val desktopDistributionManifestFile =
-    layout.projectDirectory.file("codex-agent-runtime-desktop/codex-app-server-distributions.json")
+    layout.file(providers.gradleProperty("codexAgent.desktopDistributionManifest").map(::file))
 val desktopBundledLicenseFile =
     layout.projectDirectory.file("legal/openai-codex/openai-codex-LICENSE.txt")
 val desktopBundledNoticeFile =
@@ -395,7 +394,6 @@ val stagedConsumerPublicationTasks = mapOf(
         .flatMap { publication -> listOf(
             publicationTask("codex-agent-core", publication, "desktop"),
             publicationTask("codex-agent-sdk", publication, "desktop"),
-            publicationTask("codex-agent-runtime-desktop", publication, "desktop"),
         ) },
     "ios-device" to listOf(
         publicationTask("codex-agent-core", "KotlinMultiplatform", "ios-device"),
@@ -418,16 +416,12 @@ val stagedConsumerPublicationTasks = mapOf(
         publicationTask("codex-agent-core", "Js", "node-js"),
         publicationTask("codex-agent-sdk", "KotlinMultiplatform", "node-js"),
         publicationTask("codex-agent-sdk", "Js", "node-js"),
-        publicationTask("codex-agent-runtime-desktop", "KotlinMultiplatform", "node-js"),
-        publicationTask("codex-agent-runtime-desktop", "Js", "node-js"),
     ),
     "node-wasm" to listOf(
         publicationTask("codex-agent-core", "KotlinMultiplatform", "node-wasm"),
         publicationTask("codex-agent-core", "WasmJs", "node-wasm"),
         publicationTask("codex-agent-sdk", "KotlinMultiplatform", "node-wasm"),
         publicationTask("codex-agent-sdk", "WasmJs", "node-wasm"),
-        publicationTask("codex-agent-runtime-desktop", "KotlinMultiplatform", "node-wasm"),
-        publicationTask("codex-agent-runtime-desktop", "WasmJs", "node-wasm"),
     ),
 )
 val stagedConsumerGroupId = project.group.toString()

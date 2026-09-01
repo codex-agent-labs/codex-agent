@@ -9,6 +9,21 @@ internal data class ProductVersions(
     val sdk: String,
 )
 
+internal val PRODUCT_SEMVER = Regex(
+    "(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)" +
+        "(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)" +
+        "(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?" +
+        "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?",
+)
+
+internal fun runtimeCompatibilityVersion(releaseVersion: String): String {
+    check(PRODUCT_SEMVER.matches(releaseVersion) && '+' !in releaseVersion) {
+        "Runtime compatibility requires canonical SemVer without build metadata: $releaseVersion"
+    }
+    val (major, minor) = releaseVersion.substringBefore('-').split('.').take(2)
+    return "$major.$minor.0"
+}
+
 internal fun readProductVersions(repository: File): ProductVersions {
     val versions = repository.resolve("gradle/release/versions")
     return ProductVersions(
@@ -33,7 +48,6 @@ internal fun applyProductVersions(root: Project, versions: ProductVersions) {
     root.version = versions.sdk
     mapOf(
         ":codex-agent-core" to versions.contract,
-        ":codex-agent-runtime-desktop" to versions.runtime,
         ":codex-agent-sdk" to versions.sdk,
         ":codex-agent-runtime-android" to versions.sdk,
         ":codex-agent-runtime-ios" to versions.sdk,
@@ -46,13 +60,6 @@ internal fun applyProductVersions(root: Project, versions: ProductVersions) {
         set("codexAgent.sdkVersion", versions.sdk)
     }
 }
-
-private val STRICT_SEMVER = Regex(
-    "(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)" +
-        "(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)" +
-        "(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?" +
-        "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?",
-)
 
 internal fun readProductVersion(file: File): String {
     check(file.isFile && !Files.isSymbolicLink(file.toPath())) {
@@ -69,17 +76,9 @@ internal fun readProductVersion(file: File): String {
         "Product version authority must contain only visible ASCII SemVer bytes: $file"
     }
     val version = String(bytes, 0, bytes.size - 1, US_ASCII)
-    check(STRICT_SEMVER.matches(version)) { "Invalid product SemVer in $file: $version" }
+    check(PRODUCT_SEMVER.matches(version)) { "Invalid product SemVer in $file: $version" }
     check('+' !in version) {
         "Product version policy forbids build metadata in $file: $version"
     }
     return version
-}
-
-internal fun runtimeCompatibilityVersion(releaseVersion: String): String {
-    check(STRICT_SEMVER.matches(releaseVersion) && '+' !in releaseVersion) {
-        "Runtime compatibility requires canonical SemVer without build metadata: $releaseVersion"
-    }
-    val (major, minor) = releaseVersion.substringBefore('-').split('.').take(2)
-    return "$major.$minor.0"
 }

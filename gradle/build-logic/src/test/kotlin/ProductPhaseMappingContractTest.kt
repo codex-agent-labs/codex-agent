@@ -6,59 +6,19 @@ import kotlin.test.assertTrue
 
 class ProductPhaseMappingContractTest {
     private val contract = File("src/main/kotlin/codexagent.contract-product.gradle.kts").readText()
-    private val desktop = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
+    private val desktop = File("../../runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts")
+        .readText()
+    private val runtimeBuild = File("../../runtime/build.gradle.kts").readText()
     private val javascript = File("src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText()
     private val nativeWrappers = File("src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts").readText()
     private val node = File("../../codex-agent-runtime-desktop/build.gradle.kts").readText()
     private val manifestTask = File("src/main/kotlin/ProductOutputManifestGradleTask.kt").readText()
 
     @Test
-    fun root_lifecycle_maps_the_exact_initial_Contract_and_Runtime_phases() {
+    fun root_lifecycle_maps_only_Contract_and_SDK_phases() {
         val mapping = between(contract, "val requestedProduct =", "val contractBundleDirectory =")
         val expected = linkedMapOf(
             Triple("contract", "contract", "binary") to "writeContractBinaryOutputManifest",
-            Triple("runtime", "macos-arm64", "binary") to
-                "writeMacosArm64RuntimeBinaryOutputManifest",
-            Triple("runtime", "macos-x64", "binary") to
-                "writeMacosX64RuntimeBinaryOutputManifest",
-            Triple("runtime", "linux-arm64", "binary") to
-                "writeLinuxArm64RuntimeBinaryOutputManifest",
-            Triple("runtime", "linux-x64", "binary") to
-                "writeLinuxX64RuntimeBinaryOutputManifest",
-            Triple("runtime", "windows-x64", "binary") to
-                "writeMingwX64RuntimeBinaryOutputManifest",
-            Triple("runtime", "jvm", "binary") to "writeJvmRuntimeBinaryOutputManifest",
-            Triple("runtime", "node-js", "binary") to "writeNodeJsRuntimeBinaryOutputManifest",
-            Triple("runtime", "node-wasm", "binary") to "writeNodeWasmRuntimeBinaryOutputManifest",
-            Triple("runtime", "macos-arm64", "package") to
-                "writeMacosArm64RuntimePackageOutputManifest",
-            Triple("runtime", "macos-x64", "package") to
-                "writeMacosX64RuntimePackageOutputManifest",
-            Triple("runtime", "linux-arm64", "package") to
-                "writeLinuxArm64RuntimePackageOutputManifest",
-            Triple("runtime", "linux-x64", "package") to
-                "writeLinuxX64RuntimePackageOutputManifest",
-            Triple("runtime", "windows-x64", "package") to
-                "writeMingwX64RuntimePackageOutputManifest",
-            Triple("runtime", "jvm", "package") to "writeJvmRuntimePackageOutputManifest",
-            Triple("runtime", "node-js", "package") to "writeNodeJsRuntimePackageOutputManifest",
-            Triple("runtime", "node-wasm", "package") to
-                "writeNodeWasmRuntimePackageOutputManifest",
-            Triple("runtime", "macos-arm64", "validation") to
-                "writeMacosArm64RuntimeValidationOutputManifest",
-            Triple("runtime", "macos-x64", "validation") to
-                "writeMacosX64RuntimeValidationOutputManifest",
-            Triple("runtime", "linux-arm64", "validation") to
-                "writeLinuxArm64RuntimeValidationOutputManifest",
-            Triple("runtime", "linux-x64", "validation") to
-                "writeLinuxX64RuntimeValidationOutputManifest",
-            Triple("runtime", "windows-x64", "validation") to
-                "writeMingwX64RuntimeValidationOutputManifest",
-            Triple("runtime", "jvm", "validation") to "writeJvmRuntimeValidationOutputManifest",
-            Triple("runtime", "node-js", "validation") to
-                "writeNodeJsRuntimeValidationOutputManifest",
-            Triple("runtime", "node-wasm", "validation") to
-                "writeNodeWasmRuntimeValidationOutputManifest",
             Triple("sdk", "javascript", "package") to
                 "writeJavaScriptSdkPackageOutputManifest",
             Triple("sdk", "python", "package") to
@@ -88,6 +48,37 @@ class ProductPhaseMappingContractTest {
         listOf("orNull", "orElse", "onlyIf", "enabled = false").forEach { fallback ->
             assertFalse(fallback in mapping, fallback)
         }
+        assertFalse("Triple(\"runtime\"" in mapping)
+    }
+
+    @Test
+    fun standalone_Runtime_lifecycle_maps_the_exact_binary_package_and_validation_phases() {
+        val expected = linkedMapOf(
+            "macos-arm64" to "MacosArm64",
+            "macos-x64" to "MacosX64",
+            "linux-arm64" to "LinuxArm64",
+            "linux-x64" to "LinuxX64",
+            "windows-x64" to "MingwX64",
+            "jvm" to "Jvm",
+            "node-js" to "NodeJs",
+            "node-wasm" to "NodeWasm",
+        )
+        expected.forEach { (component, title) ->
+            listOf("binary", "package", "validation").forEach { phase ->
+                val task = "write${title}Runtime${phase.replaceFirstChar(Char::uppercase)}OutputManifest"
+                assertEquals(
+                    1,
+                    Regex.escape("(\"$component\" to \"$phase\") to \"$task\"")
+                        .toRegex().findAll(runtimeBuild).count(),
+                    "$component/$phase",
+                )
+            }
+        }
+        assertEquals(24, Regex("\\(\"[^\"]+\" to \"(?:binary|package|validation)\"\\) to")
+            .findAll(runtimeBuild).count())
+        assertTrue("check(requestedProduct.get() == \"runtime\")" in runtimeBuild)
+        assertTrue("check(target == component)" in runtimeBuild)
+        assertTrue("desktopRuntime.tasks.named(taskName)" in runtimeBuild)
     }
 
     @Test
@@ -99,23 +90,23 @@ class ProductPhaseMappingContractTest {
         val native = nativePhases()
         assertEquals(
             2,
-            Regex("tasks\\.register<WriteProductOutputManifestTask>").findAll(native).count(),
+            Regex("registerRuntimeOutputManifest\\(").findAll(native).count(),
         )
         assertTrue(
-            "val writeJvmRuntimeBinaryOutputManifest = tasks.register<WriteProductOutputManifestTask>(" in
+            "val writeJvmRuntimeBinaryOutputManifest = registerRuntimeOutputManifest(" in
                 desktop,
         )
         assertTrue(
-            "tasks.register<WriteProductOutputManifestTask>(\"writeJvmRuntimePackageOutputManifest\")" in
+            "registerRuntimeOutputManifest(\n    \"writeJvmRuntimePackageOutputManifest\"" in
                 desktop,
         )
         assertTrue(
-            "tasks.register<WriteProductOutputManifestTask>(\"writeJvmRuntimeValidationOutputManifest\")" in
+            "registerRuntimeOutputManifest(\n    \"writeJvmRuntimeValidationOutputManifest\"" in
                 desktop,
         )
         assertTrue(
-            "tasks.register<WriteProductOutputManifestTask>(" +
-                "\"write\${targetTitle}RuntimeValidationOutputManifest\")" in nativeValidation(),
+            "registerRuntimeOutputManifest(\n        \"write\${targetTitle}RuntimeValidationOutputManifest\"" in
+                nativeValidation(),
         )
         listOf(
             "writeNodeJsRuntimeBinaryOutputManifest",
@@ -125,13 +116,14 @@ class ProductPhaseMappingContractTest {
         )
             .forEach { task ->
                 assertTrue(
-                    "tasks.register<WriteProductOutputManifestTask>(\"$task\")" in node,
+                    Regex("registerRuntimeOutputManifest\\(\\s*\"${Regex.escape(task)}\"")
+                        .containsMatchIn(node),
                     task,
                 )
             }
         assertTrue(
-            "tasks.register<WriteProductOutputManifestTask>(" +
-                "\"write\${title}RuntimeValidationOutputManifest\")" in nodeValidation(),
+            "registerRuntimeOutputManifest(\n        \"write\${title}RuntimeValidationOutputManifest\"" in
+                nodeValidation(),
         )
         assertTrue(
             "tasks.register<WriteProductOutputManifestTask>(" +
@@ -167,6 +159,7 @@ class ProductPhaseMappingContractTest {
             mapOf(
                 "app-server" to "outputs/app-server",
                 "c-abi" to "outputs/c-abi",
+                "c-abi-reference" to "outputs/c-abi-reference",
                 "validation-runner" to "outputs/validation-runner",
             ),
             outputRoots(packages),
@@ -174,8 +167,9 @@ class ProductPhaseMappingContractTest {
         listOf("app-server", "c-abi", "validation-runner").forEach { root ->
             assertTrue("into(\"$root\")" in packages, "Native package stage does not populate $root")
         }
+        assertTrue("into(\"c-abi-reference/" in packages)
         assertTrue("desktopManifest.distributions.associate" in native)
-        assertTrue("crossLanguageCAbiTargetSpecs.getValue(target)" in native)
+        assertTrue("cAbiTargetSpecs.getValue(target)" in native)
     }
 
     @Test
@@ -187,8 +181,8 @@ class ProductPhaseMappingContractTest {
         assertTrue("dependsOn(compileDesktopProcessSupervisor)" in binary)
         assertTrue("from(binarySupervisor) { into(\"supervisor\") }" in binary)
         assertFalse("from(compileDesktopProcessSupervisor.flatMap { it.outputFile })" in binary)
-        assertTrue("tasks.register<SnapshotImportedProductStageTask>" in binary)
-        assertTrue("stageRoot.set(importedBinarySnapshotRoot)" in binary)
+        assertTrue("registerRuntimeStageSnapshot(" in binary)
+        assertTrue("importedBinarySnapshotRoot," in binary)
         assertTrue("packageBinaryStageRoot = if (importedRuntimeBinaryStage.isPresent)" in native)
     }
 
@@ -222,7 +216,7 @@ class ProductPhaseMappingContractTest {
             assertEquals(expected, outputRoots(stage), task)
             assertTrue("into(\"adapter\")" in stage, task)
             assertTrue("into(\"validation-runner\")" in stage, task)
-            assertTrue("tasks.register<WriteProductOutputManifestTask>(" in stage, task)
+            assertTrue("registerRuntimeOutputManifest(" in stage, task)
         }
     }
 
@@ -240,7 +234,13 @@ class ProductPhaseMappingContractTest {
         listOf("c-abi", "c-abi-reference", "native").forEach { root ->
             assertTrue("into(\"$root" in validation, "Native validation does not populate $root")
         }
-        assertTrue("phase.set(\"validation\")" in validation)
+        val outputManifest = between(
+            validation,
+            "registerRuntimeOutputManifest(",
+            ").configure {",
+        )
+        assertTrue("\"write\${targetTitle}RuntimeValidationOutputManifest\"" in outputManifest)
+        assertTrue("\n        \"validation\"," in outputManifest)
         assertTrue("dependsOn(cAbiPackageEvidence, importedNativeEvidence)" in validation)
 
         val handoff = nativeValidationHandoff()
@@ -255,8 +255,8 @@ class ProductPhaseMappingContractTest {
                 .findAll(packageInputs).count(),
         )
         assertTrue(
-            "root.file(\"outputs/c-abi/" +
-                "\${crossLanguageCAbiArchiveFileName(version, distribution.target)}\")" in packageInputs,
+            "root.file(\"outputs/c-abi/\${cAbiArchiveFileName(version, distribution.target)}\")" in
+                packageInputs,
         )
         assertTrue(
             "\"outputs/app-server/codex-agent-runtime-desktop-\$version-" +
@@ -273,22 +273,31 @@ class ProductPhaseMappingContractTest {
             "val cAbiConsumerSources =",
         )
         assertTrue(
-            "providers.gradleProperty(\"codexAgent.desktopEvidenceTarget\").orElse(" in targetRouting,
+            "providers.gradleProperty(\"codexAgent.desktopEvidenceTarget\").orNull" in targetRouting,
         )
         assertTrue(
             "requestedEvidenceTarget?.let { check(it in desktopRuntimeEvidenceTargets)" in targetRouting,
         )
         assertTrue(
-            "providers.gradleProperty(\"codexAgent.component\").map { component ->" in targetRouting,
+            "providers.gradleProperty(\"codexAgent.component\").orNull?.let { component ->" in targetRouting,
         )
-        assertTrue("crossLanguageCAbiTargetSpecs.entries.single" in targetRouting)
+        assertTrue("cAbiTargetSpecs.entries.singleOrNull" in targetRouting)
         assertTrue(
             "it.value.classifier.removePrefix(\"c-abi-\") == component" in targetRouting,
         )
         assertTrue(
-            "inputs.property(\"requestedTarget\", productPhaseEvidenceTarget.orElse(\"\"))" in
-                nativeValidationHandoff(),
+            "productPhaseEvidenceTarget = requestedEvidenceTarget ?: componentEvidenceTarget.orEmpty()" in
+                targetRouting,
         )
+        val validationHandoff = nativeValidationHandoff()
+        assertTrue(
+            "registerRuntimeEvidenceTargetValidation(\n" +
+                "        \"validate\${targetTitle}DesktopEvidenceTarget\",\n" +
+                "        productPhaseEvidenceTarget,\n" +
+                "        distribution.target,\n" +
+                "    )" in validationHandoff,
+        )
+        assertTrue("dependsOn(validateEvidenceTarget)" in validationHandoff)
     }
 
     @Test
@@ -315,15 +324,15 @@ class ProductPhaseMappingContractTest {
         }
         assertEquals(
             2,
-            Regex("tasks\\.register<VerifyImportedProductOutputManifestTask>").findAll(validation).count(),
+            Regex("registerRuntimeOutputVerification\\(").findAll(validation).count(),
         )
-        assertTrue("stageRoot.set(importedJvmPackageSnapshotRoot)" in validation)
-        assertTrue("stageRoot.set(importedJvmNativePackageSnapshotRoot)" in validation)
-        assertEquals(2, Regex("tasks\\.register<SnapshotImportedProductStageTask>").findAll(validation).count())
+        assertTrue("importedJvmPackageSnapshotRoot," in validation)
+        assertTrue("importedJvmNativePackageSnapshotRoot," in validation)
+        assertEquals(2, Regex("registerRuntimeStageSnapshot\\(").findAll(validation).count())
         assertTrue(
             "tasks.register<Delete>(\"invalidateJvmRuntimeValidationOutputs\")" in validation,
         )
-        assertTrue("dependsOn(invalidateJvmRuntimeValidationOutputs)" in validation)
+        assertTrue("dependsOn(importedJvmRuntimeEvidence)" in validation)
         assertTrue(
             "tasks.register<RecordJvmRuntimeEvidenceTask>(" in validation &&
                 "\"executeImportedJvmRuntimeEvidence\"" in validation,
@@ -358,10 +367,10 @@ class ProductPhaseMappingContractTest {
         )
         assertEquals(
             2,
-            Regex("tasks\\.register<VerifyImportedProductOutputManifestTask>").findAll(validation).count(),
+            Regex("registerRuntimeOutputVerification\\(").findAll(validation).count(),
         )
-        assertTrue("stageRoot.set(importedPackageSnapshotRoot)" in validation)
-        assertTrue("stageRoot.set(importedNodeNativePackageSnapshotRoot)" in validation)
+        assertTrue("importedPackageSnapshotRoot," in validation)
+        assertTrue("importedNodeNativePackageSnapshotRoot," in validation)
         assertTrue(
             "tasks.register<Delete>(\"invalidate\${title}RuntimeValidationOutputs\")" in validation,
         )
@@ -547,8 +556,27 @@ class ProductPhaseMappingContractTest {
     }
 
     private fun outputRoots(source: String): Map<String, String> {
-        assertTrue("outputRoots.set(mapOf(" in source, "Missing outputRoots declaration")
-        val values = source.substringAfter("outputRoots.set(mapOf(").substringBefore("))")
+        val oldMarker = "outputRoots.set(mapOf("
+        val mapStart = if (oldMarker in source) {
+            source.indexOf(oldMarker) + oldMarker.length
+        } else {
+            val registration = source.indexOf("registerRuntimeOutputManifest(")
+            assertTrue(registration >= 0, "Missing Runtime output manifest registration")
+            val marker = source.indexOf("mapOf(", registration)
+            assertTrue(marker >= 0, "Missing Runtime outputRoots declaration")
+            marker + "mapOf(".length
+        }
+        var depth = 1
+        var end = mapStart
+        while (end < source.length && depth > 0) {
+            when (source[end]) {
+                '(' -> depth++
+                ')' -> depth--
+            }
+            end++
+        }
+        assertEquals(0, depth, "Unclosed outputRoots declaration")
+        val values = source.substring(mapStart, end - 1)
         return Regex("\"([^\"]+)\" to \"([^\"]+)\"").findAll(values).associate { match ->
             match.groupValues[1] to match.groupValues[2]
         }

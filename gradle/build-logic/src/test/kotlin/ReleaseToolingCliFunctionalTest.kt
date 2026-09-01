@@ -230,6 +230,22 @@ class ReleaseToolingCliFunctionalTest {
                 repository.resolve(".github/workflows/product-validation.yml").readText(),
         )
         assertTrue(":codex-agent-runtime-desktop:wasmJsNodeTest" in driver)
+        val portable = driver.substringAfter("  portable)").substringBefore("  android)")
+        val nodeWasm = driver.substringAfter("  node-wasm)").substringBefore("  desktop-macos-arm64)")
+        val runtimeDriver = driver.substringAfter("runtime_gradle() {").substringBefore("\n}")
+        assertTrue("./gradlew -p runtime" in runtimeDriver)
+        listOf(
+            "codexAgent.contractRepository",
+            "codexAgent.contractManifest",
+            "codexAgent.contractPublicKey",
+            "codexAgent.contractVersion",
+            "codexAgent.runtimeVersion",
+            "codexAgent.target",
+        ).forEach { property -> assertEquals(1, Regex(Regex.escape(property)).findAll(runtimeDriver).count(), property) }
+        assertTrue("runtime_gradle jvm" in portable)
+        assertTrue("runtime_gradle node-js" in portable)
+        assertTrue("runtime_gradle node-wasm" in nodeWasm)
+        assertFalse(Regex("\\./gradlew[^\\n]*:codex-agent-runtime-desktop").containsMatchIn(driver))
         listOf(
             "codex-agent-jvm-runtime-evidence-runner.zip",
             "codex-agent-node-runtime-evidence-runner.zip",
