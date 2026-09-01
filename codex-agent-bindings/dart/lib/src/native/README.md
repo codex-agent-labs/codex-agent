@@ -9,8 +9,7 @@ each directory below before publishing this package:
 - `linux-x64/libcodex_agent.so`
 - `windows-x64/codex_agent.dll`
 
-The Dart loader accepts only the current desktop ABI classifier and validates
-ABI compatibility before creating a context. These files are not source
-artifacts. Repository release integration must verify their checksums and
-provenance before package assembly; the Dart package does not yet duplicate
-that shared evidence.
+The Dart loader accepts only the current desktop ABI classifier. Package
+assembly also inserts the authenticated `sdk-compatibility.json` beside this
+README. The loader verifies the embedded library digest and Runtime identity
+before creating a context. These files are not source artifacts.

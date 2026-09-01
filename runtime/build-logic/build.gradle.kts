@@ -42,8 +42,18 @@ tasks.processResources {
             "products/test_results.py",
             "products/runtime_evidence.py",
             "products/c_abi.py",
+            "products/runtime_flags.py",
         )
         into("python/ci")
+    }
+    from(layout.projectDirectory.dir("../../codex-agent-runtime-desktop/native/c-api")) {
+        include(
+            "abi-contract.json",
+            "exports/linux.map",
+            "exports/macos.exports",
+            "exports/windows.def",
+        )
+        into("python/codex-agent-runtime-desktop/native/c-api")
     }
 }
 

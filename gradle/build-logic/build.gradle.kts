@@ -27,6 +27,10 @@ tasks.processResources {
         )
         into("python/ci")
     }
+    from(layout.projectDirectory.dir("../../codex-agent-runtime-desktop/native/c-api")) {
+        include("abi-contract.json", "exports/linux.map", "exports/macos.exports", "exports/windows.def")
+        into("python/codex-agent-runtime-desktop/native/c-api")
+    }
 }
 
 val releaseToolingRuntime by configurations.creating {

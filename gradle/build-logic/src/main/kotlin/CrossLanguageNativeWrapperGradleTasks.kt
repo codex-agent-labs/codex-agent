@@ -4,13 +4,16 @@ import javax.inject.Inject
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -41,6 +44,43 @@ abstract class SnapshotImportedNativeWrapperRuntimeStagesTask @Inject constructo
     }
 }
 
+@DisableCachingByDefault(because = "Signed imported product inputs must be reauthenticated on every invocation")
+abstract class GenerateNativeWrapperSdkCompatibilityTask @Inject constructor(
+    private val processes: ExecOperations,
+) : DefaultTask() {
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val requestFile: RegularFileProperty
+    @get:OutputFile abstract val outputFile: RegularFileProperty
+    @get:Input abstract val pythonExecutable: Property<String>
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val producerSources: ConfigurableFileCollection
+    @get:Internal abstract val repositoryRoot: DirectoryProperty
+
+    init { pythonExecutable.convention("python3") }
+
+    @TaskAction
+    fun generate() {
+        val output = outputFile.get().asFile
+        output.delete()
+        output.parentFile.mkdirs()
+        try {
+            processes.exec {
+                workingDir(repositoryRoot.get().asFile)
+                environment("PYTHONDONTWRITEBYTECODE", "1")
+                commandLine(
+                    pythonExecutable.get(), "-m", "ci.products.sdk_compatibility",
+                    "--request", requestFile.get().asFile.absolutePath,
+                    "--output", output.absolutePath,
+                )
+            }
+            check(regularCAbiFile(output)) { "SDK compatibility producer emitted no regular output" }
+        } catch (error: Exception) {
+            output.delete()
+            throw error
+        }
+    }
+}
+
 private fun requireExactRuntimeStageTree(destinationRoot: File) {
     val expected = setOf("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64")
     check(destinationRoot.list()?.toSet() == expected) { "Imported Runtime component inventory mismatch" }
@@ -62,10 +102,13 @@ abstract class StageCrossLanguageNativeWrapperSdksTask @Inject constructor(
 ) : DefaultTask() {
     @get:Input abstract val libraryVersion: Property<String>
     @get:Input abstract val runtimeProductVersion: Property<String>
+    @get:Input abstract val sdkVersion: Property<String>
     @get:Input abstract val producerCommit: Property<String>
     @get:Input abstract val producerTree: Property<String>
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val runtimeStageRoot: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sdkCompatibility: RegularFileProperty
     @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
     @get:Input abstract val pythonExecutable: Property<String>
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -101,7 +144,8 @@ abstract class StageCrossLanguageNativeWrapperSdksTask @Inject constructor(
     }
 
     private fun nativeWrapperSdkInput(stageRoot: File) = CrossLanguageNativeWrapperSdkInput(
-        libraryVersion.get(), producerCommit.get(), producerTree.get(),
+        libraryVersion.get(), runtimeProductVersion.get(), sdkVersion.get(),
+        producerCommit.get(), producerTree.get(), sdkCompatibility.get().asFile,
         crossLanguageCAbiTargetSpecs.keys.associateWith { target ->
             val component = crossLanguageCAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
             stageRoot.resolve(

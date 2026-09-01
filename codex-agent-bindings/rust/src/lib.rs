@@ -6,6 +6,7 @@
 //! awaited asynchronous close before their native token can be released.
 
 mod async_runtime;
+mod compatibility;
 mod enums;
 mod ffi;
 #[allow(dead_code)]
@@ -31,7 +32,7 @@ use std::time::Duration;
 
 use async_runtime::{start_operation, start_subscription};
 
-/// Encoded C ABI version required by this crate (1.12.0).
+/// Encoded C ABI version required by this crate (1.13.0).
 pub const CODEX_AGENT_ABI_VERSION: u32 = ffi::ABI_VERSION;
 
 /// Status returned by the stable C SDK.
@@ -330,6 +331,16 @@ impl RuntimeTarget {
             Self::WindowsX64 => "codex_agent.dll",
         }
     }
+
+    const fn identity_identifier(self) -> &'static str {
+        match self {
+            Self::MacosArm64 => "macos-arm64",
+            Self::MacosX64 => "macos-x64",
+            Self::LinuxArm64 => "linux-arm64",
+            Self::LinuxX64 => "linux-x64",
+            Self::WindowsX64 => "windows-x64",
+        }
+    }
 }
 
 struct LibraryInner {
@@ -342,56 +353,136 @@ pub struct CodexNativeLibrary {
     inner: Arc<LibraryInner>,
 }
 
+fn exact_external_runtime_path(requested: &Path) -> Result<PathBuf, CodexError> {
+    if requested.as_os_str().is_empty() || !requested.is_absolute() {
+        return Err(CodexError::load(
+            "Codex Agent external Runtime path must be a nonempty absolute path; loader-name/system fallback is forbidden",
+        ));
+    }
+    let mut current = Some(requested);
+    let mut final_entry = true;
+    while let Some(path) = current {
+        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+            CodexError::load(format!(
+                "inspect exact Runtime path {}: {error}",
+                path.display()
+            ))
+        })?;
+        if metadata.file_type().is_symlink()
+            || (final_entry && !metadata.is_file())
+            || (!final_entry && !metadata.is_dir())
+        {
+            return Err(CodexError::load(format!(
+                "Codex Agent Runtime path contains a symbolic or nonregular entry: {}",
+                path.display()
+            )));
+        }
+        final_entry = false;
+        current = path.parent().filter(|parent| parent != &path);
+    }
+    let canonical = std::fs::canonicalize(requested).map_err(|error| {
+        CodexError::load(format!(
+            "resolve exact Runtime path {}: {error}",
+            requested.display()
+        ))
+    })?;
+    if canonical != requested {
+        return Err(CodexError::load(
+            "Codex Agent external Runtime path must already be canonical",
+        ));
+    }
+    Ok(canonical)
+}
+
 impl CodexNativeLibrary {
-    /// Loads an explicit C SDK shared library and rejects missing symbols or incompatible ABI.
+    /// Loads an explicit absolute C SDK path and authenticates its Runtime identity.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, CodexError> {
-        let api = ffi::Api::load(path.as_ref()).map_err(|error| match error {
+        let path = exact_external_runtime_path(path.as_ref())?;
+        Self::load_exact(&path, false)
+    }
+
+    fn load_exact(path: &Path, embedded: bool) -> Result<Self, CodexError> {
+        Self::load_exact_with(path, embedded, |path| {
+            // SAFETY: the authenticated Runtime path is exact and remains owned for the returned API.
+            unsafe { libloading::Library::new(path) }
+                .map_err(|error| format!("could not load {}: {error}", path.display()))
+        })
+    }
+
+    fn load_exact_with(
+        path: &Path,
+        embedded: bool,
+        open_library: impl FnOnce(&Path) -> Result<libloading::Library, String>,
+    ) -> Result<Self, CodexError> {
+        let target = RuntimeTarget::current()?;
+        let compatibility = compatibility::compatibility().map_err(CodexError::load)?;
+        let api = ffi::Api::load(
+            path,
+            open_library,
+            |identity| {
+                compatibility.authenticate_identity(
+                    identity,
+                    target.identity_identifier(),
+                    embedded,
+                )
+            },
+        )
+        .map_err(|error| match error {
             ffi::LoadError::UnsupportedAbi(actual) => CodexError::new(
                 Status::UnsupportedAbi,
                 format!(
-                    "incompatible Codex Agent C SDK ABI 0x{actual:08x}; Rust binding requires ABI 1.12 compatibility"
+                    "incompatible Codex Agent C SDK ABI 0x{actual:08x}; Rust binding requires ABI 1.13 compatibility"
                 ),
             ),
-            ffi::LoadError::Open(message) | ffi::LoadError::MissingSymbol(message) => {
-                CodexError::load(message)
-            }
+            ffi::LoadError::Open(message)
+            | ffi::LoadError::MissingSymbol(message)
+            | ffi::LoadError::Identity(message) => CodexError::load(message),
         })?;
         Ok(Self {
             inner: Arc::new(LibraryInner { api }),
         })
     }
 
-    /// Loads the matching-host library from deterministic package/application locations.
+    /// Loads the matching-host verified embedded Runtime, unless an explicit override is set.
     ///
-    /// `CODEX_AGENT_LIBRARY` takes precedence. Otherwise the loader checks beside the executable,
-    /// then `runtimes/<target>/native`. It never depends on a Cargo source/cache directory or
-    /// falls back to a same-named library from the platform loader search path.
+    /// `CODEX_AGENT_LIBRARY` must be an absolute compatible external Runtime path. Without it,
+    /// the package's authenticated matching-target Runtime is materialized in a content-addressed
+    /// per-user cache. No executable-adjacent or platform search-path fallback is used.
     pub fn load_default() -> Result<Self, CodexError> {
         let target = RuntimeTarget::current()?;
         if let Some(path) = std::env::var_os("CODEX_AGENT_LIBRARY") {
             return Self::load(PathBuf::from(path));
         }
-        let file = target.library_name();
-        let mut candidates = Vec::new();
-        if let Ok(executable) = std::env::current_exe()
-            && let Some(directory) = executable.parent()
-        {
-            candidates.push(directory.join(file));
-            candidates.push(
-                directory
-                    .join("runtimes")
-                    .join(target.identifier())
-                    .join("native")
-                    .join(file),
-            );
-        }
-        if let Some(path) = candidates.iter().find(|candidate| candidate.is_file()) {
-            return Self::load(path);
-        }
-        Err(CodexError::load(format!(
-            "could not find verified {} C SDK library {file}; set CODEX_AGENT_LIBRARY to an explicit verified library",
-            target.identifier()
-        )))
+        let snapshot = compatibility::embedded_runtime_snapshot(
+            target.identity_identifier(),
+            target.library_name(),
+        )
+        .map_err(CodexError::load)?;
+        Self::load_snapshot_with(snapshot, |path| {
+            // SAFETY: the protected snapshot handle/path remains owned through authentication.
+            unsafe { libloading::Library::new(path) }
+                .map_err(|error| format!("could not load {}: {error}", path.display()))
+        })
+    }
+
+    fn load_snapshot_with(
+        snapshot: compatibility::EmbeddedRuntimeSnapshot,
+        open_library: impl FnOnce(&Path) -> Result<libloading::Library, String>,
+    ) -> Result<Self, CodexError> {
+        snapshot.verify().map_err(CodexError::load)?;
+        let load_path = snapshot.load_path();
+        let native = Self::load_exact_with(&load_path, true, |path| {
+            let library = open_library(path)?;
+            snapshot.verify()?;
+            Ok(library)
+        })?;
+        #[cfg(windows)]
+        snapshot
+            .retain_until_exit(native.inner.api.library_handle())
+            .map_err(CodexError::load)?;
+        #[cfg(not(windows))]
+        drop(snapshot);
+        Ok(native)
     }
 
     /// Returns the loaded library's encoded ABI version.
@@ -2725,4 +2816,251 @@ where
             )
         },
     ))
+}
+
+#[cfg(all(test, unix))]
+mod loader_security_tests {
+    use super::*;
+    use std::process::Command;
+
+    fn component_id() -> &'static str {
+        match RuntimeTarget::current().unwrap() {
+            RuntimeTarget::MacosArm64 => {
+                "sha256:2333333333333333333333333333333333333333333333333333333333333333"
+            }
+            RuntimeTarget::MacosX64 => {
+                "sha256:2444444444444444444444444444444444444444444444444444444444444444"
+            }
+            RuntimeTarget::LinuxArm64 => {
+                "sha256:2111111111111111111111111111111111111111111111111111111111111111"
+            }
+            RuntimeTarget::LinuxX64 => {
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+            RuntimeTarget::WindowsX64 => unreachable!(),
+        }
+    }
+
+    fn compile(name: &str, context_create_status: &str) -> PathBuf {
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "codex-agent-rust-loader-fixtures-{}",
+                std::process::id()
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        let output = root.join(if cfg!(target_os = "macos") {
+            format!("lib{name}.dylib")
+        } else {
+            format!("lib{name}.so")
+        });
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_codex_agent.c");
+        let mut command = Command::new("cc");
+        command.args([
+            "-std=gnu11",
+            "-fPIC",
+            "-pthread",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+        ]);
+        if cfg!(target_os = "macos") {
+            command.arg("-dynamiclib");
+        } else {
+            command.arg("-shared");
+        }
+        let result = command
+            .arg(format!(
+                "-DCODEX_AGENT_TEST_COMPONENT_ID=\"{}\"",
+                component_id()
+            ))
+            .arg(format!(
+                "-DCODEX_AGENT_TEST_CONTEXT_CREATE_STATUS={context_create_status}"
+            ))
+            .arg(source)
+            .arg("-o")
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        output
+    }
+
+    #[test]
+    fn actual_dynamic_open_rejects_ordinary_fully_compatible_aba() {
+        let verified = compile("verified", "0");
+        let malicious = compile("malicious", "8");
+        let root = verified.parent().unwrap().join("aba-snapshots");
+        let snapshot = compatibility::snapshot_for_test(
+            &root,
+            verified.file_name().unwrap().to_str().unwrap(),
+            &std::fs::read(&verified).unwrap(),
+        );
+        let pathname = snapshot.path().to_owned();
+        let owner = pathname.parent().unwrap().to_owned();
+        let backup = pathname.with_extension("verified");
+        let native = CodexNativeLibrary::load_snapshot_with(snapshot, |load_path| {
+            if std::fs::OpenOptions::new()
+                .write(true)
+                .open(&pathname)
+                .is_ok()
+            {
+                return Err("ordinary write unexpectedly bypassed snapshot protection".into());
+            }
+            if std::fs::rename(&pathname, &backup).is_ok() {
+                let _ = std::fs::rename(&backup, &pathname);
+                return Err(
+                    "ordinary replacement unexpectedly bypassed snapshot protection".into(),
+                );
+            }
+            if std::fs::copy(&malicious, &pathname).is_ok() {
+                return Err("ordinary overwrite unexpectedly bypassed snapshot protection".into());
+            }
+            // SAFETY: the documented path is protected and still bound to the verified handle.
+            unsafe { libloading::Library::new(load_path) }.map_err(|error| error.to_string())
+        })
+        .expect("protected pathname load must reject ordinary ABA");
+        assert_eq!(native.abi_version(), CODEX_AGENT_ABI_VERSION);
+        let mut context = std::ptr::null_mut();
+        // SAFETY: the writable context slot follows the authenticated C API contract.
+        assert_eq!(
+            unsafe { (native.inner.api.context_create)(&mut context) },
+            0
+        );
+        // SAFETY: context was created by this authenticated library and remains live.
+        assert_eq!(
+            unsafe { (native.inner.api.context_destroy)(&mut context) },
+            ffi::STATUS_BUSY
+        );
+        // SAFETY: the first bounded cleanup attempt retained the same live context.
+        assert_eq!(
+            unsafe { (native.inner.api.context_destroy)(&mut context) },
+            ffi::STATUS_OK
+        );
+        assert!(context.is_null());
+        assert!(
+            !owner.exists(),
+            "successful embedded snapshot owner must be removed"
+        );
+    }
+
+    #[test]
+    fn embedded_snapshot_child() {
+        let Some(library) = std::env::var_os("CODEX_AGENT_RUST_EMBEDDED_CHILD_LIBRARY") else {
+            return;
+        };
+        let root = PathBuf::from(std::env::var_os("CODEX_AGENT_RUST_EMBEDDED_CHILD_ROOT").unwrap());
+        let library = PathBuf::from(library);
+        let snapshot = compatibility::snapshot_for_test(
+            &root,
+            library.file_name().unwrap().to_str().unwrap(),
+            &std::fs::read(&library).unwrap(),
+        );
+        CodexNativeLibrary::load_snapshot_with(snapshot, |path| {
+            // SAFETY: path is bound to the protected snapshot file descriptor.
+            unsafe { libloading::Library::new(path) }.map_err(|error| error.to_string())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn embedded_snapshot_child_exit_leaves_no_owner_directory() {
+        let verified = compile("child", "0");
+        let root = verified.parent().unwrap().join("child-snapshots");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let before: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "loader_security_tests::embedded_snapshot_child",
+                "--nocapture",
+            ])
+            .env("CODEX_AGENT_RUST_EMBEDDED_CHILD_LIBRARY", &verified)
+            .env("CODEX_AGENT_RUST_EMBEDDED_CHILD_ROOT", &root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let after: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            before, after,
+            "child process leaked a Runtime snapshot owner"
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_loader_cleanup_tests {
+    use super::*;
+    use std::process::Command;
+
+    const COMPONENT: &str = "2555555555555555555555555555555555555555555555555555555555555555";
+
+    #[test]
+    fn embedded_snapshot_windows_child() {
+        if std::env::var_os("CODEX_AGENT_RUST_WINDOWS_EMBEDDED_CHILD").is_none() {
+            return;
+        }
+        CodexNativeLibrary::load_default().expect("load staged embedded Windows Runtime");
+    }
+
+    #[test]
+    fn embedded_snapshot_windows_exit_frees_then_deletes_owner() {
+        if !compatibility::embedded_available_for_test() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "codex-agent-rust-windows-exit-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let snapshots = root
+            .join("codex-agent/runtime")
+            .join(COMPONENT)
+            .join("windows-x64/snapshots");
+        std::fs::create_dir_all(&snapshots).unwrap();
+        let before: Vec<_> = std::fs::read_dir(&snapshots)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "windows_loader_cleanup_tests::embedded_snapshot_windows_child",
+                "--nocapture",
+            ])
+            .env("CODEX_AGENT_RUST_WINDOWS_EMBEDDED_CHILD", "1")
+            .env("LOCALAPPDATA", &root)
+            .env_remove("CODEX_AGENT_LIBRARY")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let after: Vec<_> = std::fs::read_dir(&snapshots)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            before, after,
+            "Windows process exit leaked a Runtime snapshot owner"
+        );
+    }
 }

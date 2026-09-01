@@ -20,11 +20,13 @@ import 'package:codex_agent/src/ffi.dart'
         NativeApi,
         OperationCallbackNative,
         StateCallbackNative,
+        authenticatedRuntimeLibraryForTesting,
         nativeMemory,
         newHandleSlot;
 import 'package:test/test.dart';
 
 import 'test_inputs.dart';
+import 'native_fixture.dart';
 
 final class DartConversationClaim {
   const DartConversationClaim({
@@ -387,19 +389,27 @@ Future<void> verifyRealConversationBoundary(
 }
 
 Future<String> _buildFixture() async {
-  final output =
-      '${Directory.systemTemp.path}/codex_agent_dart_conversation_$pid'
-      '${Platform.isMacOS ? '.dylib' : Platform.isWindows ? '.dll' : '.so'}';
+  final output = nativeFixturePath(
+    'codex_agent_dart_conversation_$pid'
+    '${Platform.isMacOS ? '.dylib' : Platform.isWindows ? '.dll' : '.so'}',
+  );
   final source = File('test/native/fake_codex_agent.c').absolute.path;
   final result = Platform.isWindows
-      ? await Process.run(
-          'cl', <String>['/nologo', '/LD', source, '/link', '/OUT:$output'])
+      ? await Process.run('cl', <String>[
+          '/nologo',
+          '/LD',
+          ...runtimeIdentityCompilerDefinitions(),
+          source,
+          '/link',
+          '/OUT:$output'
+        ])
       : await Process.run('cc', <String>[
           '-std=c11',
           '-Wall',
           '-Wextra',
           '-Werror',
           '-pedantic',
+          ...runtimeIdentityCompilerDefinitions(),
           ...(Platform.isMacOS
               ? const <String>['-dynamiclib']
               : const <String>['-shared', '-fPIC', '-pthread']),
@@ -865,10 +875,10 @@ void registerConversationParity(
   for (final claim in sorted) {
     test(claim.executedTests.single, () async {
       final path = await fixture;
-      final count = DynamicLibrary.open(path).lookupFunction<
+      final count = authenticatedRuntimeLibraryForTesting(path).lookupFunction<
           Int32 Function(Pointer<Uint8>),
           int Function(Pointer<Uint8>)>('codex_agent_dart_leaf_call_count');
-      final failNext = DynamicLibrary.open(path)
+      final failNext = authenticatedRuntimeLibraryForTesting(path)
           .lookupFunction<Void Function(), void Function()>(
               'codex_agent_dart_test_fail_next_operation');
       final headers = _headerCalls(claim);

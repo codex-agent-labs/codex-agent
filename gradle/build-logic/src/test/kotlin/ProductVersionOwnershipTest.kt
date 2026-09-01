@@ -55,6 +55,7 @@ class ProductVersionOwnershipTest {
         assertEquals(versions.contract, identities.get("codexAgent.contractVersion"))
         assertEquals(versions.runtime, identities.get("codexAgent.runtimeVersion"))
         assertEquals(versions.sdk, identities.get("codexAgent.sdkVersion"))
+        assertEquals(versions.sdkDefaultRuntime, identities.get("codexAgent.sdkDefaultRuntimeVersion"))
     }
 
     private fun configuredVersions(repository: File): Map<String, String> {
@@ -83,5 +84,7 @@ class ProductVersionOwnershipTest {
         ).forEach { (name, version) ->
             repository.resolve("gradle/release/versions/$name").writeText("$version\n")
         }
+        repository.resolve("gradle/release/sdk-default-runtime.txt")
+            .writeText("${versions.sdkDefaultRuntime}\n")
     }
 }

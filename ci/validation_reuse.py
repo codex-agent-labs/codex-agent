@@ -10,7 +10,11 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from impact import NATIVE_WRAPPER_LANES, validate_remote_build_authorization
+from impact import (
+    NATIVE_WRAPPER_LANES,
+    validate_legacy_lane_projection,
+    validate_remote_build_authorization,
+)
 from receipt import required_lanes, safe_extract
 from reuse import download_artifact, paginated_items, run_matches_pr
 
@@ -81,6 +85,8 @@ def validate(root: Path, current_plan: Path) -> dict[str, object]:
     plan = json.loads(current_plan.read_text(encoding="utf-8"))
     files = exact_files(root)
     source_plan = json.loads((root / "impact-plan.json").read_text(encoding="utf-8"))
+    validate_legacy_lane_projection(plan, plan_path=current_plan)
+    validate_legacy_lane_projection(source_plan, plan_path=root / "impact-plan.json")
     receipt = json.loads((root / "validation-receipt.json").read_text(encoding="utf-8"))
     expected = {
         "schemaVersion", "repository", "event", "validationCommit", "validationTree",
@@ -91,7 +97,7 @@ def validate(root: Path, current_plan: Path) -> dict[str, object]:
     plan_keys = {
         "schemaVersion", "event", "repository", "pullRequest", "baseCommit", "headCommit",
         "validationCommit", "validationTree", "mergeReady", "remoteBuildAuthorized",
-        "remoteBuildAuthorizationReason", "androidEvidenceRequired", "full",
+        "remoteBuildAuthorizationReason", "androidEvidenceRequired", "fullRequested", "full",
         "unknownPaths", "changedPaths", "lanes",
     }
     if (

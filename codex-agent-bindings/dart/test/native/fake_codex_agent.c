@@ -344,9 +344,30 @@ static int subscribe(void *context, state_callback_t callback, void *user_data, 
   return subscribe_with_initial(context, callback, user_data, out, kind, 1);
 }
 
-API uint32_t CALL codex_agent_abi_version(void) { return (1u << 24) | (12u << 16); }
+#ifndef CODEX_AGENT_TEST_CONTRACT_DIGEST
+#define CODEX_AGENT_TEST_CONTRACT_DIGEST "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+#endif
+#ifndef CODEX_AGENT_TEST_TARGET
+#define CODEX_AGENT_TEST_TARGET "macos-arm64"
+#endif
+static const char runtime_identity[] =
+  "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\","
+  "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+  "\"contractComponentDigest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\","
+  "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\",\"runtimeCompatibilityVersion\":\"0.2.0\","
+  "\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+
+API uint32_t CALL codex_agent_abi_version(void) { return (1u << 24) | (13u << 16); }
 API int32_t CALL codex_agent_abi_is_compatible(uint32_t requested) {
-  return (requested >> 24) == 1u;
+  return requested >= (1u << 24) && requested <= ((1u << 24) | (13u << 16));
+}
+API int32_t CALL codex_agent_runtime_identity(char *buffer, size_t *size) {
+  size_t required = sizeof(runtime_identity);
+  if (size == NULL) return 1;
+  if (buffer == NULL || *size < required) { *size = required; return BUFFER_TOO_SMALL; }
+  memcpy(buffer, runtime_identity, required);
+  *size = required;
+  return OK;
 }
 API void CALL codex_agent_test_emit_terminal_state(int32_t enabled) {
   test_store(&emit_terminal_state, enabled);

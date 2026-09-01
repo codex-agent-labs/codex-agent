@@ -50,7 +50,7 @@ internal unsafe struct NativeConversationOpenOptions
 internal static unsafe partial class NativeMethods
 {
     internal const string LibraryName = "codex_agent";
-    internal const uint AbiVersion = 0x010C0000;
+    internal const uint AbiVersion = 0x010D0000;
 
     static NativeMethods() => NativeLibraryLoader.Initialize();
 

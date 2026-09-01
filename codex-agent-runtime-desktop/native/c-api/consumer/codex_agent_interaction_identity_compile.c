@@ -3,13 +3,13 @@
 #include <stdint.h>
 
 _Static_assert(CODEX_AGENT_ABI_VERSION_MAJOR == UINT32_C(1), "ABI major");
-_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(12), "ABI minor");
+_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(13), "ABI minor");
 _Static_assert(CODEX_AGENT_ABI_VERSION_PATCH == UINT32_C(0), "ABI patch");
 _Static_assert(
-    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x010C0000),
+    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x010D0000),
     "ABI current");
 _Static_assert(
-    CODEX_AGENT_ABI_VERSION_ENCODE(1, 12, 0) ==
+    CODEX_AGENT_ABI_VERSION_ENCODE(1, 13, 0) ==
         CODEX_AGENT_ABI_VERSION_CURRENT,
     "ABI encoding");
 

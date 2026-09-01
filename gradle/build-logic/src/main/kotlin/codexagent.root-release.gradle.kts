@@ -45,6 +45,7 @@ allprojects { group = CodexAgentBuild.MAVEN_GROUP }
 applyProductVersions(rootProject, readProductVersions(rootProject))
 val contractVersion = rootProject.extra["codexAgent.contractVersion"].toString()
 val runtimeProductVersion = rootProject.extra["codexAgent.runtimeVersion"].toString()
+val sdkDefaultRuntimeVersion = rootProject.extra["codexAgent.sdkDefaultRuntimeVersion"].toString()
 val importedDesktopRuntimeJvmJar = layout.file(
     providers.gradleProperty("codexAgent.desktopRuntimeJvmJar").map(::file),
 )
@@ -137,7 +138,7 @@ val verifySdkFacadePublicationMetadata = tasks.register<VerifySdkFacadePublicati
     bomPublications.set(layout.buildDirectory.dir("publications/maven"))
     groupId.set(CodexAgentBuild.MAVEN_GROUP)
     contractVersion.set(rootProject.extra["codexAgent.contractVersion"].toString())
-    runtimeVersion.set(runtimeProductVersion)
+    runtimeVersion.set(sdkDefaultRuntimeVersion)
     sdkVersion.set(sdkProductVersion)
     kotlinVersion.set(publicationKotlinVersion)
     forbiddenPath.set(layout.projectDirectory.asFile.absolutePath)
@@ -310,7 +311,7 @@ val sdkFacadeConsumerTasks = sdkFacadeConsumerBuildTasks.mapValues { (target, bu
         mavenInventory.set(sdkFacadeConsumerMavenInventory)
         gradleWrapper.set(layout.projectDirectory.file("gradlew"))
         sdkVersion.set(sdkProductVersion)
-        runtimeVersion.set(runtimeProductVersion)
+        runtimeVersion.set(sdkDefaultRuntimeVersion)
         androidSdkDirectory.set(rootAndroidSdkDirectory)
         targetName.set(target)
         this.buildTasks.set(buildTasks)
@@ -426,7 +427,7 @@ val stagedConsumerPublicationTasks = mapOf(
 )
 val stagedConsumerGroupId = project.group.toString()
 val stagedConsumerContractVersion = contractVersion
-val stagedConsumerRuntimeVersion = runtimeProductVersion
+val stagedConsumerRuntimeVersion = sdkDefaultRuntimeVersion
 val stagedConsumerSdkVersion = sdkProductVersion
 val stagedConsumerTasks = linkedMapOf(
     "common" to "verifyStagedKmpConsumerCommon",
@@ -483,7 +484,7 @@ val stagedConsumerTasks = linkedMapOf(
         mavenInventory.set(targetInventory)
         gradleWrapper.set(layout.projectDirectory.file("gradlew"))
         sdkVersion.set(project.version.toString())
-        runtimeVersion.set(rootProject.extra["codexAgent.runtimeVersion"].toString())
+        runtimeVersion.set(rootProject.extra["codexAgent.sdkDefaultRuntimeVersion"].toString())
         androidSdkDirectory.set(rootAndroidSdkDirectory)
         targetName.set(target)
         buildTasks.set(stagedConsumerBuildTasks.getValue(target))

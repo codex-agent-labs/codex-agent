@@ -23,7 +23,7 @@ classifiers = [
 ]
 
 [tool.setuptools.package-data]
-codex_agent = ["py.typed", "native/*/*"]
+codex_agent = ["py.typed", "native/sdk-compatibility.json", "native/*/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

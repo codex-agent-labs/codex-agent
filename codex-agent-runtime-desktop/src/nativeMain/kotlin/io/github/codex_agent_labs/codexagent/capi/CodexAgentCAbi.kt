@@ -7,11 +7,14 @@ package io.github.codex_agent_labs.codexagent.capi
 
 import kotlinx.cinterop.COpaquePointerVar
 import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.UByteVar
+import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.pointed
+import kotlinx.cinterop.set
 import kotlinx.cinterop.value
 
-private const val ABI_VERSION_CURRENT: UInt = 0x010C0000u
-private const val ABI_VERSION_MINIMUM_COMPATIBLE: UInt = 0x01000000u
+internal const val RUNTIME_IDENTITY_SCHEMA_VERSION: Int = GENERATED_RUNTIME_IDENTITY_SCHEMA_VERSION
+private val runtimeIdentityBytes: ByteArray = GENERATED_RUNTIME_IDENTITY_JSON.encodeToByteArray()
 
 internal const val CODEX_AGENT_STATUS_OK: Int = 0
 internal const val CODEX_AGENT_STATUS_INVALID_ARGUMENT: Int = 1
@@ -25,11 +28,26 @@ internal const val CODEX_AGENT_STATUS_OPERATION_FAILED: Int = 14
 internal val handleRegistry = CodexAgentCHandleRegistry()
 
 @CName("codex_agent_abi_version")
-public fun codexAgentAbiVersion(): UInt = ABI_VERSION_CURRENT
+public fun codexAgentAbiVersion(): UInt = GENERATED_ABI_VERSION_CURRENT
 
 @CName("codex_agent_abi_is_compatible")
 public fun codexAgentAbiIsCompatible(requestedVersion: UInt): Int =
-    if (requestedVersion in ABI_VERSION_MINIMUM_COMPATIBLE..ABI_VERSION_CURRENT) 1 else 0
+    if (requestedVersion in GENERATED_ABI_VERSION_MINIMUM_COMPATIBLE..GENERATED_ABI_VERSION_CURRENT) 1 else 0
+
+@CName("codex_agent_runtime_identity")
+public fun codexAgentRuntimeIdentity(
+    buffer: CPointer<UByteVar>?,
+    inoutSize: CPointer<ULongVar>?,
+): Int = abiStatus {
+    if (inoutSize == null) return@abiStatus CODEX_AGENT_STATUS_INVALID_ARGUMENT
+    val capacity = inoutSize.pointed.value
+    val required = runtimeIdentityBytes.size.toULong() + 1uL
+    inoutSize.pointed.value = required
+    if (buffer == null || capacity < required) return@abiStatus CODEX_AGENT_STATUS_BUFFER_TOO_SMALL
+    runtimeIdentityBytes.forEachIndexed { index, byte -> buffer[index] = byte.toUByte() }
+    buffer[runtimeIdentityBytes.size] = 0u.toUByte()
+    CODEX_AGENT_STATUS_OK
+}
 
 @CName("codex_agent_context_create")
 public fun codexAgentContextCreate(outContext: CPointer<COpaquePointerVar>?): Int = abiStatus {

@@ -32,13 +32,13 @@ class ProductPublicationVersionFunctionalTest {
                 """
                 plugins { `java-platform`; `maven-publish`; id("codexagent.root-release") }
                 val contractVersion = file("gradle/release/versions/contract.txt").readText().trim()
-                val runtimeVersion = file("gradle/release/versions/runtime.txt").readText().trim()
+                val sdkDefaultRuntimeVersion = file("gradle/release/sdk-default-runtime.txt").readText().trim()
                 val sdkVersion = file("gradle/release/versions/sdk.txt").readText().trim()
                 dependencies {
                     constraints {
                         api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent:${'$'}sdkVersion")
                         api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent-core:${'$'}contractVersion")
-                        api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent-runtime-desktop:${'$'}runtimeVersion")
+                        api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent-runtime-desktop:${'$'}sdkDefaultRuntimeVersion")
                         api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent-runtime-android:${'$'}sdkVersion")
                         api("${CodexAgentBuild.MAVEN_GROUP}:codex-agent-runtime-ios:${'$'}sdkVersion")
                     }
@@ -96,13 +96,13 @@ class ProductPublicationVersionFunctionalTest {
             assertVersions(root, "1.2.4", "2.3.4", "3.4.5")
             assertDependencies(root, "1.2.4", "3.4.5")
 
-            writeVersions(root, "1.2.4", "2.3.5", "3.4.5")
+            writeVersions(root, "1.2.4", "2.3.5", "3.4.5", sdkDefaultRuntime = "2.3.4")
             run(root)
-            assertVersions(root, "1.2.4", "2.3.5", "3.4.5")
+            assertVersions(root, "1.2.4", "2.3.4", "3.4.5")
 
-            writeVersions(root, "1.2.4", "2.3.5", "3.4.6")
+            writeVersions(root, "1.2.4", "2.3.5", "3.4.6", sdkDefaultRuntime = "2.3.4")
             run(root)
-            assertVersions(root, "1.2.4", "2.3.5", "3.4.6")
+            assertVersions(root, "1.2.4", "2.3.4", "3.4.6")
         } finally {
             root.deleteRecursively()
         }
@@ -172,11 +172,18 @@ class ProductPublicationVersionFunctionalTest {
     private fun maven(root: File): File =
         root.resolve("build/fixture-maven/${CodexAgentBuild.MAVEN_GROUP.replace('.', '/')}")
 
-    private fun writeVersions(root: File, contract: String, runtime: String, sdk: String) {
+    private fun writeVersions(
+        root: File,
+        contract: String,
+        runtime: String,
+        sdk: String,
+        sdkDefaultRuntime: String = runtime,
+    ) {
         val directory = root.resolve("gradle/release/versions").apply { mkdirs() }
         mapOf("contract.txt" to contract, "runtime.txt" to runtime, "sdk.txt" to sdk).forEach { (name, value) ->
             directory.resolve(name).writeText("$value\n")
         }
+        root.resolve("gradle/release/sdk-default-runtime.txt").writeText("$sdkDefaultRuntime\n")
     }
 
     private companion object {

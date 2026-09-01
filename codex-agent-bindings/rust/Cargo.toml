@@ -9,10 +9,10 @@ repository = "https://github.com/codex-agent-labs/codex-agent"
 readme = "README.md"
 keywords = ["codex", "agent", "ffi"]
 categories = ["api-bindings"]
-include = ["src/**", "native/**", "LICENSE", "README.md", "Cargo.toml"]
+include = ["src/**", "native/**", "build.rs", "LICENSE", "README.md", "Cargo.toml"]
 
 [package.metadata.codex-agent]
-c-abi = "1.12.0"
+c-abi = "1.13.0"
 native-targets = ["osx-arm64", "osx-x64", "linux-arm64", "linux-x64", "win-x64"]
 library-override = "CODEX_AGENT_LIBRARY"
 

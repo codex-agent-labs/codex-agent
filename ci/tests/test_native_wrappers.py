@@ -44,6 +44,7 @@ from native_wrappers import (  # noqa: E402
     set_source_sdk_version,
     stage_dart_release,
 )
+from products.inventory import canonical_json_bytes  # noqa: E402
 
 
 def write_tar_file(path: Path, name: str, contents: str) -> None:
@@ -266,6 +267,53 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 shutil.copytree(sdk, sources / f"cpp/native/{classifier}")
                 language_roots[("C++", classifier)] = sources / f"cpp/native/{classifier}"
 
+            product_digest = lambda value: "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+            contract_digest = product_digest("contract")
+            compatibility = {
+                "schemaVersion": 1,
+                "sdkVersion": "0.2.0",
+                "contract": {"version": "0.2.0", "digest": contract_digest},
+                "runtime": {
+                    "compatibleReleaseRange": ">=0.2.0 <0.3.0",
+                    "compatibleRuntimeCompatibilityRange": ">=0.2.0 <0.3.0",
+                    "requiredIdentitySchema": 1,
+                    "requiredContractDigest": contract_digest,
+                    "requiredAbiMajor": 1,
+                    "minimumAbiMinor": 13,
+                    "defaultRuntimeVersion": "0.2.0",
+                    "defaultManifestSha256": product_digest("aggregate"),
+                    "embeddedVariants": [
+                        {
+                            "target": classifier,
+                            "componentId": product_digest(f"component:{classifier}"),
+                            "bundleSha256": product_digest(f"bundle:{classifier}"),
+                            "manifestSha256": product_digest(f"manifest:{classifier}"),
+                            "runtimeLibrarySha256": "sha256:" + hashlib.sha256(
+                                (sdks / classifier / HOSTS[classifier][4]).read_bytes()
+                            ).hexdigest(),
+                        }
+                        for classifier in sorted(HOSTS)
+                    ],
+                },
+                "platformRuntime": {
+                    "android": {"owner": "sdk", "desktopRuntimeApplicable": False},
+                    "ios": {"owner": "sdk", "desktopRuntimeApplicable": False},
+                },
+            }
+            compatibility_bytes = canonical_json_bytes(compatibility)
+            (sdks / "sdk-compatibility.json").write_bytes(compatibility_bytes)
+            for relative in (
+                "python/src/codex_agent/native/sdk-compatibility.json",
+                "csharp/native/sdk-compatibility.json",
+                "rust/native/sdk-compatibility.json",
+                "dart/lib/src/native/sdk-compatibility.json",
+            ):
+                (sources / relative).write_bytes(compatibility_bytes)
+            for classifier in HOSTS:
+                destination = sources / f"cpp/native/{classifier}/share/CodexAgent/native/sdk-compatibility.json"
+                destination.parent.mkdir(parents=True)
+                destination.write_bytes(compatibility_bytes)
+
             require_prepared_native_assets(sources, sdks)
             for (language, classifier), destination in language_roots.items():
                 target = next(path for path in destination.rglob("*") if path.is_file())
@@ -483,9 +531,40 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             }
             for name, function in functions.items()
         }
+        consumer = ast.unparse(functions["_consume"])
         self.assertIn("normalize_python_sdist", calls["package_python"])
         self.assertIn("normalize_nupkg", calls["package_once"])
         self.assertIn("-p:PathMap=", ast.unparse(functions["package_once"]))
+        self.assertFalse(any(
+            isinstance(node, ast.Subscript)
+            and isinstance(node.ctx, ast.Store)
+            and isinstance(node.slice, ast.Constant)
+            and node.slice.value == "PATH"
+            for node in ast.walk(functions["_consume"])
+        ))
+        self.assertIn("consumer_env.pop('CODEX_AGENT_LIBRARY', None)", consumer)
+        for embedded, override in (
+            (
+                "run(python, python_smoke, cwd=work, env=consumer_env)",
+                "run(python, python_smoke, python_library, cwd=work, env=consumer_env)",
+            ),
+            (
+                "run(*rust_command, cwd=work, env=cargo_env)",
+                "run(*rust_command, rust_library, cwd=work, env=cargo_env)",
+            ),
+            (
+                "run(executable(cpp_build, 'codex_agent_host_smoke'), cwd=work, env=cpp_env)",
+                "run(executable(cpp_build, 'codex_agent_host_smoke'), cpp_library, cwd=work, env=cpp_env)",
+            ),
+            (
+                "run('dart', 'run', 'bin/host_smoke.dart', cwd=dart_consumer, env=consumer_env)",
+                "run('dart', 'run', 'bin/host_smoke.dart', dart_library, cwd=dart_consumer, env=consumer_env)",
+            ),
+        ):
+            self.assertIn(embedded, consumer)
+            self.assertIn(override, consumer)
+        self.assertIn("'--', cwd=work, env=consumer_env)", consumer)
+        self.assertIn("'--', csharp_library, cwd=work, env=consumer_env)", consumer)
         self.assertEqual(
             [
                 (f"../../native/**/codex-agent-c-abi-{proof}.json",

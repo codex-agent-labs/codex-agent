@@ -20,7 +20,9 @@ pluginManagement {
         commandLineProperties[name]?.takeIf(String::isNotBlank)
             ?: error("Missing mandatory explicit -P project property: $name")
     }
-    fun absoluteNormalizedPath(name: String) = repositoryRoot.fileSystem.getPath(values.getValue(name)).also { path ->
+    fun absoluteNormalizedPath(name: String) = repositoryRoot.fileSystem.getPath(
+        commandLineProperties[name] ?: values.getValue(name),
+    ).also { path ->
         require(path.isAbsolute && path.normalize() == path) { "$name must be an absolute normalized path" }
     }
     val contractRepository = absoluteNormalizedPath("codexAgent.contractRepository")
@@ -58,6 +60,38 @@ pluginManagement {
     )
     require(values.getValue("codexAgent.target") in runtimeTargets) {
         "Unsupported standalone Desktop Runtime target: ${values.getValue("codexAgent.target")}"
+    }
+    val nativeRuntimeTargets = runtimeTargets - setOf("jvm", "node-js", "node-wasm")
+    val requestedPhase = commandLineProperties["codexAgent.phase"]
+    if (values.getValue("codexAgent.target") in nativeRuntimeTargets &&
+        (requestedPhase == null || requestedPhase == "binary")) {
+        val binaryProperties = listOf(
+            "codexAgent.runtimeBinaryFlagsDigest",
+            "codexAgent.runtimeBinaryPlan",
+            "codexAgent.repositoryRevision",
+        )
+        binaryProperties.forEach { name ->
+            require(System.getProperty("org.gradle.project.$name") == null &&
+                System.getenv("ORG_GRADLE_PROJECT_$name") == null) {
+                "$name must be supplied only as an explicit -P project property"
+            }
+            require(commandLineProperties[name]?.isNotBlank() == true) {
+                "Missing mandatory explicit -P project property: $name"
+            }
+        }
+        require(commandLineProperties["codexAgent.runtimeBinaryFlagsDigest"]
+            ?.matches(Regex("sha256:[0-9a-f]{64}")) == true) {
+            "Missing or invalid mandatory explicit -P project property: codexAgent.runtimeBinaryFlagsDigest"
+        }
+        require(commandLineProperties["codexAgent.repositoryRevision"]
+            ?.matches(Regex("[0-9a-f]{40}|[0-9a-f]{64}")) == true) {
+            "Missing or invalid mandatory explicit -P project property: codexAgent.repositoryRevision"
+        }
+        val binaryPlan = absoluteNormalizedPath("codexAgent.runtimeBinaryPlan")
+        require(java.nio.file.Files.isRegularFile(binaryPlan, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
+            !java.nio.file.Files.isSymbolicLink(binaryPlan) && binaryPlan.toRealPath() == binaryPlan) {
+            "codexAgent.runtimeBinaryPlan must be a regular non-symbolic file"
+        }
     }
     val repositoryRealPath = repositoryRoot.toRealPath()
     fun trustedRuntimeDirectory(relative: String): java.nio.file.Path {
@@ -145,10 +179,56 @@ pluginManagement {
         commandLine(verifyCommand)
     }.result.get().assertNormalExitValue()
 
+    val verifiedContractManifest = verifiedContract.resolve("contract-manifest.json")
+    require(java.nio.file.Files.isRegularFile(
+        verifiedContractManifest,
+        java.nio.file.LinkOption.NOFOLLOW_LINKS,
+    ) && !java.nio.file.Files.isSymbolicLink(verifiedContractManifest)) {
+        "Authenticated Contract snapshot is missing its manifest"
+    }
+
+    if (values.getValue("codexAgent.target") in nativeRuntimeTargets &&
+        (requestedPhase == null || requestedPhase == "binary")) {
+        val identityOutput = verifiedContract.resolve("runtime-binary-identity.json")
+        val identityCommand = listOf(
+            "python3", "-m", "ci.products.runtime_identity",
+            "--plan", absoluteNormalizedPath("codexAgent.runtimeBinaryPlan").toString(),
+            "--repository-root", repositoryRoot.toString(),
+            "--repository-revision", commandLineProperties.getValue("codexAgent.repositoryRevision"),
+            "--verified-contract-manifest", verifiedContractManifest.toString(),
+            "--expected-target", values.getValue("codexAgent.target"),
+            "--expected-runtime-version", values.getValue("codexAgent.runtimeVersion"),
+            "--expected-flags-digest",
+            commandLineProperties.getValue("codexAgent.runtimeBinaryFlagsDigest"),
+            "--output", identityOutput.toString(),
+        )
+        providers.exec {
+            workingDir(repositoryRoot.toFile())
+            setEnvironment(environment.toMutableMap().apply {
+                remove("PYTHONHOME")
+                remove("PYTHONINSPECT")
+                remove("PYTHONSTARTUP")
+                put("PYTHONPATH", repositoryRoot.toString())
+                put("PYTHONDONTWRITEBYTECODE", "1")
+                put("PYTHONNOUSERSITE", "1")
+                put("PYTHONSAFEPATH", "1")
+                put("LC_ALL", "C")
+                put("LANG", "C")
+            })
+            commandLine(identityCommand)
+        }.result.get().assertNormalExitValue()
+    }
+
     settings.extensions.extraProperties.set("codexAgent.verifiedContractValues", values)
     settings.extensions.extraProperties.set("codexAgent.verifiedRepositoryRoot", repositoryRoot)
     settings.extensions.extraProperties.set("codexAgent.verifiedContractRepository", verifiedContract.resolve("maven"))
     settings.extensions.extraProperties.set("codexAgent.verifiedDesktopRuntimeSources", desktopRuntimeSources)
+    gradle.beforeProject(org.gradle.api.Action<org.gradle.api.Project> {
+        extensions.extraProperties.set(
+            "codexAgent.verifiedContractManifest",
+            verifiedContractManifest.toFile(),
+        )
+    })
     repositories {
         mavenCentral()
         gradlePluginPortal()

@@ -16,7 +16,7 @@ class CrossLanguageCAbiBindingEvidenceTest {
         assertEquals(1, C_ABI_BOOTSTRAP_SCHEMA)
         assertEquals("codex-agent-c-abi-bootstrap-evidence-v1", C_ABI_BOOTSTRAP_PROTOCOL)
         assertEquals(556, C_ABI_BINDING_CAPABILITY_COUNT)
-        assertEquals(777, C_ABI_BINDING_PUBLIC_SYMBOL_COUNT)
+        assertEquals(778, C_ABI_BINDING_PUBLIC_SYMBOL_COUNT)
         assertEquals(7, C_ABI_BINDING_ARTIFACT_COUNT)
         assertEquals(
             setOf(

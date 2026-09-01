@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any
 
 from .inventory import (
+    _is_windows,
+    _open_directory,
+    _windows_directory_path,
     canonical_json_bytes,
     load_canonical_json,
+    load_canonical_json_bytes,
+    read_regular_file_bytes,
     require_array,
     require_boolean,
     require_exact_keys,
@@ -34,6 +40,7 @@ PHASES = {"binary", "package", "validation", "metadata"}
 TRUST_DOMAINS = {"development", "release"}
 EVENTS = {"pull_request", "merge_group", "workflow_dispatch", "push"}
 OUTPUT_MANIFEST_NAME = "output-manifest.json"
+PHASE_RECEIPT_NAME = "phase-receipt.json"
 OUTPUT_MANIFEST_KEYS = {
     "schemaVersion",
     "product",
@@ -42,6 +49,17 @@ OUTPUT_MANIFEST_KEYS = {
     "target",
     "productVersion",
     "outputs",
+}
+UPSTREAM_KEYS = {"product", "component", "phase", "target", "buildKey", "outputsDigest"}
+CONTRACT_PROJECTION_KEYS = {
+    "schemaVersion",
+    "receiptSha256",
+    "bundlePath",
+    "bundleSha256",
+    "manifestSha256",
+    "contractVersion",
+    "contractDigest",
+    "componentDigests",
 }
 
 
@@ -88,14 +106,76 @@ def validate_output_manifest(value: Any) -> dict[str, Any]:
     return manifest
 
 
-def _remove_output_manifest(root: Path) -> None:
-    manifest = root / OUTPUT_MANIFEST_NAME
+def _remove_control_file(root: Path, name: str, label: str) -> None:
+    root = require_regular_directory(Path(root), label)
+    before = root.lstat()
+    if _is_windows():
+        root = _windows_directory_path(root, label)
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        create_file.restype = wintypes.HANDLE
+        handle = create_file(
+            str(root),
+            0x0080,  # FILE_READ_ATTRIBUTES
+            0x0001 | 0x0002,  # FILE_SHARE_READ | FILE_SHARE_WRITE; deny delete/rename
+            None,
+            3,  # OPEN_EXISTING
+            0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+            None,
+        )
+        if handle == ctypes.c_void_p(-1).value:
+            raise OSError(ctypes.get_last_error(), f"{label} is missing or unsafe")
+        try:
+            descriptor = msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
+        except Exception:
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = (wintypes.HANDLE,)
+            close_handle.restype = wintypes.BOOL
+            close_handle(handle)
+            raise
+        try:
+            opened = os.fstat(descriptor)
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise ValueError(f"{label} changed while opening")
+            try:
+                (root / name).unlink()
+            except FileNotFoundError:
+                pass
+            except IsADirectoryError as error:
+                raise ValueError(f"{label} path must not be a directory") from error
+        finally:
+            os.close(descriptor)
+        return
+    descriptor = _open_directory(root.resolve(strict=True), label)
     try:
-        manifest.unlink()
-    except FileNotFoundError:
-        pass
-    except IsADirectoryError as error:
-        raise ValueError("Output manifest path must not be a directory") from error
+        opened = os.fstat(descriptor)
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError(f"{label} changed while opening")
+        try:
+            os.unlink(name, dir_fd=descriptor)
+        except FileNotFoundError:
+            pass
+        except IsADirectoryError as error:
+            raise ValueError(f"{label} path must not be a directory") from error
+    finally:
+        os.close(descriptor)
+
+
+def _remove_output_manifest(root: Path) -> None:
+    _remove_control_file(root, OUTPUT_MANIFEST_NAME, "Output-manifest root")
 
 
 def write_output_manifest(
@@ -226,10 +306,36 @@ def validate_producer(value: Any, label: str = "producer") -> dict[str, Any]:
     return producer
 
 
+def validate_contract_projection(value: Any, label: str) -> dict[str, Any]:
+    projection = require_exact_keys(value, CONTRACT_PROJECTION_KEYS, label)
+    if require_integer(projection["schemaVersion"], f"{label}.schemaVersion", 1) != 1:
+        raise ValueError("Unsupported Contract projection schemaVersion")
+    version = require_semver(projection["contractVersion"], f"{label}.contractVersion")
+    path = require_relative_path(projection["bundlePath"], f"{label}.bundlePath")
+    if path != f"outputs/codex-agent-contract-{version}.zip":
+        raise ValueError(f"{label}.bundlePath does not match its Contract version")
+    for field in ("receiptSha256", "bundleSha256", "manifestSha256", "contractDigest"):
+        require_sha256(projection[field], f"{label}.{field}")
+    records = require_array(projection["componentDigests"], f"{label}.componentDigests")
+    components = []
+    for index, value in enumerate(records):
+        record_label = f"{label}.componentDigests[{index}]"
+        record = require_exact_keys(value, {"component", "sha256"}, record_label)
+        components.append(require_identifier(record["component"], f"{record_label}.component"))
+        require_sha256(record["sha256"], f"{record_label}.sha256")
+    if not components or components != sorted(set(components)):
+        raise ValueError(f"{label}.componentDigests must be nonempty, sorted, and unique")
+    return projection
+
+
 def validate_upstream(value: Any, label: str) -> dict[str, Any]:
+    if type(value) is not dict:
+        raise ValueError(f"{label} must be an object")
+    keys = set(value)
+    expected_keys = UPSTREAM_KEYS | ({"contractProjection"} if "contractProjection" in keys else set())
     upstream = require_exact_keys(
         value,
-        {"product", "component", "phase", "target", "buildKey", "outputsDigest"},
+        expected_keys,
         label,
     )
     _product(upstream["product"], f"{label}.product")
@@ -238,6 +344,15 @@ def validate_upstream(value: Any, label: str) -> dict[str, Any]:
     require_identifier(upstream["target"], f"{label}.target")
     require_sha256(upstream["buildKey"], f"{label}.buildKey")
     require_sha256(upstream["outputsDigest"], f"{label}.outputsDigest")
+    if "contractProjection" in upstream:
+        if (
+            upstream["product"],
+            upstream["component"],
+            upstream["phase"],
+            upstream["target"],
+        ) != ("contract", "contract", "metadata", "common"):
+            raise ValueError(f"{label}.contractProjection is attached to a non-Contract upstream")
+        validate_contract_projection(upstream["contractProjection"], f"{label}.contractProjection")
     return upstream
 
 
@@ -255,8 +370,13 @@ def validate_receipt_inputs(value: Any) -> dict[str, Any]:
         },
         "phase receipt.inputs",
     )
-    _records(inputs["inventory"], "phase receipt.inputs.inventory", with_kind=False)
-    require_sha256(inputs["phaseInputDigest"], "phase receipt.inputs.phaseInputDigest")
+    inventory = _records(inputs["inventory"], "phase receipt.inputs.inventory", with_kind=False)
+    phase_input_digest = require_sha256(
+        inputs["phaseInputDigest"],
+        "phase receipt.inputs.phaseInputDigest",
+    )
+    if phase_input_digest != sha256_bytes(canonical_json_bytes(inventory)):
+        raise ValueError("phase receipt.inputs.phaseInputDigest does not match inventory")
     if inputs["versionIdentity"] is not None:
         require_semver(inputs["versionIdentity"], "phase receipt.inputs.versionIdentity")
     upstream = require_array(inputs["upstreamArtifacts"], "phase receipt.inputs.upstreamArtifacts")
@@ -283,6 +403,22 @@ def build_key_payload(
     target: str,
     inputs: dict[str, Any],
 ) -> dict[str, Any]:
+    upstream_artifacts = []
+    for upstream in inputs["upstreamArtifacts"]:
+        projection = upstream.get("contractProjection")
+        if projection is None:
+            upstream_artifacts.append(upstream)
+        else:
+            upstream_artifacts.append({
+                "schemaVersion": 1,
+                "kind": "contract-components",
+                "product": "contract",
+                "component": "contract",
+                "phase": "metadata",
+                "target": "common",
+                "contractDigest": projection["contractDigest"],
+                "componentDigests": projection["componentDigests"],
+            })
     return {
         "schemaVersion": 1,
         "product": product,
@@ -291,7 +427,7 @@ def build_key_payload(
         "target": target,
         "versionIdentity": inputs["versionIdentity"],
         "phaseInputDigest": inputs["phaseInputDigest"],
-        "upstreamArtifacts": inputs["upstreamArtifacts"],
+        "upstreamArtifacts": upstream_artifacts,
         "toolchainProfileDigest": inputs["toolchainProfileDigest"],
         "flagsDigest": inputs["flagsDigest"],
         "outputSchemaVersion": inputs["outputSchemaVersion"],
@@ -366,6 +502,79 @@ def require_release_receipt(value: Any) -> dict[str, Any]:
     return receipt
 
 
+def _remove_phase_receipt(root: Path) -> None:
+    _remove_control_file(root, PHASE_RECEIPT_NAME, "Phase-receipt root")
+
+
+def write_phase_receipt(
+    stage_root: Any,
+    receipt_root: Any,
+    product: Any,
+    component: Any,
+    phase: Any,
+    target: Any,
+    product_version: Any,
+    expected_build_key: Any,
+    inputs: Any,
+    producer: Any,
+    trust_domain: Any,
+) -> dict[str, Any]:
+    stage_root = Path(stage_root)
+    receipt_root = require_regular_directory(Path(receipt_root), "Phase-receipt root")
+    _remove_phase_receipt(receipt_root)
+    try:
+        manifest = verify_output_manifest_identity(
+            stage_root,
+            product,
+            component,
+            phase,
+            target,
+            product_version,
+        )
+        validated_inputs = validate_receipt_inputs(inputs)
+        expected_build_key = require_sha256(expected_build_key, "expected build key")
+        computed_build_key = compute_build_key(
+            product=manifest["product"],
+            component=manifest["component"],
+            phase=manifest["phase"],
+            target=manifest["target"],
+            inputs=validated_inputs,
+        )
+        if expected_build_key != computed_build_key:
+            raise ValueError("Expected build key does not match the verified planned inputs")
+        receipt = validate_phase_receipt({
+            "schemaVersion": 1,
+            "product": manifest["product"],
+            "component": manifest["component"],
+            "phase": manifest["phase"],
+            "target": manifest["target"],
+            "productVersion": manifest["productVersion"],
+            "buildKey": computed_build_key,
+            "inputs": validated_inputs,
+            "outputs": manifest["outputs"],
+            "producer": producer,
+            "trustDomain": trust_domain,
+            "result": "success",
+        })
+        receipt_path = receipt_root / PHASE_RECEIPT_NAME
+        write_canonical_json(receipt_path, receipt)
+        stored = validate_phase_receipt(load_canonical_json(receipt_path))
+        verified_manifest = verify_output_manifest_identity(
+            stage_root,
+            product,
+            component,
+            phase,
+            target,
+            product_version,
+        )
+        if stored != receipt or stored["outputs"] != verified_manifest["outputs"]:
+            raise ValueError("Stored phase receipt does not match the verified output stage")
+        return stored
+    except Exception:
+        _remove_phase_receipt(receipt_root)
+        raise
+
+
 def _parse_output_roots(values: list[str]) -> dict[str, str]:
     roots: dict[str, str] = {}
     for value in values:
@@ -397,6 +606,10 @@ def main(argv: list[str] | None = None) -> int:
     snapshot = subcommands.add_parser("snapshot-tree")
     snapshot.add_argument("--source", required=True)
     snapshot.add_argument("--destination", required=True)
+    phase_receipt = subcommands.add_parser("write-phase-receipt")
+    phase_receipt.add_argument("--stage-root", required=True)
+    phase_receipt.add_argument("--receipt-root", required=True)
+    phase_receipt.add_argument("--request", required=True)
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "write-output-manifest":
@@ -418,11 +631,61 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.target,
                 arguments.product_version,
             )
-        else:
+        elif arguments.command == "snapshot-tree":
             snapshot_regular_tree(Path(arguments.source), Path(arguments.destination))
+        else:
+            request = require_exact_keys(
+                load_canonical_json_bytes(
+                    read_regular_file_bytes(
+                        Path(arguments.request),
+                        max_bytes=16 * 1024 * 1024,
+                        reject_symlink_parents=True,
+                    ),
+                ),
+                {
+                    "schemaVersion",
+                    "product",
+                    "component",
+                    "phase",
+                    "target",
+                    "productVersion",
+                    "expectedBuildKey",
+                    "inputs",
+                    "producer",
+                    "trustDomain",
+                },
+                "phase-receipt request",
+            )
+            if require_integer(
+                request["schemaVersion"],
+                "phase-receipt request.schemaVersion",
+                1,
+            ) != 1:
+                raise ValueError("Unsupported phase-receipt request schemaVersion")
+            write_phase_receipt(
+                arguments.stage_root,
+                arguments.receipt_root,
+                request["product"],
+                request["component"],
+                request["phase"],
+                request["target"],
+                request["productVersion"],
+                request["expectedBuildKey"],
+                request["inputs"],
+                request["producer"],
+                request["trustDomain"],
+            )
     except ValueError as error:
         if arguments.command == "write-output-manifest":
-            _remove_output_manifest(Path(arguments.root))
+            try:
+                _remove_output_manifest(Path(arguments.root))
+            except (OSError, ValueError):
+                pass
+        elif arguments.command == "write-phase-receipt":
+            try:
+                _remove_phase_receipt(Path(arguments.receipt_root))
+            except (OSError, ValueError):
+                pass
         parser.error(str(error))
     return 0
 

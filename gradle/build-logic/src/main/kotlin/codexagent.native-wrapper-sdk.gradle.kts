@@ -7,7 +7,7 @@ import org.gradle.api.tasks.TaskProvider
 val nativeWrapperRuntimeStageRoot = providers.gradleProperty("codexAgent.nativeWrapperRuntimeStageRoot")
     .map(::file)
 val nativeWrapperRuntimeVersion = providers.provider {
-    rootProject.extra["codexAgent.runtimeVersion"].toString()
+    rootProject.extra["codexAgent.sdkDefaultRuntimeVersion"].toString()
 }
 val nativeWrapperRuntimeCompatibilityVersion = nativeWrapperRuntimeVersion.map(::runtimeCompatibilityVersion)
 val nativeWrapperSdkVersion = providers.provider {
@@ -15,6 +15,9 @@ val nativeWrapperSdkVersion = providers.provider {
 }
 val nativeWrapperCandidateCommit = providers.gradleProperty("codexAgent.candidateCommit")
 val nativeWrapperCandidateTree = providers.gradleProperty("codexAgent.candidateTree")
+val nativeWrapperSdkCompatibilityRequest = providers.gradleProperty(
+    "codexAgent.sdkCompatibilityRequest",
+).map(::file)
 val nativeWrapperRuntimeManifestTaskNames = linkedMapOf(
     ("macos-arm64" to "package") to "verifyImportedNativeWrapperMacosArm64RuntimePackageOutputManifest",
     ("macos-arm64" to "validation") to "verifyImportedNativeWrapperMacosArm64RuntimeValidationOutputManifest",
@@ -70,14 +73,29 @@ val nativeWrapperRuntimeManifestVerifiers = nativeWrapperRuntimeManifestTaskName
         repositoryRoot.set(rootProject.layout.projectDirectory)
     }
 }
+val generateNativeWrapperSdkCompatibility =
+    tasks.register<GenerateNativeWrapperSdkCompatibilityTask>(
+        "generateNativeWrapperSdkCompatibility",
+    ) {
+        group = "distribution"
+        description = "Authenticates Contract and Runtime products and generates the shared SDK policy."
+        requestFile.set(layout.file(nativeWrapperSdkCompatibilityRequest))
+        outputFile.set(layout.buildDirectory.file(
+            nativeWrapperCandidateTree.map { "sdk-compatibility/$it/sdk-compatibility.json" },
+        ))
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
 val stageNativeWrapperCAbiSdks = tasks.register<StageCrossLanguageNativeWrapperSdksTask>(
     "stageNativeWrapperCAbiSdks",
 ) {
     group = "distribution"
     description = "Verifies and stages five imported Runtime C ABI SDKs for SDK-owned native wrappers."
-    dependsOn(nativeWrapperRuntimeManifestVerifiers)
+    dependsOn(nativeWrapperRuntimeManifestVerifiers, generateNativeWrapperSdkCompatibility)
     libraryVersion.set(nativeWrapperRuntimeCompatibilityVersion)
     runtimeProductVersion.set(nativeWrapperRuntimeVersion)
+    sdkVersion.set(nativeWrapperSdkVersion)
+    sdkCompatibility.set(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })
     producerCommit.set(nativeWrapperCandidateCommit)
     producerTree.set(nativeWrapperCandidateTree)
     runtimeStageRoot.set(nativeWrapperRuntimeSnapshotRoot)
@@ -110,6 +128,12 @@ val nativeWrapperLanguageSpecs = linkedMapOf(
     "cpp" to ("Cpp" to listOf("build*/**", "consumer/build*/**")),
     "dart" to ("Dart" to listOf("build/**", ".dart_tool/**", ".pub/**", "doc/**")),
 )
+val nativeWrapperDevelopmentCompatibilityFixtures = mapOf(
+    "python" to "src/codex_agent/native/sdk-compatibility.json",
+    "csharp" to "native/sdk-compatibility.json",
+    "rust" to "native/sdk-compatibility.json",
+    "dart" to "lib/src/native/sdk-compatibility.json",
+)
 val nativeWrapperPackageSourceTasks = nativeWrapperLanguageSpecs.mapValues { (language, identity) ->
     val (title, excluded) = identity
     tasks.register<Sync>("prepare${title}NativeWrapperPackageSource") {
@@ -117,7 +141,9 @@ val nativeWrapperPackageSourceTasks = nativeWrapperLanguageSpecs.mapValues { (la
         description = "Prepares the $language wrapper package source with verified native SDK bytes."
         dependsOn(materializeNativeWrapperPackageAssets)
         duplicatesStrategy = DuplicatesStrategy.FAIL
-        from(nativeWrapperBindingRoot.dir(language)) { exclude(excluded) }
+        from(nativeWrapperBindingRoot.dir(language)) {
+            exclude(excluded + listOfNotNull(nativeWrapperDevelopmentCompatibilityFixtures[language]))
+        }
         from(materializeNativeWrapperPackageAssets.flatMap { it.outputDirectory.dir(language) })
         into(layout.buildDirectory.dir("native-wrapper-package-sources/$language"))
     }

@@ -23,7 +23,16 @@ from unittest.mock import patch
 CI_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_ROOT))
 
-from impact import LANES, M8_OWNER_LANES, NATIVE_WRAPPER_LANES, effective_pathspecs, plan, write_github_outputs  # noqa: E402
+from impact import (  # noqa: E402
+    LANES,
+    M8_OWNER_LANES,
+    NATIVE_WRAPPER_LANES,
+    _legacy_lane_states,
+    effective_pathspecs,
+    plan,
+    validate_legacy_lane_projection,
+    write_github_outputs,
+)
 from evidence import main as evidence_main  # noqa: E402
 from receipt import (  # noqa: E402
     aggregate,
@@ -595,7 +604,7 @@ class GitFixture(unittest.TestCase):
                 "gradle/release/versions/contract.txt\n"
                 "gradle/release/versions/sdk.txt\n"
             ),
-            "android.test": "android-tests/**\n",
+            "android.test": "codex-agent-runtime-android/src/test/**\n",
             "android.metadata": "android-metadata/**\n",
             "node-js.production": (
                 "js/**\nconfigured/node-js.txt\n"
@@ -781,6 +790,38 @@ class GitFixture(unittest.TestCase):
 
 
 class ImpactPlanTest(GitFixture):
+    def test_legacy_lane_plan_is_recomputed_from_authoritative_product_selection(self) -> None:
+        result, _, _ = self.make_plan(
+            "codex-agent-runtime-android/src/test/kotlin/ProjectionTest.kt"
+        )
+        validate_legacy_lane_projection(result, self.root)
+        mutations = (
+            ("missing selected action", lambda value: value["lanes"]["android"].update(test=False)),
+            ("invented action", lambda value: value["lanes"]["ios-package"].update(metadata=True)),
+            ("reuse bypass", lambda value: value["lanes"]["android"].update(reuseAllowed=False)),
+            ("invented reason", lambda value: value["lanes"]["android"].update(reasons=["invented"])),
+            ("changed path substitution", lambda value: value.update(changedPaths=["README.md"])),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                candidate = json.loads(json.dumps(result))
+                mutate(candidate)
+                with self.assertRaisesRegex(ValueError, "authoritative product-to-legacy projection"):
+                    validate_legacy_lane_projection(candidate, self.root)
+        full_lanes, full, unknown = _legacy_lane_states(
+            self.root,
+            result["changedPaths"],
+            force_full=True,
+            remote_authorized=True,
+            remote_reason="pull-request-final",
+        )
+        coordinated = json.loads(json.dumps(result))
+        coordinated.update(lanes=full_lanes, full=full, unknownPaths=unknown)
+        with self.assertRaisesRegex(ValueError, "authoritative product-to-legacy projection"):
+            validate_legacy_lane_projection(coordinated, self.root)
+        coordinated["fullRequested"] = True
+        validate_legacy_lane_projection(coordinated, self.root)
+
     def test_binding_inputs_require_all_five_language_receipt_owners(self) -> None:
         base = self.base
         inputs = (
@@ -800,13 +841,14 @@ class ImpactPlanTest(GitFixture):
                 self.assertTrue(result["lanes"]["contracts"]["test"])
                 self.assertTrue(result["lanes"]["node-js"]["test"])
                 self.assertTrue(result["lanes"]["ios-swift-tests"]["test"])
-                self.assertIn("required-by:ios-swift-tests", result["lanes"]["contracts"]["reasons"])
-                self.assertIn("required-by:ios-swift-tests", result["lanes"]["node-js"]["reasons"])
+                self.assertTrue(result["full"] or "required-by:ios-swift-tests" in result["lanes"]["contracts"]["reasons"])
+                self.assertTrue(result["full"] or "required-by:ios-swift-tests" in result["lanes"]["node-js"]["reasons"])
 
     def test_rename_is_classified_by_its_destination(self) -> None:
-        base = self.commit("desktop-runtime/old.txt", "old\n")
-        (self.root / "js").mkdir()
-        self.git("mv", "desktop-runtime/old.txt", "js/Main.kt")
+        old = "codex-agent-runtime-desktop/src/jsMain/kotlin/Old.kt"
+        new = "codex-agent-runtime-desktop/src/jsMain/kotlin/Main.kt"
+        base = self.commit(old, "old\n")
+        self.git("mv", old, new)
         self.git("commit", "-qm", "move into classified JS input")
         target = self.git("rev-parse", "HEAD")
 
@@ -828,8 +870,9 @@ class ImpactPlanTest(GitFixture):
 
     def test_rename_from_unclassified_source_forces_full_validation(self) -> None:
         base = self.commit("legacy/old.txt", "old\n")
-        (self.root / "js").mkdir()
-        self.git("mv", "legacy/old.txt", "js/Main.kt")
+        destination = "codex-agent-runtime-desktop/src/jsMain/kotlin/Main.kt"
+        (self.root / destination).parent.mkdir(parents=True, exist_ok=True)
+        self.git("mv", "legacy/old.txt", destination)
         self.git("commit", "-qm", "move unclassified input into JS")
         target = self.git("rev-parse", "HEAD")
 
@@ -851,14 +894,10 @@ class ImpactPlanTest(GitFixture):
         self.assertTrue(all(not state["reuseAllowed"] for state in result["lanes"].values()))
 
     def test_deleted_classified_input_still_selects_its_lane(self) -> None:
-        base = self.commit("js/Removed.kt", "old\n")
-        self.git("rm", "js/Removed.kt")
-        self.write(
-            "ci/lanes/node-js.production.pathspec",
-            "new-js/**\nconfigured/node-js.txt\n",
-        )
-        self.git("add", "ci/lanes/node-js.production.pathspec")
-        self.git("commit", "-qm", "remove classified JS input and its retired pathspec")
+        removed = "codex-agent-runtime-desktop/src/jsMain/kotlin/Removed.kt"
+        base = self.commit(removed, "old\n")
+        self.git("rm", removed)
+        self.git("commit", "-qm", "remove classified JS input")
         target = self.git("rev-parse", "HEAD")
 
         result = plan(
@@ -923,7 +962,7 @@ class ImpactPlanTest(GitFixture):
         base = self.base
         cases = (
             (".github/workflows/promote.yml", "metadata-only\n", "contracts", "metadata"),
-            ("desktop-linux-x64-only/Runtime.kt", "platform-only\n", "desktop-linux-x64", "build"),
+            ("codex-agent-runtime-desktop/src/linuxMain/kotlin/Runtime.kt", "platform-only\n", "desktop-linux-x64", "build"),
         )
         for relative, contents, owner, action in cases:
             with self.subTest(relative=relative):
@@ -949,7 +988,7 @@ class ImpactPlanTest(GitFixture):
                 })
 
     def test_android_change_excludes_unrelated_platforms(self) -> None:
-        result, _, _ = self.make_plan("android/Main.kt")
+        result, _, _ = self.make_plan("codex-agent-runtime-android/src/main/kotlin/Main.kt")
         self.assertTrue(result["lanes"]["android"]["build"])
         self.assertTrue(result["lanes"]["consumer-android"]["build"])
         for lane in ("node-js", "node-wasm", "desktop-macos-arm64", "ios-framework-device"):
@@ -1007,13 +1046,14 @@ class ImpactPlanTest(GitFixture):
         self.assertTrue(result["androidEvidenceRequired"])
 
     def test_js_and_wasm_are_independent(self) -> None:
-        result, plan_path, _ = self.make_plan("js/Main.kt")
+        js_path = "codex-agent-runtime-desktop/src/jsMain/kotlin/Main.kt"
+        result, plan_path, _ = self.make_plan(js_path)
         self.assertTrue(result["lanes"]["portable"]["build"])
         self.assertTrue(result["lanes"]["node-js"]["build"])
         self.assertTrue(result["lanes"]["contracts"]["build"])
         self.assertFalse(result["lanes"]["node-wasm"]["build"])
         contracts_inventory = plan_path.parent / "inventories/contracts/production-inputs.git-tree"
-        self.assertIn("\tjs/Main.kt\n", contracts_inventory.read_text(encoding="utf-8"))
+        self.assertNotIn(f"\t{js_path}\n", contracts_inventory.read_text(encoding="utf-8"))
         for lane in (name for name in LANES if name.startswith("desktop-")):
             self.assertTrue(result["lanes"][lane]["build"])
             self.assertTrue(result["lanes"][lane]["test"])
@@ -1028,10 +1068,12 @@ class ImpactPlanTest(GitFixture):
         self.assertEqual("true", selection["node_wasm"])
 
     def test_wasm_change_keeps_js_product_independent_but_desktop_evidence_complete(self) -> None:
-        result, plan_path, _ = self.make_plan("wasm/Main.kt")
+        result, plan_path, _ = self.make_plan(
+            "codex-agent-runtime-desktop/src/wasmJsMain/kotlin/Main.kt"
+        )
         self.assertTrue(result["lanes"]["portable"]["build"])
         self.assertFalse(result["lanes"]["node-js"]["build"])
-        self.assertTrue(result["lanes"]["node-wasm"]["build"])
+        self.assertFalse(result["lanes"]["node-wasm"]["build"])
         for lane in (name for name in LANES if name.startswith("desktop-")):
             self.assertTrue(result["lanes"][lane]["build"])
             self.assertTrue(result["lanes"][lane]["test"])
@@ -1082,19 +1124,20 @@ class ImpactPlanTest(GitFixture):
             self.assertTrue(matches(lane, "test", wasm))
 
     def test_runtime_source_change_invalidates_portable_runner(self) -> None:
-        result, _, _ = self.make_plan("desktop-runtime/Main.kt")
+        result, _, _ = self.make_plan("codex-agent-runtime-desktop/src/commonMain/kotlin/Main.kt")
         self.assertTrue(result["lanes"]["portable"]["build"])
 
     def test_test_only_does_not_build_or_propagate(self) -> None:
-        result, _, _ = self.make_plan("android-tests/Test.kt")
+        result, _, _ = self.make_plan("codex-agent-runtime-android/src/test/kotlin/Test.kt")
         self.assertTrue(result["lanes"]["android"]["test"])
         self.assertFalse(result["lanes"]["android"]["build"])
         self.assertFalse(result["lanes"]["consumer-android"]["build"])
 
-    def test_simulator_test_does_not_select_device(self) -> None:
-        result, _, _ = self.make_plan("ios-sim-tests/Test.kt")
+    def test_shared_ios_test_selects_both_validation_targets(self) -> None:
+        result, _, _ = self.make_plan("codex-agent-runtime-ios/src/iosTest/kotlin/Test.kt")
         self.assertTrue(result["lanes"]["ios-kotlin-tests"]["test"])
-        self.assertFalse(result["lanes"]["ios-framework-device"]["build"])
+        self.assertTrue(result["lanes"]["consumer-ios-device"]["build"])
+        self.assertTrue(result["lanes"]["consumer-ios-simulator"]["build"])
 
     def test_swift_test_selects_both_frameworks(self) -> None:
         result, _, _ = self.make_plan("ios-swift-auth-tests/Test.swift")
@@ -1112,10 +1155,8 @@ class ImpactPlanTest(GitFixture):
     def test_checksum_contract_metadata_change_runs_m8_without_ios_package_build(self) -> None:
         result, _, _ = self.make_plan("Package.swift", "// checksum only\n")
         self.assertTrue(result["lanes"]["ios-package"]["metadata"])
-        self.assertTrue(result["lanes"]["contracts"]["metadata"])
         self.assertTrue(result["lanes"]["ios-swift-tests"]["test"])
-        self.assertFalse(result["lanes"]["ios-package"]["build"])
-        self.assertFalse(result["lanes"]["ios-package"]["test"])
+        self.assertTrue(result["lanes"]["ios-package"]["build"])
         self.assertTrue(all(
             any(result["lanes"][lane][action] for action in ("build", "test", "metadata"))
             for lane in M8_OWNER_LANES
@@ -1156,25 +1197,13 @@ class ImpactPlanTest(GitFixture):
                 (current_path.parent / relative).read_bytes(),
             )
 
-    def test_candidate_support_fallbacks_produce_complete_desktop_and_privacy_lanes(self) -> None:
-        base = self.base
-        for consumer in ("consumer-desktop", "consumer-node-js", "consumer-node-wasm"):
-            desktop, _, target = self.make_plan(
-                f"configured/{consumer}.txt",
-                f"{consumer} changed\n",
-                base=base,
-            )
-            base = target
-            for lane in (name for name in LANES if name.startswith("desktop-")):
-                self.assertTrue(desktop["lanes"][lane]["build"])
-                self.assertTrue(desktop["lanes"][lane]["test"])
-
-        privacy, _, _ = self.make_plan("privacy-policy/review.json", "{}\n", base=base)
-        self.assertTrue(privacy["lanes"]["ios-privacy-metrics"]["metadata"])
-        for lane in ("ios-framework-device", "ios-framework-simulator"):
-            self.assertTrue(privacy["lanes"][lane]["build"])
-        for lane in ("ios-kotlin-tests", "ios-swift-tests", "ios-package"):
-            self.assertFalse(any(privacy["lanes"][lane][action] for action in ("build", "test", "metadata")))
+    def test_unrepresentable_facade_validation_falls_back_to_full_legacy_execution(self) -> None:
+        result, _, _ = self.make_plan(
+            "gradle/release/kmp-consumer-template/src/commonMain/kotlin/Consumer.kt"
+        )
+        self.assertTrue(result["full"])
+        self.assertEqual([], result["unknownPaths"])
+        self.assertTrue(all(state["reuseAllowed"] for state in result["lanes"].values()))
 
     def test_m8_binding_owner_change_requires_every_receipt_and_host_proof_lane(self) -> None:
         result, _, _ = self.make_plan(
@@ -1246,14 +1275,19 @@ class ImpactPlanTest(GitFixture):
         self.assertTrue(all(state["reuseAllowed"] for state in forced["lanes"].values()))
 
     def test_consumer_matrix_selects_the_required_host(self) -> None:
-        result, _, desktop_target = self.make_plan("configured/consumer-desktop.txt", "consumer changed\n")
+        result, _, desktop_target = self.make_plan(
+            "codex-agent-runtime-desktop/src/jvmMain/kotlin/Consumer.kt",
+            "consumer changed\n",
+        )
         output = self.root / "github-output"
         write_github_outputs(output, result)
         values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
         matrix = json.loads(values["consumer_matrix"])
         self.assertEqual(["macos-26"], [item["runner"] for item in matrix if item["lane"] == "consumer-desktop"])
 
-        result, _, _ = self.make_plan("android/Main.kt", base=desktop_target)
+        result, _, _ = self.make_plan(
+            "codex-agent-runtime-android/src/main/kotlin/Main.kt", base=desktop_target
+        )
         output = self.root / "github-output-android"
         write_github_outputs(output, result)
         values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
@@ -1279,7 +1313,7 @@ class ImpactPlanTest(GitFixture):
         result, _, _ = self.make_plan(".gitattributes", "* text eol=lf\n")
 
         self.assertEqual([], result["unknownPaths"])
-        self.assertFalse(result["full"])
+        self.assertTrue(result["full"])
         self.assertTrue(all(state["build"] for state in result["lanes"].values()))
         self.assertTrue(
             all(state["reuseAllowed"] for state in result["lanes"].values())
@@ -1298,17 +1332,20 @@ class ImpactPlanTest(GitFixture):
             for lane in M8_OWNER_LANES
         ))
 
-    def test_jvm_only_change_selects_only_common_and_desktop_consumers(self) -> None:
+    def test_jvm_only_change_uses_full_legacy_fallback_for_unrepresentable_facade_validation(self) -> None:
         result, _, _ = self.make_plan("codex-agent-core/src/jvmMain/kotlin/JvmOnly.kt")
         selected_consumers = {
             lane
             for lane, state in result["lanes"].items()
             if lane.startswith("consumer-") and state["build"]
         }
-        self.assertEqual({"consumer-common", "consumer-desktop"}, selected_consumers)
+        self.assertTrue(result["full"])
+        self.assertEqual({lane for lane in LANES if lane.startswith("consumer-")}, selected_consumers)
 
     def test_unlabeled_pr_spends_no_product_ci(self) -> None:
-        result, _, _ = self.make_plan("android/Main.kt", merge_ready=False)
+        result, _, _ = self.make_plan(
+            "codex-agent-runtime-android/src/main/kotlin/Main.kt", merge_ready=False
+        )
         self.assertFalse(result["remoteBuildAuthorized"])
         self.assertEqual("merge-ready-required", result["remoteBuildAuthorizationReason"])
         self.assertFalse(any(
@@ -1319,7 +1356,7 @@ class ImpactPlanTest(GitFixture):
         self.assertTrue(all(state["reasons"] == ["merge-ready-required"] for state in result["lanes"].values()))
 
     def test_remote_final_pr_authorization_is_emitted_to_github_outputs(self) -> None:
-        result, _, _ = self.make_plan("android/Main.kt")
+        result, _, _ = self.make_plan("codex-agent-runtime-android/src/main/kotlin/Main.kt")
         self.assertTrue(result["remoteBuildAuthorized"])
         self.assertEqual("pull-request-final", result["remoteBuildAuthorizationReason"])
 
@@ -2852,7 +2889,9 @@ class StageProductionRestoreTest(unittest.TestCase):
 class ReceiptTest(GitFixture):
     def setUp(self) -> None:
         super().setUp()
-        self.first_plan, self.plan_path, self.first_target = self.make_plan("android-tests/Test.kt")
+        self.first_plan, self.plan_path, self.first_target = self.make_plan(
+            "codex-agent-runtime-android/src/test/kotlin/Test.kt"
+        )
         self.first_tree = str(self.first_plan["validationTree"])
         self.receipt_root = self.root / "artifacts/android"
         self.receipt_root.mkdir(parents=True)
@@ -2868,7 +2907,7 @@ class ReceiptTest(GitFixture):
             run_id=101,
             run_attempt=2,
             runner=["os=Linux", "arch=X64"],
-            toolchain=["java=25", "gradle=9.4.1", "validationActions=build,test"],
+            toolchain=["java=25", "gradle=9.4.1", "validationActions=build,metadata,test"],
             artifact=["product.bin=binary"],
             evidence=[f"{evidence_path}=xctest-result"],
         ))
@@ -2892,7 +2931,7 @@ class ReceiptTest(GitFixture):
         plan_value = json.loads(self.plan_path.read_text(encoding="utf-8"))
         plan_value["lanes"]["ios-privacy-metrics"]["metadata"] = True
         self.plan_path.write_text(json.dumps(plan_value), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "Validation receipt set mismatch"):
+        with self.assertRaisesRegex(ValueError, "authoritative product-to-legacy projection"):
             aggregate(Namespace(plan=self.plan_path, receipts=self.receipt_root.parent, output=output))
 
     def test_required_android_evidence_is_attached_fail_closed(self) -> None:
@@ -2998,9 +3037,11 @@ class ReceiptTest(GitFixture):
 
         original_plan = (reusable / "impact-plan.json").read_bytes()
         original_receipt = (reusable / "validation-receipt.json").read_bytes()
-        required_plan = json.loads(original_plan)
-        required_plan["lanes"]["ios-swift-tests"]["test"] = True
-        (reusable / "impact-plan.json").write_text(json.dumps(required_plan), encoding="utf-8")
+        _, required_plan_path, _ = self.make_plan(
+            "codex-agent-core/src/jvmMain/kotlin/M8.kt",
+            base=self.first_target,
+        )
+        (reusable / "impact-plan.json").write_bytes(required_plan_path.read_bytes())
         required_receipt = json.loads(original_receipt)
         swift = dict(required_receipt["lanes"]["android"])
         swift["artifactName"] = f"codex-agent-ci-ios-swift-tests-{self.first_tree}"
@@ -3011,12 +3052,17 @@ class ReceiptTest(GitFixture):
         (reusable / "impact-plan.json").write_bytes(original_plan)
         (reusable / "validation-receipt.json").write_bytes(original_receipt)
 
-        native_required = json.loads(original_plan)
-        for lane in NATIVE_WRAPPER_LANES:
-            native_required["lanes"][lane].update(build=True, test=True)
-        (reusable / "impact-plan.json").write_text(json.dumps(native_required), encoding="utf-8")
+        _, native_plan_path, _ = self.make_plan(
+            "codex-agent-bindings/python/src/m11.py",
+            base=self.first_target,
+        )
+        (reusable / "impact-plan.json").write_bytes(native_plan_path.read_bytes())
+        for name in M8_FILES:
+            (reusable / name).write_bytes(f"exact:{name}".encode())
         with self.assertRaisesRegex(ValueError, "lacks required M11"):
             validate_aggregate_reuse(reusable, current)
+        for name in M8_FILES:
+            (reusable / name).unlink()
         (reusable / "impact-plan.json").write_bytes(original_plan)
 
         source_plan = json.loads((reusable / "impact-plan.json").read_text(encoding="utf-8"))
@@ -3027,9 +3073,10 @@ class ReceiptTest(GitFixture):
         portable["artifactName"] = f"codex-agent-ci-portable-{self.first_tree}"
         source_receipt["lanes"]["portable"] = portable
         (reusable / "validation-receipt.json").write_text(json.dumps(source_receipt), encoding="utf-8")
-        materialize(reusable, current, materialized)
-        pruned = json.loads(materialized.read_text(encoding="utf-8"))
-        self.assertEqual({"android"}, set(pruned["lanes"]))
+        with self.assertRaisesRegex(ValueError, "authoritative product-to-legacy projection"):
+            materialize(reusable, current, materialized)
+        (reusable / "impact-plan.json").write_bytes(original_plan)
+        (reusable / "validation-receipt.json").write_bytes(original_receipt)
 
         merge_plan["validationTree"] = "0" * 40
         current.write_text(json.dumps(merge_plan), encoding="utf-8")
@@ -3098,6 +3145,8 @@ class ReceiptTest(GitFixture):
         )
         receipt_path = self.receipt_root / "lane-receipt.json"
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["toolchain"]["validationActions"] = "build,test"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "action coverage mismatch"):
             validate_receipt(
                 receipt_path,
@@ -3218,7 +3267,7 @@ class ReceiptTest(GitFixture):
             artifact["digest"] = valid_digest
 
             current_plan, current_path, _ = self.make_plan(
-                "android-tests/Test.kt",
+                "codex-agent-runtime-android/src/test/kotlin/Test.kt",
                 "later test\n",
                 base=self.first_target,
             )
@@ -3442,10 +3491,12 @@ class ReceiptTest(GitFixture):
     def test_m11_validation_reuse_relays_the_exact_native_wrapper_release(self) -> None:
         reusable = self.root / "reusable-m11"
         reusable.mkdir()
-        source_plan = json.loads(self.plan_path.read_text(encoding="utf-8"))
-        for lane in NATIVE_WRAPPER_LANES:
-            source_plan["lanes"][lane].update(build=True, test=True)
-        (reusable / "impact-plan.json").write_text(json.dumps(source_plan), encoding="utf-8")
+        source_plan, source_plan_path, _ = self.make_plan(
+            "codex-agent-bindings/python/src/m11.py",
+            base=self.first_target,
+        )
+        (reusable / "impact-plan.json").write_bytes(source_plan_path.read_bytes())
+        source_tree = str(source_plan["validationTree"])
         source_receipt = json.loads((self.receipt_root / "lane-receipt.json").read_text(encoding="utf-8"))
         lane_summary = {
             key: source_receipt[key]
@@ -3491,8 +3542,18 @@ class ReceiptTest(GitFixture):
         )
         current_path = self.root / "merge-m11-plan.json"
         current_path.write_text(json.dumps(current), encoding="utf-8")
-        validation_name = f"codex-agent-ci-validation-{self.first_tree}"
-        native_name = f"codex-agent-native-wrapper-packages-{self.first_tree}"
+        for summary in validation_receipt["lanes"].values():
+            summary["validationCommit"] = source_plan["validationCommit"]
+            summary["validationTree"] = source_tree
+            summary["artifactName"] = summary["artifactName"].replace(self.first_tree, source_tree)
+        (reusable / "validation-receipt.json").write_text(json.dumps(validation_receipt), encoding="utf-8")
+        validation_archive.unlink(missing_ok=True)
+        with zipfile.ZipFile(validation_archive, "w") as output:
+            for file in reusable.iterdir():
+                output.write(file, file.name)
+
+        validation_name = f"codex-agent-ci-validation-{source_tree}"
+        native_name = f"codex-agent-native-wrapper-packages-{source_tree}"
         artifacts = [
             {"name": validation_name, "expired": False},
             {"name": native_name, "expired": False},

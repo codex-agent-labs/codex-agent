@@ -41,6 +41,7 @@ private data class CrossLanguageCAbiClientCatalog(
     val current: String,
     val minimum: String,
     val encoded: String,
+    val identitySchemaVersion: Int,
     val publicSymbolCount: Int,
     val headerPath: String,
     val packageManifestPath: String,
@@ -61,6 +62,8 @@ private val crossLanguageCAbiClientCatalog: CrossLanguageCAbiClientCatalog by la
 val CROSS_LANGUAGE_C_ABI_CURRENT: String get() = crossLanguageCAbiClientCatalog.current
 val CROSS_LANGUAGE_C_ABI_MINIMUM: String get() = crossLanguageCAbiClientCatalog.minimum
 val CROSS_LANGUAGE_C_ABI_ENCODED: String get() = crossLanguageCAbiClientCatalog.encoded
+val CROSS_LANGUAGE_C_ABI_IDENTITY_SCHEMA_VERSION: Int get() =
+    crossLanguageCAbiClientCatalog.identitySchemaVersion
 val CROSS_LANGUAGE_C_ABI_SYMBOL_COUNT: Int get() = crossLanguageCAbiClientCatalog.publicSymbolCount
 internal val C_ABI_PACKAGE_MANIFEST: String get() = crossLanguageCAbiClientCatalog.packageManifestPath
 internal val C_ABI_HEADER_PATH: String get() = crossLanguageCAbiClientCatalog.headerPath
@@ -226,7 +229,9 @@ private fun readCrossLanguageCAbiClientCatalog(contents: String): CrossLanguageC
     check(root.cAbiClientInt("schemaVersion") == 1) { "C ABI catalog schema version mismatch" }
 
     val abi = root.cAbiClientObject("abi").also {
-        it.requireCAbiClientKeys(setOf("current", "minimum", "encoded", "publicSymbolCount"))
+        it.requireCAbiClientKeys(
+            setOf("current", "minimum", "encoded", "identitySchemaVersion", "publicSymbolCount"),
+        )
     }
     val paths = root.cAbiClientObject("paths").also {
         it.requireCAbiClientKeys(setOf("header", "packageManifest", "stagedEvidence"))
@@ -295,6 +300,9 @@ private fun readCrossLanguageCAbiClientCatalog(contents: String): CrossLanguageC
         abi.cAbiClientString("current").also(::requireCAbiClientString),
         abi.cAbiClientString("minimum").also(::requireCAbiClientString),
         abi.cAbiClientString("encoded").also(::requireCAbiClientString),
+        abi.cAbiClientInt("identitySchemaVersion").also {
+            check(it > 0) { "C ABI catalog identity schema version is invalid" }
+        },
         abi.cAbiClientInt("publicSymbolCount").also { check(it > 0) { "C ABI catalog symbol count is empty" } },
         paths.cAbiClientString("header").also(::requireCAbiClientString),
         paths.cAbiClientString("packageManifest").also(::requireCAbiClientString),

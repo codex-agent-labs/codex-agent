@@ -16,7 +16,7 @@ from unittest.mock import patch
 CI_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_ROOT))
 
-from impact import LANES  # noqa: E402
+from impact import LANES, _legacy_lane_states  # noqa: E402
 from promote import (  # noqa: E402
     M11_VALIDATION_FILES,
     PROMOTED_VALIDATION_FILES,
@@ -31,7 +31,7 @@ from promote import (  # noqa: E402
     validate_source_artifacts,
     wait_for_predecessor_promotion,
 )
-from receipt import INPUT_NAMES, aggregate, create_receipt, safe_extract  # noqa: E402
+from receipt import INPUT_NAMES, aggregate, create_receipt, required_lanes, safe_extract  # noqa: E402
 
 
 REPOSITORY = "codex-agent-labs/codex-agent"
@@ -57,16 +57,13 @@ class PromotionTest(unittest.TestCase):
 
         self.plan_root = self.root / "source-plan"
         self.plan_path = self.plan_root / "impact-plan.json"
-        lanes = {
-            lane: {
-                "build": True,
-                "test": False,
-                "metadata": False,
-                "reuseAllowed": False,
-                "reasons": ["bootstrap"],
-            }
-            for lane in LANES
-        }
+        lanes, full, unknown = _legacy_lane_states(
+            CI_ROOT.parent,
+            ["product.txt"],
+            force_full=False,
+            remote_authorized=True,
+            remote_reason="merge-group",
+        )
         self.plan = {
             "schemaVersion": 1,
             "event": "merge_group",
@@ -80,8 +77,9 @@ class PromotionTest(unittest.TestCase):
             "remoteBuildAuthorized": True,
             "remoteBuildAuthorizationReason": "merge-group",
             "androidEvidenceRequired": False,
-            "full": True,
-            "unknownPaths": [],
+            "fullRequested": False,
+            "full": full,
+            "unknownPaths": unknown,
             "changedPaths": ["product.txt"],
             "lanes": lanes,
         }
@@ -93,8 +91,12 @@ class PromotionTest(unittest.TestCase):
                 path.write_text(f"{lane}:{filename}\n", encoding="utf-8")
 
         self.lanes_root = self.root / "lanes"
-        for lane in LANES:
+        for lane in required_lanes(self.plan):
             lane_root = self.lanes_root / lane
+            actions = ",".join(
+                action for action in ("build", "metadata", "test")
+                if self.plan["lanes"][lane][action]
+            )
             create_receipt(Namespace(
                 plan=self.plan_path,
                 lane=lane,
@@ -104,7 +106,7 @@ class PromotionTest(unittest.TestCase):
                 run_id=41,
                 run_attempt=2,
                 runner=["os=Linux", "arch=X64"],
-                toolchain=["java=25", "validationActions=build"],
+                toolchain=["java=25", f"validationActions={actions}"],
                 artifact=[],
                 evidence=[],
             ))
@@ -397,10 +399,20 @@ class PromotionTest(unittest.TestCase):
         wait.assert_not_called()
 
     def test_incremental_discovery_carries_only_from_its_immediate_first_parent(self) -> None:
-        self.plan["full"] = False
-        for lane, state in self.plan["lanes"].items():
-            selected = lane == "android"
-            state.update(build=selected, test=False, metadata=False)
+        changed = ["codex-agent-runtime-android/src/test/kotlin/Test.kt"]
+        lanes, full, unknown = _legacy_lane_states(
+            CI_ROOT.parent,
+            changed,
+            force_full=False,
+            remote_authorized=True,
+            remote_reason="merge-group",
+        )
+        self.plan.update(
+            changedPaths=changed,
+            lanes=lanes,
+            full=full,
+            unknownPaths=unknown,
+        )
         self.write_json(self.plan_path, self.plan)
         selected_receipts = self.root / "selected-lanes"
         shutil.copytree(self.lanes_root / "android", selected_receipts / "android")

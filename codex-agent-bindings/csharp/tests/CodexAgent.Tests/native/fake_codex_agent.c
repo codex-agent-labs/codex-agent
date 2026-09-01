@@ -296,12 +296,45 @@ static codex_agent_status_t complete_operation(
     return CODEX_AGENT_STATUS_OK;
 }
 
-uint32_t codex_agent_abi_version(void) { return CODEX_AGENT_ABI_VERSION_CURRENT; }
+uint32_t codex_agent_abi_version(void) {
+#ifdef CODEX_AGENT_TEST_ABI_VERSION
+    return CODEX_AGENT_TEST_ABI_VERSION;
+#else
+    return CODEX_AGENT_ABI_VERSION_CURRENT;
+#endif
+}
 
 int32_t codex_agent_abi_is_compatible(uint32_t requested_version) {
     return requested_version >= CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE &&
         requested_version <= CODEX_AGENT_ABI_VERSION_CURRENT;
 }
+
+#ifndef CODEX_AGENT_TEST_OMIT_RUNTIME_IDENTITY
+codex_agent_status_t codex_agent_runtime_identity(char *buffer, size_t *inout_size) {
+#if defined(__APPLE__) && defined(__aarch64__)
+    static const char identity[] = "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"cAbiVersion\":\"1.13.0\",\"componentId\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"contractComponentDigest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"macos-arm64\"}";
+#elif defined(__APPLE__) && defined(__x86_64__)
+    static const char identity[] = "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"cAbiVersion\":\"1.13.0\",\"componentId\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"contractComponentDigest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"macos-x64\"}";
+#elif defined(__linux__) && defined(__aarch64__)
+    static const char identity[] = "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"cAbiVersion\":\"1.13.0\",\"componentId\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"contractComponentDigest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"linux-arm64\"}";
+#elif defined(__linux__) && defined(__x86_64__)
+    static const char identity[] = "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"cAbiVersion\":\"1.13.0\",\"componentId\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"contractComponentDigest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"linux-x64\"}";
+#elif defined(_WIN64)
+    static const char identity[] = "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"cAbiVersion\":\"1.13.0\",\"componentId\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"contractComponentDigest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"windows-x64\"}";
+#else
+#error unsupported Codex Agent test target
+#endif
+    const size_t required = sizeof(identity);
+    if (inout_size == NULL) return CODEX_AGENT_STATUS_INVALID_ARGUMENT;
+    if (buffer == NULL || *inout_size < required) {
+        *inout_size = required;
+        return CODEX_AGENT_STATUS_BUFFER_TOO_SMALL;
+    }
+    memcpy(buffer, identity, required);
+    *inout_size = required;
+    return CODEX_AGENT_STATUS_OK;
+}
+#endif
 
 codex_agent_status_t codex_agent_context_create(codex_agent_context_t **out_context) {
     *out_context = calloc(1U, sizeof(**out_context));

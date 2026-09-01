@@ -12,7 +12,7 @@ import stat
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from impact import LANES
+from impact import LANES, validate_legacy_lane_projection
 
 
 SCHEMA_VERSION = 1
@@ -97,6 +97,7 @@ def create_receipt(arguments: argparse.Namespace) -> None:
     plan = read_json(plan_path)
     if plan.get("schemaVersion") != SCHEMA_VERSION or arguments.lane not in LANES:
         raise ValueError("Unsupported plan schema or lane")
+    validate_legacy_lane_projection(plan, plan_path=plan_path)
     output_root = arguments.output.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     input_files: dict[str, str] = {}
@@ -148,6 +149,7 @@ def validate_receipt(
 ) -> dict[str, object]:
     receipt = read_json(receipt_path)
     plan = read_json(plan_path)
+    validate_legacy_lane_projection(plan, plan_path=plan_path)
     expected_keys = {
         "schemaVersion", "repository", "workflowPath", "event", "runId", "runAttempt", "pullRequest",
         "baseCommit", "headCommit", "validationCommit", "validationTree", "lane", "artifactName", "runner",
@@ -277,6 +279,7 @@ def validate_receipt(
 
 def aggregate(arguments: argparse.Namespace) -> None:
     plan = read_json(arguments.plan)
+    validate_legacy_lane_projection(plan, plan_path=arguments.plan)
     receipts: dict[str, dict[str, object]] = {}
     for receipt_path in arguments.receipts.rglob("lane-receipt.json"):
         receipt = validate_receipt(

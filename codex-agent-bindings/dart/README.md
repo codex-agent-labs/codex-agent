@@ -65,18 +65,20 @@ objects expose stable `instance` values.
 
 Synchronous elicitation, form-validation, interaction-query, and authorization
 URL operations use the same verified C SDK as `CodexHost`. They can be called
-before a host is created; the loader resolves `CODEX_AGENT_LIBRARY` or the
-packaged classifier library synchronously and fails closed when neither is
-available.
+before a host is created. The loader accepts an exact `libraryPath` or
+`CODEX_AGENT_LIBRARY` override, otherwise it selects the packaged classifier
+library. It never falls back to a process or bare system-library name.
 
 The release package must place the native library under
 `lib/src/native/<classifier>/` for `macos-arm64`, `macos-x64`,
 `linux-arm64`, `linux-x64`, and `windows-x64`. For local development,
 pass `libraryPath` to `CodexHost.create` or set `CODEX_AGENT_LIBRARY`. The Dart
-loader uses exactly that precedence followed by the packaged directory; it has
-no process or system-library fallback and requires compatible ABI `1.12.0`.
-Repository release integration is responsible for classifier checksums and
-provenance before publication.
+loader uses exactly that precedence followed by the packaged directory. It
+requires ABI `1.13+` and Runtime identity schema 1. Before an embedded library
+is loaded, its SHA-256, target, and component identity must match the packaged
+`sdk-compatibility.json`. An explicit override may have different bytes and a
+different component ID, but must prove the declared Contract, target, ABI, and
+Runtime compatibility range through `codex_agent_runtime_identity`.
 
 Operations return `Future` and accept explicit `CodexCancellation`. State has a
 separate current-value `Future` plus current-value-first broadcast changes.

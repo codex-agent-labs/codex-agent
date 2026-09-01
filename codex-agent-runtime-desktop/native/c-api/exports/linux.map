@@ -850,3 +850,10 @@ CODEX_AGENT_1.12 {
     local:
         *;
 } CODEX_AGENT_1.11;
+
+CODEX_AGENT_1.13 {
+    global:
+        codex_agent_runtime_identity;
+    local:
+        *;
+} CODEX_AGENT_1.12;

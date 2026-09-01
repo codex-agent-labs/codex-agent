@@ -1,6 +1,7 @@
 #pragma once
 
 #include <codex_agent.h>
+#include <codex_agent/native_dispatch.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -25,6 +26,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <codex_agent/native_remap.hpp>
 
 namespace codex_agent {
 
@@ -3959,3 +3962,4 @@ static_assert(!std::is_copy_constructible_v<StateSubscription<HostState>>);
 }  // namespace codex_agent
 
 #include <codex_agent/leaf_services.hpp>
+#include <codex_agent/native_unmap.hpp>

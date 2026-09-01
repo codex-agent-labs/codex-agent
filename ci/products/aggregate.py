@@ -28,6 +28,7 @@ from .inventory import (
     write_canonical_json,
 )
 from .receipt import (
+    build_key_payload,
     output_inventory_digest,
     validate_output_manifest,
     validate_phase_receipt,
@@ -35,6 +36,11 @@ from .receipt import (
     verify_output_manifest,
 )
 from .signatures import validate_signing_metadata, verify_manifest_signature
+from .runtime_attestation import (
+    derive_desktop_validation_projection,
+    derive_runtime_component_attestation,
+)
+from .runtime_identity import derive_runtime_identity
 from .contract_model import (
     CONTRACT_ARTIFACT_COMPONENTS,
     CONTRACT_CHECKSUM_SUFFIXES,
@@ -417,17 +423,19 @@ def _contract_reference(value: Any, label: str, *, with_component: bool) -> dict
 
 
 def runtime_component_id(value: dict[str, Any]) -> str:
-    identity = {
-        "appServer": value["appServer"],
-        "cAbi": value["cAbi"],
-        "contract": value["contract"],
+    return derive_runtime_identity({
+        "schemaVersion": 1,
+        "binaryBuildKey": value["inputs"]["binaryBuildKey"],
         "runtimeCompatibilityVersion": value["runtimeCompatibilityVersion"],
         "target": value["target"],
-        "binaryBuildKey": value["inputs"]["binaryBuildKey"],
-        "binaryOutputInventoryDigest": value["inputs"]["binaryOutputInventoryDigest"],
+        "contract": {
+            "digest": value["contract"]["digest"],
+            "componentDigest": value["contract"]["componentDigest"],
+        },
+        "cAbi": value["cAbi"],
+        "appServer": value["appServer"],
         "toolchainProfile": value["toolchainProfile"],
-    }
-    return sha256_bytes(canonical_json_bytes(identity))
+    })["componentId"]
 
 
 def validate_runtime_variant(value: Any) -> dict[str, Any]:
@@ -456,7 +464,11 @@ def validate_runtime_variant(value: Any) -> dict[str, Any]:
     require_semver(variant["runtimeCompatibilityVersion"], "Runtime variant.runtimeCompatibilityVersion")
     if variant["target"] not in RUNTIME_TARGETS:
         raise ValueError("Runtime variant target is unsupported")
-    _contract_reference(variant["contract"], "Runtime variant.contract", with_component=True)
+    contract = require_exact_keys(
+        variant["contract"], {"digest", "componentDigest"}, "Runtime variant.contract",
+    )
+    require_sha256(contract["digest"], "Runtime variant.contract.digest")
+    require_sha256(contract["componentDigest"], "Runtime variant.contract.componentDigest")
     c_abi = require_exact_keys(
         variant["cAbi"],
         {
@@ -488,13 +500,7 @@ def validate_runtime_variant(value: Any) -> dict[str, Any]:
     require_sha256(app_server["binarySha256"], "Runtime variant.appServer.binarySha256")
     inputs = require_exact_keys(
         variant["inputs"],
-        {
-            "binaryBuildKey",
-            "binaryOutputInventoryDigest",
-            "binaryReceiptSha256",
-            "packageReceiptSha256",
-            "validationReceiptSha256",
-        },
+        {"binaryBuildKey", "binaryOutputInventoryDigest"},
         "Runtime variant.inputs",
     )
     for field in inputs:
@@ -508,13 +514,13 @@ def validate_runtime_variant(value: Any) -> dict[str, Any]:
         raise ValueError("Runtime variant innerArtifacts must cover c-abi, app-server, and evidence")
     required_roles = {
         "app-server-archive",
-        "binary-receipt",
+        "binary-phase-evidence",
         "c-abi-archive",
-        "package-receipt",
+        "package-phase-evidence",
         "provenance",
         "sbom",
         "validation",
-        "validation-receipt",
+        "validation-phase-evidence",
     }
     roles = [record["role"] for record in artifacts]
     if set(roles) != required_roles or len(roles) != len(required_roles):
@@ -526,14 +532,6 @@ def validate_runtime_variant(value: Any) -> dict[str, Any]:
     if any(not record["path"].startswith(expected_prefix.get(record["role"], "evidence/"))
            for record in artifacts):
         raise ValueError("Runtime variant inner artifact role/path scope mismatch")
-    role_records = {record["role"]: record for record in artifacts}
-    for role, field in (
-        ("binary-receipt", "binaryReceiptSha256"),
-        ("package-receipt", "packageReceiptSha256"),
-        ("validation-receipt", "validationReceiptSha256"),
-    ):
-        if role_records[role]["sha256"] != inputs[field]:
-            raise ValueError(f"Runtime variant {role} digest does not match inputs.{field}")
     toolchain = require_exact_keys(variant["toolchainProfile"], {"id", "digest"}, "Runtime variant.toolchainProfile")
     if require_identifier(toolchain["id"], "Runtime variant.toolchainProfile.id") != variant["target"]:
         raise ValueError("Runtime variant toolchain profile ID must equal its target")
@@ -553,8 +551,8 @@ def _runtime_variant_record(value: Any, label: str) -> dict[str, Any]:
             "bundleSha256",
             "manifestSha256",
             "receiptSha256",
+            "phaseReceipts",
             "sourceRuntimeVersion",
-            "reused",
             "producer",
         },
         label,
@@ -563,8 +561,16 @@ def _runtime_variant_record(value: Any, label: str) -> dict[str, Any]:
         raise ValueError(f"{label}.target is unsupported")
     for field in ("componentId", "bundleSha256", "manifestSha256", "receiptSha256"):
         require_sha256(record[field], f"{label}.{field}")
+    phase_receipts = require_exact_keys(
+        record["phaseReceipts"], {"binary", "package", "validation"}, f"{label}.phaseReceipts",
+    )
+    for phase, value in phase_receipts.items():
+        phase_record = require_exact_keys(
+            value, {"sha256", "producer"}, f"{label}.phaseReceipts.{phase}",
+        )
+        require_sha256(phase_record["sha256"], f"{label}.phaseReceipts.{phase}.sha256")
+        validate_producer(phase_record["producer"], f"{label}.phaseReceipts.{phase}.producer")
     require_semver(record["sourceRuntimeVersion"], f"{label}.sourceRuntimeVersion")
-    require_boolean(record["reused"], f"{label}.reused")
     validate_producer(record["producer"], f"{label}.producer")
     return record
 
@@ -590,13 +596,22 @@ def validate_runtime_aggregate(value: Any) -> dict[str, Any]:
         raise ValueError("Unsupported Runtime aggregate schemaVersion")
     if aggregate["product"] != "runtime":
         raise ValueError("Runtime aggregate product must be runtime")
-    require_semver(aggregate["runtimeVersion"], "Runtime aggregate.runtimeVersion")
+    runtime_version = require_semver(aggregate["runtimeVersion"], "Runtime aggregate.runtimeVersion")
     require_semver(aggregate["runtimeCompatibilityVersion"], "Runtime aggregate.runtimeCompatibilityVersion")
+    major, minor, _ = runtime_version.split("-", 1)[0].split(".")
+    if aggregate["runtimeCompatibilityVersion"] != f"{major}.{minor}.0":
+        raise ValueError("Runtime aggregate compatibility version does not match its release")
     _contract_reference(aggregate["contract"], "Runtime aggregate.contract", with_component=False)
     variants = [
         _runtime_variant_record(member, f"Runtime aggregate.variants[{index}]")
         for index, member in enumerate(require_array(aggregate["variants"], "Runtime aggregate.variants"))
     ]
+    if any(
+        f"{record['sourceRuntimeVersion'].split('-', 1)[0].rsplit('.', 1)[0]}.0"
+        != aggregate["runtimeCompatibilityVersion"]
+        for record in variants
+    ):
+        raise ValueError("Runtime variant source release is outside the aggregate compatibility line")
     targets = [record["target"] for record in variants]
     if tuple(targets) != RUNTIME_TARGETS:
         raise ValueError("Runtime aggregate must contain exactly five sorted supported targets")
@@ -664,25 +679,67 @@ def _runtime_variant_bundle_name(target: str, component_id: str) -> str:
 
 
 def verify_runtime_aggregate_artifacts(
-    value: Any,
+    aggregate_manifest: Path,
     *,
-    contract_manifest: Any,
+    aggregate_signature: Path,
+    aggregate_public_key: Path,
+    contract_bundle: Path,
+    contract_public_key: Path,
     variant_bundles: dict[str, Path],
     metadata_receipts: dict[str, Path],
+    phase_receipts: dict[str, dict[str, Path]],
+    validation_evidence: dict[str, Path],
     trusted_public_keys: dict[str, Path],
+    runtime_maven_files: list[dict[str, Any]],
+    adapter_evidence: dict[str, Path],
     required_trust_domain: str,
 ) -> dict[str, Any]:
-    aggregate = validate_runtime_aggregate(value)
-    contract = validate_contract_manifest(contract_manifest)
+    aggregate_path = Path(aggregate_manifest)
+    aggregate_bytes = read_regular_file_bytes(
+        aggregate_path,
+        max_bytes=16 * 1024 * 1024,
+        reject_symlink_parents=True,
+    )
+    aggregate = validate_runtime_aggregate(load_canonical_json_bytes(aggregate_bytes))
+    expected_manifest_name = f"codex-agent-runtime-{aggregate['runtimeVersion']}-manifest.json"
+    expected_signature_name = f"codex-agent-runtime-{aggregate['runtimeVersion']}-manifest.sig"
+    signature_path = Path(aggregate_signature)
+    if aggregate_path.name != expected_manifest_name or signature_path.name != expected_signature_name:
+        raise ValueError("Runtime aggregate manifest or signature identity mismatch")
+    signature_bytes = read_regular_file_bytes(
+        signature_path,
+        max_bytes=1024 * 1024,
+        reject_symlink_parents=True,
+    )
+    with tempfile.TemporaryDirectory(prefix="codex-agent-runtime-aggregate-signature-") as temporary:
+        snapshot_manifest = Path(temporary) / expected_manifest_name
+        snapshot_signature = Path(temporary) / expected_signature_name
+        snapshot_manifest.write_bytes(aggregate_bytes)
+        snapshot_signature.write_bytes(signature_bytes)
+        verify_manifest_signature(
+            snapshot_manifest,
+            snapshot_signature,
+            Path(aggregate_public_key),
+            aggregate["signing"],
+        )
     if required_trust_domain not in {"development", "release"}:
         raise ValueError("Required Runtime aggregate trust domain is invalid")
+    contract = verify_contract_bundle(
+        Path(contract_bundle),
+        Path(contract_public_key),
+        expected_trust_domain=required_trust_domain,
+    )
     for mapping, label in (
         (variant_bundles, "Runtime variant bundles"),
         (metadata_receipts, "Runtime metadata receipts"),
+        (phase_receipts, "Runtime phase receipts"),
+        (validation_evidence, "Runtime validation evidence"),
         (trusted_public_keys, "Runtime variant public keys"),
     ):
         if type(mapping) is not dict or set(mapping) != set(RUNTIME_TARGETS):
             raise ValueError(f"{label} must contain exactly the five Runtime targets")
+    if type(adapter_evidence) is not dict or set(adapter_evidence) != set(RUNTIME_ADAPTERS):
+        raise ValueError("Runtime adapter evidence must contain exactly JVM, Node JS, and Node Wasm")
     if aggregate["signing"]["trustDomain"] != required_trust_domain:
         raise ValueError("Runtime aggregate signing trust domain mismatch")
     if contract["signing"]["trustDomain"] != required_trust_domain:
@@ -692,6 +749,55 @@ def verify_runtime_aggregate_artifacts(
         or aggregate["contract"]["digest"] != contract["contractDigest"]
     ):
         raise ValueError("Runtime aggregate does not reference the authenticated Contract")
+
+    actual_maven_files = []
+    for index, value in enumerate(require_array(runtime_maven_files, "Runtime Maven file inputs")):
+        source = require_exact_keys(
+            value,
+            {"path", "role", "component", "file"},
+            f"Runtime Maven file input[{index}]",
+        )
+        path = require_relative_path(source["path"], f"Runtime Maven file input[{index}].path")
+        role = require_identifier(source["role"], f"Runtime Maven file input[{index}].role")
+        component = require_identifier(
+            source["component"], f"Runtime Maven file input[{index}].component",
+        )
+        source_file = source["file"]
+        if not isinstance(source_file, (str, os.PathLike)) or not os.fspath(source_file):
+            raise ValueError(f"Runtime Maven file input[{index}].file must be a non-empty path")
+        contents = read_regular_file_bytes(Path(source_file), reject_symlink_parents=True)
+        if not contents:
+            raise ValueError(f"Runtime Maven file input is empty: {path}")
+        actual_maven_files.append({
+            "path": path,
+            "role": role,
+            "component": component,
+            "bytes": len(contents),
+            "sha256": sha256_bytes(contents),
+        })
+    actual_maven_files.sort(key=lambda record: record["path"])
+    if actual_maven_files != aggregate["runtimeMavenFiles"]:
+        raise ValueError("Runtime aggregate Maven files differ from the verified inputs")
+
+    actual_adapter_evidence = []
+    for target in RUNTIME_ADAPTERS:
+        contents = read_regular_file_bytes(
+            Path(adapter_evidence[target]),
+            max_bytes=64 * 1024 * 1024,
+            reject_symlink_parents=True,
+        )
+        if not contents:
+            raise ValueError(f"Runtime adapter evidence is empty: {target}")
+        actual_adapter_evidence.append({
+            "path": f"evidence/{target}.json",
+            "role": "adapter",
+            "target": target,
+            "bytes": len(contents),
+            "sha256": sha256_bytes(contents),
+        })
+    actual_adapter_evidence.sort(key=lambda record: record["path"])
+    if actual_adapter_evidence != aggregate["adapterEvidence"]:
+        raise ValueError("Runtime aggregate adapter evidence differs from the verified inputs")
 
     records = {record["target"]: record for record in aggregate["variants"]}
     compatibility = aggregate["compatibility"]
@@ -748,45 +854,158 @@ def verify_runtime_aggregate_artifacts(
         if variant["signing"]["trustDomain"] != required_trust_domain:
             raise ValueError(f"Runtime variant signing trust domain mismatch: {target}")
         role_records = {member["role"]: member for member in variant["innerArtifacts"]}
-        receipt_paths = {
+        evidence_paths = {
             role_records[role]["path"]
-            for role in ("binary-receipt", "package-receipt", "validation-receipt")
+            for role in (
+                "binary-phase-evidence", "package-phase-evidence", "validation-phase-evidence",
+                "provenance", "sbom", "validation",
+            )
         }
-        receipt_zip_records, receipt_contents, receipt_archive_identity = verified_zip_contents(
+        canonical_records, canonical_contents, canonical_identity = verified_zip_contents(
             bundle,
             **RUNTIME_VARIANT_ZIP_LIMITS,
-            retained_paths=receipt_paths,
+            retained_paths=evidence_paths,
             max_retained_bytes=16 * 1024 * 1024,
+            canonical_stored=True,
         )
-        if receipt_zip_records != zip_records or receipt_archive_identity != archive_identity:
-            raise ValueError(f"Runtime variant bundle changed during verification: {target}")
-        phase_receipts = {
-            phase: validate_phase_receipt(
-                load_canonical_json_bytes(receipt_contents[role_records[role]["path"]])
+        if canonical_records != zip_records or canonical_identity != archive_identity:
+            raise ValueError(f"Runtime variant bundle changed during canonical verification: {target}")
+        phase_evidence = [
+            load_canonical_json_bytes(canonical_contents[role_records[f"{phase}-phase-evidence"]["path"]])
+            for phase in ("binary", "package", "validation")
+        ]
+        target_phase_receipts = phase_receipts[target]
+        if type(target_phase_receipts) is not dict or set(target_phase_receipts) != {
+            "binary", "package", "validation",
+        }:
+            raise ValueError(f"Runtime phase receipts must contain exactly three phases: {target}")
+        original_receipts = {}
+        for phase in ("binary", "package", "validation"):
+            phase_path = Path(target_phase_receipts[phase])
+            phase_bytes = read_regular_file_bytes(
+                phase_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
             )
-            for phase, role in (
-                ("binary", "binary-receipt"),
-                ("package", "package-receipt"),
-                ("validation", "validation-receipt"),
-            )
-        }
-        for phase, receipt in phase_receipts.items():
+            phase_record = record["phaseReceipts"][phase]
+            if sha256_bytes(phase_bytes) != phase_record["sha256"]:
+                raise ValueError(f"Runtime {phase} receipt digest mismatch: {target}")
+            receipt = validate_phase_receipt(load_canonical_json_bytes(phase_bytes))
             if (
                 receipt["product"] != "runtime"
-                or receipt["component"] != f"runtime-{target}"
+                or receipt["component"] != target
                 or receipt["phase"] != phase
                 or receipt["target"] != target
+                or receipt["productVersion"] != record["sourceRuntimeVersion"]
                 or receipt["inputs"]["versionIdentity"] != aggregate["runtimeCompatibilityVersion"]
                 or receipt["trustDomain"] != required_trust_domain
+                or receipt["producer"] != phase_record["producer"]
             ):
-                raise ValueError(f"Runtime variant {phase} receipt disagrees with its manifest: {target}")
-        binary_receipt = phase_receipts["binary"]
+                raise ValueError(f"Runtime {phase} receipt identity mismatch: {target}")
+            projected = {
+                **build_key_payload(
+                    product=receipt["product"], component=receipt["component"],
+                    phase=receipt["phase"], target=receipt["target"], inputs=receipt["inputs"],
+                ),
+                "buildKey": receipt["buildKey"],
+            }
+            if phase != "validation":
+                projected["outputInventoryDigest"] = output_inventory_digest(receipt["outputs"])
+            if phase != "validation" and projected != phase_evidence[
+                ("binary", "package", "validation").index(phase)
+            ]:
+                raise ValueError(f"Runtime {phase} receipt projection mismatch: {target}")
+            original_receipts[phase] = receipt
+        binary_receipt = original_receipts["binary"]
+        contract_inputs = binary_receipt["inputs"]["upstreamArtifacts"]
+        projection = contract_inputs[0].get("contractProjection") if len(contract_inputs) == 1 else None
+        component_digests = {} if projection is None else {
+            value["component"]: value["sha256"] for value in projection["componentDigests"]
+        }
+        if projection is None or (
+            projection["contractDigest"] != contract["contractDigest"]
+            or component_digests != {target: contract["components"][target]["sha256"]}
+        ):
+            raise ValueError(f"Runtime binary receipt Contract projection mismatch: {target}")
+        for phase, predecessor in (("package", "binary"), ("validation", "package")):
+            if original_receipts[phase]["inputs"]["upstreamArtifacts"] != [
+                _repository_reference(original_receipts[predecessor])
+            ]:
+                raise ValueError(f"Runtime {phase} receipt predecessor mismatch: {target}")
+        package_outputs = original_receipts["package"]["outputs"]
+        for role, kind, prefix in (
+            ("c-abi-archive", "c-abi", "outputs/c-abi/"),
+            ("app-server-archive", "app-server", "outputs/app-server/"),
+        ):
+            artifact = role_records[role]
+            if sum(
+                output["kind"] == kind
+                and output["relativePath"].startswith(prefix)
+                and output["bytes"] == artifact["bytes"]
+                and output["sha256"] == artifact["sha256"]
+                for output in package_outputs
+            ) != 1:
+                raise ValueError(f"Runtime variant {role} is not an exact package output: {target}")
+        identity = derive_runtime_identity({
+            "schemaVersion": 1,
+            "binaryBuildKey": variant["inputs"]["binaryBuildKey"],
+            "runtimeCompatibilityVersion": variant["runtimeCompatibilityVersion"],
+            "target": variant["target"],
+            "contract": variant["contract"],
+            "cAbi": variant["cAbi"],
+            "appServer": variant["appServer"],
+            "toolchainProfile": variant["toolchainProfile"],
+        })
+        validation_bytes = read_regular_file_bytes(
+            Path(validation_evidence[target]),
+            max_bytes=64 * 1024 * 1024,
+            reject_symlink_parents=True,
+        )
+        validation_outputs = [
+            output for output in original_receipts["validation"]["outputs"]
+            if output["kind"] == "native"
+            and output["relativePath"].startswith("outputs/native/")
+            and output["bytes"] == len(validation_bytes)
+            and output["sha256"] == sha256_bytes(validation_bytes)
+        ]
+        if len(validation_outputs) != 1:
+            raise ValueError(f"Runtime validation evidence is not one exact validation output: {target}")
+        validation_projection = derive_desktop_validation_projection(
+            load_canonical_json_bytes(validation_bytes),
+            identity_envelope=identity,
+            expected_commit=original_receipts["validation"]["producer"]["commit"],
+            classifier_archive_sha256=role_records["app-server-archive"]["sha256"],
+        )
+        validation_projection_bytes = canonical_json_bytes(validation_projection)
+        if canonical_contents[role_records["validation"]["path"]] != validation_projection_bytes:
+            raise ValueError(f"Runtime variant validation projection mismatch: {target}")
+        validation_phase_projection = {
+            **build_key_payload(
+                product=original_receipts["validation"]["product"],
+                component=original_receipts["validation"]["component"],
+                phase="validation",
+                target=original_receipts["validation"]["target"],
+                inputs=original_receipts["validation"]["inputs"],
+            ),
+            "buildKey": original_receipts["validation"]["buildKey"],
+            "validationEvidenceDigest": sha256_bytes(validation_projection_bytes),
+        }
+        if validation_phase_projection != phase_evidence[2]:
+            raise ValueError(f"Runtime validation receipt projection mismatch: {target}")
+        deterministic_artifacts = [
+            member for member in variant["innerArtifacts"]
+            if member["role"] in {"app-server-archive", "c-abi-archive", "validation"}
+        ]
+        attestation = derive_runtime_component_attestation(
+            identity, phase_evidence, deterministic_artifacts,
+        )
         if (
-            binary_receipt["buildKey"] != variant["inputs"]["binaryBuildKey"]
-            or output_inventory_digest(binary_receipt["outputs"]) !=
+            canonical_contents[role_records["sbom"]["path"]] != attestation["sbomBytes"]
+            or canonical_contents[role_records["provenance"]["path"]] !=
+                attestation["componentProvenanceBytes"]
+            or phase_evidence[0]["buildKey"] != variant["inputs"]["binaryBuildKey"]
+            or phase_evidence[0]["outputInventoryDigest"] !=
                 variant["inputs"]["binaryOutputInventoryDigest"]
         ):
-            raise ValueError(f"Runtime variant binary receipt identity mismatch: {target}")
+            raise ValueError(f"Runtime variant deterministic evidence mismatch: {target}")
         expected_c_abi = {
             "version": compatibility["cAbiVersion"],
             "minimumCompatibleVersion": compatibility["minimumCAbiVersion"],
@@ -800,7 +1019,6 @@ def verify_runtime_aggregate_artifacts(
             or variant["componentId"] != record["componentId"]
             or variant["runtimeCompatibilityVersion"] != aggregate["runtimeCompatibilityVersion"]
             or variant["contract"] != {
-                "version": contract["contractVersion"],
                 "digest": contract["contractDigest"],
                 "componentDigest": contract["components"][target]["sha256"],
             }
@@ -815,7 +1033,9 @@ def verify_runtime_aggregate_artifacts(
             raise ValueError(f"Runtime variant manifest disagrees with its aggregate: {target}")
 
         receipt_path = Path(metadata_receipts[target])
-        receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024)
+        receipt_bytes = read_regular_file_bytes(
+            receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+        )
         if sha256_bytes(receipt_bytes) != record["receiptSha256"]:
             raise ValueError(f"Runtime variant metadata receipt digest mismatch: {target}")
         receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
@@ -827,13 +1047,16 @@ def verify_runtime_aggregate_artifacts(
         }
         if (
             receipt["product"] != "runtime"
-            or receipt["component"] != f"runtime-{target}"
+            or receipt["component"] != target
             or receipt["phase"] != "metadata"
             or receipt["target"] != target
             or receipt["productVersion"] != record["sourceRuntimeVersion"]
             or receipt["inputs"]["versionIdentity"] != aggregate["runtimeCompatibilityVersion"]
             or receipt["trustDomain"] != required_trust_domain
             or receipt["producer"] != record["producer"]
+            or receipt["inputs"]["upstreamArtifacts"] != [
+                _repository_reference(original_receipts["validation"])
+            ]
             or receipt["outputs"] != [bundle_output]
         ):
             raise ValueError(f"Runtime variant metadata receipt disagrees with its aggregate: {target}")

@@ -57,10 +57,11 @@ class CrossLanguageCAbiRuntimeProductionTest {
     @Test
     fun `Python catalog parser preserves exact targets tools and consumer inventory`() {
         val catalog = readRuntimeCAbiCatalog(runRuntimeProductPythonModule("c_abi", listOf("describe")))
-        assertEquals("1.12", catalog.current)
+        assertEquals("1.13", catalog.current)
         assertEquals("1.0", catalog.minimum)
-        assertEquals("0x010c0000", catalog.encoded)
-        assertEquals(777, catalog.symbolCount)
+        assertEquals("0x010d0000", catalog.encoded)
+        assertEquals(1, catalog.identitySchemaVersion)
+        assertEquals(778, catalog.symbolCount)
         assertEquals(
             setOf("macosArm64", "macosX64", "linuxArm64", "linuxX64", "mingwX64"),
             catalog.targets.keys,
@@ -102,10 +103,10 @@ class CrossLanguageCAbiRuntimeProductionTest {
         )
         policies.forEach { (format, file) ->
             val policy = describeCrossLanguageCAbiExportPolicy(file, format)
-            assertEquals(777, policy.publicSymbols.size, format)
+            assertEquals(778, policy.publicSymbols.size, format)
             if (format == "elf") {
                 assertEquals(policy.publicSymbols, policy.publicSymbolVersions.keys)
-                assertEquals((0..12).mapTo(sortedSetOf()) { "CODEX_AGENT_1.$it" },
+                assertEquals((0..13).mapTo(sortedSetOf()) { "CODEX_AGENT_1.$it" },
                     policy.publicSymbolVersions.values.toSet())
             } else {
                 assertTrue(policy.publicSymbolVersions.isEmpty(), format)
@@ -123,6 +124,11 @@ class CrossLanguageCAbiRuntimeProductionTest {
             "package${'$'}{target.replaceFirstChar(Char::uppercase)}CAbiSdk",
             "generate${'$'}{targetTitle}CAbiPackageEvidence",
             "generateMingwX64MsvcImportLibrary",
+            "RuntimeBinaryFlagsValueSource::class.java",
+            "runtimeBinaryFlagsForKotlinTarget(target.name)",
+            "codexAgentRuntimeBinaryFlagsDigest",
+            "resolvedLinkerArguments(",
+            "resolvedMsvcOptions(",
             "codexAgent.candidateCommit",
             "codexAgent.candidateTree",
             "codexAgent.desktopClassifierDirectory",
@@ -136,11 +142,7 @@ class CrossLanguageCAbiRuntimeProductionTest {
             "native/c-api/exports/windows.def",
             "repositoryRootFile.resolve(\"LICENSE\")",
             "repositoryRootFile.resolve(\"THIRD_PARTY_NOTICES.md\")",
-            "libcodex_agent.dll.a",
-            "-Wl,--out-implib,${'$'}{mingwGnuImportLibrary.get().asFile.absolutePath}",
             "outputs.file(mingwGnuImportLibrary)",
-            "/machine:x64",
-            "/brepro",
             "cAbiToolDefaults(distribution.target)",
             "cAbiCatalog.compileOnlyConsumers.sorted()",
             "tasks.withType<KotlinNativeTest>().matching { it.name == testTaskName }.configureEach",
@@ -163,6 +165,15 @@ class CrossLanguageCAbiRuntimeProductionTest {
         assertFalse("codex-agent-runtime-desktop-${'$'}{project.version" in wiring)
         assertTrue("providers.of(RuntimeCAbiCatalogValueSource::class.java) {}.get()" in wiring)
         assertFalse("runRuntimeProductPythonModule(\"c_abi\", listOf(\"describe\"))" in wiring)
+        listOf(
+            "-Wl,--version-script,",
+            "-Wl,-exported_symbols_list,",
+            "-Wl,--out-implib,",
+            "\"/machine:x64\"",
+            "\"/brepro\"",
+        ).forEach { hardCoded ->
+            assertFalse(hardCoded in wiring, "Desktop plugin hard-codes Runtime binary flag: $hardCoded")
+        }
         assertFalse("crossLanguageCAbiTargetSpecs" in wiring)
         val projectWiring = repository.resolve("codex-agent-runtime-desktop/build.gradle.kts").readText()
         assertTrue("providers.of(RuntimeCAbiCatalogValueSource::class.java) {}.get()" in projectWiring)

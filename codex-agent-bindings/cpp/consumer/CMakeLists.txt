@@ -59,9 +59,10 @@ add_executable(
     ../tests/leaf_mock.cpp
 )
 target_compile_definitions(codex_agent_leaf_consumer PRIVATE CODEX_AGENT_BUILD)
+target_compile_definitions(codex_agent_leaf_consumer PRIVATE CODEX_AGENT_CPP_STATIC_TEST_DISPATCH)
 target_link_libraries(
     codex_agent_leaf_consumer
-    PRIVATE CodexAgent::CodexAgent Threads::Threads
+    PRIVATE CodexAgent::CodexAgent CodexAgent::C Threads::Threads
 )
 if(MSVC)
     target_compile_options(codex_agent_leaf_consumer PRIVATE /W4 /WX)
@@ -83,11 +84,11 @@ add_executable(
     ../tests/mock_codex_agent.cpp
 )
 target_compile_definitions(
-    codex_agent_conversation_consumer PRIVATE CODEX_AGENT_BUILD
+    codex_agent_conversation_consumer PRIVATE CODEX_AGENT_BUILD CODEX_AGENT_CPP_STATIC_TEST_DISPATCH
 )
 target_link_libraries(
     codex_agent_conversation_consumer
-    PRIVATE CodexAgent::CodexAgent Threads::Threads
+    PRIVATE CodexAgent::CodexAgent CodexAgent::C Threads::Threads
 )
 if(MSVC)
     target_compile_options(codex_agent_conversation_consumer PRIVATE /W4 /WX)
@@ -110,11 +111,11 @@ add_executable(
     ../tests/mock_codex_agent.cpp
 )
 target_compile_definitions(
-    codex_agent_lifecycle_example PRIVATE CODEX_AGENT_BUILD
+    codex_agent_lifecycle_example PRIVATE CODEX_AGENT_BUILD CODEX_AGENT_CPP_STATIC_TEST_DISPATCH
 )
 target_link_libraries(
     codex_agent_lifecycle_example
-    PRIVATE CodexAgent::CodexAgent Threads::Threads
+    PRIVATE CodexAgent::CodexAgent CodexAgent::C Threads::Threads
 )
 if(MSVC)
     target_compile_options(codex_agent_lifecycle_example PRIVATE /W4 /WX)
@@ -134,10 +135,10 @@ add_executable(
     ../tests/agent_mock.cpp
 )
 target_compile_definitions(
-    codex_agent_agent_consumer PRIVATE CODEX_AGENT_BUILD
+    codex_agent_agent_consumer PRIVATE CODEX_AGENT_BUILD CODEX_AGENT_CPP_STATIC_TEST_DISPATCH
 )
 target_link_libraries(
-    codex_agent_agent_consumer PRIVATE CodexAgent::CodexAgent
+    codex_agent_agent_consumer PRIVATE CodexAgent::CodexAgent CodexAgent::C
 )
 if(MSVC)
     target_compile_options(codex_agent_agent_consumer PRIVATE /W4 /WX)
@@ -159,11 +160,11 @@ add_executable(
     ../tests/host_mock.cpp
 )
 target_compile_definitions(
-    codex_agent_host_consumer PRIVATE CODEX_AGENT_BUILD
+    codex_agent_host_consumer PRIVATE CODEX_AGENT_BUILD CODEX_AGENT_CPP_STATIC_TEST_DISPATCH
 )
 target_link_libraries(
     codex_agent_host_consumer
-    PRIVATE CodexAgent::CodexAgent Threads::Threads
+    PRIVATE CodexAgent::CodexAgent CodexAgent::C Threads::Threads
 )
 if(MSVC)
     target_compile_options(codex_agent_host_consumer PRIVATE /W4 /WX)

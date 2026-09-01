@@ -52,7 +52,7 @@ crates.io, a CMake registry, or pub.dev.
 
 Every native wrapper rejects an unsupported host or incompatible ABI. Explicit
 paths never fall back to an arbitrary system library. The release packages bind
-the same verified C ABI `1.12.0` native bytes and their manifest/evidence files.
+the same verified C ABI `1.13.0` native bytes and their manifest/evidence files.
 
 ## Equivalent lifecycle examples
 

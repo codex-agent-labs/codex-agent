@@ -23,7 +23,8 @@ internal const val C_ABI_BOOTSTRAP_PROTOCOL = "codex-agent-c-abi-bootstrap-evide
 internal const val C_ABI_SCENARIO_PROOF_SCHEMA = 1
 internal const val C_ABI_SCENARIO_PROOF_ARTIFACT_ID = "c-abi-scenarios"
 internal const val C_ABI_BINDING_CAPABILITY_COUNT = 556
-internal const val C_ABI_BINDING_PUBLIC_SYMBOL_COUNT = 777
+internal val C_ABI_BINDING_PUBLIC_SYMBOL_COUNT: Int
+    get() = CROSS_LANGUAGE_C_ABI_SYMBOL_COUNT
 internal const val C_ABI_BINDING_ARTIFACT_COUNT = 7
 internal const val C_ABI_BINDING_CAPABILITY_SHA256 =
     "9a73e6d5b49ae052b236cb432f380b3f342d68760655e04369c31d4724d2d4a9"

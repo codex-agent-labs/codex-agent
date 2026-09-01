@@ -3,7 +3,11 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:codex_agent/codex_agent.dart';
+import 'package:codex_agent/src/ffi.dart'
+    show authenticatedRuntimeLibraryForTesting;
 import 'package:test/test.dart';
+
+import 'native_fixture.dart';
 
 typedef _SetTerminalNative = Void Function(Int32);
 typedef _SetTerminalDart = void Function(int);
@@ -12,14 +16,15 @@ typedef _FailOnceDart = void Function();
 
 Future<String> _buildFixture() async {
   final source = File('test/native/fake_codex_agent.c').absolute.path;
-  final output = File(
-    '${Directory.systemTemp.path}/codex_agent_dart_test_$pid'
+  final output = File(nativeFixturePath(
+    'codex_agent_dart_test_$pid'
     '${Platform.isWindows ? '.dll' : Platform.isMacOS ? '.dylib' : '.so'}',
-  ).path;
+  )).path;
   final result = Platform.isWindows
       ? await Process.run('cl', <String>[
           '/nologo',
           '/LD',
+          ...runtimeIdentityCompilerDefinitions(),
           source,
           '/link',
           '/OUT:$output',
@@ -30,6 +35,7 @@ Future<String> _buildFixture() async {
           '-Wextra',
           '-Werror',
           '-pedantic',
+          ...runtimeIdentityCompilerDefinitions(),
           ...(Platform.isMacOS
               ? const <String>['-dynamiclib']
               : const <String>['-shared', '-fPIC', '-pthread']),
@@ -219,7 +225,7 @@ void main() {
 
   test('parent close terminates an active nonterminal broadcast stream',
       () async {
-    final library = DynamicLibrary.open(libraryPath);
+    final library = authenticatedRuntimeLibraryForTesting(libraryPath);
     final setTerminal =
         library.lookupFunction<_SetTerminalNative, _SetTerminalDart>(
             'codex_agent_test_emit_terminal_state');
@@ -247,7 +253,7 @@ void main() {
 
   test('immediate stream cancellation quiesces before callback delivery',
       () async {
-    final library = DynamicLibrary.open(libraryPath);
+    final library = authenticatedRuntimeLibraryForTesting(libraryPath);
     final setTerminal =
         library.lookupFunction<_SetTerminalNative, _SetTerminalDart>(
             'codex_agent_test_emit_terminal_state');
@@ -268,7 +274,7 @@ void main() {
   });
 
   test('immediate parent close suppresses queued stream delivery', () async {
-    final library = DynamicLibrary.open(libraryPath);
+    final library = authenticatedRuntimeLibraryForTesting(libraryPath);
     final setTerminal =
         library.lookupFunction<_SetTerminalNative, _SetTerminalDart>(
             'codex_agent_test_emit_terminal_state');
@@ -296,7 +302,7 @@ void main() {
 
   test('unexpected operation destroy error is surfaced and retained for retry',
       () async {
-    final library = DynamicLibrary.open(libraryPath);
+    final library = authenticatedRuntimeLibraryForTesting(libraryPath);
     library.lookupFunction<_FailOnceNative, _FailOnceDart>(
       'codex_agent_test_fail_operation_destroy_once',
     )();
@@ -321,7 +327,7 @@ void main() {
 
   test('unexpected host release preserves ownership for explicit retry',
       () async {
-    final library = DynamicLibrary.open(libraryPath);
+    final library = authenticatedRuntimeLibraryForTesting(libraryPath);
     library.lookupFunction<_FailOnceNative, _FailOnceDart>(
       'codex_agent_test_fail_host_release_once',
     )();

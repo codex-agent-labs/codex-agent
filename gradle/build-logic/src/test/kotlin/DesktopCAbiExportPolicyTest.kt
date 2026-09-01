@@ -812,10 +812,11 @@ class DesktopCAbiExportPolicyTest {
             "codex_agent_interactions_resolve_approval",
             "codex_agent_interactions_resolve_elicitation",
         )
+        val abi113 = listOf("codex_agent_runtime_identity")
         val exports = repository.resolve("codex-agent-runtime-desktop/native/c-api/exports")
         val all = (
             abi10 + abi11 + abi12 + abi13 + abi14 + abi15 + abi16 + abi17 + abi18 + abi19 +
-                abi110 + abi111 + abi112
+                abi110 + abi111 + abi112 + abi113
         ).sorted()
         assertEquals(
             all.map { "_$it" },
@@ -834,7 +835,8 @@ class DesktopCAbiExportPolicyTest {
                 linuxVersion("1.9", abi19, "CODEX_AGENT_1.8") + "\n" +
                 linuxVersion("1.10", abi110, "CODEX_AGENT_1.9") + "\n" +
                 linuxVersion("1.11", abi111, "CODEX_AGENT_1.10") + "\n" +
-                linuxVersion("1.12", abi112, "CODEX_AGENT_1.11"),
+                linuxVersion("1.12", abi112, "CODEX_AGENT_1.11") + "\n" +
+                linuxVersion("1.13", abi113, "CODEX_AGENT_1.12"),
             exports.resolve("linux.map").readText(),
         )
         assertEquals(
@@ -850,8 +852,8 @@ class DesktopCAbiExportPolicyTest {
             "target.name.startsWith(\"macos\")",
             "-Wl,-exported_symbols_list,",
             "-Wl,-install_name,@rpath/libcodex_agent.dylib",
-            "-Wl,-compatibility_version,1.0.0",
-            "-Wl,-current_version,1.12.0",
+            "runtimeAbiContract.minimumCompatibleSemver",
+            "runtimeAbiContract.currentSemver",
             "target.name.startsWith(\"linux\")",
             "-Wl,--version-script,",
             "-Wl,-soname,libcodex_agent.so.1",

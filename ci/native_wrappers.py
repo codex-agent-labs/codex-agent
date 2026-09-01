@@ -21,7 +21,8 @@ import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 
-from products.inventory import require_semver
+from products.aggregate import validate_sdk_compatibility
+from products.inventory import load_canonical_json_bytes, require_semver
 
 
 HOSTS = {
@@ -387,7 +388,7 @@ def set_source_sdk_version(sources: Path, sdk_version: str) -> None:
 
 
 def require_prepared_native_assets(sources: Path, sdks: Path) -> None:
-    expected_sdk_entries = {*HOSTS, "codex-agent-native-wrapper-sdks.json"}
+    expected_sdk_entries = {*HOSTS, "codex-agent-native-wrapper-sdks.json", "sdk-compatibility.json"}
     if (
         not sdks.is_dir()
         or sdks.is_symlink()
@@ -396,12 +397,22 @@ def require_prepared_native_assets(sources: Path, sdks: Path) -> None:
         or (sdks / "codex-agent-native-wrapper-sdks.json").is_symlink()
     ):
         raise ValueError("staged SDK root inventory mismatch")
+    compatibility_path = sdks / "sdk-compatibility.json"
+    if not compatibility_path.is_file() or compatibility_path.is_symlink():
+        raise ValueError("staged SDK compatibility declaration is missing or symbolic")
+    compatibility_bytes = compatibility_path.read_bytes()
+    compatibility = validate_sdk_compatibility(load_canonical_json_bytes(compatibility_bytes))
+    embedded = {record["target"]: record for record in compatibility["runtime"]["embeddedVariants"]}
+    if set(embedded) != set(HOSTS):
+        raise ValueError("SDK compatibility target inventory mismatch")
     parent_specs = {
-        sources / "python/src/codex_agent/native": (set(HOSTS), set()),
-        sources / "csharp/native": (set(PACKAGE_CLASSIFIERS.values()), {"README.md"}),
-        sources / "rust/native": (set(PACKAGE_CLASSIFIERS.values()), set()),
+        sources / "python/src/codex_agent/native": (set(HOSTS), {"sdk-compatibility.json"}),
+        sources / "csharp/native": (
+            set(PACKAGE_CLASSIFIERS.values()), {"README.md", "sdk-compatibility.json"},
+        ),
+        sources / "rust/native": (set(PACKAGE_CLASSIFIERS.values()), {"sdk-compatibility.json"}),
         sources / "cpp/native": (set(HOSTS), set()),
-        sources / "dart/lib/src/native": (set(HOSTS), {"README.md"}),
+        sources / "dart/lib/src/native": (set(HOSTS), {"README.md", "sdk-compatibility.json"}),
     }
     for parent, (directories, regular_files) in parent_specs.items():
         if not parent.is_dir() or parent.is_symlink():
@@ -413,6 +424,9 @@ def require_prepared_native_assets(sources: Path, sdks: Path) -> None:
             raise ValueError(f"prepared native classifier is missing or symbolic: {parent}")
         if any(not entries[name].is_file() or entries[name].is_symlink() for name in regular_files):
             raise ValueError(f"prepared native metadata is missing or symbolic: {parent}")
+        if "sdk-compatibility.json" in regular_files and \
+                entries["sdk-compatibility.json"].read_bytes() != compatibility_bytes:
+            raise ValueError(f"prepared SDK compatibility bytes differ: {parent}")
     for classifier, host in HOSTS.items():
         sdk = sdks / classifier
         if not sdk.is_dir() or sdk.is_symlink():
@@ -420,6 +434,8 @@ def require_prepared_native_assets(sources: Path, sdks: Path) -> None:
         library = sdk / host[4]
         if not library.is_file() or library.is_symlink():
             raise ValueError(f"missing staged native library: {classifier}")
+        if f"sha256:{sha256(library)}" != embedded[classifier]["runtimeLibrarySha256"]:
+            raise ValueError(f"staged native library disagrees with SDK compatibility: {classifier}")
         package_classifier = PACKAGE_CLASSIFIERS[classifier]
         roots = {
             "Python": sources / f"python/src/codex_agent/native/{classifier}",
@@ -439,7 +455,13 @@ def require_prepared_native_assets(sources: Path, sdks: Path) -> None:
             require_matching_native(root, library.name, library, language)
             require_matching_proofs(root, sdk, language)
         cpp = sources / f"cpp/native/{classifier}"
-        if package_inventory(cpp) != package_inventory(sdk):
+        cpp_compatibility = cpp / "share/CodexAgent/native/sdk-compatibility.json"
+        if not cpp_compatibility.is_file() or cpp_compatibility.is_symlink() or \
+                cpp_compatibility.read_bytes() != compatibility_bytes:
+            raise ValueError(f"C++ SDK compatibility bytes differ: {classifier}")
+        if package_inventory(cpp) != package_inventory(sdk) + [
+            ("share/CodexAgent/native/sdk-compatibility.json", sha256(cpp_compatibility)),
+        ]:
             raise ValueError(f"C++ prepared native inventory mismatch: {classifier}")
 
 
@@ -754,6 +776,8 @@ def _consume(
     selected = select_packages(packages, classifier, sdk_version)
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-consumer-") as temporary:
         work = Path(temporary)
+        consumer_env = os.environ.copy()
+        consumer_env.pop("CODEX_AGENT_LIBRARY", None)
         csharp_consumer = work / "csharp-consumer"
         rust_consumer = work / "rust-consumer"
         dart_consumer = work / "dart-consumer"
@@ -780,15 +804,21 @@ def _consume(
         run(python, "-m", "pip", "install", "--no-deps", "--no-index", selected["python"], cwd=work)
         python_smoke = repository / "codex-agent-bindings/python/consumer/host_smoke.py"
         python_example = repository / "codex-agent-bindings/python/consumer/lifecycle_example.py"
-        run(python, "-c", "import runpy,sys; runpy.run_path(sys.argv[1])", python_example, cwd=work)
+        run(
+            python, "-c", "import runpy,sys; runpy.run_path(sys.argv[1])", python_example,
+            cwd=work, env=consumer_env,
+        )
         native_name = Path(HOSTS[classifier][4]).name
         python_library = require_matching_native(
             venv, f"**/codex_agent/native/{classifier}/{native_name}", sdk_library, "Python",
         )
         require_matching_proofs(python_library.parent, sdks / classifier, "Python")
-        run(python, python_smoke, python_library, cwd=work)
-        run_expect_failure(python, python_smoke, cwd=work)
-        run_expect_failure(python, python_smoke, python_library, python_library, cwd=work)
+        run(python, python_smoke, cwd=work, env=consumer_env)
+        run(python, python_smoke, python_library, cwd=work, env=consumer_env)
+        run_expect_failure(python, python_smoke, native_name, cwd=work, env=consumer_env)
+        run_expect_failure(
+            python, python_smoke, python_library, python_library, cwd=work, env=consumer_env,
+        )
 
         nuget = work / "nuget"
         nuget.mkdir()
@@ -811,16 +841,24 @@ def _consume(
             "C#",
         )
         require_matching_proofs(csharp_library.parent, sdks / classifier, "C#")
-        run("dotnet", "run", "--project", csharp_consumer / "CodexAgent.Consumer.csproj", "--configuration",
-            "Release", "--no-build", "--", csharp_library, "release-only", cwd=work)
+        run(
+            "dotnet", "run", "--project", csharp_consumer / "CodexAgent.Consumer.csproj",
+            "--configuration", "Release", "--no-build", "--", cwd=work, env=consumer_env,
+        )
+        run(
+            "dotnet", "run", "--project", csharp_consumer / "CodexAgent.Consumer.csproj",
+            "--configuration", "Release", "--no-build", "--", csharp_library,
+            cwd=work, env=consumer_env,
+        )
         run_expect_failure(
             "dotnet", "run", "--project", csharp_consumer / "CodexAgent.Consumer.csproj",
-            "--configuration", "Release", "--no-build", "--", cwd=work,
+            "--configuration", "Release", "--no-build", "--", native_name,
+            cwd=work, env=consumer_env,
         )
         run_expect_failure(
             "dotnet", "run", "--project", csharp_consumer / "CodexAgent.Consumer.csproj",
             "--configuration", "Release", "--no-build", "--", csharp_library, "release-only", "extra",
-            cwd=work,
+            cwd=work, env=consumer_env,
         )
 
         rust_root = work / "rust-package"
@@ -831,7 +869,7 @@ def _consume(
             cargo_toml.read_text(encoding="utf-8").replace('path = ".."', f'path = "{rust_package.as_posix()}"'),
             encoding="utf-8",
         )
-        cargo_env = os.environ | {"CARGO_TARGET_DIR": str(work / "rust-target")}
+        cargo_env = consumer_env | {"CARGO_TARGET_DIR": str(work / "rust-target")}
         run("cargo", "fetch", "--manifest-path", cargo_toml, "--locked", cwd=work, env=cargo_env)
         run("cargo", "metadata", "--manifest-path", cargo_toml, "--locked", "--offline", "--no-deps",
             cwd=work, env=cargo_env)
@@ -848,8 +886,9 @@ def _consume(
             "cargo", "run", "--manifest-path", cargo_toml, "--release", "--locked", "--offline",
             "--bin", "codex-agent-rust-host-smoke", "--",
         )
+        run(*rust_command, cwd=work, env=cargo_env)
         run(*rust_command, rust_library, cwd=work, env=cargo_env)
-        run_expect_failure(*rust_command, cwd=work, env=cargo_env)
+        run_expect_failure(*rust_command, native_name, cwd=work, env=cargo_env)
         run_expect_failure(*rust_command, rust_library, rust_library, cwd=work, env=cargo_env)
         if platform.system() in {"Darwin", "Linux"}:
             fixture = work / ("libcodex_agent_rust_lifecycle.dylib" if platform.system() == "Darwin"
@@ -886,12 +925,13 @@ def _consume(
         require_matching_proofs(
             cpp_prefix / "share/CodexAgent/native", sdks / classifier, "C++",
         )
-        cpp_env = os.environ.copy()
-        if os.name == "nt":
-            cpp_env["PATH"] = f"{cpp_library.parent}{os.pathsep}{cpp_env.get('PATH', '')}"
+        cpp_env = consumer_env.copy()
+        run(executable(cpp_build, "codex_agent_host_smoke"), cwd=work, env=cpp_env)
         run(executable(cpp_build, "codex_agent_host_smoke"), cpp_library, cwd=work, env=cpp_env)
         run(executable(cpp_build, "codex_agent_lifecycle_example"), cwd=work, env=cpp_env)
-        run_expect_failure(executable(cpp_build, "codex_agent_host_smoke"), cwd=work, env=cpp_env)
+        run_expect_failure(
+            executable(cpp_build, "codex_agent_host_smoke"), native_name, cwd=work, env=cpp_env,
+        )
         run_expect_failure(
             executable(cpp_build, "codex_agent_host_smoke"), cpp_library, cpp_library,
             cwd=work, env=cpp_env,
@@ -909,24 +949,36 @@ def _consume(
             "Dart",
         )
         require_matching_proofs(dart_library.parent, sdks / classifier, "Dart")
-        run("dart", "run", "bin/host_smoke.dart", dart_library, cwd=dart_consumer)
-        run_expect_failure("dart", "run", "bin/host_smoke.dart", cwd=dart_consumer)
+        run("dart", "run", "bin/host_smoke.dart", cwd=dart_consumer, env=consumer_env)
+        run(
+            "dart", "run", "bin/host_smoke.dart", dart_library,
+            cwd=dart_consumer, env=consumer_env,
+        )
         run_expect_failure(
-            "dart", "run", "bin/host_smoke.dart", dart_library, dart_library, cwd=dart_consumer,
+            "dart", "run", "bin/host_smoke.dart", native_name,
+            cwd=dart_consumer, env=consumer_env,
+        )
+        run_expect_failure(
+            "dart", "run", "bin/host_smoke.dart", dart_library, dart_library,
+            cwd=dart_consumer, env=consumer_env,
         )
 
         wrong_library = work / f"wrong-{native_name}"
         wrong_library.write_bytes(b"not a native library")
-        run_expect_failure(python, python_smoke, wrong_library, cwd=work)
+        run_expect_failure(python, python_smoke, wrong_library, cwd=work, env=consumer_env)
         run_expect_failure(
             "dotnet", "run", "--project", csharp_consumer / "CodexAgent.Consumer.csproj",
-            "--configuration", "Release", "--no-build", "--", wrong_library, "release-only", cwd=work,
+            "--configuration", "Release", "--no-build", "--", wrong_library, "release-only",
+            cwd=work, env=consumer_env,
         )
         run_expect_failure(*rust_command, wrong_library, cwd=work, env=cargo_env)
         run_expect_failure(
             executable(cpp_build, "codex_agent_host_smoke"), wrong_library, cwd=work, env=cpp_env,
         )
-        run_expect_failure("dart", "run", "bin/host_smoke.dart", wrong_library, cwd=dart_consumer)
+        run_expect_failure(
+            "dart", "run", "bin/host_smoke.dart", wrong_library,
+            cwd=dart_consumer, env=consumer_env,
+        )
 
     evidence_arguments: list[str] = []
     artifact_arguments: list[str] = []

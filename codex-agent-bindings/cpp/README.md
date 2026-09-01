@@ -2,7 +2,8 @@
 
 This directory contains the C++20 projection of the verified desktop C SDK and
 requires CMake 3.24+. It does not implement a runtime or protocol.
-`CodexAgent::CodexAgent` links the platform C SDK and adds move-only RAII
+`CodexAgent::CodexAgent` loads the packaged platform C SDK by its exact absolute
+path after validating its package hash and runtime identity, and adds move-only RAII
 handles, typed failures, cancellable future-like operations, and typed state
 subscriptions.
 
@@ -14,6 +15,12 @@ Before `<sdkVersion>` is published, unpack the matching locally built archive
 find_package(CodexAgent CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE CodexAgent::CodexAgent)
 ```
+
+The verified embedded Runtime is the default. To select a compatible external
+Runtime explicitly, call `codex_agent::CodexNativeLibrary::configure(absolutePath)`
+before the first CodexAgent API call. The wrapper never searches `PATH`, the
+current directory, or a bare system-library name. `CodexAgent::C` remains
+available only for applications that intentionally want the raw C ABI target.
 
 When consuming from source, set `CodexAgent_C_SDK_ROOT` and
 `CodexAgent_NATIVE_CLASSIFIER` to the verified classifier directory and its

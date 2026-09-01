@@ -1817,7 +1817,6 @@ class ContractBundleTest(unittest.TestCase):
         ).stdout.splitlines())
         self.assertEqual(
             {
-                "ci/impact.py",
                 "ci/products/__init__.py",
                 "ci/products/contract.py",
                 "ci/products/contract_model.py",

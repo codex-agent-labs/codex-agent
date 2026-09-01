@@ -26,7 +26,28 @@ fn incompatible_library() -> &'static Path {
         .as_path()
 }
 
+fn missing_identity_library() -> &'static Path {
+    static LIBRARY: OnceLock<PathBuf> = OnceLock::new();
+    LIBRARY
+        .get_or_init(|| {
+            compile_fixture_with_defines(
+                "mock_codex_agent.c",
+                "codex_agent_missing_identity",
+                &["CODEX_AGENT_TEST_OMIT_IDENTITY"],
+            )
+        })
+        .as_path()
+}
+
 fn compile_fixture(source_name: &str, library_name: &str) -> PathBuf {
+    compile_fixture_with_defines(source_name, library_name, &[])
+}
+
+fn compile_fixture_with_defines(
+    source_name: &str,
+    library_name: &str,
+    definitions: &[&str],
+) -> PathBuf {
     let directory =
         std::env::temp_dir().join(format!("codex-agent-rust-binding-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create mock output directory");
@@ -53,6 +74,9 @@ fn compile_fixture(source_name: &str, library_name: &str) -> PathBuf {
     } else {
         command.arg("-shared");
     }
+    for definition in definitions {
+        command.arg(format!("-D{definition}"));
+    }
     let result = command
         .arg(source)
         .arg("-o")
@@ -64,7 +88,7 @@ fn compile_fixture(source_name: &str, library_name: &str) -> PathBuf {
         "mock C SDK compile failed:\n{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    output
+    std::fs::canonicalize(output).expect("canonical mock library path")
 }
 
 struct ThreadWake(std::thread::Thread);
@@ -128,6 +152,7 @@ struct Control {
     subscription_destroys: Getter,
     copy_release_log: CopyLog,
     set_abi_compatible: Setter,
+    set_identity_mode: Setter,
     set_operation_destroy_mode: Setter,
     set_subscription_destroy_mode: Setter,
     set_owned_release_mode: Setter,
@@ -177,6 +202,7 @@ impl Control {
                 ),
                 copy_release_log: symbol(&library, b"codex_agent_test_release_log_copy\0"),
                 set_abi_compatible: symbol(&library, b"codex_agent_test_set_abi_compatible\0"),
+                set_identity_mode: symbol(&library, b"codex_agent_test_set_identity_mode\0"),
                 set_operation_destroy_mode: symbol(
                     &library,
                     b"codex_agent_test_set_operation_destroy_mode\0",
@@ -306,7 +332,7 @@ fn private_ffi_symbols_are_declared_by_the_c_sdk_header() {
         );
     }
     assert!(header.contains("#define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C(1)"));
-    assert!(header.contains("#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(12)"));
+    assert!(header.contains("#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(13)"));
     assert!(header.contains("#define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C(0)"));
 }
 
@@ -354,8 +380,12 @@ fn lifecycle_state_failure_cancellation_identity_and_ownership() {
 
     let incompatible_prefix_only = CodexNativeLibrary::load(incompatible_library())
         .err()
-        .expect("reject prefix-only incompatible ABI before full symbol resolution");
-    assert_eq!(incompatible_prefix_only.status, Status::UnsupportedAbi);
+        .expect("reject identity-less ABI prefix before resolving ABI symbols");
+    assert_eq!(incompatible_prefix_only.status, Status::InternalError);
+    let missing_identity = CodexNativeLibrary::load(missing_identity_library())
+        .err()
+        .expect("reject Runtime without mandatory identity function");
+    assert_eq!(missing_identity.status, Status::InternalError);
 
     // SAFETY: fixture setter loaded with its exact signature.
     set(control.set_abi_compatible, 0);
@@ -366,10 +396,43 @@ fn lifecycle_state_failure_cancellation_identity_and_ownership() {
     // SAFETY: fixture setter loaded with its exact signature.
     set(control.set_abi_compatible, 1);
 
+    for mode in 1..=7 {
+        set(control.set_identity_mode, mode);
+        let error = CodexNativeLibrary::load(path)
+            .err()
+            .unwrap_or_else(|| panic!("identity mode {mode} must fail closed"));
+        assert_eq!(error.status, Status::InternalError);
+    }
+    set(control.set_identity_mode, 0);
+
     let native = CodexNativeLibrary::load(path).expect("load ABI-complete mock");
     assert_eq!(native.abi_version(), CODEX_AGENT_ABI_VERSION);
     assert!(RuntimeTarget::current().is_ok());
+    assert!(CodexNativeLibrary::load(Path::new("")).is_err());
+    assert!(CodexNativeLibrary::load(Path::new("relative/runtime/library")).is_err());
+    assert!(CodexNativeLibrary::load(Path::new(path.file_name().unwrap())).is_err());
     assert!(CodexNativeLibrary::load(path.with_extension("missing")).is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let parent = path.parent().unwrap();
+        let final_link = parent.join("codex-agent-final-link");
+        let _ = std::fs::remove_file(&final_link);
+        symlink(path, &final_link).expect("create final Runtime symlink negative");
+        assert!(CodexNativeLibrary::load(&final_link).is_err());
+        std::fs::remove_file(&final_link).expect("remove final Runtime symlink negative");
+
+        let real_parent = parent.join("codex-agent-real-parent");
+        let linked_parent = parent.join("codex-agent-linked-parent");
+        let _ = std::fs::remove_file(&linked_parent);
+        std::fs::create_dir_all(&real_parent).expect("create Runtime parent-symlink target");
+        let copied = real_parent.join(path.file_name().unwrap());
+        std::fs::copy(path, &copied).expect("copy Runtime parent-symlink fixture");
+        symlink(&real_parent, &linked_parent).expect("create Runtime parent symlink negative");
+        assert!(CodexNativeLibrary::load(linked_parent.join(path.file_name().unwrap())).is_err());
+        std::fs::remove_file(&linked_parent).expect("remove Runtime parent symlink negative");
+    }
     assert!(CodexNativeLibrary::take_cleanup_issues().is_empty());
 
     let host = CodexHost::create_with_library(&native, host_options()).expect("create host");

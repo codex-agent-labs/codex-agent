@@ -373,7 +373,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             "\"c11-interaction-identity\"",
             "C_ELICITATION_BEHAVIOR_RECLAMATION_TEST in passedTests",
             "C_HOST_FACTORY_INVALID_TEST in passedTests",
-            "rows.size == 777",
+            "rows.size == expectedSymbolCount",
             "put(\"milestone\", JsonPrimitive(\"D104\"))",
         ).forEach { contract ->
             assertTrue(contract in producer, "Missing D104 C bootstrap producer contract: $contract")

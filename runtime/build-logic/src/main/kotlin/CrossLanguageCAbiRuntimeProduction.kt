@@ -225,7 +225,7 @@ private fun inspectCAbiBinary(
                 .firstOrNull { it.startsWith("@rpath/") }.orEmpty()
             val versions = inspect("versions", "-L", library.absolutePath)
             check("Mach-O 64-bit" in file && architecture == spec.architecture) { "C ABI Mach-O architecture mismatch" }
-            check(installName == spec.loaderIdentity && "compatibility version 1.0.0, current version 1.12.0" in versions) {
+            check(installName == spec.loaderIdentity && spec.expectedMachOLoaderVersion() in versions) {
                 "C ABI Mach-O loader/version mismatch"
             }
             check(exports == policy.publicSymbols && policy.publicSymbolVersions.isEmpty()) {
@@ -250,8 +250,8 @@ private fun inspectCAbiBinary(
             check(Regex("SONAME.*\\[${Regex.escape(spec.loaderIdentity)}]").containsMatchIn(loader)) {
                 "C ABI ELF SONAME mismatch"
             }
-            val nodes = Regex("CODEX_AGENT_1\\.(\\d+)").findAll(versions).map { it.groupValues[1].toInt() }.toSet()
-            check(nodes == (0..12).toSet()) { "C ABI ELF version-node lineage mismatch" }
+            val nodes = Regex("CODEX_AGENT_[0-9]+\\.[0-9]+").findAll(versions).map { it.value }.toSet()
+            check(nodes == policy.publicSymbolVersions.values.toSet()) { "C ABI ELF version-node lineage mismatch" }
             check(exports == policy.publicSymbols) { "C ABI packaged library export mismatch" }
             CAbiBinaryInspection(
                 exports, symbolVersions, spec.format, spec.architecture, spec.loaderIdentity, spec.expectedVersionIdentity(),

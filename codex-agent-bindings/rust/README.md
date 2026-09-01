@@ -47,11 +47,15 @@ can record `CleanupIssue(BUSY)`. Rust `Drop` never blocks to run semantic close,
 Host or Conversation records a cleanup issue rather than pretending shutdown succeeded. Token
 release is not semantic Host/Conversation close.
 
-Resolution checks `CODEX_AGENT_LIBRARY`, an executable-adjacent native library,
-then the executable's `runtimes/<target>/native/` directory. Copy the matching
-verified crate asset to one of those deployment locations. Target IDs are `osx-arm64`, `osx-x64`,
-`linux-arm64`, `linux-x64`, and `win-x64`. ABI `1.12.0` validation is
-fail-closed at load time; no platform-loader search-path fallback is used.
+Published packages must supply the verified matching-target Runtime and canonical
+`native/sdk-compatibility.json`. When those authenticated assets are present, `load_default()`
+checks the embedded digest, writes a private read-only snapshot, loads that exact path, rechecks the
+snapshot, and verifies Runtime identity, target, Contract, ABI, and compatibility line.
+`CODEX_AGENT_LIBRARY` may select a compatible external Runtime only by an already-canonical,
+non-symbolic absolute path; the external component may differ but must prove the same identity
+constraints. Target package IDs are `osx-arm64`, `osx-x64`, `linux-arm64`, `linux-x64`, and
+`win-x64`. ABI `1.13.0` validation is fail-closed; executable-adjacent, bare-name, symbolic-path,
+and platform-loader search-path fallback are forbidden.
 
 Binding verification requires declared artifacts through
 `CODEX_AGENT_CANONICAL_API_REPORT`, `CODEX_AGENT_C_ABI_BOOTSTRAP_EVIDENCE`,

@@ -28,6 +28,6 @@ public sealed class CodexAbiException : CodexException
     public uint ActualVersion { get; }
 
     internal CodexAbiException(uint actualVersion)
-        : base(CodexStatus.UnsupportedAbi, $"The loaded Codex Agent C SDK ABI 0x{actualVersion:X8} is incompatible with ABI 1.12.0.")
+        : base(CodexStatus.UnsupportedAbi, $"The loaded Codex Agent C SDK ABI 0x{actualVersion:X8} is incompatible with ABI 1.13.0.")
         => ActualVersion = actualVersion;
 }

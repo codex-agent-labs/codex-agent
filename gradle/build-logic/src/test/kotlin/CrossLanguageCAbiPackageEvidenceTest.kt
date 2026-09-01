@@ -2,6 +2,7 @@ import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -33,6 +34,9 @@ class CrossLanguageCAbiPackageEvidenceTest {
             "native-wrapper-package-assets",
             "prepareNativeWrapperPackageSources",
             "native-wrapper-package-sources/",
+            "src/codex_agent/native/sdk-compatibility.json",
+            "native/sdk-compatibility.json",
+            "lib/src/native/sdk-compatibility.json",
             "\"dart\" to (\"Dart\" to listOf(\"build/**\"",
         ).forEach { contract -> assertTrue(contract in sdkWiring, "Missing SDK wrapper wiring: $contract") }
         val cppCmake = repository.resolve("codex-agent-bindings/cpp/CMakeLists.txt").readText()
@@ -121,10 +125,11 @@ class CrossLanguageCAbiPackageEvidenceTest {
             setOf("c", "cpp", "gnuC", "gnuCpp", "architecture", "symbols", "msvcImport", "gnuImport"),
             crossLanguageCAbiRequiredToolIds("mingwX64"),
         )
-        assertEquals(777, CROSS_LANGUAGE_C_ABI_SYMBOL_COUNT)
-        assertEquals("1.12", CROSS_LANGUAGE_C_ABI_CURRENT)
+        assertEquals(778, CROSS_LANGUAGE_C_ABI_SYMBOL_COUNT)
+        assertEquals("1.13", CROSS_LANGUAGE_C_ABI_CURRENT)
         assertEquals("1.0", CROSS_LANGUAGE_C_ABI_MINIMUM)
-        assertEquals("0x010c0000", CROSS_LANGUAGE_C_ABI_ENCODED)
+        assertEquals(1, CROSS_LANGUAGE_C_ABI_IDENTITY_SCHEMA_VERSION)
+        assertEquals("0x010d0000", CROSS_LANGUAGE_C_ABI_ENCODED)
     }
 
     @Test
@@ -142,8 +147,11 @@ class CrossLanguageCAbiPackageEvidenceTest {
 
         val input = CrossLanguageNativeWrapperSdkInput(
             Fixture.VERSION,
+            Fixture.VERSION,
+            Fixture.VERSION,
             Fixture.COMMIT,
             Fixture.TREE,
+            fixture.sdkCompatibility(),
             archives,
             evidence,
             crossLanguageCAbiTargetSpecs.mapValues { (_, spec) -> fixture.reference(spec) },
@@ -154,6 +162,10 @@ class CrossLanguageCAbiPackageEvidenceTest {
         assertEquals(crossLanguageCAbiTargetSpecs.keys, index.records.keys)
         assertEquals(Fixture.COMMIT, index.producerCommit)
         assertEquals(Fixture.TREE, index.producerTree)
+        assertEquals(
+            fixture.sdkCompatibility().readBytes().toList(),
+            staged.resolve("sdk-compatibility.json").readBytes().toList(),
+        )
 
         val packageAssets = fixture.root.resolve("wrapper-package-assets")
         materializeCrossLanguageNativeWrapperPackageAssets(staged, packageAssets)
@@ -183,11 +195,98 @@ class CrossLanguageCAbiPackageEvidenceTest {
             assertEquals(expectedLibrary, cppSdk.resolve(spec.libraryPath).releaseDigest())
             assertTrue(cppSdk.resolve(C_ABI_HEADER_PATH).isFile)
             assertTrue(cppSdk.resolve(C_ABI_PACKAGE_MANIFEST).isFile)
+            assertEquals(
+                fixture.sdkCompatibility().readBytes().toList(),
+                cppSdk.resolve("share/CodexAgent/native/sdk-compatibility.json").readBytes().toList(),
+            )
+        }
+        listOf(
+            "python/src/codex_agent/native/sdk-compatibility.json",
+            "csharp/native/sdk-compatibility.json",
+            "rust/native/sdk-compatibility.json",
+            "dart/lib/src/native/sdk-compatibility.json",
+        ).forEach { path ->
+            assertEquals(
+                fixture.sdkCompatibility().readBytes().toList(),
+                packageAssets.resolve(path).readBytes().toList(),
+            )
         }
         assertEquals(
             staged.resolve("codex-agent-native-wrapper-sdks.json").readBytes().toList(),
             packageAssets.resolve("codex-agent-native-wrapper-sdks.json").readBytes().toList(),
         )
+    }
+
+    @Test
+    fun `native wrapper staging rejects malformed or inconsistent SDK compatibility`() = withFixture { fixture ->
+        val archives = linkedMapOf<String, File>()
+        val evidence = linkedMapOf<String, File>()
+        crossLanguageCAbiTargetSpecs.values.forEach { spec ->
+            val archive = fixture.root.resolve(crossLanguageCAbiArchiveFileName(Fixture.VERSION, spec.target))
+            val snapshot = fixture.packageArchive(spec, archive)
+            val proof = fixture.root.resolve(crossLanguageCAbiPackageEvidenceFileName(spec.target))
+            fixture.writeEvidence(spec, archive, snapshot, proof)
+            archives[spec.target] = archive
+            evidence[spec.target] = proof
+        }
+        fun input(compatibility: File) = CrossLanguageNativeWrapperSdkInput(
+            Fixture.VERSION, Fixture.VERSION, Fixture.VERSION, Fixture.COMMIT, Fixture.TREE,
+            compatibility, archives, evidence,
+            crossLanguageCAbiTargetSpecs.mapValues { (_, spec) -> fixture.reference(spec) },
+        )
+        val original = fixture.sdkCompatibility().readText()
+        val parsed = Json.parseToJsonElement(original).jsonObject
+        val runtime = parsed.getValue("runtime").jsonObject
+        val variants = runtime.getValue("embeddedVariants") as JsonArray
+        fun duplicateVariantField(field: String) = JsonArray(variants.mapIndexed { index, value ->
+            if (index != 1) value else JsonObject(
+                value.jsonObject + (field to variants.first().jsonObject.getValue(field)),
+            )
+        })
+        val invalid = mapOf(
+            "noncanonical" to " $original",
+            "missing-target" to canonicalJson(JsonObject(parsed + ("runtime" to JsonObject(
+                runtime + ("embeddedVariants" to JsonArray(variants.dropLast(1))),
+            )))),
+            "release-range" to canonicalJson(JsonObject(parsed + ("runtime" to JsonObject(
+                runtime + ("compatibleReleaseRange" to JsonPrimitive(">=0.3.0 <0.4.0")),
+            )))),
+            "compatibility-range" to canonicalJson(JsonObject(parsed + ("runtime" to JsonObject(
+                runtime + ("compatibleRuntimeCompatibilityRange" to JsonPrimitive(">=0.3.0 <0.4.0")),
+            )))),
+            "contract-digest" to canonicalJson(JsonObject(parsed + ("runtime" to JsonObject(
+                runtime + ("requiredContractDigest" to JsonPrimitive("sha256:${"0".repeat(64)}")),
+            )))),
+            "identity-schema" to canonicalJson(JsonObject(parsed + ("runtime" to JsonObject(
+                runtime + ("requiredIdentitySchema" to JsonPrimitive(2)),
+            )))),
+            "abi-policy" to canonicalJson(JsonObject(parsed + ("runtime" to JsonObject(
+                runtime + ("minimumAbiMinor" to JsonPrimitive(12)),
+            )))),
+            "duplicate-component" to canonicalJson(JsonObject(parsed + ("runtime" to JsonObject(
+                runtime + ("embeddedVariants" to duplicateVariantField("componentId")),
+            )))),
+            "duplicate-manifest" to canonicalJson(JsonObject(parsed + ("runtime" to JsonObject(
+                runtime + ("embeddedVariants" to duplicateVariantField("manifestSha256")),
+            )))),
+            "library-digest" to original.replaceFirst(
+                Regex("\\\"runtimeLibrarySha256\\\":\\\"sha256:[0-9a-f]{64}\\\""),
+                "\"runtimeLibrarySha256\":\"sha256:${"0".repeat(64)}\"",
+            ),
+            "platform-owner" to original.replaceFirst(
+                "\"desktopRuntimeApplicable\":false", "\"desktopRuntimeApplicable\":true",
+            ),
+        )
+        invalid.forEach { (name, contents) ->
+            val compatibility = fixture.root.resolve("$name-sdk-compatibility.json").apply {
+                writeText(contents)
+            }
+            assertFailsWith<IllegalStateException>(name) {
+                stageCrossLanguageNativeWrapperSdks(
+                    input(compatibility), fixture.root.resolve("invalid-$name-output"),
+                )
+            }
+        }
     }
 
     @Test
@@ -218,6 +317,49 @@ class CrossLanguageCAbiPackageEvidenceTest {
 
         fun library(spec: CrossLanguageCAbiTargetSpec): File = root.resolve("${spec.target}-library").apply {
             if (!isFile) writeText("${spec.format}:${spec.architecture}:${spec.loaderIdentity}\n")
+        }
+
+        fun sdkCompatibility(): File = root.resolve("sdk-compatibility.json").apply {
+            if (!isFile) writeText(canonicalJson(buildJsonObject {
+                put("schemaVersion", 1)
+                put("sdkVersion", VERSION)
+                put("contract", buildJsonObject {
+                    put("version", VERSION)
+                    put("digest", "sha256:" + library(crossLanguageCAbiTargetSpecs.values.first()).releaseDigest())
+                })
+                put("runtime", buildJsonObject {
+                    put("compatibleReleaseRange", ">=0.2.0 <0.3.0")
+                    put("compatibleRuntimeCompatibilityRange", ">=0.2.0 <0.3.0")
+                    put("requiredIdentitySchema", 1)
+                    put("requiredContractDigest", "sha256:" + library(crossLanguageCAbiTargetSpecs.values.first()).releaseDigest())
+                    put("requiredAbiMajor", 1)
+                    put("minimumAbiMinor", 13)
+                    put("defaultRuntimeVersion", VERSION)
+                    put("defaultManifestSha256", "sha256:" + library(crossLanguageCAbiTargetSpecs.values.last()).releaseDigest())
+                    put("embeddedVariants", buildJsonArray {
+                        crossLanguageCAbiTargetSpecs.values
+                            .sortedBy { it.classifier.removePrefix("c-abi-") }
+                            .forEach { spec ->
+                                val digest = library(spec).releaseDigest()
+                                add(buildJsonObject {
+                                    put("target", spec.classifier.removePrefix("c-abi-"))
+                                    put("componentId", "sha256:$digest")
+                                    put("bundleSha256", "sha256:$digest")
+                                    put("manifestSha256", "sha256:$digest")
+                                    put("runtimeLibrarySha256", "sha256:$digest")
+                                })
+                            }
+                    })
+                })
+                put("platformRuntime", buildJsonObject {
+                    listOf("android", "ios").forEach { platform ->
+                        put(platform, buildJsonObject {
+                            put("owner", "sdk")
+                            put("desktopRuntimeApplicable", false)
+                        })
+                    }
+                })
+            }))
         }
 
         fun reference(spec: CrossLanguageCAbiTargetSpec) = CrossLanguageNativeWrapperSdkReferenceInput(
@@ -357,11 +499,11 @@ class CrossLanguageCAbiPackageEvidenceTest {
         private fun exportPolicy(spec: CrossLanguageCAbiTargetSpec): File = root.resolve("${spec.target}.exports").apply {
             if (isFile) return@apply
             if (spec.format == "elf") {
-                writeText((0..12).joinToString("\n", postfix = "\n") { minor ->
+                writeText((0..13).joinToString("\n", postfix = "\n") { minor ->
                     buildString {
                         appendLine("CODEX_AGENT_1.$minor {")
                         appendLine("    global:")
-                        symbols.filterIndexed { index, _ -> index % 13 == minor }.forEach {
+                        symbols.filterIndexed { index, _ -> index % 14 == minor }.forEach {
                             appendLine("        $it;")
                         }
                         append("};")

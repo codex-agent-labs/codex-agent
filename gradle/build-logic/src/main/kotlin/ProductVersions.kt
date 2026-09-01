@@ -7,6 +7,7 @@ internal data class ProductVersions(
     val contract: String,
     val runtime: String,
     val sdk: String,
+    val sdkDefaultRuntime: String = runtime,
 )
 
 internal val PRODUCT_SEMVER = Regex(
@@ -26,11 +27,16 @@ internal fun runtimeCompatibilityVersion(releaseVersion: String): String {
 
 internal fun readProductVersions(repository: File): ProductVersions {
     val versions = repository.resolve("gradle/release/versions")
-    return ProductVersions(
+    val result = ProductVersions(
         contract = readProductVersion(versions.resolve("contract.txt")),
         runtime = readProductVersion(versions.resolve("runtime.txt")),
         sdk = readProductVersion(versions.resolve("sdk.txt")),
+        sdkDefaultRuntime = readProductVersion(repository.resolve("gradle/release/sdk-default-runtime.txt")),
     )
+    check('-' !in result.sdkDefaultRuntime) {
+        "SDK default Runtime must be a stable release"
+    }
+    return result
 }
 
 internal fun readProductVersions(root: Project): ProductVersions {
@@ -40,6 +46,9 @@ internal fun readProductVersions(root: Project): ProductVersions {
             root.layout.projectDirectory.file("gradle/release/versions/$name"),
         ).asText.get()
     }
+    root.providers.fileContents(
+        root.layout.projectDirectory.file("gradle/release/sdk-default-runtime.txt"),
+    ).asText.get()
     return readProductVersions(repository)
 }
 
@@ -58,6 +67,7 @@ internal fun applyProductVersions(root: Project, versions: ProductVersions) {
         set("codexAgent.contractVersion", versions.contract)
         set("codexAgent.runtimeVersion", versions.runtime)
         set("codexAgent.sdkVersion", versions.sdk)
+        set("codexAgent.sdkDefaultRuntimeVersion", versions.sdkDefaultRuntime)
     }
 }
 

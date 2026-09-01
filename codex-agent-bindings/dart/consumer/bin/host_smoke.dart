@@ -3,9 +3,12 @@ import 'dart:io';
 import 'package:codex_agent/codex_agent.dart';
 
 Future<void> main(List<String> arguments) async {
-  if (arguments.length != 1) {
+  final String? libraryPath;
+  try {
+    libraryPath = runtimeOverrideFromArguments(arguments);
+  } on FormatException {
     stderr.writeln(
-      'usage: dart run bin/host_smoke.dart <absolute-c-sdk-library>',
+      'usage: dart run bin/host_smoke.dart [absolute-c-sdk-library]',
     );
     exitCode = 64;
     return;
@@ -20,7 +23,7 @@ Future<void> main(List<String> arguments) async {
       title: 'Installed Host smoke',
       version: '1.0.0',
     ),
-    libraryPath: arguments.single,
+    libraryPath: libraryPath,
   );
 
   final initial = await host.currentState;
@@ -40,4 +43,16 @@ Future<void> main(List<String> arguments) async {
     return;
   }
   throw StateError('closed Host remained usable');
+}
+
+String? runtimeOverrideFromArguments(List<String> arguments) {
+  if (arguments.length > 1) {
+    throw const FormatException('at most one Runtime override is allowed');
+  }
+  if (arguments.isEmpty) return null;
+  final override = arguments.single;
+  if (override.isEmpty || !File(override).isAbsolute) {
+    throw const FormatException('Runtime override must be an absolute path');
+  }
+  return override;
 }

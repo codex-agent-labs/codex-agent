@@ -50,6 +50,7 @@ from ci.products.inventory import (
     write_canonical_json,
 )
 from ci.products.receipt import (
+    build_key_payload,
     compute_build_key,
     output_inventory_digest,
     require_release_receipt,
@@ -57,6 +58,12 @@ from ci.products.receipt import (
     validate_phase_receipt,
     verify_output_manifest,
 )
+from ci.products.runtime_attestation import (
+    derive_desktop_validation_projection,
+    derive_runtime_component_attestation,
+)
+from ci.products.runtime_evidence import build_desktop_evidence, imported_desktop_test_task
+from ci.products.runtime_identity import derive_runtime_identity
 from ci.products.signatures import (
     ALGORITHM,
     NAMESPACE,
@@ -118,9 +125,10 @@ def output_manifest():
 
 
 def phase_receipt(trust: str = "development"):
+    inventory = [{"relativePath": "source/value.kt", "bytes": 1, "sha256": DIGEST_A}]
     inputs = {
-        "inventory": [{"relativePath": "source/value.kt", "bytes": 1, "sha256": DIGEST_A}],
-        "phaseInputDigest": DIGEST_A,
+        "inventory": inventory,
+        "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
         "versionIdentity": "0.2.0",
         "upstreamArtifacts": [],
         "toolchainProfileDigest": DIGEST_B,
@@ -167,9 +175,10 @@ def repository_receipt(
         "bytes": len(payload),
         "sha256": sha256_bytes(payload),
     }
+    inventory = [{"relativePath": f"source/{product}.txt", "bytes": 1, "sha256": DIGEST_A}]
     inputs = {
-        "inventory": [{"relativePath": f"source/{product}.txt", "bytes": 1, "sha256": DIGEST_A}],
-        "phaseInputDigest": DIGEST_A,
+        "inventory": inventory,
+        "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
         "versionIdentity": version,
         "upstreamArtifacts": sorted(
             upstream or [],
@@ -347,7 +356,7 @@ def runtime_variant(target: str = "macos-arm64", signing_metadata=None):
         "componentId": "",
         "runtimeCompatibilityVersion": "0.2.0",
         "target": target,
-        "contract": {"version": "0.2.0", "digest": DIGEST_A, "componentDigest": DIGEST_B},
+        "contract": {"digest": DIGEST_A, "componentDigest": DIGEST_B},
         "cAbi": {
             "version": "1.13.0",
             "minimumCompatibleVersion": "1.0.0",
@@ -360,18 +369,15 @@ def runtime_variant(target: str = "macos-arm64", signing_metadata=None):
         "inputs": {
             "binaryBuildKey": DIGEST_A,
             "binaryOutputInventoryDigest": DIGEST_B,
-            "binaryReceiptSha256": DIGEST_C,
-            "packageReceiptSha256": DIGEST_A,
-            "validationReceiptSha256": DIGEST_B,
         },
         "innerArtifacts": [
-            artifact("app-server/codex.zip", role="app-server-archive"),
-            artifact("c-abi/codex-agent-c.zip", role="c-abi-archive"),
-            artifact("evidence/binary-receipt.json", role="binary-receipt", digest=DIGEST_C),
-            artifact("evidence/package-receipt.json", role="package-receipt", digest=DIGEST_A),
+            artifact("app-server/codex.zip", role="app-server-archive", digest=DIGEST_C),
+            artifact("c-abi/codex-agent-c.zip", role="c-abi-archive", digest=DIGEST_B),
+            artifact("evidence/binary-phase.json", role="binary-phase-evidence", digest=DIGEST_C),
+            artifact("evidence/package-phase.json", role="package-phase-evidence", digest=DIGEST_A),
             artifact("evidence/provenance.json", role="provenance"),
             artifact("evidence/sbom.json", role="sbom"),
-            artifact("evidence/validation-receipt.json", role="validation-receipt", digest=DIGEST_B),
+            artifact("evidence/validation-phase.json", role="validation-phase-evidence", digest=DIGEST_B),
             artifact("evidence/validation.json", role="validation"),
         ],
         "toolchainProfile": {"id": target, "digest": DIGEST_A},
@@ -390,8 +396,11 @@ def runtime_aggregate():
             "bundleSha256": sha256_bytes(f"bundle-{index}".encode()),
             "manifestSha256": sha256_bytes(f"manifest-{index}".encode()),
             "receiptSha256": sha256_bytes(f"receipt-{index}".encode()),
+            "phaseReceipts": {
+                phase: {"sha256": sha256_bytes(f"{phase}-receipt-{index}".encode()), "producer": producer()}
+                for phase in ("binary", "package", "validation")
+            },
             "sourceRuntimeVersion": "0.2.0" if index % 2 == 0 else "0.2.1",
-            "reused": index != 0,
             "producer": producer(),
         })
     return {
@@ -509,11 +518,25 @@ def runtime_aggregate_artifacts(
     signing_metadata,
     *,
     receipt_mutator=None,
+    phase_receipt_mutator=None,
     variant_mutator=None,
 ):
     root.mkdir()
-    contract = contract_manifest()
-    contract["signing"] = signing_metadata
+    from ci.products.contract import build_contract_bundle
+    from ci.tests.test_contract_bundle import _write_staging
+
+    contract_staging = root / "contract-staging"
+    _write_staging(contract_staging)
+    contract_bundle = root / "contract" / "codex-agent-contract-0.2.0.zip"
+    contract = build_contract_bundle(
+        contract_staging,
+        contract_bundle,
+        "0.2.0",
+        producer(),
+        private_key,
+        public_key,
+        signing_metadata,
+    )
     aggregate = runtime_aggregate()
     aggregate["signing"] = signing_metadata
     aggregate["contract"] = {
@@ -521,15 +544,36 @@ def runtime_aggregate_artifacts(
         "digest": contract["contractDigest"],
     }
     compatibility = aggregate["compatibility"]
-    contents_by_digest = {DIGEST_A: b"a", DIGEST_B: b"b", DIGEST_C: b"c"}
     bundles = {}
     receipts = {}
+    phase_receipts = {}
+    validation_evidence = {}
     public_keys = {target: public_key for target in RUNTIME_TARGETS}
+    runtime_maven_files = []
+    for record in aggregate["runtimeMavenFiles"]:
+        source = root / "runtime-maven" / record["component"] / Path(record["path"]).name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(f"runtime-maven-{record['component']}\n".encode())
+        record["bytes"] = source.stat().st_size
+        record["sha256"] = sha256_file(source)
+        runtime_maven_files.append({
+            "path": record["path"],
+            "role": record["role"],
+            "component": record["component"],
+            "file": source,
+        })
+    adapter_evidence = {}
+    for record in aggregate["adapterEvidence"]:
+        source = root / record["path"]
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(f"runtime-adapter-{record['target']}\n".encode())
+        record["bytes"] = source.stat().st_size
+        record["sha256"] = sha256_file(source)
+        adapter_evidence[record["target"]] = source
 
     for target, record in zip(RUNTIME_TARGETS, aggregate["variants"]):
         variant = runtime_variant(target, signing_metadata)
         variant["contract"] = {
-            "version": contract["contractVersion"],
             "digest": contract["contractDigest"],
             "componentDigest": contract["components"][target]["sha256"],
         }
@@ -544,26 +588,99 @@ def runtime_aggregate_artifacts(
         variant["appServer"]["version"] = compatibility["appServerVersion"]
         variant["appServer"]["releaseTag"] = compatibility["appServerReleaseTag"]
         variant["toolchainProfile"]["digest"] = compatibility["toolchainProfileDigests"][target]
-        inner_receipt_bytes = {}
-        for phase, role, input_field in (
-            ("binary", "binary-receipt", "binaryReceiptSha256"),
-            ("package", "package-receipt", "packageReceiptSha256"),
-            ("validation", "validation-receipt", "validationReceiptSha256"),
-        ):
+        artifact_bytes = {
+            "app-server/codex-app-server.zip": b"c",
+            "c-abi/codex-agent-c.zip": b"b",
+        }
+        evidence_target = {
+            "macos-arm64": "macosArm64", "macos-x64": "macosX64",
+            "linux-arm64": "linuxArm64", "linux-x64": "linuxX64", "windows-x64": "mingwX64",
+        }[target]
+        validation_path = root / f"{target}-validation.json"
+        write_canonical_json(validation_path, build_desktop_evidence(
+            COMMIT,
+            evidence_target,
+            variant["appServer"]["binarySha256"].removeprefix("sha256:"),
+            DIGEST_A.removeprefix("sha256:"),
+            sha256_bytes(artifact_bytes["app-server/codex-app-server.zip"]).removeprefix("sha256:"),
+            test_task=imported_desktop_test_task(evidence_target),
+        ))
+        validation_evidence[target] = validation_path
+        valid_receipts = []
+        for phase in ("binary", "package", "validation"):
             phase_value = phase_receipt(signing_metadata["trustDomain"])
             phase_value["product"] = "runtime"
-            phase_value["component"] = f"runtime-{target}"
+            phase_value["component"] = target
             phase_value["phase"] = phase
             phase_value["target"] = target
             phase_value["productVersion"] = record["sourceRuntimeVersion"]
             phase_value["inputs"]["versionIdentity"] = aggregate["runtimeCompatibilityVersion"]
-            phase_value["outputs"] = [output(
-                f"{phase}/{target}.bin",
-                sha256_bytes(f"{phase}-{target}".encode()),
-            )]
-            replacement = None if receipt_mutator is None else receipt_mutator(
-                target, phase, phase_value,
-            )
+            phase_value["inputs"]["toolchainProfileDigest"] = variant["toolchainProfile"]["digest"]
+            if phase == "binary":
+                phase_value["inputs"]["upstreamArtifacts"] = [{
+                    "product": "contract",
+                    "component": "contract",
+                    "phase": "metadata",
+                    "target": "common",
+                    "buildKey": DIGEST_A,
+                    "outputsDigest": DIGEST_B,
+                    "contractProjection": {
+                        "schemaVersion": 1,
+                        "receiptSha256": DIGEST_A,
+                        "bundlePath": "outputs/codex-agent-contract-0.2.0.zip",
+                        "bundleSha256": DIGEST_B,
+                        "manifestSha256": DIGEST_C,
+                        "contractVersion": contract["contractVersion"],
+                        "contractDigest": contract["contractDigest"],
+                        "componentDigests": [{
+                            "component": target,
+                            "sha256": contract["components"][target]["sha256"],
+                        }],
+                    },
+                }]
+                phase_value["outputs"] = [output(
+                    f"binary/{target}.bin", sha256_bytes(f"binary-{target}".encode()),
+                )]
+            elif phase == "package":
+                previous = valid_receipts[-1]
+                phase_value["inputs"]["upstreamArtifacts"] = [{
+                    "product": previous["product"],
+                    "component": previous["component"],
+                    "phase": previous["phase"],
+                    "target": previous["target"],
+                    "buildKey": previous["buildKey"],
+                    "outputsDigest": output_inventory_digest(previous["outputs"]),
+                }]
+                phase_value["outputs"] = [
+                    {
+                        "kind": "app-server" if path.startswith("outputs/app-server/") else "c-abi",
+                        "relativePath": path,
+                        "bytes": len(artifact_bytes[path.removeprefix("outputs/")]),
+                        "sha256": sha256_bytes(artifact_bytes[path.removeprefix("outputs/")]),
+                    }
+                    for path in (
+                        "outputs/app-server/codex-app-server.zip",
+                        "outputs/c-abi/codex-agent-c.zip",
+                    )
+                ]
+            else:
+                previous = valid_receipts[-1]
+                phase_value["inputs"]["upstreamArtifacts"] = [{
+                    "product": previous["product"],
+                    "component": previous["component"],
+                    "phase": previous["phase"],
+                    "target": previous["target"],
+                    "buildKey": previous["buildKey"],
+                    "outputsDigest": output_inventory_digest(previous["outputs"]),
+                }]
+                phase_value["outputs"] = [{
+                    "kind": "native",
+                    "relativePath": "outputs/native/validation.json",
+                    "bytes": validation_path.stat().st_size,
+                    "sha256": sha256_file(validation_path),
+                }]
+            if phase_receipt_mutator is not None:
+                phase_receipt_mutator(target, phase, phase_value)
             phase_value["buildKey"] = compute_build_key(
                 product=phase_value["product"],
                 component=phase_value["component"],
@@ -571,20 +688,126 @@ def runtime_aggregate_artifacts(
                 target=phase_value["target"],
                 inputs=phase_value["inputs"],
             )
-            contents = canonical_json_bytes(phase_value) if replacement is None else replacement
-            inner_receipt_bytes[role] = contents
-            inner_record = next(member for member in variant["innerArtifacts"] if member["role"] == role)
-            inner_record["bytes"] = len(contents)
-            inner_record["sha256"] = sha256_bytes(contents)
-            variant["inputs"][input_field] = inner_record["sha256"]
-            if phase == "binary":
-                variant["inputs"]["binaryBuildKey"] = phase_value["buildKey"]
-                variant["inputs"]["binaryOutputInventoryDigest"] = output_inventory_digest(
-                    phase_value["outputs"],
+            valid_receipts.append(phase_value)
+        target_phase_receipts = {}
+        record["phaseReceipts"] = {}
+        for phase, value in zip(("binary", "package", "validation"), valid_receipts, strict=True):
+            path = root / f"{target}-{phase}.receipt.json"
+            write_canonical_json(path, value)
+            target_phase_receipts[phase] = path
+            record["phaseReceipts"][phase] = {
+                "sha256": sha256_file(path),
+                "producer": value["producer"],
+            }
+        phase_receipts[target] = target_phase_receipts
+        variant["inputs"] = {
+            "binaryBuildKey": valid_receipts[0]["buildKey"],
+            "binaryOutputInventoryDigest": output_inventory_digest(valid_receipts[0]["outputs"]),
+        }
+        variant["componentId"] = runtime_component_id(variant)
+        identity = derive_runtime_identity({
+            "schemaVersion": 1,
+            "binaryBuildKey": variant["inputs"]["binaryBuildKey"],
+            "runtimeCompatibilityVersion": variant["runtimeCompatibilityVersion"],
+            "target": target,
+            "contract": variant["contract"],
+            "cAbi": variant["cAbi"],
+            "appServer": variant["appServer"],
+            "toolchainProfile": variant["toolchainProfile"],
+        })
+        validation_projection = derive_desktop_validation_projection(
+            load_canonical_json(validation_path),
+            identity_envelope=identity,
+            expected_commit=valid_receipts[2]["producer"]["commit"],
+            classifier_archive_sha256=sha256_bytes(
+                artifact_bytes["app-server/codex-app-server.zip"],
+            ),
+        )
+        artifact_bytes["evidence/validation.json"] = canonical_json_bytes(validation_projection)
+        valid_phase_evidence = []
+        for value in valid_receipts:
+            evidence = {
+                **build_key_payload(
+                    product=value["product"], component=value["component"], phase=value["phase"],
+                    target=value["target"], inputs=value["inputs"],
+                ),
+                "buildKey": value["buildKey"],
+            }
+            if value["phase"] == "validation":
+                evidence["validationEvidenceDigest"] = sha256_bytes(
+                    artifact_bytes["evidence/validation.json"],
                 )
+            else:
+                evidence["outputInventoryDigest"] = output_inventory_digest(value["outputs"])
+            valid_phase_evidence.append(evidence)
+        deterministic_artifacts = [
+            artifact(path, role=role, digest=sha256_bytes(artifact_bytes[path]))
+            | {"bytes": len(artifact_bytes[path])}
+            for path, role in (
+                ("app-server/codex-app-server.zip", "app-server-archive"),
+                ("c-abi/codex-agent-c.zip", "c-abi-archive"),
+                ("evidence/validation.json", "validation"),
+            )
+        ]
+        attestation = derive_runtime_component_attestation(
+            identity, valid_phase_evidence, deterministic_artifacts,
+        )
+        phase_evidence_bytes = {}
+        for phase, receipt_value, evidence_value in zip(
+            ("binary", "package", "validation"),
+            valid_receipts,
+            valid_phase_evidence,
+            strict=True,
+        ):
+            mutated = copy.deepcopy(receipt_value)
+            replacement = None if receipt_mutator is None else receipt_mutator(target, phase, mutated)
+            if receipt_mutator is not None:
+                mutated["buildKey"] = compute_build_key(
+                    product=mutated["product"], component=mutated["component"],
+                    phase=mutated["phase"], target=mutated["target"], inputs=mutated["inputs"],
+                )
+                evidence_value = {
+                    **build_key_payload(
+                        product=mutated["product"], component=mutated["component"],
+                        phase=mutated["phase"], target=mutated["target"], inputs=mutated["inputs"],
+                    ),
+                    "buildKey": mutated["buildKey"],
+                }
+                if phase == "validation":
+                    evidence_value["validationEvidenceDigest"] = sha256_bytes(
+                        artifact_bytes["evidence/validation.json"],
+                    )
+                else:
+                    evidence_value["outputInventoryDigest"] = output_inventory_digest(
+                        mutated["outputs"],
+                    )
+            phase_evidence_bytes[phase] = (
+                canonical_json_bytes(evidence_value) if replacement is None else replacement
+            )
+        members = {
+            **artifact_bytes,
+            "evidence/binary-phase.json": phase_evidence_bytes["binary"],
+            "evidence/package-phase.json": phase_evidence_bytes["package"],
+            "evidence/provenance.json": attestation["componentProvenanceBytes"],
+            "evidence/sbom.json": attestation["sbomBytes"],
+            "evidence/validation-phase.json": phase_evidence_bytes["validation"],
+        }
+        roles = {
+            "app-server/codex-app-server.zip": "app-server-archive",
+            "c-abi/codex-agent-c.zip": "c-abi-archive",
+            "evidence/binary-phase.json": "binary-phase-evidence",
+            "evidence/package-phase.json": "package-phase-evidence",
+            "evidence/provenance.json": "provenance",
+            "evidence/sbom.json": "sbom",
+            "evidence/validation-phase.json": "validation-phase-evidence",
+            "evidence/validation.json": "validation",
+        }
+        variant["innerArtifacts"] = [
+            artifact(path, role=roles[path], digest=sha256_bytes(contents)) | {"bytes": len(contents)}
+            for path, contents in sorted(members.items())
+        ]
         if variant_mutator is not None:
             variant_mutator(target, variant)
-        variant["componentId"] = runtime_component_id(variant)
         record["componentId"] = variant["componentId"]
 
         with tempfile.TemporaryDirectory() as staging:
@@ -592,13 +815,6 @@ def runtime_aggregate_artifacts(
             manifest = stage / "runtime-variant-manifest.json"
             write_canonical_json(manifest, variant)
             signature = sign_manifest(manifest, private_key, signing_metadata)
-            members = {
-                member["path"]: inner_receipt_bytes.get(
-                    member["role"],
-                    contents_by_digest.get(member["sha256"]),
-                )
-                for member in variant["innerArtifacts"]
-            }
             members[manifest.name] = manifest.read_bytes()
             members[signature.name] = signature.read_bytes()
             name = (
@@ -608,17 +824,29 @@ def runtime_aggregate_artifacts(
             bundle = root / name
             with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
                 for path in sorted(members):
-                    archive.writestr(path, members[path])
+                    info = zipfile.ZipInfo(path, (1980, 1, 1, 0, 0, 0))
+                    info.compress_type = zipfile.ZIP_STORED
+                    info.create_system = 3
+                    info.external_attr = (stat.S_IFREG | 0o644) << 16
+                    archive.writestr(info, members[path])
 
         record["bundleSha256"] = sha256_file(bundle)
         record["manifestSha256"] = sha256_bytes(canonical_json_bytes(variant))
         receipt = phase_receipt(signing_metadata["trustDomain"])
         receipt["product"] = "runtime"
-        receipt["component"] = f"runtime-{target}"
+        receipt["component"] = target
         receipt["phase"] = "metadata"
         receipt["target"] = target
         receipt["productVersion"] = record["sourceRuntimeVersion"]
         receipt["inputs"]["versionIdentity"] = aggregate["runtimeCompatibilityVersion"]
+        receipt["inputs"]["upstreamArtifacts"] = [{
+            "product": valid_receipts[2]["product"],
+            "component": valid_receipts[2]["component"],
+            "phase": valid_receipts[2]["phase"],
+            "target": valid_receipts[2]["target"],
+            "buildKey": valid_receipts[2]["buildKey"],
+            "outputsDigest": output_inventory_digest(valid_receipts[2]["outputs"]),
+        }]
         receipt["outputs"] = [{
             "kind": "runtime-variant",
             "relativePath": bundle.name,
@@ -638,7 +866,22 @@ def runtime_aggregate_artifacts(
         record["producer"] = receipt["producer"]
         bundles[target] = bundle
         receipts[target] = receipt_path
-    return aggregate, contract, bundles, receipts, public_keys
+    aggregate_manifest = root / f"codex-agent-runtime-{aggregate['runtimeVersion']}-manifest.json"
+    write_canonical_json(aggregate_manifest, aggregate)
+    aggregate_signature = sign_manifest(aggregate_manifest, private_key, signing_metadata)
+    return (
+        aggregate_manifest,
+        aggregate_signature,
+        public_key,
+        contract_bundle,
+        bundles,
+        receipts,
+        phase_receipts,
+        validation_evidence,
+        public_keys,
+        runtime_maven_files,
+        adapter_evidence,
+    )
 
 
 class CanonicalProductJsonTest(unittest.TestCase):
@@ -783,6 +1026,34 @@ class ProductInventoryTest(unittest.TestCase):
                     archive_path,
                     retained_paths={"manifest.json"},
                     max_retained_bytes=2,
+                )
+
+    def test_canonical_zip_verification_retains_only_requested_members(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive_path = Path(temporary) / "canonical.zip"
+            members = {"manifest.json": b"{}\n", "payload.bin": b"x" * (2 * 1024 * 1024)}
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+                for path, contents in members.items():
+                    info = zipfile.ZipInfo(path, (1980, 1, 1, 0, 0, 0))
+                    info.compress_type = zipfile.ZIP_STORED
+                    info.create_system = 3
+                    info.external_attr = (stat.S_IFREG | 0o644) << 16
+                    archive.writestr(info, contents)
+
+            records, contents, _ = verified_zip_contents(
+                archive_path,
+                retained_paths={"manifest.json"},
+                max_retained_bytes=3,
+                canonical_stored=True,
+            )
+            self.assertEqual(["manifest.json", "payload.bin"], [record["relativePath"] for record in records])
+            self.assertEqual({"manifest.json": b"{}\n"}, contents)
+            with self.assertRaisesRegex(ValueError, "Retained ZIP member contents are too large"):
+                verified_zip_contents(
+                    archive_path,
+                    retained_paths={"manifest.json"},
+                    max_retained_bytes=2,
+                    canonical_stored=True,
                 )
 
     def test_file_and_zip_snapshots_reject_concurrent_growth_and_reparse_points(self):
@@ -1200,23 +1471,24 @@ class ProductAggregateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_runtime_variant(invalid)
 
-        changed_receipt = copy.deepcopy(variant)
-        changed_receipt["inputs"]["binaryReceiptSha256"] = DIGEST_A
-        next(record for record in changed_receipt["innerArtifacts"]
-             if record["role"] == "binary-receipt")["sha256"] = DIGEST_A
-        self.assertEqual(variant["componentId"], runtime_component_id(changed_receipt))
-        validate_runtime_variant(changed_receipt)
+        changed_evidence = copy.deepcopy(variant)
+        next(record for record in changed_evidence["innerArtifacts"]
+             if record["role"] == "binary-phase-evidence")["sha256"] = DIGEST_A
+        self.assertEqual(variant["componentId"], runtime_component_id(changed_evidence))
+        validate_runtime_variant(changed_evidence)
 
         changed_build = copy.deepcopy(variant)
         changed_build["inputs"]["binaryBuildKey"] = DIGEST_C
         self.assertNotEqual(variant["componentId"], runtime_component_id(changed_build))
 
+        changed_outputs = copy.deepcopy(variant)
+        changed_outputs["inputs"]["binaryOutputInventoryDigest"] = DIGEST_C
+        self.assertEqual(variant["componentId"], runtime_component_id(changed_outputs))
+
         wrong_toolchain = copy.deepcopy(variant)
         wrong_toolchain["toolchainProfile"]["id"] = "linux-x64"
-        wrong_toolchain["componentId"] = runtime_component_id(wrong_toolchain)
         impossible_minimum = copy.deepcopy(variant)
         impossible_minimum["cAbi"]["minimumCompatibleVersion"] = "9.0.0"
-        impossible_minimum["componentId"] = runtime_component_id(impossible_minimum)
         for invalid in (wrong_toolchain, impossible_minimum):
             with self.assertRaises(ValueError):
                 validate_runtime_variant(invalid)
@@ -1462,25 +1734,54 @@ class ProductSigningTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             private_key, public_key, metadata = generate_development_key(root / "keys")
-            aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
+            (
+                aggregate_manifest, aggregate_signature, aggregate_public_key, contract_bundle,
+                bundles, receipts, phase_receipts, validation_evidence, public_keys,
+                runtime_maven_files, adapter_evidence,
+            ) = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
             )
+            aggregate = load_canonical_json(aggregate_manifest)
 
-            def verify(value=aggregate, *, keys=public_keys, trust="development"):
-                return verify_runtime_aggregate_artifacts(
-                    value,
-                    contract_manifest=contract,
-                    variant_bundles=bundles,
-                    metadata_receipts=receipts,
-                    trusted_public_keys=keys,
-                    required_trust_domain=trust,
-                )
+            def verify(value=None, *, keys=public_keys, trust="development"):
+                selected = aggregate if value is None else value
+                with tempfile.TemporaryDirectory(dir=root) as candidate:
+                    manifest = Path(candidate) / f"codex-agent-runtime-{selected['runtimeVersion']}-manifest.json"
+                    write_canonical_json(manifest, selected)
+                    signature = sign_manifest(manifest, private_key, selected["signing"])
+                    return verify_runtime_aggregate_artifacts(
+                        manifest,
+                        aggregate_signature=signature,
+                        aggregate_public_key=aggregate_public_key,
+                        contract_bundle=contract_bundle,
+                        contract_public_key=aggregate_public_key,
+                        variant_bundles=bundles,
+                        metadata_receipts=receipts,
+                        phase_receipts=phase_receipts,
+                        validation_evidence=validation_evidence,
+                        trusted_public_keys=keys,
+                        runtime_maven_files=runtime_maven_files,
+                        adapter_evidence=adapter_evidence,
+                        required_trust_domain=trust,
+                    )
 
             verify()
             self.assertEqual(
                 {"0.2.0", "0.2.1"},
                 {record["sourceRuntimeVersion"] for record in aggregate["variants"]},
             )
+
+            for path in (
+                Path(runtime_maven_files[0]["file"]),
+                Path(adapter_evidence["jvm"]),
+            ):
+                original = path.read_bytes()
+                path.write_bytes(original + b"tampered")
+                try:
+                    with self.assertRaises(ValueError):
+                        verify()
+                finally:
+                    path.write_bytes(original)
 
             bundle_digest = copy.deepcopy(aggregate); bundle_digest["variants"][0]["bundleSha256"] = DIGEST_A
             manifest_digest = copy.deepcopy(aggregate); manifest_digest["variants"][0]["manifestSha256"] = DIGEST_A
@@ -1497,11 +1798,18 @@ class ProductSigningTest(unittest.TestCase):
             missing_bundle = dict(bundles); missing_bundle.pop(RUNTIME_TARGETS[0])
             with self.assertRaises(ValueError):
                 verify_runtime_aggregate_artifacts(
-                    aggregate,
-                    contract_manifest=contract,
+                    aggregate_manifest,
+                    aggregate_signature=aggregate_signature,
+                    aggregate_public_key=aggregate_public_key,
+                    contract_bundle=contract_bundle,
+                    contract_public_key=aggregate_public_key,
                     variant_bundles=missing_bundle,
                     metadata_receipts=receipts,
+                    phase_receipts=phase_receipts,
+                    validation_evidence=validation_evidence,
                     trusted_public_keys=public_keys,
+                    runtime_maven_files=runtime_maven_files,
+                    adapter_evidence=adapter_evidence,
                     required_trust_domain="development",
                 )
             with self.assertRaises(ValueError):
@@ -1543,10 +1851,17 @@ class ProductSigningTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     verify_runtime_aggregate_artifacts(
                         values[0],
-                        contract_manifest=values[1],
-                        variant_bundles=values[2],
-                        metadata_receipts=values[3],
-                        trusted_public_keys=values[4],
+                        aggregate_signature=values[1],
+                        aggregate_public_key=values[2],
+                        contract_bundle=values[3],
+                        contract_public_key=values[2],
+                        variant_bundles=values[4],
+                        metadata_receipts=values[5],
+                        phase_receipts=values[6],
+                        validation_evidence=values[7],
+                        trusted_public_keys=values[8],
+                        runtime_maven_files=values[9],
+                        adapter_evidence=values[10],
                         required_trust_domain="development",
                     )
 
@@ -1579,14 +1894,25 @@ class ProductSigningTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             private_key, public_key, metadata = generate_development_key(root / "keys")
-            aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
+            (
+                aggregate_manifest, aggregate_signature, aggregate_public_key, contract_bundle,
+                bundles, receipts, phase_receipts, validation_evidence, public_keys,
+                runtime_maven_files, adapter_evidence,
+            ) = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
             )
             arguments = {
-                "contract_manifest": contract,
+                "aggregate_signature": aggregate_signature,
+                "aggregate_public_key": aggregate_public_key,
+                "contract_bundle": contract_bundle,
+                "contract_public_key": aggregate_public_key,
                 "variant_bundles": bundles,
                 "metadata_receipts": receipts,
+                "phase_receipts": phase_receipts,
+                "validation_evidence": validation_evidence,
                 "trusted_public_keys": public_keys,
+                "runtime_maven_files": runtime_maven_files,
+                "adapter_evidence": adapter_evidence,
                 "required_trust_domain": "development",
             }
             for limit in (
@@ -1601,15 +1927,20 @@ class ProductSigningTest(unittest.TestCase):
                     aggregate_product.RUNTIME_VARIANT_ZIP_LIMITS,
                     {limit: 0},
                 ), self.assertRaises(ValueError):
-                    verify_runtime_aggregate_artifacts(aggregate, **arguments)
+                    verify_runtime_aggregate_artifacts(aggregate_manifest, **arguments)
 
     def test_runtime_metadata_receipt_uses_one_immutable_byte_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             private_key, public_key, metadata = generate_development_key(root / "keys")
-            aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
+            (
+                aggregate_manifest, aggregate_signature, aggregate_public_key, contract_bundle,
+                bundles, receipts, phase_receipts, validation_evidence, public_keys,
+                runtime_maven_files, adapter_evidence,
+            ) = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
             )
+            aggregate = load_canonical_json(aggregate_manifest)
             target = RUNTIME_TARGETS[0]
             receipt_path = receipts[target]
             valid_bytes = receipt_path.read_bytes()
@@ -1628,6 +1959,11 @@ class ProductSigningTest(unittest.TestCase):
             next(record for record in aggregate["variants"] if record["target"] == target)[
                 "receiptSha256"
             ] = sha256_bytes(invalid_bytes)
+            candidate_root = root / "candidate"
+            candidate_root.mkdir()
+            candidate_manifest = candidate_root / f"codex-agent-runtime-{aggregate['runtimeVersion']}-manifest.json"
+            write_canonical_json(candidate_manifest, aggregate)
+            candidate_signature = sign_manifest(candidate_manifest, private_key, aggregate["signing"])
             original = aggregate_product.read_regular_file_bytes
 
             def read_then_replace(path, **keywords):
@@ -1642,11 +1978,18 @@ class ProductSigningTest(unittest.TestCase):
                 side_effect=read_then_replace,
             ), self.assertRaises(ValueError):
                 verify_runtime_aggregate_artifacts(
-                    aggregate,
-                    contract_manifest=contract,
+                    candidate_manifest,
+                    aggregate_signature=candidate_signature,
+                    aggregate_public_key=aggregate_public_key,
+                    contract_bundle=contract_bundle,
+                    contract_public_key=aggregate_public_key,
                     variant_bundles=bundles,
                     metadata_receipts=receipts,
+                    phase_receipts=phase_receipts,
+                    validation_evidence=validation_evidence,
                     trusted_public_keys=public_keys,
+                    runtime_maven_files=runtime_maven_files,
+                    adapter_evidence=adapter_evidence,
                     required_trust_domain="development",
                 )
 
@@ -1654,16 +1997,26 @@ class ProductSigningTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             private_key, public_key, metadata = generate_development_key(root / "keys")
-            aggregate, contract, bundles, receipts, public_keys = runtime_aggregate_artifacts(
+            (
+                aggregate_manifest, aggregate_signature, aggregate_public_key, contract_bundle,
+                bundles, receipts, phase_receipts, validation_evidence, public_keys,
+                runtime_maven_files, adapter_evidence,
+            ) = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
             )
             observed: list[tuple[set[str], set[str]]] = []
             original = aggregate_product.verified_zip_contents
+            original_signature_verifier = aggregate_product.verify_manifest_signature
 
             def record_retained_paths(*arguments, **keywords):
                 records, contents, archive_identity = original(*arguments, **keywords)
                 observed.append((set(keywords["retained_paths"]), set(contents)))
                 return records, contents, archive_identity
+
+            def stop_after_variant_authentication(manifest, signature, key, signing_metadata):
+                if Path(manifest).name == aggregate_manifest.name:
+                    return original_signature_verifier(manifest, signature, key, signing_metadata)
+                raise ValueError("stop-after-authentication-material")
 
             with mock.patch.object(
                 aggregate_product,
@@ -1672,14 +2025,21 @@ class ProductSigningTest(unittest.TestCase):
             ), mock.patch.object(
                 aggregate_product,
                 "verify_manifest_signature",
-                side_effect=ValueError("stop-after-authentication-material"),
+                side_effect=stop_after_variant_authentication,
             ), self.assertRaisesRegex(ValueError, "stop-after-authentication-material"):
                 verify_runtime_aggregate_artifacts(
-                    aggregate,
-                    contract_manifest=contract,
+                    aggregate_manifest,
+                    aggregate_signature=aggregate_signature,
+                    aggregate_public_key=aggregate_public_key,
+                    contract_bundle=contract_bundle,
+                    contract_public_key=aggregate_public_key,
                     variant_bundles=bundles,
                     metadata_receipts=receipts,
+                    phase_receipts=phase_receipts,
+                    validation_evidence=validation_evidence,
                     trusted_public_keys=public_keys,
+                    runtime_maven_files=runtime_maven_files,
+                    adapter_evidence=adapter_evidence,
                     required_trust_domain="development",
                 )
             expected = {"runtime-variant-manifest.json", "runtime-variant-manifest.sig"}

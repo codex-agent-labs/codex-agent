@@ -23,7 +23,7 @@ dependencies {
     constraints {
         api("${project.group}:codex-agent:${project.version}")
         api("${project.group}:codex-agent-core:${project.extra["codexAgent.contractVersion"]}")
-        api("${project.group}:codex-agent-runtime-desktop:${project.extra["codexAgent.runtimeVersion"]}")
+        api("${project.group}:codex-agent-runtime-desktop:${project.extra["codexAgent.sdkDefaultRuntimeVersion"]}")
         api("${project.group}:codex-agent-runtime-android:${project.version}")
         api("${project.group}:codex-agent-runtime-ios:${project.version}")
     }

@@ -302,7 +302,7 @@ class LoaderAndPackageTests(unittest.TestCase):
         )
 
     def test_explicit_library_path_is_exact_and_fail_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             library = Path(directory) / "libcodex_agent.so"
             library.touch()
             self.assertEqual(resolve_library_path(library), library.resolve())

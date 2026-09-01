@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -21,19 +22,214 @@ from .inventory import (
     load_canonical_json_bytes,
     load_json_bytes,
     read_regular_file_bytes,
+    require_exact_keys,
+    require_integer,
     verified_zip_contents,
 )
 
 
-C_ABI_CURRENT = "1.12"
-C_ABI_MINIMUM = "1.0"
-C_ABI_ENCODED = "0x010c0000"
-C_ABI_SYMBOL_COUNT = 777
+C_ABI_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+C_ABI_CONTRACT_PATH = (
+    C_ABI_REPOSITORY_ROOT / "codex-agent-runtime-desktop/native/c-api/abi-contract.json"
+)
+C_ABI_REVIEWED_HEADER_PATH = (
+    C_ABI_REPOSITORY_ROOT / "codex-agent-runtime-desktop/native/c-api/include/codex_agent.h"
+)
+C_ABI_REVIEWED_EXPORT_PATHS = MappingProxyType({
+    "elf": C_ABI_REPOSITORY_ROOT / "codex-agent-runtime-desktop/native/c-api/exports/linux.map",
+    "mach-o": C_ABI_REPOSITORY_ROOT / "codex-agent-runtime-desktop/native/c-api/exports/macos.exports",
+    "pe": C_ABI_REPOSITORY_ROOT / "codex-agent-runtime-desktop/native/c-api/exports/windows.def",
+})
 C_ABI_PACKAGE_MANIFEST = "codex-agent-c-abi-manifest.json"
 C_ABI_HEADER_PATH = "include/codex_agent.h"
 C_ABI_STAGED_EVIDENCE_PATH = "codex-agent-c-abi-evidence.json"
 C_ABI_FILE_MODE = stat.S_IFREG | 0o644
 C_ABI_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+_SYMBOL = re.compile(r"(?<![A-Za-z0-9_])(_?codex_agent_[A-Za-z0-9_]+)(?![A-Za-z0-9_])")
+_HEADER_SYMBOL = re.compile(r"\b(codex_agent_[A-Za-z0-9_]+)\s*\(")
+_HEADER_INTEGER_MACRO = re.compile(
+    r"^#define[ \t]+(?P<name>CODEX_AGENT_ABI_VERSION_(?:MAJOR|MINOR|PATCH))"
+    r"[ \t]+UINT32_C\((?P<value>[0-9]+)\)[ \t]*$",
+    re.MULTILINE,
+)
+_HEADER_CURRENT_MACRO = re.compile(
+    r"^#define[ \t]+CODEX_AGENT_ABI_VERSION_CURRENT[ \t]+"
+    r"CODEX_AGENT_ABI_VERSION_ENCODE\([ \t]*CODEX_AGENT_ABI_VERSION_MAJOR[ \t]*,[ \t]*"
+    r"CODEX_AGENT_ABI_VERSION_MINOR[ \t]*,[ \t]*CODEX_AGENT_ABI_VERSION_PATCH[ \t]*\)[ \t]*$",
+    re.MULTILINE,
+)
+_HEADER_MINIMUM_MACRO = re.compile(
+    r"^#define[ \t]+CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE[ \t]+"
+    r"CODEX_AGENT_ABI_VERSION_ENCODE\([ \t]*(?P<major>[0-9]+)[ \t]*,[ \t]*"
+    r"(?P<minor>[0-9]+)[ \t]*,[ \t]*(?P<patch>[0-9]+)[ \t]*\)[ \t]*$",
+    re.MULTILINE,
+)
+_HEADER_AUTHORITY_DEFINE = re.compile(
+    r"^#define[ \t]+(?P<name>CODEX_AGENT_ABI_VERSION_"
+    r"(?:MAJOR|MINOR|PATCH|CURRENT|MINIMUM_COMPATIBLE))\b.*$",
+    re.MULTILINE,
+)
+
+
+@dataclass(frozen=True)
+class CAbiVersion:
+    major: int
+    minor: int
+    patch: int
+
+    @property
+    def semver(self) -> str:
+        return f"{self.major}.{self.minor}.{self.patch}"
+
+    @property
+    def line(self) -> str:
+        return f"{self.major}.{self.minor}"
+
+    @property
+    def encoded(self) -> int:
+        return (self.major << 24) | (self.minor << 16) | self.patch
+
+    @property
+    def encoded_hex(self) -> str:
+        return f"0x{self.encoded:08x}"
+
+
+@dataclass(frozen=True)
+class CAbiContract:
+    current: CAbiVersion
+    minimum_compatible: CAbiVersion
+    runtime_identity_schema_version: int
+
+
+def _abi_version(value: Any, label: str) -> CAbiVersion:
+    record = require_exact_keys(value, {"major", "minor", "patch"}, label)
+    major = require_integer(record["major"], f"{label}.major", 1)
+    minor = require_integer(record["minor"], f"{label}.minor")
+    patch = require_integer(record["patch"], f"{label}.patch")
+    if major > 0xFF or minor > 0xFF or patch > 0xFFFF:
+        raise ValueError(f"{label} cannot be represented by CODEX_AGENT_ABI_VERSION_ENCODE")
+    return CAbiVersion(major, minor, patch)
+
+
+def load_c_abi_contract(path: Path) -> CAbiContract:
+    contents = read_regular_file_bytes(
+        Path(path),
+        max_bytes=4096,
+    )
+    value = require_exact_keys(
+        load_canonical_json_bytes(contents),
+        {"schemaVersion", "current", "minimumCompatible", "runtimeIdentitySchemaVersion"},
+        "C ABI contract",
+    )
+    if require_integer(value["schemaVersion"], "C ABI contract.schemaVersion", 1) != 1:
+        raise ValueError("Unsupported C ABI contract schemaVersion")
+    current = _abi_version(value["current"], "C ABI contract.current")
+    minimum = _abi_version(value["minimumCompatible"], "C ABI contract.minimumCompatible")
+    if minimum.major != current.major or (
+        minimum.major, minimum.minor, minimum.patch
+    ) > (current.major, current.minor, current.patch):
+        raise ValueError("C ABI contract minimumCompatible is not on or below the current ABI line")
+    identity_schema = require_integer(
+        value["runtimeIdentitySchemaVersion"],
+        "C ABI contract.runtimeIdentitySchemaVersion",
+        1,
+    )
+    if identity_schema > 0xFFFFFFFF:
+        raise ValueError("C ABI contract runtimeIdentitySchemaVersion is out of range")
+    return CAbiContract(current, minimum, identity_schema)
+
+
+def _version_document(version: CAbiVersion) -> dict[str, Any]:
+    return {
+        "major": version.major,
+        "minor": version.minor,
+        "patch": version.patch,
+        "semver": version.semver,
+        "line": version.line,
+        "encoded": version.encoded_hex,
+    }
+
+
+def describe_c_abi_contract(path: Path) -> dict[str, Any]:
+    contract = load_c_abi_contract(path)
+    return {
+        "schemaVersion": 1,
+        "current": _version_document(contract.current),
+        "minimumCompatible": _version_document(contract.minimum_compatible),
+        "runtimeIdentitySchemaVersion": contract.runtime_identity_schema_version,
+    }
+
+
+def _policy_symbols(path: Path, label: str) -> frozenset[str]:
+    try:
+        text = read_regular_file_bytes(
+            Path(path),
+            max_bytes=4 * 1024 * 1024,
+        ).decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label} is not UTF-8") from error
+    occurrences = [match.group(1).removeprefix("_") for match in _SYMBOL.finditer(text)]
+    if not occurrences:
+        raise ValueError(f"{label} contains no public C ABI symbols")
+    if len(occurrences) != len(set(occurrences)):
+        raise ValueError(f"{label} contains duplicate public C ABI symbols")
+    return frozenset(occurrences)
+
+
+def _reviewed_symbol_set(paths: Mapping[str, Path]) -> frozenset[str]:
+    if type(paths) not in {dict, MappingProxyType} or set(paths) != {"mach-o", "elf", "pe"}:
+        raise ValueError("Reviewed C ABI export policies must contain exactly mach-o, elf, and pe")
+    by_format = {
+        format: _policy_symbols(path, f"C ABI {format} export policy")
+        for format, path in paths.items()
+    }
+    first = by_format["mach-o"]
+    if any(symbols != first for symbols in by_format.values()):
+        raise ValueError("Reviewed C ABI export policy symbol sets differ")
+    return first
+
+
+@lru_cache(maxsize=1)
+def _repository_contract() -> CAbiContract:
+    return load_c_abi_contract(C_ABI_CONTRACT_PATH)
+
+
+@lru_cache(maxsize=1)
+def _repository_symbol_set() -> frozenset[str]:
+    return _reviewed_symbol_set(C_ABI_REVIEWED_EXPORT_PATHS)
+
+
+def __getattr__(name: str) -> Any:
+    """Retain legacy imports without reading repository authorities at module import."""
+    contract = None
+    if name in {
+        "C_ABI_CONTRACT",
+        "C_ABI_CURRENT",
+        "C_ABI_CURRENT_SEMVER",
+        "C_ABI_MINIMUM",
+        "C_ABI_MINIMUM_SEMVER",
+        "C_ABI_ENCODED",
+        "C_ABI_MINIMUM_ENCODED",
+        "C_ABI_IDENTITY_SCHEMA_VERSION",
+    }:
+        contract = _repository_contract()
+    values = {
+        "C_ABI_CONTRACT": contract,
+        "C_ABI_CURRENT": contract.current.line if contract else None,
+        "C_ABI_CURRENT_SEMVER": contract.current.semver if contract else None,
+        "C_ABI_MINIMUM": contract.minimum_compatible.line if contract else None,
+        "C_ABI_MINIMUM_SEMVER": contract.minimum_compatible.semver if contract else None,
+        "C_ABI_ENCODED": contract.current.encoded_hex if contract else None,
+        "C_ABI_MINIMUM_ENCODED": contract.minimum_compatible.encoded_hex if contract else None,
+        "C_ABI_IDENTITY_SCHEMA_VERSION": (
+            contract.runtime_identity_schema_version if contract else None
+        ),
+        "C_ABI_SYMBOL_COUNT": len(_repository_symbol_set()) if name == "C_ABI_SYMBOL_COUNT" else None,
+    }
+    if name not in values:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return values[name]
 
 
 @dataclass(frozen=True)
@@ -54,11 +250,15 @@ class CAbiTargetSpec:
 
     @property
     def version_identity(self) -> str:
+        contract = _repository_contract()
         if self.format == "mach-o":
-            return "compatibility=1.0.0,current=1.12.0"
+            return (
+                f"compatibility={contract.minimum_compatible.semver},"
+                f"current={contract.current.semver}"
+            )
         if self.format == "elf":
-            return ",".join(f"CODEX_AGENT_1.{minor}" for minor in range(13))
-        return "abi=1.12"
+            return ",".join(_expected_linux_version_nodes(contract))
+        return f"abi={contract.current.line}"
 
     @property
     def required_tool_ids(self) -> frozenset[str]:
@@ -212,9 +412,7 @@ class _PackageMember:
         return _sha256(self.contents)
 
 
-_SYMBOL = re.compile(r"(?<![A-Za-z0-9_])(_?codex_agent_[A-Za-z0-9_]+)(?![A-Za-z0-9_])")
-_HEADER_SYMBOL = re.compile(r"\b(codex_agent_[A-Za-z0-9_]+)\s*\(")
-_LINUX_VERSION_NODE = re.compile(r"^(CODEX_AGENT_1\.\d+) \{$")
+_LINUX_VERSION_NODE = re.compile(r"^(CODEX_AGENT_[0-9]+\.[0-9]+) \{$")
 _LINUX_VERSION_SYMBOL = re.compile(r"^(codex_agent_[A-Za-z0-9_]+);$")
 _VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?")
 _GIT_ID = re.compile(r"[0-9a-f]{40}")
@@ -232,13 +430,15 @@ def c_abi_host_target(os_name: str, os_arch: str) -> str | None:
 
 def describe_c_abi() -> dict[str, Any]:
     """Return the complete canonical catalog consumed by non-Python build clients."""
+    contract = _repository_contract()
     return {
         "schemaVersion": 1,
         "abi": {
-            "current": C_ABI_CURRENT,
-            "minimum": C_ABI_MINIMUM,
-            "encoded": C_ABI_ENCODED,
-            "publicSymbolCount": C_ABI_SYMBOL_COUNT,
+            "current": contract.current.line,
+            "minimum": contract.minimum_compatible.line,
+            "encoded": contract.current.encoded_hex,
+            "identitySchemaVersion": contract.runtime_identity_schema_version,
+            "publicSymbolCount": len(_repository_symbol_set()),
         },
         "paths": {
             "header": C_ABI_HEADER_PATH,
@@ -293,16 +493,118 @@ def c_abi_evidence_file_name(target: str) -> str:
 
 
 def c_abi_expected_symbols(export_policy: Path) -> frozenset[str]:
-    contents = _regular_bytes(export_policy, "C ABI export policy").decode("utf-8", errors="strict")
-    symbols = frozenset(match.group(1).removeprefix("_") for match in _SYMBOL.finditer(contents))
-    if len(symbols) != C_ABI_SYMBOL_COUNT:
+    symbols = _policy_symbols(Path(export_policy), "C ABI export policy")
+    expected_count = len(_repository_symbol_set())
+    if len(symbols) != expected_count:
         raise ValueError(
-            f"C ABI export policy must contain exactly {C_ABI_SYMBOL_COUNT} symbols, found {len(symbols)}",
+            "C ABI export policy does not contain the exact canonical symbol count: "
+            f"expected {expected_count}, found {len(symbols)}",
         )
     return symbols
 
 
-def c_abi_linux_symbol_versions(export_policy: Path) -> dict[str, str]:
+def _expected_linux_version_nodes(contract: CAbiContract | None = None) -> tuple[str, ...]:
+    if contract is None:
+        contract = _repository_contract()
+    current = contract.current
+    minimum = contract.minimum_compatible
+    if current.major != minimum.major:
+        raise ValueError("C ABI Linux version lineage cannot cross ABI majors")
+    return tuple(
+        f"CODEX_AGENT_{current.major}.{minor}"
+        for minor in range(minimum.minor, current.minor + 1)
+    )
+
+
+def _header_macro_values(path: Path) -> tuple[CAbiVersion, CAbiVersion, frozenset[str]]:
+    try:
+        text = read_regular_file_bytes(
+            Path(path),
+            max_bytes=8 * 1024 * 1024,
+        ).decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValueError("Reviewed C ABI header is not UTF-8") from error
+    logical = text.replace("\\\r\n", " ").replace("\\\n", " ")
+    authority_defines = [match.group("name") for match in _HEADER_AUTHORITY_DEFINE.finditer(logical)]
+    expected_names = {
+        "CODEX_AGENT_ABI_VERSION_MAJOR",
+        "CODEX_AGENT_ABI_VERSION_MINOR",
+        "CODEX_AGENT_ABI_VERSION_PATCH",
+        "CODEX_AGENT_ABI_VERSION_CURRENT",
+        "CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE",
+    }
+    if set(authority_defines) != expected_names or len(authority_defines) != len(expected_names):
+        raise ValueError("Reviewed C ABI header authority macros are missing or duplicated")
+    macros: dict[str, int] = {}
+    for match in _HEADER_INTEGER_MACRO.finditer(logical):
+        name = match.group("name")
+        if name in macros:
+            raise ValueError(f"Reviewed C ABI header contains duplicate macro: {name}")
+        macros[name] = int(match.group("value"))
+    component_names = {
+        "CODEX_AGENT_ABI_VERSION_MAJOR",
+        "CODEX_AGENT_ABI_VERSION_MINOR",
+        "CODEX_AGENT_ABI_VERSION_PATCH",
+    }
+    if set(macros) != component_names:
+        raise ValueError("Reviewed C ABI header version component macros are missing or malformed")
+    current = CAbiVersion(
+        macros["CODEX_AGENT_ABI_VERSION_MAJOR"],
+        macros["CODEX_AGENT_ABI_VERSION_MINOR"],
+        macros["CODEX_AGENT_ABI_VERSION_PATCH"],
+    )
+    if len(list(_HEADER_CURRENT_MACRO.finditer(logical))) != 1:
+        raise ValueError("Reviewed C ABI header current-version macro is missing or malformed")
+    minimum_matches = list(_HEADER_MINIMUM_MACRO.finditer(logical))
+    if len(minimum_matches) != 1:
+        raise ValueError("Reviewed C ABI header minimum-compatible macro is missing or duplicated")
+    minimum_match = minimum_matches[0]
+    minimum = CAbiVersion(*(
+        int(minimum_match.group(name)) for name in ("major", "minor", "patch")
+    ))
+    symbols = frozenset(match.group(1) for match in _HEADER_SYMBOL.finditer(text))
+    if not symbols:
+        raise ValueError("Reviewed C ABI header contains no public function declarations")
+    return current, minimum, symbols
+
+
+def verify_c_abi_contract(
+    abi_contract: Path,
+    header: Path,
+    macos_exports: Path,
+    linux_map: Path,
+    windows_def: Path,
+) -> dict[str, Any]:
+    contract = load_c_abi_contract(abi_contract)
+    current, minimum, header_symbols = _header_macro_values(header)
+    if current != contract.current or minimum != contract.minimum_compatible:
+        raise ValueError("Reviewed C ABI header macros do not match the canonical ABI contract")
+    paths = {
+        "mach-o": Path(macos_exports),
+        "elf": Path(linux_map),
+        "pe": Path(windows_def),
+    }
+    symbols = _reviewed_symbol_set(paths)
+    if header_symbols != symbols:
+        raise ValueError("Reviewed C ABI header/export policy symbol sets differ")
+    versions = c_abi_linux_symbol_versions(Path(linux_map), contract=contract, expected_symbols=symbols)
+    if set(versions) != set(symbols):
+        raise ValueError("Reviewed C ABI Linux policy does not version the exact public symbol set")
+    return {
+        **describe_c_abi_contract(abi_contract),
+        "publicSymbolCount": len(symbols),
+        "publicSymbolsSha256": _sorted_newline_sha256(symbols),
+    }
+
+
+def c_abi_linux_symbol_versions(
+    export_policy: Path,
+    *,
+    contract: CAbiContract | None = None,
+    expected_symbols: frozenset[str] | None = None,
+) -> dict[str, str]:
+    if contract is None:
+        contract = _repository_contract()
     text = _regular_bytes(export_policy, "C ABI Linux export policy").decode("utf-8", errors="strict")
     node: str | None = None
     assignments: dict[str, str] = {}
@@ -324,13 +626,16 @@ def c_abi_linux_symbol_versions(export_policy: Path) -> dict[str, str]:
             if symbol in assignments:
                 raise ValueError(f"Duplicate C ABI Linux symbol assignment: {symbol}")
             assignments[symbol] = node
-    symbols = c_abi_expected_symbols(export_policy)
+    symbols = c_abi_expected_symbols(export_policy) if expected_symbols is None else expected_symbols
+    expected_nodes = set(_expected_linux_version_nodes(contract))
     if (
-        len(assignments) != C_ABI_SYMBOL_COUNT
+        len(assignments) != len(symbols)
         or set(assignments) != set(symbols)
-        or set(assignments.values()) != {f"CODEX_AGENT_1.{minor}" for minor in range(13)}
+        or set(assignments.values()) != expected_nodes
     ):
-        raise ValueError("C ABI Linux export policy must assign every exact symbol to the 1.0-1.12 lineage")
+        raise ValueError(
+            "C ABI Linux export policy must assign every exact symbol to the canonical ABI lineage"
+        )
     return dict(sorted(assignments.items()))
 
 
@@ -459,6 +764,7 @@ def inspect_c_abi_package(
 
 def build_c_abi_package_evidence(values: CAbiEvidenceValues) -> dict[str, Any]:
     spec = _checked_target(values.target, values.classifier)
+    contract = _repository_contract()
     return {
         "schemaVersion": 1,
         "artifactId": spec.proof_id,
@@ -469,9 +775,9 @@ def build_c_abi_package_evidence(values: CAbiEvidenceValues) -> dict[str, Any]:
         "producerTree": values.producer_tree,
         "runnerOs": values.runner_os,
         "runnerArch": values.runner_arch,
-        "abiCurrent": C_ABI_CURRENT,
-        "abiMinimum": C_ABI_MINIMUM,
-        "abiEncoded": C_ABI_ENCODED,
+        "abiCurrent": contract.current.line,
+        "abiMinimum": contract.minimum_compatible.line,
+        "abiEncoded": contract.current.encoded_hex,
         "archiveSha256": values.archive_sha256,
         "headerSha256": values.header_sha256,
         "libraryPath": spec.library_path,
@@ -518,6 +824,7 @@ def verify_c_abi_package_evidence(
     expected_consumers: Mapping[str, str],
 ) -> None:
     spec = _checked_target(expected.target, expected.classifier)
+    contract = _repository_contract()
     if set(expected_consumers) != set(STRICT_CONSUMERS):
         raise ValueError("C ABI strict consumer source inventory is incomplete or unexpected")
     package = inspect_c_abi_package(Path(archive), expected)
@@ -549,9 +856,9 @@ def verify_c_abi_package_evidence(
     ):
         raise ValueError("C ABI evidence runner identity mismatch")
     if (
-        _strict_string(report, "abiCurrent") != C_ABI_CURRENT
-        or _strict_string(report, "abiMinimum") != C_ABI_MINIMUM
-        or _strict_string(report, "abiEncoded") != C_ABI_ENCODED
+        _strict_string(report, "abiCurrent") != contract.current.line
+        or _strict_string(report, "abiMinimum") != contract.minimum_compatible.line
+        or _strict_string(report, "abiEncoded") != contract.current.encoded_hex
     ):
         raise ValueError("C ABI evidence ABI version mismatch")
     if (
@@ -567,7 +874,7 @@ def verify_c_abi_package_evidence(
         reported_symbols != sorted(reported_symbols)
         or len(reported_symbols) != len(set(reported_symbols))
         or set(reported_symbols) != set(symbols)
-        or _strict_int(report, "publicSymbolCount") != C_ABI_SYMBOL_COUNT
+        or _strict_int(report, "publicSymbolCount") != len(_repository_symbol_set())
         or _strict_string(report, "publicSymbolsSha256") != _sorted_newline_sha256(symbols)
     ):
         raise ValueError("C ABI evidence public symbol inventory mismatch")
@@ -768,6 +1075,16 @@ def main(argv: list[str] | None = None) -> int:
 
     commands.add_parser("describe", aliases=["specs"])
 
+    describe_contract = commands.add_parser("describe-abi-contract")
+    describe_contract.add_argument("--abi-contract", type=Path, required=True)
+
+    verify_contract = commands.add_parser("verify-abi-contract")
+    verify_contract.add_argument("--abi-contract", type=Path, required=True)
+    verify_contract.add_argument("--header", type=Path, required=True)
+    verify_contract.add_argument("--macos-exports", type=Path, required=True)
+    verify_contract.add_argument("--linux-map", type=Path, required=True)
+    verify_contract.add_argument("--windows-def", type=Path, required=True)
+
     export_policy = commands.add_parser("describe-export-policy")
     export_policy.add_argument("--export-policy", type=Path, required=True)
     export_policy.add_argument("--format", choices=("mach-o", "elf", "pe"), required=True)
@@ -810,6 +1127,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments.command in {"describe", "specs"}:
             _write_stdout(describe_c_abi())
+        elif arguments.command == "describe-abi-contract":
+            _write_stdout(describe_c_abi_contract(arguments.abi_contract))
+        elif arguments.command == "verify-abi-contract":
+            _write_stdout(verify_c_abi_contract(
+                arguments.abi_contract,
+                arguments.header,
+                arguments.macos_exports,
+                arguments.linux_map,
+                arguments.windows_def,
+            ))
         elif arguments.command == "describe-export-policy":
             _write_stdout(describe_c_abi_export_policy(arguments.export_policy, arguments.format))
         elif arguments.command == "package":
@@ -1057,6 +1384,7 @@ def _package_manifest(
     symbols: frozenset[str],
     payload: list[_PackageMember],
 ) -> dict[str, Any]:
+    contract = _repository_contract()
     return {
         "schemaVersion": 1,
         "libraryVersion": package_input.library_version,
@@ -1064,9 +1392,9 @@ def _package_manifest(
         "classifier": package_input.classifier,
         "producerCommit": package_input.producer_commit,
         "producerTree": package_input.producer_tree,
-        "abiCurrent": C_ABI_CURRENT,
-        "abiMinimum": C_ABI_MINIMUM,
-        "abiEncoded": C_ABI_ENCODED,
+        "abiCurrent": contract.current.line,
+        "abiMinimum": contract.minimum_compatible.line,
+        "abiEncoded": contract.current.encoded_hex,
         "publicSymbolCount": len(symbols),
         "publicSymbolsSha256": _sorted_newline_sha256(symbols),
         "exportPolicySha256": _sha256(_regular_bytes(package_input.export_policy, "C ABI export policy")),
@@ -1102,6 +1430,7 @@ def _verify_package_manifest(
     payload: list[_PackageMember],
     digests: Mapping[str, str],
 ) -> None:
+    contract = _repository_contract()
     keys = {
         "schemaVersion", "libraryVersion", "target", "classifier", "producerCommit", "producerTree",
         "abiCurrent", "abiMinimum", "abiEncoded", "publicSymbolCount", "publicSymbolsSha256",
@@ -1118,13 +1447,13 @@ def _verify_package_manifest(
     ):
         raise ValueError("C ABI package manifest producer identity mismatch")
     if (
-        _strict_string(manifest, "abiCurrent") != C_ABI_CURRENT
-        or _strict_string(manifest, "abiMinimum") != C_ABI_MINIMUM
-        or _strict_string(manifest, "abiEncoded") != C_ABI_ENCODED
+        _strict_string(manifest, "abiCurrent") != contract.current.line
+        or _strict_string(manifest, "abiMinimum") != contract.minimum_compatible.line
+        or _strict_string(manifest, "abiEncoded") != contract.current.encoded_hex
     ):
         raise ValueError("C ABI package manifest ABI version mismatch")
     if (
-        _strict_int(manifest, "publicSymbolCount") != C_ABI_SYMBOL_COUNT
+        _strict_int(manifest, "publicSymbolCount") != len(_repository_symbol_set())
         or _strict_string(manifest, "publicSymbolsSha256") != _sorted_newline_sha256(symbols)
         or _strict_string(manifest, "exportPolicySha256")
         != _sha256(_regular_bytes(expected.export_policy, "C ABI export policy"))

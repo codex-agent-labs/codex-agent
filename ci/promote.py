@@ -19,6 +19,7 @@ from impact import (
     LANES,
     M8_OWNER_LANES,
     NATIVE_WRAPPER_LANES,
+    validate_legacy_lane_projection,
     validate_remote_build_authorization,
 )
 from receipt import (
@@ -41,7 +42,7 @@ OID = re.compile(r"[0-9a-f]{40}")
 PLAN_KEYS = {
     "schemaVersion", "event", "repository", "pullRequest", "baseCommit", "headCommit",
     "validationCommit", "validationTree", "mergeReady", "remoteBuildAuthorized",
-    "remoteBuildAuthorizationReason", "androidEvidenceRequired", "full",
+    "remoteBuildAuthorizationReason", "androidEvidenceRequired", "fullRequested", "full",
     "unknownPaths", "changedPaths", "lanes",
 }
 LANE_PLAN_KEYS = {"build", "test", "metadata", "reuseAllowed", "reasons"}
@@ -234,6 +235,7 @@ def validate_plan(
     if set(plan) != PLAN_KEYS or plan.get("schemaVersion") != SCHEMA_VERSION:
         raise ValueError("Unsupported or non-exact impact plan schema")
     remote_authorized, remote_reason = validate_remote_build_authorization(plan)
+    validate_legacy_lane_projection(plan, plan_path=plan_path)
     if (
         plan.get("repository") != repository
         or plan.get("event") != "merge_group"
@@ -250,6 +252,7 @@ def validate_plan(
         require_oid(plan[field], f"impact plan {field}")
     if (
         not isinstance(plan.get("androidEvidenceRequired"), bool)
+        or not isinstance(plan.get("fullRequested"), bool)
         or not isinstance(plan.get("full"), bool)
         or not isinstance(plan.get("unknownPaths"), list)
         or not isinstance(plan.get("changedPaths"), list)

@@ -12,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
+import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ValueSource
 import org.gradle.api.provider.ValueSourceParameters
 
@@ -107,6 +108,7 @@ data class RuntimeCAbiCatalog(
     val current: String,
     val minimum: String,
     val encoded: String,
+    val identitySchemaVersion: Int,
     val symbolCount: Int,
     val strictConsumers: Set<String>,
     val compileOnlyConsumers: Set<String>,
@@ -121,11 +123,52 @@ data class RuntimeCAbiCatalog(
     }
 }
 
+data class RuntimeAbiContract(
+    val currentSemver: String,
+    val currentEncoded: String,
+    val minimumCompatibleSemver: String,
+    val minimumCompatibleEncoded: String,
+    val runtimeIdentitySchemaVersion: Int,
+)
+
+internal fun CrossLanguageCAbiTargetSpec.expectedMachOLoaderVersion(): String {
+    check(format == "mach-o") { "C ABI target is not Mach-O: $target" }
+    val fields = versionIdentity.split(',').associate { field ->
+        val parts = field.split('=', limit = 2)
+        check(parts.size == 2 && parts.all(String::isNotBlank)) {
+            "Invalid C ABI Mach-O version identity: $versionIdentity"
+        }
+        parts[0] to parts[1]
+    }
+    check(fields.keys == setOf("compatibility", "current")) {
+        "Invalid C ABI Mach-O version identity: $versionIdentity"
+    }
+    return "compatibility version ${fields.getValue("compatibility")}, " +
+        "current version ${fields.getValue("current")}"
+}
+
+interface RuntimeAbiContractValueSourceParameters : ValueSourceParameters {
+    val abiContractFile: RegularFileProperty
+}
+
+abstract class RuntimeAbiContractValueSource : ValueSource<String, RuntimeAbiContractValueSourceParameters> {
+    override fun obtain(): String = runRuntimeProductPythonModule(
+        "c_abi",
+        listOf(
+            "describe-abi-contract",
+            "--abi-contract",
+            parameters.abiContractFile.get().asFile.absolutePath,
+        ),
+    )
+}
+
 abstract class RuntimeCAbiCatalogValueSource : ValueSource<String, ValueSourceParameters.None> {
     override fun obtain(): String = runRuntimeProductPythonModule("c_abi", listOf("describe"))
 }
 
 fun readRuntimeCAbiCatalog(output: String): RuntimeCAbiCatalog = parseRuntimeCAbiCatalog(output)
+
+fun readRuntimeAbiContract(output: String): RuntimeAbiContract = parseRuntimeAbiContract(output)
 
 private val runtimeCAbiCatalog: RuntimeCAbiCatalog by lazy {
     parseRuntimeCAbiCatalog(runRuntimeProductPythonModule("c_abi", listOf("describe")))
@@ -433,7 +476,7 @@ private fun parseRuntimeCAbiCatalog(output: String): RuntimeCAbiCatalog {
     root.requireKeys("schemaVersion", "abi", "paths", "consumers", "hostMappings", "targets")
     check(root.strictInt("schemaVersion") == 1) { "C ABI catalog schemaVersion must be 1" }
     val abi = root.strictObject("abi").also {
-        it.requireKeys("current", "minimum", "encoded", "publicSymbolCount")
+        it.requireKeys("current", "minimum", "encoded", "identitySchemaVersion", "publicSymbolCount")
     }
     root.strictObject("paths").requireKeys("header", "packageManifest", "stagedEvidence")
     val consumers = root.strictObject("consumers").also {
@@ -479,12 +522,51 @@ private fun parseRuntimeCAbiCatalog(output: String): RuntimeCAbiCatalog {
         abi.strictString("current"),
         abi.strictString("minimum"),
         abi.strictString("encoded"),
+        abi.strictInt("identitySchemaVersion"),
         abi.strictInt("publicSymbolCount"),
         consumers.strictStringSet("strict"),
         consumers.strictStringSet("compileOnly"),
         consumers.strictStringSet("gnu"),
         mappings,
         targetList.associateBy(CrossLanguageCAbiTargetSpec::target),
+    )
+}
+
+private fun parseRuntimeAbiContract(output: String): RuntimeAbiContract {
+    val root = parseRuntimeCAbiCanonicalObject(output, "C ABI contract")
+    root.requireKeys("schemaVersion", "current", "minimumCompatible", "runtimeIdentitySchemaVersion")
+    check(root.strictInt("schemaVersion") == 1) { "C ABI contract schemaVersion must be 1" }
+
+    fun version(name: String): Pair<String, String> {
+        val value = root.strictObject(name)
+        value.requireKeys("major", "minor", "patch", "semver", "line", "encoded")
+        val major = value.strictInt("major")
+        val minor = value.strictInt("minor")
+        val patch = value.strictInt("patch")
+        check(major in 0..0xff && minor in 0..0xff && patch in 0..0xffff) {
+            "C ABI contract $name version is outside the encoded range"
+        }
+        val semver = value.strictString("semver")
+        check(semver == "$major.$minor.$patch" && value.strictString("line") == "$major.$minor") {
+            "C ABI contract $name version projection is inconsistent"
+        }
+        val encoded = value.strictString("encoded")
+        val expected = "0x" + major.toString(16).padStart(2, '0') +
+            minor.toString(16).padStart(2, '0') + patch.toString(16).padStart(4, '0')
+        check(encoded == expected) { "C ABI contract $name encoded version is inconsistent" }
+        return semver to encoded
+    }
+
+    val current = version("current")
+    val minimum = version("minimumCompatible")
+    val identitySchema = root.strictInt("runtimeIdentitySchemaVersion")
+    check(identitySchema > 0) { "C ABI Runtime identity schema version must be positive" }
+    return RuntimeAbiContract(
+        current.first,
+        current.second,
+        minimum.first,
+        minimum.second,
+        identitySchema,
     )
 }
 
@@ -514,7 +596,7 @@ private fun parseRuntimeCAbiPackageSnapshot(output: String): CrossLanguageCAbiPa
     )
 }
 
-private fun parseRuntimeCAbiCanonicalObject(output: String, label: String): JsonObject {
+internal fun parseRuntimeCAbiCanonicalObject(output: String, label: String): JsonObject {
     check(output.endsWith('\n') && output.count { it == '\n' } == 1 && '\r' !in output) {
         "$label must be one LF-terminated canonical JSON line"
     }
@@ -523,35 +605,35 @@ private fun parseRuntimeCAbiCanonicalObject(output: String, label: String): Json
     return root
 }
 
-private fun JsonObject.requireKeys(vararg expected: String) {
+internal fun JsonObject.requireKeys(vararg expected: String) {
     check(keys == expected.toSet()) { "C ABI projection schema fields mismatch" }
 }
 
-private fun JsonObject.strictObject(name: String): JsonObject =
+internal fun JsonObject.strictObject(name: String): JsonObject =
     getValue(name) as? JsonObject ?: error("C ABI projection $name must be an object")
 
-private fun JsonObject.strictArray(name: String): JsonArray =
+internal fun JsonObject.strictArray(name: String): JsonArray =
     getValue(name) as? JsonArray ?: error("C ABI projection $name must be an array")
 
-private fun JsonObject.strictString(name: String): String {
+internal fun JsonObject.strictString(name: String): String {
     val value = getValue(name) as? JsonPrimitive ?: error("C ABI projection $name must be a string")
     check(value.isString) { "C ABI projection $name must be a string" }
     return value.contentOrNull ?: error("C ABI projection $name is missing")
 }
 
-private fun JsonObject.strictInt(name: String): Int {
+internal fun JsonObject.strictInt(name: String): Int {
     val value = getValue(name) as? JsonPrimitive ?: error("C ABI projection $name must be an integer")
     check(!value.isString) { "C ABI projection $name must be an integer" }
     return value.intOrNull ?: error("C ABI projection $name must be an integer")
 }
 
-private fun JsonObject.strictStringList(name: String): List<String> = strictArray(name).mapIndexed { index, element ->
+internal fun JsonObject.strictStringList(name: String): List<String> = strictArray(name).mapIndexed { index, element ->
     val primitive = element as? JsonPrimitive ?: error("C ABI projection $name[$index] must be a string")
     check(primitive.isString) { "C ABI projection $name[$index] must be a string" }
     primitive.contentOrNull ?: error("C ABI projection $name[$index] is missing")
 }
 
-private fun JsonObject.strictStringSet(name: String): Set<String> {
+internal fun JsonObject.strictStringSet(name: String): Set<String> {
     val values = strictStringList(name)
     check(values == values.sorted() && values.distinct().size == values.size) {
         "C ABI projection $name must be sorted and unique"

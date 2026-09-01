@@ -1,12 +1,13 @@
 #include "codex_agent.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 _Static_assert(CODEX_AGENT_ABI_VERSION_MAJOR == UINT32_C(1), "ABI major changed");
-_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(12), "ABI minor changed");
+_Static_assert(CODEX_AGENT_ABI_VERSION_MINOR == UINT32_C(13), "ABI minor changed");
 _Static_assert(CODEX_AGENT_ABI_VERSION_PATCH == UINT32_C(0), "ABI patch changed");
 _Static_assert(
-    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x010C0000),
+    CODEX_AGENT_ABI_VERSION_CURRENT == UINT32_C(0x010D0000),
     "current ABI encoding changed");
 _Static_assert(
     CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE == UINT32_C(0x01000000),
@@ -33,6 +34,10 @@ _Static_assert(CODEX_AGENT_STATUS_OPERATION_FAILED == INT32_C(14), "operation-fa
 
 int main(void) {
     codex_agent_context_t *context = NULL;
+    size_t identity_size = 0;
+    char *identity = NULL;
+    const char *identity_cursor = NULL;
+    char identity_sentinel = 'Z';
     CHECK(codex_agent_abi_version() == CODEX_AGENT_ABI_VERSION_CURRENT);
     CHECK(codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE) != 0);
     CHECK(codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_CURRENT) != 0);
@@ -40,6 +45,41 @@ int main(void) {
         CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE - UINT32_C(1)) == 0);
     CHECK(codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_CURRENT + UINT32_C(1)) == 0);
     CHECK(codex_agent_abi_is_compatible(CODEX_AGENT_ABI_VERSION_ENCODE(2, 0, 0)) == 0);
+
+    CHECK(codex_agent_runtime_identity(&identity_sentinel, NULL) == CODEX_AGENT_STATUS_INVALID_ARGUMENT);
+    CHECK(identity_sentinel == 'Z');
+    CHECK(codex_agent_runtime_identity(NULL, &identity_size) == CODEX_AGENT_STATUS_BUFFER_TOO_SMALL);
+    CHECK(identity_size > 1);
+    identity = (char *)malloc(identity_size);
+    CHECK(identity != NULL);
+    memset(identity, 'Z', identity_size);
+    {
+        size_t undersized = identity_size - 1;
+        CHECK(codex_agent_runtime_identity(identity, &undersized) == CODEX_AGENT_STATUS_BUFFER_TOO_SMALL);
+        CHECK(undersized == identity_size);
+        CHECK(identity[0] == 'Z');
+    }
+    CHECK(codex_agent_runtime_identity(identity, &identity_size) == CODEX_AGENT_STATUS_OK);
+    CHECK(strlen(identity) + 1 == identity_size);
+    CHECK(identity[identity_size - 1] == '\0');
+    CHECK(strpbrk(identity, " \t\r\n") == NULL);
+    identity_cursor = identity;
+#define CHECK_IDENTITY_FIELD(name) do { \
+        identity_cursor = strstr(identity_cursor, "\"" name "\":"); \
+        CHECK(identity_cursor != NULL); \
+        identity_cursor += sizeof(name) + 2; \
+    } while (0)
+    CHECK_IDENTITY_FIELD("appServerVersion");
+    CHECK_IDENTITY_FIELD("buildInputDigest");
+    CHECK_IDENTITY_FIELD("cAbiVersion");
+    CHECK_IDENTITY_FIELD("componentId");
+    CHECK_IDENTITY_FIELD("contractComponentDigest");
+    CHECK_IDENTITY_FIELD("contractDigest");
+    CHECK_IDENTITY_FIELD("runtimeCompatibilityVersion");
+    CHECK_IDENTITY_FIELD("schemaVersion");
+    CHECK_IDENTITY_FIELD("target");
+#undef CHECK_IDENTITY_FIELD
+    free(identity);
 
     CHECK(codex_agent_context_create(NULL) == CODEX_AGENT_STATUS_INVALID_ARGUMENT);
     CHECK(codex_agent_context_create(&context) == CODEX_AGENT_STATUS_OK);

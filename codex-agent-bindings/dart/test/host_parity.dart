@@ -8,6 +8,7 @@ import 'package:codex_agent/src/ffi.dart';
 import 'package:test/test.dart';
 
 import 'test_inputs.dart';
+import 'native_fixture.dart';
 
 final class DartHostClaim {
   const DartHostClaim({
@@ -263,7 +264,7 @@ Future<void> verifyRealHostBoundary(
   if (!Platform.isMacOS) return;
   final library = requiredRealLibrary();
   NativeApi.load(library.absolute.path);
-  final dylib = DynamicLibrary.open(library.absolute.path);
+  final dylib = authenticatedRuntimeLibraryForTesting(library.absolute.path);
   final api = NativeApi.load(library.absolute.path);
   final handle = newHandleSlot<Void>();
   final scalar = nativeMemory.allocate<Int32>(sizeOf<Int32>());
@@ -347,17 +348,26 @@ Future<void> verifyRealHostBoundary(
 
 Future<String> _buildFixture() async {
   final source = File('test/native/fake_codex_agent.c').absolute.path;
-  final output = '${Directory.systemTemp.path}/codex_agent_dart_host_$pid'
-      '${Platform.isMacOS ? '.dylib' : Platform.isWindows ? '.dll' : '.so'}';
+  final output = nativeFixturePath(
+    'codex_agent_dart_host_$pid'
+    '${Platform.isMacOS ? '.dylib' : Platform.isWindows ? '.dll' : '.so'}',
+  );
   final result = Platform.isWindows
-      ? await Process.run(
-          'cl', <String>['/nologo', '/LD', source, '/link', '/OUT:$output'])
+      ? await Process.run('cl', <String>[
+          '/nologo',
+          '/LD',
+          ...runtimeIdentityCompilerDefinitions(),
+          source,
+          '/link',
+          '/OUT:$output'
+        ])
       : await Process.run('cc', <String>[
           '-std=c11',
           '-Wall',
           '-Wextra',
           '-Werror',
           '-pedantic',
+          ...runtimeIdentityCompilerDefinitions(),
           ...(Platform.isMacOS
               ? const <String>['-dynamiclib']
               : const <String>['-shared', '-fPIC', '-pthread']),
@@ -654,7 +664,7 @@ void registerHostParity(
   for (final claim in sorted) {
     test(claim.executedTests.single, () async {
       final path = await fixture;
-      final library = DynamicLibrary.open(path);
+      final library = authenticatedRuntimeLibraryForTesting(path);
       final count = library.lookupFunction<_CallCountNative, _CallCountDart>(
           'codex_agent_dart_leaf_call_count');
       final functions = _headers(claim)

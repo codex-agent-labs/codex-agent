@@ -7,6 +7,10 @@ private val productPythonResources = listOf(
     "ci/products/test_results.py",
     "ci/products/runtime_evidence.py",
     "ci/products/c_abi.py",
+    "codex-agent-runtime-desktop/native/c-api/abi-contract.json",
+    "codex-agent-runtime-desktop/native/c-api/exports/linux.map",
+    "codex-agent-runtime-desktop/native/c-api/exports/macos.exports",
+    "codex-agent-runtime-desktop/native/c-api/exports/windows.def",
 )
 
 private val extractedProductPythonRoot: java.io.File by lazy {

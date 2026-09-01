@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import json
 import os
 import platform
+import stat
+import tempfile
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Callable
@@ -10,8 +14,22 @@ from typing import Any, Callable
 from ._errors import Status, UnsupportedAbiError, check
 
 
-ABI_VERSION = (1 << 24) | (12 << 16)
+ABI_VERSION = (1 << 24) | (13 << 16)
 MINIMUM_ABI_VERSION = 1 << 24
+
+_IDENTITY_KEYS = {
+    "appServerVersion",
+    "buildInputDigest",
+    "cAbiVersion",
+    "componentId",
+    "contractComponentDigest",
+    "contractDigest",
+    "runtimeCompatibilityVersion",
+    "schemaVersion",
+    "target",
+}
+_SHA256_PREFIX = "sha256:"
+_SNAPSHOT_DIRECTORIES: list[tempfile.TemporaryDirectory[str]] = []
 
 Handle = ctypes.c_void_p
 HandlePointer = ctypes.POINTER(Handle)
@@ -106,10 +124,264 @@ def _library_name(classifier: str) -> str:
     return "codex_agent.dll"
 
 
+def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+def _strict_json(data: bytes, description: str) -> dict[str, Any]:
+    try:
+        value = json.loads(data, object_pairs_hook=_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise OSError(f"invalid {description}: {error}") from error
+    if not isinstance(value, dict):
+        raise OSError(f"invalid {description}: expected an object")
+    return value
+
+
+def _canonical_json(value: dict[str, Any], final_lf: bool) -> bytes:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return encoded + (b"\n" if final_lf else b"")
+
+
+def _exact_keys(value: dict[str, Any], keys: set[str], description: str) -> None:
+    if set(value) != keys:
+        raise OSError(f"invalid {description}: unexpected fields")
+
+
+def _sha256(value: Any, description: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith(_SHA256_PREFIX)
+        or len(value) != 71
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise OSError(f"invalid {description}")
+    return value
+
+
+def _integer(value: Any, description: str, minimum: int = 0) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise OSError(f"invalid {description}")
+    return value
+
+
+def _semver(value: Any, description: str) -> tuple[int, int, int]:
+    if not isinstance(value, str):
+        raise OSError(f"invalid {description}")
+    parts = value.split(".")
+    if (
+        len(parts) != 3
+        or any(not part.isascii() or not part.isdigit() for part in parts)
+        or any(len(part) > 1 and part.startswith("0") for part in parts)
+    ):
+        raise OSError(f"invalid {description}")
+    return tuple(int(part) for part in parts)  # type: ignore[return-value]
+
+
+def _range(value: Any, description: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    if not isinstance(value, str) or len(parts := value.split(" ")) != 2:
+        raise OSError(f"invalid {description}")
+    if not parts[0].startswith(">=") or not parts[1].startswith("<"):
+        raise OSError(f"invalid {description}")
+    lower = _semver(parts[0][2:], description)
+    upper = _semver(parts[1][1:], description)
+    if lower >= upper:
+        raise OSError(f"invalid {description}")
+    return lower, upper
+
+
+def _in_range(version: Any, bounds: tuple[tuple[int, int, int], tuple[int, int, int]], description: str) -> bool:
+    parsed = _semver(version, description)
+    return bounds[0] <= parsed < bounds[1]
+
+
+def _validate_compatibility(data: bytes) -> dict[str, Any]:
+    root = _strict_json(data, "SDK compatibility declaration")
+    _exact_keys(root, {"schemaVersion", "sdkVersion", "contract", "runtime", "platformRuntime"}, "SDK compatibility declaration")
+    if _integer(root["schemaVersion"], "SDK compatibility schema") != 1:
+        raise OSError("unsupported SDK compatibility schema")
+    _semver(root["sdkVersion"], "SDK version")
+    contract = root["contract"]
+    runtime = root["runtime"]
+    platform_runtime = root["platformRuntime"]
+    if not isinstance(contract, dict) or not isinstance(runtime, dict) or not isinstance(platform_runtime, dict):
+        raise OSError("invalid SDK compatibility declaration")
+    _exact_keys(contract, {"version", "digest"}, "Contract compatibility")
+    _semver(contract["version"], "Contract version")
+    _sha256(contract["digest"], "Contract digest")
+    _exact_keys(
+        runtime,
+        {
+            "compatibleReleaseRange", "compatibleRuntimeCompatibilityRange",
+            "requiredIdentitySchema", "requiredContractDigest", "requiredAbiMajor",
+            "minimumAbiMinor", "defaultRuntimeVersion", "defaultManifestSha256",
+            "embeddedVariants",
+        },
+        "Runtime compatibility",
+    )
+    release_range = _range(runtime["compatibleReleaseRange"], "Runtime release range")
+    _range(runtime["compatibleRuntimeCompatibilityRange"], "Runtime compatibility range")
+    if _integer(runtime["requiredIdentitySchema"], "required identity schema") != 1 or _integer(runtime["requiredAbiMajor"], "required ABI major") != 1:
+        raise OSError("unsupported Runtime identity or ABI major")
+    _integer(runtime["minimumAbiMinor"], "minimum ABI minor")
+    if _sha256(runtime["requiredContractDigest"], "required Contract digest") != contract["digest"]:
+        raise OSError("SDK compatibility Contract digest mismatch")
+    _sha256(runtime["defaultManifestSha256"], "default Runtime manifest digest")
+    if not _in_range(runtime["defaultRuntimeVersion"], release_range, "default Runtime version"):
+        raise OSError("default Runtime version is outside its compatible range")
+    variants = runtime["embeddedVariants"]
+    if not isinstance(variants, list):
+        raise OSError("invalid embedded Runtime variants")
+    expected_targets = ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-x64"]
+    if [variant.get("target") if isinstance(variant, dict) else None for variant in variants] != expected_targets:
+        raise OSError("SDK compatibility must contain exactly five sorted Runtime targets")
+    for variant in variants:
+        _exact_keys(variant, {"target", "componentId", "bundleSha256", "manifestSha256", "runtimeLibrarySha256"}, "embedded Runtime variant")
+        for key in ("componentId", "bundleSha256", "manifestSha256", "runtimeLibrarySha256"):
+            _sha256(variant[key], f"embedded Runtime {key}")
+    if len({variant["componentId"] for variant in variants}) != len(variants):
+        raise OSError("embedded Runtime component IDs must be unique")
+    if len({variant["manifestSha256"] for variant in variants}) != len(variants):
+        raise OSError("embedded Runtime manifest digests must be unique")
+    _exact_keys(platform_runtime, {"android", "ios"}, "platform Runtime compatibility")
+    for name in ("android", "ios"):
+        value = platform_runtime[name]
+        if not isinstance(value, dict):
+            raise OSError(f"invalid {name} Runtime compatibility")
+        _exact_keys(value, {"owner", "desktopRuntimeApplicable"}, f"{name} Runtime compatibility")
+        if value["owner"] != "sdk" or value["desktopRuntimeApplicable"] is not False:
+            raise OSError(f"invalid {name} Runtime ownership")
+    if data != _canonical_json(root, True):
+        raise OSError("SDK compatibility declaration is not canonical JSON")
+    return root
+
+
+def _load_compatibility() -> dict[str, Any]:
+    resource = files("codex_agent").joinpath("native", "sdk-compatibility.json")
+    try:
+        return _validate_compatibility(resource.read_bytes())
+    except FileNotFoundError as error:
+        raise OSError("Codex Agent SDK compatibility declaration is missing") from error
+
+
+def _is_link_or_reparse(metadata: os.stat_result) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _validate_absolute_regular_path(path: Path, description: str) -> Path:
+    if not path.is_absolute():
+        raise ValueError(f"{description} must be an absolute path")
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError as error:
+            raise FileNotFoundError(f"{description} does not exist: {path}") from error
+        if _is_link_or_reparse(metadata):
+            raise OSError(f"{description} must not contain symlinks or reparse points: {path}")
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise FileNotFoundError(f"{description} is not a regular file: {path}")
+    return path
+
+
+def _snapshot_embedded_library(path: Path, expected_digest: str) -> Path:
+    _validate_absolute_regular_path(path, "embedded Codex Agent Runtime library")
+    directory = tempfile.TemporaryDirectory(prefix="codex-agent-runtime-")
+    _SNAPSHOT_DIRECTORIES.append(directory)
+    destination = Path(directory.name) / path.name
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    digest = hashlib.sha256()
+    try:
+        with os.fdopen(os.open(path, flags), "rb") as source, destination.open("xb") as output:
+            while block := source.read(1024 * 1024):
+                digest.update(block)
+                output.write(block)
+            output.flush()
+            os.fsync(output.fileno())
+        if _SHA256_PREFIX + digest.hexdigest() != expected_digest:
+            raise OSError("embedded Codex Agent Runtime library digest mismatch")
+        destination.chmod(stat.S_IRUSR)
+        return destination
+    except Exception:
+        _SNAPSHOT_DIRECTORIES.remove(directory)
+        directory.cleanup()
+        raise
+
+
+def _validate_runtime_identity(
+    identity: dict[str, Any], compatibility: dict[str, Any], classifier: str, embedded: bool
+) -> None:
+    _exact_keys(identity, _IDENTITY_KEYS, "Runtime identity")
+    runtime = compatibility["runtime"]
+    if _integer(identity["schemaVersion"], "Runtime identity schema") != runtime["requiredIdentitySchema"]:
+        raise OSError("Runtime identity schema mismatch")
+    for key in ("componentId", "contractDigest", "contractComponentDigest", "buildInputDigest"):
+        _sha256(identity[key], f"Runtime identity {key}")
+    if identity["target"] != classifier:
+        raise OSError("Runtime identity target mismatch")
+    if identity["contractDigest"] != runtime["requiredContractDigest"]:
+        raise OSError("Runtime identity Contract mismatch")
+    abi = _semver(identity["cAbiVersion"], "Runtime identity ABI")
+    if abi[0] != runtime["requiredAbiMajor"] or abi[1] < runtime["minimumAbiMinor"]:
+        raise OSError("Runtime identity ABI is incompatible")
+    if not _in_range(identity["runtimeCompatibilityVersion"], _range(runtime["compatibleRuntimeCompatibilityRange"], "Runtime compatibility range"), "Runtime compatibility version"):
+        raise OSError("Runtime compatibility version is unsupported")
+    _semver(identity["appServerVersion"], "Runtime app-server version")
+    if embedded:
+        variant = next(item for item in runtime["embeddedVariants"] if item["target"] == classifier)
+        if identity["componentId"] != variant["componentId"]:
+            raise OSError("embedded Runtime component mismatch")
+
+
+def _read_runtime_identity(library: Any) -> dict[str, Any]:
+    function = getattr(library, "codex_agent_runtime_identity")
+    function.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_size_t)]
+    function.restype = ctypes.c_int32
+    required = ctypes.c_size_t()
+    if int(function(None, ctypes.byref(required))) != Status.BUFFER_TOO_SMALL or required.value < 2:
+        raise OSError("Runtime identity size query failed")
+    buffer = (ctypes.c_char * required.value)()
+    capacity = ctypes.c_size_t(required.value)
+    if int(function(buffer, ctypes.byref(capacity))) != Status.OK or capacity.value != required.value:
+        raise OSError("Runtime identity read failed")
+    raw = bytes(buffer)
+    if raw[-1:] != b"\0" or b"\0" in raw[:-1]:
+        raise OSError("Runtime identity is not a canonical NUL-terminated string")
+    identity = _strict_json(raw[:-1], "Runtime identity")
+    if raw[:-1] != _canonical_json(identity, False):
+        raise OSError("Runtime identity is not canonical JSON")
+    return identity
+
+
 def resolve_library_path(explicit: str | os.PathLike[str] | None = None) -> Path:
-    configured = explicit or os.environ.get("CODEX_AGENT_LIBRARY")
-    if configured:
-        path = Path(configured).expanduser().resolve()
+    if explicit is not None:
+        raw = os.fspath(explicit)
+        if not raw.strip():
+            raise ValueError("Codex Agent native library path must not be blank")
+        configured: str | os.PathLike[str] | None = raw
+    elif "CODEX_AGENT_LIBRARY" in os.environ:
+        configured = os.environ["CODEX_AGENT_LIBRARY"]
+        if not configured.strip():
+            raise ValueError("CODEX_AGENT_LIBRARY must not be blank")
+    else:
+        configured = None
+    if configured is not None:
+        path = Path(configured)
     else:
         classifier = current_classifier()
         path = Path(
@@ -119,15 +391,11 @@ def resolve_library_path(explicit: str | os.PathLike[str] | None = None) -> Path
                 )
             )
         )
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"Codex Agent C SDK library not found at {path}; set CODEX_AGENT_LIBRARY or install the matching platform wheel"
-        )
-    return path
+    return _validate_absolute_regular_path(path, "Codex Agent C SDK library")
 
 
 class NativeLibrary:
-    """Strict ctypes declarations for the Python-owned portion of ABI 1.12."""
+    """Strict ctypes declarations for the Python-owned portion of ABI 1.13."""
 
     def __init__(self, library: Any) -> None:
         self.library = library
@@ -136,12 +404,29 @@ class NativeLibrary:
         compatible = int(self.library.codex_agent_abi_is_compatible(ABI_VERSION))
         if compatible != 1 or actual < MINIMUM_ABI_VERSION or actual >> 24 != 1:
             raise UnsupportedAbiError(
-                f"Codex Agent ABI 1.12 is required; loaded 0x{actual:08x}"
+                f"Codex Agent ABI 1.13 is required; loaded 0x{actual:08x}"
             )
 
     @classmethod
     def load(cls, path: str | os.PathLike[str] | None = None) -> NativeLibrary:
-        return cls(ctypes.CDLL(str(resolve_library_path(path))))
+        compatibility = _load_compatibility()
+        classifier = current_classifier()
+        library_path = resolve_library_path(path)
+        embedded = path is None and "CODEX_AGENT_LIBRARY" not in os.environ
+        if embedded:
+            variant = next(item for item in compatibility["runtime"]["embeddedVariants"] if item["target"] == classifier)
+            library_path = _snapshot_embedded_library(library_path, variant["runtimeLibrarySha256"])
+        library = ctypes.CDLL(str(library_path))
+        identity = _read_runtime_identity(library)
+        _validate_runtime_identity(identity, compatibility, classifier, embedded)
+        abi = _semver(identity["cAbiVersion"], "Runtime identity ABI")
+        encoded_abi = (abi[0] << 24) | (abi[1] << 16) | abi[2]
+        abi_version = getattr(library, "codex_agent_abi_version")
+        abi_version.argtypes = []
+        abi_version.restype = ctypes.c_uint32
+        if int(abi_version()) != encoded_abi:
+            raise OSError("Runtime identity ABI disagrees with the loaded library")
+        return cls(library)
 
     def function(self, name: str) -> Any:
         return getattr(self.library, name)
@@ -189,6 +474,10 @@ class NativeLibrary:
         self._declare("codex_agent_abi_version", [], ctypes.c_uint32)
         self._declare(
             "codex_agent_abi_is_compatible", [ctypes.c_uint32], ctypes.c_int32
+        )
+        self._declare(
+            "codex_agent_runtime_identity",
+            [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_size_t)],
         )
         self._declare("codex_agent_context_create", [hp])
         self._declare("codex_agent_context_destroy", [hp])

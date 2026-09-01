@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C(1)
-#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(12)
+#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C(13)
 #define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C(0)
 #define CODEX_AGENT_ABI_VERSION_ENCODE(major, minor, patch) \
     ((((uint32_t)(major) & UINT32_C(0xff)) << 24) | \
@@ -445,6 +445,14 @@ typedef void (CODEX_AGENT_CALL *codex_agent_state_callback_t)(
 CODEX_AGENT_API uint32_t CODEX_AGENT_CALL codex_agent_abi_version(void);
 CODEX_AGENT_API int32_t CODEX_AGENT_CALL codex_agent_abi_is_compatible(
     uint32_t requested_version);
+/*
+ * Writes the canonical NUL-terminated Runtime identity JSON. When buffer is
+ * NULL or too small, *inout_size receives the required NUL-inclusive size and
+ * CODEX_AGENT_STATUS_BUFFER_TOO_SMALL is returned. On input, *inout_size is
+ * the capacity of buffer. The caller owns buffer and no allocation is returned.
+ */
+CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL
+codex_agent_runtime_identity(char *buffer, size_t *inout_size);
 
 CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_approval_decision_validate(
     codex_agent_approval_decision_t value);

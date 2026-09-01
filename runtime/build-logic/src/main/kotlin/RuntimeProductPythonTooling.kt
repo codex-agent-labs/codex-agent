@@ -10,9 +10,14 @@ private val runtimeProductPythonResources = listOf(
     "ci/products/test_results.py",
     "ci/products/runtime_evidence.py",
     "ci/products/c_abi.py",
+    "ci/products/runtime_flags.py",
+    "codex-agent-runtime-desktop/native/c-api/abi-contract.json",
+    "codex-agent-runtime-desktop/native/c-api/exports/linux.map",
+    "codex-agent-runtime-desktop/native/c-api/exports/macos.exports",
+    "codex-agent-runtime-desktop/native/c-api/exports/windows.def",
 )
 
-private val runtimeProductPythonModules = setOf("runtime_evidence", "c_abi", "test_results")
+private val runtimeProductPythonModules = setOf("runtime_evidence", "c_abi", "runtime_flags", "test_results")
 
 private object RuntimeProductPythonToolingMarker
 
@@ -31,6 +36,9 @@ private val extractedRuntimeProductPythonRoot: java.io.File by lazy {
     runtimeProductPythonResources.forEach { relative ->
         val resource = "python/$relative"
         val output = root.resolve(relative)
+        check(output.parentFile.isDirectory || output.parentFile.mkdirs()) {
+            "Could not create packaged Runtime product resource directory: ${output.parentFile}"
+        }
         val input = RuntimeProductPythonToolingMarker::class.java.classLoader.getResourceAsStream(resource)
             ?: error("Packaged Runtime product Python resource is missing: $resource")
         input.use { source ->

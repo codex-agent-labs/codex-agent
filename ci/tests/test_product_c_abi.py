@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,11 +15,18 @@ import warnings
 import zipfile
 
 from ci.products.c_abi import (
+    C_ABI_CONTRACT,
+    C_ABI_CONTRACT_PATH,
     C_ABI_CURRENT,
+    C_ABI_CURRENT_SEMVER,
     C_ABI_ENCODED,
     C_ABI_FILE_MODE,
+    C_ABI_IDENTITY_SCHEMA_VERSION,
     C_ABI_MINIMUM,
+    C_ABI_MINIMUM_SEMVER,
     C_ABI_PACKAGE_MANIFEST,
+    C_ABI_REVIEWED_EXPORT_PATHS,
+    C_ABI_REVIEWED_HEADER_PATH,
     C_ABI_STAGED_EVIDENCE_PATH,
     C_ABI_SYMBOL_COUNT,
     C_ABI_ZIP_EPOCH,
@@ -37,11 +45,14 @@ from ci.products.c_abi import (
     c_abi_expected_symbols,
     c_abi_host_target,
     c_abi_linux_symbol_versions,
+    describe_c_abi_contract,
     inspect_c_abi_package,
+    load_c_abi_contract,
     main,
     package_c_abi_sdk,
     portable_verify_c_abi_package_evidence,
     verify_c_abi_package_evidence,
+    verify_c_abi_contract,
     write_c_abi_package_evidence,
 )
 from ci.products.inventory import canonical_json_bytes
@@ -89,9 +100,9 @@ class ProductCAbiTest(unittest.TestCase):
                 c_abi_archive_file_name("1.2.3", target),
             )
             self.assertEqual(f"{spec.proof_id}.json", c_abi_evidence_file_name(target))
-            self.assertEqual(C_ABI_CURRENT, "1.12")
+            self.assertEqual(C_ABI_CURRENT, "1.13")
             self.assertEqual(C_ABI_MINIMUM, "1.0")
-            self.assertEqual(C_ABI_ENCODED, "0x010c0000")
+            self.assertEqual(C_ABI_ENCODED, "0x010d0000")
 
     def test_describe_and_specs_emit_the_complete_canonical_catalog(self) -> None:
         expected = describe_c_abi()
@@ -104,6 +115,7 @@ class ProductCAbiTest(unittest.TestCase):
                 "current": C_ABI_CURRENT,
                 "minimum": C_ABI_MINIMUM,
                 "encoded": C_ABI_ENCODED,
+                "identitySchemaVersion": C_ABI_IDENTITY_SCHEMA_VERSION,
                 "publicSymbolCount": C_ABI_SYMBOL_COUNT,
             },
             expected["abi"],
@@ -160,6 +172,196 @@ class ProductCAbiTest(unittest.TestCase):
             outputs.append(output.getvalue())
         self.assertEqual(outputs[0], outputs[1])
 
+    def test_canonical_abi_contract_derives_all_version_identities_and_cli_output(self) -> None:
+        contract = load_c_abi_contract(C_ABI_CONTRACT_PATH)
+        self.assertEqual(C_ABI_CONTRACT, contract)
+        self.assertEqual("1.13.0", C_ABI_CURRENT_SEMVER)
+        self.assertEqual("1.0.0", C_ABI_MINIMUM_SEMVER)
+        self.assertEqual(0x010D0000, contract.current.encoded)
+        self.assertEqual(1, contract.runtime_identity_schema_version)
+        expected = {
+            "schemaVersion": 1,
+            "current": {
+                "major": 1,
+                "minor": 13,
+                "patch": 0,
+                "semver": "1.13.0",
+                "line": "1.13",
+                "encoded": "0x010d0000",
+            },
+            "minimumCompatible": {
+                "major": 1,
+                "minor": 0,
+                "patch": 0,
+                "semver": "1.0.0",
+                "line": "1.0",
+                "encoded": "0x01000000",
+            },
+            "runtimeIdentitySchemaVersion": 1,
+        }
+        self.assertEqual(expected, describe_c_abi_contract(C_ABI_CONTRACT_PATH))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(0, main([
+                "describe-abi-contract", "--abi-contract", str(C_ABI_CONTRACT_PATH),
+            ]))
+        self.assertEqual(expected, self._canonical_stdout(output.getvalue()))
+
+    def test_explicit_contract_cli_isolated_from_repository_authority_paths(self) -> None:
+        package = self.root / "isolated" / "ci" / "products"
+        package.mkdir(parents=True)
+        (package.parent / "__init__.py").write_bytes(b"")
+        (package / "__init__.py").write_bytes(b"")
+        source_root = Path(__file__).resolve().parents[1] / "products"
+        shutil.copy2(source_root / "c_abi.py", package / "c_abi.py")
+        shutil.copy2(source_root / "inventory.py", package / "inventory.py")
+        contract = self._write("isolated-input/abi-contract.json", C_ABI_CONTRACT_PATH.read_bytes())
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "ci.products.c_abi",
+                "describe-abi-contract",
+                "--abi-contract",
+                str(contract),
+            ],
+            cwd=self.root / "isolated",
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual("", completed.stderr)
+        self.assertEqual(0, completed.returncode)
+        self.assertEqual(
+            describe_c_abi_contract(C_ABI_CONTRACT_PATH),
+            self._canonical_stdout(completed.stdout),
+        )
+
+    def test_abi_contract_rejects_noncanonical_schema_range_and_compatibility_mutations(self) -> None:
+        base = json.loads(C_ABI_CONTRACT_PATH.read_text(encoding="utf-8"))
+        mutations: list[tuple[str, object]] = []
+
+        missing = copy.deepcopy(base)
+        missing.pop("runtimeIdentitySchemaVersion")
+        mutations.append(("missing", missing))
+        extra = copy.deepcopy(base)
+        extra["unknown"] = 1
+        mutations.append(("extra", extra))
+        wrong_schema = copy.deepcopy(base)
+        wrong_schema["schemaVersion"] = 2
+        mutations.append(("schema", wrong_schema))
+        boolean = copy.deepcopy(base)
+        boolean["current"]["minor"] = True
+        mutations.append(("boolean", boolean))
+        major_overflow = copy.deepcopy(base)
+        major_overflow["current"]["major"] = 256
+        mutations.append(("major-overflow", major_overflow))
+        minor_overflow = copy.deepcopy(base)
+        minor_overflow["current"]["minor"] = 256
+        mutations.append(("minor-overflow", minor_overflow))
+        patch_overflow = copy.deepcopy(base)
+        patch_overflow["current"]["patch"] = 65536
+        mutations.append(("patch-overflow", patch_overflow))
+        identity_zero = copy.deepcopy(base)
+        identity_zero["runtimeIdentitySchemaVersion"] = 0
+        mutations.append(("identity-zero", identity_zero))
+        newer_minimum = copy.deepcopy(base)
+        newer_minimum["minimumCompatible"]["minor"] = 14
+        mutations.append(("newer-minimum", newer_minimum))
+        other_major = copy.deepcopy(base)
+        other_major["minimumCompatible"]["major"] = 2
+        mutations.append(("other-major", other_major))
+
+        for name, value in mutations:
+            with self.subTest(name=name):
+                path = self._write(f"contracts/{name}.json", canonical_json_bytes(value))
+                with self.assertRaises(ValueError):
+                    load_c_abi_contract(path)
+
+        noncanonical = self._write(
+            "contracts/noncanonical.json",
+            (json.dumps(base, indent=2) + "\n").encode(),
+        )
+        with self.assertRaisesRegex(ValueError, "not canonical"):
+            load_c_abi_contract(noncanonical)
+        duplicate = self._write(
+            "contracts/duplicate.json",
+            C_ABI_CONTRACT_PATH.read_bytes().replace(
+                b'{"current":', b'{"schemaVersion":1,"current":', 1,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate key"):
+            load_c_abi_contract(duplicate)
+
+    def test_reviewed_header_and_three_export_policies_are_verified_as_one_authority(self) -> None:
+        header = self._abi_contract_header(self.symbols)
+        macos = self._export_policy("macosArm64")
+        linux = self._export_policy("linuxX64")
+        windows = self._export_policy("mingwX64")
+        result = verify_c_abi_contract(
+            C_ABI_CONTRACT_PATH, header, macos, linux, windows,
+        )
+        self.assertEqual(C_ABI_SYMBOL_COUNT, result["publicSymbolCount"])
+        self.assertRegex(result["publicSymbolsSha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(describe_c_abi_contract(C_ABI_CONTRACT_PATH)["current"], result["current"])
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(0, main([
+                "verify-abi-contract",
+                "--abi-contract", str(C_ABI_CONTRACT_PATH),
+                "--header", str(header),
+                "--macos-exports", str(macos),
+                "--linux-map", str(linux),
+                "--windows-def", str(windows),
+            ]))
+        self.assertEqual(result, self._canonical_stdout(output.getvalue()))
+
+        wrong_header = self._write(
+            "bad/abi-minor.h",
+            header.read_bytes().replace(b"VERSION_MINOR UINT32_C(13)", b"VERSION_MINOR UINT32_C(12)"),
+        )
+        with self.assertRaisesRegex(ValueError, "header macros"):
+            verify_c_abi_contract(
+                C_ABI_CONTRACT_PATH, wrong_header, macos, linux, windows,
+            )
+
+        duplicate_header = self._write(
+            "bad/abi-duplicate.h",
+            header.read_bytes() + b"#define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C(1)\n",
+        )
+        with self.assertRaisesRegex(ValueError, "authority macros"):
+            verify_c_abi_contract(
+                C_ABI_CONTRACT_PATH, duplicate_header, macos, linux, windows,
+            )
+
+        missing_macos = self._write(
+            "bad/macos.exports",
+            macos.read_bytes().replace(f"_{self.symbols[0]}\n".encode(), b"", 1),
+        )
+        with self.assertRaisesRegex(ValueError, "symbol sets differ"):
+            verify_c_abi_contract(
+                C_ABI_CONTRACT_PATH, header, missing_macos, linux, windows,
+            )
+
+        duplicate_windows = self._write(
+            "bad/windows.def",
+            windows.read_bytes() + f"{self.symbols[0]}\n".encode(),
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate public C ABI symbols"):
+            verify_c_abi_contract(
+                C_ABI_CONTRACT_PATH, header, macos, linux, duplicate_windows,
+            )
+
+    def test_tracked_reviewed_export_count_is_derived_without_a_numeric_constant(self) -> None:
+        sets = {
+            format: c_abi_expected_symbols(path)
+            for format, path in C_ABI_REVIEWED_EXPORT_PATHS.items()
+        }
+        self.assertEqual(1, len({frozenset(symbols) for symbols in sets.values()}))
+        self.assertEqual(C_ABI_SYMBOL_COUNT, len(next(iter(sets.values()))))
+        self.assertTrue(C_ABI_REVIEWED_HEADER_PATH.is_file())
+
     def test_describe_export_policy_emits_exact_canonical_symbols_and_linux_versions(self) -> None:
         for target in ("macosArm64", "linuxX64", "mingwX64"):
             with self.subTest(target=target):
@@ -197,14 +399,14 @@ class ProductCAbiTest(unittest.TestCase):
             describe_c_abi_export_policy(missing, "pe")
 
         malformed = self._write("bad/malformed.exports", b"\xff\xfe")
-        with self.assertRaises(UnicodeDecodeError):
+        with self.assertRaisesRegex(ValueError, "not UTF-8"):
             describe_c_abi_export_policy(malformed, "mach-o")
 
         short = self._write(
             "bad/missing-symbol.exports",
             "".join(f"{symbol}\n" for symbol in self.symbols[:-1]).encode(),
         )
-        with self.assertRaisesRegex(ValueError, "exactly 777 symbols"):
+        with self.assertRaisesRegex(ValueError, "exact canonical symbol count"):
             describe_c_abi_export_policy(short, "pe")
 
         linux = self._export_policy("linuxX64")
@@ -217,14 +419,18 @@ class ProductCAbiTest(unittest.TestCase):
                 1,
             ).encode(),
         )
-        with self.assertRaisesRegex(ValueError, "Duplicate C ABI Linux symbol assignment"):
+        with self.assertRaisesRegex(ValueError, "duplicate public C ABI symbols"):
             describe_c_abi_export_policy(duplicate, "elf")
 
         wrong_node = self._write(
             "bad/wrong-node.map",
-            linux_contents.replace("CODEX_AGENT_1.12 {", "CODEX_AGENT_2.12 {", 1).encode(),
+            linux_contents.replace(
+                f"CODEX_AGENT_{C_ABI_CONTRACT.current.major}.{C_ABI_CONTRACT.current.minor} {{",
+                f"CODEX_AGENT_{C_ABI_CONTRACT.current.major + 1}.{C_ABI_CONTRACT.current.minor} {{",
+                1,
+            ).encode(),
         )
-        with self.assertRaisesRegex(ValueError, "outside a version node"):
+        with self.assertRaisesRegex(ValueError, "canonical ABI lineage"):
             describe_c_abi_export_policy(wrong_node, "elf")
 
         error = io.StringIO()
@@ -234,7 +440,7 @@ class ProductCAbiTest(unittest.TestCase):
                 "--export-policy", str(duplicate),
                 "--format", "elf",
             ]))
-        self.assertIn("Duplicate C ABI Linux symbol assignment", error.getvalue())
+        self.assertIn("duplicate public C ABI symbols", error.getvalue())
 
     def test_all_five_packages_are_deterministic_and_exact(self) -> None:
         for target, spec in TARGET_SPECS.items():
@@ -280,10 +486,19 @@ class ProductCAbiTest(unittest.TestCase):
         self.assertEqual(set(self.symbols), set(c_abi_expected_symbols(policy)))
         versions = c_abi_linux_symbol_versions(policy)
         self.assertEqual(set(self.symbols), set(versions))
-        self.assertEqual({f"CODEX_AGENT_1.{minor}" for minor in range(13)}, set(versions.values()))
+        self.assertEqual(
+            {
+                f"CODEX_AGENT_{C_ABI_CONTRACT.current.major}.{minor}"
+                for minor in range(
+                    C_ABI_CONTRACT.minimum_compatible.minor,
+                    C_ABI_CONTRACT.current.minor + 1,
+                )
+            },
+            set(versions.values()),
+        )
 
         short_policy = self._write("bad/short.map", b"codex_agent_only;\n")
-        with self.assertRaisesRegex(ValueError, "exactly 777 symbols"):
+        with self.assertRaisesRegex(ValueError, "exact canonical symbol count"):
             c_abi_expected_symbols(short_policy)
         outside = self._write(
             "bad/outside.map",
@@ -833,18 +1048,49 @@ class ProductCAbiTest(unittest.TestCase):
             gnu_consumers=tuple(proof(name, gnu=True) for name in GNU_CONSUMERS) if spec.format == "pe" else (),
         )
 
+    def _abi_contract_header(self, symbols: tuple[str, ...]) -> Path:
+        current = C_ABI_CONTRACT.current
+        minimum = C_ABI_CONTRACT.minimum_compatible
+        contents = (
+            "#include <stdint.h>\n"
+            f"#define CODEX_AGENT_ABI_VERSION_MAJOR UINT32_C({current.major})\n"
+            f"#define CODEX_AGENT_ABI_VERSION_MINOR UINT32_C({current.minor})\n"
+            f"#define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C({current.patch})\n"
+            "#define CODEX_AGENT_ABI_VERSION_ENCODE(major, minor, patch) \\\n"
+            "    ((((uint32_t)(major) & UINT32_C(0xff)) << 24) | \\\n"
+            "     (((uint32_t)(minor) & UINT32_C(0xff)) << 16) | \\\n"
+            "     ((uint32_t)(patch) & UINT32_C(0xffff)))\n"
+            "#define CODEX_AGENT_ABI_VERSION_CURRENT \\\n"
+            "    CODEX_AGENT_ABI_VERSION_ENCODE( \\\n"
+            "        CODEX_AGENT_ABI_VERSION_MAJOR, \\\n"
+            "        CODEX_AGENT_ABI_VERSION_MINOR, \\\n"
+            "        CODEX_AGENT_ABI_VERSION_PATCH)\n"
+            "#define CODEX_AGENT_ABI_VERSION_MINIMUM_COMPATIBLE \\\n"
+            f"    CODEX_AGENT_ABI_VERSION_ENCODE({minimum.major}, {minimum.minor}, {minimum.patch})\n"
+            + "".join(f"int {symbol}(void);\n" for symbol in symbols)
+        )
+        return self._write("inputs/abi-contract-header.h", contents.encode())
+
     def _export_policy(self, target: str) -> Path:
         destination = self.root / "inputs" / target / "exports"
         if destination.exists():
             return destination
         if TARGET_SPECS[target].format == "elf":
             lines: list[str] = []
-            for minor in range(13):
-                lines.append(f"CODEX_AGENT_1.{minor} {{\n    global:\n")
+            node_count = (
+                C_ABI_CONTRACT.current.minor - C_ABI_CONTRACT.minimum_compatible.minor + 1
+            )
+            for minor in range(
+                C_ABI_CONTRACT.minimum_compatible.minor,
+                C_ABI_CONTRACT.current.minor + 1,
+            ):
+                lines.append(
+                    f"CODEX_AGENT_{C_ABI_CONTRACT.current.major}.{minor} {{\n    global:\n"
+                )
                 lines.extend(
                     f"        {symbol};\n"
                     for index, symbol in enumerate(self.symbols)
-                    if index % 13 == minor
+                    if index % node_count == minor - C_ABI_CONTRACT.minimum_compatible.minor
                 )
                 lines.append("};\n")
             contents = "".join(lines).encode()

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
-const USAGE: &str = "usage: codex-agent-rust-host-smoke <absolute-c-sdk-library>";
+const USAGE: &str = "usage: codex-agent-rust-host-smoke [<absolute-c-sdk-library>]";
 
 struct ThreadWake(std::thread::Thread);
 
@@ -44,36 +44,22 @@ fn consumer_error(status: Status, action: impl Into<String>) -> CodexError {
 
 fn parse_library_path(
     arguments: impl IntoIterator<Item = OsString>,
-) -> Result<PathBuf, CodexError> {
+) -> Result<Option<PathBuf>, CodexError> {
     let mut arguments = arguments.into_iter();
-    let library_path = arguments
-        .next()
-        .ok_or_else(|| consumer_error(Status::InvalidArgument, USAGE))?;
+    let Some(library_path) = arguments.next() else {
+        return Ok(None);
+    };
     if arguments.next().is_some() {
         return Err(consumer_error(Status::InvalidArgument, USAGE));
     }
-    Ok(PathBuf::from(library_path))
+    let library_path = PathBuf::from(library_path);
+    if !library_path.is_absolute() {
+        return Err(consumer_error(Status::InvalidArgument, USAGE));
+    }
+    Ok(Some(library_path))
 }
 
-fn real_host_smoke(library_path: &Path) -> Result<(), CodexError> {
-    let library_path = library_path.canonicalize().map_err(|error| {
-        consumer_error(
-            Status::InvalidArgument,
-            format!(
-                "resolve explicit C SDK library {}: {error}",
-                library_path.display()
-            ),
-        )
-    })?;
-    if !library_path.is_file() {
-        return Err(consumer_error(
-            Status::InvalidArgument,
-            format!(
-                "explicit C SDK library is not a file: {}",
-                library_path.display()
-            ),
-        ));
-    }
+fn real_host_smoke(library_path: Option<&Path>) -> Result<(), CodexError> {
     let stale_issues = CodexNativeLibrary::take_cleanup_issues();
     if !stale_issues.is_empty() {
         return Err(consumer_error(
@@ -82,7 +68,35 @@ fn real_host_smoke(library_path: &Path) -> Result<(), CodexError> {
         ));
     }
 
-    let native = CodexNativeLibrary::load(&library_path)?;
+    let (native, source) = if let Some(library_path) = library_path {
+        let library_path = library_path.canonicalize().map_err(|error| {
+            consumer_error(
+                Status::InvalidArgument,
+                format!(
+                    "resolve explicit C SDK library {}: {error}",
+                    library_path.display()
+                ),
+            )
+        })?;
+        if !library_path.is_file() {
+            return Err(consumer_error(
+                Status::InvalidArgument,
+                format!(
+                    "explicit C SDK library is not a file: {}",
+                    library_path.display()
+                ),
+            ));
+        }
+        (
+            CodexNativeLibrary::load(&library_path)?,
+            library_path.display().to_string(),
+        )
+    } else {
+        (
+            CodexNativeLibrary::load_default()?,
+            "embedded Runtime".into(),
+        )
+    };
     let host = CodexHost::create_with_library(
         &native,
         HostOptions {
@@ -122,16 +136,13 @@ fn real_host_smoke(library_path: &Path) -> Result<(), CodexError> {
             format!("installed Host cleanup failed: {cleanup_issues:?}"),
         ));
     }
-    println!(
-        "installed-crate Host smoke passed with {}",
-        library_path.display()
-    );
+    println!("installed-crate Host smoke passed with {source}");
     Ok(())
 }
 
 fn main() -> Result<(), CodexError> {
     let library_path = parse_library_path(std::env::args_os().skip(1))?;
-    real_host_smoke(&library_path)
+    real_host_smoke(library_path.as_deref())
 }
 
 #[cfg(test)]
@@ -139,13 +150,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requires_exactly_one_sdk_path() {
-        let missing = parse_library_path(Vec::<OsString>::new()).unwrap_err();
-        assert_eq!(missing.status, Status::InvalidArgument);
-        assert_eq!(missing.action, USAGE);
+    fn accepts_embedded_default_or_one_absolute_override() {
+        assert_eq!(parse_library_path(Vec::<OsString>::new()).unwrap(), None);
 
-        let path = parse_library_path([OsString::from("sdk")]).unwrap();
-        assert_eq!(path, PathBuf::from("sdk"));
+        let absolute = std::env::temp_dir().join("sdk");
+        let path = parse_library_path([absolute.clone().into_os_string()]).unwrap();
+        assert_eq!(path, Some(absolute));
+
+        let relative = parse_library_path([OsString::from("sdk")]).unwrap_err();
+        assert_eq!(relative.status, Status::InvalidArgument);
+        assert_eq!(relative.action, USAGE);
 
         let extra =
             parse_library_path([OsString::from("sdk"), OsString::from("extra")]).unwrap_err();

@@ -1,4 +1,5 @@
 using CodexAgent;
+using CodexAgent.Interop;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
@@ -119,6 +120,27 @@ static void VerifyOrdinaryEnumCapabilities(
     Console.WriteLine("CodexAgent C# ordinary enum capability tests passed: 110/110.");
 }
 
+if (args is ["--runtime-loader-embedded-child", var library, var compatibility, var target, var snapshotRoot])
+{
+    NativeLibraryLoader.LoadEmbeddedForTests(
+        library, File.ReadAllText(compatibility), target, snapshotRoot);
+    Console.WriteLine("CodexAgent C# embedded Runtime child load passed.");
+    return;
+}
+
+if (args is ["--runtime-loader-security"])
+{
+    RuntimeLoaderSecurity.Verify();
+    var fileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+        ? "codex_agent.dll"
+        : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+            ? "libcodex_agent.dylib"
+            : "libcodex_agent.so";
+    CodexNativeLibrary.Configure(Path.Combine(AppContext.BaseDirectory, fileName));
+    RuntimeLoaderSecurity.VerifyNative();
+    return;
+}
+
 var capabilityClaims = ReadCapabilityClaims();
 var canonicalCapabilities = ReadCanonicalCapabilities();
 if (args is ["--real-mcp-values", var realSdkPath])
@@ -140,6 +162,13 @@ if (args is ["--real-mcp-values", var realSdkPath])
 Require(
     CodexNativeLibrary.RuntimeIdentifier is "osx-arm64" or "osx-x64" or "linux-arm64" or "linux-x64" or "win-x64",
     "supported RID");
+
+var fakeLibraryName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+    ? "codex_agent.dll"
+    : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+        ? "libcodex_agent.dylib"
+        : "libcodex_agent.so";
+CodexNativeLibrary.Configure(Path.Combine(AppContext.BaseDirectory, fakeLibraryName));
 
 var executedCapabilityTests = new HashSet<string>(StringComparer.Ordinal);
 VerifyOrdinaryEnumCapabilities(capabilityClaims, canonicalCapabilities, executedCapabilityTests);

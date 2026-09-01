@@ -2,6 +2,7 @@ import javax.inject.Inject
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
+import org.gradle.api.provider.ListProperty
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.OutputFile
@@ -18,6 +19,7 @@ abstract class CompileDesktopProcessSupervisorTask @Inject constructor(
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val sourceFile: RegularFileProperty
     @get:Input abstract val compiler: Property<String>
+    @get:Input abstract val compilerArguments: ListProperty<String>
     @get:Input abstract val windows: Property<Boolean>
     @get:OutputFile abstract val outputFile: RegularFileProperty
 
@@ -28,12 +30,9 @@ abstract class CompileDesktopProcessSupervisorTask @Inject constructor(
         output.parentFile.mkdirs()
         processes.exec {
             if (windows.get()) {
-                commandLine(compiler.get(), "/nologo", "/O2", "/W4", "/WX", source, "/Fe:$output")
+                commandLine(listOf(compiler.get()) + compilerArguments.get() + listOf(source, "/Fe:$output"))
             } else {
-                commandLine(
-                    compiler.get(), "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-O2",
-                    "-Wall", "-Wextra", "-Werror", source, "-o", output,
-                )
+                commandLine(listOf(compiler.get()) + compilerArguments.get() + listOf(source, "-o", output))
             }
         }.assertNormalExitValue()
     }

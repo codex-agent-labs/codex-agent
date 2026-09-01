@@ -5,10 +5,12 @@ import 'dart:io';
 import 'package:codex_agent/codex_agent.dart';
 import 'package:codex_agent/src/client.dart'
     show createLeafServicesForTesting, leafNativeCallObserver;
-import 'package:codex_agent/src/ffi.dart' show nativeMemory;
+import 'package:codex_agent/src/ffi.dart'
+    show authenticatedRuntimeLibraryForTesting, nativeMemory;
 import 'package:test/test.dart';
 
 import 'test_inputs.dart';
+import 'native_fixture.dart';
 
 final class DartLeafClaim {
   const DartLeafClaim({
@@ -578,18 +580,27 @@ Future<void> verifyRealLeafBoundary(
 }
 
 Future<String> _buildFixture() async {
-  final output = '${Directory.systemTemp.path}/codex_agent_dart_leaf_$pid'
-      '${Platform.isMacOS ? '.dylib' : Platform.isWindows ? '.dll' : '.so'}';
+  final output = nativeFixturePath(
+    'codex_agent_dart_leaf_$pid'
+    '${Platform.isMacOS ? '.dylib' : Platform.isWindows ? '.dll' : '.so'}',
+  );
   final source = File('test/native/fake_codex_agent.c').absolute.path;
   final result = Platform.isWindows
-      ? await Process.run(
-          'cl', <String>['/nologo', '/LD', source, '/link', '/OUT:$output'])
+      ? await Process.run('cl', <String>[
+          '/nologo',
+          '/LD',
+          ...runtimeIdentityCompilerDefinitions(),
+          source,
+          '/link',
+          '/OUT:$output'
+        ])
       : await Process.run('cc', <String>[
           '-std=c11',
           '-Wall',
           '-Wextra',
           '-Werror',
           '-pedantic',
+          ...runtimeIdentityCompilerDefinitions(),
           ...(Platform.isMacOS
               ? const <String>['-dynamiclib']
               : const <String>['-shared', '-fPIC', '-pthread']),
@@ -881,7 +892,7 @@ void registerLeafServiceParity(
   for (final claim in sorted) {
     test(claim.executedTests.single, () async {
       final path = await fixture;
-      final count = DynamicLibrary.open(path).lookupFunction<
+      final count = authenticatedRuntimeLibraryForTesting(path).lookupFunction<
           Int32 Function(Pointer<Uint8>),
           int Function(Pointer<Uint8>)>('codex_agent_dart_leaf_call_count');
       final serviceCalls = _serviceCalls(claim);

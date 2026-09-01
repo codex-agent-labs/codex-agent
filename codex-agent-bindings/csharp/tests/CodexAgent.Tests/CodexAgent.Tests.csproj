@@ -30,9 +30,13 @@
 
   <Target Name="BuildFakeCodexAgentNativeLibraryMacos" AfterTargets="Build" Condition="$([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('osx-'))">
     <Exec Command="clang -std=c11 -Wall -Wextra -Werror -dynamiclib -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent.dylib&quot;" />
+    <Exec Command="clang -std=c11 -Wall -Wextra -Werror -dynamiclib -DCODEX_AGENT_TEST_OMIT_RUNTIME_IDENTITY=1 -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent_missing_identity.dylib&quot;" />
+    <Exec Command="clang -std=c11 -Wall -Wextra -Werror -dynamiclib -DCODEX_AGENT_TEST_ABI_VERSION=0x010E0000 -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent_abi_mismatch.dylib&quot;" />
   </Target>
   <Target Name="BuildFakeCodexAgentNativeLibraryLinux" AfterTargets="Build" Condition="$([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('linux-'))">
     <Exec Command="cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent.so&quot;" />
+    <Exec Command="cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -DCODEX_AGENT_TEST_OMIT_RUNTIME_IDENTITY=1 -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent_missing_identity.so&quot;" />
+    <Exec Command="cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -DCODEX_AGENT_TEST_ABI_VERSION=0x010E0000 -I&quot;$(CodexAgentCSdkRoot)/include&quot; native/fake_codex_agent.c -o &quot;$(TargetDir)libcodex_agent_abi_mismatch.so&quot;" />
   </Target>
 
   <Target Name="BuildRealMcpValueFixtureMacos" AfterTargets="Build" Condition="'$(CodexAgentRealSdkPath)' != '' and $([System.String]::Copy('$(NETCoreSdkRuntimeIdentifier)').StartsWith('osx-'))">

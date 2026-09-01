@@ -20,10 +20,15 @@ class RuntimeIsolationFixtureTest {
         "ci/products/__init__.py",
         "ci/products/c_abi.py",
         "ci/products/contract.py",
+        "ci/products/contract_projection.py",
         "ci/products/contract_model.py",
         "ci/products/inventory.py",
         "ci/products/receipt.py",
+        "ci/products/registry.py",
         "ci/products/runtime_evidence.py",
+        "ci/products/runtime_flags.py",
+        "ci/products/runtime_identity.py",
+        "ci/products/selection.py",
         "ci/products/signatures.py",
         "ci/products/test_results.py",
     )
@@ -394,6 +399,12 @@ class RuntimeIsolationFixtureTest {
         environmentOverrides: Map<String, String> = emptyMap(),
         vararg additionalArguments: String,
     ): GradleRunner {
+        // Configuration-only fixture calls never execute native compilation; the
+        // real identity plan is exercised by GenerateRuntimeAbiSourceTask tests.
+        val unusedBinaryPlan = fixture.resolve("inputs/runtime-binary-plan-unused.json").apply {
+            parentFile.mkdirs()
+            if (!exists()) writeText("{}\n")
+        }
         val arguments = mutableListOf(
             task,
             "-PcodexAgent.contractRepository=${contract.resolve("maven").absolutePath}",
@@ -402,6 +413,10 @@ class RuntimeIsolationFixtureTest {
             "-PcodexAgent.contractVersion=$contractVersion",
             "-PcodexAgent.runtimeVersion=0.2.0",
             "-PcodexAgent.target=$target",
+            "-PcodexAgent.runtimeBinaryFlagsDigest=${runtimeBinaryFlagsDigest(target)}",
+            "-PcodexAgent.runtimeBinaryPlan=${unusedBinaryPlan.absolutePath}",
+            "-PcodexAgent.repositoryRevision=${"0".repeat(40)}",
+            "-PcodexAgent.phase=metadata",
             "--configuration-cache",
             "--configuration-cache-problems=fail",
             "--stacktrace",
@@ -421,6 +436,17 @@ class RuntimeIsolationFixtureTest {
             .withEnvironment(environment)
             .withArguments(arguments)
     }
+
+    private fun runtimeBinaryFlagsDigest(target: String): String = readRuntimeBinaryFlags(
+        runRuntimeProductPythonModule(
+            "runtime_flags",
+            listOf(
+                "describe-all",
+                "--file",
+                repository.resolve("codex-agent-runtime-desktop/native/c-api/binary-flags.json").absolutePath,
+            ),
+        ),
+    ).getValue(target).flagsDigest
 
     private fun assertAccepted(result: BuildResult, task: String) {
         assertTrue(

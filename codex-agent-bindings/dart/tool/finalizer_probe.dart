@@ -2,6 +2,8 @@ import 'dart:developer';
 import 'dart:ffi';
 
 import 'package:codex_agent/codex_agent.dart';
+import 'package:codex_agent/src/ffi.dart'
+    show authenticatedRuntimeLibraryForTesting;
 import 'package:vm_service/vm_service.dart';
 import 'package:vm_service/vm_service_io.dart';
 
@@ -63,7 +65,7 @@ Future<void> main(List<String> arguments) async {
   }
   final libraryPath = arguments.first;
   final mode = arguments.length == 2 ? arguments[1] : 'abandon';
-  final library = DynamicLibrary.open(libraryPath);
+  final library = authenticatedRuntimeLibraryForTesting(libraryPath);
   final hostClose = library.lookupFunction<_CounterNative, _CounterDart>(
     'codex_agent_test_host_close_calls',
   );

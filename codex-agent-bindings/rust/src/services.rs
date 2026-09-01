@@ -3977,7 +3977,7 @@ mod tests {
                 "leaf fixture failed:\n{}",
                 String::from_utf8_lossy(&result.stderr)
             );
-            output
+            std::fs::canonicalize(output).expect("canonical leaf fixture path")
         })
     }
 

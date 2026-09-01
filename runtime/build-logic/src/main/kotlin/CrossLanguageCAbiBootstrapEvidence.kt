@@ -28,11 +28,11 @@ internal const val C_ABI_BOOTSTRAP_CAPABILITY_SHA256 =
 
 private const val C_ABI_CANONICAL_CAPABILITY_COUNT = 556
 private const val C_ABI_HEADER_SHA256 =
-    "65133d04f8a65ae94b6752237e46650392ffc741d1191d97afa219a81b1c1023"
+    "e222d543a376cb5f8ce85e62616c701a394fd1ab41503a807328d6b418f73797"
 private const val C_ABI_CINTEROP_SHA256 =
     "72a9b664b86ca436fb0759d3db7223c8ee4fc77942c796e0ba6ef4c13fd90690"
 private const val C_ABI_MACOS_EXPORTS_SHA256 =
-    "cf63234583c0e916e46d960d38042c889c67a21ed71f8196620a8144bd27dce6"
+    "28305f5f6dfdde649cec19b9d166e69517cabbdad01cd5f960ccc99cbdd3835b"
 private const val C_ABI_FOUNDATION_C_SHA256 =
     "ef416640f7204bc98eb4bd0568b7f5c60c051fccabdd7e40b72b45d955ea6768"
 private const val C_ABI_FOUNDATION_CPP_SHA256 =
@@ -3411,12 +3411,12 @@ private fun List<String>.sortedNewlineSha256(): String = MessageDigest.getInstan
     .digest(sorted().joinToString(separator = "", transform = { "$it\n" }).encodeToByteArray())
     .joinToString("") { byte -> "%02x".format(byte) }
 
-private fun exactExportPolicy(file: File): Set<String> {
+private fun exactExportPolicy(file: File, expectedSymbolCount: Int): Set<String> {
     check(file.releaseDigest() == C_ABI_MACOS_EXPORTS_SHA256) { "Reviewed macOS C ABI export policy drift" }
     val rows = file.readLines().filter(String::isNotBlank)
-    check(rows.size == 777 && rows == rows.sorted() && rows.size == rows.distinct().size &&
+    check(rows.size == expectedSymbolCount && rows == rows.sorted() && rows.size == rows.distinct().size &&
         rows.all { it.startsWith("_codex_agent_") }) {
-        "macOS C ABI export policy must contain the exact sorted 777-symbol inventory"
+        "macOS C ABI export policy must contain the exact sorted $expectedSymbolCount-symbol inventory"
     }
     return rows.mapTo(sortedSetOf()) { it.removePrefix("_") }
 }
@@ -3448,6 +3448,8 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:Input abstract val contractVersion: org.gradle.api.provider.Property<String>
     @get:Input abstract val contractComponent: org.gradle.api.provider.Property<String>
+    @get:Input abstract val expectedPublicSymbolCount: org.gradle.api.provider.Property<Int>
+    @get:Input abstract val expectedLoaderVersion: org.gradle.api.provider.Property<String>
     @get:Internal abstract val repositoryRoot: DirectoryProperty
 
     @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -3595,7 +3597,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
         val cinterop = cinteropDefinition.get().asFile.also {
             check(it.releaseDigest() == C_ABI_CINTEROP_SHA256) { "Reviewed C ABI cinterop definition drift" }
         }
-        val exports = exactExportPolicy(exportPolicy.get().asFile)
+        val exports = exactExportPolicy(exportPolicy.get().asFile, expectedPublicSymbolCount.get())
         val foundationC = foundationCConsumer.get().asFile.also {
             check(it.releaseDigest() == C_ABI_FOUNDATION_C_SHA256) { "Reviewed C foundation consumer drift" }
         }
@@ -3924,7 +3926,7 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             listOf("/usr/bin/otool", "-L", library.absolutePath),
         ).lineSequence().map(String::trim).firstOrNull { it.startsWith("@rpath/libcodex_agent.dylib ") }
         check(linkedIdentity ==
-            "@rpath/libcodex_agent.dylib (compatibility version 1.0.0, current version 1.12.0)") {
+            "@rpath/libcodex_agent.dylib (${expectedLoaderVersion.get()})") {
             "Unexpected C ABI dylib loader versions: $linkedIdentity"
         }
 

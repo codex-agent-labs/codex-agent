@@ -12,8 +12,6 @@ import tempfile
 from typing import Any
 import zipfile
 
-from ci.impact import inventory, inventory_paths, run_git
-
 from .contract_model import (
     CONTRACT_ARTIFACT_COMPONENTS,
     CONTRACT_COMPONENTS,
@@ -31,9 +29,12 @@ from .contract_model import (
 )
 from .inventory import (
     canonical_json_bytes,
+    git_inventory as inventory,
+    git_inventory_paths as inventory_paths,
     load_canonical_json,
     regular_file_inventory,
     require_semver,
+    run_git,
     sha256_file,
     write_canonical_json,
 )

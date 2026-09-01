@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hashlib
 import json
 import os
@@ -8,9 +9,12 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import struct
+import subprocess
 import tempfile
 from typing import Any, Iterable, NoReturn
 import zipfile
+from contextlib import ExitStack, nullcontext
+from functools import lru_cache
 
 
 SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
@@ -20,6 +24,167 @@ SEMVER = re.compile(
     r"(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
     r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?"
 )
+
+
+def run_git(root: Path, *arguments: str, binary: bool = False) -> bytes | str:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.stdout if binary else result.stdout.decode("utf-8")
+
+
+@lru_cache(maxsize=8)
+def tree_entries(root: Path, revision: str) -> tuple[tuple[str, str], ...]:
+    raw = run_git(root, "ls-tree", "-r", "-z", revision, binary=True)
+    entries: list[tuple[str, str]] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, path = record.split(b"\t", 1)
+        mode, kind, object_id = metadata.decode("ascii").split(" ")
+        decoded_path = path.decode("utf-8")
+        entries.append((decoded_path, f"{mode}\t{kind}\t{object_id}\t{decoded_path}"))
+    return tuple(entries)
+
+
+def git_inventory(root: Path, revision: str, pathspecs: tuple[str, ...]) -> str:
+    if not pathspecs:
+        return ""
+    entries = (
+        record
+        for path, record in tree_entries(root, revision)
+        if any(fnmatch.fnmatchcase(path, pathspec) for pathspec in pathspecs)
+    )
+    return "".join(f"{entry}\n" for entry in sorted(entries))
+
+
+def git_inventory_paths(contents: str) -> set[str]:
+    return {line.split("\t", 3)[3] for line in contents.splitlines() if line}
+
+
+def git_file_inventory(
+    root: Path,
+    revision: str,
+    relative_paths: Iterable[str],
+) -> list[dict[str, Any]]:
+    """Hash exact regular blobs from one Git tree without trusting the checkout."""
+    paths = tuple(relative_paths)
+    if isinstance(relative_paths, (str, bytes)) or len(paths) != len(set(paths)):
+        raise ValueError("Inventory paths must be a unique iterable")
+    entries = {}
+    for path, record in tree_entries(Path(root), revision):
+        mode, kind, object_id, recorded_path = record.split("\t", 3)
+        entries[path] = (mode, kind, object_id, recorded_path)
+    selected = []
+    for index, value in enumerate(sorted(paths)):
+        relative = require_relative_path(value, f"Inventory path[{index}]")
+        entry = entries.get(relative)
+        if entry is None:
+            raise ValueError(f"Inventory path is absent from the selected Git tree: {relative}")
+        mode, kind, object_id, recorded_path = entry
+        if mode not in {"100644", "100755"} or kind != "blob" or recorded_path != relative:
+            raise ValueError(f"Inventory path is not a regular Git blob: {relative}")
+        selected.append((relative, object_id))
+    if not selected:
+        return []
+    result = subprocess.run(
+        ["git", "cat-file", "--batch"],
+        cwd=root,
+        input="".join(f"{object_id}\n" for _, object_id in selected).encode("ascii"),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout
+    offset = 0
+    records = []
+    for relative, expected_id in selected:
+        end = result.find(b"\n", offset)
+        if end < 0:
+            raise ValueError("Git blob batch output is truncated")
+        header = result[offset:end].decode("ascii").split(" ")
+        if len(header) != 3 or header[0] != expected_id or header[1] != "blob":
+            raise ValueError(f"Git blob identity changed during inventory: {relative}")
+        try:
+            size = int(header[2])
+        except ValueError as error:
+            raise ValueError(f"Git blob size is invalid: {relative}") from error
+        start = end + 1
+        finish = start + size
+        contents = result[start:finish]
+        if len(contents) != size or result[finish:finish + 1] != b"\n":
+            raise ValueError(f"Git blob batch output is malformed: {relative}")
+        records.append({
+            "relativePath": relative,
+            "bytes": size,
+            "sha256": sha256_bytes(contents),
+        })
+        offset = finish + 1
+    if offset != len(result):
+        raise ValueError("Git blob batch output contains unexpected data")
+    return records
+
+
+def git_regular_blob_bytes(
+    root: Path,
+    revision: str,
+    relative_path: str,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Read one exact regular blob from an immutable Git tree."""
+    if type(max_bytes) is not int or max_bytes < 0:
+        raise ValueError("Git blob size limit must be a nonnegative integer")
+    relative = require_relative_path(relative_path, "Git blob path")
+    entries = {
+        path: record.split("\t", 3)
+        for path, record in tree_entries(Path(root), revision)
+    }
+    entry = entries.get(relative)
+    if entry is None:
+        raise ValueError(f"Git blob is absent from the selected tree: {relative}")
+    mode, kind, object_id, recorded_path = entry
+    if mode not in {"100644", "100755"} or kind != "blob" or recorded_path != relative:
+        raise ValueError(f"Git blob is not a regular file: {relative}")
+    try:
+        size = int(run_git(Path(root), "cat-file", "-s", object_id).strip())
+    except ValueError as error:
+        raise ValueError(f"Git blob size is invalid: {relative}") from error
+    if size > max_bytes:
+        raise ValueError(f"Git blob exceeds the size limit: {relative}")
+    contents = run_git(Path(root), "cat-file", "blob", object_id, binary=True)
+    if len(contents) != size:
+        raise ValueError(f"Git blob changed while reading: {relative}")
+    return contents
+
+
+def changed_git_paths(root: Path, base: str, target: str) -> tuple[set[str], set[str]]:
+    raw = run_git(root, "diff", "--name-status", "-z", base, target, binary=True)
+    tokens = raw.split(b"\0")
+    result: set[str] = set()
+    removals: set[str] = set()
+    index = 0
+    while index < len(tokens) and tokens[index]:
+        status = tokens[index].decode("ascii")
+        index += 1
+        count = 2 if status.startswith(("R", "C")) else 1
+        paths: list[str] = []
+        for _ in range(count):
+            if index >= len(tokens) or not tokens[index]:
+                raise ValueError(f"Malformed git diff entry for {status}")
+            paths.append(tokens[index].decode("utf-8"))
+            index += 1
+        if status.startswith("R"):
+            result.update(paths)
+            removals.add(paths[0])
+        else:
+            result.add(paths[-1])
+            if status.startswith("D"):
+                removals.add(paths[-1])
+    return result, removals
 
 
 def _reject_number(value: str) -> NoReturn:
@@ -202,6 +367,27 @@ def read_regular_file_bytes(
         raise ValueError(f"File is missing or unsafe: {path}") from error
     finally:
         os.close(descriptor)
+
+
+def file_inventory(root: Path, relative_paths: Iterable[str]) -> list[dict[str, Any]]:
+    """Hash an exact set of regular repository files into canonical plan records."""
+    repository = Path(root).resolve(strict=True)
+    paths = tuple(relative_paths)
+    if isinstance(relative_paths, (str, bytes)) or len(paths) != len(set(paths)):
+        raise ValueError("Inventory paths must be a unique iterable")
+    records = []
+    for index, value in enumerate(sorted(paths)):
+        relative = require_relative_path(value, f"Inventory path[{index}]")
+        contents = read_regular_file_bytes(
+            repository.joinpath(*PurePosixPath(relative).parts),
+            reject_symlink_parents=True,
+        )
+        records.append({
+            "relativePath": relative,
+            "bytes": len(contents),
+            "sha256": sha256_bytes(contents),
+        })
+    return records
 
 
 def _open_directory(path: Path, label: str, *, create: bool = False) -> int:
@@ -729,14 +915,17 @@ def verified_zip_contents(
     retained = None if retained_paths is None else {
         require_relative_path(path, "retained ZIP member path") for path in retained_paths
     }
-    if canonical_stored and retained is not None:
-        raise ValueError("Canonical ZIP verification must retain every member")
     retained_bytes = 0
     descriptor, archive_stat = _open_regular_file(archive, "ZIP archive")
     try:
         if max_archive_bytes is not None and archive_stat.st_size > max_archive_bytes:
             raise ValueError("ZIP archive is too large")
-        with os.fdopen(descriptor, "rb", closefd=False) as raw, tempfile.TemporaryFile() as snapshot:
+        canonical_file = tempfile.TemporaryFile() if canonical_stored else nullcontext(None)
+        with (
+            os.fdopen(descriptor, "rb", closefd=False) as raw,
+            tempfile.TemporaryFile() as snapshot,
+            canonical_file as expected,
+        ):
             archive_digest = hashlib.sha256()
             remaining = archive_stat.st_size
             while remaining:
@@ -768,7 +957,11 @@ def verified_zip_contents(
                 if max_central_directory_bytes is not None and central_size > max_central_directory_bytes:
                     raise ValueError("ZIP archive central directory is too large")
                 snapshot.seek(0)
-            with zipfile.ZipFile(snapshot) as source:
+            with ExitStack() as archives:
+                source = archives.enter_context(zipfile.ZipFile(snapshot))
+                canonical = archives.enter_context(
+                    zipfile.ZipFile(expected, "w", compression=zipfile.ZIP_STORED)
+                ) if canonical_stored else None
                 entries = source.infolist()
                 if max_members is not None and len(entries) > max_members:
                     raise ValueError("ZIP archive contains too many members")
@@ -817,7 +1010,14 @@ def verified_zip_contents(
                     digest = hashlib.sha256()
                     member_bytes = 0
                     retained_member = bytearray() if retained is None or path in retained else None
-                    with source.open(entry, "r") as member:
+                    canonical_member = nullcontext(None)
+                    if canonical is not None:
+                        canonical_info = zipfile.ZipInfo(path, (1980, 1, 1, 0, 0, 0))
+                        canonical_info.compress_type = zipfile.ZIP_STORED
+                        canonical_info.create_system = 3
+                        canonical_info.external_attr = (stat.S_IFREG | 0o644) << 16
+                        canonical_member = canonical.open(canonical_info, "w")
+                    with source.open(entry, "r") as member, canonical_member as canonical_output:
                         while chunk := member.read(1024 * 1024):
                             member_bytes += len(chunk)
                             if member_bytes > entry.file_size or (
@@ -825,6 +1025,8 @@ def verified_zip_contents(
                             ):
                                 raise ValueError(f"ZIP member expands beyond its declared limit: {path}")
                             digest.update(chunk)
+                            if canonical_output is not None:
+                                canonical_output.write(chunk)
                             if retained_member is not None:
                                 retained_bytes += len(chunk)
                                 if max_retained_bytes is not None and retained_bytes > max_retained_bytes:
@@ -840,23 +1042,14 @@ def verified_zip_contents(
                         "bytes": member_bytes,
                         "sha256": f"sha256:{digest.hexdigest()}",
                     })
-            if canonical_stored:
-                with tempfile.TemporaryFile() as expected:
-                    with zipfile.ZipFile(expected, "w", compression=zipfile.ZIP_STORED) as canonical:
-                        for record in records:
-                            path = record["relativePath"]
-                            info = zipfile.ZipInfo(path, (1980, 1, 1, 0, 0, 0))
-                            info.compress_type = zipfile.ZIP_STORED
-                            info.create_system = 3
-                            info.external_attr = (stat.S_IFREG | 0o644) << 16
-                            canonical.writestr(info, contents_by_path[path])
-                    snapshot.seek(0)
-                    expected.seek(0)
-                    while actual_chunk := snapshot.read(1024 * 1024):
-                        if actual_chunk != expected.read(len(actual_chunk)):
-                            raise ValueError("Canonical ZIP archive bytes do not match the canonical encoding")
-                    if expected.read(1):
+            if expected is not None:
+                snapshot.seek(0)
+                expected.seek(0)
+                while actual_chunk := snapshot.read(1024 * 1024):
+                    if actual_chunk != expected.read(len(actual_chunk)):
                         raise ValueError("Canonical ZIP archive bytes do not match the canonical encoding")
+                if expected.read(1):
+                    raise ValueError("Canonical ZIP archive bytes do not match the canonical encoding")
             final_stat = os.fstat(descriptor)
             if _stat_identity(archive_stat) != _stat_identity(final_stat):
                 raise ValueError("ZIP archive changed during verification")

@@ -323,8 +323,8 @@ static void VerifyHostSurface()
         throw new InvalidOperationException("Packed seven-capability Host/Ready surface is incomplete.");
 }
 
-if (args.Length is < 1 or > 2) throw new ArgumentException("Usage: <native-library> [lifecycle|release-only]");
-CodexNativeLibrary.Configure(args[0]);
+if (args.Length > 2) throw new ArgumentException("Usage: [native-library] [lifecycle|release-only]");
+if (args.Length > 0) CodexNativeLibrary.Configure(args[0]);
 if (CodexResolution.Preferred != 0 || CodexFormFieldType.MultiSelect != (CodexFormFieldType)5)
     throw new InvalidOperationException("Packed ordinary enum projection is incompatible with the C SDK.");
 VerifyMcpValues();
@@ -334,7 +334,7 @@ VerifyLeafServiceSurface();
 VerifyConversationSurface();
 VerifyAgentSurface();
 VerifyHostSurface();
-var mode = args.ElementAtOrDefault(1) ?? "lifecycle";
+var mode = args.ElementAtOrDefault(1) ?? "release-only";
 var options = new CodexHostOptions(
     "/verified/bundle",
     "/tmp/codex-agent-dotnet-consumer",

@@ -1,5 +1,6 @@
 use libloading::Library;
 use std::ffi::c_void;
+#[cfg(unix)]
 use std::mem::ManuallyDrop;
 use std::path::Path;
 
@@ -12,6 +13,7 @@ pub(crate) enum LoadError {
     Open(String),
     MissingSymbol(String),
     UnsupportedAbi(u32),
+    Identity(String),
 }
 
 pub(crate) const STATUS_OK: i32 = 0;
@@ -22,7 +24,7 @@ pub(crate) const STATUS_BUFFER_TOO_SMALL: i32 = 9;
 pub(crate) const STATUS_NOT_READY: i32 = 13;
 pub(crate) const STATUS_OPERATION_FAILED: i32 = 14;
 
-pub(crate) const ABI_VERSION: u32 = (1 << 24) | (12 << 16);
+pub(crate) const ABI_VERSION: u32 = (1 << 24) | (13 << 16);
 
 macro_rules! opaque {
     ($($name:ident),+ $(,)?) => {$(
@@ -184,6 +186,7 @@ pub(crate) type StateCallback =
 
 type AbiVersion = unsafe extern "C" fn() -> u32;
 type AbiCompatible = unsafe extern "C" fn(u32) -> i32;
+type RuntimeIdentity = unsafe extern "C" fn(*mut u8, *mut usize) -> i32;
 type ContextCreate = unsafe extern "C" fn(*mut *mut Context) -> i32;
 type ContextDestroy = unsafe extern "C" fn(*mut *mut Context) -> i32;
 type HostCreate = unsafe extern "C" fn(*mut Context, *const HostOptions, *mut *mut Host) -> i32;
@@ -298,38 +301,73 @@ macro_rules! api {
     (
         abi_version: $abi_version_ty:ty => $abi_version_symbol:literal,
         abi_is_compatible: $abi_compatible_ty:ty => $abi_compatible_symbol:literal,
+        runtime_identity: $runtime_identity_ty:ty => $runtime_identity_symbol:literal,
         $($field:ident: $ty:ty => $symbol:literal),+ $(,)?
     ) => {
         #[allow(dead_code)]
         pub(crate) struct Api {
+            #[cfg(unix)]
             _library: ManuallyDrop<Library>,
+            #[cfg(windows)]
+            library_handle: usize,
             pub(crate) abi_version: $abi_version_ty,
             $(pub(crate) $field: $ty,)+
         }
 
         impl Api {
-            pub(crate) fn load(path: &Path) -> Result<Self, LoadError> {
+            pub(crate) fn load(
+                path: &Path,
+                open_library: impl FnOnce(&Path) -> Result<Library, String>,
+                authenticate: impl FnOnce(&[u8]) -> Result<u32, String>,
+            ) -> Result<Self, LoadError> {
                 // SAFETY: the library remains owned by Api for at least as long as every copied
                 // function pointer, and every symbol is loaded with its exact public C ABI type.
-                let library = unsafe { Library::new(path) }
-                    .map_err(|error| LoadError::Open(format!("could not load {}: {error}", path.display())))?;
-                // Resolve only the stable compatibility prefix before touching the
-                // version-dependent symbol set.
-                // SAFETY: these two symbols form the stable ABI compatibility prefix.
+                let library = open_library(path).map_err(LoadError::Open)?;
+                // Runtime identity is the only symbol resolved before the ABI and ordinary symbol
+                // tables. Its authenticated ABI must agree exactly with the subsequent export.
+                // SAFETY: this function follows the public buffer/size copy contract.
+                let runtime_identity = unsafe {
+                    *library
+                        .get::<$runtime_identity_ty>(concat!($runtime_identity_symbol, "\0").as_bytes())
+                        .map_err(|error| LoadError::MissingSymbol(format!("missing C SDK symbol {}: {error}", $runtime_identity_symbol)))?
+                };
+                let mut required = 0usize;
+                // SAFETY: the null buffer measures the required identity size.
+                let measured = unsafe { runtime_identity(std::ptr::null_mut(), &mut required) };
+                if measured != STATUS_BUFFER_TOO_SMALL || !(2..=65536).contains(&required) {
+                    return Err(LoadError::Identity("Runtime identity has an invalid size contract".into()));
+                }
+                let mut identity = vec![0u8; required];
+                let mut written = required;
+                // SAFETY: identity is writable for its exact advertised capacity.
+                let copied = unsafe { runtime_identity(identity.as_mut_ptr(), &mut written) };
+                if copied != STATUS_OK || written != required || identity.last() != Some(&0)
+                    || identity[..identity.len() - 1].contains(&0)
+                {
+                    return Err(LoadError::Identity("Runtime identity copy contract is invalid".into()));
+                }
+                let identity_abi = authenticate(&identity[..identity.len() - 1])
+                    .map_err(LoadError::Identity)?;
+                // SAFETY: the ABI version function accepts no borrowed memory.
                 let abi_version = unsafe {
                     *library
                         .get::<$abi_version_ty>(concat!($abi_version_symbol, "\0").as_bytes())
                         .map_err(|error| LoadError::MissingSymbol(format!("missing C SDK symbol {}: {error}", $abi_version_symbol)))?
                 };
-                // SAFETY: this symbol is the other stable ABI compatibility-prefix function.
+                // SAFETY: the authenticated ABI version function accepts no borrowed memory.
+                let actual = unsafe { abi_version() };
+                if identity_abi != actual {
+                    return Err(LoadError::Identity(format!(
+                        "Runtime identity ABI 0x{identity_abi:08x} disagrees with codex_agent_abi_version 0x{actual:08x}"
+                    )));
+                }
+                // SAFETY: the compatibility query accepts an encoded integer only.
                 let abi_is_compatible = unsafe {
                     *library
                         .get::<$abi_compatible_ty>(concat!($abi_compatible_symbol, "\0").as_bytes())
                         .map_err(|error| LoadError::MissingSymbol(format!("missing C SDK symbol {}: {error}", $abi_compatible_symbol)))?
                 };
-                // SAFETY: both version functions accept no borrowed memory.
-                let actual = unsafe { abi_version() };
-                // SAFETY: the compatibility query accepts an encoded integer only.
+                // SAFETY: the authenticated compatibility query accepts an encoded integer only.
                 let compatible = unsafe { abi_is_compatible(ABI_VERSION) };
                 if actual >> 24 != 1 || compatible != 1 {
                     return Err(LoadError::UnsupportedAbi(actual));
@@ -343,8 +381,25 @@ macro_rules! api {
                     };
                 )+
                 // Kotlin/Native owns process-wide runtime state and cannot be safely unloaded.
-                Ok(Self { _library: ManuallyDrop::new(library), abi_version, $($field,)+ })
+                #[cfg(unix)]
+                let library = ManuallyDrop::new(library);
+                #[cfg(windows)]
+                let library_handle = {
+                    let platform: libloading::os::windows::Library = library.into();
+                    platform.into_raw() as usize
+                };
+                Ok(Self {
+                    #[cfg(unix)]
+                    _library: library,
+                    #[cfg(windows)]
+                    library_handle,
+                    abi_version,
+                    $($field,)+
+                })
             }
+
+            #[cfg(windows)]
+            pub(crate) fn library_handle(&self) -> usize { self.library_handle }
         }
     };
 }
@@ -352,6 +407,7 @@ macro_rules! api {
 api!(
     abi_version: AbiVersion => "codex_agent_abi_version",
     abi_is_compatible: AbiCompatible => "codex_agent_abi_is_compatible",
+    runtime_identity: RuntimeIdentity => "codex_agent_runtime_identity",
     context_create: ContextCreate => "codex_agent_context_create",
     context_destroy: ContextDestroy => "codex_agent_context_destroy",
     host_create: HostCreate => "codex_agent_host_create",

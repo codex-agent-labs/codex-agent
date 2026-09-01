@@ -4,44 +4,32 @@
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import os
 import re
-import subprocess
-from functools import lru_cache
 from pathlib import Path
 
+if __package__:
+    from .legacy_lanes import LANES
+    from .product_legacy import project_legacy_lanes
+    from .products.inventory import (
+        changed_git_paths as changed_paths,
+        git_inventory as inventory,
+        run_git,
+    )
+    from .products.registry import PHASE_INSTANCE_IDS
+    from .products.selection import classify_paths
+else:
+    from legacy_lanes import LANES
+    from product_legacy import project_legacy_lanes
+    from products.inventory import (  # type: ignore[no-redef]
+        changed_git_paths as changed_paths,
+        git_inventory as inventory,
+        run_git,
+    )
+    from products.registry import PHASE_INSTANCE_IDS
+    from products.selection import classify_paths
 
-LANES = (
-    "contracts",
-    "portable",
-    "android",
-    "node-js",
-    "node-wasm",
-    "desktop-macos-arm64",
-    "desktop-macos-x64",
-    "desktop-linux-arm64",
-    "desktop-linux-x64",
-    "desktop-windows-x64",
-    "ios-native-tests",
-    "ios-rust-device",
-    "ios-rust-simulator",
-    "ios-framework-device",
-    "ios-framework-simulator",
-    "ios-kotlin-tests",
-    "ios-swift-build",
-    "ios-swift-tests",
-    "ios-package",
-    "ios-privacy-metrics",
-    "consumer-common",
-    "consumer-android",
-    "consumer-desktop",
-    "consumer-ios-device",
-    "consumer-ios-simulator",
-    "consumer-node-js",
-    "consumer-node-wasm",
-)
 
 CATEGORIES = ("production", "test", "metadata")
 
@@ -136,7 +124,6 @@ SUPPORT_TRIGGER_ACTIONS = {
     "ios-package": ("build", "test"),
 }
 
-HARMLESS_PATHS = ("README.md", "docs/**", ".gitignore", ".editorconfig")
 FULL_VALIDATION_PATHS = {
     ".github/workflows/ci.yml",
     ".github/workflows/product-validation.yml",
@@ -404,17 +391,6 @@ def evaluate_remote_build_authorization(
     return False, "unsupported-event", False
 
 
-def run_git(root: Path, *arguments: str, binary: bool = False) -> bytes | str:
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=root,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    return result.stdout if binary else result.stdout.decode("utf-8")
-
-
 def read_pathspecs(root: Path, lane: str, category: str) -> tuple[str, ...]:
     path = root / "ci" / "lanes" / f"{lane}.{category}.pathspec"
     if not path.exists():
@@ -446,71 +422,6 @@ def effective_pathspecs(root: Path, lane: str, category: str) -> tuple[str, ...]
                 if upstream in downstreams
             )
     return tuple(sorted(specs))
-
-
-@lru_cache(maxsize=8)
-def tree_entries(root: Path, revision: str) -> tuple[tuple[str, str], ...]:
-    raw = run_git(root, "ls-tree", "-r", "-z", revision, binary=True)
-    entries: list[tuple[str, str]] = []
-    for record in raw.split(b"\0"):
-        if not record:
-            continue
-        metadata, path = record.split(b"\t", 1)
-        mode, kind, object_id = metadata.decode("ascii").split(" ")
-        decoded_path = path.decode("utf-8")
-        entries.append((decoded_path, f"{mode}\t{kind}\t{object_id}\t{decoded_path}"))
-    return tuple(entries)
-
-
-def inventory(root: Path, revision: str, pathspecs: tuple[str, ...]) -> str:
-    if not pathspecs:
-        return ""
-    entries = (
-        record
-        for path, record in tree_entries(root, revision)
-        if any(fnmatch.fnmatchcase(path, pathspec) for pathspec in pathspecs)
-    )
-    return "".join(f"{entry}\n" for entry in sorted(entries))
-
-
-def inventory_paths(contents: str) -> set[str]:
-    return {line.split("\t", 3)[3] for line in contents.splitlines() if line}
-
-
-@lru_cache(maxsize=8)
-def historical_pathspecs(root: Path, revision: str) -> tuple[str, ...]:
-    raw = str(run_git(root, "grep", "-h", "-e", ".", revision, "--", "ci/lanes/*.pathspec"))
-    return tuple(
-        line
-        for raw_line in raw.splitlines()
-        if (line := raw_line.strip()) and not line.startswith("#")
-    )
-
-
-def changed_paths(root: Path, base: str, target: str) -> tuple[set[str], set[str]]:
-    raw = run_git(root, "diff", "--name-status", "-z", base, target, binary=True)
-    tokens = raw.split(b"\0")
-    result: set[str] = set()
-    removals: set[str] = set()
-    index = 0
-    while index < len(tokens) and tokens[index]:
-        status = tokens[index].decode("ascii")
-        index += 1
-        count = 2 if status.startswith(("R", "C")) else 1
-        paths: list[str] = []
-        for _ in range(count):
-            if index >= len(tokens) or not tokens[index]:
-                raise ValueError(f"Malformed git diff entry for {status}")
-            paths.append(tokens[index].decode("utf-8"))
-            index += 1
-        if status.startswith("R"):
-            result.update(paths)
-            removals.add(paths[0])
-        else:
-            result.add(paths[-1])
-            if status.startswith("D"):
-                removals.add(paths[-1])
-    return result, removals
 
 
 def lane_action(root: Path, lane: str, category: str) -> bool:
@@ -545,6 +456,128 @@ def require_action(
     if reason not in state["reasons"]:
         state["reasons"].append(reason)
     return changed
+
+
+def _legacy_lane_states(
+    root: Path,
+    changes: list[str] | tuple[str, ...],
+    *,
+    force_full: bool,
+    remote_authorized: bool,
+    remote_reason: str,
+) -> tuple[dict[str, dict[str, object]], bool, list[str]]:
+    selection = classify_paths(changes)
+    unresolved = PHASE_INSTANCE_IDS if force_full else selection.instances
+    projection = project_legacy_lanes(unresolved)
+    lanes: dict[str, dict[str, object]] = {
+        lane: {
+            "build": False,
+            "test": False,
+            "metadata": False,
+            "reuseAllowed": True,
+            "reasons": [],
+        }
+        for lane in LANES
+    }
+    unknown = list(selection.unknown_paths)
+    full = force_full or bool(unknown) or projection.full
+
+    if full:
+        reason = (
+            "ci-full-label" if force_full else
+            "unknown-path" if unknown else
+            "legacy-projection-fallback"
+        )
+        for lane in LANES:
+            require_production(root, lanes, lane, reason)
+            lanes[lane]["reuseAllowed"] = selection.reuse_allowed
+    else:
+        for lane, action in projection.actions:
+            require_action(root, lanes, lane, action, "selected-product-phase")
+        propagated = True
+        while propagated:
+            propagated = False
+            if any(
+                lanes[lane][action]
+                for lane in M8_OWNER_LANES
+                for action in ("build", "test", "metadata")
+            ):
+                propagated |= require_action(
+                    root,
+                    lanes,
+                    "ios-swift-tests",
+                    "test",
+                    "required-by:cross-language-m8",
+                )
+            for upstream, downstreams in DEPENDENCIES.items():
+                if lanes[upstream]["build"] and any(
+                    not reason.startswith("required-by:")
+                    for reason in lanes[upstream]["reasons"]
+                ):
+                    for downstream in downstreams:
+                        propagated |= require_production(
+                            root, lanes, downstream, f"dependency:{upstream}",
+                        )
+            for downstream, upstreams in SUPPORT_DEPENDENCIES.items():
+                if any(lanes[downstream][action] for action in SUPPORT_TRIGGER_ACTIONS.get(
+                    downstream, ("build", "test", "metadata"),
+                )):
+                    for upstream, action in upstreams:
+                        propagated |= require_action(
+                            root, lanes, upstream, action, f"required-by:{downstream}",
+                        )
+
+    if not remote_authorized:
+        for state in lanes.values():
+            state.update(build=False, test=False, metadata=False, reuseAllowed=False)
+            state["reasons"] = [remote_reason]
+    return lanes, full, unknown
+
+
+def _plan_repository_root(plan_path: Path | None = None) -> Path:
+    if plan_path is not None:
+        for candidate in plan_path.resolve().parents:
+            if (candidate / ".git").exists() and (candidate / "ci/lanes").is_dir():
+                return candidate
+    return Path(__file__).resolve().parents[1]
+
+
+def validate_legacy_lane_projection(
+    plan: dict[str, object],
+    repository_root: Path | None = None,
+    plan_path: Path | None = None,
+) -> None:
+    changes = plan.get("changedPaths")
+    if (
+        not isinstance(changes, list)
+        or any(type(path) is not str for path in changes)
+        or changes != sorted(set(changes))
+    ):
+        raise ValueError("Impact plan changed paths are malformed")
+    remote_authorized, remote_reason = validate_remote_build_authorization(plan)
+    force_full = plan.get("fullRequested")
+    if type(force_full) is not bool:
+        raise ValueError("Impact plan full-request flag is malformed")
+    root = repository_root or _plan_repository_root(plan_path)
+    lanes, full, unknown = _legacy_lane_states(
+        root,
+        changes,
+        force_full=force_full,
+        remote_authorized=remote_authorized,
+        remote_reason=remote_reason,
+    )
+    if not (
+        plan.get("lanes") == lanes
+        and plan.get("full") == full
+        and plan.get("unknownPaths") == unknown
+    ):
+        raise ValueError("Impact plan is not the authoritative product-to-legacy projection")
+    android_evidence = plan.get("androidEvidenceRequired")
+    if type(android_evidence) is not bool:
+        raise ValueError("Impact plan Android evidence flag is malformed")
+    android = plan["lanes"]["android"]
+    if android_evidence and not any(android[action] for action in ("build", "test", "metadata")):
+        raise ValueError("Impact plan requires Android evidence without Android work")
 
 
 def plan(
@@ -582,94 +615,21 @@ def plan(
         github_sha=github_sha,
         dispatch_approved=dispatch_approved,
     )
-    changes, removals = changed_paths(root, base_commit, target_commit)
-    lanes: dict[str, dict[str, object]] = {}
-    covered: set[str] = set()
+    changes, _ = changed_paths(root, base_commit, target_commit)
+    lanes, full, unknown = _legacy_lane_states(
+        root,
+        changes,
+        force_full=force_full,
+        remote_authorized=remote_authorized,
+        remote_reason=remote_reason,
+    )
     target_inventories: dict[tuple[str, str], str] = {}
 
     for lane in LANES:
-        state = {
-            "build": False,
-            "test": False,
-            "metadata": False,
-            "reuseAllowed": True,
-            "reasons": [],
-        }
-        lanes[lane] = state
-        for category, action in (("production", "build"), ("test", "test"), ("metadata", "metadata")):
-            specs = effective_pathspecs(root, lane, category)
-            base_inventory = inventory(root, base_commit, specs)
-            target_inventory = inventory(root, target_commit, specs)
-            target_inventories[(lane, category)] = target_inventory
-            covered.update(inventory_paths(base_inventory))
-            covered.update(inventory_paths(target_inventory))
-            if base_inventory != target_inventory:
-                state[action] = True
-                state["reasons"].append(f"{category}-input-changed")
-        if state["build"]:
-            if lane_action(root, lane, "test"):
-                state["test"] = True
-            if lane_action(root, lane, "metadata"):
-                state["metadata"] = True
-
-    harmless_base = inventory(root, base_commit, HARMLESS_PATHS)
-    harmless_target = inventory(root, target_commit, HARMLESS_PATHS)
-    covered.update(inventory_paths(harmless_base))
-    covered.update(inventory_paths(harmless_target))
-    prior_specs = historical_pathspecs(root, base_commit)
-    covered.update(
-        path
-        for path in removals
-        if any(fnmatch.fnmatchcase(path, spec) for spec in prior_specs)
-    )
-    unknown = sorted(changes - covered)
-    core_change = any(
-        path in FULL_VALIDATION_PATHS or path.startswith(FULL_VALIDATION_PREFIXES)
-        for path in changes
-    )
-    full = force_full or bool(unknown) or core_change
-
-    if full:
-        reason = "ci-full-label" if force_full else "planner-core-changed" if core_change else "unknown-path"
-        for lane in LANES:
-            require_production(root, lanes, lane, reason)
-            lanes[lane]["reuseAllowed"] = not bool(unknown)
-    else:
-        propagated = True
-        while propagated:
-            propagated = False
-            if any(
-                lanes[lane][action]
-                for lane in M8_OWNER_LANES
-                for action in ("build", "test", "metadata")
-            ):
-                propagated |= require_action(
-                    root,
-                    lanes,
-                    "ios-swift-tests",
-                    "test",
-                    "required-by:cross-language-m8",
-                )
-            for upstream, downstreams in DEPENDENCIES.items():
-                if lanes[upstream]["build"] and any(
-                    not reason.startswith("required-by:")
-                    for reason in lanes[upstream]["reasons"]
-                ):
-                    for downstream in downstreams:
-                        propagated |= require_production(root, lanes, downstream, f"dependency:{upstream}")
-            for downstream, upstreams in SUPPORT_DEPENDENCIES.items():
-                if any(lanes[downstream][action] for action in SUPPORT_TRIGGER_ACTIONS.get(
-                    downstream, ("build", "test", "metadata"),
-                )):
-                    for upstream, action in upstreams:
-                        propagated |= require_action(
-                            root, lanes, upstream, action, f"required-by:{downstream}",
-                        )
-
-    if not remote_authorized:
-        for state in lanes.values():
-            state.update(build=False, test=False, metadata=False, reuseAllowed=False)
-            state["reasons"] = [remote_reason]
+        for category in CATEGORIES:
+            target_inventories[(lane, category)] = inventory(
+                root, target_commit, effective_pathspecs(root, lane, category),
+            )
 
     result: dict[str, object] = {
         "schemaVersion": 1,
@@ -686,12 +646,14 @@ def plan(
         "androidEvidenceRequired": require_android_evidence and any(
             lanes["android"][action] for action in ("build", "test", "metadata")
         ),
+        "fullRequested": force_full,
         "full": full,
         "unknownPaths": unknown,
         "changedPaths": sorted(changes),
         "lanes": lanes,
     }
     validate_remote_build_authorization(result)
+    validate_legacy_lane_projection(result, root)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     inventory_root = output.parent / "inventories"

@@ -19,10 +19,19 @@ val repositoryRootDirectory = layout.dir(providers.provider { repositoryRootFile
 val productTooling = layout.dir(providers.provider { repositoryRootFile.resolve("ci/products") })
 val runtimeProductTooling = files(productTooling)
 val runtimeProductVersion = providers.provider { project.version.toString() }
+val verifiedContractManifestFile = layout.file(providers.provider {
+    rootProject.extra["codexAgent.verifiedContractManifest"] as File
+})
 val contractBundleRoot = providers.gradleProperty("codexAgent.contractManifest")
     .map(::File)
     .map { it.parentFile }
 val desktopManifestFile = layout.projectDirectory.file("codex-app-server-distributions.json")
+val runtimeAbiContractFile = layout.projectDirectory.file("native/c-api/abi-contract.json")
+val runtimeBinaryFlagsFile = layout.projectDirectory.file("native/c-api/binary-flags.json")
+val runtimeAbiHeaderFile = layout.projectDirectory.file("native/c-api/include/codex_agent.h")
+val runtimeAbiMacosExportsFile = layout.projectDirectory.file("native/c-api/exports/macos.exports")
+val runtimeAbiLinuxMapFile = layout.projectDirectory.file("native/c-api/exports/linux.map")
+val runtimeAbiWindowsDefFile = layout.projectDirectory.file("native/c-api/exports/windows.def")
 val desktopRuntimeCompatibilityVersion = providers.provider {
     runtimeCompatibilityVersion(project.version.toString())
 }
@@ -33,6 +42,23 @@ val generateDesktopDistributionSource = tasks.register<GenerateDesktopDistributi
     manifestFile.set(desktopManifestFile)
     libraryVersion.set(desktopRuntimeCompatibilityVersion)
     outputDirectory.set(layout.buildDirectory.dir("generated/distributions/kotlin"))
+}
+val generateRuntimeAbiSource = tasks.register<GenerateRuntimeAbiSourceTask>(
+    "generateRuntimeAbiSource",
+) {
+    runtimeBinaryPlan.set(layout.file(providers.gradleProperty("codexAgent.runtimeBinaryPlan").map(::File)))
+    repositoryRevision.set(providers.gradleProperty("codexAgent.repositoryRevision"))
+    expectedTarget.set(providers.gradleProperty("codexAgent.target"))
+    runtimeVersion.set(runtimeProductVersion)
+    expectedFlagsDigest.set(providers.gradleProperty("codexAgent.runtimeBinaryFlagsDigest"))
+    verifiedContractManifest.set(verifiedContractManifestFile)
+    repositoryRoot.set(repositoryRootDirectory)
+    abiContractFile.set(runtimeAbiContractFile)
+    reviewedHeaderFile.set(runtimeAbiHeaderFile)
+    macosExportsFile.set(runtimeAbiMacosExportsFile)
+    linuxMapFile.set(runtimeAbiLinuxMapFile)
+    windowsDefFile.set(runtimeAbiWindowsDefFile)
+    outputDirectory.set(layout.buildDirectory.dir("generated/runtime-abi/kotlin"))
 }
 val desktopManifest = readDesktopCodexManifest(desktopManifestFile.asFile)
 val localArchiveDirectory = providers.gradleProperty("codexAgent.desktopArchiveDirectory")
@@ -46,7 +72,29 @@ val supervisorDirectory = providers.gradleProperty("codexAgent.desktopSupervisor
 private val cAbiCatalog = readRuntimeCAbiCatalog(
     providers.of(RuntimeCAbiCatalogValueSource::class.java) {}.get(),
 )
+private val runtimeAbiContract = readRuntimeAbiContract(
+    providers.of(RuntimeAbiContractValueSource::class.java) {
+        parameters.abiContractFile.set(runtimeAbiContractFile)
+    }.get(),
+)
+private val runtimeBinaryFlags = readRuntimeBinaryFlags(
+    providers.of(RuntimeBinaryFlagsValueSource::class.java) {
+        parameters.flagsFile.set(runtimeBinaryFlagsFile)
+    }.get(),
+).also { verifyRuntimeBinaryFlagsAgainstAbi(it, runtimeAbiContract) }
+private val requestedRuntimeTarget = providers.gradleProperty("codexAgent.target").get()
+private val requestedRuntimePhase = providers.gradleProperty("codexAgent.phase").orNull
+if (requestedRuntimeTarget in runtimeBinaryFlags && (requestedRuntimePhase == null || requestedRuntimePhase == "binary")) {
+    verifyRuntimeBinaryFlagsAgainstPlan(
+        runtimeBinaryFlags,
+        requestedRuntimeTarget,
+        providers.gradleProperty("codexAgent.runtimeBinaryFlagsDigest").get(),
+    )
+}
 private val cAbiTargetSpecs = cAbiCatalog.targets
+fun runtimeBinaryFlagsForKotlinTarget(target: String): RuntimeBinaryFlags = runtimeBinaryFlags.getValue(
+    cAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-"),
+)
 fun cAbiArchiveFileName(libraryVersion: String, target: String): String =
     cAbiTargetSpecs.getValue(target).archiveFileNameTemplate.replace("{libraryVersion}", libraryVersion)
 fun cAbiPackageEvidenceFileName(target: String): String = cAbiTargetSpecs.getValue(target).evidenceFileName
@@ -60,9 +108,12 @@ val hostSupervisorName = if (hostTarget == "mingwX64") {
 } else {
     "codex-process-supervisor"
 }
-val mingwGnuImportLibrary = layout.buildDirectory.file(
-    "bin/mingwX64/releaseShared/libcodex_agent.dll.a",
-)
+val mingwRuntimeBinaryFlags = runtimeBinaryFlagsForKotlinTarget("mingwX64")
+val mingwGnuImportLibrary = layout.file(providers.provider {
+    mingwRuntimeBinaryFlags.roleFile(
+        "gnuImportLibraryOutput", repositoryRootFile, layout.buildDirectory.get().asFile,
+    )
+})
 val compileDesktopProcessSupervisor = tasks.register<CompileDesktopProcessSupervisorTask>(
     "compileDesktopProcessSupervisor",
 ) {
@@ -71,6 +122,9 @@ val compileDesktopProcessSupervisor = tasks.register<CompileDesktopProcessSuperv
     sourceFile.set(layout.projectDirectory.file("native/supervisor/codex_process_supervisor.c"))
     compiler.set(providers.gradleProperty("codexAgent.desktopSupervisorCompiler")
         .orElse(if (hostTarget == "mingwX64") "cl" else "cc"))
+    compilerArguments.set(
+        hostTarget?.let { runtimeBinaryFlagsForKotlinTarget(it).supervisorCompilerArguments }.orEmpty(),
+    )
     windows.set(hostTarget == "mingwX64")
     outputFile.set(layout.buildDirectory.file("supervisor/${hostTarget ?: "unsupported"}/$hostSupervisorName"))
     enabled = hostTarget != null
@@ -170,42 +224,27 @@ extensions.configure<KotlinMultiplatformExtension> {
     }
     desktopTargets.forEach { target ->
         target.binaries.sharedLib {
-            val exportPolicyFile = layout.projectDirectory.file(
-                when {
-                    target.name.startsWith("macos") -> "native/c-api/exports/macos.exports"
-                    target.name.startsWith("linux") -> "native/c-api/exports/linux.map"
-                    target.name == "mingwX64" -> "native/c-api/exports/windows.def"
-                    else -> error("Unsupported Desktop C ABI target ${target.name}")
-                },
-            )
+            val binaryFlags = runtimeBinaryFlagsForKotlinTarget(target.name)
+            val exportPolicyFile = layout.file(providers.provider {
+                binaryFlags.roleFile("exportPolicy", repositoryRootFile, layout.buildDirectory.get().asFile)
+            }).get()
             linkTaskProvider.configure {
                 inputs.file(exportPolicyFile)
                     .withPropertyName("codexAgentCAbiExportPolicy")
                     .withPathSensitivity(PathSensitivity.RELATIVE)
+                inputs.file(runtimeAbiContractFile)
+                    .withPropertyName("codexAgentCAbiContract")
+                    .withPathSensitivity(PathSensitivity.RELATIVE)
+                inputs.property("codexAgentRuntimeBinaryFlagsDigest", binaryFlags.flagsDigest)
             }
             baseName = "codex_agent"
-            when {
-                target.name.startsWith("macos") -> linkerOpts(
-                    "-Wl,-exported_symbols_list,${exportPolicyFile.asFile}",
-                    "-Wl,-install_name,@rpath/libcodex_agent.dylib",
-                    "-Wl,-compatibility_version,1.0.0",
-                    "-Wl,-current_version,1.12.0",
-                )
-                target.name.startsWith("linux") -> linkerOpts(
-                    "-Wl,--version-script,${exportPolicyFile.asFile}",
-                    "-Wl,-soname,libcodex_agent.so.1",
-                )
-                target.name == "mingwX64" -> {
-                    linkTaskProvider.configure {
-                        outputs.file(mingwGnuImportLibrary)
-                    }
-                    linkerOpts(
-                        "-Wl,--exclude-all-symbols",
-                        "-Wl,--out-implib,${mingwGnuImportLibrary.get().asFile.absolutePath}",
-                        exportPolicyFile.asFile.absolutePath,
-                    )
-                }
+            if (target.name == "mingwX64") {
+                linkTaskProvider.configure { outputs.file(mingwGnuImportLibrary) }
             }
+            linkerOpts(*binaryFlags.resolvedLinkerArguments(
+                repositoryRootFile,
+                layout.buildDirectory.get().asFile,
+            ).toTypedArray())
         }
         target.compilations.getByName("main").cinterops.create("codexDesktop") {
             defFile(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_desktop.def"))
@@ -217,6 +256,7 @@ extensions.configure<KotlinMultiplatformExtension> {
         }
     }
     sourceSets.getByName("commonMain").kotlin.srcDir(generateDesktopDistributionSource)
+    sourceSets.getByName("nativeMain").kotlin.srcDir(generateRuntimeAbiSource)
 }
 
 val cAbiCandidateCommit = providers.gradleProperty("codexAgent.candidateCommit")
@@ -224,14 +264,11 @@ val cAbiCandidateTree = providers.gradleProperty("codexAgent.candidateTree")
 val cAbiReviewedHeader = layout.projectDirectory.file("native/c-api/include/codex_agent.h")
 val cAbiLicense = layout.file(providers.provider { repositoryRootFile.resolve("LICENSE") })
 val cAbiNotice = layout.file(providers.provider { repositoryRootFile.resolve("THIRD_PARTY_NOTICES.md") })
-fun cAbiExportPolicy(target: String) = layout.projectDirectory.file(
-    when {
-        target.startsWith("macos") -> "native/c-api/exports/macos.exports"
-        target.startsWith("linux") -> "native/c-api/exports/linux.map"
-        target == "mingwX64" -> "native/c-api/exports/windows.def"
-        else -> error("Unsupported C ABI package target: $target")
-    },
-)
+fun cAbiExportPolicy(target: String) = layout.file(providers.provider {
+    runtimeBinaryFlagsForKotlinTarget(target).roleFile(
+        "exportPolicy", repositoryRootFile, layout.buildDirectory.get().asFile,
+    )
+}).get()
 fun cAbiReleaseLibrary(target: String) = layout.buildDirectory.file(
     "bin/$target/releaseShared/" + when {
         target.startsWith("macos") -> "libcodex_agent.dylib"
@@ -240,7 +277,11 @@ fun cAbiReleaseLibrary(target: String) = layout.buildDirectory.file(
         else -> error("Unsupported C ABI package target: $target")
     },
 )
-val mingwMsvcImportLibrary = layout.buildDirectory.file("c-abi/mingwX64/codex_agent.lib")
+val mingwMsvcImportLibrary = layout.file(providers.provider {
+    mingwRuntimeBinaryFlags.roleFile(
+        "msvcImportLibraryOutput", repositoryRootFile, layout.buildDirectory.get().asFile,
+    )
+})
 val generateMingwX64MsvcImportLibrary = tasks.register<Exec>("generateMingwX64MsvcImportLibrary") {
     group = "distribution"
     description = "Generates the reviewed Windows C ABI MSVC import library."
@@ -248,14 +289,14 @@ val generateMingwX64MsvcImportLibrary = tasks.register<Exec>("generateMingwX64Ms
     val definition = cAbiExportPolicy("mingwX64")
     val tool = providers.gradleProperty("codexAgent.cAbiTool.msvcImport").orElse("lib")
     inputs.file(definition).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.property("codexAgentRuntimeBinaryFlagsDigest", mingwRuntimeBinaryFlags.flagsDigest)
     inputs.property("tool", tool)
     outputs.file(mingwMsvcImportLibrary)
     outputs.upToDateWhen { false }
-    commandLine(
-        tool.get(), "/nologo", "/machine:x64", "/brepro",
-        "/def:${definition.asFile.absolutePath}",
-        "/out:${mingwMsvcImportLibrary.get().asFile.absolutePath}",
-    )
+    commandLine(listOf(tool.get()) + mingwRuntimeBinaryFlags.resolvedMsvcOptions(
+        repositoryRootFile,
+        layout.buildDirectory.get().asFile,
+    ))
     doFirst {
         outputs.files.singleFile.parentFile.mkdirs()
     }
@@ -511,6 +552,8 @@ val generateCAbiBootstrapEvidence =
     contractPublicKey.set(layout.file(providers.gradleProperty("codexAgent.contractPublicKey").map(::File)))
     contractVersion.set(providers.gradleProperty("codexAgent.contractVersion"))
     contractComponent.set("macos-arm64")
+    expectedPublicSymbolCount.set(cAbiCatalog.symbolCount)
+    expectedLoaderVersion.set(cAbiTargetSpecs.getValue("macosArm64").expectedMachOLoaderVersion())
     repositoryRoot.set(repositoryRootDirectory)
     reviewedHeader.set(layout.projectDirectory.file("native/c-api/include/codex_agent.h"))
     cinteropDefinition.set(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_agent_c.def"))

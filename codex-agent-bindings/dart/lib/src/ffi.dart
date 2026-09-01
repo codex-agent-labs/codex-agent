@@ -5,8 +5,9 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'errors.dart';
+import 'runtime_compatibility.dart';
 
-const int requiredAbiVersion = (1 << 24) | (12 << 16);
+const int requiredAbiVersion = (1 << 24) | (13 << 16);
 
 final class CodexNativeContext extends Opaque {}
 
@@ -101,15 +102,55 @@ typedef CodexAbiVersionNative = Uint32 Function();
 typedef CodexAbiVersionDart = int Function();
 typedef CodexAbiCompatibleNative = Int32 Function(Uint32);
 typedef CodexAbiCompatibleDart = int Function(int);
+typedef CodexRuntimeIdentityNative = Int32 Function(
+  Pointer<Uint8>,
+  Pointer<Size>,
+);
+typedef CodexRuntimeIdentityDart = int Function(Pointer<Uint8>, Pointer<Size>);
+
+typedef _OpenNative = Int32 Function(Pointer<Uint8>, Int32);
+typedef _OpenDart = int Function(Pointer<Uint8>, int);
+typedef _CloseNative = Int32 Function(Int32);
+typedef _CloseDart = int Function(int);
+typedef _SeekNative = Int64 Function(Int32, Int64, Int32);
+typedef _SeekDart = int Function(int, int, int);
+typedef _FstatNative = Int32 Function(Int32, Pointer<Uint8>);
+typedef _FstatDart = int Function(int, Pointer<Uint8>);
+typedef _StatNative = Int32 Function(Pointer<Uint8>, Pointer<Uint8>);
+typedef _StatDart = int Function(Pointer<Uint8>, Pointer<Uint8>);
+typedef _CreateFileNative = IntPtr Function(
+  Pointer<Uint16>,
+  Uint32,
+  Uint32,
+  Pointer<Void>,
+  Uint32,
+  Uint32,
+  IntPtr,
+);
+typedef _CreateFileDart = int Function(
+  Pointer<Uint16>,
+  int,
+  int,
+  Pointer<Void>,
+  int,
+  int,
+  int,
+);
+typedef _CloseHandleNative = Int32 Function(IntPtr);
+typedef _CloseHandleDart = int Function(int);
 
 typedef CodexCreateContextNative = Int32 Function(
-    Pointer<Pointer<CodexNativeContext>>);
+  Pointer<Pointer<CodexNativeContext>>,
+);
 typedef CodexCreateContextDart = int Function(
-    Pointer<Pointer<CodexNativeContext>>);
+  Pointer<Pointer<CodexNativeContext>>,
+);
 typedef CodexDestroyContextNative = Int32 Function(
-    Pointer<Pointer<CodexNativeContext>>);
+  Pointer<Pointer<CodexNativeContext>>,
+);
 typedef CodexDestroyContextDart = int Function(
-    Pointer<Pointer<CodexNativeContext>>);
+  Pointer<Pointer<CodexNativeContext>>,
+);
 
 typedef CodexCreateHostNative = Int32 Function(
   Pointer<CodexNativeContext>,
@@ -501,8 +542,9 @@ typedef CodexFreeDart = void Function(Pointer<Void>);
 
 final class NativeMemory {
   NativeMemory._(DynamicLibrary library)
-      : _malloc = library
-            .lookupFunction<CodexMallocNative, CodexMallocDart>('malloc'),
+      : _malloc = library.lookupFunction<CodexMallocNative, CodexMallocDart>(
+          'malloc',
+        ),
         _free = library.lookupFunction<CodexFreeNative, CodexFreeDart>('free');
 
   factory NativeMemory.platform() {
@@ -532,8 +574,9 @@ final NativeMemory nativeMemory = NativeMemory.platform();
 
 final class NativeString {
   NativeString(String value) : _bytes = utf8.encode(value) {
-    final allocatedView =
-        nativeMemory.allocate<CodexStringView>(sizeOf<CodexStringView>());
+    final allocatedView = nativeMemory.allocate<CodexStringView>(
+      sizeOf<CodexStringView>(),
+    );
     Pointer<Uint8> data = nullptr;
     try {
       if (_bytes.isNotEmpty) {
@@ -596,12 +639,11 @@ String libraryNameFor(String classifier) {
 }
 
 String resolveLibraryPathSync([String? explicit]) {
-  final configured = explicit ?? Platform.environment['CODEX_AGENT_LIBRARY'];
-  if (configured != null && configured.isNotEmpty) {
-    final file = File(configured).absolute;
-    if (!file.existsSync()) {
-      throw CodexException('Codex Agent C SDK not found at ${file.path}');
-    }
+  final environment = Platform.environment['CODEX_AGENT_LIBRARY'];
+  final configured = explicit ?? environment;
+  if (configured != null) {
+    final file = File(configured);
+    requireAbsoluteRegularFile(file, 'Codex Agent C SDK');
     return file.path;
   }
 
@@ -617,7 +659,9 @@ String resolveLibraryPathSync([String? explicit]) {
       'or set CODEX_AGENT_LIBRARY',
     );
   }
-  return File.fromUri(uri).path;
+  final packaged = File.fromUri(uri);
+  requireAbsoluteRegularFile(packaged, 'packaged Codex Agent C SDK');
+  return packaged.path;
 }
 
 Future<String> resolveLibraryPath([String? explicit]) async =>
@@ -650,13 +694,9 @@ final class NativeApi {
           'codex_agent_host_release',
         ),
         hostStart = library.lookupFunction<CodexNativeHostOperationNative,
-            CodexNativeHostOperationDart>(
-          'codex_agent_host_start',
-        ),
+            CodexNativeHostOperationDart>('codex_agent_host_start'),
         hostClose = library.lookupFunction<CodexNativeHostOperationNative,
-            CodexNativeHostOperationDart>(
-          'codex_agent_host_close',
-        ),
+            CodexNativeHostOperationDart>('codex_agent_host_close'),
         hostSelectWorkspace = library.lookupFunction<
                 CodexNativeHostSelectWorkspaceNative,
                 CodexNativeHostSelectWorkspaceDart>(
@@ -708,10 +748,9 @@ final class NativeApi {
             CodexNativeConversationsOpenNative,
             CodexNativeConversationsOpenDart>('codex_agent_conversations_open'),
         conversationRelease = library.lookupFunction<
-            CodexReleaseHandleNative<CodexNativeConversation>,
-            CodexReleaseHandleDart<CodexNativeConversation>>(
-          'codex_agent_conversation_release',
-        ),
+                CodexReleaseHandleNative<CodexNativeConversation>,
+                CodexReleaseHandleDart<CodexNativeConversation>>(
+            'codex_agent_conversation_release'),
         conversationSame = library.lookupFunction<
                 CodexNativeConversationSameNative,
                 CodexNativeConversationSameDart>(
@@ -745,7 +784,9 @@ final class NativeApi {
                 CodexSubscribeDart<CodexNativeConversation>>(
             'codex_agent_conversation_state_subscribe'),
         operationCancel = library.lookupFunction<CodexCancelOperationNative,
-            CodexCancelOperationDart>('codex_agent_operation_cancel'),
+            CodexCancelOperationDart>(
+          'codex_agent_operation_cancel',
+        ),
         operationResult = library.lookupFunction<
             CodexNativeOperationResultNative,
             CodexNativeOperationResultDart>('codex_agent_operation_result'),
@@ -768,10 +809,9 @@ final class NativeApi {
                 CodexReleaseHandleDart<CodexNativeOperation>>(
             'codex_agent_operation_destroy'),
         subscriptionDestroy = library.lookupFunction<
-            CodexReleaseHandleNative<CodexNativeSubscription>,
-            CodexReleaseHandleDart<CodexNativeSubscription>>(
-          'codex_agent_subscription_destroy',
-        ),
+                CodexReleaseHandleNative<CodexNativeSubscription>,
+                CodexReleaseHandleDart<CodexNativeSubscription>>(
+            'codex_agent_subscription_destroy'),
         snapshotDestroy = library.lookupFunction<
                 CodexReleaseHandleNative<CodexNativeSnapshot>,
                 CodexReleaseHandleDart<CodexNativeSnapshot>>(
@@ -782,11 +822,14 @@ final class NativeApi {
         ),
         hostStateAgent = library.lookupFunction<CodexNativeHostStateAgentNative,
             CodexNativeHostStateAgentDart>('codex_agent_host_state_agent'),
-        hostStateFailure = library.lookupFunction<CodexStateFailureNative,
-            CodexStateFailureDart>('codex_agent_host_state_failure'),
+        hostStateFailure = library
+            .lookupFunction<CodexStateFailureNative, CodexStateFailureDart>(
+          'codex_agent_host_state_failure',
+        ),
         hostStateHasWorkspace =
             library.lookupFunction<CodexStateIntNative, CodexStateIntDart>(
-                'codex_agent_host_state_has_workspace'),
+          'codex_agent_host_state_has_workspace',
+        ),
         hostStateWorkspacePath = library.lookupFunction<
                 CodexCopySnapshotStringNative, CodexCopySnapshotStringDart>(
             'codex_agent_host_state_workspace_path_copy'),
@@ -795,7 +838,8 @@ final class NativeApi {
             'codex_agent_host_state_workspace_display_name_copy'),
         hostStateRequirementReason =
             library.lookupFunction<CodexStateIntNative, CodexStateIntDart>(
-                'codex_agent_host_state_requirement_reason'),
+          'codex_agent_host_state_requirement_reason',
+        ),
         hostStateRequirementMessage = library.lookupFunction<
                 CodexCopySnapshotStringNative, CodexCopySnapshotStringDart>(
             'codex_agent_host_state_requirement_message_copy'),
@@ -804,13 +848,16 @@ final class NativeApi {
             CodexActiveConversationDart>('codex_agent_active_conversation'),
         conversationStateStatus =
             library.lookupFunction<CodexStateIntNative, CodexStateIntDart>(
-                'codex_agent_conversation_state_status'),
-        conversationStateFailure = library.lookupFunction<
-            CodexStateFailureNative,
-            CodexStateFailureDart>('codex_agent_conversation_state_failure'),
+          'codex_agent_conversation_state_status',
+        ),
+        conversationStateFailure = library
+            .lookupFunction<CodexStateFailureNative, CodexStateFailureDart>(
+          'codex_agent_conversation_state_failure',
+        ),
         stateBooleanValue =
             library.lookupFunction<CodexStateIntNative, CodexStateIntDart>(
-                'codex_agent_state_boolean_value'),
+          'codex_agent_state_boolean_value',
+        ),
         failureRelease = library.lookupFunction<
                 CodexReleaseHandleNative<CodexNativeFailure>,
                 CodexReleaseHandleDart<CodexNativeFailure>>(
@@ -824,10 +871,9 @@ final class NativeApi {
                 CodexNativeFailureRecoverableDart>(
             'codex_agent_failure_is_recoverable'),
         summaryDestroy = library.lookupFunction<
-            CodexReleaseHandleNative<CodexNativeConversationSummary>,
-            CodexReleaseHandleDart<CodexNativeConversationSummary>>(
-          'codex_agent_conversation_summary_destroy',
-        ),
+                CodexReleaseHandleNative<CodexNativeConversationSummary>,
+                CodexReleaseHandleDart<CodexNativeConversationSummary>>(
+            'codex_agent_conversation_summary_destroy'),
         summaryConversationId = library.lookupFunction<
                 CodexSummaryConversationIdNative,
                 CodexSummaryConversationIdDart>(
@@ -837,12 +883,12 @@ final class NativeApi {
             'codex_agent_conversation_summary_title_copy'),
         summaryUpdated = library
             .lookupFunction<CodexSummaryUpdatedNative, CodexSummaryUpdatedDart>(
-                'codex_agent_conversation_summary_updated_at_epoch_seconds'),
-        conversationIdDestroy = library.lookupFunction<
-            CodexReleaseHandleNative<CodexNativeConversationId>,
-            CodexReleaseHandleDart<CodexNativeConversationId>>(
-          'codex_agent_conversation_id_destroy',
+          'codex_agent_conversation_summary_updated_at_epoch_seconds',
         ),
+        conversationIdDestroy = library.lookupFunction<
+                CodexReleaseHandleNative<CodexNativeConversationId>,
+                CodexReleaseHandleDart<CodexNativeConversationId>>(
+            'codex_agent_conversation_id_destroy'),
         conversationIdValue = library.lookupFunction<
                 CodexCopyConversationIdNative, CodexCopyConversationIdDart>(
             'codex_agent_conversation_id_value_copy'),
@@ -888,16 +934,7 @@ final class NativeApi {
             'codex_agent_conversation_is_turn_active_subscribe');
 
   factory NativeApi.load(String path) {
-    final api = NativeApi._(DynamicLibrary.open(path));
-    final actual = api.abiVersion();
-    if ((actual >> 24) != 1 || api.abiCompatible(requiredAbiVersion) != 1) {
-      throw CodexNativeException(
-        CodexStatus.unsupportedAbi.value,
-        'Codex Agent C SDK ABI 1.12.x is required; loaded '
-        '0x${actual.toRadixString(16).padLeft(8, '0')}',
-      );
-    }
-    return api;
+    return NativeApi._(_authenticatedRuntime(path).library);
   }
 
   final DynamicLibrary library;
@@ -985,8 +1022,298 @@ final class NativeApi {
       conversationIsTurnActiveSubscribe;
 }
 
-void checkStatus(int value, String operation,
-    {Set<CodexStatus> allow = const {}}) {
+final class _AuthenticatedRuntime {
+  const _AuthenticatedRuntime(this.library, this.digest);
+
+  final DynamicLibrary library;
+  final String digest;
+}
+
+final _authenticatedRuntimes = <String, _AuthenticatedRuntime>{};
+
+_AuthenticatedRuntime _authenticatedRuntime(
+  String path, {
+  void Function(File snapshot)? beforeDynamicOpen,
+}) {
+  final file = File(path);
+  requireAbsoluteRegularFile(file, 'Codex Agent C SDK');
+  final cached = _authenticatedRuntimes[path];
+  if (cached != null) {
+    if (runtimeFileSha256(file) != cached.digest) {
+      throw const CodexException(
+        'Codex Agent Runtime changed after authentication',
+      );
+    }
+    return cached;
+  }
+
+  final compatibility = RuntimeCompatibility.load();
+  final target = currentClassifier();
+  final packagedUri = Isolate.resolvePackageUriSync(
+    Uri.parse(
+      'package:codex_agent/src/native/$target/${libraryNameFor(target)}',
+    ),
+  );
+  final embedded = packagedUri != null &&
+      packagedUri.scheme == 'file' &&
+      File.fromUri(packagedUri).path == file.path;
+  final snapshot = snapshotRuntimeLibrary(
+    file,
+    compatibility,
+    target,
+    embedded: embedded,
+  );
+  try {
+    final library = _openProtectedRuntime(
+      snapshot,
+      beforeDynamicOpen: beforeDynamicOpen,
+    );
+    final identityAbi = compatibility.verifyRuntimeIdentity(
+      readRuntimeIdentity(library),
+      target,
+      embedded: embedded,
+    );
+    late final CodexAbiVersionDart abiVersion;
+    late final CodexAbiCompatibleDart abiCompatible;
+    try {
+      abiVersion =
+          library.lookupFunction<CodexAbiVersionNative, CodexAbiVersionDart>(
+        'codex_agent_abi_version',
+      );
+      abiCompatible = library.lookupFunction<CodexAbiCompatibleNative,
+          CodexAbiCompatibleDart>('codex_agent_abi_is_compatible');
+    } on Object {
+      throw const CodexException('Codex Agent Runtime cannot prove its ABI');
+    }
+    final actual = abiVersion();
+    if (actual != identityAbi ||
+        (actual >> 24) != compatibility.requiredAbiMajor ||
+        ((actual >> 16) & 0xff) < compatibility.minimumAbiMinor ||
+        abiCompatible(requiredAbiVersion) != 1) {
+      throw CodexNativeException(
+        CodexStatus.unsupportedAbi.value,
+        'Codex Agent C SDK ABI 1.13+ is required; loaded '
+        '0x${actual.toRadixString(16).padLeft(8, '0')}',
+      );
+    }
+    snapshot.removeAfterLoad();
+    return _authenticatedRuntimes[path] =
+        _AuthenticatedRuntime(library, snapshot.digest);
+  } catch (_) {
+    snapshot.removeAfterLoad();
+    rethrow;
+  }
+}
+
+DynamicLibrary authenticatedRuntimeLibraryForTesting(
+  String path, {
+  void Function(File snapshot)? beforeDynamicOpen,
+}) =>
+    _authenticatedRuntime(
+      path,
+      beforeDynamicOpen: beforeDynamicOpen,
+    ).library;
+
+DynamicLibrary _openProtectedRuntime(
+  RuntimeLibrarySnapshot snapshot, {
+  void Function(File snapshot)? beforeDynamicOpen,
+}) =>
+    Platform.isWindows
+        ? _openProtectedWindows(snapshot, beforeDynamicOpen)
+        : _openProtectedPosix(snapshot, beforeDynamicOpen);
+
+DynamicLibrary _openProtectedPosix(
+  RuntimeLibrarySnapshot snapshot,
+  void Function(File snapshot)? beforeDynamicOpen,
+) {
+  final process = DynamicLibrary.process();
+  final open = process.lookupFunction<_OpenNative, _OpenDart>('open');
+  final close = process.lookupFunction<_CloseNative, _CloseDart>('close');
+  final seek = process.lookupFunction<_SeekNative, _SeekDart>('lseek');
+  final fstat = Platform.isMacOS
+      ? process.lookupFunction<_FstatNative, _FstatDart>('fstat')
+      : null;
+  final stat = Platform.isMacOS
+      ? process.lookupFunction<_StatNative, _StatDart>('stat')
+      : null;
+  final path = _nativeUtf8(snapshot.file.path);
+  final noFollow = Platform.isMacOS ? 0x00000100 : 0x00020000;
+  final closeOnExec = Platform.isMacOS ? 0x01000000 : 0x00080000;
+  final descriptor = open(path, noFollow | closeOnExec);
+  nativeMemory.free(path);
+  if (descriptor < 0) {
+    throw const CodexException('Codex Agent Runtime snapshot cannot be opened');
+  }
+  final descriptorFile = File(
+    Platform.isMacOS ? '/dev/fd/$descriptor' : '/proc/self/fd/$descriptor',
+  );
+  void verifyDescriptor() {
+    if (seek(descriptor, 0, 0) != 0) {
+      throw const CodexException('Codex Agent Runtime snapshot cannot be read');
+    }
+    snapshot.verifyDescriptor(descriptorFile);
+  }
+
+  void verifyMacPathBinding() {
+    verifyDescriptor();
+    snapshot.verify();
+    final descriptorStat = nativeMemory.allocate<Uint8>(256);
+    final pathStat = nativeMemory.allocate<Uint8>(256);
+    final snapshotPath = _nativeUtf8(snapshot.file.path);
+    try {
+      if (fstat!(descriptor, descriptorStat) != 0 ||
+          stat!(snapshotPath, pathStat) != 0) {
+        throw const CodexException(
+          'Codex Agent Runtime snapshot identity cannot be read',
+        );
+      }
+      final descriptorData = ByteData.sublistView(
+        descriptorStat.asTypedList(16),
+      );
+      final pathData = ByteData.sublistView(pathStat.asTypedList(16));
+      if (descriptorData.getInt32(0, Endian.host) !=
+              pathData.getInt32(0, Endian.host) ||
+          descriptorData.getUint64(8, Endian.host) !=
+              pathData.getUint64(8, Endian.host)) {
+        throw const CodexException(
+          'Codex Agent Runtime snapshot identity changed',
+        );
+      }
+    } finally {
+      nativeMemory.free(snapshotPath);
+      nativeMemory.free(pathStat);
+      nativeMemory.free(descriptorStat);
+    }
+  }
+
+  try {
+    if (Platform.isLinux) {
+      verifyDescriptor();
+      snapshot.file.deleteSync();
+      beforeDynamicOpen?.call(snapshot.file);
+      verifyDescriptor();
+    } else {
+      verifyMacPathBinding();
+      beforeDynamicOpen?.call(snapshot.file);
+      verifyMacPathBinding();
+    }
+    seek(descriptor, 0, 0);
+    final library = DynamicLibrary.open(
+      Platform.isLinux ? descriptorFile.path : snapshot.file.path,
+    );
+    if (Platform.isLinux) {
+      verifyDescriptor();
+    } else {
+      verifyMacPathBinding();
+    }
+    return library;
+  } finally {
+    close(descriptor);
+  }
+}
+
+DynamicLibrary _openProtectedWindows(
+  RuntimeLibrarySnapshot snapshot,
+  void Function(File snapshot)? beforeDynamicOpen,
+) {
+  final kernel = DynamicLibrary.open('kernel32.dll');
+  final createFile =
+      kernel.lookupFunction<_CreateFileNative, _CreateFileDart>('CreateFileW');
+  final closeHandle = kernel
+      .lookupFunction<_CloseHandleNative, _CloseHandleDart>('CloseHandle');
+  final path = _nativeUtf16(snapshot.file.path);
+  final handle = createFile(
+    path,
+    0x80000000,
+    0x00000001,
+    nullptr,
+    3,
+    0x00200080,
+    0,
+  );
+  nativeMemory.free(path);
+  if (handle == -1) {
+    throw const CodexException('Codex Agent Runtime cannot be locked');
+  }
+  try {
+    snapshot.verify();
+    beforeDynamicOpen?.call(snapshot.file);
+    snapshot.verify();
+    final library = DynamicLibrary.open(snapshot.file.path);
+    snapshot.verify();
+    return library;
+  } finally {
+    closeHandle(handle);
+  }
+}
+
+Pointer<Uint8> _nativeUtf8(String value) {
+  final bytes = utf8.encode(value);
+  final result = nativeMemory.allocate<Uint8>(bytes.length + 1);
+  result.asTypedList(bytes.length + 1)
+    ..setRange(0, bytes.length, bytes)
+    ..[bytes.length] = 0;
+  return result;
+}
+
+Pointer<Uint16> _nativeUtf16(String value) {
+  final units = value.codeUnits;
+  final result = nativeMemory.allocate<Uint16>((units.length + 1) * 2);
+  result.asTypedList(units.length + 1)
+    ..setRange(0, units.length, units)
+    ..[units.length] = 0;
+  return result;
+}
+
+String readRuntimeIdentity(DynamicLibrary library) {
+  CodexRuntimeIdentityDart identity;
+  try {
+    identity = library
+        .lookupFunction<CodexRuntimeIdentityNative, CodexRuntimeIdentityDart>(
+      'codex_agent_runtime_identity',
+    );
+  } on Object {
+    throw const CodexException('Codex Agent Runtime cannot prove its identity');
+  }
+  final required = nativeMemory.allocate<Size>(sizeOf<Size>());
+  required.value = 0;
+  try {
+    if (identity(nullptr, required) != CodexStatus.bufferTooSmall.value ||
+        required.value < 2 ||
+        required.value > 65536) {
+      throw const CodexException('invalid Codex Agent Runtime identity query');
+    }
+    final capacity = required.value;
+    final buffer = nativeMemory.allocate<Uint8>(capacity);
+    try {
+      if (identity(buffer, required) != CodexStatus.ok.value ||
+          required.value != capacity) {
+        throw const CodexException('invalid Codex Agent Runtime identity copy');
+      }
+      final bytes = buffer.asTypedList(capacity);
+      if (bytes.last != 0 || bytes.take(capacity - 1).contains(0)) {
+        throw const CodexException(
+          'invalid Codex Agent Runtime identity bytes',
+        );
+      }
+      return utf8.decode(bytes.sublist(0, capacity - 1), allowMalformed: false);
+    } finally {
+      nativeMemory.free(buffer);
+    }
+  } on CodexException {
+    rethrow;
+  } on Object catch (error) {
+    throw CodexException('invalid Codex Agent Runtime identity: $error');
+  } finally {
+    nativeMemory.free(required);
+  }
+}
+
+void checkStatus(
+  int value,
+  String operation, {
+  Set<CodexStatus> allow = const {},
+}) {
   if (value == CodexStatus.ok.value) return;
   final status = CodexStatus.fromValue(value);
   if (allow.contains(status)) return;
@@ -1000,9 +1327,13 @@ Pointer<Pointer<T>> newHandleSlot<T extends NativeType>() {
 }
 
 String copyString<T extends NativeType>(
-  int Function(Pointer<CodexNativeContext>, Pointer<T>, Pointer<Uint8>, int,
-          Pointer<Size>)
-      copier,
+  int Function(
+    Pointer<CodexNativeContext>,
+    Pointer<T>,
+    Pointer<Uint8>,
+    int,
+    Pointer<Size>,
+  ) copier,
   Pointer<CodexNativeContext> context,
   Pointer<T> owner, {
   bool nullable = false,
@@ -1023,8 +1354,10 @@ String copyString<T extends NativeType>(
         copier(context, owner, buffer, required.value, required),
         'string copy',
       );
-      return utf8.decode(buffer.asTypedList(required.value),
-          allowMalformed: false);
+      return utf8.decode(
+        buffer.asTypedList(required.value),
+        allowMalformed: false,
+      );
     } finally {
       nativeMemory.free(buffer);
     }

@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from impact import validate_legacy_lane_projection
 from receipt import INPUT_NAMES, parse_mapping, read_json, safe_extract, validate_receipt
 
 
@@ -228,6 +229,7 @@ def reissue_transport_receipt(
 def restore(arguments: argparse.Namespace) -> dict[str, object]:
     plan_path = arguments.plan.resolve()
     plan = read_json(plan_path)
+    validate_legacy_lane_projection(plan, plan_path=plan_path)
     lane_state = plan.get("lanes", {}).get(arguments.lane)
     if not isinstance(lane_state, dict):
         raise ValueError(f"Impact plan does not contain lane {arguments.lane}")
