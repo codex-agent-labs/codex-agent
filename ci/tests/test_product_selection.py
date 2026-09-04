@@ -291,12 +291,14 @@ class ProductSelectionTest(unittest.TestCase):
                 self.assertTrue(result.reuse_allowed)
 
     def test_shared_toolchain_authority_selects_exact_native_binary_lines(self) -> None:
-        result = classify_paths(["ci/products/toolchain.py"])
-        for target in NATIVE_TARGETS:
-            self.assertIn(PhaseInstanceId("runtime", target, "binary", target), result.instances)
-        self.assertFalse(component(result, "runtime", "jvm"))
-        self.assertFalse(component(result, "runtime", "node-js"))
-        self.assertFalse(any(instance.product == "sdk" for instance in result.instances))
+        for path in ("ci/products/toolchain.py", ".github/workflows/runtime-toolchain-capture.yml"):
+            with self.subTest(path=path):
+                result = classify_paths([path])
+                for target in NATIVE_TARGETS:
+                    self.assertIn(PhaseInstanceId("runtime", target, "binary", target), result.instances)
+                self.assertFalse(component(result, "runtime", "jvm"))
+                self.assertFalse(component(result, "runtime", "node-js"))
+                self.assertFalse(any(instance.product == "sdk" for instance in result.instances))
 
     def test_target_toolchain_profile_selects_only_its_native_binary_line(self) -> None:
         path = "gradle/release/toolchains/runtime/linux-x64.json"

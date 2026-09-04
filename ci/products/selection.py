@@ -385,6 +385,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
             "sdk", "sdk-ios", "validation"
         ),
         ".github/workflows/desktop-runtime-evidence.yml": _runtime(RUNTIME_COMPONENTS),
+        ".github/workflows/runtime-toolchain-capture.yml": _runtime(NATIVE_TARGETS),
         ".github/workflows/product-validation.yml": set(ALL_INSTANCES),
         ".github/workflows/promote.yml": set(ALL_METADATA),
         ".github/workflows/publish.yml": set(ALL_METADATA),
