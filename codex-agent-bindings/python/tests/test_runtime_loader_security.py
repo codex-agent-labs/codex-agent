@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from codex_agent._ffi import (  # noqa: E402
     NativeLibrary,
+    _library_name,
     _load_compatibility,
     _read_runtime_identity,
     _snapshot_embedded_library,
@@ -134,8 +135,12 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
             "missing schema field": lambda value: value.pop("schemaVersion"),
             "boolean schema": lambda value: value.__setitem__("schemaVersion", True),
             "ABI 1.12": lambda value: value.__setitem__("cAbiVersion", "1.12.0"),
+            "wrong ABI minor": lambda value: value.__setitem__("cAbiVersion", "1.0.0"),
             "wrong ABI major": lambda value: value.__setitem__("cAbiVersion", "2.13.0"),
             "wrong Contract": lambda value: value.__setitem__("contractDigest", digest("9")),
+            "malformed Contract component digest": lambda value: value.__setitem__(
+                "contractComponentDigest", "sha256:invalid"
+            ),
             "wrong target": lambda value: value.__setitem__("target", "linux-arm64"),
             "unsupported compatibility": lambda value: value.__setitem__("runtimeCompatibilityVersion", "0.3.0"),
         }
@@ -203,6 +208,27 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "digest mismatch"):
                 _snapshot_embedded_library(source, expected)
 
+    def test_tampered_embedded_library_digest_fails_before_dynamic_loading(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            library = Path(directory) / "libcodex_agent"
+            library.write_bytes(b"tampered embedded Runtime")
+            with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
+                    patch("codex_agent._ffi.resolve_library_path", return_value=library), \
+                    patch("codex_agent._ffi.ctypes.CDLL") as dynamic_loader:
+                with self.assertRaisesRegex(OSError, "digest mismatch"):
+                    NativeLibrary.load()
+            dynamic_loader.assert_not_called()
+
+    def test_missing_embedded_library_never_falls_back_to_path(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            system_candidate = Path(directory) / _library_name(current_classifier())
+            system_candidate.write_bytes(b"arbitrary system Runtime")
+            missing_package = Path(directory) / "missing-package"
+            with patch("codex_agent._ffi.files", return_value=missing_package), \
+                    patch.dict(os.environ, {"PATH": directory}, clear=False):
+                with self.assertRaises(FileNotFoundError):
+                    resolve_library_path()
+
     def test_explicit_paths_are_absolute_regular_and_link_free(self) -> None:
         with self.assertRaises(ValueError):
             resolve_library_path("")
@@ -233,8 +259,9 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             root = Path(directory)
             missing = compile_library(root, "missing_identity", None, 0x010D0000)
-            with self.assertRaises(AttributeError):
-                _read_runtime_identity(ctypes.CDLL(str(missing)))
+            with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility):
+                with self.assertRaises(AttributeError):
+                    NativeLibrary.load(missing)
 
             target = current_classifier()
             mismatched_identity = identity(target)
