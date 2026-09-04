@@ -359,6 +359,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
             canonical_json_bytes(phase_plan),
             (self.destination / "phase-plans/contract-contract-binary-common.json").read_bytes(),
         )
+        self.assertEqual("true", self.outputs()["contract_reconciliation_required"])
+        self.assertEqual("binary", self.outputs()["contract_next_phase"])
 
     def test_no_product_work_is_the_only_vacuous_full_reuse(self) -> None:
         result = self.run_discover(impact_plan(changed=["README.md"]))
@@ -366,6 +368,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
         self.assertTrue(result["fullReuse"])
         self.assertFalse(result["targetJobsRequired"])
         self.assertEqual("false", self.outputs()["target_jobs_required"])
+        self.assertEqual("false", self.outputs()["contract_reconciliation_required"])
+        self.assertEqual("none", self.outputs()["contract_next_phase"])
         persisted = json.loads((self.destination / "request.json").read_text())
         self.assertEqual([], persisted["requested"])
 
@@ -930,7 +934,11 @@ class ProductReuseAdapterTest(unittest.TestCase):
                     )
                 self.assertFalse((fixture["root"] / f"rejected-{field}").exists())
                 self.assertEqual(
-                    {"contract_complete": "false", "next_phase_required": "false"},
+                    {
+                        "contract_complete": "false",
+                        "next_phase": "none",
+                        "next_phase_required": "false",
+                    },
                     dict(
                         line.split("=", 1)
                         for line in (fixture["root"] / f"output-{field}").read_text().splitlines()
@@ -1310,6 +1318,25 @@ class ProductReuseAdapterTest(unittest.TestCase):
         ), self.assertRaisesRegex(RuntimeError, "programmer defect"):
             product_reuse.main(arguments)
 
+    def test_product_reuse_cli_publishes_the_complete_discovery_handoff(self) -> None:
+        arguments = [
+            "discover", "--plan", "plan.json", "--destination", "discovery",
+            "--handoff", "handoff", "--github-output", "output",
+        ]
+        with mock.patch.object(product_reuse, "discover") as discover, \
+                mock.patch.object(product_reuse, "publish_regular_tree") as publish:
+            self.assertEqual(0, product_reuse.main(arguments))
+        discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"))
+        publish.assert_called_once_with(Path("discovery"), Path("handoff"))
+
+    def test_contract_ready_phase_is_exactly_one_known_contract_phase(self) -> None:
+        binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        package = PhaseInstanceId("contract", "contract", "package", "common")
+        self.assertEqual("none", product_reuse._contract_ready_phase({}))
+        self.assertEqual("binary", product_reuse._contract_ready_phase({binary: {}}))
+        with self.assertRaisesRegex(ValueError, "more than one"):
+            product_reuse._contract_ready_phase({binary: {}, package: {}})
+
     def test_contract_advance_replays_the_request_and_preserves_a_fresh_shard(self) -> None:
         resolved_root = self.root.resolve()
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
@@ -1505,7 +1532,11 @@ class ProductReuseAdapterTest(unittest.TestCase):
             miss["source"] for miss in verified["resolution"]["phases"][0]["misses"]
         ])
         self.assertEqual(
-            {"contract_complete": "false", "next_phase_required": "true"},
+            {
+                "contract_complete": "false",
+                "next_phase": "package",
+                "next_phase_required": "true",
+            },
             dict(line.split("=", 1) for line in output.read_text().splitlines()),
         )
 

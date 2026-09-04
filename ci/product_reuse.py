@@ -766,6 +766,16 @@ def _write_ready_plans(destination: Path, plans: Mapping[PhaseInstanceId, Mappin
         )
 
 
+def _contract_ready_phase(plans: Mapping[PhaseInstanceId, Mapping[str, Any]]) -> str:
+    phases = [
+        instance.phase for instance in plans
+        if instance.product == "contract" and instance.component == "contract" and instance.target == "common"
+    ]
+    if len(phases) > 1:
+        raise ValueError("Contract reuse wave elected more than one ready phase")
+    return phases[0] if phases else "none"
+
+
 def _result(
     requested: tuple[PhaseInstanceId, ...], *, complete: bool, reason: str,
     reuse: Mapping[str, Any] | None = None,
@@ -783,7 +793,8 @@ def _result(
 
 def _finish(
     destination: Path, request: Mapping[str, Any], result: Mapping[str, Any],
-    github_output_path: Path,
+    github_output_path: Path, *, contract_next_phase: str = "none",
+    contract_reconciliation_required: bool = False,
 ) -> dict[str, Any]:
     write_canonical_json(destination / "request.json", request)
     write_canonical_json(destination / "result.json", result)
@@ -791,6 +802,8 @@ def _finish(
         "full_reuse": result["fullReuse"],
         "target_jobs_required": result["targetJobsRequired"],
         "product_reuse_reason": result["reason"],
+        "contract_next_phase": contract_next_phase,
+        "contract_reconciliation_required": contract_reconciliation_required,
     })
     return dict(result)
 
@@ -895,6 +908,7 @@ def advance_contract(
     github_output(github_output_path, {
         "contract_complete": False,
         "next_phase_required": False,
+        "next_phase": "none",
     })
     supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
     destination = _prepare_destination(destination, supplied_root)
@@ -1138,6 +1152,7 @@ def advance_contract(
     github_output(github_output_path, {
         "contract_complete": advanced["fullReuse"],
         "next_phase_required": bool(ready_plans),
+        "next_phase": _contract_ready_phase(ready_plans),
     })
     return advanced
 
@@ -1151,6 +1166,8 @@ def discover(
         "full_reuse": False,
         "target_jobs_required": True,
         "product_reuse_reason": "not-evaluated",
+        "contract_next_phase": "none",
+        "contract_reconciliation_required": False,
     })
     supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
     destination = _prepare_destination(destination, supplied_root)
@@ -1216,7 +1233,10 @@ def discover(
             write_canonical_json(destination / "reuse-wave-result.json", contract_result)
             return _finish(destination, request, _result(
                 requested, complete=False, reason="product-build-required", reuse=contract_result,
-            ), github_output_path)
+            ), github_output_path,
+                contract_next_phase=_contract_ready_phase(contract_ready_plans),
+                contract_reconciliation_required=True,
+            )
         contract_evidence = _contract_evidence(
             plan, destination, catalogs, contract_result, trust,
         )
@@ -1276,6 +1296,7 @@ def parser() -> argparse.ArgumentParser:
     discover_command = commands.add_parser("discover")
     discover_command.add_argument("--plan", type=Path, required=True)
     discover_command.add_argument("--destination", type=Path, required=True)
+    discover_command.add_argument("--handoff", type=Path)
     discover_command.add_argument("--github-output", type=Path, required=True)
     advance_command = commands.add_parser("advance-contract")
     advance_command.add_argument("--plan", type=Path, required=True)
@@ -1292,6 +1313,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments.command == "discover":
             discover(arguments.plan, arguments.destination, arguments.github_output)
+            if arguments.handoff is not None:
+                publish_regular_tree(arguments.destination, arguments.handoff)
         else:
             advance_contract(
                 arguments.plan,

@@ -230,16 +230,18 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("steps.validation-reuse.outputs.reused != 'true'", product_reuse)
         self.assertIn("python3 ci/product_reuse.py discover", product_reuse)
         self.assertIn("--destination build/product-reuse", product_reuse)
-        self.assertIn("cp build/product-reuse/request.json build/product-reuse/result.json", product_reuse)
-        self.assertIn(
-            "cp -R build/product-reuse/phase-plans build/product-reuse/producer.json build/ci/product-reuse/",
-            product_reuse,
-        )
-        self.assertIn(
-            "cp -R build/product-reuse/reused-carrier build/ci/product-reuse/",
-            product_reuse,
-        )
+        self.assertIn("--handoff build/ci/product-reuse", product_reuse)
+        self.assertNotIn("cp ", product_reuse)
+        self.assertNotIn("cp -R", product_reuse)
         self.assertNotIn("--destination build/ci/", product_reuse)
+        self.assertIn(
+            "contract_reconciliation_required: ${{ steps.product-reuse.outputs.contract_reconciliation_required }}",
+            plan_job,
+        )
+        self.assertIn(
+            "contract_next_phase: ${{ steps.product-reuse.outputs.contract_next_phase }}",
+            plan_job,
+        )
         self.assertIn(
             "name: codex-agent-product-carrier-${{ steps.impact.outputs.validation_tree }}",
             plan_job,
