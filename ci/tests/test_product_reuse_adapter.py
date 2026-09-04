@@ -15,7 +15,10 @@ sys.path.insert(0, str(CI_ROOT))
 
 import product_reuse  # noqa: E402
 from products.inventory import canonical_json_bytes, sha256_bytes  # noqa: E402
+from products.plan import plan_phase  # noqa: E402
+from products.receipt import write_output_manifest  # noqa: E402
 from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId  # noqa: E402
+from products.restore import finalize_phase_object, verify_carrier, verify_phase_shard  # noqa: E402
 
 
 COMMIT = "a" * 40
@@ -476,6 +479,258 @@ class ProductReuseAdapterTest(unittest.TestCase):
         )
         self.assertEqual("verified-full-reuse", result["reason"])
         self.assertFalse(result["targetJobsRequired"])
+
+    def test_partial_remote_reuse_is_preserved_as_an_exact_prefix_carrier(self) -> None:
+        requested = PhaseInstanceId("contract", "contract", "metadata", "common")
+        closure = product_reuse._dependency_closure((requested,))
+        binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        package = PhaseInstanceId("contract", "contract", "package", "common")
+        build_key = sha256_bytes(b"binary-plan")
+        package_build_key = sha256_bytes(b"package-plan")
+        receipt_digest = sha256_bytes(b"binary-receipt")
+        object_digest = sha256_bytes(b"binary-object")
+        phases = []
+        for instance in closure:
+            reused = instance == binary
+            build = instance == package
+            phases.append({
+                **product_reuse._identity_record(instance),
+                "buildKey": build_key if reused else package_build_key if build else None,
+                "state": "reused" if reused else "build" if build else "waiting",
+                "source": "same-pr" if reused else None,
+                "transportSource": {
+                    "kind": "same-pr",
+                    "indexSha256": sha256_bytes(b"index"),
+                    "artifactName": "contract.bin",
+                    "artifactSha256": sha256_bytes(b"artifact"),
+                } if reused else None,
+                "receiptSha256": receipt_digest if reused else None,
+                "objectSha256": object_digest if reused else None,
+                "misses": [
+                    {"source": source, "reason": "fixture-miss"}
+                    for source in product_reuse.SOURCES
+                ] if build else [
+                    {"source": source, "reason": "fixture-miss"}
+                    for source in product_reuse.SOURCES[:2]
+                ] if reused else [],
+            })
+        result = {
+            "schemaVersion": 1,
+            "result": "build-required",
+            "fullReuse": False,
+            "phases": phases,
+            "matrices": {"contract": [{
+                **product_reuse._identity_record(package),
+                "buildKey": package_build_key,
+            }], "runtime": [], "sdk": []},
+        }
+        object_path = self.root / "binary.zip"
+        catalog = product_reuse.Catalog(
+            "same-pr", {}, sha256_bytes(b"index"), {}, {build_key: object_path},
+        )
+        receipt = {**product_reuse._identity_record(binary)}
+        with mock.patch.object(
+            product_reuse,
+            "verify_object",
+            return_value={"receipt": receipt},
+        ), mock.patch.object(product_reuse, "write_carrier") as write:
+            self.assertTrue(product_reuse._write_reused_carrier(
+                result,
+                (requested,),
+                [catalog],
+                self.root / "carrier",
+                {"kind": "ci", "producer": {}},
+                require_complete=False,
+            ))
+        normalized = write.call_args.args[1]
+        self.assertEqual([phases[closure.index(binary)]], normalized["phases"])
+        self.assertEqual((binary,), write.call_args.args[2])
+        self.assertEqual({binary: object_path}, write.call_args.args[3])
+        self.assertEqual("complete", normalized["result"])
+        self.assertTrue(normalized["fullReuse"])
+
+        contradictions = []
+        wrong_completion = json.loads(json.dumps(result))
+        wrong_completion["fullReuse"] = True
+        contradictions.append(("contradicts", wrong_completion))
+        wrong_matrix = json.loads(json.dumps(result))
+        wrong_matrix["matrices"]["contract"] = []
+        contradictions.append(("matrices", wrong_matrix))
+        wrong_schema = json.loads(json.dumps(result))
+        wrong_schema["schemaVersion"] = 2
+        contradictions.append(("schemaVersion", wrong_schema))
+        unknown_result_key = json.loads(json.dumps(result))
+        unknown_result_key["unexpected"] = True
+        contradictions.append(("fields are invalid", unknown_result_key))
+        unknown_phase_key = json.loads(json.dumps(result))
+        unknown_phase_key["phases"][0]["unexpected"] = True
+        contradictions.append(("fields are invalid", unknown_phase_key))
+        build_evidence = json.loads(json.dumps(result))
+        build_evidence["phases"][closure.index(package)]["receiptSha256"] = receipt_digest
+        contradictions.append(("materialized evidence", build_evidence))
+        waiting_evidence = json.loads(json.dumps(result))
+        waiting_evidence["phases"][2]["source"] = "stable"
+        contradictions.append(("materialized evidence", waiting_evidence))
+        missing_build_miss = json.loads(json.dumps(result))
+        missing_build_miss["phases"][closure.index(package)]["misses"].pop()
+        contradictions.append(("every lookup miss", missing_build_miss))
+        reordered_build_misses = json.loads(json.dumps(result))
+        reordered_build_misses["phases"][closure.index(package)]["misses"].reverse()
+        contradictions.append(("every lookup miss", reordered_build_misses))
+        duplicate_build_miss = json.loads(json.dumps(result))
+        duplicate_build_miss["phases"][closure.index(package)]["misses"].append(
+            duplicate_build_miss["phases"][closure.index(package)]["misses"][-1]
+        )
+        contradictions.append(("every lookup miss", duplicate_build_miss))
+        missing_reuse_miss = json.loads(json.dumps(result))
+        missing_reuse_miss["phases"][closure.index(binary)]["misses"].pop()
+        contradictions.append(("source ordered", missing_reuse_miss))
+        reordered_reuse_misses = json.loads(json.dumps(result))
+        reordered_reuse_misses["phases"][closure.index(binary)]["misses"].reverse()
+        contradictions.append(("source ordered", reordered_reuse_misses))
+        duplicate_reuse_miss = json.loads(json.dumps(result))
+        duplicate_reuse_miss["phases"][closure.index(binary)]["misses"].append(
+            duplicate_reuse_miss["phases"][closure.index(binary)]["misses"][-1]
+        )
+        contradictions.append(("source ordered", duplicate_reuse_miss))
+        for error, contradictory in contradictions:
+            with self.subTest(error=error), mock.patch.object(
+                product_reuse,
+                "verify_object",
+                return_value={"receipt": receipt},
+            ), mock.patch.object(product_reuse, "write_carrier") as rejected_write:
+                with self.assertRaisesRegex(ValueError, error):
+                    product_reuse._write_reused_carrier(
+                        contradictory,
+                        (requested,),
+                        [catalog],
+                        self.root / "rejected-carrier",
+                        {"kind": "ci", "producer": {}},
+                        require_complete=False,
+                    )
+                rejected_write.assert_not_called()
+
+    def test_partial_reuse_carrier_rejects_a_nonclosed_phase_set(self) -> None:
+        requested = PhaseInstanceId("contract", "contract", "metadata", "common")
+        closure = product_reuse._dependency_closure((requested,))
+        package = PhaseInstanceId("contract", "contract", "package", "common")
+        build_key = sha256_bytes(b"package-plan")
+        receipt_digest = sha256_bytes(b"package-receipt")
+        object_digest = sha256_bytes(b"package-object")
+        phases = [{
+            **product_reuse._identity_record(instance),
+            "buildKey": build_key if instance == package else None,
+            "state": "reused" if instance == package else "waiting",
+            "source": "stable" if instance == package else None,
+            "transportSource": {
+                "kind": "stable",
+                "indexSha256": sha256_bytes(b"index"),
+                "artifactName": "contract.bin",
+                "artifactSha256": sha256_bytes(b"artifact"),
+            } if instance == package else None,
+            "receiptSha256": receipt_digest if instance == package else None,
+            "objectSha256": object_digest if instance == package else None,
+            "misses": [],
+        } for instance in closure]
+        result = {
+            "schemaVersion": 1,
+            "result": "build-required",
+            "fullReuse": False,
+            "phases": phases,
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+        }
+        catalog = product_reuse.Catalog(
+            "stable", {}, sha256_bytes(b"index"), {}, {build_key: self.root / "package.zip"},
+        )
+        with mock.patch.object(
+            product_reuse,
+            "verify_object",
+            return_value={"receipt": product_reuse._identity_record(package)},
+        ), mock.patch.object(product_reuse, "write_carrier") as write:
+            with self.assertRaisesRegex(ValueError, "dependency-closed"):
+                product_reuse._write_reused_carrier(
+                    result,
+                    (requested,),
+                    [catalog],
+                    self.root / "carrier",
+                    {"kind": "ci", "producer": {}},
+                    require_complete=False,
+                )
+        write.assert_not_called()
+
+    def test_reused_carrier_preserves_real_object_and_receipt_bytes(self) -> None:
+        binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        resolved_root = self.root.resolve()
+        stage = resolved_root / "stage"
+        output = stage / "outputs/value.bin"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"value")
+        write_output_manifest(
+            stage, "contract", "contract", "binary", "common", "0.2.0",
+            {"artifact": "outputs"},
+        )
+        plan = plan_phase(
+            binary,
+            inventory=[{"relativePath": "input.kt", "bytes": 1, "sha256": sha256_bytes(b"i")}],
+            versions=VERSIONS,
+            upstream_receipts=[],
+            toolchain_profile_digest=product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            flags_digest=product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+        )
+        consumer = product_reuse._consumer(
+            impact_plan(changed=["input.kt"]),
+            {"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1"},
+        )
+        shard = resolved_root / "shard"
+        finalize_phase_object(
+            stage_root=stage,
+            phase_plan=plan,
+            producer=consumer["producer"],
+            product_version="0.2.0",
+            trust_domain="development",
+            destination=shard,
+        )
+        verified_shard = verify_phase_shard(shard, binary)
+        descriptor = verified_shard
+        source = {
+            "kind": "same-pr",
+            "indexSha256": sha256_bytes(b"index"),
+            "artifactName": "value.bin",
+            "artifactSha256": sha256_bytes(b"value"),
+        }
+        result = {
+            "schemaVersion": 1,
+            "result": "complete",
+            "fullReuse": True,
+            "phases": [{
+                **product_reuse._identity_record(binary),
+                "buildKey": descriptor["buildKey"],
+                "state": "reused",
+                "source": "same-pr",
+                "transportSource": source,
+                "receiptSha256": descriptor["receiptSha256"],
+                "objectSha256": descriptor["objectSha256"],
+                "misses": [
+                    {"source": name, "reason": "fixture-miss"}
+                    for name in product_reuse.SOURCES[:2]
+                ],
+            }],
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+        }
+        catalog = product_reuse.Catalog(
+            "same-pr", {}, source["indexSha256"], {}, {
+                descriptor["buildKey"]: shard / descriptor["objectPath"],
+            },
+        )
+        carrier = resolved_root / "carrier"
+        self.assertTrue(product_reuse._write_reused_carrier(
+            result, (binary,), [catalog], carrier, consumer, require_complete=False,
+        ))
+        verified_carrier = verify_carrier(carrier, (binary,), consumer)
+        self.assertEqual(
+            (shard / "phase-receipt.json").read_bytes(),
+            verified_carrier["objects"][0]["receiptBytes"],
+        )
 
     def test_incomplete_result_keeps_target_jobs_required(self) -> None:
         selected = PhaseInstanceId("contract", "contract", "binary", "common")

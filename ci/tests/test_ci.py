@@ -235,6 +235,10 @@ class RunLaneContractTest(unittest.TestCase):
             "cp -R build/product-reuse/phase-plans build/product-reuse/producer.json build/ci/product-reuse/",
             product_reuse,
         )
+        self.assertIn(
+            "cp -R build/product-reuse/reused-carrier build/ci/product-reuse/",
+            product_reuse,
+        )
         self.assertNotIn("--destination build/ci/", product_reuse)
         self.assertIn(
             "name: codex-agent-product-carrier-${{ steps.impact.outputs.validation_tree }}",

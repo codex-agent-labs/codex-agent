@@ -23,9 +23,11 @@ from products.inventory import (
     load_canonical_json_bytes,
     load_json_bytes,
     require_array,
+    require_boolean,
     require_exact_keys,
     require_integer,
     require_semver,
+    require_sha256,
     require_string,
     sha256_bytes,
     tree_entries,
@@ -36,12 +38,13 @@ from products.registry import (
     NATIVE_TARGETS,
     PHASE_INSTANCE_IDS,
     PhaseInstanceId,
+    phase_instance_dependencies,
     required_toolchain_profile,
 )
 from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST
 from products.runtime_flags import load_runtime_binary_flags_bytes
 from products.restore import object_relative_path, restore_object, verify_object, write_carrier
-from products.reuse import _dependency_closure, plan_reuse_wave
+from products.reuse import SOURCES, _dependency_closure, plan_reuse_wave
 from products.selection import classify_paths
 from products.signatures import load_keyring, public_key_for_metadata
 from products.toolchain import load_toolchain_profile_bytes
@@ -54,6 +57,11 @@ _PLAN_KEYS = {
     "unknownPaths", "changedPaths", "lanes",
 }
 _IDENTITY_KEYS = ("product", "component", "phase", "target")
+_REUSE_RESULT_KEYS = {"schemaVersion", "result", "fullReuse", "phases", "matrices"}
+_REUSE_PHASE_KEYS = {
+    *_IDENTITY_KEYS, "buildKey", "state", "source", "transportSource",
+    "receiptSha256", "objectSha256", "misses",
+}
 _VERSION_PATHS = {
     "contract": "gradle/release/versions/contract.txt",
     "runtime-release": "gradle/release/versions/runtime.txt",
@@ -548,37 +556,128 @@ def _contract_evidence(
     }
 
 
-def _reverify_complete(
+def _write_reused_carrier(
     result: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...],
     catalogs: list[Catalog], destination: Path, consumer: Mapping[str, Any],
-) -> None:
+    *, require_complete: bool,
+) -> bool:
+    result = require_exact_keys(result, _REUSE_RESULT_KEYS, "Reuse result")
+    if require_integer(result["schemaVersion"], "Reuse result.schemaVersion", 1) != 1:
+        raise ValueError("Unsupported reuse result schemaVersion")
+    full_reuse = require_boolean(result["fullReuse"], "Reuse result.fullReuse")
+    matrices = require_exact_keys(
+        result["matrices"], {"contract", "runtime", "sdk"}, "Reuse result.matrices",
+    )
+    actual_matrices = {
+        product: require_array(matrices[product], f"Reuse result.matrices.{product}")
+        for product in ("contract", "runtime", "sdk")
+    }
     closure = _dependency_closure(requested)
-    phases = result.get("phases")
-    if not isinstance(phases, list) or len(phases) != len(closure):
-        raise ValueError("Complete reuse result does not cover its exact dependency closure")
+    phases = require_array(result["phases"], "Reuse result.phases")
+    if len(phases) != len(closure):
+        raise ValueError("Reuse result does not cover its exact dependency closure")
     actual = []
+    selected: list[PhaseInstanceId] = []
+    selected_phases = []
     sources: dict[PhaseInstanceId, Path] = {}
-    for phase in phases:
+    expected_matrices = {"contract": [], "runtime": [], "sdk": []}
+    for index, value in enumerate(phases):
+        phase = require_exact_keys(value, _REUSE_PHASE_KEYS, f"Reuse result.phases[{index}]")
         instance = _identity(phase)
         actual.append(instance)
-        if phase.get("state") != "reused" or phase.get("source") not in {
+        misses = require_array(phase["misses"], f"Reuse result.phases[{index}].misses")
+        miss_sources = []
+        for miss_index, miss_value in enumerate(misses):
+            miss = require_exact_keys(
+                miss_value,
+                {"source", "reason"},
+                f"Reuse result.phases[{index}].misses[{miss_index}]",
+            )
+            if miss["source"] not in SOURCES:
+                raise ValueError("Reuse result miss source is invalid")
+            require_string(miss["reason"], "Reuse result miss reason")
+            miss_sources.append(miss["source"])
+        if phase.get("state") != "reused":
+            if phase.get("state") not in {"build", "waiting"}:
+                raise ValueError("Reuse result contains an unsupported phase state")
+            if any(phase[field] is not None for field in (
+                "source", "transportSource", "receiptSha256", "objectSha256",
+            )):
+                raise ValueError("Unresolved reuse phase contains materialized evidence")
+            if phase["state"] == "waiting":
+                if phase["buildKey"] is not None or misses:
+                    raise ValueError("Waiting reuse phase contains planned evidence")
+            else:
+                build_key = require_sha256(
+                    phase["buildKey"], f"Reuse result.phases[{index}].buildKey",
+                )
+                if miss_sources != list(SOURCES):
+                    raise ValueError("Build reuse phase does not record every lookup miss")
+                expected_matrices[instance.product].append({
+                    **_identity_record(instance), "buildKey": build_key,
+                })
+            continue
+        if phase.get("source") not in {
             "stable", "promoted-main", "same-pr",
         }:
-            raise ValueError("Complete reuse result contains an unmaterialized phase")
+            raise ValueError("Reuse result contains an unmaterialized phase")
+        source_index = SOURCES.index(phase["source"])
+        if miss_sources != list(SOURCES[:source_index]):
+            raise ValueError("Reused product phase lookup misses are not source ordered")
+        for field in ("buildKey", "receiptSha256", "objectSha256"):
+            require_sha256(phase[field], f"Reuse result.phases[{index}].{field}")
         catalog = _catalog_for_phase(catalogs, phase)
         object_path = catalog.objects.get(phase["buildKey"])
         if object_path is None:
-            raise ValueError("Complete reuse result lacks a persisted object")
+            raise ValueError("Reuse result lacks a persisted object")
         verified = verify_object(
             object_path, build_key=phase["buildKey"], receipt_sha256=phase["receiptSha256"],
             object_sha256=phase["objectSha256"],
         )
         if _identity(verified["receipt"]) != instance:
             raise ValueError("Persisted product object identity disagrees with the reuse result")
+        selected.append(instance)
+        selected_phases.append(phase)
         sources[instance] = object_path
     if tuple(actual) != closure:
-        raise ValueError("Complete reuse result phase order or identity is invalid")
-    write_carrier(destination / "carrier", result, closure, sources, consumer)
+        raise ValueError("Reuse result phase order or identity is invalid")
+    if actual_matrices != expected_matrices:
+        raise ValueError("Reuse result matrices do not exactly match its build phases")
+    selected_set = set(selected)
+    if any(
+        dependency not in selected_set
+        for instance in selected
+        for dependency in phase_instance_dependencies(instance)
+    ):
+        raise ValueError("Reused product phases are not dependency-closed")
+    actually_complete = tuple(selected) == closure
+    if (
+        result["result"] != ("complete" if actually_complete else "build-required")
+        or full_reuse is not actually_complete
+    ):
+        raise ValueError("Reuse result completion state contradicts its phases")
+    if require_complete and not actually_complete:
+        raise ValueError("Complete reuse result contains an unresolved phase")
+    if not selected:
+        return False
+    normalized = {
+        "schemaVersion": 1,
+        "result": "complete",
+        "fullReuse": True,
+        "phases": selected_phases,
+        "matrices": {"contract": [], "runtime": [], "sdk": []},
+    }
+    write_carrier(destination, normalized, tuple(selected), sources, consumer)
+    return True
+
+
+def _reverify_complete(
+    result: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...],
+    catalogs: list[Catalog], destination: Path, consumer: Mapping[str, Any],
+) -> None:
+    _write_reused_carrier(
+        result, requested, catalogs, destination / "carrier", consumer, require_complete=True,
+    )
 
 
 def _consumer(plan: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
@@ -715,6 +814,15 @@ def discover(
         )
         write_canonical_json(destination / "contract-reuse-result.json", contract_result)
         if contract_result["fullReuse"] is not True:
+            if any(phase.get("state") == "reused" for phase in contract_result["phases"]):
+                _write_reused_carrier(
+                    contract_result,
+                    (contract,),
+                    catalogs,
+                    destination / "reused-carrier",
+                    _consumer(plan, environment),
+                    require_complete=False,
+                )
             _write_ready_plans(destination, contract_ready_plans)
             if contract_ready_plans:
                 write_canonical_json(
@@ -760,6 +868,15 @@ def discover(
     )
     if complete:
         _reverify_complete(reuse, requested, catalogs, destination, _consumer(plan, environment))
+    elif any(phase.get("state") == "reused" for phase in reuse["phases"]):
+        _write_reused_carrier(
+            reuse,
+            requested,
+            catalogs,
+            destination / "reused-carrier",
+            _consumer(plan, environment),
+            require_complete=False,
+        )
     return _finish(destination, request, _result(
         requested,
         complete=complete,
