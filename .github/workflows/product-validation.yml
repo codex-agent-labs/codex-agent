@@ -204,7 +204,7 @@ jobs:
           mkdir -p build/ci/product-reuse
           cp build/product-reuse/request.json build/product-reuse/result.json build/ci/product-reuse/
           if [ -d build/product-reuse/phase-plans ]; then
-            cp -R build/product-reuse/phase-plans build/ci/product-reuse/
+            cp -R build/product-reuse/phase-plans build/product-reuse/producer.json build/ci/product-reuse/
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

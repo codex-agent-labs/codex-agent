@@ -349,12 +349,20 @@ class ProductReuseAdapterTest(unittest.TestCase):
             _release_trust=mock.Mock(return_value=None),
             _discover_catalogs=mock.Mock(return_value=[]),
             plan_reuse_wave=mock.Mock(side_effect=plan_wave),
+            environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
         )
         self.assertEqual("product-build-required", result["reason"])
         self.assertTrue(result["targetJobsRequired"])
         self.assertEqual(
             canonical_json_bytes(phase_plan),
             (self.destination / "phase-plans/contract-contract-binary-common.json").read_bytes(),
+        )
+        self.assertEqual(
+            product_reuse._consumer(
+                impact_plan(changed=["known.kt"]),
+                {"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )["producer"],
+            json.loads((self.destination / "producer.json").read_text()),
         )
 
 

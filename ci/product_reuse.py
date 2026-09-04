@@ -725,6 +725,8 @@ def discover(
 
     reuse = plan_reuse_wave(wave_request, build_plan_consumer=retain_ready_plan)
     _write_ready_plans(destination, ready_plans)
+    if ready_plans:
+        write_canonical_json(destination / "producer.json", _consumer(plan, environment)["producer"])
     write_canonical_json(destination / "reuse-wave-result.json", reuse)
     matrices = reuse.get("matrices")
     complete = (
