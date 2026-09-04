@@ -628,6 +628,7 @@ def observe_producer(
     runner_arch = _identity(environment.get("RUNNER_ARCH", ""), "RUNNER_ARCH")
     if (runner_os, runner_arch) != roles[producer_role]:
         raise ValueError("Actual runner does not match the selected toolchain producer")
+    expected_names = PROFILE_TOOL_NAMES[(selected, producer_role)]
 
     wrapper = _properties(_authority(root, revision, WRAPPER_PROPERTIES), "Gradle wrapper properties")
     wrapper_sha = wrapper.get("distributionSha256Sum", "")
@@ -645,20 +646,6 @@ def observe_producer(
     distribution_match = re.search(r"/gradle-([^/]+)-(?:bin|all)\.zip$", distribution)
     if distribution_match is None or gradle["version"] != distribution_match.group(1):
         raise ValueError("Observed Gradle version does not match the exact wrapper distribution")
-    catalog = tomllib.loads(_authority(root, revision, VERSION_CATALOG).decode("utf-8"))
-    kotlin_version = catalog.get("versions", {}).get("kotlin")
-    if type(kotlin_version) is not str:
-        raise ValueError("Kotlin plugin version is missing from the exact catalog")
-    metadata = _authority(root, revision, RUNTIME_VERIFICATION_METADATA)
-    gradle_home = Path(gradle_user_home or environment.get("GRADLE_USER_HOME", Path.home() / ".gradle")).resolve()
-    kgp_root = gradle_home / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-gradle-plugin" / kotlin_version
-    kgp_matches = sorted(kgp_root.rglob(f"kotlin-gradle-plugin-{kotlin_version}-*.jar")) if kgp_root.is_dir() else []
-    if len(kgp_matches) != 1:
-        raise ValueError("Kotlin plugin cache must contain exactly one resolved implementation jar")
-    kgp_name = kgp_matches[0].name
-    kgp_sha = _sha256_file(kgp_matches[0], "Kotlin plugin")
-    if _metadata_checksum(metadata, kgp_name) != kgp_sha:
-        raise ValueError("Kotlin plugin cache does not match Runtime verification metadata")
     java_path_value = find_executable("java")
     if java_path_value is None:
         raise ValueError("Java runtime is missing")
@@ -675,13 +662,35 @@ def observe_producer(
             "vmName": _match(r"^\s*java\.vm\.name = (.+)$", java_output, "Java VM name"),
             "vmVersion": _match(r"^\s*java\.vm\.version = (.+)$", java_output, "Java VM version"),
         },
-        "kotlinPlugin": {
+    }
+    if "kotlinPlugin" in expected_names:
+        catalog = tomllib.loads(_authority(root, revision, VERSION_CATALOG).decode("utf-8"))
+        kotlin_version = catalog.get("versions", {}).get("kotlin")
+        if type(kotlin_version) is not str:
+            raise ValueError("Kotlin plugin version is missing from the exact catalog")
+        metadata = _authority(root, revision, RUNTIME_VERIFICATION_METADATA)
+        gradle_home = Path(
+            gradle_user_home or environment.get("GRADLE_USER_HOME", Path.home() / ".gradle")
+        ).resolve()
+        kgp_root = (
+            gradle_home
+            / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-gradle-plugin"
+            / kotlin_version
+        )
+        kgp_matches = sorted(
+            kgp_root.rglob(f"kotlin-gradle-plugin-{kotlin_version}-*.jar")
+        ) if kgp_root.is_dir() else []
+        if len(kgp_matches) != 1:
+            raise ValueError("Kotlin plugin cache must contain exactly one resolved implementation jar")
+        kgp_name = kgp_matches[0].name
+        kgp_sha = _sha256_file(kgp_matches[0], "Kotlin plugin")
+        if _metadata_checksum(metadata, kgp_name) != kgp_sha:
+            raise ValueError("Kotlin plugin cache does not match Runtime verification metadata")
+        observations["kotlinPlugin"] = {
             "artifactName": kgp_name,
             "artifactSha256": kgp_sha,
             "version": kotlin_version,
-        },
-    }
-    expected_names = PROFILE_TOOL_NAMES[(selected, producer_role)]
+        }
     if "kotlinNativeCompiler" in expected_names:
         host, classifier = HOSTS[(runner_os, runner_arch)]
         native_target = TARGETS[selected]

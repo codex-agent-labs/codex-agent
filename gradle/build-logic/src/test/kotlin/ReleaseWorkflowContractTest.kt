@@ -14,6 +14,7 @@ internal object ReleaseWorkflowFixture {
         "android-runtime-evidence.yml",
         "apple-runtime-evidence.yml",
         "desktop-runtime-evidence.yml",
+        "runtime-toolchain-capture.yml",
         "release-candidate.yml",
         "publish.yml",
     ).associateWith { repository.resolve(".github/workflows/$it").readText() }
@@ -25,6 +26,41 @@ class ReleaseWorkflowContractTest {
     private val repository = ReleaseWorkflowFixture.repository
     private val workflows = ReleaseWorkflowFixture.workflows
     private val actions = ReleaseWorkflowFixture.actions
+
+    @Test
+    fun `Runtime toolchain capture observes six producers without product work`() {
+        val capture = workflows.getValue("runtime-toolchain-capture.yml")
+        assertTrue("workflow_dispatch:" in capture)
+        assertFalse("workflow_call:" in capture)
+        assertTrue("environment: product-attestation" in capture)
+        assertEquals(2, capture.lineSequence().count {
+            "test \"${'$'}GITHUB_REPOSITORY\" = codex-agent-labs/codex-agent" in it
+        })
+        assertEquals(2, capture.lineSequence().count { ".can_admins_bypass == false" in it })
+        assertEquals(2, capture.lineSequence().count { "custom_branch_policies: true" in it })
+        assertEquals(2, capture.lineSequence().count {
+            ".total_count > 0 and (.branch_policies | length) == .total_count" in it
+        })
+        assertTrue("test \"${'$'}GITHUB_SHA\" = \"${'$'}VALIDATION_COMMIT\"" in capture)
+        assertTrue("test \"${'$'}(git rev-parse 'HEAD^{tree}')\" = \"${'$'}VALIDATION_TREE\"" in capture)
+        assertEquals(5, Regex("(?m)^          - profile: ").findAll(capture).count())
+        assertEquals(5, Regex("(?m)^            role: ").findAll(capture).count())
+        assertEquals(1, capture.lineSequence().count { "role: cross-builder" in it })
+        assertEquals(4, capture.lineSequence().count { "role: builder" in it })
+        assertEquals(1, capture.lineSequence().count { "--producer-role supervisor-builder" in it })
+        assertTrue("fail-fast: false" in capture)
+        assertEquals(2, capture.lineSequence().count { "ci.products.toolchain observe-producer" in it })
+        assertTrue("assemble-profile" in capture)
+        assertTrue("verify-capture" in capture)
+        assertTrue("cache-read-only: \"true\"" in capture)
+        assertTrue("needs: observe" in capture)
+        assertTrue("find build/ci/toolchain-downloads -mindepth 1 -print" in capture)
+        assertTrue("-eq 10" in capture)
+        assertEquals(2, capture.lineSequence().count { "test ! -L \"${'$'}" in it })
+        listOf("./gradlew", "ciProductPhase", "cargo ", "xcodebuild", "konanc ").forEach {
+            assertFalse(it in capture, it)
+        }
+    }
 
     @Test
     fun `Kotlin simulator test action captures only its resolved metrics file`() {

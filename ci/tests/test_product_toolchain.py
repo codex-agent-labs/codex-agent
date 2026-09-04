@@ -423,6 +423,51 @@ class ProductToolchainTest(unittest.TestCase):
             from ci.products.toolchain import _metadata_checksum
             _metadata_checksum(b"<verification-metadata/>", "kotlin-native-prebuilt.tar.gz")
 
+    def test_linux_arm64_supervisor_observer_needs_no_kotlin_cache(self) -> None:
+        java, cc, ld = self.root / "tools/java", self.root / "tools/cc", self.root / "tools/ld"
+        for path in (java, cc, ld):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(path.name.encode())
+        authorities = {
+            "gradle/wrapper/gradle-wrapper.properties": (
+                b"distributionUrl=https\\://services.gradle.org/distributions/gradle-9.4.1-bin.zip\n"
+                b"distributionSha256Sum=" + (b"1" * 64) + b"\n"
+            ),
+            "gradlew": b"#!/bin/sh\n",
+        }
+
+        def execute(command: tuple[str, ...], root: Path) -> str:
+            if command[0].endswith("gradlew"):
+                return "Gradle 9.4.1\n"
+            if command[0] == str(java):
+                return (
+                    " java.runtime.version = 17.0.20+8\n java.vendor = Eclipse Adoptium\n"
+                    " java.vendor.version = Temurin-17.0.20+8\n java.vm.name = OpenJDK VM\n"
+                    " java.vm.version = 17.0.20+8\n os.arch = aarch64\n"
+                )
+            if command[0] == str(cc):
+                return {
+                    "--version": "gcc 14.1", "-dumpmachine": "aarch64-linux-gnu",
+                    "-print-prog-name=ld": str(ld),
+                }[command[1]]
+            if command[0] == str(ld):
+                return "GNU ld 2.42"
+            raise AssertionError(command)
+
+        with mock.patch(
+            "ci.products.toolchain._authority", side_effect=lambda _, __, path: authorities[path]
+        ), mock.patch("ci.products.toolchain.run_git", return_value="b" * 40 + "\n"):
+            result = observe_producer(
+                self.root, "a" * 40, "linux-arm64", "supervisor-builder", "linux-arm64",
+                environment={"RUNNER_OS": "Linux", "RUNNER_ARCH": "ARM64"},
+                execute=execute,
+                find_executable=lambda name: {"cc": str(cc), "java": str(java), "ld": str(ld)}.get(name),
+            )
+        self.assertEqual(
+            ("gradleWrapper", "javaRuntime", "supervisorCompiler"),
+            tuple(item["name"] for item in result["toolObservations"]),
+        )
+
     def test_linux_arm64_assembly_requires_both_exact_producers(self) -> None:
         cross = observation("linux-arm64", "cross-builder", "Linux", "X64")
         supervisor = observation("linux-arm64", "supervisor-builder", "Linux", "ARM64")
