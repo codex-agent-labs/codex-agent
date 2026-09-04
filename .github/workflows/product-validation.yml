@@ -142,6 +142,9 @@ jobs:
       lane_ios_swift_tests_test: ${{ steps.impact.outputs.lane_ios_swift_tests_test }}
       validation_reused: ${{ steps.validation-reuse.outputs.reused }}
       validation_source_run_id: ${{ steps.validation-reuse.outputs.source_run_id }}
+      product_full_reuse: ${{ steps.product-reuse.outputs.full_reuse }}
+      product_target_jobs_required: ${{ steps.product-reuse.outputs.target_jobs_required }}
+      product_reuse_reason: ${{ steps.product-reuse.outputs.product_reuse_reason }}
     steps:
       - id: event-authorization
         env:
@@ -191,6 +194,15 @@ jobs:
         run: >-
           python3 ci/validation_reuse.py discover --plan build/ci/impact-plan.json
           --destination build/ci/reused-validation --github-output "$GITHUB_OUTPUT"
+      - id: product-reuse
+        if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 ci/product_reuse.py discover --plan build/ci/impact-plan.json \
+            --destination build/product-reuse --github-output "$GITHUB_OUTPUT"
+          mkdir -p build/ci/product-reuse
+          cp build/product-reuse/request.json build/product-reuse/result.json build/ci/product-reuse/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error

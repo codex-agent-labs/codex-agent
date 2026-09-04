@@ -172,6 +172,7 @@ class RunLaneContractTest(unittest.TestCase):
             "desktop",
             "apple",
             "consumers",
+            "sdk-javascript",
         ):
             with self.subTest(job=name):
                 self.assertIn(event_guard, job(name))
@@ -184,8 +185,27 @@ class RunLaneContractTest(unittest.TestCase):
 
         self.assertLess(
             workflow.index("- id: validation-reuse"),
+            workflow.index("- id: product-reuse"),
+        )
+        self.assertLess(
+            workflow.index("- id: product-reuse"),
             workflow.index("\n  product:"),
         )
+        product_reuse = plan_job.split("- id: product-reuse", 1)[1].split(
+            "- uses: actions/upload-artifact@", 1,
+        )[0]
+        self.assertIn("steps.event-authorization.outputs.authorized == 'true'", product_reuse)
+        self.assertIn("steps.impact.outputs.remote_build_authorized == 'true'", product_reuse)
+        self.assertIn("steps.validation-reuse.outputs.reused != 'true'", product_reuse)
+        self.assertIn("python3 ci/product_reuse.py discover", product_reuse)
+        self.assertIn("--destination build/product-reuse", product_reuse)
+        self.assertIn("cp build/product-reuse/request.json build/product-reuse/result.json", product_reuse)
+        self.assertNotIn("--destination build/ci/", product_reuse)
+        for name in (
+            "product", "android", "android-runtime-evidence", "desktop", "apple", "consumers",
+            "sdk-javascript", "merge-gate",
+        ):
+            self.assertNotIn("product_target_jobs_required", job(name))
 
         gate = job("merge-gate")
         self.assertLess(
