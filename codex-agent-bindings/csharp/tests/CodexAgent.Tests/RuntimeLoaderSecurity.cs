@@ -157,6 +157,18 @@ internal static class RuntimeLoaderSecurity
     private static void VerifyInvalidNativeLibraries(string compatibility)
     {
         var extension = OperatingSystem.IsMacOS() ? ".dylib" : ".so";
+        var valid = Path.Combine(AppContext.BaseDirectory, "libcodex_agent" + extension);
+        var incompatibleOverride = JsonNode.Parse(compatibility)!.AsObject();
+        incompatibleOverride["contract"]!["digest"] = "sha256:" + new string('9', 64);
+        incompatibleOverride["runtime"]!["requiredContractDigest"] = "sha256:" + new string('9', 64);
+        Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateNativePathForTests(
+            valid,
+            incompatibleOverride.ToJsonString(new JsonSerializerOptions
+            {
+                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            }) + "\n",
+            Target));
+
         var missing = Path.Combine(AppContext.BaseDirectory, "libcodex_agent_missing_identity" + extension);
         Reject<EntryPointNotFoundException>(() => NativeLibraryLoader.ValidateNativePathForTests(
             missing, compatibility, Target));
