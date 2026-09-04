@@ -104,7 +104,9 @@ internal static class NativeLibraryLoader
         }
     }
 
-    private static string FindEmbeddedLibrary()
+    private static string FindEmbeddedLibrary() => FindEmbeddedLibrary(AppContext.BaseDirectory);
+
+    private static string FindEmbeddedLibrary(string baseDirectory)
     {
         var fileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
             ? "codex_agent.dll"
@@ -113,8 +115,8 @@ internal static class NativeLibraryLoader
                 : "libcodex_agent.so";
         var candidates = new[]
         {
-            Path.Combine(AppContext.BaseDirectory, fileName),
-            Path.Combine(AppContext.BaseDirectory, "runtimes", RuntimeIdentifier, "native", fileName),
+            Path.Combine(baseDirectory, fileName),
+            Path.Combine(baseDirectory, "runtimes", RuntimeIdentifier, "native", fileName),
         };
         var candidate = candidates.FirstOrDefault(File.Exists) ?? throw new DllNotFoundException(
             $"Could not find the Codex Agent C SDK library for {RuntimeIdentifier}. " +
@@ -122,9 +124,12 @@ internal static class NativeLibraryLoader
         return ValidateAbsoluteRegularPath(candidate, "embedded Codex Agent Runtime library");
     }
 
-    private static Compatibility ReadCompatibility()
+    private static Compatibility ReadCompatibility() =>
+        ReadCompatibility(typeof(NativeLibraryLoader).Assembly);
+
+    private static Compatibility ReadCompatibility(Assembly assembly)
     {
-        using var stream = typeof(NativeLibraryLoader).Assembly.GetManifestResourceStream(CompatibilityResource)
+        using var stream = assembly.GetManifestResourceStream(CompatibilityResource)
             ?? throw new InvalidDataException("Codex Agent SDK compatibility declaration is missing.");
         using var bytes = new MemoryStream();
         stream.CopyTo(bytes);
@@ -132,6 +137,12 @@ internal static class NativeLibraryLoader
     }
 
     internal static void ValidateCompatibilityForTests(string json) => _ = ParseCompatibility(json);
+
+    internal static void ValidateCompatibilityResourceForTests(Assembly assembly) =>
+        _ = ReadCompatibility(assembly);
+
+    internal static string FindEmbeddedLibraryForTests(string baseDirectory) =>
+        FindEmbeddedLibrary(baseDirectory);
 
     internal static void ValidateExplicitPathForTests(string path) =>
         _ = ValidateAbsoluteRegularPath(path, "configured Codex Agent C SDK library");

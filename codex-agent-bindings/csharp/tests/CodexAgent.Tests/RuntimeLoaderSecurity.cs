@@ -63,6 +63,7 @@ internal static class RuntimeLoaderSecurity
             value => value.Remove("schemaVersion"),
             value => value["schemaVersion"] = true,
             value => value["cAbiVersion"] = "1.12.0",
+            value => value["cAbiVersion"] = "1.0.0",
             value => value["cAbiVersion"] = "2.13.0",
             value => value["contractDigest"] = "sha256:" + new string('9', 64),
             value => value["target"] = "linux-arm64",
@@ -111,6 +112,8 @@ internal static class RuntimeLoaderSecurity
 
     private static void VerifyPathsAndSnapshot()
     {
+        Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateCompatibilityResourceForTests(
+            typeof(RuntimeLoaderSecurity).Assembly));
         Reject<ArgumentException>(() => NativeLibraryLoader.ValidateExplicitPathForTests("codex_agent"));
         Reject<ArgumentException>(() => NativeLibraryLoader.ValidateExplicitPathForTests(""));
         var root = Path.Combine(AppContext.BaseDirectory, "runtime-loader-security");
@@ -118,10 +121,40 @@ internal static class RuntimeLoaderSecurity
         Directory.CreateDirectory(root);
         try
         {
+            var systemDirectory = Directory.CreateDirectory(Path.Combine(root, "system"));
+            var packageDirectory = Directory.CreateDirectory(Path.Combine(root, "package"));
+            var systemCandidateName = OperatingSystem.IsWindows()
+                ? "codex_agent.dll"
+                : OperatingSystem.IsMacOS() ? "libcodex_agent.dylib" : "libcodex_agent.so";
+            File.WriteAllText(Path.Combine(systemDirectory.FullName, systemCandidateName), "arbitrary system Runtime");
+            var previousPath = Environment.GetEnvironmentVariable("PATH");
+            try
+            {
+                Environment.SetEnvironmentVariable("PATH", systemDirectory.FullName);
+                Reject<DllNotFoundException>(() => NativeLibraryLoader.FindEmbeddedLibraryForTests(
+                    packageDirectory.FullName));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("PATH", previousPath);
+            }
+
             var source = Path.Combine(root, "runtime-library");
             File.WriteAllText(source, "verified Runtime");
             NativeLibraryLoader.ValidateExplicitPathForTests(source);
             var expected = "sha256:" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))).ToLowerInvariant();
+            var wrongDigest = JsonNode.Parse(Compatibility())!.AsObject();
+            wrongDigest["runtime"]!["embeddedVariants"]!.AsArray()
+                .Single(value => value!["target"]!.GetValue<string>() == Target)!["runtimeLibrarySha256"] =
+                "sha256:" + new string('9', 64);
+            Reject<InvalidDataException>(() => NativeLibraryLoader.LoadEmbeddedForTests(
+                source,
+                wrongDigest.ToJsonString(new JsonSerializerOptions
+                {
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+                }) + "\n",
+                Target,
+                Path.Combine(root, "rejected-snapshots")));
             var snapshot = NativeLibraryLoader.SnapshotForTests(source, expected);
             try
             {

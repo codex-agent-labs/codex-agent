@@ -264,6 +264,23 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
                     NativeLibrary.load(missing)
 
             target = current_classifier()
+            for description, abi_version, encoded_abi in (
+                ("ABI 1.12", "1.12.0", 0x010C0000),
+                ("wrong ABI major", "2.13.0", 0x020D0000),
+            ):
+                with self.subTest(description):
+                    incompatible_abi_identity = identity(target)
+                    incompatible_abi_identity["cAbiVersion"] = abi_version
+                    incompatible_abi = compile_library(
+                        root,
+                        description.lower().replace(" ", "_"),
+                        canonical(incompatible_abi_identity, False),
+                        encoded_abi,
+                    )
+                    with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility):
+                        with self.assertRaisesRegex(OSError, "ABI is incompatible"):
+                            NativeLibrary.load(incompatible_abi)
+
             mismatched_identity = identity(target)
             mismatch = compile_library(root, "abi_mismatch", canonical(mismatched_identity, False), 0x010E0000)
             with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility):
