@@ -130,14 +130,22 @@ val sdkMavenPackageManifestTasks = sdkMavenPackageSpecs.mapValues { (component, 
         repositoryRoot.set(rootProject.layout.projectDirectory)
         outputDirectory.set(phaseOutputs.map { it.dir("maven") })
     }
-    tasks.register<WriteProductOutputManifestTask>("write${title}PackageOutputManifest") {
+    val evidence = tasks.register<Sync>("stage${title}PackageEvidence") {
         dependsOn(stage)
+        from(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })
+        into(phaseOutputs.map { it.dir("evidence") })
+    }
+    tasks.register<WriteProductOutputManifestTask>("write${title}PackageOutputManifest") {
+        dependsOn(evidence)
         product.set("sdk")
         this.component.set(component)
         phase.set("package")
         this.target.set(target)
         productVersion.set(nativeWrapperSdkVersion)
-        outputRoots.set(mapOf("maven" to "outputs/maven"))
+        outputRoots.set(mapOf(
+            "evidence" to "outputs/evidence",
+            "maven" to "outputs/maven",
+        ))
         outputsDirectory.set(phaseOutputs)
         producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
         repositoryRoot.set(rootProject.layout.projectDirectory)
@@ -255,16 +263,27 @@ val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapV
         outputDirectory.set(phaseOutputs)
         repositoryRoot.set(rootProject.layout.projectDirectory)
     }
+    val evidenceTitle = manifestTaskName.removePrefix("write").removeSuffix("OutputManifest")
+    val evidence = tasks.register<Sync>("stage${evidenceTitle}Evidence") {
+        dependsOn(stage)
+        from(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory }) {
+            include("sdk-compatibility.json")
+        }
+        into(phaseOutputs.map { it.dir("evidence") })
+    }
     tasks.register<WriteProductOutputManifestTask>(manifestTaskName) {
         group = "distribution"
         description = "Writes and verifies the exact $language SDK package manifest."
-        dependsOn(stage)
+        dependsOn(evidence)
         product.set("sdk")
         component.set(language)
         phase.set("package")
         target.set("desktop")
         productVersion.set(nativeWrapperSdkVersion)
-        outputRoots.set(mapOf("package" to "outputs/$language"))
+        outputRoots.set(mapOf(
+            "evidence" to "outputs/evidence",
+            "package" to "outputs/$language",
+        ))
         outputsDirectory.set(phaseOutputs)
         producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
         repositoryRoot.set(rootProject.layout.projectDirectory)

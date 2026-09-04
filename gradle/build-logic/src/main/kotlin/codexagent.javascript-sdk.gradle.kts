@@ -1598,6 +1598,7 @@ val verifyNpmSdkCompatibilityArchive = tasks.register<VerifyNpmSdkCompatibilityA
     description = "Verifies the exact SDK compatibility declaration in the final npm archive."
     dependsOn(packageNpm, npmSdkCompatibility)
     archiveFile.set(npmArchiveFile)
+    sdkVersion.set(npmVersion)
     sdkCompatibility.set(npmSdkCompatibility.flatMap { it.outputFile })
     producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
     repositoryRoot.set(rootProject.layout.projectDirectory)
@@ -1611,6 +1612,7 @@ val stageJavaScriptSdkPackagePhase = tasks.register<Sync>("stageJavaScriptSdkPac
     into(javascriptSdkPackagePhaseOutputs)
     from(npmArchiveFile) { into("package") }
     from(npmSdkCompatibilityArchiveReport) { into("evidence") }
+    from(npmSdkCompatibility.flatMap { it.outputFile }) { into("evidence") }
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }

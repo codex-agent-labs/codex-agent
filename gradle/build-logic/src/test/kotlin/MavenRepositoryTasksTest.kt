@@ -26,6 +26,55 @@ class MavenRepositoryTasksTest {
         }
 
     @Test
+    fun `fresh SDK discovery timestamps never enter reusable inventories`() =
+        withRepository { repository, inventory ->
+            val first = repository.resolve("first")
+            val second = repository.resolve("second")
+            listOf(first to "20260904091032", second to "20260905010203").forEach { (root, timestamp) ->
+                writeExactSdkRepository(root, "sdk-core", timestamp)
+                finalizeFreshSdkBinaryMavenRepository(root, GROUP, VERSIONS.sdk, "sdk-core")
+            }
+            val firstFiles = verifiedRegularFiles(first)
+            val secondFiles = verifiedRegularFiles(second)
+            assertEquals(firstFiles.keys, secondFiles.keys)
+            firstFiles.forEach { (path, file) -> assertEquals(file.readText(), secondFiles.getValue(path).readText(), path) }
+            assertTrue(firstFiles.keys.none { "maven-metadata.xml" in it })
+            verifySdkBinaryMavenRepository(first, GROUP, VERSIONS.sdk, "sdk-core", inventory)
+            val original = inventory.readText()
+            verifySdkBinaryMavenRepository(second, GROUP, VERSIONS.sdk, "sdk-core", inventory)
+            assertEquals(original, inventory.readText())
+        }
+
+    @Test
+    fun `discovery metadata and noncanonical checksums cannot enter an imported SDK stage`() =
+        listOf("metadata", "checksum").forEach { mutation ->
+            withRepository { repository, inventory ->
+                writeExactSdkRepository(repository, "sdk-android", if (mutation == "metadata") "20260904091032" else null)
+                if (mutation == "checksum") {
+                    val primary = expectedSdkBinaryMavenPrimaryPaths("sdk-android", VERSIONS.sdk).first()
+                    val checksum = repository.resolve("io/github/codex-agent-labs/$primary.sha256")
+                    checksum.writeText(checksum.readText().trim())
+                }
+                assertFailsWith<IllegalStateException> {
+                    verifySdkBinaryMavenRepository(repository, GROUP, VERSIONS.sdk, "sdk-android", inventory)
+                }
+                assertTrue(!inventory.exists())
+            }
+        }
+
+    @Test
+    fun `fresh stage rejects tampered metadata without deleting it`() =
+        withRepository { repository, _ ->
+            writeExactSdkRepository(repository, "sdk-android", "20260904091032")
+            val metadata = repository.resolve("io/github/codex-agent-labs/codex-agent-runtime-android/maven-metadata.xml")
+            metadata.writeText("tampered")
+            assertFailsWith<IllegalStateException> {
+                finalizeFreshSdkBinaryMavenRepository(repository, GROUP, VERSIONS.sdk, "sdk-android")
+            }
+            assertEquals("tampered", metadata.readText())
+        }
+
+    @Test
     fun `SDK binary repository rejects a wrong or arbitrary transport checksum`() =
         listOf("wrong-primary", "wrong-metadata", "arbitrary").forEach { mutation ->
             withRepository { repository, inventory ->
@@ -274,22 +323,22 @@ class MavenRepositoryTasksTest {
         }
     }
 
-    private fun writeExactSdkRepository(repository: File, component: String) {
+    private fun writeExactSdkRepository(repository: File, component: String, timestamp: String? = null) {
         val group = repository.resolve("io/github/codex-agent-labs")
         expectedSdkBinaryMavenPrimaryPaths(component, VERSIONS.sdk).forEach { relative ->
             group.resolve(relative).apply {
                 parentFile.mkdirs()
                 writeText(if (extension == "pom") validPom else relative)
                 checksumAlgorithms.forEach { (suffix, algorithm) ->
-                    resolveSibling(name + suffix).writeText(releaseDigest(algorithm))
+                    resolveSibling(name + suffix).writeText(releaseDigest(algorithm) + if (timestamp == null) "\n" else "")
                 }
             }
         }
-        expectedSdkBinaryMavenPrimaryPaths(component, VERSIONS.sdk)
+        if (timestamp != null) expectedSdkBinaryMavenPrimaryPaths(component, VERSIONS.sdk)
             .mapTo(sortedSetOf()) { it.substringBefore('/') }
             .forEach { artifactId ->
                 group.resolve("$artifactId/maven-metadata.xml").apply {
-                    writeText("<metadata/>")
+                    writeText("<metadata><lastUpdated>$timestamp</lastUpdated></metadata>")
                     checksumAlgorithms.forEach { (suffix, algorithm) ->
                         resolveSibling(name + suffix).writeText(releaseDigest(algorithm))
                     }

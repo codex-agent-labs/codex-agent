@@ -97,12 +97,16 @@ class NativeWrapperProductPhaseArtifactGraphTest {
             "phase.set(\"package\")",
             "target.set(\"desktop\")",
             "productVersion.set(nativeWrapperSdkVersion)",
-            "outputRoots.set(mapOf(\"package\" to \"outputs/\$language\"))",
+            "\"evidence\" to \"outputs/evidence\"",
+            "\"package\" to \"outputs/\$language\"",
             "tasks.register<PackageNativeWrapperSdkTask>(stageTaskName)",
             "this.language.set(language)",
             "dependsOn(nativeWrapperPackageSourceTasks.getValue(language), stageNativeWrapperCAbiSdks)",
             "sourcesDirectory.set(layout.buildDirectory.dir(\"native-wrapper-package-sources/\$language\"))",
         ).forEach { value -> assertTrue(value in seam, value) }
+        assertTrue("tasks.register<Sync>(\"stage\${evidenceTitle}Evidence\")" in seam)
+        assertTrue("include(\"sdk-compatibility.json\")" in seam)
+        assertFalse("include(\"codex-agent-native-wrapper-sdks.json\"" in seam)
         assertFalse("dependsOn(prepareNativeWrapperPackageSources, stageNativeWrapperCAbiSdks)" in seam)
         assertFalse("layout.buildDirectory.dir(\"product-stage/sdk/\$language/package\")" in
             sdk.substringAfter("val invalidateNativeWrapperProductPhaseOutputs =").substringBefore(
@@ -179,6 +183,7 @@ class NativeWrapperProductPhaseArtifactGraphTest {
             listOf("Python", "CSharp", "Rust", "Cpp", "Dart").forEach { title ->
                 assertTrue(":codex-agent-sdk:prepare${title}NativeWrapperPackageSource" in paths)
                 assertTrue(":codex-agent-sdk:stage${title}NativeWrapperSdkPackagePhase" in paths)
+                assertTrue(":codex-agent-sdk:stage${title}NativeWrapperSdkPackageEvidence" in paths)
             }
             assertTrue(":codex-agent-sdk:stageNativeWrapperCAbiSdks" in paths)
             assertTrue(":codex-agent-sdk:snapshotImportedNativeWrapperRuntimeStages" in paths)

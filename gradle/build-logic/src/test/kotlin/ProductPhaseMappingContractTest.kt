@@ -569,12 +569,18 @@ class ProductPhaseMappingContractTest {
         assertTrue("dependsOn(verifyNpmSdkCompatibilityArchive)" in sdkPackage)
         assertTrue("from(npmArchiveFile) { into(\"package\") }" in sdkPackage)
         assertTrue("from(npmSdkCompatibilityArchiveReport) { into(\"evidence\") }" in sdkPackage)
+        assertTrue("from(npmSdkCompatibility.flatMap { it.outputFile }) { into(\"evidence\") }" in sdkPackage)
         assertTrue("codexAgent.sdkDefaultRuntimeVersion" in javascript)
         assertFalse("codexAgent.runtimeVersion" in javascript)
         assertTrue("dependsOn(verifyNpmDeclarationGolden, npmSdkCompatibility)" in javascript)
         assertTrue("into(\"META-INF/codex-agent\")" in javascript)
         assertTrue("tasks.register<VerifyNpmSdkCompatibilityArchiveTask>" in javascript)
         assertTrue("dependsOn(packageNpm, npmSdkCompatibility)" in javascript)
+        assertTrue("sdkVersion.set(npmVersion)" in javascript)
+        val verifier = File("src/main/kotlin/SdkMavenPackageTask.kt").readText()
+        assertTrue("\"--version\", sdkVersion.get()," in verifier.substringAfter(
+            "abstract class VerifyNpmSdkCompatibilityArchiveTask",
+        ))
         listOf(
             "product.set(\"sdk\")",
             "component.set(\"javascript\")",
@@ -588,7 +594,10 @@ class ProductPhaseMappingContractTest {
         val sdkPackage = nativeWrapperPackage()
         assertTrue("tasks.register<PackageNativeWrapperSdkTask>(stageTaskName)" in sdkPackage)
         assertTrue("this.language.set(language)" in sdkPackage)
-        assertTrue("outputRoots.set(mapOf(\"package\" to \"outputs/\$language\"))" in sdkPackage)
+        assertTrue("\"evidence\" to \"outputs/evidence\"" in sdkPackage)
+        assertTrue("\"package\" to \"outputs/\$language\"" in sdkPackage)
+        assertTrue("include(\"sdk-compatibility.json\")" in sdkPackage)
+        assertFalse("include(\"codex-agent-native-wrapper-sdks.json\"" in sdkPackage)
         assertFalse("\"package-source\" to" in sdkPackage)
         assertFalse("\"runtime-sdks\" to" in sdkPackage)
     }
@@ -609,10 +618,19 @@ class ProductPhaseMappingContractTest {
         assertTrue("tasks.register<PackageSdkMavenArtifactsTask>" in sdkPackage)
         assertTrue("binaryMavenRepository.set(snapshot.map { it.dir(\"outputs/maven\") })" in sdkPackage)
         assertTrue("dependsOn(verify, generateNativeWrapperSdkCompatibility)" in sdkPackage)
+        assertTrue("tasks.register<Sync>(\"stage\${title}PackageEvidence\")" in sdkPackage)
+        assertTrue("from(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })" in sdkPackage)
         assertTrue("tasks.register<Delete>(\"invalidate\${title}PackagePhase\")" in sdkPackage)
         assertTrue("snapshotTask.configure { dependsOn(invalidate) }" in sdkPackage)
         assertTrue("generateNativeWrapperSdkCompatibility.configure { mustRunAfter(invalidate) }" in sdkPackage)
-        assertTrue("outputRoots.set(mapOf(\"maven\" to \"outputs/maven\"))" in sdkPackage)
+        assertEquals(
+            mapOf("evidence" to "outputs/evidence", "maven" to "outputs/maven"),
+            outputRoots(between(
+                sdkPackage,
+                "tasks.register<WriteProductOutputManifestTask>(\"write\${title}PackageOutputManifest\")",
+                "val stageNativeWrapperCAbiSdks =",
+            )),
+        )
         assertFalse("compile" in between(
             sdkPackage,
             "val sdkMavenPackageSpecs =",
@@ -645,6 +663,12 @@ class ProductPhaseMappingContractTest {
         assertTrue("publish\${it}PublicationToSDK_CORE_BINARY_STAGINGRepository" in binary)
         assertTrue("publish\${it}PublicationToSDK_IOS_BINARY_STAGINGRepository" in binary)
         assertTrue("tasks.register<VerifySdkBinaryMavenRepositoryTask>" in binary)
+        assertTrue("producerSources.from(layout.projectDirectory.dir(\"ci/products\"))" in binary)
+        val mavenTasks = File("src/main/kotlin/MavenRepositoryTasks.kt").readText()
+        val freshVerification = mavenTasks.substringAfter("    fun verify() {").substringBefore("internal fun verifyMavenRepository")
+        assertTrue(freshVerification.indexOf("finalizeFreshSdkBinaryMavenRepository(") < freshVerification.indexOf("processes.exec"))
+        assertTrue("\"--verify-only\"" in freshVerification)
+        assertTrue(freshVerification.indexOf("processes.exec") < freshVerification.indexOf("        verifySdkBinaryMavenRepository("))
         assertTrue("dependsOn(verify)" in binary)
         assertTrue("\"evidence\" to \"outputs/evidence\"" in binary)
         assertTrue("} else null" in binary)

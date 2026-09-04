@@ -391,8 +391,10 @@ def set_source_sdk_version(
 def require_prepared_native_assets(
     sources: Path,
     sdks: Path,
+    sdk_version: str,
     languages: tuple[str, ...] = LANGUAGES,
 ) -> None:
+    version_value = require_semver(sdk_version, "SDK version")
     expected_sdk_entries = {*HOSTS, "codex-agent-native-wrapper-sdks.json", "sdk-compatibility.json"}
     if (
         not sdks.is_dir()
@@ -407,6 +409,8 @@ def require_prepared_native_assets(
         raise ValueError("staged SDK compatibility declaration is missing or symbolic")
     compatibility_bytes = compatibility_path.read_bytes()
     compatibility = validate_sdk_compatibility(load_canonical_json_bytes(compatibility_bytes))
+    if compatibility["sdkVersion"] != version_value:
+        raise ValueError("prepared SDK compatibility version mismatch")
     embedded = {record["target"]: record for record in compatibility["runtime"]["embeddedVariants"]}
     if set(embedded) != set(HOSTS):
         raise ValueError("SDK compatibility target inventory mismatch")
@@ -515,7 +519,7 @@ def package_once(
     if not languages or len(set(languages)) != len(languages) or any(language not in LANGUAGES for language in languages):
         raise ValueError(f"invalid native wrapper language selection: {languages}")
     clean_output(output)
-    require_prepared_native_assets(sources, sdks, languages)
+    require_prepared_native_assets(sources, sdks, sdk_version, languages)
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-package-") as temporary:
         work = Path(temporary)
         for language in languages:
@@ -590,7 +594,7 @@ def package_once(
                 )
         write_package_toolchains(output, languages)
         require_embedded_package_versions(output, sdk_version, languages)
-        require_embedded_sdk_compatibility(output, sdks, languages)
+        require_embedded_sdk_compatibility(output, sdks, sdk_version, languages)
         require_embedded_native_assets(output, sdks, sdk_version, languages)
 
 
@@ -757,9 +761,13 @@ def require_embedded_package_versions(
 def require_embedded_sdk_compatibility(
     packages: Path,
     sdks: Path,
+    sdk_version: str,
     languages: tuple[str, ...] = LANGUAGES,
 ) -> None:
     expected = (sdks / "sdk-compatibility.json").read_bytes()
+    compatibility = validate_sdk_compatibility(load_canonical_json_bytes(expected))
+    if compatibility["sdkVersion"] != require_semver(sdk_version, "SDK version"):
+        raise ValueError("embedded SDK compatibility version mismatch")
 
     def package_root(extracted: Path, archive: Path) -> Path:
         roots = list(extracted.iterdir())

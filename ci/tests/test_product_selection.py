@@ -732,12 +732,32 @@ class ProductSelectionTest(unittest.TestCase):
             {instance.component for instance in maven.instances},
         )
         self.assertTrue(all(instance.product == "sdk" for instance in maven.instances))
-        self.assertTrue(all(instance.phase in {"package", "validation", "metadata"} for instance in maven.instances))
+        self.assertEqual({"binary", "package", "validation", "metadata"}, {instance.phase for instance in maven.instances})
+        paths = (
+            "ci/products/sdk_maven.py",
+            "gradle/build-logic/src/main/kotlin/MavenRepositoryTasks.kt",
+            "gradle/build-logic/src/main/kotlin/codexagent.contract-product.gradle.kts",
+        )
+        for name in ("sdk-core", "sdk-android", "sdk-ios"):
+            binary = next(instance for instance in PHASE_INSTANCE_IDS
+                          if instance.product == "sdk" and instance.component == name and instance.phase == "binary")
+            self.assertEqual(tuple(sorted(paths)), phase_inventory_paths(paths, binary))
+        for path in paths:
+            selected = classify_paths([path]).instances
+            self.assertFalse(any(instance.product == "runtime" and instance.phase == "binary" for instance in selected))
 
         archive = classify_paths(["ci/products/sdk_archive.py"])
-        self.assertEqual({"javascript"}, {instance.component for instance in archive.instances})
+        self.assertEqual({"sdk-core", "sdk-android", "sdk-ios", "javascript"},
+                         {instance.component for instance in archive.instances})
         self.assertTrue(all(instance.product == "sdk" for instance in archive.instances))
         self.assertTrue(all(instance.phase in {"package", "validation", "metadata"} for instance in archive.instances))
+        shared_packages = classify_paths([
+            "gradle/build-logic/src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts",
+        ])
+        self.assertEqual({"sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS},
+                         {instance.component for instance in shared_packages.instances})
+        self.assertTrue(all(instance.product == "sdk" and instance.phase != "binary"
+                            for instance in shared_packages.instances))
 
         gradle = classify_paths([
             "gradle/build-logic/src/main/kotlin/SdkMavenPackageTask.kt",

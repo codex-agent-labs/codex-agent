@@ -406,6 +406,8 @@ fun registerSdkBinaryPhase(
         sdkVersion.set(rootProject.extra["codexAgent.sdkVersion"].toString())
         this.component.set(component)
         inventory.set(evidenceDirectory.map { it.file("maven-primary-inventory.json") })
+        producerSources.from(layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(layout.projectDirectory)
     }
     return tasks.register<WriteProductOutputManifestTask>("write${title}BinaryOutputManifest") {
         group = "publishing"

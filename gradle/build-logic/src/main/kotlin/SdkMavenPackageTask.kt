@@ -66,6 +66,7 @@ abstract class VerifyNpmSdkCompatibilityArchiveTask @Inject constructor(
     abstract val archiveFile: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val sdkCompatibility: RegularFileProperty
+    @get:Input abstract val sdkVersion: Property<String>
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val producerSources: ConfigurableFileCollection
     @get:Internal abstract val repositoryRoot: DirectoryProperty
@@ -81,6 +82,7 @@ abstract class VerifyNpmSdkCompatibilityArchiveTask @Inject constructor(
                 environment("PYTHONDONTWRITEBYTECODE", "1")
                 commandLine(
                     "python3", "-m", "ci.products.sdk_archive",
+                    "--version", sdkVersion.get(),
                     "--archive", archiveFile.get().asFile.absolutePath,
                     "--compatibility", sdkCompatibility.get().asFile.absolutePath,
                     "--output", report.absolutePath,

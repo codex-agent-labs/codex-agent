@@ -6,15 +6,19 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.work.DisableCachingByDefault
+import org.gradle.process.ExecOperations
 
 private enum class MavenProduct { CONTRACT, RUNTIME, SDK }
 
@@ -175,6 +179,47 @@ internal fun expectedSdkBinaryMavenPrimaryPaths(component: String, sdkVersion: S
     }.toSortedSet()
 }
 
+internal fun finalizeFreshSdkBinaryMavenRepository(
+    repository: File,
+    groupId: String,
+    sdkVersion: String,
+    component: String,
+) {
+    check(groupId == CodexAgentBuild.MAVEN_GROUP) { "Unexpected Maven group: $groupId" }
+    val groupPath = groupId.replace('.', '/')
+    val primaries = expectedSdkBinaryMavenPrimaryPaths(component, sdkVersion)
+        .mapTo(sortedSetOf()) { "$groupPath/$it" }
+    val metadata = sdkBinaryArtifactIds.getValue(component).mapTo(sortedSetOf()) {
+        "$groupPath/$it/maven-metadata.xml"
+    }
+    val files = verifiedRegularFiles(repository)
+    val hasMetadata = files.keys.any { it.substringAfterLast('/').startsWith("maven-metadata.xml") }
+    val rawPrimaries = primaries + if (hasMetadata) metadata else emptySet()
+    val expected = rawPrimaries.flatMapTo(sortedSetOf()) { primary ->
+        listOf(primary) + checksumAlgorithms.keys.map { primary + it }
+    }
+    check(files.keys == expected) { "Fresh SDK Maven file set mismatch" }
+    // Validate the entire fresh publication before removing only its discovery metadata.
+    rawPrimaries.forEach { primary ->
+        checksumAlgorithms.forEach { (suffix, algorithm) ->
+            val digest = files.getValue(primary).releaseDigest(algorithm)
+            check(files.getValue(primary + suffix).readText() in setOf(digest, "$digest\n")) {
+                "Fresh SDK Maven checksum mismatch: $primary$suffix"
+            }
+        }
+    }
+    if (hasMetadata) metadata.forEach { primary ->
+        (listOf(primary) + checksumAlgorithms.keys.map { primary + it }).forEach { path ->
+            check(files.getValue(path).delete()) { "Cannot remove fresh SDK discovery metadata: $path" }
+        }
+    }
+    primaries.forEach { primary ->
+        checksumAlgorithms.forEach { (suffix, algorithm) ->
+            files.getValue(primary + suffix).writeText(files.getValue(primary).releaseDigest(algorithm) + "\n")
+        }
+    }
+}
+
 internal fun verifySdkBinaryMavenRepository(
     repository: File,
     groupId: String,
@@ -198,16 +243,11 @@ internal fun verifySdkBinaryMavenRepository(
     }
 
     val files = verifiedRegularFiles(repository)
-    val expectedMetadata = expectedIds.flatMapTo(sortedSetOf()) { artifactId ->
-        listOf("", ".md5", ".sha1", ".sha256", ".sha512").map { suffix ->
-            "$groupPath/$artifactId/maven-metadata.xml$suffix"
-        }
-    }
     val expectedRootPrimary = expectedPrimary.mapTo(sortedSetOf()) { "$groupPath/$it" }
     val expectedPrimaryChecksums = expectedRootPrimary.flatMapTo(sortedSetOf()) { primary ->
         checksumAlgorithms.keys.map { suffix -> primary + suffix }
     }
-    val expectedFiles = (expectedRootPrimary + expectedPrimaryChecksums + expectedMetadata).toSortedSet()
+    val expectedFiles = (expectedRootPrimary + expectedPrimaryChecksums).toSortedSet()
     val actualPaths = files.keys.toSortedSet()
     check(actualPaths == expectedFiles) {
         "SDK Maven file set mismatch: expected=$expectedFiles actual=$actualPaths"
@@ -215,19 +255,11 @@ internal fun verifySdkBinaryMavenRepository(
     expectedRootPrimary.forEach { relative ->
         val primary = files.getValue(relative)
         checksumAlgorithms.forEach { (suffix, algorithm) ->
-            check(files.getValue(relative + suffix).readText().trim() == primary.releaseDigest(algorithm)) {
+            check(files.getValue(relative + suffix).readText() == primary.releaseDigest(algorithm) + "\n") {
                 "SDK Maven checksum does not match its primary: $relative$suffix"
             }
         }
         if (relative.endsWith(".pom")) verifyGplPom(primary)
-    }
-    expectedMetadata.filter { it.endsWith("maven-metadata.xml") }.forEach { relative ->
-        val metadata = files.getValue(relative)
-        checksumAlgorithms.forEach { (suffix, algorithm) ->
-            check(files.getValue(relative + suffix).readText().trim() == metadata.releaseDigest(algorithm)) {
-                "SDK Maven checksum does not match its metadata: $relative$suffix"
-            }
-        }
     }
 
     check(!inventory.canonicalFile.toPath().startsWith(repository.canonicalFile.toPath())) {
@@ -255,22 +287,36 @@ internal fun verifySdkBinaryMavenRepository(
 }
 
 @DisableCachingByDefault(because = "Verifies a freshly published SDK Maven repository in place")
-abstract class VerifySdkBinaryMavenRepositoryTask @Inject constructor() : DefaultTask() {
+abstract class VerifySdkBinaryMavenRepositoryTask @Inject constructor(
+    private val processes: ExecOperations,
+) : DefaultTask() {
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val repository: DirectoryProperty
     @get:Input abstract val groupId: Property<String>
     @get:Input abstract val sdkVersion: Property<String>
     @get:Input abstract val component: Property<String>
     @get:OutputFile abstract val inventory: RegularFileProperty
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val producerSources: ConfigurableFileCollection
+    @get:Internal abstract val repositoryRoot: DirectoryProperty
 
     @TaskAction
-    fun verify() = verifySdkBinaryMavenRepository(
-        repository.get().asFile,
-        groupId.get(),
-        sdkVersion.get(),
-        component.get(),
-        inventory.get().asFile,
-    )
+    fun verify() {
+        val directory = repository.get().asFile
+        inventory.get().asFile.delete()
+        finalizeFreshSdkBinaryMavenRepository(directory, groupId.get(), sdkVersion.get(), component.get())
+        processes.exec {
+            workingDir(repositoryRoot.get().asFile)
+            environment("PYTHONDONTWRITEBYTECODE", "1")
+            commandLine(
+                "python3", "-m", "ci.products.sdk_maven", "--verify-only",
+                "--source", directory.absolutePath,
+                "--group-id", groupId.get(), "--version", sdkVersion.get(),
+                "--component", component.get(),
+            )
+        }
+        verifySdkBinaryMavenRepository(directory, groupId.get(), sdkVersion.get(), component.get(), inventory.get().asFile)
+    }
 }
 
 internal fun verifyMavenRepository(

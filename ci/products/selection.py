@@ -473,6 +473,11 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(NATIVE_TARGETS)
 
     if path in _METADATA_AUTHORITIES:
+        if path == "gradle/build-logic/src/main/kotlin/MavenRepositoryTasks.kt":
+            return set(ALL_METADATA).union(*(
+                _from_phase("sdk", component, "binary")
+                for component in ("sdk-core", "sdk-android", "sdk-ios")
+            ))
         return set(ALL_METADATA)
 
     if path in {"ci/products/contract.py", "ci/products/contract_model.py"}:
@@ -499,11 +504,14 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return selected
     if path == "ci/products/sdk_maven.py":
         return set().union(*(
-            _from_phase("sdk", component, "package")
+            _from_phase("sdk", component, "binary")
             for component in ("sdk-core", "sdk-android", "sdk-ios")
         ))
     if path == "ci/products/sdk_archive.py":
-        return _from_phase("sdk", "javascript", "package")
+        return set().union(*(
+            _from_phase("sdk", component, "package")
+            for component in ("sdk-core", "sdk-android", "sdk-ios", "javascript")
+        ))
     if path in {
         "ci/products/__init__.py",
         "ci/products/runtime_evidence.py",
@@ -703,7 +711,10 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
     sdk_build_logic = {
         "codexagent.javascript-sdk.gradle.kts": _bindings(("javascript",)),
-        "codexagent.native-wrapper-sdk.gradle.kts": _bindings(NATIVE_BINDINGS),
+        "codexagent.native-wrapper-sdk.gradle.kts": _bindings(NATIVE_BINDINGS).union(*(
+            _from_phase("sdk", component, "package")
+            for component in ("sdk-core", "sdk-android", "sdk-ios")
+        )),
         "codexagent.android-runtime-evidence.gradle.kts": _from_phase("sdk", "sdk-android", "binary"),
         "codexagent.ios-runtime.gradle.kts": _from_phase("sdk", "sdk-ios", "binary"),
     }
@@ -744,11 +755,15 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         if name in {
             "GenerateProtocolTask.kt",
             "VerifyProtocolSourceTask.kt",
-            "codexagent.contract-product.gradle.kts",
             "codexagent.core-verification.gradle.kts",
             "codexagent.protocol-generator.gradle.kts",
         }:
             return _from_phase("contract", "contract", "validation")
+        if name == "codexagent.contract-product.gradle.kts":
+            return _from_phase("contract", "contract", "validation").union(*(
+                _from_phase("sdk", component, "binary")
+                for component in ("sdk-core", "sdk-android", "sdk-ios")
+            ))
         if name in {
             "CodexAgentBuild.kt",
             "ProductOutputManifestGradleTask.kt",

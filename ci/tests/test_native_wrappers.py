@@ -184,20 +184,24 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             root = Path(temporary)
             sdks = root / "sdks"
             sdks.mkdir()
-            compatibility = b'{"schemaVersion":1}\n'
+            compatibility = (
+                CI_ROOT.parent / "codex-agent-bindings/csharp/native/sdk-compatibility.json"
+            ).read_bytes()
             (sdks / "sdk-compatibility.json").write_bytes(compatibility)
             package = root / "packages/csharp/CodexAgent.0.2.0.nupkg"
             write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json", compatibility.decode())
 
-            require_embedded_sdk_compatibility(root / "packages", sdks, ("csharp",))
+            require_embedded_sdk_compatibility(root / "packages", sdks, "0.2.0", ("csharp",))
+            with self.assertRaisesRegex(ValueError, "compatibility version mismatch"):
+                require_embedded_sdk_compatibility(root / "packages", sdks, "0.2.1", ("csharp",))
 
             write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json", "changed")
             with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
-                require_embedded_sdk_compatibility(root / "packages", sdks, ("csharp",))
+                require_embedded_sdk_compatibility(root / "packages", sdks, "0.2.0", ("csharp",))
 
             write_zip_file(package, "wrong/location/sdk-compatibility.json", compatibility.decode())
             with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
-                require_embedded_sdk_compatibility(root / "packages", sdks, ("csharp",))
+                require_embedded_sdk_compatibility(root / "packages", sdks, "0.2.0", ("csharp",))
 
     def test_release_archive_native_assets_match_the_staged_sdk(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -549,7 +553,9 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 destination.parent.mkdir(parents=True)
                 destination.write_bytes(compatibility_bytes)
 
-            require_prepared_native_assets(sources, sdks)
+            require_prepared_native_assets(sources, sdks, "0.2.0")
+            with self.assertRaisesRegex(ValueError, "compatibility version mismatch"):
+                require_prepared_native_assets(sources, sdks, "0.2.1")
             for (language, classifier), destination in language_roots.items():
                 target = next(path for path in destination.rglob("*") if path.is_file())
                 original = target.read_bytes()
@@ -557,20 +563,20 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 with self.subTest(language=language, classifier=classifier), self.assertRaisesRegex(
                     ValueError, re.escape(language),
                 ):
-                    require_prepared_native_assets(sources, sdks)
+                    require_prepared_native_assets(sources, sdks, "0.2.0")
                 target.write_bytes(original)
 
             extra = sources / "python/src/codex_agent/native/unexpected"
             extra.mkdir()
             with self.assertRaisesRegex(ValueError, "classifier inventory"):
-                require_prepared_native_assets(sources, sdks)
+                require_prepared_native_assets(sources, sdks, "0.2.0")
             extra.rmdir()
 
             missing = sources / "rust/native/linux-x64"
             hidden = sources / "rust/native/linux-x64-hidden"
             missing.rename(hidden)
             with self.assertRaisesRegex(ValueError, "classifier inventory"):
-                require_prepared_native_assets(sources, sdks)
+                require_prepared_native_assets(sources, sdks, "0.2.0")
             hidden.rename(missing)
 
             real = sources / "dart/lib/src/native/linux-x64"
@@ -578,13 +584,13 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             real.rename(hidden)
             real.symlink_to(hidden, target_is_directory=True)
             with self.assertRaisesRegex(ValueError, "classifier inventory|symbolic"):
-                require_prepared_native_assets(sources, sdks)
+                require_prepared_native_assets(sources, sdks, "0.2.0")
             real.unlink()
             hidden.rename(real)
 
             (sdks / "unexpected").mkdir()
             with self.assertRaisesRegex(ValueError, "SDK root inventory"):
-                require_prepared_native_assets(sources, sdks)
+                require_prepared_native_assets(sources, sdks, "0.2.0")
 
     def test_package_selection_rejects_mixed_sdk_versions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
