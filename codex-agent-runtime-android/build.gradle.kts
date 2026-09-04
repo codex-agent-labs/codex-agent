@@ -108,5 +108,12 @@ mavenPublishing {
 }
 
 dependencyLocking {
+    lockFile.set(layout.projectDirectory.file(
+        if (rootProject.extra.has("codexAgent.authenticatedContractVersion")) {
+            "gradle-authenticated-contract.lockfile"
+        } else {
+            "gradle.lockfile"
+        },
+    ))
     lockAllConfigurations()
 }

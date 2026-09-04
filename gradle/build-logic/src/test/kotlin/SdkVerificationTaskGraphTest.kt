@@ -22,6 +22,18 @@ class SdkVerificationTaskGraphTest {
         assertTrue("Task 'writeSdkCoreBinaryOutputManifest' not found" in direct.output, direct.output)
         assertFalse(Regex("(?m)^:codex-agent-core:").containsMatchIn(direct.output), direct.output)
 
+        val forged = GradleRunner.create()
+            .withProjectDir(repository)
+            .withArguments(
+                "writeSdkCoreBinaryOutputManifest",
+                "-PcodexAgent.authenticatedContractVersion=0.2.0",
+                "-PcodexAgent.authenticatedSdkComponent=sdk-core",
+                "--dry-run", "--offline", "--no-configuration-cache", "--console=plain",
+            )
+            .buildAndFail()
+        assertTrue("is reserved for verified settings state" in forged.output, forged.output)
+        assertFalse(Regex("(?m)^:codex-agent-core:").containsMatchIn(forged.output), forged.output)
+
         val canonical = GradleRunner.create()
             .withProjectDir(repository)
             .withArguments(

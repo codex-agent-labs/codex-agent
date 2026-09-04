@@ -7,6 +7,15 @@ pluginManagement {
     }
 }
 
+listOf(
+    "codexAgent.authenticatedContractVersion",
+    "codexAgent.authenticatedSdkComponent",
+).forEach { name ->
+    require(!providers.gradleProperty(name).isPresent) {
+        "$name is reserved for verified settings state"
+    }
+}
+
 val rootProjectProperties = gradle.startParameter.projectProperties
 val sdkBinaryRequest = rootProjectProperties["codexAgent.product"] == "sdk" &&
     rootProjectProperties["codexAgent.phase"] == "binary"
