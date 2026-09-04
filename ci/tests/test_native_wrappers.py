@@ -32,7 +32,9 @@ from native_wrappers import (  # noqa: E402
     normalize_python_sdist,
     main,
     package_all,
+    require_embedded_native_assets,
     require_embedded_package_versions,
+    require_embedded_sdk_compatibility,
     require_prepared_native_assets,
     require_sdk_version_file,
     require_source_sdk_version,
@@ -154,6 +156,228 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             self.assertIn("second=missing", str(failure.exception))
             self.assertFalse((root / "packages").exists())
 
+    def test_package_run_builds_only_the_selected_language_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calls: list[tuple[str, ...]] = []
+
+            def package_once(*arguments: object) -> None:
+                output = Path(arguments[2])
+                languages = arguments[4]
+                self.assertIsInstance(languages, tuple)
+                calls.append(languages)
+                language = languages[0]
+                output.joinpath(language).mkdir(parents=True)
+                output.joinpath(language, "package").write_text("same", encoding="utf-8")
+
+            with patch("native_wrappers.package_once", side_effect=package_once):
+                package_all(root, root, root / "packages", "0.2.0", ("rust",))
+
+            self.assertEqual([("rust",), ("rust",)], calls)
+            self.assertEqual(["rust/package"], [
+                path.relative_to(root / "packages").as_posix()
+                for path in files(root / "packages")
+            ])
+
+    def test_release_archives_contain_the_exact_shared_compatibility_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sdks = root / "sdks"
+            sdks.mkdir()
+            compatibility = b'{"schemaVersion":1}\n'
+            (sdks / "sdk-compatibility.json").write_bytes(compatibility)
+            package = root / "packages/csharp/CodexAgent.0.2.0.nupkg"
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json", compatibility.decode())
+
+            require_embedded_sdk_compatibility(root / "packages", sdks, ("csharp",))
+
+            write_zip_file(package, "META-INF/codex-agent/sdk-compatibility.json", "changed")
+            with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
+                require_embedded_sdk_compatibility(root / "packages", sdks, ("csharp",))
+
+            write_zip_file(package, "wrong/location/sdk-compatibility.json", compatibility.decode())
+            with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
+                require_embedded_sdk_compatibility(root / "packages", sdks, ("csharp",))
+
+    def test_release_archive_native_assets_match_the_staged_sdk(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sdks = root / "sdks"
+            package = root / "packages/csharp/CodexAgent.0.2.0.nupkg"
+            package.parent.mkdir(parents=True)
+            with zipfile.ZipFile(package, "w") as archive:
+                for classifier, package_classifier in PACKAGE_CLASSIFIERS.items():
+                    sdk = sdks / classifier
+                    library = sdk / HOSTS[classifier][4]
+                    library.parent.mkdir(parents=True)
+                    library.write_bytes(f"library:{classifier}".encode())
+                    archive.writestr(
+                        f"runtimes/{package_classifier}/native/{library.name}",
+                        library.read_bytes(),
+                    )
+                    for proof in ("manifest", "evidence"):
+                        name = f"codex-agent-c-abi-{proof}.json"
+                        (sdk / name).write_text(f"{proof}:{classifier}\n", encoding="utf-8")
+                        archive.writestr(
+                            f"runtimes/{package_classifier}/native/{name}",
+                            (sdk / name).read_bytes(),
+                        )
+
+            require_embedded_native_assets(root / "packages", sdks, "0.2.0", ("csharp",))
+            with zipfile.ZipFile(package) as source:
+                entries = {name: source.read(name) for name in source.namelist()}
+            entries["runtimes/osx-arm64/native/codex_agent.dll"] = b"extra-target"
+            with zipfile.ZipFile(package, "w") as archive:
+                for name, contents in entries.items():
+                    archive.writestr(name, contents)
+            with self.assertRaisesRegex(ValueError, "target inventory mismatch"):
+                require_embedded_native_assets(root / "packages", sdks, "0.2.0", ("csharp",))
+            del entries["runtimes/osx-arm64/native/codex_agent.dll"]
+            entries["runtimes/linux-x64/native/libcodex_agent.so"] = b"tampered"
+            with zipfile.ZipFile(package, "w") as archive:
+                for name, contents in entries.items():
+                    archive.writestr(name, contents)
+            with self.assertRaisesRegex(ValueError, "native library differs"):
+                require_embedded_native_assets(root / "packages", sdks, "0.2.0", ("csharp",))
+
+    def test_each_non_csharp_archive_rejects_native_tampering_or_extra_files(self) -> None:
+        def prepare_sdks(root: Path) -> Path:
+            sdks = root / "sdks"
+            (sdks / "sdk-compatibility.json").parent.mkdir(parents=True)
+            (sdks / "sdk-compatibility.json").write_text("compatibility\n", encoding="utf-8")
+            for classifier in HOSTS:
+                sdk = sdks / classifier
+                members = {
+                    "include/codex_agent.h": f"header:{classifier}".encode(),
+                    HOSTS[classifier][4]: f"library:{classifier}".encode(),
+                    "codex-agent-c-abi-manifest.json": f"manifest:{classifier}".encode(),
+                    "codex-agent-c-abi-evidence.json": f"evidence:{classifier}".encode(),
+                }
+                if classifier.startswith("linux-"):
+                    members["lib/libcodex_agent.so.1"] = f"soname:{classifier}".encode()
+                elif classifier == "windows-x64":
+                    members["lib/libcodex_agent.dll.a"] = b"gnu-import"
+                    members["lib/codex_agent.lib"] = b"msvc-import"
+                for relative, contents in members.items():
+                    path = sdk / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(contents)
+            return sdks
+
+        def copy_target(sdks: Path, classifier: str, destination: Path) -> None:
+            destination.mkdir(parents=True, exist_ok=True)
+            sdk = sdks / classifier
+            for relative in (
+                HOSTS[classifier][4],
+                "codex-agent-c-abi-manifest.json",
+                "codex-agent-c-abi-evidence.json",
+            ):
+                target = destination / Path(relative).name
+                target.write_bytes((sdk / relative).read_bytes())
+
+        def build_language(root: Path, language: str, sdks: Path) -> Path:
+            packages = root / "packages"
+            compatibility = (sdks / "sdk-compatibility.json").read_bytes()
+            if language == "python":
+                source = root / "python-sdist"
+                native = source / "src/codex_agent/native"
+                native.mkdir(parents=True, exist_ok=True)
+                (native / "sdk-compatibility.json").write_bytes(compatibility)
+                for classifier in HOSTS:
+                    copy_target(sdks, classifier, native / classifier)
+                deterministic_tar(
+                    source, packages / "python/codex_agent-0.2.0.tar.gz", "codex_agent-0.2.0",
+                )
+                for classifier, tag in PYTHON_TAGS.items():
+                    wheel = root / f"python-wheel-{classifier}"
+                    native = wheel / "codex_agent/native"
+                    native.mkdir(parents=True, exist_ok=True)
+                    (native / "sdk-compatibility.json").write_bytes(compatibility)
+                    copy_target(sdks, classifier, native / classifier)
+                    deterministic_zip(
+                        wheel,
+                        packages / f"python/codex_agent-0.2.0-py3-none-{tag}.whl",
+                        "",
+                    )
+                return source / "src/codex_agent/native/macos-arm64"
+            if language == "rust":
+                source = root / "rust"
+                native = source / "native"
+                native.mkdir(parents=True, exist_ok=True)
+                (native / "sdk-compatibility.json").write_bytes(compatibility)
+                for classifier, package_classifier in PACKAGE_CLASSIFIERS.items():
+                    copy_target(sdks, classifier, native / package_classifier)
+                deterministic_tar(
+                    source, packages / "rust/codex-agent-0.2.0.crate", "codex-agent-0.2.0",
+                )
+                return native / "osx-arm64"
+            if language == "dart":
+                source = root / "dart"
+                native = source / "lib/src/native"
+                native.mkdir(parents=True, exist_ok=True)
+                (native / "README.md").write_text("native\n", encoding="utf-8")
+                (native / "sdk-compatibility.json").write_bytes(compatibility)
+                for classifier in HOSTS:
+                    copy_target(sdks, classifier, native / classifier)
+                deterministic_tar(
+                    source, packages / "dart/codex-agent-dart-0.2.0.tar.gz", "codex_agent-0.2.0",
+                )
+                return native / "macos-arm64"
+            if language == "cpp":
+                for classifier in HOSTS:
+                    source = root / f"cpp-{classifier}"
+                    sdk = sdks / classifier
+                    for relative in (
+                        "include/codex_agent.h",
+                        HOSTS[classifier][4],
+                        *(
+                            ("lib/libcodex_agent.so.1",)
+                            if classifier.startswith("linux-") else
+                            ("lib/libcodex_agent.dll.a", "lib/codex_agent.lib")
+                            if classifier == "windows-x64" else ()
+                        ),
+                    ):
+                        target = source / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes((sdk / relative).read_bytes())
+                    proof = source / "share/CodexAgent/native"
+                    proof.mkdir(parents=True, exist_ok=True)
+                    (proof / "sdk-compatibility.json").write_bytes(compatibility)
+                    for name in (
+                        "codex-agent-c-abi-manifest.json",
+                        "codex-agent-c-abi-evidence.json",
+                    ):
+                        (proof / name).write_bytes((sdk / name).read_bytes())
+                    deterministic_zip(
+                        source,
+                        packages / f"cpp/codex-agent-cpp-0.2.0-{classifier}.zip",
+                        f"codex-agent-cpp-0.2.0-{classifier}",
+                    )
+                return root / "cpp-linux-x64/lib/libcodex_agent.so.1"
+            raise AssertionError(language)
+
+        for language in ("python", "rust", "dart", "cpp"):
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                sdks = prepare_sdks(root)
+                mutation = build_language(root, language, sdks)
+                require_embedded_native_assets(root / "packages", sdks, "0.2.0", (language,))
+                if language == "cpp":
+                    mutation.write_bytes(b"tampered")
+                    classifier = "linux-x64"
+                    deterministic_zip(
+                        root / f"cpp-{classifier}",
+                        root / f"packages/cpp/codex-agent-cpp-0.2.0-{classifier}.zip",
+                        f"codex-agent-cpp-0.2.0-{classifier}",
+                    )
+                    pattern = "native artifact differs"
+                else:
+                    (mutation / "extra-native.bin").write_bytes(b"extra")
+                    build_language(root, language, sdks)
+                    pattern = "target inventory mismatch"
+                with self.assertRaisesRegex(ValueError, pattern):
+                    require_embedded_native_assets(root / "packages", sdks, "0.2.0", (language,))
+
     def test_failed_or_invalid_package_run_removes_stale_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -208,6 +432,17 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             require_source_sdk_version(root, "3.4.5")
             self.assertIn('version = "3.4.5"', (root / "rust/Cargo.lock").read_text(encoding="utf-8"))
 
+            shutil.rmtree(root / "python")
+            shutil.rmtree(root / "csharp")
+            shutil.rmtree(root / "cpp")
+            shutil.rmtree(root / "dart")
+            set_source_sdk_version(root, "4.5.6", ("rust",))
+            require_source_sdk_version(root, "4.5.6", ("rust",))
+
+            for relative, contents in manifests.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents.replace("0.2.0", "3.4.5"), encoding="utf-8")
             with (root / "cpp/CMakeLists.txt").open("a", encoding="utf-8") as manifest:
                 manifest.write("project(CodexAgent VERSION 3.4.5 LANGUAGES CXX)\n")
             with self.assertRaisesRegex(ValueError, "exactly one"):

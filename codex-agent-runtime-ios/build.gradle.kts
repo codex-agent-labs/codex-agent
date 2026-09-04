@@ -10,12 +10,17 @@ plugins {
 }
 
 val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toString()
+val contractDependency: Any = if (rootProject.extra.has("codexAgent.authenticatedContractVersion")) {
+    "${project.group}:codex-agent-core:${rootProject.extra["codexAgent.authenticatedContractVersion"]}"
+} else {
+    project(":codex-agent-core")
+}
 
 kotlin {
     explicitApi()
     sourceSets {
         commonMain.dependencies {
-            api(project(":codex-agent-core"))
+            api(contractDependency)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
         }

@@ -5,12 +5,14 @@ import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.TaskProvider
 import org.gradle.api.tasks.bundling.Zip
+import org.gradle.kotlin.dsl.named
 import org.gradle.kotlin.dsl.register
 
 data class IosAppleDistributionTasks(
     val appleDistributionDirectory: Provider<Directory>,
     val releaseXCFrameworkDirectory: Provider<Directory>,
     val privacyManifestFile: RegularFile,
+    val sdkCompatibilityFile: Provider<RegularFile>?,
     val prepareCodexAgentReleaseXCFramework: TaskProvider<PrepareCodexAgentReleaseXCFrameworkTask>,
     val packageCodexAgentAppleDistribution: TaskProvider<Zip>,
     val verifyCodexAgentSwiftPackage: TaskProvider<Exec>,
@@ -37,6 +39,15 @@ fun Project.registerIosAppleDistributionTasks(
     val codexNotice = rootProject.layout.projectDirectory.file(
         "legal/openai-codex/openai-codex-NOTICE.txt",
     )
+    val sdkCompatibility = if (providers.gradleProperty("codexAgent.sdkCompatibilityRequest").isPresent) {
+        project(":codex-agent-sdk").layout.buildDirectory.file(
+            providers.gradleProperty("codexAgent.candidateTree").map {
+                "sdk-compatibility/$it/META-INF/codex-agent/sdk-compatibility.json"
+            },
+        )
+    } else {
+        null
+    }
 
     val assembleDependency: Any = if (importedDeviceFramework != null && importedSimulatorFramework != null) {
         tasks.register<AssembleImportedCodexAgentXCFrameworkTask>("assembleCodexAgentReleaseXCFrameworkFromImports") {
@@ -62,6 +73,10 @@ fun Project.registerIosAppleDistributionTasks(
     val stageCodexAgentAppleDistribution =
         tasks.register<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
             dependsOn(prepareCodexAgentReleaseXCFramework)
+            if (sdkCompatibility != null) {
+                dependsOn(":codex-agent-sdk:generateNativeWrapperSdkCompatibility")
+                this.sdkCompatibility.set(sdkCompatibility)
+            }
             packageManifest.set(layout.projectDirectory.file("apple/Package.swift"))
             sourcesDirectory.set(layout.projectDirectory.dir("apple/Sources"))
             testsDirectory.set(layout.projectDirectory.dir("apple/Tests"))
@@ -133,6 +148,7 @@ fun Project.registerIosAppleDistributionTasks(
         appleDistributionDirectory,
         releaseXCFrameworkDirectory,
         privacyManifestFile,
+        sdkCompatibility,
         prepareCodexAgentReleaseXCFramework,
         packageCodexAgentAppleDistribution,
         verifyCodexAgentSwiftPackage,

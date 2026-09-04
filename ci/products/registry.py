@@ -296,7 +296,7 @@ def required_contract_components(instance: PhaseInstanceId) -> tuple[str, ...]:
     if phase.product == "runtime" and phase.component in RUNTIME_COMPONENTS and phase.phase == "binary":
         components = (phase.component,)
     elif phase == PhaseId("sdk", "sdk-core", "binary"):
-        components = ("common",)
+        components = ("common", *SDK_FACADE_CONTRACT_COMPONENTS.values())
     elif phase == PhaseId("sdk", "sdk-core", "validation"):
         components = (SDK_FACADE_CONTRACT_COMPONENTS[instance.target],)
     elif phase == PhaseId("sdk", "sdk-android", "binary"):

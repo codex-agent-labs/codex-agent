@@ -38,6 +38,13 @@ class AppleDistributionTasksTest {
         assertTrue("path: \"Tests/CodexAgentObjectiveCConsumer\"" in manifest)
         assertTrue("publicHeadersPath: \"include\"" in manifest)
         assertTrue("testsDirectory.set(layout.projectDirectory.dir(\"apple/Tests\"))" in registration)
+        val releaseRegistration = repository.resolve(
+            "gradle/build-logic/src/main/kotlin/IosAppleReleaseVerificationTasks.kt",
+        ).readText()
+        assertTrue(
+            "CodexAgent.framework/META-INF/codex-agent" in releaseRegistration,
+            "SwiftPM binary ZIP omits SDK compatibility metadata",
+        )
         val expectedIdentifiers = listOf(
             "CodexAgentObservationTests/testBufferingCancellationAndDroppedStreamReleaseTheObservation()",
             "CodexAgentObservationTests/testCodexOperationErrorsExposeStructuredFailure()",
@@ -261,6 +268,7 @@ class AppleDistributionTasksTest {
             AppleDistributionInputs(
                 file("inputs/Package.swift"), directory("Sources"), directory("Tests"), directory("Framework"),
                 file("LICENSE"), file("THIRD_PARTY_NOTICES.md"), file("codex-license"), file("codex-notice"),
+                file("sdk-compatibility.json"),
                 directory("TestApp"),
             ),
             output,
@@ -271,6 +279,10 @@ class AppleDistributionTasksTest {
         assertEquals("Framework", packageRoot.resolve("CodexAgent.xcframework/content").readText())
         assertEquals("codex-license", packageRoot.resolve("openai-codex-LICENSE.txt").readText())
         assertEquals("codex-notice", packageRoot.resolve("openai-codex-NOTICE.txt").readText())
+        assertEquals(
+            "sdk-compatibility.json",
+            packageRoot.resolve("META-INF/codex-agent/sdk-compatibility.json").readText(),
+        )
         assertEquals("TestApp", output.resolve("CodexAgentTestApp/content").readText())
     }
 

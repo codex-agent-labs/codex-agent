@@ -396,11 +396,20 @@ fn lifecycle_state_failure_cancellation_identity_and_ownership() {
     // SAFETY: fixture setter loaded with its exact signature.
     set(control.set_abi_compatible, 1);
 
-    for mode in 1..=7 {
+    for (mode, case) in [
+        (1, "identity schema"),
+        (2, "host target"),
+        (3, "Contract digest"),
+        (4, "ABI 1.12"),
+        (5, "Runtime compatibility"),
+        (6, "malformed identity"),
+        (7, "actual/declared ABI mismatch"),
+        (8, "wrong ABI major"),
+    ] {
         set(control.set_identity_mode, mode);
         let error = CodexNativeLibrary::load(path)
             .err()
-            .unwrap_or_else(|| panic!("identity mode {mode} must fail closed"));
+            .unwrap_or_else(|| panic!("{case} identity must fail closed"));
         assert_eq!(error.status, Status::InternalError);
     }
     set(control.set_identity_mode, 0);

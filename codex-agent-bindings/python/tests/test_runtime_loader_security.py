@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from codex_agent._ffi import (  # noqa: E402
     NativeLibrary,
+    _load_compatibility,
     _read_runtime_identity,
     _snapshot_embedded_library,
     _validate_compatibility,
@@ -162,6 +163,33 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(OSError, "canonical"):
             _validate_compatibility(canonical(value, False))
 
+    def test_tampered_compatibility_policy_fails_closed(self) -> None:
+        changes = {
+            "Contract digest disagreement": lambda value: value["contract"].__setitem__("digest", digest("9")),
+            "default Runtime outside release range": lambda value: value["runtime"].__setitem__("defaultRuntimeVersion", "0.3.0"),
+            "duplicate component identity": lambda value: value["runtime"]["embeddedVariants"][1].__setitem__(
+                "componentId", value["runtime"]["embeddedVariants"][0]["componentId"]
+            ),
+            "duplicate manifest identity": lambda value: value["runtime"]["embeddedVariants"][1].__setitem__(
+                "manifestSha256", value["runtime"]["embeddedVariants"][0]["manifestSha256"]
+            ),
+            "Desktop Runtime assigned to Android": lambda value: value["platformRuntime"]["android"].__setitem__(
+                "desktopRuntimeApplicable", True
+            ),
+        }
+        for description, change in changes.items():
+            with self.subTest(description):
+                value = json.loads(json.dumps(compatibility()))
+                change(value)
+                with self.assertRaises(OSError):
+                    _validate_compatibility(canonical(value))
+
+    def test_missing_packaged_compatibility_declaration_fails_closed(self) -> None:
+        with patch("codex_agent._ffi.files") as resources:
+            resources.return_value.joinpath.return_value.read_bytes.side_effect = FileNotFoundError
+            with self.assertRaisesRegex(OSError, "compatibility declaration is missing"):
+                _load_compatibility()
+
     def test_immutable_snapshot_survives_deterministic_source_swap(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             source = Path(directory) / "libcodex_agent.dylib"
@@ -214,6 +242,15 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
             with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility):
                 with self.assertRaisesRegex(OSError, "ABI disagrees"):
                     NativeLibrary.load(mismatch)
+
+            incompatible_identity = identity(target)
+            incompatible_identity["contractDigest"] = digest("9")
+            incompatible = compile_library(
+                root, "incompatible_override", canonical(incompatible_identity, False), 0x010D0000
+            )
+            with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility):
+                with self.assertRaisesRegex(OSError, "Contract mismatch"):
+                    NativeLibrary.load(incompatible)
 
     def test_noncanonical_native_identity_fails(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:

@@ -1,8 +1,20 @@
 import java.io.File
 import java.nio.file.Files
+import javax.inject.Inject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+import org.gradle.work.DisableCachingByDefault
 
 private enum class MavenProduct { CONTRACT, RUNTIME, SDK }
 
@@ -116,7 +128,22 @@ private val mavenArtifactSpecs = listOf(
     MavenArtifactSpec("codex-agent-runtime-desktop-wasm-js", listOf("-javadoc.jar", "-sources.jar", ".klib", ".module", ".pom"), MavenProduct.RUNTIME),
 )
 
-private val checksumAlgorithms = linkedMapOf(
+private val sdkBinaryArtifactIds = mapOf(
+    "sdk-core" to setOf(
+        "codex-agent", "codex-agent-android", "codex-agent-iosarm64",
+        "codex-agent-iossimulatorarm64", "codex-agent-js", "codex-agent-jvm",
+        "codex-agent-linuxarm64", "codex-agent-linuxx64", "codex-agent-macosarm64",
+        "codex-agent-macosx64", "codex-agent-mingwx64", "codex-agent-wasm-js",
+        "codex-agent-bom",
+    ),
+    "sdk-android" to setOf("codex-agent-runtime-android"),
+    "sdk-ios" to setOf(
+        "codex-agent-runtime-ios", "codex-agent-runtime-ios-iosarm64",
+        "codex-agent-runtime-ios-iossimulatorarm64",
+    ),
+)
+
+internal val checksumAlgorithms = linkedMapOf(
     ".md5" to "MD5",
     ".sha1" to "SHA-1",
     ".sha256" to "SHA-256",
@@ -136,6 +163,115 @@ internal fun expectedMavenPrimaryPaths(versions: ProductVersions): Set<String> =
         "${spec.artifactId}/$version/${spec.artifactId}-$version$suffix"
     }
 }.toSortedSet()
+
+internal fun expectedSdkBinaryMavenPrimaryPaths(component: String, sdkVersion: String): Set<String> {
+    val artifactIds = sdkBinaryArtifactIds[component]
+        ?: error("Unsupported SDK Maven binary component: $component")
+    return mavenArtifactSpecs.filter { it.artifactId in artifactIds }.flatMap { spec ->
+        check(spec.product == MavenProduct.SDK) { "SDK binary component contains a non-SDK artifact" }
+        spec.suffixes.map { suffix ->
+            "${spec.artifactId}/$sdkVersion/${spec.artifactId}-$sdkVersion$suffix"
+        }
+    }.toSortedSet()
+}
+
+internal fun verifySdkBinaryMavenRepository(
+    repository: File,
+    groupId: String,
+    sdkVersion: String,
+    component: String,
+    inventory: File,
+) {
+    check(groupId == CodexAgentBuild.MAVEN_GROUP) { "Unexpected Maven group: $groupId" }
+    val expectedPrimary = expectedSdkBinaryMavenPrimaryPaths(component, sdkVersion)
+    val expectedIds = expectedPrimary.mapTo(sortedSetOf()) { it.substringBefore('/') }
+    check(expectedIds == sdkBinaryArtifactIds.getValue(component).toSortedSet()) {
+        "SDK Maven artifact authority is incomplete: $component"
+    }
+    val groupPath = groupId.replace('.', '/')
+    val groupRoot = repository.resolve(groupPath)
+    check(groupRoot.isDirectory) { "SDK Maven group is missing: $groupId" }
+    val actualIds = groupRoot.listFiles().orEmpty().filter(File::isDirectory)
+        .mapTo(sortedSetOf(), File::getName)
+    check(actualIds == expectedIds) {
+        "SDK Maven publication set mismatch: expected=$expectedIds actual=$actualIds"
+    }
+
+    val files = verifiedRegularFiles(repository)
+    val expectedMetadata = expectedIds.flatMapTo(sortedSetOf()) { artifactId ->
+        listOf("", ".md5", ".sha1", ".sha256", ".sha512").map { suffix ->
+            "$groupPath/$artifactId/maven-metadata.xml$suffix"
+        }
+    }
+    val expectedRootPrimary = expectedPrimary.mapTo(sortedSetOf()) { "$groupPath/$it" }
+    val expectedPrimaryChecksums = expectedRootPrimary.flatMapTo(sortedSetOf()) { primary ->
+        checksumAlgorithms.keys.map { suffix -> primary + suffix }
+    }
+    val expectedFiles = (expectedRootPrimary + expectedPrimaryChecksums + expectedMetadata).toSortedSet()
+    val actualPaths = files.keys.toSortedSet()
+    check(actualPaths == expectedFiles) {
+        "SDK Maven file set mismatch: expected=$expectedFiles actual=$actualPaths"
+    }
+    expectedRootPrimary.forEach { relative ->
+        val primary = files.getValue(relative)
+        checksumAlgorithms.forEach { (suffix, algorithm) ->
+            check(files.getValue(relative + suffix).readText().trim() == primary.releaseDigest(algorithm)) {
+                "SDK Maven checksum does not match its primary: $relative$suffix"
+            }
+        }
+        if (relative.endsWith(".pom")) verifyGplPom(primary)
+    }
+    expectedMetadata.filter { it.endsWith("maven-metadata.xml") }.forEach { relative ->
+        val metadata = files.getValue(relative)
+        checksumAlgorithms.forEach { (suffix, algorithm) ->
+            check(files.getValue(relative + suffix).readText().trim() == metadata.releaseDigest(algorithm)) {
+                "SDK Maven checksum does not match its metadata: $relative$suffix"
+            }
+        }
+    }
+
+    check(!inventory.canonicalFile.toPath().startsWith(repository.canonicalFile.toPath())) {
+        "SDK Maven inventory must be outside the staged repository"
+    }
+    inventory.atomicWriteJson(buildJsonObject {
+        put("schemaVersion", JsonPrimitive(1))
+        put("product", JsonPrimitive("sdk"))
+        put("component", JsonPrimitive(component))
+        put("groupId", JsonPrimitive(groupId))
+        put("sdkVersion", JsonPrimitive(sdkVersion))
+        put("artifactIds", buildJsonArray { expectedIds.forEach { add(JsonPrimitive(it)) } })
+        put("primaryArtifactCount", JsonPrimitive(expectedRootPrimary.size))
+        put("files", buildJsonArray {
+            expectedRootPrimary.forEach { relative ->
+                val file = files.getValue(relative)
+                add(buildJsonObject {
+                    put("path", JsonPrimitive(relative))
+                    put("bytes", JsonPrimitive(file.length()))
+                    put("sha256", JsonPrimitive(file.releaseDigest()))
+                })
+            }
+        })
+    })
+}
+
+@DisableCachingByDefault(because = "Verifies a freshly published SDK Maven repository in place")
+abstract class VerifySdkBinaryMavenRepositoryTask @Inject constructor() : DefaultTask() {
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val repository: DirectoryProperty
+    @get:Input abstract val groupId: Property<String>
+    @get:Input abstract val sdkVersion: Property<String>
+    @get:Input abstract val component: Property<String>
+    @get:OutputFile abstract val inventory: RegularFileProperty
+
+    @TaskAction
+    fun verify() = verifySdkBinaryMavenRepository(
+        repository.get().asFile,
+        groupId.get(),
+        sdkVersion.get(),
+        component.get(),
+        inventory.get().asFile,
+    )
+}
 
 internal fun verifyMavenRepository(
     repository: File,

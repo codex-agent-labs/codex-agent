@@ -40,6 +40,7 @@ abstract class ExportAppleVerifiedDistributionTask @Inject constructor(
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val nativeEvidenceReceipt: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val nativeProvenance: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val packageSwift: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val sdkCompatibility: RegularFileProperty
     @get:Internal abstract val repositoryDirectory: DirectoryProperty
     @get:Internal abstract val canonicalBuildDirectory: DirectoryProperty
     @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
@@ -76,6 +77,7 @@ abstract class ExportAppleVerifiedDistributionTask @Inject constructor(
         val identity = AppleVerifiedDistributionIdentity(
             commit, tree, version.get(), nativeProvenance.get().asFile.releaseDigest(),
             packageSwift.get().asFile.releaseDigest(), nativeEvidenceReceipt.get().asFile.releaseDigest(),
+            sdkCompatibility.get().asFile.releaseDigest(),
         )
         output.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).atomicWriteJson(
             buildAppleVerifiedDistributionProof(identity, artifacts, reports, toolchain, nativeEvidence),
@@ -94,6 +96,7 @@ abstract class ImportAppleVerifiedDistributionTask @Inject constructor(
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val nativeEvidenceReceipt: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val nativeProvenance: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val packageSwift: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val sdkCompatibility: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val currentXcodeVersionFile: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val currentSwiftVersionFile: RegularFileProperty
     @get:Internal abstract val repositoryDirectory: DirectoryProperty
@@ -108,6 +111,7 @@ abstract class ImportAppleVerifiedDistributionTask @Inject constructor(
         val identity = AppleVerifiedDistributionIdentity(
             commit, tree, version.get(), nativeProvenance.get().asFile.releaseDigest(),
             packageSwift.get().asFile.releaseDigest(), nativeEvidenceReceipt.get().asFile.releaseDigest(),
+            sdkCompatibility.get().asFile.releaseDigest(),
         )
         val inventory = verifyAppleVerifiedDistribution(
             evidenceDirectory.get().asFile, nativeEvidenceDirectory.get().asFile, identity,

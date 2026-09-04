@@ -87,6 +87,22 @@ internal static class RuntimeLoaderSecurity
             Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateCompatibilityForTests(booleanInteger.ToJsonString() + "\n"));
         }
 
+        foreach (var mutation in new Action<JsonObject>[]
+        {
+            value => value["contract"]!["digest"] = "sha256:" + new string('9', 64),
+            value => value["runtime"]!["defaultRuntimeVersion"] = "0.3.0",
+            value => value["runtime"]!["embeddedVariants"]![1]!["componentId"] =
+                value["runtime"]!["embeddedVariants"]![0]!["componentId"]!.GetValue<string>(),
+            value => value["runtime"]!["embeddedVariants"]![1]!["manifestSha256"] =
+                value["runtime"]!["embeddedVariants"]![0]!["manifestSha256"]!.GetValue<string>(),
+            value => value["platformRuntime"]!["android"]!["desktopRuntimeApplicable"] = true,
+        })
+        {
+            var value = JsonNode.Parse(compatibility)!.AsObject();
+            mutation(value);
+            Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateCompatibilityForTests(value.ToJsonString() + "\n"));
+        }
+
         VerifyPathsAndSnapshot();
         VerifyInvalidNativeLibraries(compatibility);
         VerifyChildEmbeddedLoad(compatibility);

@@ -16,6 +16,9 @@
 #ifndef CODEX_AGENT_FIXTURE_CONTRACT
 #define CODEX_AGENT_FIXTURE_CONTRACT "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 #endif
+#ifndef CODEX_AGENT_FIXTURE_RUNTIME
+#define CODEX_AGENT_FIXTURE_RUNTIME "0.2.0"
+#endif
 #ifndef CODEX_AGENT_FIXTURE_ACTUAL_ABI_MAJOR
 #define CODEX_AGENT_FIXTURE_ACTUAL_ABI_MAJOR 1
 #endif
@@ -34,7 +37,7 @@ constexpr std::string_view identity =
     "\"componentId\":\"sha256:" CODEX_AGENT_FIXTURE_COMPONENT "\","
     "\"contractComponentDigest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\","
     "\"contractDigest\":\"sha256:" CODEX_AGENT_FIXTURE_CONTRACT "\","
-    "\"runtimeCompatibilityVersion\":\"0.2.0\","
+    "\"runtimeCompatibilityVersion\":\"" CODEX_AGENT_FIXTURE_RUNTIME "\","
     "\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_FIXTURE_TARGET "\"}";
 }
 

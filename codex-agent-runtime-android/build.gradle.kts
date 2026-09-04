@@ -13,6 +13,11 @@ plugins {
 }
 
 val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toString()
+val contractDependency: Any = if (rootProject.extra.has("codexAgent.authenticatedContractVersion")) {
+    "${project.group}:codex-agent-core:${rootProject.extra["codexAgent.authenticatedContractVersion"]}"
+} else {
+    project(":codex-agent-core")
+}
 
 val bundledSqliteTest = dependencies.create(libs.androidx.sqlite.bundled.get()) as ExternalModuleDependency
 bundledSqliteTest.attributes {
@@ -45,7 +50,7 @@ kotlin {
 }
 
 dependencies {
-    api(project(":codex-agent-core"))
+    api(contractDependency)
     implementation(libs.androidx.browser)
     implementation(libs.androidx.sqlite)
     implementation(libs.androidx.sqlite.framework)

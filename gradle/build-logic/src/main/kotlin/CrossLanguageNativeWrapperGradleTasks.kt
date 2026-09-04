@@ -50,7 +50,8 @@ abstract class GenerateNativeWrapperSdkCompatibilityTask @Inject constructor(
 ) : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val requestFile: RegularFileProperty
-    @get:OutputFile abstract val outputFile: RegularFileProperty
+    @get:Internal abstract val outputFile: RegularFileProperty
+    @get:OutputDirectory abstract val resourceDirectory: DirectoryProperty
     @get:Input abstract val pythonExecutable: Property<String>
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val producerSources: ConfigurableFileCollection
@@ -60,8 +61,9 @@ abstract class GenerateNativeWrapperSdkCompatibilityTask @Inject constructor(
 
     @TaskAction
     fun generate() {
+        val resourceRoot = resourceDirectory.get().asFile
         val output = outputFile.get().asFile
-        output.delete()
+        resourceRoot.deleteRecursively()
         output.parentFile.mkdirs()
         try {
             processes.exec {
@@ -74,8 +76,11 @@ abstract class GenerateNativeWrapperSdkCompatibilityTask @Inject constructor(
                 )
             }
             check(regularCAbiFile(output)) { "SDK compatibility producer emitted no regular output" }
+            check(resourceRoot.walkTopDown().filter(File::isFile).toList() == listOf(output)) {
+                "SDK compatibility resource inventory is not exact"
+            }
         } catch (error: Exception) {
-            output.delete()
+            resourceRoot.deleteRecursively()
             throw error
         }
     }
@@ -234,6 +239,46 @@ abstract class MaterializeCrossLanguageNativeWrapperPackageAssetsTask @Inject co
             materializeCrossLanguageNativeWrapperPackageAssets(trusted, outputDirectory.get().asFile)
         } finally {
             temporary.deleteRecursively()
+        }
+    }
+}
+
+@DisableCachingByDefault(because = "Language package tools and their verified profiles own reuse")
+abstract class PackageNativeWrapperSdkTask @Inject constructor(
+    private val processes: ExecOperations,
+) : DefaultTask() {
+    @get:Input abstract val language: Property<String>
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sourcesDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sdkDirectory: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sdkVersionFile: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val packageScript: RegularFileProperty
+    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:Internal abstract val repositoryRoot: DirectoryProperty
+
+    @TaskAction
+    fun packageSdk() {
+        val output = outputDirectory.get().asFile
+        output.deleteRecursively()
+        try {
+            processes.exec {
+                workingDir(repositoryRoot.get().asFile)
+                environment("PYTHONDONTWRITEBYTECODE", "1")
+                commandLine(
+                    "python3", packageScript.get().asFile.absolutePath, "package",
+                    "--sources", sourcesDirectory.get().asFile.parentFile.absolutePath,
+                    "--sdks", sdkDirectory.get().asFile.absolutePath,
+                    "--output", output.absolutePath,
+                    "--sdk-version-file", sdkVersionFile.get().asFile.absolutePath,
+                    "--language", language.get(),
+                )
+            }
+        } catch (error: Exception) {
+            output.deleteRecursively()
+            throw error
         }
     }
 }

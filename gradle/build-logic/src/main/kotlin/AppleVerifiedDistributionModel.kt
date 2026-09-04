@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import java.util.zip.ZipFile
 
 internal const val IOS_VERIFIED_DISTRIBUTION_PROOF = "verified-distribution-proof.json"
 internal const val IOS_VERIFIED_DISTRIBUTION_PROPERTY = "codexAgent.iosVerifiedDistributionDirectory"
@@ -49,6 +50,7 @@ internal data class AppleVerifiedDistributionIdentity(
     val nativeProvenanceSha256: String,
     val packageSwiftSha256: String,
     val nativeEvidenceReceiptSha256: String,
+    val sdkCompatibilitySha256: String,
 )
 
 internal data class AppleVerifiedDistributionInventory(
@@ -81,6 +83,7 @@ internal fun buildAppleVerifiedDistributionProof(
     put("nativeProvenanceSha256", JsonPrimitive(identity.nativeProvenanceSha256))
     put("packageSwiftSha256", JsonPrimitive(identity.packageSwiftSha256))
     put("nativeEvidenceReceiptSha256", JsonPrimitive(identity.nativeEvidenceReceiptSha256))
+    put("sdkCompatibilitySha256", JsonPrimitive(identity.sdkCompatibilitySha256))
     put("completedTasks", JsonArray(appleVerifiedCompletedTasks.map(::JsonPrimitive)))
     put("artifacts", releaseRecords(artifacts))
     put("reports", releaseRecords(reports))
@@ -100,7 +103,7 @@ internal fun verifyAppleVerifiedDistribution(
     val expectedKeys = setOf(
         "schemaVersion", "protocol", "result", "candidateCommit", "candidateTree", "cleanCheckout", "version",
         "nativeProvenanceSha256", "packageSwiftSha256", "nativeEvidenceReceiptSha256", "completedTasks",
-        "artifacts", "reports", "toolchain", "nativeEvidence",
+        "sdkCompatibilitySha256", "artifacts", "reports", "toolchain", "nativeEvidence",
     )
     check(proof.keys == expectedKeys && proof.releaseInt("schemaVersion") == 1 &&
         proof.releaseString("protocol") == "codex-agent-ios-verified-distribution-v1" &&
@@ -115,6 +118,7 @@ internal fun verifyAppleVerifiedDistribution(
         "nativeProvenanceSha256" to identity.nativeProvenanceSha256,
         "packageSwiftSha256" to identity.packageSwiftSha256,
         "nativeEvidenceReceiptSha256" to identity.nativeEvidenceReceiptSha256,
+        "sdkCompatibilitySha256" to identity.sdkCompatibilitySha256,
     ).forEach { (key, value) ->
         check(proof.releaseString(key) == value) { "Verified Apple distribution $key mismatch" }
     }
@@ -130,10 +134,44 @@ internal fun verifyAppleVerifiedDistribution(
     val expectedFiles = artifacts.keys + reports.keys + toolchain.keys + IOS_VERIFIED_DISTRIBUTION_PROOF
     check(files.keys == expectedFiles) { "Verified Apple distribution contains missing or extra files" }
     val swiftArchive = artifacts.getValue("CodexAgent-${identity.version}.xcframework.zip")
+    verifyAppleSdkCompatibility(artifacts, identity)
     val checksum = artifacts.getValue("CodexAgent-${identity.version}.xcframework.zip.sha256").readText().trim()
     check(checksum == swiftArchive.releaseDigest()) { "Verified Apple distribution Swift checksum mismatch" }
     return AppleVerifiedDistributionInventory(artifacts, reports, toolchain, proofFile)
 }
+
+private fun verifyAppleSdkCompatibility(
+    artifacts: Map<String, File>,
+    identity: AppleVerifiedDistributionIdentity,
+) {
+    val sourcePath = "META-INF/codex-agent/sdk-compatibility.json"
+    val swiftPaths = listOf("ios-arm64", "ios-arm64-simulator").map { slice ->
+        "CodexAgent.xcframework/$slice/CodexAgent.framework/$sourcePath"
+    }
+    val expected = linkedMapOf(
+        artifacts.getValue("CodexAgentPackage-${identity.version}.zip") to listOf(sourcePath),
+        artifacts.getValue("CodexAgent-${identity.version}.xcframework.zip") to swiftPaths,
+    )
+    val payloads = expected.flatMap { (archiveFile, expectedPaths) ->
+        ZipFile(archiveFile).use { archive ->
+            val entries = archive.entries().asSequence().filterNot { it.isDirectory }.toList()
+            val declarations = entries.filter { it.name.substringAfterLast('/') == "sdk-compatibility.json" }
+            check(declarations.map { it.name } == expectedPaths) {
+                "Apple SDK compatibility path inventory mismatch: ${archiveFile.name}"
+            }
+            declarations.map { entry -> archive.getInputStream(entry).use { it.readBytes() } }
+        }
+    }
+    check(payloads.isNotEmpty() && payloads.all { it.contentEquals(payloads.first()) }) {
+        "Apple SDK compatibility bytes differ between distributions"
+    }
+    check(payloads.first().sha256Hex() == identity.sdkCompatibilitySha256) {
+        "Apple SDK compatibility digest mismatch"
+    }
+}
+
+private fun ByteArray.sha256Hex(): String = java.security.MessageDigest.getInstance("SHA-256")
+    .digest(this).joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
 private fun releaseRecords(files: Map<String, File>) = buildJsonArray {
     files.toSortedMap().forEach { (path, file) -> add(file.releaseRecord(path)) }

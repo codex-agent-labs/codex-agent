@@ -11,7 +11,7 @@ Supported runtime identifiers are `osx-arm64`, `osx-x64`, `linux-arm64`,
 Call `CodexNativeLibrary.Configure(path)` once before first use to select an
 explicit verified library. Otherwise resolution checks the application base
 directory and then `runtimes/<rid>/native/`; there is no environment-variable
-or system-loader fallback. The loader requires compatible C ABI `1.12.0`.
+or system-loader fallback. The loader requires compatible C ABI `1.13.0`.
 
 ```csharp
 await using var host = CodexHost.Create(new CodexHostOptions(

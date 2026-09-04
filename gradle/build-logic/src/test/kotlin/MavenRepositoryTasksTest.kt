@@ -1,4 +1,5 @@
 import java.io.File
+import java.nio.file.Files
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -6,6 +7,74 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class MavenRepositoryTasksTest {
+    @Test
+    fun `SDK binary owners reuse the exact release artifact authority`() {
+        assertEquals(67, expectedSdkBinaryMavenPrimaryPaths("sdk-core", VERSIONS.sdk).size)
+        assertEquals(5, expectedSdkBinaryMavenPrimaryPaths("sdk-android", VERSIONS.sdk).size)
+        assertEquals(20, expectedSdkBinaryMavenPrimaryPaths("sdk-ios", VERSIONS.sdk).size)
+    }
+
+    @Test
+    fun `exact SDK binary repository passes and binds every primary`() =
+        withRepository { repository, inventory ->
+            writeExactSdkRepository(repository, "sdk-core")
+            verifySdkBinaryMavenRepository(repository, GROUP, VERSIONS.sdk, "sdk-core", inventory)
+            val report = inventory.readReleaseObject()
+            assertEquals(67, report.releaseInt("primaryArtifactCount"))
+            assertEquals(67, report.releaseArray("files").size)
+            assertEquals(13, report.releaseArray("artifactIds").size)
+        }
+
+    @Test
+    fun `SDK binary repository rejects a wrong or arbitrary transport checksum`() =
+        listOf("wrong-primary", "wrong-metadata", "arbitrary").forEach { mutation ->
+            withRepository { repository, inventory ->
+                writeExactSdkRepository(repository, "sdk-android")
+                val group = repository.resolve("io/github/codex-agent-labs")
+                val primary = expectedSdkBinaryMavenPrimaryPaths("sdk-android", VERSIONS.sdk).first()
+                when (mutation) {
+                    "wrong-primary" -> group.resolve(primary + ".sha256").writeText("0".repeat(64))
+                    "wrong-metadata" -> group.resolve(
+                        "codex-agent-runtime-android/maven-metadata.xml.sha256",
+                    ).writeText("0".repeat(64))
+                    else -> group.resolve(primary + ".unexpected.sha256").writeText("0".repeat(64))
+                }
+                assertFailsWith<IllegalStateException>(mutation) {
+                    verifySdkBinaryMavenRepository(
+                        repository, GROUP, VERSIONS.sdk, "sdk-android", inventory,
+                    )
+                }
+            }
+        }
+
+    @Test
+    fun `SDK binary repository rejects missing extra unsafe and wrong-version files`() {
+        listOf("missing", "extra", "wrong-version", "symlink").forEach { mutation ->
+            withRepository { repository, inventory ->
+                writeExactSdkRepository(repository, "sdk-ios")
+                val group = repository.resolve("io/github/codex-agent-labs")
+                val primary = expectedSdkBinaryMavenPrimaryPaths("sdk-ios", VERSIONS.sdk).first()
+                when (mutation) {
+                    "missing" -> group.resolve(primary).delete()
+                    "extra" -> group.resolve("extra/${VERSIONS.sdk}/extra-${VERSIONS.sdk}.jar")
+                        .apply { parentFile.mkdirs(); writeText("extra") }
+                    "wrong-version" -> group.resolve(
+                        "codex-agent-runtime-ios/9.9.9/codex-agent-runtime-ios-9.9.9.pom",
+                    ).apply { parentFile.mkdirs(); writeText(validPom) }
+                    "symlink" -> Files.createSymbolicLink(
+                        group.resolve("codex-agent-runtime-ios/link" ).toPath(),
+                        group.resolve(primary).toPath(),
+                    )
+                }
+                assertFailsWith<IllegalStateException>(mutation) {
+                    verifySdkBinaryMavenRepository(
+                        repository, GROUP, VERSIONS.sdk, "sdk-ios", inventory,
+                    )
+                }
+            }
+        }
+    }
+
     @Test
     fun `exact signed publication passes`() = withRepository { repository, inventory ->
         writeExactRepository(repository, signed = true)
@@ -203,6 +272,29 @@ class MavenRepositoryTasksTest {
                 if (signed) resolveSibling(name + ".asc").writeText("signature")
             }
         }
+    }
+
+    private fun writeExactSdkRepository(repository: File, component: String) {
+        val group = repository.resolve("io/github/codex-agent-labs")
+        expectedSdkBinaryMavenPrimaryPaths(component, VERSIONS.sdk).forEach { relative ->
+            group.resolve(relative).apply {
+                parentFile.mkdirs()
+                writeText(if (extension == "pom") validPom else relative)
+                checksumAlgorithms.forEach { (suffix, algorithm) ->
+                    resolveSibling(name + suffix).writeText(releaseDigest(algorithm))
+                }
+            }
+        }
+        expectedSdkBinaryMavenPrimaryPaths(component, VERSIONS.sdk)
+            .mapTo(sortedSetOf()) { it.substringBefore('/') }
+            .forEach { artifactId ->
+                group.resolve("$artifactId/maven-metadata.xml").apply {
+                    writeText("<metadata/>")
+                    checksumAlgorithms.forEach { (suffix, algorithm) ->
+                        resolveSibling(name + suffix).writeText(releaseDigest(algorithm))
+                    }
+                }
+            }
     }
 
     companion object {

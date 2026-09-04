@@ -46,6 +46,7 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         xcodeVersionFile.set(xcode); swiftVersionFile.set(swift)
         nativeEvidenceDirectory.set(nativeEvidence); nativeEvidenceReceipt.set(nativeReceipt)
         nativeProvenance.set(provenance); this.packageSwift.set(packageSwift)
+        distribution.sdkCompatibilityFile?.let { sdkCompatibility.set(it) }
         repositoryDirectory.set(rootProject.layout.projectDirectory)
         canonicalBuildDirectory.set(layout.buildDirectory)
         outputDirectory.set(layout.buildDirectory.dir("apple-verified-distribution"))
@@ -60,6 +61,7 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         evidenceDirectory.set(layout.dir(importedPath.map(rootProject::file)))
         nativeEvidenceDirectory.set(nativeEvidence); nativeEvidenceReceipt.set(nativeReceipt)
         nativeProvenance.set(provenance); this.packageSwift.set(packageSwift)
+        distribution.sdkCompatibilityFile?.let { sdkCompatibility.set(it) }
         currentXcodeVersionFile.set(xcode); currentSwiftVersionFile.set(swift)
         repositoryDirectory.set(rootProject.layout.projectDirectory)
         canonicalBuildDirectory.set(layout.buildDirectory)

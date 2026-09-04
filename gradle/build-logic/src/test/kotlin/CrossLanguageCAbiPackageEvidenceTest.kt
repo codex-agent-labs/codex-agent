@@ -73,6 +73,7 @@ class CrossLanguageCAbiPackageEvidenceTest {
         listOf(
             "StageCrossLanguageNativeWrapperSdksTask",
             "MaterializeCrossLanguageNativeWrapperPackageAssetsTask",
+            "PackageNativeWrapperSdkTask",
         ).forEach { taskType ->
             val declaration = "abstract class $taskType"
             assertFalse(declaration in clientSource, "Root C ABI client owns $taskType")

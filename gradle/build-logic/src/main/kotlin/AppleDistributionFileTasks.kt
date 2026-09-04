@@ -17,6 +17,7 @@ import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -66,6 +67,7 @@ internal data class AppleDistributionInputs(
     val thirdPartyNotices: File,
     val codexLicense: File,
     val codexNotice: File,
+    val sdkCompatibility: File?,
     val testApplication: File,
 )
 
@@ -81,6 +83,9 @@ internal fun stageAppleDistribution(inputs: AppleDistributionInputs, distributio
     copyReleaseFile(inputs.thirdPartyNotices, packageDirectory.resolve("THIRD_PARTY_NOTICES.md"))
     copyReleaseFile(inputs.codexLicense, packageDirectory.resolve("openai-codex-LICENSE.txt"))
     copyReleaseFile(inputs.codexNotice, packageDirectory.resolve("openai-codex-NOTICE.txt"))
+    inputs.sdkCompatibility?.let {
+        copyReleaseFile(it, packageDirectory.resolve("META-INF/codex-agent/sdk-compatibility.json"))
+    }
     copyReleaseTree(inputs.testApplication, distribution.resolve("CodexAgentTestApp"))
 }
 
@@ -219,6 +224,8 @@ abstract class StageCodexAgentAppleDistributionTask : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val thirdPartyNotices: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val codexLicense: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val codexNotice: RegularFileProperty
+    @get:Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sdkCompatibility: RegularFileProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val testApplication: DirectoryProperty
     @get:OutputDirectory abstract val distributionDirectory: DirectoryProperty
 
@@ -226,7 +233,8 @@ abstract class StageCodexAgentAppleDistributionTask : DefaultTask() {
         AppleDistributionInputs(
             packageManifest.get().asFile, sourcesDirectory.get().asFile, testsDirectory.get().asFile,
             xcframeworkDirectory.get().asFile, licenseFile.get().asFile, thirdPartyNotices.get().asFile,
-            codexLicense.get().asFile, codexNotice.get().asFile, testApplication.get().asFile,
+            codexLicense.get().asFile, codexNotice.get().asFile,
+            sdkCompatibility.orNull?.asFile, testApplication.get().asFile,
         ),
         distributionDirectory.get().asFile,
     )

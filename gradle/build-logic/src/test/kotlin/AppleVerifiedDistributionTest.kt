@@ -3,6 +3,8 @@ import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class AppleVerifiedDistributionTest {
     @Test
@@ -30,7 +32,31 @@ class AppleVerifiedDistributionTest {
         assertFailsWith<IllegalStateException> { it.verify() }
         Unit
     }
+
+    @Test
+    fun `compatibility bytes and exact paths are required in both Apple archives`() = fixture().use {
+        it.writeSource("wrong/sdk-compatibility.json")
+        it.rebuildProof()
+        assertFailsWith<IllegalStateException> { it.verify() }
+        it.writeSource("META-INF/codex-agent/sdk-compatibility.json")
+
+        it.writeSwift(
+            "CodexAgent.xcframework/ios-arm64/CodexAgent.framework/META-INF/codex-agent/sdk-compatibility.json",
+        )
+        it.rebuildProof()
+        assertFailsWith<IllegalStateException> { it.verify() }
+
+        it.writeSwift(*swiftCompatibilityPaths, payload = "changed".toByteArray())
+        it.rebuildProof()
+        assertFailsWith<IllegalStateException> { it.verify() }
+        Unit
+    }
 }
+
+private val swiftCompatibilityPaths = arrayOf(
+    "CodexAgent.xcframework/ios-arm64/CodexAgent.framework/META-INF/codex-agent/sdk-compatibility.json",
+    "CodexAgent.xcframework/ios-arm64-simulator/CodexAgent.framework/META-INF/codex-agent/sdk-compatibility.json",
+)
 
 private class VerifiedDistributionFixture : AutoCloseable {
     private val root = createTempDirectory("apple-verified-distribution").toFile()
@@ -39,14 +65,19 @@ private class VerifiedDistributionFixture : AutoCloseable {
     private val provenance = root.resolve("provenance.json").apply { writeText("{}") }
     private val packageSwift = root.resolve("Package.swift").apply { writeText("// package") }
     private val nativeReceipt = root.resolve("native-receipt.json").apply { writeText("{}") }
+    private val sdkCompatibility = "{\"schemaVersion\":1}\n".toByteArray()
     private val identity = AppleVerifiedDistributionIdentity(
         "1".repeat(40), "2".repeat(40), "0.2.0", provenance.releaseDigest(),
-        packageSwift.releaseDigest(), nativeReceipt.releaseDigest(),
+        packageSwift.releaseDigest(), nativeReceipt.releaseDigest(), sdkCompatibility.sha256(),
     )
 
     init {
-        val swift = distribution.resolve("CodexAgent-0.2.0.xcframework.zip").apply { writeText("swift") }
-        distribution.resolve("CodexAgentPackage-0.2.0.zip").writeText("package")
+        val swift = distribution.resolve("CodexAgent-0.2.0.xcframework.zip").apply {
+            zip(*swiftCompatibilityPaths)
+        }
+        distribution.resolve("CodexAgentPackage-0.2.0.zip").zip(
+            "META-INF/codex-agent/sdk-compatibility.json",
+        )
         distribution.resolve("CodexAgent-0.2.0.xcframework.zip.sha256").writeText(swift.releaseDigest())
         appleVerifiedReportLayout.keys.forEach { path ->
             distribution.resolve(path).apply { parentFile.mkdirs(); writeText(path) }
@@ -73,6 +104,29 @@ private class VerifiedDistributionFixture : AutoCloseable {
     }
 
     fun verify() = verifyAppleVerifiedDistribution(distribution, nativeEvidence, identity)
+
+    fun writeSource(vararg paths: String) {
+        distribution.resolve("CodexAgentPackage-0.2.0.zip").zip(*paths)
+    }
+
+    fun writeSwift(vararg paths: String, payload: ByteArray = sdkCompatibility) {
+        distribution.resolve("CodexAgent-0.2.0.xcframework.zip").zip(*paths, payload = payload)
+    }
+
+    private fun File.zip(vararg paths: String, payload: ByteArray = sdkCompatibility) {
+        outputStream().use { output ->
+            ZipOutputStream(output).use { archive ->
+                paths.forEach { path ->
+                    archive.putNextEntry(ZipEntry(path))
+                    archive.write(payload)
+                    archive.closeEntry()
+                }
+            }
+        }
+    }
+
+    private fun ByteArray.sha256(): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(this).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     override fun close() = root.deleteRecursively().let { }
 }
 

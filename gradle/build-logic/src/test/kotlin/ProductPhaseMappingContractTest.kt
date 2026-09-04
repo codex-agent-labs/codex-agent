@@ -19,6 +19,12 @@ class ProductPhaseMappingContractTest {
         val mapping = between(contract, "val requestedProduct =", "val contractBundleDirectory =")
         val expected = linkedMapOf(
             Triple("contract", "contract", "binary") to "writeContractBinaryOutputManifest",
+            Triple("sdk", "sdk-core", "binary") to "writeSdkCoreBinaryOutputManifest",
+            Triple("sdk", "sdk-core", "package") to "writeSdkCorePackageOutputManifest",
+            Triple("sdk", "sdk-android", "binary") to "writeSdkAndroidBinaryOutputManifest",
+            Triple("sdk", "sdk-android", "package") to "writeSdkAndroidPackageOutputManifest",
+            Triple("sdk", "sdk-ios", "binary") to "writeSdkIosBinaryOutputManifest",
+            Triple("sdk", "sdk-ios", "package") to "writeSdkIosPackageOutputManifest",
             Triple("sdk", "javascript", "package") to
                 "writeJavaScriptSdkPackageOutputManifest",
             Triple("sdk", "python", "package") to
@@ -130,7 +136,7 @@ class ProductPhaseMappingContractTest {
                 "\"writeJavaScriptSdkPackageOutputManifest\")" in javascriptPackage(),
         )
         assertEquals(
-            1,
+            2,
             Regex("tasks\\.register<WriteProductOutputManifestTask>").findAll(nativeWrapperPackage()).count(),
         )
         assertEquals(1, Regex("abstract class WriteProductOutputManifestTask").findAll(manifestTask).count())
@@ -447,19 +453,97 @@ class ProductPhaseMappingContractTest {
         assertFalse("jsProductionExecutableCompileSync" in imported)
 
         val sdkPackage = javascriptPackage()
-        assertEquals(mapOf("package" to "outputs/package"), outputRoots(sdkPackage))
+        assertEquals(
+            mapOf(
+                "evidence" to "outputs/evidence",
+                "package" to "outputs/package",
+            ),
+            outputRoots(sdkPackage),
+        )
         assertEquals(
             1,
             Regex("tasks\\.register<WriteProductOutputManifestTask>").findAll(sdkPackage).count(),
         )
-        assertTrue("dependsOn(packageNpm)" in sdkPackage)
+        assertTrue("dependsOn(verifyNpmSdkCompatibilityArchive)" in sdkPackage)
         assertTrue("from(npmArchiveFile) { into(\"package\") }" in sdkPackage)
+        assertTrue("from(npmSdkCompatibilityArchiveReport) { into(\"evidence\") }" in sdkPackage)
+        assertTrue("codexAgent.sdkDefaultRuntimeVersion" in javascript)
+        assertFalse("codexAgent.runtimeVersion" in javascript)
+        assertTrue("dependsOn(verifyNpmDeclarationGolden, npmSdkCompatibility)" in javascript)
+        assertTrue("into(\"META-INF/codex-agent\")" in javascript)
+        assertTrue("tasks.register<VerifyNpmSdkCompatibilityArchiveTask>" in javascript)
+        assertTrue("dependsOn(packageNpm, npmSdkCompatibility)" in javascript)
         listOf(
             "product.set(\"sdk\")",
             "component.set(\"javascript\")",
             "phase.set(\"package\")",
             "target.set(\"node\")",
         ).forEach { contract -> assertTrue(contract in sdkPackage, contract) }
+    }
+
+    @Test
+    fun native_wrapper_package_phases_emit_one_real_language_archive_inventory() {
+        val sdkPackage = nativeWrapperPackage()
+        assertTrue("tasks.register<PackageNativeWrapperSdkTask>(stageTaskName)" in sdkPackage)
+        assertTrue("this.language.set(language)" in sdkPackage)
+        assertTrue("outputRoots.set(mapOf(\"package\" to \"outputs/\$language\"))" in sdkPackage)
+        assertFalse("\"package-source\" to" in sdkPackage)
+        assertFalse("\"runtime-sdks\" to" in sdkPackage)
+    }
+
+    @Test
+    fun SDK_Maven_package_phases_consume_only_imported_binary_artifacts() {
+        val sdkPackage = nativeWrapperPackage()
+        mapOf(
+            "sdk-core" to "codexAgent.sdkCoreBinaryStageRoot",
+            "sdk-android" to "codexAgent.sdkAndroidBinaryStageRoot",
+            "sdk-ios" to "codexAgent.sdkIosBinaryStageRoot",
+        ).forEach { (component, property) ->
+            assertTrue("\"$component\"" in sdkPackage, component)
+            assertTrue("\"$property\"" in sdkPackage, property)
+        }
+        assertTrue("tasks.register<SnapshotImportedProductStageTask>" in sdkPackage)
+        assertTrue("tasks.register<VerifyImportedProductOutputManifestTask>" in sdkPackage)
+        assertTrue("tasks.register<PackageSdkMavenArtifactsTask>" in sdkPackage)
+        assertTrue("binaryMavenRepository.set(snapshot.map { it.dir(\"outputs/maven\") })" in sdkPackage)
+        assertTrue("dependsOn(verify, generateNativeWrapperSdkCompatibility)" in sdkPackage)
+        assertTrue("tasks.register<Delete>(\"invalidate\${title}PackagePhase\")" in sdkPackage)
+        assertTrue("snapshotTask.configure { dependsOn(invalidate) }" in sdkPackage)
+        assertTrue("generateNativeWrapperSdkCompatibility.configure { mustRunAfter(invalidate) }" in sdkPackage)
+        assertTrue("outputRoots.set(mapOf(\"maven\" to \"outputs/maven\"))" in sdkPackage)
+        assertFalse("compile" in between(
+            sdkPackage,
+            "val sdkMavenPackageSpecs =",
+            "val stageNativeWrapperCAbiSdks =",
+        ), "SDK Maven package phase reaches compilation")
+    }
+
+    @Test
+    fun SDK_Maven_binary_phases_publish_to_three_disjoint_raw_repositories() {
+        val binary = between(contract, "val sdkFacade =", "tasks.register(\"ciProductPhase\")")
+        mapOf(
+            "sdk-core" to "SDK_CORE_BINARY_STAGING",
+            "sdk-android" to "SDK_ANDROID_BINARY_STAGING",
+            "sdk-ios" to "SDK_IOS_BINARY_STAGING",
+        ).forEach { (component, repository) ->
+            assertTrue("authenticatedSdkComponent == \"$component\"" in binary, component)
+            assertTrue("component = \"$component\"" in binary, component)
+            assertTrue("repositoryName = \"$repository\"" in binary, repository)
+        }
+        listOf(
+            "publishMavenPublicationToSDK_CORE_BINARY_STAGINGRepository",
+            "publishMavenPublicationToSDK_ANDROID_BINARY_STAGINGRepository",
+        ).forEach { assertTrue(it in binary, it) }
+        assertTrue("contractPublicationNames.map" in binary)
+        assertTrue("listOf(\"KotlinMultiplatform\", \"IosArm64\", \"IosSimulatorArm64\").map" in binary)
+        assertTrue("publish\${it}PublicationToSDK_CORE_BINARY_STAGINGRepository" in binary)
+        assertTrue("publish\${it}PublicationToSDK_IOS_BINARY_STAGINGRepository" in binary)
+        assertTrue("tasks.register<VerifySdkBinaryMavenRepositoryTask>" in binary)
+        assertTrue("dependsOn(verify)" in binary)
+        assertTrue("\"evidence\" to \"outputs/evidence\"" in binary)
+        assertTrue("} else null" in binary)
+        assertFalse("generateNativeWrapperSdkCompatibility" in binary)
+        assertFalse("runtimeVersion" in binary)
     }
 
     @Test

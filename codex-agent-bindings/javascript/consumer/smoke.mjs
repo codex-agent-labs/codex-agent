@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -14,6 +15,10 @@ const declarationFile = path.join(packageRoot, 'index.d.ts');
 const commonJsFile = path.join(packageRoot, 'index.cjs');
 const esmFile = path.join(packageRoot, 'index.mjs');
 const packageJsonFile = path.join(packageRoot, 'package.json');
+const sdkCompatibilityRelativePath = 'META-INF/codex-agent/sdk-compatibility.json';
+const sdkCompatibilityFile = path.join(packageRoot, sdkCompatibilityRelativePath);
+const sdkCompatibilityArchivePath = `package/${sdkCompatibilityRelativePath}`;
+const expectedDefaultRuntimeVersion = process.env.CODEX_AGENT_EXPECTED_DEFAULT_RUNTIME_VERSION;
 const tarballFile = process.env.CODEX_AGENT_NPM_TARBALL;
 const keywordTypeKinds = new Set([
   ts.SyntaxKind.AnyKeyword,
@@ -37,6 +42,30 @@ function identity(file) {
     bytes: bytes.length,
     sha256: createHash('sha256').update(bytes).digest('hex'),
   };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJson(value[key])]));
+  }
+  return value;
+}
+
+function verifySdkCompatibility(bytes) {
+  assert.ok(expectedDefaultRuntimeVersion, 'The selected SDK default Runtime version must be supplied by Gradle');
+  const text = bytes.toString('utf8');
+  const value = JSON.parse(text);
+  assert.equal(text, `${JSON.stringify(canonicalJson(value))}\n`, 'SDK compatibility bytes must be canonical');
+  assert.deepEqual(Object.keys(value), ['contract', 'platformRuntime', 'runtime', 'schemaVersion', 'sdkVersion']);
+  assert.equal(value.schemaVersion, 1);
+  assert.equal(
+    value.runtime.defaultRuntimeVersion,
+    expectedDefaultRuntimeVersion,
+    'defaultRuntimeVersion must equal the selected SDK default Runtime',
+  );
+  assert.equal(value.runtime.embeddedVariants.length, 5);
+  return value;
 }
 
 function hasModifier(node, kind) {
@@ -636,6 +665,49 @@ test('esm exposes the same runtime values as CommonJS', () => {
 
 test('typescript compiler discovers the exact installed public API', () => {
   assert.ok(tarballFile, 'The exact npm tarball path must be supplied by Gradle');
+  const compatibilityBytes = fs.readFileSync(sdkCompatibilityFile);
+  const compatibility = verifySdkCompatibility(compatibilityBytes);
+  const archiveEntries = execFileSync('tar', ['-tzf', tarballFile], { encoding: 'utf8' })
+    .trimEnd()
+    .split('\n');
+  assert.deepEqual(
+    archiveEntries.filter((entry) => path.posix.basename(entry) === 'sdk-compatibility.json'),
+    [sdkCompatibilityArchivePath],
+    'The npm archive must contain the compatibility resource at exactly one path',
+  );
+  assert.deepEqual(
+    execFileSync('tar', ['-xOzf', tarballFile, sdkCompatibilityArchivePath]),
+    compatibilityBytes,
+    'Installed compatibility bytes must equal the exact npm archive member',
+  );
+  assert.equal(
+    fs.existsSync(path.join(packageRoot, 'sdk-compatibility.json')),
+    false,
+    'The compatibility resource must not be duplicated at the package root',
+  );
+  assert.throws(
+    () => fs.readFileSync(path.join(packageRoot, 'missing', sdkCompatibilityRelativePath)),
+    { code: 'ENOENT' },
+    'A missing compatibility resource must fail closed',
+  );
+  const wrongDefault = Buffer.from(
+    compatibilityBytes.toString('utf8').replace(
+      `"defaultRuntimeVersion":"${expectedDefaultRuntimeVersion}"`,
+      '"defaultRuntimeVersion":"0.2.1"',
+    ),
+  );
+  assert.notDeepEqual(wrongDefault, compatibilityBytes, 'The default Runtime mutation source is stale');
+  assert.throws(
+    () => verifySdkCompatibility(wrongDefault),
+    /defaultRuntimeVersion/,
+    'A package carrying the wrong selected default Runtime must fail',
+  );
+  assert.throws(
+    () => verifySdkCompatibility(Buffer.concat([compatibilityBytes, Buffer.from('\n')])),
+    /canonical/,
+    'Tampered compatibility bytes must fail',
+  );
+  assert.equal(compatibility.sdkVersion, JSON.parse(fs.readFileSync(packageJsonFile, 'utf8')).version);
   const compilerApi = compilerPublicApi();
   const commonJsExports = Object.getOwnPropertyNames(require('@codex-agent-labs/codex-agent')).sort();
   const esmExports = Object.keys(sdk).sort();

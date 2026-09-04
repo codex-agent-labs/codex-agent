@@ -281,6 +281,12 @@ API status_t codex_agent_runtime_identity(char *buffer, size_t *inout_size) {
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
         "\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
         "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
+    static const char wrong_abi_major[] =
+        "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
+        "\"cAbiVersion\":\"2.0.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
+        "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
+        "\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+        "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     const char *identity = valid;
     switch (atomic_load(&identity_mode)) {
         case 1: identity = schema; break;
@@ -290,6 +296,7 @@ API status_t codex_agent_runtime_identity(char *buffer, size_t *inout_size) {
         case 5: identity = incompatible_runtime; break;
         case 6: identity = "not-json"; break;
         case 7: identity = above_actual_abi; break;
+        case 8: identity = wrong_abi_major; break;
         default: break;
     }
     if (inout_size == NULL) return 1;

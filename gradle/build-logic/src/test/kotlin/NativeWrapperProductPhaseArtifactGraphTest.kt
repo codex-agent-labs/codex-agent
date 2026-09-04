@@ -42,7 +42,11 @@ class NativeWrapperProductPhaseArtifactGraphTest {
                 )
             }
         }
-        assertEquals(1, Regex("tasks\\.register<VerifyImportedProductOutputManifestTask>").findAll(seam).count())
+        assertEquals(
+            1,
+            Regex("tasks\\.register<VerifyImportedProductOutputManifestTask>")
+                .findAll(seam.substringBefore("val sdkMavenPackageSpecs =")).count(),
+        )
         assertEquals(10, Regex("to \"verifyImportedNativeWrapper").findAll(seam).count())
         assertTrue("nativeWrapperRuntimeManifestTaskNames.map" in seam)
         listOf(
@@ -50,7 +54,7 @@ class NativeWrapperProductPhaseArtifactGraphTest {
             "phase.set(productPhase)",
             "productVersion.set(nativeWrapperRuntimeVersion)",
             "stageNativeWrapperCAbiSdks",
-            "dependsOn(nativeWrapperRuntimeManifestVerifiers)",
+            "dependsOn(nativeWrapperRuntimeManifestVerifiers, generateNativeWrapperSdkCompatibility)",
         ).forEach { contract -> assertTrue(contract in seam, contract) }
         assertTrue("runtimeProductVersion.set(nativeWrapperRuntimeVersion)" in seam)
         assertTrue("nativeWrapperRuntimeVersion.map(::runtimeCompatibilityVersion)" in seam)
@@ -93,9 +97,17 @@ class NativeWrapperProductPhaseArtifactGraphTest {
             "phase.set(\"package\")",
             "target.set(\"desktop\")",
             "productVersion.set(nativeWrapperSdkVersion)",
-            "\"package-source\" to \"outputs/package-source\"",
-            "\"runtime-sdks\" to \"outputs/runtime-sdks\"",
+            "outputRoots.set(mapOf(\"package\" to \"outputs/\$language\"))",
+            "tasks.register<PackageNativeWrapperSdkTask>(stageTaskName)",
+            "this.language.set(language)",
+            "dependsOn(nativeWrapperPackageSourceTasks.getValue(language), stageNativeWrapperCAbiSdks)",
+            "sourcesDirectory.set(layout.buildDirectory.dir(\"native-wrapper-package-sources/\$language\"))",
         ).forEach { value -> assertTrue(value in seam, value) }
+        assertFalse("dependsOn(prepareNativeWrapperPackageSources, stageNativeWrapperCAbiSdks)" in seam)
+        assertFalse("layout.buildDirectory.dir(\"product-stage/sdk/\$language/package\")" in
+            sdk.substringAfter("val invalidateNativeWrapperProductPhaseOutputs =").substringBefore(
+                "val nativeWrapperRuntimeSnapshotRoot =",
+            ))
     }
 
     @Test
@@ -179,13 +191,46 @@ class NativeWrapperProductPhaseArtifactGraphTest {
             )
             val forbidden = paths.filter { path ->
                 val name = path.substringAfterLast(':')
-                forbiddenTaskNames.any { it.matches(name) }
+                name != "generateNativeWrapperSdkCompatibility" &&
+                    forbiddenTaskNames.any { it.matches(name) }
             }
             assertTrue(forbidden.isEmpty(), "Runtime producer tasks are reachable: $forbidden")
             assertTrue(paths.none { it.startsWith(":codex-agent-core:") }, paths.toString())
             assertTrue(paths.none { it.startsWith(":codex-agent-runtime-desktop:") }, paths.toString())
         } finally {
             importedStages.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `SDK Maven package invalidates stale outputs before an imported binary failure`() {
+        val temporary = createTempDirectory("missing-sdk-binary-stage").toFile()
+        val missing = temporary.resolve("absent")
+        val phaseRoot = repositoryRoot.resolve("codex-agent-sdk/build/product-stage/sdk/sdk-core/package")
+        phaseRoot.resolve("outputs/maven/stale").apply {
+            parentFile.mkdirs()
+            writeText("stale")
+        }
+        phaseRoot.resolve("output-manifest.json").writeText("stale")
+        try {
+            GradleRunner.create()
+                .withProjectDir(repositoryRoot)
+                .withArguments(
+                    "ciProductPhase",
+                    "-PcodexAgent.product=sdk",
+                    "-PcodexAgent.component=sdk-core",
+                    "-PcodexAgent.phase=package",
+                    "-PcodexAgent.sdkCoreBinaryStageRoot=${missing.absolutePath}",
+                    "-PcodexAgent.candidateCommit=${"a".repeat(40)}",
+                    "-PcodexAgent.candidateTree=${"c".repeat(40)}",
+                    "--console=plain",
+                    "--stacktrace",
+                )
+                .buildAndFail()
+            assertFalse(phaseRoot.exists(), "Stale SDK package output survived an upstream failure")
+        } finally {
+            phaseRoot.deleteRecursively()
+            temporary.deleteRecursively()
         }
     }
 

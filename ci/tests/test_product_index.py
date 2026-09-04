@@ -280,6 +280,74 @@ class ProductIndexTest(unittest.TestCase):
                     (manifest.read_bytes(), manifest.with_suffix(".sig").read_bytes()),
                 )
 
+    def test_promoted_main_is_one_signed_immutable_index_pair(self) -> None:
+        manifest = self.root / "promotion" / "product-index.json"
+        manifest.parent.mkdir()
+        promotion_context = {
+            "kind": "promoted-main",
+            "commit": COMMIT,
+            "tree": TREE,
+            "promotionRunId": 7,
+            "promotionRunAttempt": 1,
+        }
+
+        first = write_signed_product_index(
+            [source("binary"), source("metadata")],
+            repository=REPOSITORY,
+            context=promotion_context,
+            trust_domain="release",
+            signing=self.release_signing,
+            producer=producer("release"),
+            stable_history=None,
+            private_key=self.private_key,
+            public_key=self.public_key,
+            manifest_path=manifest,
+        )
+        before = (manifest.read_bytes(), manifest.with_suffix(".sig").read_bytes())
+        retry = write_signed_product_index(
+            [source("metadata"), source("binary")],
+            repository=REPOSITORY,
+            context=promotion_context,
+            trust_domain="release",
+            signing=self.release_signing,
+            producer=producer("release"),
+            stable_history=None,
+            private_key=self.private_key,
+            public_key=self.public_key,
+            manifest_path=manifest,
+        )
+
+        self.assertEqual("published", first["status"])
+        self.assertEqual("existing", retry["status"])
+        self.assertEqual(
+            before,
+            (manifest.read_bytes(), manifest.with_suffix(".sig").read_bytes()),
+        )
+        verify_manifest_signature(
+            manifest,
+            manifest.with_suffix(".sig"),
+            self.public_key,
+            self.release_signing,
+        )
+
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            write_signed_product_index(
+                [source("binary"), source("metadata", flags_digest=DIGEST_B)],
+                repository=REPOSITORY,
+                context=promotion_context,
+                trust_domain="release",
+                signing=self.release_signing,
+                producer=producer("release"),
+                stable_history=None,
+                private_key=self.private_key,
+                public_key=self.public_key,
+                manifest_path=manifest,
+            )
+        self.assertEqual(
+            before,
+            (manifest.read_bytes(), manifest.with_suffix(".sig").read_bytes()),
+        )
+
     def test_exact_schema_context_and_build_key_order(self) -> None:
         values = [
             source("metadata", trust_domain="development"),

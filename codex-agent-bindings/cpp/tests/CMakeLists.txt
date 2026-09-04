@@ -20,6 +20,13 @@ target_compile_definitions(codex_agent_loader_old_abi PRIVATE
 add_library(codex_agent_loader_abi_mismatch SHARED native_loader_fixture.cpp)
 target_compile_definitions(codex_agent_loader_abi_mismatch PRIVATE
     CODEX_AGENT_FIXTURE_ACTUAL_ABI_MINOR=14)
+add_library(codex_agent_loader_wrong_abi_major SHARED native_loader_fixture.cpp)
+target_compile_definitions(codex_agent_loader_wrong_abi_major PRIVATE
+    CODEX_AGENT_FIXTURE_ABI="2.0.0" CODEX_AGENT_FIXTURE_ACTUAL_ABI_MAJOR=2
+    CODEX_AGENT_FIXTURE_ACTUAL_ABI_MINOR=0)
+add_library(codex_agent_loader_incompatible_runtime SHARED native_loader_fixture.cpp)
+target_compile_definitions(codex_agent_loader_incompatible_runtime PRIVATE
+    CODEX_AGENT_FIXTURE_RUNTIME="0.3.0")
 add_library(codex_agent_loader_wrong_contract SHARED native_loader_fixture.cpp)
 target_compile_definitions(codex_agent_loader_wrong_contract PRIVATE
     CODEX_AGENT_FIXTURE_CONTRACT="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -33,7 +40,8 @@ else()
 endif()
 add_library(codex_agent_loader_wrong_target SHARED native_loader_fixture.cpp)
 foreach(fixture codex_agent_loader_valid codex_agent_loader_external codex_agent_loader_old_abi
-        codex_agent_loader_abi_mismatch
+        codex_agent_loader_abi_mismatch codex_agent_loader_wrong_abi_major
+        codex_agent_loader_incompatible_runtime
         codex_agent_loader_wrong_contract codex_agent_loader_missing_identity)
     target_compile_features(${fixture} PRIVATE cxx_std_20)
     target_compile_definitions(${fixture} PRIVATE CODEX_AGENT_BUILD)
@@ -62,6 +70,7 @@ target_link_libraries(codex_agent_native_loader_test PRIVATE CodexAgent::Loader)
 add_dependencies(codex_agent_native_loader_test codex_agent_loader_compatibility
     codex_agent_loader_external codex_agent_loader_old_abi
     codex_agent_loader_abi_mismatch
+    codex_agent_loader_wrong_abi_major codex_agent_loader_incompatible_runtime
     codex_agent_loader_wrong_contract codex_agent_loader_wrong_target
     codex_agent_loader_missing_identity)
 add_test(NAME codex_agent_native_loader_embedded COMMAND codex_agent_native_loader_test
@@ -77,6 +86,12 @@ add_test(NAME codex_agent_native_loader_old_abi COMMAND codex_agent_native_loade
 add_test(NAME codex_agent_native_loader_actual_abi_mismatch COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
     $<TARGET_FILE:codex_agent_loader_abi_mismatch>)
+add_test(NAME codex_agent_native_loader_wrong_abi_major COMMAND codex_agent_native_loader_test
+    $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
+    $<TARGET_FILE:codex_agent_loader_wrong_abi_major>)
+add_test(NAME codex_agent_native_loader_incompatible_runtime COMMAND codex_agent_native_loader_test
+    $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
+    $<TARGET_FILE:codex_agent_loader_incompatible_runtime>)
 add_test(NAME codex_agent_native_loader_wrong_contract COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
     $<TARGET_FILE:codex_agent_loader_wrong_contract>)
@@ -89,6 +104,9 @@ add_test(NAME codex_agent_native_loader_missing_identity COMMAND codex_agent_nat
 add_test(NAME codex_agent_native_loader_no_fallback COMMAND codex_agent_native_loader_test
     "${CMAKE_CURRENT_BINARY_DIR}/missing/$<TARGET_FILE_NAME:codex_agent_loader_valid>"
     "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure)
+add_test(NAME codex_agent_native_loader_missing_compatibility_sidecar COMMAND codex_agent_native_loader_test
+    $<TARGET_FILE:codex_agent_loader_valid>
+    "${CMAKE_CURRENT_BINARY_DIR}/missing/sdk-compatibility.json" failure)
 add_test(NAME codex_agent_native_loader_relative_override COMMAND codex_agent_native_loader_test
     $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" failure
     relative-library-name)
@@ -114,6 +132,12 @@ add_test(NAME codex_agent_native_loader_zero_leaks COMMAND "${Python3_EXECUTABLE
     $<TARGET_FILE:codex_agent_loader_valid>
     "${CODEX_AGENT_LOADER_COMPATIBILITY}"
     $<TARGET_FILE:codex_agent_loader_old_abi>)
+if(NOT DEFINED CODEX_AGENT_CPP_INSTALL_PACKAGE OR CODEX_AGENT_CPP_INSTALL_PACKAGE)
+    add_test(NAME codex_agent_cpp_installed_package_tamper COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test_installed_package_tamper.py"
+        "${CMAKE_COMMAND}" "${CMAKE_BINARY_DIR}" "$<CONFIG>" "${CMAKE_INSTALL_LIBDIR}"
+        "${CODEX_AGENT_C_SDK_LIBRARY_RELATIVE}")
+endif()
 
 if(NOT CodexAgent_C_SDK_LIBRARY)
     message(FATAL_ERROR

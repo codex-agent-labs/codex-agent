@@ -135,7 +135,11 @@ class ProductRegistryTest(unittest.TestCase):
         cases = {
             PhaseInstanceId("runtime", "jvm", "binary", "jvm"): ("jvm",),
             PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64"): ("linux-x64",),
-            PhaseInstanceId("sdk", "sdk-core", "binary", "common"): ("common",),
+            PhaseInstanceId("sdk", "sdk-core", "binary", "common"): tuple(sorted((
+                "common", "android", "ios-arm64", "ios-simulator-arm64", "jvm",
+                "linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "node-js",
+                "node-wasm", "windows-x64",
+            ))),
             PhaseInstanceId("sdk", "sdk-core", "validation", "node-wasm"): ("node-wasm",),
             PhaseInstanceId("sdk", "sdk-android", "binary", "android"): ("android",),
             PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"): (

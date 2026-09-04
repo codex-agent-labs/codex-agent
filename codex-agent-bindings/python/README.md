@@ -36,7 +36,7 @@ Set `CODEX_AGENT_LIBRARY` to the exact verified C SDK library, pass
 library under `codex_agent/native/<classifier>/`. Supported classifiers are
 `macos-arm64`, `macos-x64`, `linux-arm64`, `linux-x64`, and `windows-x64`.
 That is the complete resolution order; there is no executable-adjacent or
-system-loader fallback. The loader requires compatible C ABI `1.12.0` before
+system-loader fallback. The loader requires compatible C ABI `1.13.0` before
 it creates a context.
 
 Canonical closed value sets are exported as typed `IntEnum` classes from

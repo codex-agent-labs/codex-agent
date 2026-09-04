@@ -9,11 +9,16 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.kmp.library)
     alias(libs.plugins.maven.publish)
-    id("codexagent.javascript-sdk")
     id("codexagent.native-wrapper-sdk")
+    id("codexagent.javascript-sdk")
 }
 
 val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toString()
+val contractDependency: Any = if (rootProject.extra.has("codexAgent.authenticatedContractVersion")) {
+    "${project.group}:codex-agent-core:${rootProject.extra["codexAgent.authenticatedContractVersion"]}"
+} else {
+    project(":codex-agent-core")
+}
 
 kotlin {
     explicitApi()
@@ -41,7 +46,7 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            api(project(":codex-agent-core"))
+            api(contractDependency)
         }
     }
 }

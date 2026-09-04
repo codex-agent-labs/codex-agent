@@ -18,7 +18,7 @@ runtime identifiers:
 Inside the NuGet package those files are under `runtimes/<rid>/native/`.
 `CodexNativeLibrary.Configure(path)` overrides application-base and packaged
 RID resolution before first use; there is no environment or system fallback.
-The loader requires compatible C ABI `1.12.0`.
+The loader requires compatible C ABI `1.13.0`.
 
 The current mechanically checked surface contains 556 exact capabilities: 110
 ordinary enum entries, 46 MCP immutable-value capabilities, a complementary

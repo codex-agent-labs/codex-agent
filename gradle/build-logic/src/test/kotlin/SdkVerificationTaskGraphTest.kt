@@ -9,6 +9,32 @@ import org.gradle.testkit.runner.TaskOutcome
 
 class SdkVerificationTaskGraphTest {
     @Test
+    fun `unauthenticated SDK binary producers are absent and canonical entry fails before Core tasks`() {
+        val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .first { it.resolve("settings.gradle.kts").isFile && it.resolve("codex-agent-core").isDirectory }
+        val direct = GradleRunner.create()
+            .withProjectDir(repository)
+            .withArguments(
+                "writeSdkCoreBinaryOutputManifest", "--dry-run", "--offline",
+                "--no-configuration-cache", "--console=plain",
+            )
+            .buildAndFail()
+        assertTrue("Task 'writeSdkCoreBinaryOutputManifest' not found" in direct.output, direct.output)
+        assertFalse(Regex("(?m)^:codex-agent-core:").containsMatchIn(direct.output), direct.output)
+
+        val canonical = GradleRunner.create()
+            .withProjectDir(repository)
+            .withArguments(
+                "ciProductPhase", "-PcodexAgent.product=sdk", "-PcodexAgent.component=sdk-core",
+                "-PcodexAgent.phase=binary", "--dry-run", "--offline",
+                "--no-configuration-cache", "--console=plain",
+            )
+            .buildAndFail()
+        assertTrue("Missing mandatory explicit -P project property: codexAgent.contractRepository" in canonical.output)
+        assertFalse(Regex("(?m)^:codex-agent-core:").containsMatchIn(canonical.output), canonical.output)
+    }
+
+    @Test
     fun `root checkout configures no Desktop Runtime project or task`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { it.resolve("settings.gradle.kts").isFile && it.resolve("codex-agent-core").isDirectory }

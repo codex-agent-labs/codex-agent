@@ -147,14 +147,116 @@ val writeContractBinaryOutputManifest = tasks.register<WriteProductOutputManifes
     stageRoot.set(contractBinaryPhaseRoot)
     manifestFile.set(contractBinaryPhaseRoot.map { it.file("output-manifest.json") })
 }
-val requestedProduct = providers.gradleProperty("codexAgent.product")
-val requestedComponent = providers.gradleProperty("codexAgent.component")
-val requestedPhase = providers.gradleProperty("codexAgent.phase")
 val sdk = providers.provider {
     checkNotNull(findProject(":codex-agent-sdk")) {
         "SDK product phases require :codex-agent-sdk"
     }
 }
+val sdkFacade = project(":codex-agent-sdk")
+val sdkAndroid = project(":codex-agent-runtime-android")
+val sdkIos = project(":codex-agent-runtime-ios")
+
+fun registerSdkBinaryPhase(
+    component: String,
+    title: String,
+    target: String,
+    repositoryName: String,
+    publishingProjects: List<Project>,
+    publicationTaskPaths: List<String>,
+): TaskProvider<WriteProductOutputManifestTask> {
+    val phaseRoot = layout.buildDirectory.dir("product-stage/sdk/$component/binary")
+    val phaseOutputs = phaseRoot.map { it.dir("outputs") }
+    val mavenRepository = phaseOutputs.map { it.dir("maven") }
+    val evidenceDirectory = phaseOutputs.map { it.dir("evidence") }
+    publishingProjects.forEach { publishingProject ->
+        publishingProject.pluginManager.withPlugin("maven-publish") {
+            publishingProject.extensions.configure<PublishingExtension> {
+                repositories.maven {
+                    name = repositoryName
+                    url = mavenRepository.get().asFile.toURI()
+                }
+            }
+        }
+    }
+    val reset = tasks.register<Delete>("reset${title}BinaryPhase") {
+        delete(phaseRoot)
+    }
+    publicationTaskPaths.forEach { path ->
+        val publishingProject = project(path.substringBeforeLast(':').ifEmpty { ":" })
+        publishingProject.tasks.matching { it.name == path.substringAfterLast(':') }.configureEach {
+            dependsOn(reset)
+        }
+    }
+    val verify = tasks.register<VerifySdkBinaryMavenRepositoryTask>("verify${title}BinaryMavenRepository") {
+        dependsOn(publicationTaskPaths)
+        repository.set(mavenRepository)
+        groupId.set(CodexAgentBuild.MAVEN_GROUP)
+        sdkVersion.set(rootProject.extra["codexAgent.sdkVersion"].toString())
+        this.component.set(component)
+        inventory.set(evidenceDirectory.map { it.file("maven-primary-inventory.json") })
+    }
+    return tasks.register<WriteProductOutputManifestTask>("write${title}BinaryOutputManifest") {
+        group = "publishing"
+        description = "Stages the exact Contract-only $component Maven binary outputs."
+        dependsOn(verify)
+        product.set("sdk")
+        this.component.set(component)
+        phase.set("binary")
+        this.target.set(target)
+        productVersion.set(rootProject.extra["codexAgent.sdkVersion"].toString())
+        outputRoots.set(mapOf(
+            "maven" to "outputs/maven",
+            "evidence" to "outputs/evidence",
+        ))
+        outputsDirectory.set(phaseOutputs)
+        producerSources.from(layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(layout.projectDirectory)
+        stageRoot.set(phaseRoot)
+        manifestFile.set(phaseRoot.map { it.file("output-manifest.json") })
+    }
+}
+
+val authenticatedSdkComponent = rootProject.extra.properties["codexAgent.authenticatedSdkComponent"] as String?
+val writeSdkCoreBinaryOutputManifest = if (authenticatedSdkComponent == "sdk-core") {
+    registerSdkBinaryPhase(
+        component = "sdk-core",
+        title = "SdkCore",
+        target = "common",
+        repositoryName = "SDK_CORE_BINARY_STAGING",
+        publishingProjects = listOf(rootProject, sdkFacade),
+        publicationTaskPaths = listOf(":publishMavenPublicationToSDK_CORE_BINARY_STAGINGRepository") +
+            contractPublicationNames.map {
+                ":codex-agent-sdk:publish${it}PublicationToSDK_CORE_BINARY_STAGINGRepository"
+            },
+    )
+} else null
+val writeSdkAndroidBinaryOutputManifest = if (authenticatedSdkComponent == "sdk-android") {
+    registerSdkBinaryPhase(
+        component = "sdk-android",
+        title = "SdkAndroid",
+        target = "android",
+        repositoryName = "SDK_ANDROID_BINARY_STAGING",
+        publishingProjects = listOf(sdkAndroid),
+        publicationTaskPaths = listOf(
+            ":codex-agent-runtime-android:publishMavenPublicationToSDK_ANDROID_BINARY_STAGINGRepository",
+        ),
+    )
+} else null
+val writeSdkIosBinaryOutputManifest = if (authenticatedSdkComponent == "sdk-ios") {
+    registerSdkBinaryPhase(
+        component = "sdk-ios",
+        title = "SdkIos",
+        target = "ios",
+        repositoryName = "SDK_IOS_BINARY_STAGING",
+        publishingProjects = listOf(sdkIos),
+        publicationTaskPaths = listOf("KotlinMultiplatform", "IosArm64", "IosSimulatorArm64").map {
+            ":codex-agent-runtime-ios:publish${it}PublicationToSDK_IOS_BINARY_STAGINGRepository"
+        },
+    )
+} else null
+val requestedProduct = providers.gradleProperty("codexAgent.product")
+val requestedComponent = providers.gradleProperty("codexAgent.component")
+val requestedPhase = providers.gradleProperty("codexAgent.phase")
 tasks.register("ciProductPhase") {
     group = "build"
     description = "Executes one exact product/component/phase lifecycle mapping."
@@ -162,6 +264,21 @@ tasks.register("ciProductPhase") {
         val selection = Triple(requestedProduct.get(), requestedComponent.get(), requestedPhase.get())
         when (selection) {
             Triple("contract", "contract", "binary") -> writeContractBinaryOutputManifest
+            Triple("sdk", "sdk-core", "binary") -> checkNotNull(writeSdkCoreBinaryOutputManifest) {
+                "SDK Core binary producer was not authenticated during settings evaluation"
+            }
+            Triple("sdk", "sdk-core", "package") ->
+                sdk.get().tasks.named("writeSdkCorePackageOutputManifest")
+            Triple("sdk", "sdk-android", "binary") -> checkNotNull(writeSdkAndroidBinaryOutputManifest) {
+                "SDK Android binary producer was not authenticated during settings evaluation"
+            }
+            Triple("sdk", "sdk-android", "package") ->
+                sdk.get().tasks.named("writeSdkAndroidPackageOutputManifest")
+            Triple("sdk", "sdk-ios", "binary") -> checkNotNull(writeSdkIosBinaryOutputManifest) {
+                "SDK iOS binary producer was not authenticated during settings evaluation"
+            }
+            Triple("sdk", "sdk-ios", "package") ->
+                sdk.get().tasks.named("writeSdkIosPackageOutputManifest")
             Triple("sdk", "javascript", "package") ->
                 sdk.get().tasks.named("writeJavaScriptSdkPackageOutputManifest")
             Triple("sdk", "python", "package") ->

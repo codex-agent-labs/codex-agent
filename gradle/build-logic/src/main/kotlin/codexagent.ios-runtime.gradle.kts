@@ -64,6 +64,11 @@ val nativeTasks = registerIosNativeTasks(
 )
 
 val xcframework = XCFramework("CodexAgent")
+val iosContractDependency: Any = if (rootProject.extra.has("codexAgent.authenticatedContractVersion")) {
+    "${project.group}:codex-agent-core:${rootProject.extra["codexAgent.authenticatedContractVersion"]}"
+} else {
+    project(":codex-agent-core")
+}
 extensions.configure<KotlinMultiplatformExtension> {
     val device = iosArm64()
     val simulator = iosSimulatorArm64()
@@ -93,7 +98,7 @@ extensions.configure<KotlinMultiplatformExtension> {
         target.binaries.framework {
             baseName = "CodexAgent"
             isStatic = true
-            export(project(":codex-agent-core"))
+            export(iosContractDependency)
             xcframework.add(this)
         }
     }

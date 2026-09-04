@@ -17,7 +17,10 @@ val importedNpmRuntimePackageStage = providers.gradleProperty("codexAgent.runtim
 val importedNpmRuntimeValidationStage =
     providers.gradleProperty("codexAgent.runtimeBindingValidationStage").map(::file)
 val npmCandidateTree = providers.gradleProperty("codexAgent.candidateTree")
-val npmRuntimeVersion = rootProject.extra["codexAgent.runtimeVersion"].toString()
+val npmRuntimeVersion = rootProject.extra["codexAgent.sdkDefaultRuntimeVersion"].toString()
+val npmSdkCompatibility = tasks.named<GenerateNativeWrapperSdkCompatibilityTask>(
+    "generateNativeWrapperSdkCompatibility",
+)
 val importedNpmContractSnapshotRoot = layout.buildDirectory.dir(
     npmCandidateTree.map { "imported-sdk-product-stages/$it/contract" },
 )
@@ -1538,7 +1541,7 @@ export type CodexAuthenticationMethod = "chatgpt_browser" | "chatgpt_device_code
 val stageNpmPackage = tasks.register<Sync>("stageNpmPackage") {
     group = "distribution"
     description = "Stages the deterministic Node-only JavaScript and TypeScript SDK."
-    dependsOn(verifyNpmDeclarationGolden)
+    dependsOn(verifyNpmDeclarationGolden, npmSdkCompatibility)
     inputs.property("npmVersion", npmVersion)
     duplicatesStrategy = DuplicatesStrategy.FAIL
     into(npmStageDirectory)
@@ -1555,6 +1558,9 @@ val stageNpmPackage = tasks.register<Sync>("stageNpmPackage") {
     }
     from(rootProject.layout.projectDirectory.file("LICENSE"))
     from(rootProject.layout.projectDirectory.file("THIRD_PARTY_NOTICES.md"))
+    from(npmSdkCompatibility.flatMap { it.outputFile }) {
+        into("META-INF/codex-agent")
+    }
     doLast {
         val expectedVersion = inputs.properties.getValue("npmVersion").toString()
         val stage = destinationDir
@@ -1583,13 +1589,28 @@ val packageNpm = tasks.register<Tar>("packageNpm") {
 }
 
 val npmArchiveFile = layout.buildDirectory.file("distributions/codex-agent-$npmVersion.tgz")
+val npmSdkCompatibilityArchiveReport =
+    layout.buildDirectory.file("reports/npm/sdk-compatibility-archive.json")
+val verifyNpmSdkCompatibilityArchive = tasks.register<VerifyNpmSdkCompatibilityArchiveTask>(
+    "verifyNpmSdkCompatibilityArchive",
+) {
+    group = "verification"
+    description = "Verifies the exact SDK compatibility declaration in the final npm archive."
+    dependsOn(packageNpm, npmSdkCompatibility)
+    archiveFile.set(npmArchiveFile)
+    sdkCompatibility.set(npmSdkCompatibility.flatMap { it.outputFile })
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+    reportFile.set(npmSdkCompatibilityArchiveReport)
+}
 val javascriptSdkPackagePhaseRoot = layout.buildDirectory.dir("product-stage/sdk/javascript/package")
 val javascriptSdkPackagePhaseOutputs = javascriptSdkPackagePhaseRoot.map { it.dir("outputs") }
 val stageJavaScriptSdkPackagePhase = tasks.register<Sync>("stageJavaScriptSdkPackagePhase") {
     group = "distribution"
-    dependsOn(packageNpm)
+    dependsOn(verifyNpmSdkCompatibilityArchive)
     into(javascriptSdkPackagePhaseOutputs)
     from(npmArchiveFile) { into("package") }
+    from(npmSdkCompatibilityArchiveReport) { into("evidence") }
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
@@ -1601,7 +1622,10 @@ tasks.register<WriteProductOutputManifestTask>("writeJavaScriptSdkPackageOutputM
     phase.set("package")
     target.set("node")
     productVersion.set(npmVersion)
-    outputRoots.set(mapOf("package" to "outputs/package"))
+    outputRoots.set(mapOf(
+        "evidence" to "outputs/evidence",
+        "package" to "outputs/package",
+    ))
     outputsDirectory.set(javascriptSdkPackagePhaseOutputs)
     producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
     repositoryRoot.set(rootProject.layout.projectDirectory)
@@ -1665,6 +1689,10 @@ val verifyPackedNpmConsumers = tasks.register<Exec>("verifyPackedNpmConsumers") 
     inputs.files(npmConsumerSourceDirectory.asFileTree)
     outputs.files(npmPublicApiReport, npmPackedTestReport)
     environment("CODEX_AGENT_NPM_TARBALL", npmArchiveFile.get().asFile.absolutePath)
+    environment(
+        "CODEX_AGENT_EXPECTED_DEFAULT_RUNTIME_VERSION",
+        rootProject.extra["codexAgent.sdkDefaultRuntimeVersion"].toString(),
+    )
     commandLine("npm", "run", "verify")
     doFirst {
         outputs.files.forEach(File::delete)

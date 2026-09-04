@@ -101,6 +101,7 @@ void main() {
       },
       {...valid, 'contractDigest': _digestA},
       {...valid, 'cAbiVersion': '1.12.0'},
+      {...valid, 'cAbiVersion': '2.0.0'},
       {...valid, 'runtimeCompatibilityVersion': '0.3.0'},
       {...valid, 'componentId': _digestB},
     ];
@@ -161,6 +162,15 @@ void main() {
     );
   });
 
+  test('missing SDK compatibility declaration fails closed', () {
+    expect(
+      () => RuntimeCompatibility.read(
+        File('${temporary.path}/missing-sdk-compatibility.json'),
+      ),
+      throwsA(isA<CodexException>()),
+    );
+  });
+
   test('default release and embedded identities are internally consistent', () {
     void expectRejected(void Function(Map<String, Object?>) mutate) {
       final changed =
@@ -175,6 +185,9 @@ void main() {
     expectRejected(
       (value) => _runtime(value)['defaultRuntimeVersion'] = '0.3.0',
     );
+    expectRejected(
+      (value) => _runtime(value)['requiredContractDigest'] = _digestA,
+    );
     expectRejected((value) {
       final variants = _runtime(value)['embeddedVariants']! as List<Object?>;
       (variants[1]! as Map<String, Object?>)['componentId'] =
@@ -184,6 +197,11 @@ void main() {
       final variants = _runtime(value)['embeddedVariants']! as List<Object?>;
       (variants[1]! as Map<String, Object?>)['manifestSha256'] =
           (variants[0]! as Map<String, Object?>)['manifestSha256'];
+    });
+    expectRejected((value) {
+      final platform = value['platformRuntime']! as Map<String, Object?>;
+      final android = platform['android']! as Map<String, Object?>;
+      android['desktopRuntimeApplicable'] = true;
     });
   });
 
@@ -287,6 +305,25 @@ void main() {
     );
     expect(
       () => NativeApi.load(mismatch.path),
+      throwsA(isA<CodexException>()),
+    );
+  });
+
+  test('incompatible explicit override fails at the loader boundary', () async {
+    final target = currentClassifier();
+    final identity = jsonDecode(
+      _identity(target, componentId: _digestA),
+    ) as Map<String, Object?>;
+    identity['contractDigest'] = _digestA;
+    final incompatible = await _compileLibrary(
+      temporary,
+      'incompatible-override',
+      identity: jsonEncode(identity),
+      abiVersion: requiredAbiVersion,
+    );
+
+    expect(
+      () => authenticatedRuntimeLibraryForTesting(incompatible.path),
       throwsA(isA<CodexException>()),
     );
   });

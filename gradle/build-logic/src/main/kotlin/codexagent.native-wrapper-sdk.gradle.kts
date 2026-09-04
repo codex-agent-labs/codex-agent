@@ -18,6 +18,9 @@ val nativeWrapperCandidateTree = providers.gradleProperty("codexAgent.candidateT
 val nativeWrapperSdkCompatibilityRequest = providers.gradleProperty(
     "codexAgent.sdkCompatibilityRequest",
 ).map(::file)
+val nativeWrapperRuntimeSnapshotRoot = layout.buildDirectory.dir(
+    nativeWrapperCandidateTree.map { "imported-native-wrapper-runtime-stages/$it" },
+)
 val nativeWrapperRuntimeManifestTaskNames = linkedMapOf(
     ("macos-arm64" to "package") to "verifyImportedNativeWrapperMacosArm64RuntimePackageOutputManifest",
     ("macos-arm64" to "validation") to "verifyImportedNativeWrapperMacosArm64RuntimeValidationOutputManifest",
@@ -35,16 +38,8 @@ val invalidateNativeWrapperProductPhaseOutputs = tasks.register<Delete>(
 ) {
     group = "verification"
     description = "Deletes stale native-wrapper SDK outputs before imported Runtime verification."
-    delete(
-        layout.buildDirectory.dir("native-wrapper-package-sources"),
-        listOf("python", "csharp", "rust", "cpp", "dart").map { language ->
-            layout.buildDirectory.dir("product-stage/sdk/$language/package")
-        },
-    )
+    delete(nativeWrapperRuntimeSnapshotRoot)
 }
-val nativeWrapperRuntimeSnapshotRoot = layout.buildDirectory.dir(
-    nativeWrapperCandidateTree.map { "imported-native-wrapper-runtime-stages/$it" },
-)
 val snapshotImportedNativeWrapperRuntimeStages =
     tasks.register<SnapshotImportedNativeWrapperRuntimeStagesTask>(
         "snapshotImportedNativeWrapperRuntimeStages",
@@ -80,12 +75,76 @@ val generateNativeWrapperSdkCompatibility =
         group = "distribution"
         description = "Authenticates Contract and Runtime products and generates the shared SDK policy."
         requestFile.set(layout.file(nativeWrapperSdkCompatibilityRequest))
-        outputFile.set(layout.buildDirectory.file(
-            nativeWrapperCandidateTree.map { "sdk-compatibility/$it/sdk-compatibility.json" },
+        resourceDirectory.set(layout.buildDirectory.dir(
+            nativeWrapperCandidateTree.map { "sdk-compatibility/$it" },
         ))
+        outputFile.set(resourceDirectory.file("META-INF/codex-agent/sdk-compatibility.json"))
         producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
         repositoryRoot.set(rootProject.layout.projectDirectory)
     }
+val sdkMavenPackageSpecs = linkedMapOf(
+    "sdk-core" to Triple("SdkCore", "common", "codexAgent.sdkCoreBinaryStageRoot"),
+    "sdk-android" to Triple("SdkAndroid", "android", "codexAgent.sdkAndroidBinaryStageRoot"),
+    "sdk-ios" to Triple("SdkIos", "ios", "codexAgent.sdkIosBinaryStageRoot"),
+)
+val sdkMavenPackageManifestTasks = sdkMavenPackageSpecs.mapValues { (component, spec) ->
+    val (title, target, property) = spec
+    val imported = layout.dir(providers.gradleProperty(property).map(::file))
+    val snapshot = layout.buildDirectory.dir(
+        nativeWrapperCandidateTree.map { "imported-sdk-binary-stages/$it/$component" },
+    )
+    val reset = tasks.register<Delete>("resetImported${title}BinaryStage") { delete(snapshot) }
+    val snapshotTask = tasks.register<SnapshotImportedProductStageTask>("snapshotImported${title}BinaryStage") {
+        dependsOn(reset)
+        sourceDirectory.set(imported)
+        outputDirectory.set(snapshot)
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
+    val verify = tasks.register<VerifyImportedProductOutputManifestTask>("verifyImported${title}BinaryStage") {
+        dependsOn(snapshotTask)
+        product.set("sdk")
+        this.component.set(component)
+        phase.set("binary")
+        this.target.set(target)
+        productVersion.set(nativeWrapperSdkVersion)
+        stageRoot.set(snapshot)
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
+    val phaseRoot = layout.buildDirectory.dir("product-stage/sdk/$component/package")
+    val phaseOutputs = phaseRoot.map { it.dir("outputs") }
+    val invalidate = tasks.register<Delete>("invalidate${title}PackagePhase") {
+        delete(phaseRoot)
+    }
+    snapshotTask.configure { dependsOn(invalidate) }
+    generateNativeWrapperSdkCompatibility.configure { mustRunAfter(invalidate) }
+    val stage = tasks.register<PackageSdkMavenArtifactsTask>("stage${title}PackagePhase") {
+        dependsOn(verify, generateNativeWrapperSdkCompatibility)
+        binaryMavenRepository.set(snapshot.map { it.dir("outputs/maven") })
+        sdkCompatibility.set(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })
+        this.component.set(component)
+        groupId.set(project.group.toString())
+        sdkVersion.set(nativeWrapperSdkVersion)
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        outputDirectory.set(phaseOutputs.map { it.dir("maven") })
+    }
+    tasks.register<WriteProductOutputManifestTask>("write${title}PackageOutputManifest") {
+        dependsOn(stage)
+        product.set("sdk")
+        this.component.set(component)
+        phase.set("package")
+        this.target.set(target)
+        productVersion.set(nativeWrapperSdkVersion)
+        outputRoots.set(mapOf("maven" to "outputs/maven"))
+        outputsDirectory.set(phaseOutputs)
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        stageRoot.set(phaseRoot)
+        manifestFile.set(phaseRoot.map { it.file("output-manifest.json") })
+    }
+}
 val stageNativeWrapperCAbiSdks = tasks.register<StageCrossLanguageNativeWrapperSdksTask>(
     "stageNativeWrapperCAbiSdks",
 ) {
@@ -148,6 +207,11 @@ val nativeWrapperPackageSourceTasks = nativeWrapperLanguageSpecs.mapValues { (la
         into(layout.buildDirectory.dir("native-wrapper-package-sources/$language"))
     }
 }
+val prepareNativeWrapperPackageSources = tasks.register("prepareNativeWrapperPackageSources") {
+    group = "distribution"
+    description = "Prepares all native wrapper package sources from the verified five-host SDK staging."
+    dependsOn(nativeWrapperPackageSourceTasks.values)
+}
 val nativeWrapperSdkPackageTaskNames = linkedMapOf(
     "python" to Triple(
         "stagePythonNativeWrapperSdkPackagePhase",
@@ -179,15 +243,17 @@ val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapV
     val (stageTaskName, manifestTaskName, phasePath) = names
     val phaseRoot = layout.buildDirectory.dir(phasePath)
     val phaseOutputs = phaseRoot.map { it.dir("outputs") }
-    val stage = tasks.register<Sync>(stageTaskName) {
+    val stage = tasks.register<PackageNativeWrapperSdkTask>(stageTaskName) {
         group = "distribution"
-        description = "Stages the exact $language SDK wrapper package inputs once."
-        dependsOn(nativeWrapperPackageSourceTasks.getValue(language))
-        into(phaseOutputs)
-        from(nativeWrapperPackageSourceTasks.getValue(language)) { into("package-source") }
-        from(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory }) { into("runtime-sdks") }
-        includeEmptyDirs = false
-        duplicatesStrategy = DuplicatesStrategy.FAIL
+        description = "Builds the exact reproducible $language SDK package from verified Runtime inputs."
+        dependsOn(nativeWrapperPackageSourceTasks.getValue(language), stageNativeWrapperCAbiSdks)
+        this.language.set(language)
+        sourcesDirectory.set(layout.buildDirectory.dir("native-wrapper-package-sources/$language"))
+        sdkDirectory.set(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })
+        sdkVersionFile.set(rootProject.layout.projectDirectory.file("gradle/release/versions/sdk.txt"))
+        packageScript.set(rootProject.layout.projectDirectory.file("ci/native_wrappers.py"))
+        outputDirectory.set(phaseOutputs)
+        repositoryRoot.set(rootProject.layout.projectDirectory)
     }
     tasks.register<WriteProductOutputManifestTask>(manifestTaskName) {
         group = "distribution"
@@ -198,21 +264,13 @@ val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapV
         phase.set("package")
         target.set("desktop")
         productVersion.set(nativeWrapperSdkVersion)
-        outputRoots.set(mapOf(
-            "package-source" to "outputs/package-source",
-            "runtime-sdks" to "outputs/runtime-sdks",
-        ))
+        outputRoots.set(mapOf("package" to "outputs/$language"))
         outputsDirectory.set(phaseOutputs)
         producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
         repositoryRoot.set(rootProject.layout.projectDirectory)
         stageRoot.set(phaseRoot)
         manifestFile.set(phaseRoot.map { it.file("output-manifest.json") })
     }
-}
-tasks.register("prepareNativeWrapperPackageSources") {
-    group = "distribution"
-    description = "Prepares all native wrapper package sources from the verified five-host SDK staging."
-    dependsOn(nativeWrapperPackageSourceTasks.values)
 }
 
 val nativeWrapperReleaseDirectory = providers.gradleProperty("codexAgent.nativeWrapperReleaseDirectory")

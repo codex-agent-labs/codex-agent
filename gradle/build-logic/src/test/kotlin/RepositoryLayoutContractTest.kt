@@ -51,14 +51,28 @@ class RepositoryLayoutContractTest {
     }
 
     @Test
-    fun `platform adapters expose the root Core project and Desktop consumes the Contract coordinate`() {
-        val coreApi = Regex("""(?m)^\s*api\(project\(":codex-agent-core"\)\)\s*$""")
+    fun `SDK owners switch from the root Core project to the authenticated Contract coordinate`() {
+        val settings = repository.resolve("settings.gradle.kts").readText()
+        listOf(
+            "ci.products.contract\", \"verify-directory",
+            "AUTHENTICATED_SDK_CONTRACT_BUNDLE",
+            "codexAgent.contractRepository",
+            "codexAgent.contractManifest",
+            "codexAgent.contractPublicKey",
+            "codexAgent.contractVersion",
+            "--required-component",
+        ).forEach { assertTrue(it in settings, it) }
+        listOf(
+            "common", "android", "ios-arm64", "ios-simulator-arm64", "jvm",
+            "linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "node-js",
+            "node-wasm", "windows-x64",
+        ).forEach { assertTrue("\"$it\"" in settings, it) }
         listOf("android", "ios").forEach { runtime ->
             val build = repository.resolve("codex-agent-runtime-$runtime/build.gradle.kts").readText()
-            assertEquals(1, coreApi.findAll(build).count(), runtime)
+            assertTrue("codexAgent.authenticatedContractVersion" in build, runtime)
+            assertTrue("api(contractDependency)" in build, runtime)
         }
         val desktop = repository.resolve("codex-agent-runtime-desktop/build.gradle.kts").readText()
-        assertEquals(0, coreApi.findAll(desktop).count())
         assertTrue("io.github.codex-agent-labs:codex-agent-core:" in desktop)
         assertTrue("providers.gradleProperty(\"codexAgent.contractVersion\")" in desktop)
         assertFalse("project(\":codex-agent-core\")" in desktop)
@@ -68,10 +82,8 @@ class RepositoryLayoutContractTest {
     fun `public SDK facade exports Core without duplicating declarations`() {
         val facade = repository.resolve("codex-agent-sdk")
         val build = facade.resolve("build.gradle.kts").readText()
-        assertEquals(
-            1,
-            Regex("""(?m)^\s*api\(project\(\":codex-agent-core\"\)\)\s*$""").findAll(build).count(),
-        )
+        assertTrue("codexAgent.authenticatedContractVersion" in build)
+        assertTrue("api(contractDependency)" in build)
         val sources = facade.resolve("src").walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .toList()
