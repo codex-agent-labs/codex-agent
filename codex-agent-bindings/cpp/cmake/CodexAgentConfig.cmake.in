@@ -27,8 +27,6 @@ endif()
 set(_codex_agent_verified_files
     "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h|@CODEX_AGENT_C_SDK_HEADER_SHA256@"
     "${CodexAgent_C_SDK_LIBRARY}|@CODEX_AGENT_C_SDK_LIBRARY_SHA256@"
-    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/native/codex-agent-c-abi-manifest.json|@CODEX_AGENT_C_SDK_MANIFEST_SHA256@"
-    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/native/codex-agent-c-abi-evidence.json|@CODEX_AGENT_C_SDK_EVIDENCE_SHA256@"
     "${CodexAgent_SDK_COMPATIBILITY}|@CODEX_AGENT_SDK_COMPATIBILITY_SHA256@"
 )
 if(CodexAgent_NATIVE_CLASSIFIER MATCHES "^linux-")

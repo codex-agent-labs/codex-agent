@@ -34,6 +34,8 @@ internal data class CrossLanguageNativeWrapperSdkRecord(
     val classifier: String,
     val libraryPath: String,
     val librarySha256: String,
+    val producerCommit: String,
+    val producerTree: String,
 )
 
 internal data class CrossLanguageNativeWrapperSdkIndex(
@@ -203,12 +205,18 @@ fun stageCrossLanguageNativeWrapperSdks(
                     "Imported native wrapper C ABI evidence is missing or symbolic: $target"
                 }
                 checkIdentity(input.libraryVersion, input.producerCommit, input.producerTree)
+                // The Gradle entry point authenticates this exact raw report against
+                // its original validation receipt before calling portable inspection.
+                val originalEvidence = releaseJson.parseToJsonElement(proof.readText()).jsonObject
+                val originalCommit = originalEvidence.strictString("producerCommit")
+                val originalTree = originalEvidence.strictString("producerTree")
+                checkIdentity(input.libraryVersion, originalCommit, originalTree)
                 val reference = input.references.getValue(target)
                 withPortableVerifiedCrossLanguageCAbiPackageEvidence(
                     target,
                     input.libraryVersion,
-                    input.producerCommit,
-                    input.producerTree,
+                    originalCommit,
+                    originalTree,
                     archive,
                     proof,
                     reference.reviewedHeader,
@@ -237,13 +245,15 @@ fun stageCrossLanguageNativeWrapperSdks(
                         put("libraryPath", spec.libraryPath)
                         put("librarySha256", report.strictSha256("librarySha256"))
                         put("manifestSha256", manifest.releaseDigest())
+                        put("producerCommit", originalCommit)
+                        put("producerTree", originalTree)
                     })
                 }
             }
         }
         staged.resolve("sdk-compatibility.json").writeBytes(compatibility.bytes)
         staged.resolve("codex-agent-native-wrapper-sdks.json").atomicWriteJson(buildJsonObject {
-            put("schemaVersion", 1)
+            put("schemaVersion", 2)
             put("libraryVersion", input.libraryVersion)
             put("runtimeProductVersion", input.runtimeProductVersion)
             put("sdkVersion", input.sdkVersion)
@@ -265,7 +275,6 @@ fun materializeCrossLanguageNativeWrapperPackageAssets(
     stagedSdkDirectory: File,
     outputDirectory: File,
 ) {
-    val indexFile = stagedSdkDirectory.resolve("codex-agent-native-wrapper-sdks.json")
     val index = readCrossLanguageNativeWrapperSdkIndex(stagedSdkDirectory)
     check(!outputDirectory.exists()) { "Native wrapper package asset output is immutable: $outputDirectory" }
     val parent = outputDirectory.absoluteFile.parentFile.also(File::mkdirs)
@@ -277,8 +286,6 @@ fun materializeCrossLanguageNativeWrapperPackageAssets(
             val classifier = record.classifier
             val source = stagedSdkDirectory.resolve(classifier)
             val library = source.resolve(spec.libraryPath)
-            val manifest = source.resolve("codex-agent-c-abi-manifest.json")
-            val evidence = source.resolve("codex-agent-c-abi-evidence.json")
             val packageClassifier = when (classifier) {
                 "macos-arm64" -> "osx-arm64"
                 "macos-x64" -> "osx-x64"
@@ -294,11 +301,13 @@ fun materializeCrossLanguageNativeWrapperPackageAssets(
             destinations.forEach { (path, libraryName) ->
                 val destination = staged.resolve(path).also(File::mkdirs)
                 Files.copy(library.toPath(), destination.resolve(libraryName).toPath())
-                Files.copy(manifest.toPath(), destination.resolve(manifest.name).toPath())
-                Files.copy(evidence.toPath(), destination.resolve(evidence.name).toPath())
             }
-            check(source.copyRecursively(staged.resolve("cpp/native/$classifier"))) {
-                "Failed to stage the verified C SDK for the C++ $classifier package"
+            verifiedRegularFiles(source).filterKeys {
+                it !in setOf(C_ABI_PACKAGE_MANIFEST, "codex-agent-c-abi-evidence.json")
+            }.forEach { (path, file) ->
+                val destination = staged.resolve("cpp/native/$classifier/$path")
+                destination.parentFile.mkdirs()
+                Files.copy(file.toPath(), destination.toPath())
             }
             val cppCompatibility = staged.resolve(
                 "cpp/native/$classifier/share/CodexAgent/native/sdk-compatibility.json",
@@ -317,7 +326,6 @@ fun materializeCrossLanguageNativeWrapperPackageAssets(
             destination.parentFile.mkdirs()
             Files.copy(stagedSdkDirectory.resolve("sdk-compatibility.json").toPath(), destination.toPath())
         }
-        Files.copy(indexFile.toPath(), staged.resolve(indexFile.name).toPath())
         try {
             Files.move(staged.toPath(), outputDirectory.toPath(), StandardCopyOption.ATOMIC_MOVE)
         } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
@@ -366,7 +374,7 @@ internal fun readCrossLanguageNativeWrapperSdkIndex(
         "schemaVersion", "libraryVersion", "runtimeProductVersion", "sdkVersion",
         "sdkCompatibilitySha256", "producerCommit", "producerTree", "targets",
     ) &&
-        root.strictInt("schemaVersion") == 1) {
+        root.strictInt("schemaVersion") == 2) {
         "Native wrapper SDK index schema mismatch"
     }
     val version = root.strictString("libraryVersion")
@@ -395,7 +403,7 @@ internal fun readCrossLanguageNativeWrapperSdkIndex(
             val record = element.jsonObject
             check(record.keys == setOf(
                 "target", "classifier", "archiveSha256", "evidenceSha256", "libraryPath", "librarySha256",
-                "manifestSha256",
+                "manifestSha256", "producerCommit", "producerTree",
             ) && record.strictString("classifier") == spec.classifier.removePrefix("c-abi-") &&
                 record.strictString("libraryPath") == spec.libraryPath) {
                 "Native wrapper SDK target record mismatch: $target"
@@ -412,6 +420,14 @@ internal fun readCrossLanguageNativeWrapperSdkIndex(
             check(listOf(library, manifest, evidence).all(::regularCAbiFile)) {
                 "Native wrapper SDK target payload is incomplete: $target"
             }
+            val originalCommit = record.strictString("producerCommit")
+            val originalTree = record.strictString("producerTree")
+            checkIdentity(version, originalCommit, originalTree)
+            val rawEvidence = releaseJson.parseToJsonElement(evidence.readText()).jsonObject
+            check(rawEvidence.strictString("producerCommit") == originalCommit &&
+                rawEvidence.strictString("producerTree") == originalTree) {
+                "Native wrapper SDK original producer mismatch: $target"
+            }
             val librarySha256 = record.strictSha256("librarySha256")
             check(library.releaseDigest() == librarySha256 &&
                 compatibility.runtimeLibraryDigests.getValue(classifier) == librarySha256 &&
@@ -419,7 +435,9 @@ internal fun readCrossLanguageNativeWrapperSdkIndex(
                 evidence.releaseDigest() == record.strictSha256("evidenceSha256")) {
                 "Native wrapper SDK target hash mismatch: $target"
             }
-            CrossLanguageNativeWrapperSdkRecord(target, classifier, spec.libraryPath, librarySha256)
+            CrossLanguageNativeWrapperSdkRecord(
+                target, classifier, spec.libraryPath, librarySha256, originalCommit, originalTree,
+            )
         },
     )
 }

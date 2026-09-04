@@ -35,6 +35,8 @@ class ReleaseToolingCliFunctionalTest {
                 val entries = archive.entries().asSequence().map { it.name }.toList()
                 assertTrue("ReleaseToolingCliKt.class" in entries)
                 assertTrue("ProductVersions.class" in entries)
+                assertTrue("ProductVersionIdentityKt.class" in entries)
+                assertTrue("NativeWrapperSdkCompatibility.class" in entries)
                 assertFalse("ProductVersionsKt.class" in entries)
                 assertFalse("ReleaseToolingGradleTasksKt.class" in entries)
                 assertFalse("CrossLanguageNativeWrapperGradleTasksKt.class" in entries)

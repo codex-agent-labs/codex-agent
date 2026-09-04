@@ -730,9 +730,14 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             return _from_phase("sdk", "sdk-ios", "binary")
         if name.startswith("CrossLanguageJavaScript"):
             return _from_phase("sdk", "javascript", "validation")
+        if name in {
+            "CrossLanguageNativeWrapperSdkStaging.kt",
+            "CrossLanguageNativeWrapperGradleTasks.kt",
+            "CrossLanguageCAbiClient.kt",
+        }:
+            return _bindings(NATIVE_BINDINGS)
         if name.startswith("CrossLanguageNativeWrapper") or name in {
             "CrossLanguageCAbiBindingEvidence.kt",
-            "CrossLanguageCAbiClient.kt",
         }:
             return set().union(*(
                 _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
@@ -769,6 +774,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             "ProductOutputManifestGradleTask.kt",
             "ProductPythonTooling.kt",
             "ProductVersions.kt",
+            "ProductVersionIdentity.kt",
             "PrepareCodexRuntimeTask.kt",
             "codexagent.codex-runtime.gradle.kts",
         }:

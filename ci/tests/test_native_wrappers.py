@@ -9,6 +9,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import venv
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -30,11 +31,14 @@ from native_wrappers import (  # noqa: E402
     host_classifier,
     normalize_nupkg,
     normalize_python_sdist,
+    package_python,
+    reject_raw_c_abi_proofs,
     main,
     package_all,
     require_embedded_native_assets,
     require_embedded_package_versions,
     require_embedded_sdk_compatibility,
+    require_matching_compatibility,
     require_prepared_native_assets,
     require_sdk_version_file,
     require_source_sdk_version,
@@ -65,6 +69,86 @@ def write_zip_file(path: Path, name: str, contents: str) -> None:
 
 
 class NativeWrapperReleaseTest(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "stdlib venv symlink fixture is POSIX-specific")
+    def test_installed_python_proof_scan_is_scoped_below_venv_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = Path(temporary) / "venv"
+            venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
+            self.assertTrue(any(path.is_symlink() for path in (environment / "bin").iterdir()))
+
+            package = environment / "synthetic/site-packages/codex_agent"
+            python_library = package / "native/linux-x64/libcodex_agent.so"
+            python_library.parent.mkdir(parents=True)
+            python_library.write_bytes(b"library")
+            self.assertEqual(package.resolve(), python_library.resolve().parents[2])
+            reject_raw_c_abi_proofs(python_library.resolve().parents[2], "Python")
+
+            forbidden = package / "codex-agent-c-abi-manifest.json"
+            forbidden.write_bytes(b"forbidden")
+            with self.assertRaisesRegex(ValueError, "forbidden raw C ABI proof"):
+                reject_raw_c_abi_proofs(python_library.resolve().parents[2], "Python")
+            forbidden.unlink()
+
+            package_symlink = package / "native-link"
+            package_symlink.symlink_to(python_library)
+            with self.assertRaisesRegex(ValueError, "symbolic package input"):
+                reject_raw_c_abi_proofs(python_library.resolve().parents[2], "Python")
+
+    def test_installed_compatibility_must_exactly_match_the_staged_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = root / "sdk-compatibility.json"
+            expected.write_bytes(b"canonical\n")
+            installed = root / "package/native/sdk-compatibility.json"
+            installed.parent.mkdir(parents=True)
+            installed.write_bytes(expected.read_bytes())
+            require_matching_compatibility(
+                root / "package", "native/sdk-compatibility.json", expected, "fixture",
+            )
+            installed.write_bytes(b"changed\n")
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                require_matching_compatibility(
+                    root / "package", "native/sdk-compatibility.json", expected, "fixture",
+                )
+
+    def test_python_wheels_retain_compatibility_and_only_the_selected_native_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            native = source / "src/codex_agent/native"
+            native.mkdir(parents=True)
+            (native / "sdk-compatibility.json").write_bytes(b"compatibility\n")
+            for classifier in HOSTS:
+                target = native / classifier
+                target.mkdir()
+                (target / Path(HOSTS[classifier][4]).name).write_bytes(classifier.encode())
+            output = root / "output"
+            output.mkdir()
+            work = root / "work"
+            work.mkdir()
+
+            def fake_run(*command: str | Path, cwd: Path, env: dict[str, str]) -> None:
+                if "build" in command:
+                    deterministic_tar(
+                        cwd, output / "codex_agent-0.2.0.tar.gz", "codex_agent-0.2.0",
+                    )
+                    return
+                tag = str(command[command.index("--plat-name") + 1])
+                classifier = next(key for key, value in PYTHON_TAGS.items() if value == tag)
+                wheel_native = cwd / "src/codex_agent/native"
+                self.assertEqual(
+                    {classifier, "sdk-compatibility.json"},
+                    {path.name for path in wheel_native.iterdir()},
+                )
+                deterministic_zip(
+                    cwd / "src",
+                    output / f"codex_agent-0.2.0-py3-none-{tag}.whl",
+                    "",
+                )
+
+            with patch("native_wrappers.run", side_effect=fake_run):
+                package_python(source, output, work)
+
     def test_python_sdist_normalization_removes_archive_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -219,17 +303,19 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                         f"runtimes/{package_classifier}/native/{library.name}",
                         library.read_bytes(),
                     )
-                    for proof in ("manifest", "evidence"):
-                        name = f"codex-agent-c-abi-{proof}.json"
-                        (sdk / name).write_text(f"{proof}:{classifier}\n", encoding="utf-8")
-                        archive.writestr(
-                            f"runtimes/{package_classifier}/native/{name}",
-                            (sdk / name).read_bytes(),
-                        )
 
             require_embedded_native_assets(root / "packages", sdks, "0.2.0", ("csharp",))
             with zipfile.ZipFile(package) as source:
                 entries = {name: source.read(name) for name in source.namelist()}
+            for proof in ("manifest", "evidence"):
+                name = f"codex-agent-c-abi-{proof}.json"
+                entries[f"unrelated/{name}"] = b"forbidden"
+                with zipfile.ZipFile(package, "w") as archive:
+                    for entry, contents in entries.items():
+                        archive.writestr(entry, contents)
+                with self.assertRaisesRegex(ValueError, "forbidden raw C ABI proof"):
+                    require_embedded_native_assets(root / "packages", sdks, "0.2.0", ("csharp",))
+                del entries[f"unrelated/{name}"]
             entries["runtimes/osx-arm64/native/codex_agent.dll"] = b"extra-target"
             with zipfile.ZipFile(package, "w") as archive:
                 for name, contents in entries.items():
@@ -254,6 +340,8 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 members = {
                     "include/codex_agent.h": f"header:{classifier}".encode(),
                     HOSTS[classifier][4]: f"library:{classifier}".encode(),
+                    "LICENSE.txt": b"license\n",
+                    "THIRD_PARTY_NOTICES.md": b"notices\n",
                     "codex-agent-c-abi-manifest.json": f"manifest:{classifier}".encode(),
                     "codex-agent-c-abi-evidence.json": f"evidence:{classifier}".encode(),
                 }
@@ -271,13 +359,8 @@ class NativeWrapperReleaseTest(unittest.TestCase):
         def copy_target(sdks: Path, classifier: str, destination: Path) -> None:
             destination.mkdir(parents=True, exist_ok=True)
             sdk = sdks / classifier
-            for relative in (
-                HOSTS[classifier][4],
-                "codex-agent-c-abi-manifest.json",
-                "codex-agent-c-abi-evidence.json",
-            ):
-                target = destination / Path(relative).name
-                target.write_bytes((sdk / relative).read_bytes())
+            relative = HOSTS[classifier][4]
+            (destination / Path(relative).name).write_bytes((sdk / relative).read_bytes())
 
         def build_language(root: Path, language: str, sdks: Path) -> Path:
             packages = root / "packages"
@@ -344,14 +427,17 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                         target = source / relative
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_bytes((sdk / relative).read_bytes())
-                    proof = source / "share/CodexAgent/native"
-                    proof.mkdir(parents=True, exist_ok=True)
-                    (proof / "sdk-compatibility.json").write_bytes(compatibility)
-                    for name in (
-                        "codex-agent-c-abi-manifest.json",
-                        "codex-agent-c-abi-evidence.json",
-                    ):
-                        (proof / name).write_bytes((sdk / name).read_bytes())
+                    metadata = source / "share/CodexAgent/native"
+                    metadata.mkdir(parents=True, exist_ok=True)
+                    (metadata / "sdk-compatibility.json").write_bytes(compatibility)
+                    legal = source / "share/doc/CodexAgent/LICENSE.txt"
+                    legal.parent.mkdir(parents=True, exist_ok=True)
+                    legal.write_bytes((sdk / "LICENSE.txt").read_bytes())
+                    (legal.parent / "README.md").write_text("C++ wrapper\n", encoding="utf-8")
+                    loader = source / "share/CodexAgent/loader"
+                    loader.mkdir(parents=True, exist_ok=True)
+                    (loader / "native_loader.cpp").write_text("// loader\n", encoding="utf-8")
+                    (loader / "generate_native_dispatch.py").write_text("# generator\n", encoding="utf-8")
                     deterministic_zip(
                         source,
                         packages / f"cpp/codex-agent-cpp-0.2.0-{classifier}.zip",
@@ -367,6 +453,33 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 mutation = build_language(root, language, sdks)
                 require_embedded_native_assets(root / "packages", sdks, "0.2.0", (language,))
                 if language == "cpp":
+                    forbidden = root / "cpp-macos-arm64/share/CodexAgent/native/codex-agent-c-abi-evidence.json"
+                else:
+                    forbidden = mutation / "codex-agent-c-abi-evidence.json"
+                forbidden.write_bytes(b"forbidden")
+                build_language(root, language, sdks)
+                with self.assertRaisesRegex(ValueError, "forbidden raw C ABI proof"):
+                    require_embedded_native_assets(root / "packages", sdks, "0.2.0", (language,))
+                forbidden.unlink()
+                mutation = build_language(root, language, sdks)
+                if language == "cpp":
+                    for classifier, relative, pattern in (
+                        ("macos-arm64", "include/codex_agent.h", "native artifact differs"),
+                        ("windows-x64", "lib/codex_agent.lib", "native artifact differs"),
+                        ("macos-x64", "share/doc/CodexAgent/LICENSE.txt", "legal artifact differs"),
+                    ):
+                        with self.subTest(language=language, classifier=classifier, relative=relative):
+                            (root / f"cpp-{classifier}" / relative).write_bytes(b"tampered")
+                            deterministic_zip(
+                                root / f"cpp-{classifier}",
+                                root / f"packages/cpp/codex-agent-cpp-0.2.0-{classifier}.zip",
+                                f"codex-agent-cpp-0.2.0-{classifier}",
+                            )
+                            with self.assertRaisesRegex(ValueError, pattern):
+                                require_embedded_native_assets(
+                                    root / "packages", sdks, "0.2.0", (language,),
+                                )
+                            build_language(root, language, sdks)
                     mutation.write_bytes(b"tampered")
                     classifier = "linux-x64"
                     deterministic_zip(
@@ -484,6 +597,26 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 library = sdk / host[4]
                 library.parent.mkdir(parents=True)
                 library.write_bytes(f"library:{classifier}".encode())
+                for relative, contents in {
+                    "include/codex_agent.h": f"header:{classifier}".encode(),
+                    "LICENSE.txt": b"license\n",
+                    "THIRD_PARTY_NOTICES.md": b"notices\n",
+                }.items():
+                    path = sdk / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(contents)
+                if classifier.startswith("linux-"):
+                    soname = sdk / "lib/libcodex_agent.so.1"
+                    soname.parent.mkdir(parents=True, exist_ok=True)
+                    soname.write_bytes(f"soname:{classifier}".encode())
+                elif classifier == "windows-x64":
+                    for relative, contents in {
+                        "lib/libcodex_agent.dll.a": b"gnu-import",
+                        "lib/codex_agent.lib": b"msvc-import",
+                    }.items():
+                        path = sdk / relative
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(contents)
                 for proof in ("manifest", "evidence"):
                     (sdk / f"codex-agent-c-abi-{proof}.json").write_text(
                         f"{proof}:{classifier}\n", encoding="utf-8"
@@ -497,13 +630,10 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 for language, destination in roots.items():
                     destination.mkdir(parents=True)
                     shutil.copy2(library, destination / library.name)
-                    for proof in ("manifest", "evidence"):
-                        shutil.copy2(
-                            sdk / f"codex-agent-c-abi-{proof}.json",
-                            destination / f"codex-agent-c-abi-{proof}.json",
-                        )
                     language_roots[(language, classifier)] = destination
                 shutil.copytree(sdk, sources / f"cpp/native/{classifier}")
+                for proof in ("manifest", "evidence"):
+                    (sources / f"cpp/native/{classifier}/codex-agent-c-abi-{proof}.json").unlink()
                 language_roots[("C++", classifier)] = sources / f"cpp/native/{classifier}"
 
             product_digest = lambda value: "sha256:" + hashlib.sha256(value.encode()).hexdigest()
@@ -556,6 +686,17 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             require_prepared_native_assets(sources, sdks, "0.2.0")
             with self.assertRaisesRegex(ValueError, "compatibility version mismatch"):
                 require_prepared_native_assets(sources, sdks, "0.2.1")
+            staged_proof = sdks / "linux-x64/codex-agent-c-abi-evidence.json"
+            staged_proof_bytes = staged_proof.read_bytes()
+            staged_proof.unlink()
+            with self.assertRaisesRegex(ValueError, "staged raw C ABI proof"):
+                require_prepared_native_assets(sources, sdks, "0.2.0")
+            staged_proof.write_bytes(staged_proof_bytes)
+            forbidden = sources / "python/src/codex_agent/native/linux-x64/codex-agent-c-abi-manifest.json"
+            forbidden.write_bytes(b"forbidden")
+            with self.assertRaisesRegex(ValueError, "forbidden raw C ABI proof"):
+                require_prepared_native_assets(sources, sdks, "0.2.0")
+            forbidden.unlink()
             for (language, classifier), destination in language_roots.items():
                 target = next(path for path in destination.rglob("*") if path.is_file())
                 original = target.read_bytes()
@@ -784,6 +925,12 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             for node in ast.walk(functions["_consume"])
         ))
         self.assertIn("consumer_env.pop('CODEX_AGENT_LIBRARY', None)", consumer)
+        self.assertIn(
+            "reject_raw_c_abi_proofs(python_library.parents[2], 'Python')",
+            consumer,
+        )
+        self.assertEqual(5, consumer.count("require_matching_compatibility("))
+        self.assertEqual(5, consumer.count("reject_raw_c_abi_proofs("))
         for embedded, override in (
             (
                 "run(python, python_smoke, cwd=work, env=consumer_env)",
@@ -806,18 +953,10 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             self.assertIn(override, consumer)
         self.assertIn("'--', cwd=work, env=consumer_env)", consumer)
         self.assertIn("'--', csharp_library, cwd=work, env=consumer_env)", consumer)
-        self.assertEqual(
-            [
-                (f"../../native/**/codex-agent-c-abi-{proof}.json",
-                 "runtimes/%(RecursiveDir)native/%(Filename)%(Extension)")
-                for proof in ("manifest", "evidence")
-            ],
-            [
-                (item.get("Include"), item.get("PackagePath"))
-                for item in csharp_project.findall(".//None")
-                if "codex-agent-c-abi-" in item.get("Include", "")
-            ],
-        )
+        self.assertFalse(any(
+            "codex-agent-c-abi-" in item.get("Include", "")
+            for item in csharp_project.findall(".//None")
+        ))
         self.assertEqual(
             ["macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"],
             list(HOSTS),

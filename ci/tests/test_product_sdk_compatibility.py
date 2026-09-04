@@ -17,7 +17,7 @@ from ci.products.aggregate import (
     runtime_component_id,
     validate_sdk_compatibility,
 )
-from ci.products.c_abi import TARGET_SPECS
+from ci.products.c_abi import TARGET_SPECS, _json_bytes as c_abi_evidence_bytes
 from ci.products.contract import build_contract_bundle
 from ci.products.contract_attestation import build_contract_attestation
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
@@ -28,7 +28,7 @@ from ci.products.inventory import (
     sha256_bytes,
     write_canonical_json,
 )
-from ci.products.receipt import compute_build_key
+from ci.products.receipt import compute_build_key, write_output_manifest
 from ci.products import sdk_compatibility as sdk_compatibility_module
 from ci.products.sdk_compatibility import main, produce_sdk_compatibility
 from ci.products.signatures import generate_development_key
@@ -484,6 +484,86 @@ class Fixture:
 
 
 class SdkCompatibilityProducerTest(unittest.TestCase):
+    def test_imported_stages_keep_original_receipt_versions_and_producers(self) -> None:
+        # Receipt-bound stage verification unit fixture, not real target execution evidence.
+        from ci.tests.test_product_runtime_variant import _inputs, _receipt
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            target = "linux-x64"
+            receipts = {}
+            attestation = {"phaseReceipts": {}}
+            original = {}
+            for phase in ("package", "validation"):
+                stage = root / target / phase
+                payload = stage / "outputs/c-abi" / (
+                    "c-abi-package-linux-x64.json" if phase == "validation" else "native.zip"
+                )
+                payload.parent.mkdir(parents=True)
+                payload.write_bytes(c_abi_evidence_bytes({
+                    "producerCommit": "a" * 40, "producerTree": "b" * 40, "target": "linuxX64",
+                }) if phase == "validation" else b"deterministic package fixture\n")
+                manifest = write_output_manifest(
+                    stage, "runtime", target, phase, target, "0.2.7", {"c-abi": "outputs/c-abi"},
+                )
+                receipt = _receipt(phase, _inputs(phase, [], DIGEST_A), manifest["outputs"], "development")
+                receipts[phase] = root / f"{phase}-receipt.json"
+                write_canonical_json(receipts[phase], receipt)
+                original[phase] = receipts[phase].read_bytes()
+                attestation["phaseReceipts"][phase] = sha256_bytes(original[phase])
+
+            verify = lambda: sdk_compatibility_module._verify_runtime_stages(
+                root, target, receipts, attestation,
+            )
+            verify()  # No demand that original 0.2.7 receipts use current aggregate SemVer.
+            self.assertEqual(original, {phase: path.read_bytes() for phase, path in receipts.items()})
+
+            receipts["validation"].write_bytes(original["validation"].replace(b'"runId":1', b'"runId":2'))
+            with self.assertRaisesRegex(ValueError, "receipt changed"):
+                verify()
+            receipts["validation"].write_bytes(original["validation"])
+            proof = root / target / "validation/outputs/c-abi/c-abi-package-linux-x64.json"
+            proof.write_bytes(proof.read_bytes().replace(b"a" * 40, b"c" * 40))
+            with self.assertRaises(ValueError):
+                verify()  # Even a new self-consistent local manifest cannot replace signed outputs.
+            manifest = write_output_manifest(
+                proof.parents[2], "runtime", target, "validation", target, "0.2.7",
+                {"c-abi": "outputs/c-abi"},
+            )
+            with self.assertRaisesRegex(ValueError, "stage differs from authenticated receipt"):
+                verify()
+            receipt = load_canonical_json_bytes(original["validation"])
+            receipt["outputs"] = manifest["outputs"]
+            write_canonical_json(receipts["validation"], receipt)
+            attestation["phaseReceipts"]["validation"] = sha256_bytes(receipts["validation"].read_bytes())
+            with self.assertRaisesRegex(ValueError, "original producer mismatch"):
+                verify()  # Independently bind raw producer facts even with valid inventory hashes.
+
+    def test_cli_authenticates_requested_stages_before_emitting_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture = Fixture(root / "fixture")
+            stages = root / "runtime-stages"
+            for target in RUNTIME_TARGETS:
+                for phase in ("package", "validation"):
+                    (stages / target / phase).mkdir(parents=True)
+            request = root / "request.json"
+            write_canonical_json(request, fixture.request())
+            output = root / "sdk-compatibility.json"
+            with fixture.verifiers(), patch.object(
+                sdk_compatibility_module, "_verify_runtime_stages",
+                side_effect=ValueError("original stage receipt mismatch"),
+            ) as verifier, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as failure:
+                    main([
+                        "--request", str(request), "--output", str(output),
+                        "--runtime-stage-root", str(stages),
+                    ])
+                self.assertEqual(2, failure.exception.code)
+            verifier.assert_called_once()
+            self.assertEqual(stages, verifier.call_args.args[0])
+            self.assertFalse(output.exists())
+
     def produce(self, fixture: Fixture, output: Path, **changes: object) -> dict:
         arguments = fixture.arguments(output)
         arguments.update(changes)

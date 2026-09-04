@@ -40,8 +40,6 @@ if(CodexAgent_C_SDK_ROOT)
     foreach(required
         "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h"
         "${CodexAgent_C_SDK_LIBRARY}"
-        "${CodexAgent_C_SDK_ROOT}/codex-agent-c-abi-manifest.json"
-        "${CodexAgent_C_SDK_ROOT}/codex-agent-c-abi-evidence.json"
         "${CodexAgent_SDK_COMPATIBILITY}"
     )
         if(NOT EXISTS "${required}")
@@ -64,8 +62,6 @@ if(CodexAgent_C_SDK_ROOT)
     endif()
     file(SHA256 "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h" CODEX_AGENT_C_SDK_HEADER_SHA256)
     file(SHA256 "${CodexAgent_C_SDK_LIBRARY}" CODEX_AGENT_C_SDK_LIBRARY_SHA256)
-    file(SHA256 "${CodexAgent_C_SDK_ROOT}/codex-agent-c-abi-manifest.json" CODEX_AGENT_C_SDK_MANIFEST_SHA256)
-    file(SHA256 "${CodexAgent_C_SDK_ROOT}/codex-agent-c-abi-evidence.json" CODEX_AGENT_C_SDK_EVIDENCE_SHA256)
     file(SHA256 "${CodexAgent_SDK_COMPATIBILITY}" CODEX_AGENT_SDK_COMPATIBILITY_SHA256)
     if(CODEX_AGENT_C_SDK_SONAME)
         file(SHA256 "${CODEX_AGENT_C_SDK_SONAME}" CODEX_AGENT_C_SDK_SONAME_SHA256)
@@ -177,10 +173,7 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
         )
     endif()
     install(
-        FILES
-            "${CodexAgent_C_SDK_ROOT}/codex-agent-c-abi-manifest.json"
-            "${CodexAgent_C_SDK_ROOT}/codex-agent-c-abi-evidence.json"
-            "${CodexAgent_SDK_COMPATIBILITY}"
+        FILES "${CodexAgent_SDK_COMPATIBILITY}"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/native"
     )
     install(TARGETS CodexAgentLoader ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")

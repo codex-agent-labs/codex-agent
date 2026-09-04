@@ -309,6 +309,7 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
         val packageDirectory = root.resolve("packages")
         val packageArtifact = packageDirectory.resolve("package.nupkg")
         val hostEvidenceDirectory = root.resolve("host-evidence")
+        private val canonicalStagedCAbiSdks = root.resolve("canonical-staged-c-abi-sdks")
         val stagedCAbiSdks = root.resolve("staged-c-abi-sdks")
         val receipt = root.resolve("csharp-parity.json")
         val candidateCommit = "c".repeat(40)
@@ -354,50 +355,46 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
         }
 
         private fun writeStagedCAbiSdks() {
-            stagedCAbiSdks.deleteRecursively()
-            val targets = buildJsonArray {
-                crossLanguageCAbiTargetSpecs.toSortedMap().forEach { (target, spec) ->
-                    val classifier = spec.classifier.removePrefix("c-abi-")
-                    val targetRoot = stagedCAbiSdks.resolve(classifier)
-                    val library = targetRoot.resolve(spec.libraryPath).also { it.parentFile.mkdirs() }
-                    val manifest = targetRoot.resolve("codex-agent-c-abi-manifest.json")
-                    val evidence = targetRoot.resolve("codex-agent-c-abi-evidence.json")
-                    library.writeText("native-$classifier")
-                    targetRoot.resolve("include/codex_agent.h").apply {
-                        parentFile.mkdirs()
-                        writeText("header-$classifier")
+            if (!canonicalStagedCAbiSdks.isDirectory) {
+                val fixture = CrossLanguageCAbiPackageEvidenceTest.Fixture()
+                try {
+                    val version = CrossLanguageCAbiPackageEvidenceTest.Fixture.VERSION
+                    val archives = linkedMapOf<String, File>()
+                    val evidence = linkedMapOf<String, File>()
+                    crossLanguageCAbiTargetSpecs.values.forEach { spec ->
+                        val archive = fixture.root.resolve(
+                            crossLanguageCAbiArchiveFileName(version, spec.target),
+                        )
+                        val snapshot = fixture.packageArchive(spec, archive)
+                        val proof = fixture.root.resolve(
+                            crossLanguageCAbiPackageEvidenceFileName(spec.target),
+                        )
+                        fixture.writeEvidence(spec, archive, snapshot, proof)
+                        archives[spec.target] = archive
+                        evidence[spec.target] = proof
                     }
-                    targetRoot.resolve("LICENSE.txt").writeText("license-$classifier")
-                    targetRoot.resolve("THIRD_PARTY_NOTICES.md").writeText("notice-$classifier")
-                    if (spec.format == "elf") {
-                        targetRoot.resolve("lib/${spec.loaderIdentity}").writeText("native-$classifier")
-                    }
-                    spec.importLibraryPaths.forEach { path ->
-                        targetRoot.resolve(path).apply {
-                            parentFile.mkdirs()
-                            writeText("import-$classifier-$path")
-                        }
-                    }
-                    manifest.writeText("manifest-$classifier")
-                    evidence.writeText("evidence-$classifier")
-                    add(buildJsonObject {
-                        put("target", JsonPrimitive(target))
-                        put("classifier", JsonPrimitive(classifier))
-                        put("archiveSha256", JsonPrimitive("a".repeat(64)))
-                        put("evidenceSha256", JsonPrimitive(evidence.releaseDigest()))
-                        put("libraryPath", JsonPrimitive(spec.libraryPath))
-                        put("librarySha256", JsonPrimitive(library.releaseDigest()))
-                        put("manifestSha256", JsonPrimitive(manifest.releaseDigest()))
-                    })
+                    stageCrossLanguageNativeWrapperSdks(
+                        CrossLanguageNativeWrapperSdkInput(
+                            version,
+                            version,
+                            version,
+                            candidateCommit,
+                            candidateTree,
+                            fixture.sdkCompatibility(),
+                            archives,
+                            evidence,
+                            crossLanguageCAbiTargetSpecs.mapValues { (_, spec) -> fixture.reference(spec) },
+                        ),
+                        canonicalStagedCAbiSdks,
+                    )
+                } finally {
+                    fixture.root.deleteRecursively()
                 }
             }
-            stagedCAbiSdks.resolve("codex-agent-native-wrapper-sdks.json").atomicWriteJson(buildJsonObject {
-                put("schemaVersion", JsonPrimitive(1))
-                put("libraryVersion", JsonPrimitive("1.0.0"))
-                put("producerCommit", JsonPrimitive(candidateCommit))
-                put("producerTree", JsonPrimitive(candidateTree))
-                put("targets", targets)
-            })
+            stagedCAbiSdks.deleteRecursively()
+            check(canonicalStagedCAbiSdks.copyRecursively(stagedCAbiSdks)) {
+                "could not restore canonical staged C ABI SDK fixture"
+            }
         }
 
         private fun writeHostEvidence() {

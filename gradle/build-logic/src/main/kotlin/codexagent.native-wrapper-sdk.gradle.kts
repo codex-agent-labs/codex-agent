@@ -21,24 +21,14 @@ val nativeWrapperSdkCompatibilityRequest = providers.gradleProperty(
 val nativeWrapperRuntimeSnapshotRoot = layout.buildDirectory.dir(
     nativeWrapperCandidateTree.map { "imported-native-wrapper-runtime-stages/$it" },
 )
-val nativeWrapperRuntimeManifestTaskNames = linkedMapOf(
-    ("macos-arm64" to "package") to "verifyImportedNativeWrapperMacosArm64RuntimePackageOutputManifest",
-    ("macos-arm64" to "validation") to "verifyImportedNativeWrapperMacosArm64RuntimeValidationOutputManifest",
-    ("macos-x64" to "package") to "verifyImportedNativeWrapperMacosX64RuntimePackageOutputManifest",
-    ("macos-x64" to "validation") to "verifyImportedNativeWrapperMacosX64RuntimeValidationOutputManifest",
-    ("linux-arm64" to "package") to "verifyImportedNativeWrapperLinuxArm64RuntimePackageOutputManifest",
-    ("linux-arm64" to "validation") to "verifyImportedNativeWrapperLinuxArm64RuntimeValidationOutputManifest",
-    ("linux-x64" to "package") to "verifyImportedNativeWrapperLinuxX64RuntimePackageOutputManifest",
-    ("linux-x64" to "validation") to "verifyImportedNativeWrapperLinuxX64RuntimeValidationOutputManifest",
-    ("windows-x64" to "package") to "verifyImportedNativeWrapperWindowsX64RuntimePackageOutputManifest",
-    ("windows-x64" to "validation") to "verifyImportedNativeWrapperWindowsX64RuntimeValidationOutputManifest",
-)
 val invalidateNativeWrapperProductPhaseOutputs = tasks.register<Delete>(
     "invalidateNativeWrapperProductPhaseOutputs",
 ) {
     group = "verification"
     description = "Deletes stale native-wrapper SDK outputs before imported Runtime verification."
     delete(nativeWrapperRuntimeSnapshotRoot)
+    delete(layout.buildDirectory.dir(nativeWrapperCandidateTree.map { "native-wrapper-c-abi-sdks/$it" }))
+    delete(layout.buildDirectory.dir(nativeWrapperCandidateTree.map { "native-wrapper-package-assets/$it" }))
 }
 val snapshotImportedNativeWrapperRuntimeStages =
     tasks.register<SnapshotImportedNativeWrapperRuntimeStagesTask>(
@@ -52,22 +42,6 @@ val snapshotImportedNativeWrapperRuntimeStages =
         producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
         repositoryRoot.set(rootProject.layout.projectDirectory)
     }
-val nativeWrapperRuntimeManifestVerifiers = nativeWrapperRuntimeManifestTaskNames.map { (identity, taskName) ->
-    val (component, productPhase) = identity
-    tasks.register<VerifyImportedProductOutputManifestTask>(taskName) {
-        group = "verification"
-        description = "Verifies the imported $component Runtime $productPhase stage for SDK wrappers."
-        dependsOn(snapshotImportedNativeWrapperRuntimeStages)
-        product.set("runtime")
-        this.component.set(component)
-        phase.set(productPhase)
-        target.set(component)
-        productVersion.set(nativeWrapperRuntimeVersion)
-        stageRoot.set(nativeWrapperRuntimeSnapshotRoot.map { it.dir("$component/$productPhase") })
-        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-    }
-}
 val generateNativeWrapperSdkCompatibility =
     tasks.register<GenerateNativeWrapperSdkCompatibilityTask>(
         "generateNativeWrapperSdkCompatibility",
@@ -158,11 +132,12 @@ val stageNativeWrapperCAbiSdks = tasks.register<StageCrossLanguageNativeWrapperS
 ) {
     group = "distribution"
     description = "Verifies and stages five imported Runtime C ABI SDKs for SDK-owned native wrappers."
-    dependsOn(nativeWrapperRuntimeManifestVerifiers, generateNativeWrapperSdkCompatibility)
+    dependsOn(snapshotImportedNativeWrapperRuntimeStages, generateNativeWrapperSdkCompatibility)
     libraryVersion.set(nativeWrapperRuntimeCompatibilityVersion)
     runtimeProductVersion.set(nativeWrapperRuntimeVersion)
     sdkVersion.set(nativeWrapperSdkVersion)
     sdkCompatibility.set(generateNativeWrapperSdkCompatibility.flatMap { it.outputFile })
+    compatibilityRequest.set(layout.file(nativeWrapperSdkCompatibilityRequest))
     producerCommit.set(nativeWrapperCandidateCommit)
     producerTree.set(nativeWrapperCandidateTree)
     runtimeStageRoot.set(nativeWrapperRuntimeSnapshotRoot)

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import copy
 import contextlib
+from dataclasses import replace
 import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -470,16 +472,115 @@ class ProductCAbiTest(unittest.TestCase):
                         self.assertEqual(zipfile.ZIP_DEFLATED, info.compress_type)
                         self.assertEqual(3, info.create_system)
                         self.assertEqual(C_ABI_FILE_MODE, (info.external_attr >> 16) & 0xFFFF)
-                    manifest = json.loads(archive.read(C_ABI_PACKAGE_MANIFEST))
+                    manifest_bytes = archive.read(C_ABI_PACKAGE_MANIFEST)
+                    manifest = json.loads(manifest_bytes)
+                self.assertEqual(canonical_json_bytes(manifest), manifest_bytes)
                 self.assertEqual(
                     {
-                        "schemaVersion", "libraryVersion", "target", "classifier", "producerCommit",
-                        "producerTree", "abiCurrent", "abiMinimum", "abiEncoded", "publicSymbolCount",
-                        "publicSymbolsSha256", "exportPolicySha256", "members",
+                        "schemaVersion", "libraryVersion", "target", "classifier", "abiCurrent",
+                        "abiMinimum", "abiEncoded", "publicSymbolCount", "publicSymbolsSha256",
+                        "exportPolicySha256", "members",
                     },
                     set(manifest),
                 )
+                self.assertEqual(2, manifest["schemaVersion"])
                 self.assertEqual(C_ABI_SYMBOL_COUNT, manifest["publicSymbolCount"])
+                self.assertRegex(manifest["publicSymbolsSha256"], r"^sha256:[0-9a-f]{64}$")
+                self.assertRegex(manifest["exportPolicySha256"], r"^sha256:[0-9a-f]{64}$")
+                self.assertTrue(all(
+                    re.fullmatch(r"sha256:[0-9a-f]{64}", member["sha256"])
+                    for member in manifest["members"]
+                ))
+
+    def test_package_bytes_exclude_producer_but_external_evidence_retains_it(self) -> None:
+        first_input = self._package_input("linuxX64")
+        second_input = self._replace_input(
+            first_input,
+            producer_commit="c" * 40,
+            producer_tree="d" * 40,
+        )
+        first_archive = self.root / "first-producer.zip"
+        second_archive = self.root / "second-producer.zip"
+        first_snapshot = package_c_abi_sdk(first_input, first_archive)
+        second_snapshot = package_c_abi_sdk(second_input, second_archive)
+
+        self.assertEqual(first_archive.read_bytes(), second_archive.read_bytes())
+        self.assertEqual(first_snapshot, second_snapshot)
+        self.assertEqual(first_snapshot, inspect_c_abi_package(first_archive, second_input))
+
+        first_values = self._evidence_values("linuxX64", first_snapshot)
+        second_values = replace(
+            first_values,
+            producer_commit=second_input.producer_commit,
+            producer_tree=second_input.producer_tree,
+        )
+        first_report = build_c_abi_package_evidence(first_values)
+        second_report = build_c_abi_package_evidence(second_values)
+        self.assertNotEqual(first_report, second_report)
+        self.assertEqual("a" * 40, first_report["producerCommit"])
+        self.assertEqual("b" * 40, first_report["producerTree"])
+        self.assertEqual("c" * 40, second_report["producerCommit"])
+        self.assertEqual("d" * 40, second_report["producerTree"])
+
+        spec = TARGET_SPECS["linuxX64"]
+        verify_c_abi_package_evidence(
+            second_report,
+            second_archive,
+            second_input,
+            spec.runner_os,
+            spec.runner_arch,
+            self.consumer_digests,
+        )
+        with self.assertRaisesRegex(ValueError, "evidence producer identity mismatch"):
+            verify_c_abi_package_evidence(
+                first_report,
+                second_archive,
+                second_input,
+                spec.runner_os,
+                spec.runner_arch,
+                self.consumer_digests,
+            )
+
+        with zipfile.ZipFile(first_archive) as archive:
+            old_manifest = json.loads(archive.read(C_ABI_PACKAGE_MANIFEST))
+
+        noncanonical_archive = self.root / "noncanonical-schema-2.zip"
+        self._rewrite_zip(
+            first_archive,
+            noncanonical_archive,
+            mutate={
+                C_ABI_PACKAGE_MANIFEST: json.dumps(old_manifest, indent=4).encode("utf-8") + b"\n",
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "package bytes are not canonical"):
+            inspect_c_abi_package(noncanonical_archive, first_input)
+
+        bare_digest_manifest = copy.deepcopy(old_manifest)
+        bare_digest_manifest["publicSymbolsSha256"] = bare_digest_manifest[
+            "publicSymbolsSha256"
+        ].removeprefix("sha256:")
+        bare_digest_archive = self.root / "bare-manifest-digest.zip"
+        self._rewrite_zip(
+            first_archive,
+            bare_digest_archive,
+            mutate={C_ABI_PACKAGE_MANIFEST: canonical_json_bytes(bare_digest_manifest)},
+        )
+        with self.assertRaisesRegex(ValueError, "public symbol identity mismatch"):
+            inspect_c_abi_package(bare_digest_archive, first_input)
+
+        old_manifest.update({
+            "schemaVersion": 1,
+            "producerCommit": first_input.producer_commit,
+            "producerTree": first_input.producer_tree,
+        })
+        old_archive = self.root / "producer-bearing-schema-1.zip"
+        self._rewrite_zip(
+            first_archive,
+            old_archive,
+            mutate={C_ABI_PACKAGE_MANIFEST: canonical_json_bytes(old_manifest)},
+        )
+        with self.assertRaisesRegex(ValueError, "package manifest schema mismatch"):
+            inspect_c_abi_package(old_archive, first_input)
 
     def test_symbol_version_and_package_input_contracts_fail_closed(self) -> None:
         policy = self._export_policy("linuxX64")

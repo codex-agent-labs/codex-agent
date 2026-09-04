@@ -24,38 +24,14 @@ class NativeWrapperProductPhaseArtifactGraphTest {
         assertTrue("providers.gradleProperty(\"codexAgent.nativeWrapperRuntimeStageRoot\")" in seam)
         assertTrue(".map(::file)" in seam)
         assertTrue("snapshotImportedNativeWrapperRuntimeStages" in seam)
-        assertTrue("dependsOn(snapshotImportedNativeWrapperRuntimeStages)" in seam)
+        assertTrue("dependsOn(snapshotImportedNativeWrapperRuntimeStages, generateNativeWrapperSdkCompatibility)" in seam)
         assertFalse(".orElse(" in seam, "Imported native-wrapper Runtime stages must not fall back locally")
         listOf(
-            "macos-arm64" to "MacosArm64",
-            "macos-x64" to "MacosX64",
-            "linux-arm64" to "LinuxArm64",
-            "linux-x64" to "LinuxX64",
-            "windows-x64" to "WindowsX64",
-        ).forEach { (component, title) ->
-            assertTrue("(\"$component\" to \"package\")" in seam, component)
-            assertTrue("(\"$component\" to \"validation\")" in seam, component)
-            for (phase in listOf("Package", "Validation")) {
-                assertTrue(
-                    "verifyImportedNativeWrapper${title}Runtime${phase}OutputManifest" in seam,
-                    "$component/$phase",
-                )
-            }
-        }
-        assertEquals(
-            1,
-            Regex("tasks\\.register<VerifyImportedProductOutputManifestTask>")
-                .findAll(seam.substringBefore("val sdkMavenPackageSpecs =")).count(),
-        )
-        assertEquals(10, Regex("to \"verifyImportedNativeWrapper").findAll(seam).count())
-        assertTrue("nativeWrapperRuntimeManifestTaskNames.map" in seam)
-        listOf(
-            "product.set(\"runtime\")",
-            "phase.set(productPhase)",
-            "productVersion.set(nativeWrapperRuntimeVersion)",
             "stageNativeWrapperCAbiSdks",
-            "dependsOn(nativeWrapperRuntimeManifestVerifiers, generateNativeWrapperSdkCompatibility)",
+            "compatibilityRequest.set(layout.file(nativeWrapperSdkCompatibilityRequest))",
         ).forEach { contract -> assertTrue(contract in seam, contract) }
+        assertFalse("productVersion.set(nativeWrapperRuntimeVersion)" in seam,
+            "Original phase versions must come from authenticated receipts, not current aggregate")
         assertTrue("runtimeProductVersion.set(nativeWrapperRuntimeVersion)" in seam)
         assertTrue("nativeWrapperRuntimeVersion.map(::runtimeCompatibilityVersion)" in seam)
         val privateSnapshot = nativeWrapperTasks.substringAfter("fun stage() {")
@@ -64,7 +40,9 @@ class NativeWrapperProductPhaseArtifactGraphTest {
         val verification = privateSnapshot.indexOf("verifyRuntimeStageManifests(")
         val consumption = privateSnapshot.indexOf("stageCrossLanguageNativeWrapperSdks(")
         assertTrue(snapshot >= 0 && snapshot < verification && verification < consumption)
-        assertTrue("verify-output-manifest" in nativeWrapperTasks)
+        assertTrue("\"ci.products.sdk_compatibility\"" in nativeWrapperTasks)
+        assertTrue("\"--runtime-stage-root\"" in nativeWrapperTasks)
+        assertTrue("verifiedCompatibility.readBytes().contentEquals(expectedCompatibility.readBytes())" in nativeWrapperTasks)
         assertEquals(1, Regex("private fun verifyRuntimeStageManifests").findAll(nativeWrapperTasks).count())
         listOf(
             "cAbiArchiveFiles",
@@ -171,15 +149,7 @@ class NativeWrapperProductPhaseArtifactGraphTest {
                 .toSet()
 
             manifestTasks.forEach { assertTrue(it in paths, it) }
-            listOf(
-                "MacosArm64", "MacosX64", "LinuxArm64", "LinuxX64", "WindowsX64",
-            ).forEach { title ->
-                for (phase in listOf("Package", "Validation")) {
-                    val verifier =
-                        ":codex-agent-sdk:verifyImportedNativeWrapper${title}Runtime${phase}OutputManifest"
-                    assertTrue(verifier in paths, verifier)
-                }
-            }
+            assertTrue(":codex-agent-sdk:generateNativeWrapperSdkCompatibility" in paths)
             listOf("Python", "CSharp", "Rust", "Cpp", "Dart").forEach { title ->
                 assertTrue(":codex-agent-sdk:prepare${title}NativeWrapperPackageSource" in paths)
                 assertTrue(":codex-agent-sdk:stage${title}NativeWrapperSdkPackagePhase" in paths)

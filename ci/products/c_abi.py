@@ -1386,20 +1386,25 @@ def _package_manifest(
 ) -> dict[str, Any]:
     contract = _repository_contract()
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "libraryVersion": package_input.library_version,
         "target": package_input.target,
         "classifier": package_input.classifier,
-        "producerCommit": package_input.producer_commit,
-        "producerTree": package_input.producer_tree,
         "abiCurrent": contract.current.line,
         "abiMinimum": contract.minimum_compatible.line,
         "abiEncoded": contract.current.encoded_hex,
         "publicSymbolCount": len(symbols),
-        "publicSymbolsSha256": _sorted_newline_sha256(symbols),
-        "exportPolicySha256": _sha256(_regular_bytes(package_input.export_policy, "C ABI export policy")),
+        "publicSymbolsSha256": f"sha256:{_sorted_newline_sha256(symbols)}",
+        "exportPolicySha256": (
+            f"sha256:{_sha256(_regular_bytes(package_input.export_policy, 'C ABI export policy'))}"
+        ),
         "members": [
-            {"path": member.path, "role": member.role, "bytes": len(member.contents), "sha256": member.sha256}
+            {
+                "path": member.path,
+                "role": member.role,
+                "bytes": len(member.contents),
+                "sha256": f"sha256:{member.sha256}",
+            }
             for member in payload
         ],
     }
@@ -1412,7 +1417,10 @@ def _write_package(
     payload: list[_PackageMember],
 ) -> None:
     members = [(member.path, member.contents) for member in payload]
-    members.append((C_ABI_PACKAGE_MANIFEST, _json_bytes(_package_manifest(package_input, symbols, payload))))
+    members.append((
+        C_ABI_PACKAGE_MANIFEST,
+        canonical_json_bytes(_package_manifest(package_input, symbols, payload)),
+    ))
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path, contents in sorted(members):
             info = zipfile.ZipInfo(path, C_ABI_ZIP_EPOCH)
@@ -1432,20 +1440,17 @@ def _verify_package_manifest(
 ) -> None:
     contract = _repository_contract()
     keys = {
-        "schemaVersion", "libraryVersion", "target", "classifier", "producerCommit", "producerTree",
-        "abiCurrent", "abiMinimum", "abiEncoded", "publicSymbolCount", "publicSymbolsSha256",
-        "exportPolicySha256", "members",
+        "schemaVersion", "libraryVersion", "target", "classifier", "abiCurrent", "abiMinimum",
+        "abiEncoded", "publicSymbolCount", "publicSymbolsSha256", "exportPolicySha256", "members",
     }
-    if type(manifest) is not dict or set(manifest) != keys or _strict_int(manifest, "schemaVersion") != 1:
+    if type(manifest) is not dict or set(manifest) != keys or _strict_int(manifest, "schemaVersion") != 2:
         raise ValueError("C ABI package manifest schema mismatch")
     if (
         _strict_string(manifest, "libraryVersion") != expected.library_version
         or _strict_string(manifest, "target") != spec.target
         or _strict_string(manifest, "classifier") != spec.classifier
-        or _strict_string(manifest, "producerCommit") != expected.producer_commit
-        or _strict_string(manifest, "producerTree") != expected.producer_tree
     ):
-        raise ValueError("C ABI package manifest producer identity mismatch")
+        raise ValueError("C ABI package manifest product identity mismatch")
     if (
         _strict_string(manifest, "abiCurrent") != contract.current.line
         or _strict_string(manifest, "abiMinimum") != contract.minimum_compatible.line
@@ -1454,9 +1459,9 @@ def _verify_package_manifest(
         raise ValueError("C ABI package manifest ABI version mismatch")
     if (
         _strict_int(manifest, "publicSymbolCount") != len(_repository_symbol_set())
-        or _strict_string(manifest, "publicSymbolsSha256") != _sorted_newline_sha256(symbols)
+        or _strict_string(manifest, "publicSymbolsSha256") != f"sha256:{_sorted_newline_sha256(symbols)}"
         or _strict_string(manifest, "exportPolicySha256")
-        != _sha256(_regular_bytes(expected.export_policy, "C ABI export policy"))
+        != f"sha256:{_sha256(_regular_bytes(expected.export_policy, 'C ABI export policy'))}"
     ):
         raise ValueError("C ABI package manifest public symbol identity mismatch")
     records = _strict_array(manifest, "members")
@@ -1467,7 +1472,12 @@ def _verify_package_manifest(
         path = _strict_string(value, "path")
         if not _safe_path(path):
             raise ValueError(f"Unsafe C ABI manifest member: {path}")
-        parsed.append((path, _strict_string(value, "role"), _strict_int(value, "bytes"), _strict_sha(value, "sha256")))
+        parsed.append((
+            path,
+            _strict_string(value, "role"),
+            _strict_int(value, "bytes"),
+            _strict_string(value, "sha256"),
+        ))
     expected_by_path = {member.path: member for member in payload}
     if (
         [record[0] for record in parsed] != sorted(expected_by_path)
@@ -1475,7 +1485,7 @@ def _verify_package_manifest(
         or any(
             role != expected_by_path[path].role
             or size != len(expected_by_path[path].contents)
-            or digest != digests[path]
+            or digest != f"sha256:{digests[path]}"
             for path, role, size, digest in parsed
         )
     ):

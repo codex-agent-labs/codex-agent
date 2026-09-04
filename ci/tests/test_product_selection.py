@@ -109,6 +109,24 @@ class ProductSelectionTest(unittest.TestCase):
             for component_name in {"sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript"}
         ))
 
+    def test_native_staging_helpers_select_packages_but_proof_matchers_only_validation(self) -> None:
+        for name in (
+            "CrossLanguageNativeWrapperSdkStaging.kt",
+            "CrossLanguageNativeWrapperGradleTasks.kt",
+            "CrossLanguageCAbiClient.kt",
+            "CrossLanguageNativeWrapperBindingEvidence.kt",
+        ):
+            with self.subTest(name=name):
+                selected = identities(classify_paths([f"gradle/build-logic/src/main/kotlin/{name}"]))
+                self.assertEqual({"sdk"}, {instance.product for instance in selected})
+                self.assertEqual(set(NATIVE_BINDINGS), {instance.component for instance in selected})
+                phases = {"validation", "metadata"}
+                if name != "CrossLanguageNativeWrapperBindingEvidence.kt":
+                    phases.add("package")
+                for binding in NATIVE_BINDINGS:
+                    self.assertEqual(phases, {instance.phase for instance in selected
+                                              if instance.component == binding})
+
     def test_current_runtime_version_does_not_select_mobile_sdk_products(self) -> None:
         selected = identities(classify_paths(["gradle/release/versions/runtime.txt"]))
         self.assertEqual(

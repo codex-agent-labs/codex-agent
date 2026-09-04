@@ -16,6 +16,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.gradle.api.tasks.CacheableTask
+import org.gradle.work.DisableCachingByDefault
 
 class CrossLanguageCAbiPackageEvidenceTest {
     private val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
@@ -187,15 +188,14 @@ class CrossLanguageCAbiPackageEvidenceTest {
                 packageAssets.resolve("dart/lib/src/native/$classifier"),
             ).forEach { destination ->
                 assertTrue(fixture.library(spec).readBytes().contentEquals(destination.resolve(libraryName).readBytes()))
-                assertEquals(
-                    evidence.getValue(spec.target).readBytes().toList(),
-                    destination.resolve("codex-agent-c-abi-evidence.json").readBytes().toList(),
-                )
+                assertFalse(destination.resolve("codex-agent-c-abi-evidence.json").exists())
+                assertFalse(destination.resolve(C_ABI_PACKAGE_MANIFEST).exists())
             }
             val cppSdk = packageAssets.resolve("cpp/native/$classifier")
             assertEquals(expectedLibrary, cppSdk.resolve(spec.libraryPath).releaseDigest())
             assertTrue(cppSdk.resolve(C_ABI_HEADER_PATH).isFile)
-            assertTrue(cppSdk.resolve(C_ABI_PACKAGE_MANIFEST).isFile)
+            assertFalse(cppSdk.resolve(C_ABI_PACKAGE_MANIFEST).exists())
+            assertFalse(cppSdk.resolve("codex-agent-c-abi-evidence.json").exists())
             assertEquals(
                 fixture.sdkCompatibility().readBytes().toList(),
                 cppSdk.resolve("share/CodexAgent/native/sdk-compatibility.json").readBytes().toList(),
@@ -212,10 +212,29 @@ class CrossLanguageCAbiPackageEvidenceTest {
                 packageAssets.resolve(path).readBytes().toList(),
             )
         }
+        assertFalse(packageAssets.resolve("codex-agent-native-wrapper-sdks.json").exists())
+        val originalProofs = evidence.mapValues { it.value.readBytes().toList() }
+        val mixedEvidence = evidence.mapValues { (target, file) ->
+            fixture.root.resolve("mixed-$target.json").apply {
+                writeText(file.readText()
+                    .replace(Fixture.COMMIT, digest(target).take(40))
+                    .replace(Fixture.TREE, digest("tree:$target").take(40)))
+            }
+        }
+        val mixedStage = fixture.root.resolve("mixed-wrapper-sdks")
+        stageCrossLanguageNativeWrapperSdks(input.copy(evidence = mixedEvidence), mixedStage)
+        val mixedIndex = readCrossLanguageNativeWrapperSdkIndex(mixedStage)
+        mixedIndex.records.forEach { (target, record) ->
+            assertEquals(digest(target).take(40), record.producerCommit)
+            assertEquals(digest("tree:$target").take(40), record.producerTree)
+        }
+        val mixedAssets = fixture.root.resolve("mixed-package-assets")
+        materializeCrossLanguageNativeWrapperPackageAssets(mixedStage, mixedAssets)
         assertEquals(
-            staged.resolve("codex-agent-native-wrapper-sdks.json").readBytes().toList(),
-            packageAssets.resolve("codex-agent-native-wrapper-sdks.json").readBytes().toList(),
+            verifiedRegularFiles(packageAssets).mapValues { it.value.releaseDigest() },
+            verifiedRegularFiles(mixedAssets).mapValues { it.value.releaseDigest() },
         )
+        assertEquals(originalProofs, evidence.mapValues { it.value.readBytes().toList() })
     }
 
     @Test
@@ -291,8 +310,8 @@ class CrossLanguageCAbiPackageEvidenceTest {
     }
 
     @Test
-    fun `SDK Gradle tasks remain cacheable`() {
-        assertNotNull(StageCrossLanguageNativeWrapperSdksTask::class.java.getAnnotation(CacheableTask::class.java))
+    fun `SDK trust staging reruns while deterministic materialization remains cacheable`() {
+        assertNotNull(StageCrossLanguageNativeWrapperSdksTask::class.java.getAnnotation(DisableCachingByDefault::class.java))
         assertNotNull(
             MaterializeCrossLanguageNativeWrapperPackageAssetsTask::class.java.getAnnotation(CacheableTask::class.java),
         )

@@ -58,6 +58,10 @@ PACKAGE_CLASSIFIERS = {
     "windows-x64": "win-x64",
 }
 FIXED_TIME = 315532800
+FORBIDDEN_C_ABI_PROOFS = {
+    "codex-agent-c-abi-manifest.json",
+    "codex-agent-c-abi-evidence.json",
+}
 
 
 def run(*command: str | Path, cwd: Path, env: dict[str, str] | None = None) -> None:
@@ -189,14 +193,21 @@ def require_matching_native(root: Path, pattern: str, sdk_library: Path, languag
     return native.resolve()
 
 
-def require_matching_proofs(package_root: Path, sdk_root: Path, language: str) -> None:
-    for name in ("codex-agent-c-abi-manifest.json", "codex-agent-c-abi-evidence.json"):
-        package_file = package_root / name
-        sdk_file = sdk_root / name
-        if (not package_file.is_file() or package_file.is_symlink() or
-                not sdk_file.is_file() or sdk_file.is_symlink() or
-                sha256(package_file) != sha256(sdk_file)):
-            raise ValueError(f"{language} installed package {name} does not match the verified SDK")
+def reject_raw_c_abi_proofs(root: Path, language: str) -> None:
+    forbidden = [path for path in files(root) if path.name in FORBIDDEN_C_ABI_PROOFS]
+    if forbidden:
+        raise ValueError(f"{language} package contains forbidden raw C ABI proof: {forbidden[0].name}")
+
+
+def require_matching_compatibility(
+    root: Path,
+    pattern: str,
+    expected: Path,
+    language: str,
+) -> None:
+    declaration = require_one(root, pattern)
+    if declaration.read_bytes() != expected.read_bytes():
+        raise ValueError(f"{language} installed SDK compatibility does not match the verified SDK")
 
 
 def normalize_python_sdist(package: Path, work: Path) -> None:
@@ -227,7 +238,7 @@ def package_python(source: Path, output: Path, work: Path) -> None:
         shutil.copytree(all_source, wheel_source)
         native = wheel_source / "src/codex_agent/native"
         for child in native.iterdir():
-            if child.name != classifier:
+            if child.name not in {classifier, "sdk-compatibility.json"}:
                 shutil.rmtree(child)
         run(
             sys.executable, "setup.py", "bdist_wheel", "--python-tag", "py3",
@@ -239,8 +250,12 @@ def package_python(source: Path, output: Path, work: Path) -> None:
     for classifier, tag in PYTHON_TAGS.items():
         wheel = require_one(output, f"*-{tag}.whl")
         with zipfile.ZipFile(wheel) as archive:
-            native = {name.split("/native/", 1)[1].split("/", 1)[0]
-                      for name in archive.namelist() if "/native/" in name}
+            native = {
+                relative.split("/", 1)[0]
+                for name in archive.namelist()
+                if "/native/" in name
+                and "/" in (relative := name.split("/native/", 1)[1])
+            }
         if native != {classifier}:
             raise ValueError(f"Python wheel native inventory mismatch: {classifier}")
 
@@ -437,6 +452,7 @@ def require_prepared_native_assets(
         if "sdk-compatibility.json" in regular_files and \
                 entries["sdk-compatibility.json"].read_bytes() != compatibility_bytes:
             raise ValueError(f"prepared SDK compatibility bytes differ: {parent}")
+        reject_raw_c_abi_proofs(parent, language)
     for classifier, host in HOSTS.items():
         sdk = sdks / classifier
         if not sdk.is_dir() or sdk.is_symlink():
@@ -444,6 +460,11 @@ def require_prepared_native_assets(
         library = sdk / host[4]
         if not library.is_file() or library.is_symlink():
             raise ValueError(f"missing staged native library: {classifier}")
+        if any(
+            not (sdk / proof).is_file() or (sdk / proof).is_symlink()
+            for proof in FORBIDDEN_C_ABI_PROOFS
+        ):
+            raise ValueError(f"missing or symbolic staged raw C ABI proof: {classifier}")
         if f"sha256:{sha256(library)}" != embedded[classifier]["runtimeLibrarySha256"]:
             raise ValueError(f"staged native library disagrees with SDK compatibility: {classifier}")
         package_classifier = PACKAGE_CLASSIFIERS[classifier]
@@ -453,11 +474,7 @@ def require_prepared_native_assets(
             "Rust": sources / f"rust/native/{package_classifier}",
             "Dart": sources / f"dart/lib/src/native/{classifier}",
         }
-        expected = {
-            library.name,
-            "codex-agent-c-abi-manifest.json",
-            "codex-agent-c-abi-evidence.json",
-        }
+        expected = {library.name}
         for language, root in roots.items():
             if language.lower().replace("#", "sharp") not in languages:
                 continue
@@ -465,7 +482,6 @@ def require_prepared_native_assets(
             if inventory != expected:
                 raise ValueError(f"{language} prepared native inventory mismatch: {classifier}")
             require_matching_native(root, library.name, library, language)
-            require_matching_proofs(root, sdk, language)
         if "cpp" not in languages:
             continue
         cpp = sources / f"cpp/native/{classifier}"
@@ -473,9 +489,12 @@ def require_prepared_native_assets(
         if not cpp_compatibility.is_file() or cpp_compatibility.is_symlink() or \
                 cpp_compatibility.read_bytes() != compatibility_bytes:
             raise ValueError(f"C++ SDK compatibility bytes differ: {classifier}")
-        if package_inventory(cpp) != package_inventory(sdk) + [
-            ("share/CodexAgent/native/sdk-compatibility.json", sha256(cpp_compatibility)),
-        ]:
+        expected_cpp = {
+            path: digest for path, digest in package_inventory(sdk)
+            if Path(path).name not in FORBIDDEN_C_ABI_PROOFS
+        }
+        expected_cpp["share/CodexAgent/native/sdk-compatibility.json"] = sha256(cpp_compatibility)
+        if dict(package_inventory(cpp)) != expected_cpp:
             raise ValueError(f"C++ prepared native inventory mismatch: {classifier}")
 
 
@@ -826,7 +845,6 @@ def require_embedded_native_assets(
     languages: tuple[str, ...] = LANGUAGES,
 ) -> None:
     version_value = require_semver(sdk_version, "SDK version")
-    proof_names = {"codex-agent-c-abi-manifest.json", "codex-agent-c-abi-evidence.json"}
 
     def require_inventory(directory: Path, expected: set[str], language: str) -> None:
         actual = {path.relative_to(directory).as_posix() for path in files(directory)}
@@ -834,7 +852,7 @@ def require_embedded_native_assets(
             raise ValueError(f"{language} package native target inventory mismatch")
 
     def target_files(prefix: str, classifier: str) -> set[str]:
-        return {f"{prefix}/{name}" for name in proof_names | {Path(HOSTS[classifier][4]).name}}
+        return {f"{prefix}/{Path(HOSTS[classifier][4]).name}"}
 
     def root(extracted: Path, archive: Path) -> Path:
         roots = list(extracted.iterdir())
@@ -846,16 +864,13 @@ def require_embedded_native_assets(
         package_target: Path,
         classifier: str,
         language: str,
-        library_relative: str | None = None,
-        proof_root: Path | None = None,
     ) -> None:
         sdk = sdks / classifier
         sdk_library = sdk / HOSTS[classifier][4]
-        packaged_library = package_target / (library_relative or sdk_library.name)
+        packaged_library = package_target / sdk_library.name
         if (not packaged_library.is_file() or packaged_library.is_symlink() or
                 sha256(packaged_library) != sha256(sdk_library)):
             raise ValueError(f"{language} package native library differs: {classifier}")
-        require_matching_proofs(proof_root or package_target, sdk, language)
 
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-assets-") as temporary:
         work = Path(temporary)
@@ -864,6 +879,7 @@ def require_embedded_native_assets(
             sdist = python / f"codex_agent-{version_value}.tar.gz"
             extracted = work / "python-sdist"
             safe_extract_tar(sdist, extracted)
+            reject_raw_c_abi_proofs(extracted, "Python")
             native = root(extracted, sdist) / "src/codex_agent/native"
             require_inventory(
                 native,
@@ -878,6 +894,7 @@ def require_embedded_native_assets(
                 wheel = python / f"codex_agent-{version_value}-py3-none-{tag}.whl"
                 extracted = work / f"python-{classifier}"
                 safe_extract_zip(wheel, extracted)
+                reject_raw_c_abi_proofs(extracted, "Python")
                 native = extracted / "codex_agent/native"
                 require_inventory(
                     native,
@@ -889,6 +906,7 @@ def require_embedded_native_assets(
             archive = packages / "csharp" / f"CodexAgent.{version_value}.nupkg"
             extracted = work / "csharp"
             safe_extract_zip(archive, extracted)
+            reject_raw_c_abi_proofs(extracted, "C#")
             require_inventory(
                 extracted / "runtimes",
                 {
@@ -904,6 +922,7 @@ def require_embedded_native_assets(
             archive = packages / "rust" / f"codex-agent-{version_value}.crate"
             extracted = work / "rust"
             safe_extract_tar(archive, extracted)
+            reject_raw_c_abi_proofs(extracted, "Rust")
             native = root(extracted, archive) / "native"
             require_inventory(
                 native,
@@ -920,6 +939,7 @@ def require_embedded_native_assets(
             archive = packages / "dart" / f"codex-agent-dart-{version_value}.tar.gz"
             extracted = work / "dart"
             safe_extract_tar(archive, extracted)
+            reject_raw_c_abi_proofs(extracted, "Dart")
             native = root(extracted, archive) / "lib/src/native"
             require_inventory(
                 native,
@@ -935,11 +955,22 @@ def require_embedded_native_assets(
                 archive = packages / "cpp" / f"codex-agent-cpp-{version_value}-{classifier}.zip"
                 extracted = work / f"cpp-{classifier}"
                 safe_extract_zip(archive, extracted)
+                reject_raw_c_abi_proofs(extracted, "C++")
                 package = root(extracted, archive)
-                proof_root = package / "share/CodexAgent/native"
+                metadata_root = package / "share/CodexAgent/native"
                 require_inventory(
-                    proof_root,
-                    proof_names | {"sdk-compatibility.json"},
+                    metadata_root,
+                    {"sdk-compatibility.json"},
+                    "C++",
+                )
+                require_inventory(
+                    package / "share/CodexAgent/loader",
+                    {"native_loader.cpp", "generate_native_dispatch.py"},
+                    "C++",
+                )
+                require_inventory(
+                    package / "share/doc/CodexAgent",
+                    {"README.md", "LICENSE.txt"},
                     "C++",
                 )
                 expected_native = {"include/codex_agent.h", HOSTS[classifier][4]}
@@ -962,10 +993,12 @@ def require_embedded_native_assets(
                     if (not packaged.is_file() or packaged.is_symlink() or not staged.is_file() or
                             staged.is_symlink() or sha256(packaged) != sha256(staged)):
                         raise ValueError(f"C++ package native artifact differs: {classifier}/{relative}")
-                verify_target(
-                    package, classifier, "C++", HOSTS[classifier][4],
-                    proof_root,
-                )
+                packaged_license = package / "share/doc/CodexAgent/LICENSE.txt"
+                staged_license = sdks / classifier / "LICENSE.txt"
+                if (not packaged_license.is_file() or packaged_license.is_symlink() or
+                        not staged_license.is_file() or staged_license.is_symlink() or
+                        sha256(packaged_license) != sha256(staged_license)):
+                    raise ValueError(f"C++ package legal artifact differs: {classifier}/LICENSE.txt")
 
 
 def set_consumer_sdk_version(csharp: Path, rust: Path, dart: Path, sdk_version: str) -> None:
@@ -1035,6 +1068,12 @@ def _consume(
     sdk_library = (sdks / classifier / HOSTS[classifier][4]).resolve()
     if not sdk_library.is_file() or sdk_library.is_symlink():
         raise ValueError(f"missing matching-host SDK: {sdk_library}")
+    sdk_compatibility = sdks / "sdk-compatibility.json"
+    if not sdk_compatibility.is_file() or sdk_compatibility.is_symlink():
+        raise ValueError(f"missing SDK compatibility declaration: {sdk_compatibility}")
+    compatibility = validate_sdk_compatibility(load_canonical_json_bytes(sdk_compatibility.read_bytes()))
+    if compatibility["sdkVersion"] != sdk_version:
+        raise ValueError("installed consumer SDK compatibility version mismatch")
     clean_output(output)
     selected = select_packages(packages, classifier, sdk_version)
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-consumer-") as temporary:
@@ -1075,7 +1114,10 @@ def _consume(
         python_library = require_matching_native(
             venv, f"**/codex_agent/native/{classifier}/{native_name}", sdk_library, "Python",
         )
-        require_matching_proofs(python_library.parent, sdks / classifier, "Python")
+        require_matching_compatibility(
+            venv, "**/codex_agent/native/sdk-compatibility.json", sdk_compatibility, "Python",
+        )
+        reject_raw_c_abi_proofs(python_library.parents[2], "Python")
         run(python, python_smoke, cwd=work, env=consumer_env)
         run(python, python_smoke, python_library, cwd=work, env=consumer_env)
         run_expect_failure(python, python_smoke, native_name, cwd=work, env=consumer_env)
@@ -1103,7 +1145,10 @@ def _consume(
             sdk_library,
             "C#",
         )
-        require_matching_proofs(csharp_library.parent, sdks / classifier, "C#")
+        require_matching_compatibility(
+            cache, "**/META-INF/codex-agent/sdk-compatibility.json", sdk_compatibility, "C#",
+        )
+        reject_raw_c_abi_proofs(cache, "C#")
         run(
             "dotnet", "run", "--project", csharp_consumer / "CodexAgent.Consumer.csproj",
             "--configuration", "Release", "--no-build", "--", cwd=work, env=consumer_env,
@@ -1144,7 +1189,10 @@ def _consume(
             sdk_library,
             "Rust",
         )
-        require_matching_proofs(rust_library.parent, sdks / classifier, "Rust")
+        require_matching_compatibility(
+            rust_package, "native/sdk-compatibility.json", sdk_compatibility, "Rust",
+        )
+        reject_raw_c_abi_proofs(rust_package, "Rust")
         rust_command = (
             "cargo", "run", "--manifest-path", cargo_toml, "--release", "--locked", "--offline",
             "--bin", "codex-agent-rust-host-smoke", "--",
@@ -1185,9 +1233,10 @@ def _consume(
         cpp_library = require_matching_native(
             cpp_prefix, HOSTS[classifier][4], sdk_library, "C++",
         )
-        require_matching_proofs(
-            cpp_prefix / "share/CodexAgent/native", sdks / classifier, "C++",
+        require_matching_compatibility(
+            cpp_prefix, "share/CodexAgent/native/sdk-compatibility.json", sdk_compatibility, "C++",
         )
+        reject_raw_c_abi_proofs(cpp_prefix, "C++")
         cpp_env = consumer_env.copy()
         run(executable(cpp_build, "codex_agent_host_smoke"), cwd=work, env=cpp_env)
         run(executable(cpp_build, "codex_agent_host_smoke"), cpp_library, cwd=work, env=cpp_env)
@@ -1211,7 +1260,10 @@ def _consume(
             sdk_library,
             "Dart",
         )
-        require_matching_proofs(dart_library.parent, sdks / classifier, "Dart")
+        require_matching_compatibility(
+            dart_package, "lib/src/native/sdk-compatibility.json", sdk_compatibility, "Dart",
+        )
+        reject_raw_c_abi_proofs(dart_package, "Dart")
         run("dart", "run", "bin/host_smoke.dart", cwd=dart_consumer, env=consumer_env)
         run(
             "dart", "run", "bin/host_smoke.dart", dart_library,

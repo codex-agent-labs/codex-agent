@@ -11,9 +11,18 @@ import zipfile
 
 import ci.products.runtime_variant as runtime_variant_module
 from ci.products.aggregate import validate_runtime_variant
+from ci.products.c_abi import (
+    C_ABI_CONTRACT,
+    C_ABI_PACKAGE_MANIFEST,
+    C_ABI_SYMBOL_COUNT,
+    TARGET_SPECS as C_ABI_TARGETS,
+    CAbiPackageInput,
+    package_c_abi_sdk,
+)
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
+    load_json_bytes,
     sha256_bytes,
     sha256_file,
     verified_zip_contents,
@@ -134,20 +143,63 @@ def _write_zip(path: Path, members: dict[str, bytes]) -> None:
 
 
 class Fixture:
-    def __init__(self, root: Path, private_key: Path, public_key: Path, signing: dict):
+    def __init__(
+        self,
+        root: Path,
+        private_key: Path,
+        public_key: Path,
+        signing: dict,
+        *,
+        c_abi_producer_commit: str = "a" * 40,
+        c_abi_producer_tree: str = "b" * 40,
+    ):
         self.root = root
         root.mkdir()
         self.private_key = private_key
         self.public_key = public_key
         self.signing = signing
-        self.header = b"reviewed C header\n"
+        symbols = tuple(f"codex_agent_symbol_{index:03d}" for index in range(C_ABI_SYMBOL_COUNT))
+        self.header = "".join(f"int {symbol}(void);\n" for symbol in symbols).encode()
         self.app_binary = b"exact app server binary\n"
         self.c_abi = root / "codex-agent-c.zip"
         self.app_server = root / "codex-agent-runtime-desktop-0.2.0-app-server-linux-x64.zip"
-        _write_zip(self.c_abi, {
-            "include/codex_agent.h": self.header,
-            "lib/libcodex_agent.so": b"runtime library\n",
-        })
+        c_abi_inputs = root / "c-abi-inputs"
+        c_abi_inputs.mkdir()
+        reviewed_header = c_abi_inputs / "codex_agent.h"
+        reviewed_header.write_bytes(self.header)
+        library = c_abi_inputs / "libcodex_agent.so"
+        library.write_bytes(b"runtime library\n")
+        license_path = c_abi_inputs / "LICENSE.txt"
+        license_path.write_bytes(b"license\n")
+        notice_path = c_abi_inputs / "THIRD_PARTY_NOTICES.md"
+        notice_path.write_bytes(b"notice\n")
+        export_policy = c_abi_inputs / "exports.map"
+        node_count = C_ABI_CONTRACT.current.minor - C_ABI_CONTRACT.minimum_compatible.minor + 1
+        export_policy.write_text("".join(
+            f"CODEX_AGENT_{C_ABI_CONTRACT.current.major}.{minor} {{\n    global:\n"
+            + "".join(
+                f"        {symbol};\n"
+                for index, symbol in enumerate(symbols)
+                if index % node_count == minor - C_ABI_CONTRACT.minimum_compatible.minor
+            )
+            + "};\n"
+            for minor in range(
+                C_ABI_CONTRACT.minimum_compatible.minor,
+                C_ABI_CONTRACT.current.minor + 1,
+            )
+        ), encoding="utf-8")
+        package_c_abi_sdk(CAbiPackageInput(
+            target="linuxX64",
+            classifier=C_ABI_TARGETS["linuxX64"].classifier,
+            library_version=COMPATIBILITY_VERSION,
+            producer_commit=c_abi_producer_commit,
+            producer_tree=c_abi_producer_tree,
+            reviewed_header=reviewed_header,
+            license=license_path,
+            notice=notice_path,
+            library=library,
+            export_policy=export_policy,
+        ), self.c_abi)
         self.supervisor = b"supervisor\n"
         classifier_payload = {
             "codex-app-server": self.app_binary,
@@ -256,6 +308,8 @@ class Fixture:
             "package", _inputs("package", [_reference(self.receipts["binary"])], self.toolchain),
             package_outputs, signing["trustDomain"],
         )
+        self.receipts["package"]["producer"]["commit"] = c_abi_producer_commit
+        self.receipts["package"]["producer"]["tree"] = c_abi_producer_tree
         self.receipts["validation"] = _receipt(
             "validation",
             _inputs("validation", [_reference(self.receipts["package"])], self.toolchain),
@@ -381,6 +435,11 @@ class RuntimeVariantProducerTest(unittest.TestCase):
             )
             self.assertTrue(records)
             self.assertEqual(first.c_abi.read_bytes(), contents["c-abi/codex-agent-c.zip"])
+            with zipfile.ZipFile(io.BytesIO(contents["c-abi/codex-agent-c.zip"])) as c_abi:
+                c_abi_manifest = load_json_bytes(c_abi.read(C_ABI_PACKAGE_MANIFEST))
+            self.assertEqual(2, c_abi_manifest["schemaVersion"])
+            self.assertNotIn("producerCommit", c_abi_manifest)
+            self.assertNotIn("producerTree", c_abi_manifest)
             self.assertEqual(
                 first.app_server.read_bytes(), contents["app-server/codex-app-server.zip"],
             )
@@ -770,7 +829,14 @@ class RuntimeVariantProducerTest(unittest.TestCase):
             first_key, first_public, first_signing = generate_development_key(root / "first-key")
             second_key, second_public, second_signing = generate_development_key(root / "second-key")
             first = Fixture(root / "first", first_key, first_public, first_signing)
-            second = Fixture(root / "second", second_key, second_public, second_signing)
+            second = Fixture(
+                root / "second",
+                second_key,
+                second_public,
+                second_signing,
+                c_abi_producer_commit="2" * 40,
+                c_abi_producer_tree="5" * 40,
+            )
             for index, phase in enumerate(("binary", "package", "validation"), start=1):
                 receipt = copy.deepcopy(second.receipts[phase])
                 receipt["productVersion"] = f"0.2.{index + 7}"
@@ -788,6 +854,27 @@ class RuntimeVariantProducerTest(unittest.TestCase):
                     selected["bytes"] = second.validation.stat().st_size
                     selected["sha256"] = sha256_file(second.validation)
                 write_canonical_json(second.receipt_paths[phase], receipt)
+            first_originals = {
+                **{phase: path.read_bytes() for phase, path in first.receipt_paths.items()},
+                "evidence": first.validation.read_bytes(),
+            }
+            second_originals = {
+                **{phase: path.read_bytes() for phase, path in second.receipt_paths.items()},
+                "evidence": second.validation.read_bytes(),
+            }
+            self.assertEqual(first.c_abi.read_bytes(), second.c_abi.read_bytes())
+            self.assertNotEqual(first_originals["package"], second_originals["package"])
+            self.assertNotEqual(first_originals["evidence"], second_originals["evidence"])
+            first_package = load_canonical_json_bytes(first_originals["package"])
+            second_package = load_canonical_json_bytes(second_originals["package"])
+            self.assertEqual(
+                ("a" * 40, "b" * 40),
+                (first_package["producer"]["commit"], first_package["producer"]["tree"]),
+            )
+            self.assertEqual(
+                ("2" * 40, "5" * 40),
+                (second_package["producer"]["commit"], second_package["producer"]["tree"]),
+            )
             first_result = produce_runtime_variant(**first.arguments())
             second_result = produce_runtime_variant(**second.arguments())
             self.assertEqual(
@@ -812,6 +899,14 @@ class RuntimeVariantProducerTest(unittest.TestCase):
             self.assertNotEqual(first_value, second_value)
             self.assertNotEqual(first_value["phaseReceipts"], second_value["phaseReceipts"])
             self.assertNotEqual(first_value["signing"], second_value["signing"])
+            self.assertEqual(first_originals, {
+                **{phase: path.read_bytes() for phase, path in first.receipt_paths.items()},
+                "evidence": first.validation.read_bytes(),
+            })
+            self.assertEqual(second_originals, {
+                **{phase: path.read_bytes() for phase, path in second.receipt_paths.items()},
+                "evidence": second.validation.read_bytes(),
+            })
 
     def test_attestation_payload_receipt_evidence_signature_and_cross_pair_tamper(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

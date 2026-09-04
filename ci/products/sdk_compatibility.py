@@ -19,9 +19,11 @@ from .contract_attestation import verify_contract_attestation
 from .inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
+    load_json_bytes,
     read_regular_file_bytes,
     require_exact_keys,
     require_integer,
+    require_regular_directory,
     require_string,
     sha256_bytes,
     verified_zip_contents,
@@ -34,6 +36,7 @@ from .index import (
 )
 from .runtime_attestation import verify_runtime_variant_attestation
 from .runtime_aggregate import verify_runtime_aggregate_attestation
+from .receipt import validate_phase_receipt, verify_output_manifest_identity
 
 
 _JSON_LIMIT = 16 * 1024 * 1024
@@ -66,6 +69,7 @@ def _variant_record(
     required_trust_domain: str,
     runtime_keyring: Path | None,
     runtime_keys_directory: Path | None,
+    runtime_stage_root: Path | None = None,
 ) -> dict[str, Any]:
     aggregate_record = next(record for record in aggregate["variants"] if record["target"] == target)
     expected_name = (
@@ -102,6 +106,8 @@ def _variant_record(
         raise ValueError(
             f"Runtime variant differs from the authenticated aggregate attestation: {target}"
         )
+    if runtime_stage_root is not None:
+        _verify_runtime_stages(runtime_stage_root, target, phase_receipts, variant_attestation)
     c_abi = next(
         artifact for artifact in variant["innerArtifacts"] if artifact["role"] == "c-abi-archive"
     )
@@ -184,6 +190,50 @@ def _variant_record(
     }
 
 
+def _verify_runtime_stages(
+    root: Path,
+    target: str,
+    phase_receipts: dict[str, Path],
+    authenticated_attestation: dict[str, Any],
+) -> None:
+    """Bind imported raw stages to the already-authenticated original receipts."""
+    for phase in ("package", "validation"):
+        receipt_bytes = read_regular_file_bytes(
+            phase_receipts[phase], max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
+        )
+        if sha256_bytes(receipt_bytes) != authenticated_attestation["phaseReceipts"][phase]:
+            raise ValueError(f"Runtime original {phase} receipt changed: {target}")
+        receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+        if (receipt["product"], receipt["component"], receipt["phase"], receipt["target"]) != (
+            "runtime", target, phase, target,
+        ):
+            raise ValueError(f"Runtime original {phase} receipt identity mismatch: {target}")
+        stage = root / target / phase
+        manifest = verify_output_manifest_identity(
+            stage, "runtime", target, phase, target, receipt["productVersion"],
+        )
+        if manifest["outputs"] != receipt["outputs"]:
+            raise ValueError(f"Runtime {phase} stage differs from authenticated receipt: {target}")
+        if phase == "validation":
+            spec = next(spec for spec in TARGET_SPECS.values()
+                        if spec.classifier.removeprefix("c-abi-") == target)
+            proof_path = f"outputs/c-abi/c-abi-package-{target}.json"
+            if not any(output["kind"] == "c-abi" and output["relativePath"] == proof_path
+                       for output in receipt["outputs"]):
+                raise ValueError(f"Runtime C ABI evidence output identity mismatch: {target}")
+            # Raw C ABI evidence retains its original legacy encoding. Its exact
+            # bytes are receipt-bound; portable-verify checks its full semantics.
+            proof = load_json_bytes(read_regular_file_bytes(
+                stage / proof_path,
+                max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
+            ))
+            if (type(proof) is not dict
+                    or proof.get("producerCommit") != receipt["producer"]["commit"]
+                    or proof.get("producerTree") != receipt["producer"]["tree"]
+                    or proof.get("target") != spec.target):
+                raise ValueError(f"Runtime C ABI evidence original producer mismatch: {target}")
+
+
 def produce_sdk_compatibility(
     *,
     sdk_version: str,
@@ -210,8 +260,17 @@ def produce_sdk_compatibility(
     contract_keys_directory: Path | None = None,
     runtime_keyring: Path | None = None,
     runtime_keys_directory: Path | None = None,
+    runtime_stage_root: Path | None = None,
 ) -> dict[str, Any]:
     """Verify the selected embedded products and emit one canonical declaration."""
+    if runtime_stage_root is not None:
+        runtime_stage_root = require_regular_directory(runtime_stage_root, "Runtime stage root")
+        if {entry.name for entry in runtime_stage_root.iterdir()} != set(RUNTIME_TARGETS):
+            raise ValueError("Runtime stage root requires exactly five targets")
+        for target in RUNTIME_TARGETS:
+            stage = require_regular_directory(runtime_stage_root / target, "Runtime target stage")
+            if {entry.name for entry in stage.iterdir()} != {"package", "validation"}:
+                raise ValueError(f"Runtime stage phase inventory mismatch: {target}")
     if required_trust_domain not in {"development", "release"}:
         raise ValueError("SDK compatibility trust domain is invalid")
     optional_pairs = (
@@ -312,6 +371,7 @@ def produce_sdk_compatibility(
                     required_trust_domain=required_trust_domain,
                     runtime_keyring=runtime_keyring,
                     runtime_keys_directory=runtime_keys_directory,
+                    runtime_stage_root=runtime_stage_root,
                 )
                 for target in sorted(RUNTIME_TARGETS)
             ],
@@ -383,6 +443,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m ci.products.sdk_compatibility")
     parser.add_argument("--request", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--runtime-stage-root")
     arguments = parser.parse_args(argv)
     try:
         request_path = Path(arguments.request)
@@ -528,6 +589,8 @@ def main(argv: list[str] | None = None) -> int:
                 "SDK compatibility request.requiredTrustDomain",
             ),
             output=Path(arguments.output),
+            runtime_stage_root=(Path(arguments.runtime_stage_root)
+                                if arguments.runtime_stage_root else None),
             contract_keyring=(
                 _request_path(
                     request["contractKeyring"],

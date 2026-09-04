@@ -101,7 +101,7 @@ private fun requireExactRuntimeStageTree(destinationRoot: File) {
     }
 }
 
-@CacheableTask
+@DisableCachingByDefault(because = "Original Runtime receipts and external attestations must be authenticated on every invocation")
 abstract class StageCrossLanguageNativeWrapperSdksTask @Inject constructor(
     private val processes: ExecOperations,
 ) : DefaultTask() {
@@ -110,11 +110,13 @@ abstract class StageCrossLanguageNativeWrapperSdksTask @Inject constructor(
     @get:Input abstract val sdkVersion: Property<String>
     @get:Input abstract val producerCommit: Property<String>
     @get:Input abstract val producerTree: Property<String>
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val compatibilityRequest: RegularFileProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val runtimeStageRoot: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val sdkCompatibility: RegularFileProperty
-    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:Internal abstract val outputDirectory: DirectoryProperty
     @get:Input abstract val pythonExecutable: Property<String>
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val producerSources: ConfigurableFileCollection
@@ -140,7 +142,9 @@ abstract class StageCrossLanguageNativeWrapperSdksTask @Inject constructor(
                 pythonExecutable.get(),
                 repositoryRoot.get().asFile,
                 stageRoot,
-                runtimeProductVersion.get(),
+                compatibilityRequest.get().asFile,
+                sdkCompatibility.get().asFile,
+                temporary.resolve("sdk-compatibility.json"),
             )
             stageCrossLanguageNativeWrapperSdks(nativeWrapperSdkInput(stageRoot), outputDirectory.get().asFile)
         } finally {
@@ -187,24 +191,23 @@ private fun verifyRuntimeStageManifests(
     pythonExecutable: String,
     repositoryRoot: File,
     stageRoot: File,
-    productVersion: String,
+    compatibilityRequest: File,
+    expectedCompatibility: File,
+    verifiedCompatibility: File,
 ) {
-    listOf("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64").forEach { component ->
-        listOf("package", "validation").forEach { phase ->
-            processes.exec {
-                workingDir(repositoryRoot)
-                environment("PYTHONDONTWRITEBYTECODE", "1")
-                commandLine(
-                    pythonExecutable, "-m", "ci.products", "receipt", "verify-output-manifest",
-                    "--root", stageRoot.resolve("$component/$phase").absolutePath,
-                    "--product", "runtime",
-                    "--component", component,
-                    "--phase", phase,
-                    "--target", component,
-                    "--product-version", productVersion,
-                )
-            }
-        }
+    processes.exec {
+        workingDir(repositoryRoot)
+        environment("PYTHONDONTWRITEBYTECODE", "1")
+        commandLine(
+            pythonExecutable, "-m", "ci.products.sdk_compatibility",
+            "--request", compatibilityRequest.absolutePath,
+            "--output", verifiedCompatibility.absolutePath,
+            "--runtime-stage-root", stageRoot.absolutePath,
+        )
+    }
+    check(regularCAbiFile(verifiedCompatibility) && regularCAbiFile(expectedCompatibility) &&
+        verifiedCompatibility.readBytes().contentEquals(expectedCompatibility.readBytes())) {
+        "Authenticated Runtime stages disagree with the selected SDK compatibility declaration"
     }
 }
 

@@ -54,8 +54,6 @@ def main() -> int:
         members = (
             Path("include/codex_agent.h"),
             Path(arguments.library),
-            Path("share/CodexAgent/native/codex-agent-c-abi-evidence.json"),
-            Path("share/CodexAgent/native/codex-agent-c-abi-manifest.json"),
             Path("share/CodexAgent/native/sdk-compatibility.json"),
         )
         for index, member in enumerate(members):
