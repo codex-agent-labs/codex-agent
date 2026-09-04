@@ -35,6 +35,13 @@ from .receipt import (
     validate_producer,
     verify_output_manifest,
 )
+from .registry import PhaseInstanceId
+from .restore import (
+    PHASE_RECEIPT_NAME,
+    object_relative_path,
+    restore_object,
+    verify_carrier,
+)
 from .signatures import validate_signing_metadata, verify_manifest_signature
 from .runtime_attestation import (
     derive_desktop_validation_projection,
@@ -353,6 +360,59 @@ def verify_repository_evidence(
     }
     write_canonical_json(output_path, report)
     return report
+
+
+def verify_repository_carrier(
+    *,
+    carrier: Any,
+    expected_instances: Any,
+    consumer: Any,
+    contract_version: Any,
+    runtime_version: Any,
+    sdk_version: Any,
+    trust_domain: Any,
+    output: Any,
+) -> dict[str, Any]:
+    output_path = _invalidate_repository_report(output, (carrier,))
+    carrier_root = _repository_evidence_root(carrier, "Product carrier directory")
+    verified = verify_carrier(carrier_root, expected_instances, consumer)
+    terminal = {
+        PhaseInstanceId(product, component, phase, target): product
+        for product, (component, phase, target) in REPOSITORY_EVIDENCE_IDENTITIES.items()
+    }
+    objects = {
+        PhaseInstanceId(record["product"], record["component"], record["phase"], record["target"]): record
+        for record in verified["objects"]
+    }
+    if not terminal.keys() <= objects.keys():
+        raise ValueError("Product carrier lacks the exact repository terminal phases")
+
+    with tempfile.TemporaryDirectory(prefix="codex-agent-repository-carrier-") as temporary:
+        roots = {}
+        for instance, product in terminal.items():
+            record = objects[instance]
+            root = Path(temporary).resolve() / product
+            restored = restore_object(
+                carrier_root / object_relative_path(record["buildKey"], record["receiptSha256"]),
+                root / "outputs",
+                build_key=record["buildKey"],
+                receipt_sha256=record["receiptSha256"],
+                object_sha256=record["objectSha256"],
+            )
+            if restored["receiptBytes"] != record["receiptBytes"]:
+                raise ValueError("Product carrier terminal receipt changed during restore")
+            (root / PHASE_RECEIPT_NAME).write_bytes(restored["receiptBytes"])
+            roots[product] = root
+        return verify_repository_evidence(
+            contract_evidence=roots["contract"],
+            runtime_evidence=roots["runtime"],
+            sdk_evidence=roots["sdk"],
+            contract_version=contract_version,
+            runtime_version=runtime_version,
+            sdk_version=sdk_version,
+            trust_domain=trust_domain,
+            output=output_path,
+        )
 
 
 def _stable_semver_tuple(value: Any, label: str) -> tuple[int, int, int]:

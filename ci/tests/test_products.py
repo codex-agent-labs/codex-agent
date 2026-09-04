@@ -31,6 +31,7 @@ from ci.products.aggregate import (
     validate_sdk_compatibility,
     verify_contract_bundle,
     verify_immutable_product_indexes,
+    verify_repository_carrier,
     verify_repository_evidence,
     verify_runtime_aggregate_artifacts,
 )
@@ -64,6 +65,8 @@ from ci.products.runtime_attestation import (
 )
 from ci.products.runtime_evidence import build_desktop_evidence, imported_desktop_test_task
 from ci.products.runtime_identity import derive_runtime_identity
+from ci.products.registry import PhaseInstanceId
+from ci.products.restore import object_relative_path, store_local_object, write_carrier
 from ci.products.signatures import (
     ALGORITHM,
     NAMESPACE,
@@ -1204,6 +1207,106 @@ class ProductReceiptTest(unittest.TestCase):
                 output=root / "release.json",
             )
             self.assertEqual("release", release["trustDomain"])
+
+    def test_repository_carrier_restores_exact_terminal_receipts_before_aggregation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            versions, directories, receipts = repository_evidence_fixture(root / "evidence")
+            cache = root / "cache"
+            consumer = {
+                "kind": "local",
+                "repository": "codex-agent-labs/codex-agent",
+                "commit": COMMIT,
+                "tree": TREE,
+            }
+            instances = tuple(sorted(
+                PhaseInstanceId(
+                    receipt["product"], receipt["component"], receipt["phase"], receipt["target"],
+                )
+                for receipt in receipts.values()
+            ))
+            sources = {}
+            phases = []
+            for instance in instances:
+                directory = directories[instance.product]
+                stored = store_local_object(
+                    directory / "outputs", directory / "phase-receipt.json", cache,
+                )
+                sources[instance] = stored["path"]
+                phases.append({
+                    "product": instance.product,
+                    "component": instance.component,
+                    "phase": instance.phase,
+                    "target": instance.target,
+                    "buildKey": stored["buildKey"],
+                    "state": "reused",
+                    "source": "local",
+                    "transportSource": {
+                        "kind": "local",
+                        "cacheRelativePath": object_relative_path(
+                            stored["buildKey"], stored["receiptSha256"],
+                        ),
+                    },
+                    "receiptSha256": stored["receiptSha256"],
+                    "objectSha256": stored["objectSha256"],
+                    "misses": [],
+                })
+            carrier = root / "carrier"
+            write_carrier(carrier, {
+                "schemaVersion": 1,
+                "result": "complete",
+                "fullReuse": True,
+                "phases": phases,
+                "matrices": {"contract": [], "runtime": [], "sdk": []},
+            }, instances, sources, consumer)
+
+            report = root / "repository.json"
+            result = verify_repository_carrier(
+                carrier=carrier,
+                expected_instances=instances,
+                consumer=consumer,
+                contract_version=versions["contract"],
+                runtime_version=versions["runtime"],
+                sdk_version=versions["sdk"],
+                trust_domain="development",
+                output=report,
+            )
+            self.assertEqual(["contract", "runtime", "sdk"], [
+                product["product"] for product in result["products"]
+            ])
+            self.assertEqual(result, load_canonical_json(report))
+
+            report.write_text("stale passed report\n")
+            (carrier / "carrier.json").write_bytes(b"{}\n")
+            with self.assertRaises(ValueError):
+                verify_repository_carrier(
+                    carrier=carrier,
+                    expected_instances=instances,
+                    consumer=consumer,
+                    contract_version=versions["contract"],
+                    runtime_version=versions["runtime"],
+                    sdk_version=versions["sdk"],
+                    trust_domain="development",
+                    output=report,
+                )
+            self.assertFalse(report.exists())
+
+            for unsafe in (root / "missing-carrier", root / "linked-carrier"):
+                if unsafe.name == "linked-carrier":
+                    unsafe.symlink_to(carrier, target_is_directory=True)
+                report.write_text("stale passed report\n")
+                with self.assertRaises(ValueError):
+                    verify_repository_carrier(
+                        carrier=unsafe,
+                        expected_instances=instances,
+                        consumer=consumer,
+                        contract_version=versions["contract"],
+                        runtime_version=versions["runtime"],
+                        sdk_version=versions["sdk"],
+                        trust_domain="development",
+                        output=report,
+                    )
+                self.assertFalse(report.exists())
 
     def test_repository_evidence_rejects_stale_reverse_missing_and_unsafe_inputs_without_stale_success(self):
         def verify(root, versions, directories, output):
