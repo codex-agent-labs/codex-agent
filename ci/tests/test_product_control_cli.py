@@ -264,6 +264,32 @@ class ProductControlCliTest(unittest.TestCase):
             tuple(load_canonical_json_bytes(missing.stdout)[key] for key in ("status", "reason")),
         )
 
+    def test_store_phase_cli_finalizes_one_existing_plan_without_replanning(self) -> None:
+        stage, _, receipt = self.stage_and_receipt()
+        plan = self.write_request("phase-plan.json", {
+            "schemaVersion": 1,
+            "product": receipt["product"],
+            "component": receipt["component"],
+            "phase": receipt["phase"],
+            "target": receipt["target"],
+            "buildKey": receipt["buildKey"],
+            "inputs": receipt["inputs"],
+        })
+        producer = self.write_request("producer.json", self.producer())
+        shard = self.root / "phase-shard"
+        result = self.run_cli(
+            "restore", "store-phase",
+            "--stage-root", str(stage),
+            "--phase-plan", str(plan),
+            "--producer", str(producer),
+            "--product-version", "0.2.0",
+            "--trust-domain", "development",
+            "--destination", str(shard),
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(b"", result.stdout)
+        self.assertEqual(receipt, load_canonical_json_bytes((shard / "phase-receipt.json").read_bytes()))
+
     def test_corrupt_local_object_is_reported_without_mutation(self) -> None:
         stage, receipt_path, receipt = self.stage_and_receipt()
         cache = self.root / "cache"

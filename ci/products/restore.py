@@ -43,6 +43,7 @@ from .receipt import (
     validate_phase_receipt,
     validate_producer,
     verify_output_manifest,
+    write_phase_receipt,
 )
 from .registry import PHASE_INSTANCE_IDS, PhaseInstanceId
 
@@ -70,6 +71,14 @@ CARRIER_RESOLUTION_KEYS = {"schemaVersion", "result", "fullReuse", "phases", "ma
 CARRIER_PHASE_KEYS = {
     "product", "component", "phase", "target", "buildKey", "state", "source",
     "transportSource", "receiptSha256", "objectSha256", "misses",
+}
+PHASE_PLAN_KEYS = {
+    "schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs",
+}
+PHASE_SHARD_NAME = "phase-object.json"
+PHASE_SHARD_KEYS = {
+    "schemaVersion", "product", "component", "phase", "target", "buildKey",
+    "receiptSha256", "objectSha256", "objectPath",
 }
 
 
@@ -425,6 +434,139 @@ def write_carrier(
         verify_carrier(root, expected, consumer)
         snapshot_regular_tree(root, destination)
     return verify_carrier(destination, expected, consumer)
+
+
+def verify_phase_shard(root: Path, expected_instance: PhaseInstanceId) -> dict[str, Any]:
+    root = Path(root)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("Product phase shard directory is missing or unsafe")
+    if not isinstance(expected_instance, PhaseInstanceId) or expected_instance not in PHASE_INSTANCE_IDS:
+        raise ValueError("Expected product phase shard identity is invalid")
+    descriptor_bytes = _read_safe_regular(root / PHASE_SHARD_NAME, max_bytes=PRODUCT_JSON_LIMIT)
+    descriptor = require_exact_keys(
+        load_canonical_json_bytes(descriptor_bytes),
+        PHASE_SHARD_KEYS,
+        "Product phase shard",
+    )
+    if require_integer(descriptor["schemaVersion"], "Product phase shard.schemaVersion", 1) != 1:
+        raise ValueError("Unsupported product phase shard schemaVersion")
+    if _carrier_identity(descriptor, "Product phase shard") != expected_instance:
+        raise ValueError("Product phase shard identity is invalid")
+    build_key = require_sha256(descriptor["buildKey"], "Product phase shard.buildKey")
+    receipt_sha256 = require_sha256(
+        descriptor["receiptSha256"], "Product phase shard.receiptSha256",
+    )
+    object_sha256 = require_sha256(
+        descriptor["objectSha256"], "Product phase shard.objectSha256",
+    )
+    object_path = object_relative_path(build_key, receipt_sha256)
+    if require_relative_path(descriptor["objectPath"], "Product phase shard.objectPath") != object_path:
+        raise ValueError("Product phase shard object path is invalid")
+    receipt_bytes = _read_safe_regular(root / PHASE_RECEIPT_NAME, max_bytes=PRODUCT_JSON_LIMIT)
+    if sha256_bytes(receipt_bytes) != receipt_sha256:
+        raise ValueError("Product phase shard receipt digest is invalid")
+    verified = verify_object(
+        root / object_path,
+        build_key=build_key,
+        receipt_sha256=receipt_sha256,
+        object_sha256=object_sha256,
+    )
+    if verified["receiptBytes"] != receipt_bytes or _carrier_identity(
+        verified["receipt"], "Product phase shard receipt",
+    ) != expected_instance:
+        raise ValueError("Product phase shard receipt is invalid")
+    expected_files = sorted((
+        {
+            "relativePath": PHASE_SHARD_NAME,
+            "bytes": len(descriptor_bytes),
+            "sha256": sha256_bytes(descriptor_bytes),
+        },
+        {
+            "relativePath": PHASE_RECEIPT_NAME,
+            "bytes": len(receipt_bytes),
+            "sha256": receipt_sha256,
+        },
+        {
+            "relativePath": object_path,
+            "bytes": verified["objectBytes"],
+            "sha256": object_sha256,
+        },
+    ), key=lambda record: record["relativePath"])
+    if regular_file_inventory(root) != expected_files:
+        raise ValueError("Product phase shard file inventory is incomplete or unexpected")
+    if (
+        _read_safe_regular(root / PHASE_SHARD_NAME, max_bytes=PRODUCT_JSON_LIMIT) != descriptor_bytes
+        or _read_safe_regular(root / PHASE_RECEIPT_NAME, max_bytes=PRODUCT_JSON_LIMIT) != receipt_bytes
+    ):
+        raise ValueError("Product phase shard control files changed during verification")
+    final_object = verify_object(
+        root / object_path,
+        build_key=build_key,
+        receipt_sha256=receipt_sha256,
+        object_sha256=object_sha256,
+    )
+    if (
+        final_object["objectBytes"] != verified["objectBytes"]
+        or final_object["receiptBytes"] != receipt_bytes
+    ):
+        raise ValueError("Product phase shard object changed during verification")
+    return {**descriptor, "receipt": verified["receipt"], "receiptBytes": receipt_bytes}
+
+
+def finalize_phase_object(
+    *,
+    stage_root: Path,
+    phase_plan: Any,
+    producer: Any,
+    product_version: Any,
+    trust_domain: Any,
+    destination: Path,
+) -> dict[str, Any]:
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Product phase shard destination must not exist")
+    plan = require_exact_keys(phase_plan, PHASE_PLAN_KEYS, "Product phase plan")
+    if require_integer(plan["schemaVersion"], "Product phase plan.schemaVersion", 1) != 1:
+        raise ValueError("Unsupported product phase plan schemaVersion")
+    instance = _carrier_identity(plan, "Product phase plan")
+    build_key = require_sha256(plan["buildKey"], "Product phase plan.buildKey")
+    validate_producer(producer, "Product phase producer")
+    with tempfile.TemporaryDirectory(prefix="codex-agent-product-phase-") as temporary:
+        root = Path(temporary).resolve() / "shard"
+        root.mkdir()
+        receipt = write_phase_receipt(
+            stage_root,
+            root,
+            instance.product,
+            instance.component,
+            instance.phase,
+            instance.target,
+            product_version,
+            build_key,
+            plan["inputs"],
+            producer,
+            trust_domain,
+        )
+        stored = store_local_object(stage_root, root / PHASE_RECEIPT_NAME, root)
+        if stored["status"] != "published":
+            raise ValueError("Fresh product phase object was not newly published")
+        descriptor = require_exact_keys({
+            "schemaVersion": 1,
+            "product": instance.product,
+            "component": instance.component,
+            "phase": instance.phase,
+            "target": instance.target,
+            "buildKey": build_key,
+            "receiptSha256": stored["receiptSha256"],
+            "objectSha256": stored["objectSha256"],
+            "objectPath": object_relative_path(build_key, stored["receiptSha256"]),
+        }, PHASE_SHARD_KEYS, "Product phase shard")
+        write_canonical_json(root / PHASE_SHARD_NAME, descriptor)
+        verified = verify_phase_shard(root, instance)
+        if verified["receipt"] != receipt:
+            raise ValueError("Product phase shard receipt changed during finalization")
+        snapshot_regular_tree(root, destination)
+    return verify_phase_shard(destination, instance)
 
 
 def _snapshot_archive(source: Path, destination: Path) -> dict[str, Any]:
@@ -913,6 +1055,14 @@ def main(argv: list[str] | None = None) -> int:
     store.add_argument("--cache-root")
     store.add_argument("--output", required=True)
 
+    phase = commands.add_parser("store-phase")
+    phase.add_argument("--stage-root", required=True)
+    phase.add_argument("--phase-plan", required=True)
+    phase.add_argument("--producer", required=True)
+    phase.add_argument("--product-version", required=True)
+    phase.add_argument("--trust-domain", required=True)
+    phase.add_argument("--destination", required=True)
+
     restore = commands.add_parser("restore-local")
     restore.add_argument("--build-key", required=True)
     restore.add_argument("--receipt-sha256", required=True)
@@ -927,8 +1077,22 @@ def main(argv: list[str] | None = None) -> int:
 
     arguments = parser.parse_args(argv)
     try:
-        cache_root = _selected_cache_root(arguments.cache_root)
-        if arguments.command == "store-local":
+        if arguments.command == "store-phase":
+            finalize_phase_object(
+                stage_root=Path(arguments.stage_root),
+                phase_plan=load_canonical_json_bytes(_read_safe_regular(
+                    Path(arguments.phase_plan), max_bytes=PRODUCT_JSON_LIMIT,
+                )),
+                producer=load_canonical_json_bytes(_read_safe_regular(
+                    Path(arguments.producer), max_bytes=PRODUCT_JSON_LIMIT,
+                )),
+                product_version=arguments.product_version,
+                trust_domain=arguments.trust_domain,
+                destination=Path(arguments.destination),
+            )
+            return 0
+        elif arguments.command == "store-local":
+            cache_root = _selected_cache_root(arguments.cache_root)
             result = store_local_object(
                 Path(arguments.stage_root),
                 Path(arguments.receipt),
@@ -943,6 +1107,7 @@ def main(argv: list[str] | None = None) -> int:
                 "objectSha256": result["objectSha256"],
             }
         elif arguments.command == "restore-local":
+            cache_root = _selected_cache_root(arguments.cache_root)
             result = restore_local_object(
                 cache_root,
                 arguments.build_key,
@@ -966,6 +1131,7 @@ def main(argv: list[str] | None = None) -> int:
                     "receipt": result["receipt"],
                 })
         else:
+            cache_root = _selected_cache_root(arguments.cache_root)
             request = load_canonical_json_bytes(
                 read_regular_file_bytes(
                     Path(arguments.request),
@@ -982,7 +1148,8 @@ def main(argv: list[str] | None = None) -> int:
             }
         _write_output(arguments.output, output)
     except ValueError as error:
-        _remove_output(arguments.output)
+        if hasattr(arguments, "output"):
+            _remove_output(arguments.output)
         parser.error(str(error))
     return 0
 

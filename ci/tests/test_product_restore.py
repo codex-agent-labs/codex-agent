@@ -15,6 +15,7 @@ from ci.products.receipt import compute_build_key, write_output_manifest
 from ci.products.registry import PhaseInstanceId
 from ci.products.restore import (
     CacheObjectError,
+    finalize_phase_object,
     native_cache_root,
     object_relative_path,
     restore_local_object,
@@ -24,6 +25,7 @@ from ci.products.restore import (
     validate_transport,
     verify_carrier,
     verify_object,
+    verify_phase_shard,
     write_carrier,
     write_transport,
 )
@@ -294,6 +296,77 @@ class ProductRestoreTest(unittest.TestCase):
         (carrier_root / "extra").write_bytes(b"no")
         with self.assertRaisesRegex(ValueError, "inventory"):
             verify_carrier(carrier_root, (instance,), consumer)
+
+    def test_phase_finalizer_preserves_the_plan_receipt_and_exact_object_shard(self) -> None:
+        instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+        plan = {
+            "schemaVersion": 1,
+            "product": instance.product,
+            "component": instance.component,
+            "phase": instance.phase,
+            "target": instance.target,
+            "buildKey": self.receipt["buildKey"],
+            "inputs": self.receipt["inputs"],
+        }
+        invalid_plan = copy.deepcopy(plan)
+        invalid_plan["buildKey"] = DIGEST_A
+        with self.assertRaisesRegex(ValueError, "Expected build key"):
+            finalize_phase_object(
+                stage_root=self.stage,
+                phase_plan=invalid_plan,
+                producer=self.producer(),
+                product_version="0.2.0",
+                trust_domain="development",
+                destination=self.root / "invalid-shard",
+            )
+        self.assertFalse((self.root / "invalid-shard").exists())
+
+        shard = self.root / "shard"
+        result = finalize_phase_object(
+            stage_root=self.stage,
+            phase_plan=plan,
+            producer=self.producer(),
+            product_version="0.2.0",
+            trust_domain="development",
+            destination=shard,
+        )
+        self.assertEqual(self.receipt_bytes, result["receiptBytes"])
+        self.assertEqual(result, verify_phase_shard(shard, instance))
+        self.assertEqual({
+            "phase-object.json",
+            "phase-receipt.json",
+            object_relative_path(result["buildKey"], result["receiptSha256"]),
+        }, {record["relativePath"] for record in product_restore.regular_file_inventory(shard)})
+
+        original_inventory = product_restore.regular_file_inventory
+
+        def mutate_then_inventory(root, *arguments, **keywords):
+            inventory = original_inventory(root, *arguments, **keywords)
+            (Path(root) / "phase-object.json").write_bytes(b"{}\n")
+            return inventory
+
+        with mock.patch.object(
+            product_restore,
+            "regular_file_inventory",
+            side_effect=mutate_then_inventory,
+        ), self.assertRaisesRegex(ValueError, "control files changed"):
+            verify_phase_shard(shard, instance)
+        write_canonical_json(shard / "phase-object.json", {
+            key: result[key] for key in product_restore.PHASE_SHARD_KEYS
+        })
+
+        (shard / "extra").write_bytes(b"no")
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            verify_phase_shard(shard, instance)
+        with self.assertRaisesRegex(ValueError, "must not exist"):
+            finalize_phase_object(
+                stage_root=self.stage,
+                phase_plan=plan,
+                producer=self.producer(),
+                product_version="0.2.0",
+                trust_domain="development",
+                destination=shard,
+            )
 
     def test_identity_and_allow_list_mutations_fail_before_materialization(self) -> None:
         stored = self.store()
