@@ -124,6 +124,7 @@ _RUNTIME_BUILD_LOGIC_NATIVE_PACKAGE = frozenset({
 _RUNTIME_BUILD_LOGIC_NATIVE_BINARY = frozenset({
     "CompileDesktopProcessSupervisorTask.kt",
     "GenerateDesktopDistributionSourceTask.kt",
+    "GenerateRuntimeAbiSourceTask.kt",
     "PrepareRuntimePinnedArchiveTask.kt",
     "RuntimeBinaryFlags.kt",
     "RuntimeDownload.kt",
@@ -493,6 +494,13 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         for component in ("sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript"):
             selected.update(_from_phase("sdk", component, "package"))
         return selected
+    if path == "ci/products/sdk_maven.py":
+        return set().union(*(
+            _from_phase("sdk", component, "package")
+            for component in ("sdk-core", "sdk-android", "sdk-ios")
+        ))
+    if path == "ci/products/sdk_archive.py":
+        return _from_phase("sdk", "javascript", "package")
     if path in {
         "ci/products/__init__.py",
         "ci/products/runtime_evidence.py",
@@ -720,6 +728,11 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             "VerifyImportedSdkBindingParityTask.kt",
         }:
             return _sdk_validation()
+        if name == "SdkMavenPackageTask.kt":
+            return set().union(*(
+                _from_phase("sdk", component, "package")
+                for component in ("sdk-core", "sdk-android", "sdk-ios", "javascript")
+            ))
         if name in {
             "FacadePublicationContract.kt",
             "KmpConsumerVerificationTask.kt",

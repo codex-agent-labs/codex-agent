@@ -723,6 +723,44 @@ class ProductSelectionTest(unittest.TestCase):
         )
         self.assertTrue(all(instance.phase in {"package", "validation", "metadata"} for instance in sdk.instances))
 
+    def test_sdk_package_and_runtime_identity_tools_have_exact_product_owners(self) -> None:
+        maven = classify_paths(["ci/products/sdk_maven.py"])
+        self.assertEqual(
+            {"sdk-core", "sdk-android", "sdk-ios"},
+            {instance.component for instance in maven.instances},
+        )
+        self.assertTrue(all(instance.product == "sdk" for instance in maven.instances))
+        self.assertTrue(all(instance.phase in {"package", "validation", "metadata"} for instance in maven.instances))
+
+        archive = classify_paths(["ci/products/sdk_archive.py"])
+        self.assertEqual({"javascript"}, {instance.component for instance in archive.instances})
+        self.assertTrue(all(instance.product == "sdk" for instance in archive.instances))
+        self.assertTrue(all(instance.phase in {"package", "validation", "metadata"} for instance in archive.instances))
+
+        gradle = classify_paths([
+            "gradle/build-logic/src/main/kotlin/SdkMavenPackageTask.kt",
+        ])
+        self.assertEqual(
+            {"sdk-core", "sdk-android", "sdk-ios", "javascript"},
+            {instance.component for instance in gradle.instances},
+        )
+        self.assertTrue(all(instance.product == "sdk" for instance in gradle.instances))
+        self.assertTrue(all(instance.phase in {"package", "validation", "metadata"} for instance in gradle.instances))
+
+        runtime = classify_paths([
+            "runtime/build-logic/src/main/kotlin/GenerateRuntimeAbiSourceTask.kt",
+        ])
+        self.assertEqual(
+            set(NATIVE_TARGETS) | {"runtime-aggregate"},
+            {instance.component for instance in runtime.instances},
+        )
+        self.assertTrue(all(instance.product == "runtime" for instance in runtime.instances))
+        self.assertEqual(
+            set(NATIVE_TARGETS),
+            {instance.component for instance in runtime.instances if instance.phase == "binary"},
+        )
+        self.assertFalse(any(instance.product == "sdk" for instance in runtime.instances))
+
     def test_current_untracked_product_authorities_are_explicit_controls(self) -> None:
         paths = (
             "ci/legacy_lanes.py",
