@@ -50,6 +50,45 @@ class FacadePublicationContractTest {
     }
 
     @Test
+    fun `facade metadata rejects cross-product version substitution`() {
+        listOf<(Fixture) -> Unit>(
+            { fixture ->
+                fixture.replace(
+                    "jvm",
+                    "<artifactId>codex-agent-core-jvm</artifactId><version>$contractVersion</version>",
+                    "<artifactId>codex-agent-core-jvm</artifactId><version>$runtimeVersion</version>",
+                )
+            },
+            { fixture ->
+                fixture.replaceModule(
+                    "jvm",
+                    "\"module\":\"codex-agent-core\",\"version\":{\"requires\":\"$contractVersion\"}",
+                    "\"module\":\"codex-agent-core\",\"version\":{\"requires\":\"$runtimeVersion\"}",
+                )
+            },
+            { fixture ->
+                fixture.replace(
+                    "jvm",
+                    "<artifactId>codex-agent-jvm</artifactId><version>$sdkVersion</version>",
+                    "<artifactId>codex-agent-jvm</artifactId><version>$contractVersion</version>",
+                )
+            },
+            { fixture ->
+                fixture.replaceModule(
+                    "jvm",
+                    "\"module\":\"codex-agent\",\"version\":\"$sdkVersion\"",
+                    "\"module\":\"codex-agent\",\"version\":\"$contractVersion\"",
+                )
+            },
+        ).forEach { mutation ->
+            withFixture { fixture ->
+                mutation(fixture)
+                assertFailsWith<IllegalStateException> { fixture.verify() }
+            }
+        }
+    }
+
+    @Test
     fun `duplicate facade POM and module dependencies fail closed`() {
         withFixture { fixture ->
             fixture.duplicatePomDependency("jvm")

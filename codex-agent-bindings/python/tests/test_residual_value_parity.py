@@ -134,6 +134,8 @@ def _expected_scenarios(capability: str) -> tuple[str, ...]:
         scenarios.add("nullability")
     if "kotlin.collections" in capability:
         scenarios.add("collection-immutability-ordering")
+    if "CodexFailure" in capability:
+        scenarios.add("structured-failure")
     return tuple(sorted(scenarios))
 
 
@@ -466,6 +468,24 @@ class ResidualValueParityTests(unittest.TestCase):
                 codex_agent.AuthenticationStatus.SIGNED_OUT
             ),
         )
+        failure = codex_agent.Failure("failed", "Failed", True)
+        failure_states = (
+            codex_agent.AuthenticationState(failure=failure),
+            codex_agent.ConversationState(
+                codex_agent.ConversationStatus.FAILED, failure=failure
+            ),
+            codex_agent.IntegrationAuthorizationState(
+                codex_agent.IntegrationAuthorizationStatus.FAILED, failure=failure
+            ),
+            codex_agent.InteractionState(failure=failure),
+            codex_agent.HostStateFailed(failure),
+        )
+        for state in failure_states:
+            self.assertIs(state.failure, failure)
+            self.assertEqual(
+                (state.failure.code, state.failure.message, state.failure.is_recoverable),
+                ("failed", "Failed", True),
+            )
         items = ["a", "a", "b"]
         text_list = codex_agent.FormTextListValue(items)
         items[0] = "changed"

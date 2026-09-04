@@ -92,28 +92,33 @@ class ProductPublicationVersionFunctionalTest {
             assertTrue("Reusing configuration cache" in second)
 
             writeVersions(root, "1.2.4", "2.3.4", "3.4.5")
-            run(root)
-            assertVersions(root, "1.2.4", "2.3.4", "3.4.5")
-            assertDependencies(root, "1.2.4", "3.4.5")
+            run(root, listOf(":codex-agent-core:publishMavenPublicationToFIXTURERepository"))
+            assertVersions(root, "1.2.4", "2.3.4", "3.4.5", sdkContract = "1.2.3")
+            assertDependencies(root, "1.2.3", "3.4.5")
 
             writeVersions(root, "1.2.4", "2.3.5", "3.4.5", sdkDefaultRuntime = "2.3.4")
-            run(root)
-            assertVersions(root, "1.2.4", "2.3.4", "3.4.5")
+            assertVersions(root, "1.2.4", "2.3.4", "3.4.5", sdkContract = "1.2.3")
 
             writeVersions(root, "1.2.4", "2.3.5", "3.4.6", sdkDefaultRuntime = "2.3.4")
             run(root)
             assertVersions(root, "1.2.4", "2.3.4", "3.4.6")
+            assertDependencies(root, "1.2.4", "3.4.6")
+            assertTrue(
+                "<version>1.2.3</version>" in
+                    maven(root).resolve("codex-agent/3.4.5/codex-agent-3.4.5.pom").readText(),
+            )
         } finally {
             root.deleteRecursively()
         }
     }
 
-    private fun run(root: File): String = GradleRunner.create()
+    private fun run(root: File, tasks: List<String> = modules.keys.map {
+        "$it:publishMavenPublicationToFIXTURERepository"
+    } + ":publishMavenPublicationToFIXTURERepository"): String = GradleRunner.create()
         .withProjectDir(root)
         .withPluginClasspath()
         .withArguments(
-            modules.keys.map { "$it:publishMavenPublicationToFIXTURERepository" } + listOf(
-                ":publishMavenPublicationToFIXTURERepository",
+            tasks + listOf(
                 "--configuration-cache",
                 "--configuration-cache-problems=fail",
                 "--stacktrace",
@@ -122,7 +127,13 @@ class ProductPublicationVersionFunctionalTest {
         .build()
         .output
 
-    private fun assertVersions(root: File, contract: String, runtime: String, sdk: String) {
+    private fun assertVersions(
+        root: File,
+        contract: String,
+        runtime: String,
+        sdk: String,
+        sdkContract: String = contract,
+    ) {
         val versions = mapOf(
             "codex-agent-core" to contract,
             "codex-agent" to sdk,
@@ -142,7 +153,7 @@ class ProductPublicationVersionFunctionalTest {
         val bom = maven(root).resolve("codex-agent-bom/$sdk/codex-agent-bom-$sdk.pom").readText()
         mapOf(
             "codex-agent" to sdk,
-            "codex-agent-core" to contract,
+            "codex-agent-core" to sdkContract,
             "codex-agent-runtime-desktop" to runtime,
             "codex-agent-runtime-android" to sdk,
             "codex-agent-runtime-ios" to sdk,
