@@ -629,7 +629,11 @@ def _local_catalog(restore_root: Path, value: Any) -> LocalCatalog | None:
     })
 
 
-def plan_reuse_wave(value: Any) -> dict[str, Any]:
+def plan_reuse_wave(
+    value: Any,
+    *,
+    build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     """Decode one strict control request and delegate all resolution to advance_reuse."""
     request = require_exact_keys(
         value,
@@ -838,6 +842,7 @@ def plan_reuse_wave(value: Any) -> dict[str, Any]:
             contract_projection_provider=(
                 contract_projection_provider if contract_components else None
             ),
+            build_plan_consumer=build_plan_consumer,
         )
         return result
 
@@ -902,6 +907,7 @@ def advance_reuse(
     contract_projection_provider: Callable[
         [PhaseInstanceId, dict[str, Any]], VerifiedContractProjection
     ] | None = None,
+    build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave."""
     if not isinstance(session, LookupSession):
@@ -910,6 +916,8 @@ def advance_reuse(
         raise ValueError("Reuse repository root and revision must be supplied together")
     if contract_projection_provider is not None and not callable(contract_projection_provider):
         raise ValueError("Contract projection provider must be callable")
+    if build_plan_consumer is not None and not callable(build_plan_consumer):
+        raise ValueError("Build plan consumer must be callable")
     resolved_repository_root = None if repository_root is None else Path(repository_root)
     closure = _dependency_closure(requested_instances)
     if not isinstance(phase_inputs, Mapping) or set(phase_inputs) != set(closure):
@@ -1038,6 +1046,9 @@ def advance_reuse(
             "buildKey": plan["buildKey"],
         })
     full_reuse = len(resolved) == len(closure)
+    if build_plan_consumer is not None:
+        for instance, plan in sorted(build_plans.items()):
+            build_plan_consumer(instance, dict(plan))
     return {
         "schemaVersion": 1,
         "result": "complete" if full_reuse else "build-required",

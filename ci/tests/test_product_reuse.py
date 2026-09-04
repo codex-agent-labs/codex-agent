@@ -1404,6 +1404,7 @@ class ProductReuseTest(unittest.TestCase):
             if instance != PYTHON_PACKAGE
         ]
 
+        ready_plans = []
         result, _ = advance_reuse(
             [PYTHON_PACKAGE],
             inputs,
@@ -1411,11 +1412,20 @@ class ProductReuseTest(unittest.TestCase):
             self.session(),
             repository_root=flags_repository,
             repository_revision=flags_revision,
+            build_plan_consumer=lambda instance, plan: ready_plans.append((instance, plan)),
         )
 
         self.assertFalse(result["fullReuse"])
         self.assertEqual([], result["matrices"]["runtime"])
         self.assertEqual([], result["matrices"]["contract"])
+        self.assertEqual(
+            [(PYTHON_PACKAGE, plan_for(
+                PYTHON_PACKAGE,
+                inputs,
+                {instance: envelope for instance, envelope in resolved.items() if instance != PYTHON_PACKAGE},
+            ))],
+            ready_plans,
+        )
         self.assertEqual(
             [{
                 "product": "sdk",

@@ -615,6 +615,20 @@ def _discovery_request(plan: Mapping[str, Any], requested: tuple[PhaseInstanceId
     }
 
 
+def _write_ready_plans(destination: Path, plans: Mapping[PhaseInstanceId, Mapping[str, Any]]) -> None:
+    if not plans:
+        return
+    root = destination / "phase-plans"
+    root.mkdir()
+    for instance, plan in sorted(plans.items()):
+        if _identity(plan) != instance:
+            raise ValueError("Ready phase plan identity is invalid")
+        write_canonical_json(
+            root / f"{instance.product}-{instance.component}-{instance.phase}-{instance.target}.json",
+            plan,
+        )
+
+
 def _result(
     requested: tuple[PhaseInstanceId, ...], *, complete: bool, reason: str,
     reuse: Mapping[str, Any] | None = None,
@@ -702,7 +716,15 @@ def discover(
         plan, root, destination, requested, versions, authorities, catalogs, contract_evidence,
     )
     write_canonical_json(destination / "reuse-wave-request.json", wave_request)
-    reuse = plan_reuse_wave(wave_request)
+    ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
+
+    def retain_ready_plan(instance: PhaseInstanceId, phase_plan: dict[str, Any]) -> None:
+        if instance in ready_plans:
+            raise ValueError(f"Duplicate ready phase plan: {instance}")
+        ready_plans[instance] = phase_plan
+
+    reuse = plan_reuse_wave(wave_request, build_plan_consumer=retain_ready_plan)
+    _write_ready_plans(destination, ready_plans)
     write_canonical_json(destination / "reuse-wave-result.json", reuse)
     matrices = reuse.get("matrices")
     complete = (

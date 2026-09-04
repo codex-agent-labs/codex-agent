@@ -326,6 +326,17 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "schemaVersion": 1, "result": "build-required", "fullReuse": False,
             "phases": [], "matrices": {"contract": [{}], "runtime": [], "sdk": []},
         }
+        phase_plan = {
+            "schemaVersion": 1,
+            **product_reuse._identity_record(selected),
+            "buildKey": sha256_bytes(b"build"),
+            "inputs": {"exact": "planner-owned"},
+        }
+
+        def plan_wave(_request, *, build_plan_consumer):
+            build_plan_consumer(selected, phase_plan)
+            return reuse
+
         result = self.run_discover(
             impact_plan(changed=["known.kt"]),
             selection=mock.Mock(instances=(selected,), unknown_paths=()),
@@ -337,10 +348,14 @@ class ProductReuseAdapterTest(unittest.TestCase):
             }),
             _release_trust=mock.Mock(return_value=None),
             _discover_catalogs=mock.Mock(return_value=[]),
-            plan_reuse_wave=mock.Mock(return_value=reuse),
+            plan_reuse_wave=mock.Mock(side_effect=plan_wave),
         )
         self.assertEqual("product-build-required", result["reason"])
         self.assertTrue(result["targetJobsRequired"])
+        self.assertEqual(
+            canonical_json_bytes(phase_plan),
+            (self.destination / "phase-plans/contract-contract-binary-common.json").read_bytes(),
+        )
 
 
 if __name__ == "__main__":
