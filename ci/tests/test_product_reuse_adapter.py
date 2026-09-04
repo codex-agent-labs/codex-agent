@@ -1329,6 +1329,16 @@ class ProductReuseAdapterTest(unittest.TestCase):
         discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"))
         publish.assert_called_once_with(Path("discovery"), Path("handoff"))
 
+        materialize_arguments = [
+            "materialize-contract", "--plan", "plan.json", "--state-root", "state",
+            "--phase", "package", "--destination", "stage",
+        ]
+        with mock.patch.object(product_reuse, "materialize_contract") as materialize:
+            self.assertEqual(0, product_reuse.main(materialize_arguments))
+        materialize.assert_called_once_with(
+            Path("plan.json"), Path("state"), "package", Path("stage"),
+        )
+
     def test_contract_ready_phase_is_exactly_one_known_contract_phase(self) -> None:
         binary = PhaseInstanceId("contract", "contract", "binary", "common")
         package = PhaseInstanceId("contract", "contract", "package", "common")
@@ -1539,6 +1549,84 @@ class ProductReuseAdapterTest(unittest.TestCase):
             },
             dict(line.split("=", 1) for line in output.read_text().splitlines()),
         )
+        restored_stage = resolved_root / "restored-binary"
+        with mock.patch.object(product_reuse, "_validate_plan", return_value=plan):
+            restored = product_reuse.materialize_contract(
+                self.plan_path,
+                destination,
+                "binary",
+                restored_stage,
+                repository_root=resolved_root,
+                environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+        self.assertEqual(b"value", (restored_stage / "outputs/value.bin").read_bytes())
+        self.assertEqual(descriptor["receiptSha256"], sha256_bytes(restored["receiptBytes"]))
+
+        alternate_stage = resolved_root / "alternate-stage"
+        alternate_output = alternate_stage / "outputs/value.bin"
+        alternate_output.parent.mkdir(parents=True)
+        alternate_output.write_bytes(b"alternate")
+        write_output_manifest(
+            alternate_stage, "contract", "contract", "binary", "common", "0.2.0",
+            {"artifact": "outputs"},
+        )
+        alternate_plan = plan_phase(
+            binary,
+            inventory=[{
+                "relativePath": "input.kt", "bytes": 2, "sha256": sha256_bytes(b"ii"),
+            }],
+            versions=VERSIONS,
+            upstream_receipts=[],
+            toolchain_profile_digest=product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            flags_digest=product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+        )
+        alternate_shard = resolved_root / "alternate-binary-shard"
+        finalize_phase_object(
+            stage_root=alternate_stage,
+            phase_plan=alternate_plan,
+            producer=producer,
+            product_version="0.2.0",
+            trust_domain="development",
+            destination=alternate_shard,
+        )
+        alternate_descriptor = verify_phase_shard(alternate_shard, binary)
+        stale_state = resolved_root / "stale-state"
+        shutil.copytree(destination, stale_state)
+        stale_result = json.loads((stale_state / "contract-reuse-result.json").read_text())
+        stale_binary = next(
+            value for value in stale_result["phases"]
+            if product_reuse._identity(value) == binary
+        )
+        for field in ("buildKey", "receiptSha256", "objectSha256"):
+            stale_binary[field] = alternate_descriptor[field]
+        (stale_state / "contract-reuse-result.json").write_bytes(
+            canonical_json_bytes(stale_result),
+        )
+        rejected_stale_stage = resolved_root / "restored-stale-binary"
+        with mock.patch.object(product_reuse, "_validate_plan", return_value=plan), \
+                self.assertRaisesRegex(ValueError, "carrier disagrees"):
+            product_reuse.materialize_contract(
+                self.plan_path,
+                stale_state,
+                "binary",
+                rejected_stale_stage,
+                repository_root=resolved_root,
+                environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+        self.assertFalse(rejected_stale_stage.exists())
+
+        rejected_stage = resolved_root / "restored-package"
+        with mock.patch.object(product_reuse, "_validate_plan", return_value=plan), \
+                self.assertRaisesRegex(ValueError, "not materialized"):
+            product_reuse.materialize_contract(
+                self.plan_path,
+                destination,
+                "package",
+                rejected_stage,
+                repository_root=resolved_root,
+                environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+        self.assertFalse(rejected_stage.exists())
 
         package_stage = resolved_root / "package-stage"
         package_output = package_stage / "outputs/value.zip"

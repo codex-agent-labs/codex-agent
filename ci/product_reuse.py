@@ -1157,6 +1157,58 @@ def advance_contract(
     return advanced
 
 
+def materialize_contract(
+    plan_path: Path, state_root: Path, phase: str, destination: Path, *,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    if phase not in {"binary", "package", "validation", "metadata"}:
+        raise ValueError("Contract materialization phase is unsupported")
+    supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
+    destination = _prepare_destination(destination, supplied_root)
+    destination.rmdir()
+    root = supplied_root.resolve()
+    state_root = Path(os.path.abspath(state_root))
+    try:
+        state_root.relative_to(root)
+    except ValueError as error:
+        raise ValueError("Contract materialization state must remain inside the repository") from error
+    plan = _validate_plan(plan_path, root)
+    if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
+        raise ValueError("Contract materialization requires an authorized PR or merge-group run")
+    consumer = _consumer(plan, os.environ if environ is None else environ)
+    producer = _canonical_control(state_root / "producer.json", "Contract producer")
+    validate_producer(producer, "Contract producer")
+    if producer != consumer["producer"]:
+        raise ValueError("Contract producer does not match the current workflow run")
+    result = _canonical_control(
+        state_root / "contract-reuse-result.json", "Contract reuse result",
+    )
+    contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+    _, materialized, _ = _validate_reuse_result(result, (contract,), require_complete=False)
+    requested = PhaseInstanceId("contract", "contract", phase, "common")
+    if requested not in materialized:
+        raise ValueError("Requested Contract phase is not materialized in the current state")
+    carrier_name = "carrier" if result["fullReuse"] else "reused-carrier"
+    carrier_root = state_root / carrier_name
+    carrier = verify_carrier(carrier_root, materialized, consumer)
+    result_by_instance = {_identity(value): value for value in result["phases"]}
+    carrier_by_instance = {_identity(value): value for value in carrier["objects"]}
+    if any(
+        any(carrier_by_instance[instance][field] != result_by_instance[instance][field]
+            for field in (*_IDENTITY_KEYS, "buildKey", "receiptSha256", "objectSha256"))
+        for instance in materialized
+    ):
+        raise ValueError("Contract materialization carrier disagrees with its reuse result")
+    record = next(value for value in carrier["objects"] if _identity(value) == requested)
+    return restore_object(
+        carrier_root / object_relative_path(record["buildKey"], record["receiptSha256"]),
+        destination,
+        build_key=record["buildKey"],
+        receipt_sha256=record["receiptSha256"],
+        object_sha256=record["objectSha256"],
+    )
+
+
 def discover(
     plan_path: Path, destination: Path, github_output_path: Path, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
@@ -1305,6 +1357,11 @@ def parser() -> argparse.ArgumentParser:
     advance_command.add_argument("--phase-shard", type=Path, action="append", default=[])
     advance_command.add_argument("--destination", type=Path, required=True)
     advance_command.add_argument("--github-output", type=Path, required=True)
+    materialize_command = commands.add_parser("materialize-contract")
+    materialize_command.add_argument("--plan", type=Path, required=True)
+    materialize_command.add_argument("--state-root", type=Path, required=True)
+    materialize_command.add_argument("--phase", required=True)
+    materialize_command.add_argument("--destination", type=Path, required=True)
     return result
 
 
@@ -1315,7 +1372,7 @@ def main(argv: list[str] | None = None) -> int:
             discover(arguments.plan, arguments.destination, arguments.github_output)
             if arguments.handoff is not None:
                 publish_regular_tree(arguments.destination, arguments.handoff)
-        else:
+        elif arguments.command == "advance-contract":
             advance_contract(
                 arguments.plan,
                 arguments.discovery_root,
@@ -1323,6 +1380,10 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.phase_shard,
                 arguments.destination,
                 arguments.github_output,
+            )
+        else:
+            materialize_contract(
+                arguments.plan, arguments.state_root, arguments.phase, arguments.destination,
             )
     except (OSError, ValueError) as error:
         parser().error(str(error))
