@@ -11,6 +11,10 @@ from ci.products.aggregate import validate_product_index
 import ci.products.index as product_index
 from ci.products.index import (
     IndexEntrySource,
+    ReleaseIndexAdmission,
+    release_attested_contract_admission,
+    release_attested_runtime_aggregate_admission,
+    release_attested_runtime_variant_admission,
     SignedProductIndex,
     build_product_index,
     verify_stable_index_history,
@@ -73,8 +77,11 @@ def receipt(
     repository: str = REPOSITORY,
     pull_request: int = 31,
     version: str = VERSION,
+    product: str = "contract",
+    component: str = "contract",
+    target: str = "common",
 ) -> tuple[bytes, str]:
-    artifact_path = f"outputs/contract-{phase}.zip"
+    artifact_path = f"outputs/{component}-{phase}.zip"
     inventory = [{
         "relativePath": f"sources/{phase}.kt",
         "bytes": 1,
@@ -91,16 +98,16 @@ def receipt(
     }
     value = validate_phase_receipt({
         "schemaVersion": 1,
-        "product": "contract",
-        "component": "contract",
+        "product": product,
+        "component": component,
         "phase": phase,
-        "target": "common",
+        "target": target,
         "productVersion": version,
         "buildKey": compute_build_key(
-            product="contract",
-            component="contract",
+            product=product,
+            component=component,
             phase=phase,
-            target="common",
+            target=target,
             inputs=inputs,
         ),
         "inputs": inputs,
@@ -129,6 +136,9 @@ def source(
     repository: str = REPOSITORY,
     pull_request: int = 31,
     version: str = VERSION,
+    product: str = "contract",
+    component: str = "contract",
+    target: str = "common",
 ) -> IndexEntrySource:
     contents, artifact_path = receipt(
         phase,
@@ -138,6 +148,9 @@ def source(
         repository=repository,
         pull_request=pull_request,
         version=version,
+        product=product,
+        component=component,
+        target=target,
     )
     return IndexEntrySource(contents, artifact_path)
 
@@ -349,10 +362,33 @@ class ProductIndexTest(unittest.TestCase):
             (manifest.read_bytes(), manifest.with_suffix(".sig").read_bytes()),
         )
 
-    def test_release_index_preserves_only_a_development_contract_metadata_receipt(self) -> None:
+    def test_release_index_requires_exact_attested_contract_admission(self) -> None:
         original = source("metadata", trust_domain="development")
+        receipt_path = self.root / "contract-metadata-receipt.json"
+        receipt_path.write_bytes(original.receipt_bytes)
+        verified_receipt = validate_phase_receipt(
+            load_canonical_json_bytes(original.receipt_bytes),
+        )
+        with mock.patch(
+            "ci.products.contract_attestation.verify_contract_attestation",
+            return_value=({}, verified_receipt, {}),
+        ) as verifier:
+            admission = release_attested_contract_admission(
+                original,
+                payload=self.root / "contract.zip",
+                metadata_receipt=receipt_path,
+                attestation=self.root / "contract.attestation.json",
+                signature=self.root / "contract.attestation.sig",
+                public_key=self.public_key,
+                keyring=self.keyring,
+                keys_directory=self.release_keys,
+            )
+        self.assertEqual("release", verifier.call_args.kwargs["required_trust_domain"])
+        admitted = IndexEntrySource(
+            original.receipt_bytes, original.artifact_path, admission,
+        )
         value = build_product_index(
-            [original],
+            [admitted],
             repository=REPOSITORY,
             context={
                 "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
@@ -364,10 +400,11 @@ class ProductIndexTest(unittest.TestCase):
             stable_history=None,
         )
         self.assertEqual(sha256_bytes(original.receipt_bytes), value["entries"][0]["receiptSha256"])
+        self.assertNotIn("releaseAdmission", value["entries"][0])
 
         with self.assertRaisesRegex(ValueError, "trust domain"):
             build_product_index(
-                [source("binary", trust_domain="development")],
+                [original],
                 repository=REPOSITORY,
                 context={
                     "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
@@ -377,6 +414,242 @@ class ProductIndexTest(unittest.TestCase):
                 signing=self.release_signing,
                 producer=producer("release"),
                 stable_history=None,
+            )
+
+        changed = source(
+            "metadata", trust_domain="development", flags_digest=DIGEST_B,
+        )
+        with self.assertRaisesRegex(ValueError, "trust domain"):
+            build_product_index(
+                [IndexEntrySource(changed.receipt_bytes, changed.artifact_path, admission)],
+                repository=REPOSITORY,
+                context={
+                    "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
+                    "promotionRunId": 7, "promotionRunAttempt": 1,
+                },
+                trust_domain="release",
+                signing=self.release_signing,
+                producer=producer("release"),
+                stable_history=None,
+            )
+
+    def test_release_index_accepts_exact_attested_runtime_variant_phase(self) -> None:
+        target = "linux-x64"
+        sources = {
+            phase: source(
+                phase, trust_domain="development", product="runtime",
+                component=target, target=target,
+            )
+            for phase in ("binary", "package", "validation", "metadata")
+        }
+        paths = {}
+        receipts = {}
+        for phase, value in sources.items():
+            path = self.root / f"{phase}-receipt.json"
+            path.write_bytes(value.receipt_bytes)
+            paths[phase] = path
+            receipts[phase] = validate_phase_receipt(
+                load_canonical_json_bytes(value.receipt_bytes),
+            )
+        selected = sources["package"]
+        with mock.patch(
+            "ci.products.runtime_attestation.verify_runtime_variant_attestation",
+            return_value=({"target": target}, receipts, {}),
+        ) as verifier:
+            admission = release_attested_runtime_variant_admission(
+                selected,
+                payload=self.root / "variant.zip",
+                binary_receipt=paths["binary"],
+                package_receipt=paths["package"],
+                validation_receipt=paths["validation"],
+                metadata_receipt=paths["metadata"],
+                validation_evidence=self.root / "validation.json",
+                attestation=self.root / "variant.attestation.json",
+                signature=self.root / "variant.attestation.sig",
+                public_key=self.public_key,
+                keyring=self.keyring,
+                keys_directory=self.release_keys,
+            )
+        self.assertEqual("release", verifier.call_args.kwargs["required_trust_domain"])
+        value = build_product_index(
+            [IndexEntrySource(selected.receipt_bytes, selected.artifact_path, admission)],
+            repository=REPOSITORY,
+            context={
+                "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
+                "promotionRunId": 7, "promotionRunAttempt": 1,
+            },
+            trust_domain="release",
+            signing=self.release_signing,
+            producer=producer("release"),
+            stable_history=None,
+        )
+        self.assertEqual(sha256_bytes(selected.receipt_bytes), value["entries"][0]["receiptSha256"])
+
+        other = source(
+            "package", trust_domain="development", product="runtime",
+            component=target, target=target, flags_digest=DIGEST_B,
+        )
+        with self.assertRaisesRegex(ValueError, "trust domain"):
+            build_product_index(
+                [IndexEntrySource(other.receipt_bytes, other.artifact_path, admission)],
+                repository=REPOSITORY,
+                context={
+                    "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
+                    "promotionRunId": 7, "promotionRunAttempt": 1,
+                },
+                trust_domain="release", signing=self.release_signing,
+                producer=producer("release"), stable_history=None,
+            )
+
+    def test_release_admission_is_opaque_and_binds_complete_outputs(self) -> None:
+        with self.assertRaisesRegex(TypeError, "verifier-produced"):
+            ReleaseIndexAdmission(object())
+
+        original = source("metadata", trust_domain="development")
+        value = load_canonical_json_bytes(original.receipt_bytes)
+        value["outputs"].append({
+            "kind": "artifact",
+            "relativePath": "outputs/other.zip",
+            "bytes": 5,
+            "sha256": sha256_bytes(b"other"),
+        })
+        value["outputs"].sort(key=lambda output: output["relativePath"])
+        contents = canonical_json_bytes(validate_phase_receipt(value))
+        exact = IndexEntrySource(contents, original.artifact_path)
+        receipt_path = self.root / "multi-output-receipt.json"
+        receipt_path.write_bytes(contents)
+        with mock.patch(
+            "ci.products.contract_attestation.verify_contract_attestation",
+            return_value=({}, validate_phase_receipt(value), {}),
+        ):
+            admission = release_attested_contract_admission(
+                exact,
+                payload=self.root / "contract.zip",
+                metadata_receipt=receipt_path,
+                attestation=self.root / "contract.attestation.json",
+                signature=self.root / "contract.attestation.sig",
+                public_key=self.public_key,
+                keyring=self.keyring,
+                keys_directory=self.release_keys,
+            )
+        arguments = {
+            "repository": REPOSITORY,
+            "context": {
+                "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
+                "promotionRunId": 7, "promotionRunAttempt": 1,
+            },
+            "trust_domain": "release",
+            "signing": self.release_signing,
+            "producer": producer("release"),
+            "stable_history": None,
+        }
+        for rejected in (
+            IndexEntrySource(contents, "outputs/other.zip", admission),
+            IndexEntrySource(contents, original.artifact_path, True),
+        ):
+            with self.subTest(artifact=rejected.artifact_path), self.assertRaisesRegex(
+                ValueError, "trust domain",
+            ):
+                build_product_index([rejected], **arguments)
+
+        changed = load_canonical_json_bytes(contents)
+        changed["outputs"][0]["sha256"] = DIGEST_B
+        with self.assertRaisesRegex(ValueError, "trust domain"):
+            build_product_index([
+                IndexEntrySource(
+                    canonical_json_bytes(validate_phase_receipt(changed)),
+                    original.artifact_path,
+                    admission,
+                ),
+            ], **arguments)
+
+        sdk = source(
+            "package", trust_domain="development", product="sdk",
+            component="python", target="desktop",
+        )
+        with self.assertRaisesRegex(ValueError, "trust domain"):
+            build_product_index([sdk], **arguments)
+
+    def test_release_index_requires_runtime_aggregate_attestation_closure(self) -> None:
+        original = source(
+            "metadata", trust_domain="development", product="runtime",
+            component="runtime-aggregate", target="aggregate",
+        )
+        receipt_path = self.root / "aggregate-metadata-receipt.json"
+        receipt_path.write_bytes(original.receipt_bytes)
+        verified_receipt = validate_phase_receipt(
+            load_canonical_json_bytes(original.receipt_bytes),
+        )
+        aggregate_verifier = mock.Mock(return_value=({}, verified_receipt, {}))
+        closure_verifier = mock.Mock(return_value=({}, {}, []))
+        variant_inputs = {"linux-x64": self.root / "input"}
+        with mock.patch(
+            "ci.products.runtime_aggregate.verify_runtime_aggregate_attestation",
+            aggregate_verifier,
+        ), mock.patch(
+            "ci.products.runtime_aggregate.verify_runtime_aggregate_attestation_closure",
+            closure_verifier,
+        ):
+            admission = release_attested_runtime_aggregate_admission(
+                original,
+                manifest=self.root / "runtime-manifest.json",
+                metadata_receipt=receipt_path,
+                attestation=self.root / "runtime.attestation.json",
+                signature=self.root / "runtime.attestation.sig",
+                public_key=self.public_key,
+                variant_bundles=variant_inputs,
+                variant_phase_receipts={"linux-x64": {}},
+                variant_attestations=variant_inputs,
+                variant_attestation_signatures=variant_inputs,
+                variant_public_keys=variant_inputs,
+                variant_validation_evidence=variant_inputs,
+                adapter_receipts=[],
+                keyring=self.keyring,
+                keys_directory=self.release_keys,
+                variant_keyring=self.keyring,
+                variant_keys_directory=self.release_keys,
+            )
+        self.assertEqual("release", aggregate_verifier.call_args.kwargs["required_trust_domain"])
+        self.assertEqual("release", closure_verifier.call_args.kwargs[
+            "required_variant_trust_domain"
+        ])
+        value = build_product_index(
+            [IndexEntrySource(original.receipt_bytes, original.artifact_path, admission)],
+            repository=REPOSITORY,
+            context={
+                "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
+                "promotionRunId": 7, "promotionRunAttempt": 1,
+            },
+            trust_domain="release", signing=self.release_signing,
+            producer=producer("release"), stable_history=None,
+        )
+        self.assertEqual("runtime-aggregate", value["entries"][0]["component"])
+
+        with mock.patch(
+            "ci.products.runtime_aggregate.verify_runtime_aggregate_attestation",
+            return_value=({}, verified_receipt, {}),
+        ), mock.patch(
+            "ci.products.runtime_aggregate.verify_runtime_aggregate_attestation_closure",
+            side_effect=ValueError("closure mismatch"),
+        ), self.assertRaisesRegex(ValueError, "closure mismatch"):
+            release_attested_runtime_aggregate_admission(
+                original,
+                manifest=self.root / "runtime-manifest.json",
+                metadata_receipt=receipt_path,
+                attestation=self.root / "runtime.attestation.json",
+                signature=self.root / "runtime.attestation.sig",
+                public_key=self.public_key,
+                variant_bundles=variant_inputs,
+                variant_phase_receipts={"linux-x64": {}},
+                variant_attestations=variant_inputs,
+                variant_attestation_signatures=variant_inputs,
+                variant_public_keys=variant_inputs,
+                variant_validation_evidence=variant_inputs,
+                adapter_receipts=[],
+                keyring=self.keyring,
+                keys_directory=self.release_keys,
+                variant_keyring=self.keyring,
+                variant_keys_directory=self.release_keys,
             )
 
     def test_exact_schema_context_and_build_key_order(self) -> None:

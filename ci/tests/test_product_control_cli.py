@@ -147,6 +147,7 @@ class ProductControlCliTest(unittest.TestCase):
             },
             "upstreamReceipts": [],
             "contractEvidence": None,
+            "runtimeValidationEvidence": None,
             "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
             "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST,
             "outputSchemaVersion": 1,
@@ -490,6 +491,7 @@ class ProductControlCliTest(unittest.TestCase):
                 "outputSchemaVersion": 1,
             }],
             "contractEvidence": None,
+            "runtimeValidationEvidence": [],
             "availableObjects": [],
             "catalogs": {
                 "stable": [],

@@ -9,6 +9,7 @@ import stat
 import subprocess
 import tempfile
 from typing import Any, Iterable, Iterator
+from weakref import WeakKeyDictionary
 
 from .aggregate import validate_product_index, verify_immutable_product_indexes
 from .inventory import (
@@ -17,6 +18,7 @@ from .inventory import (
     _open_regular_file,
     _stat_identity,
     _windows_directory_path,
+    canonical_json_bytes,
     load_canonical_json_bytes,
     read_regular_file_bytes,
     require_exact_keys,
@@ -39,12 +41,40 @@ from .signatures import (
 _INDEX_LIMIT = 16 * 1024 * 1024
 _SIGNATURE_LIMIT = 1024 * 1024
 _HISTORY_TOKEN = object()
+_RELEASE_ADMISSION_TOKEN = object()
+
+
+class ReleaseIndexAdmission:
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls, token: object) -> ReleaseIndexAdmission:
+        if token is not _RELEASE_ADMISSION_TOKEN:
+            raise TypeError("Release-index admission is verifier-produced")
+        return super().__new__(cls)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReleaseAdmissionBinding:
+    _token: object
+    _identity: tuple[str, str, str, str]
+    _build_key: str
+    _receipt_sha256: str
+    _outputs: bytes
+    _output_inventory_digest: str
+    _artifact_name: str
+    _artifact_sha256: str
+
+
+_RELEASE_ADMISSIONS: WeakKeyDictionary[
+    ReleaseIndexAdmission, _ReleaseAdmissionBinding,
+] = WeakKeyDictionary()
 
 
 @dataclass(frozen=True, slots=True)
 class IndexEntrySource:
     receipt_bytes: bytes
     artifact_path: str
+    release_admission: ReleaseIndexAdmission | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,32 +236,201 @@ def verify_stable_index_history(
     return VerifiedStableIndexHistory(repository, tuple(verified), _HISTORY_TOKEN)
 
 
-def _entry(
+def _validated_entry_source(
     source: IndexEntrySource,
-    *,
-    repository: str,
-    trust_domain: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
     if not isinstance(source, IndexEntrySource) or type(source.receipt_bytes) is not bytes:
         raise ValueError("Product index entry source is invalid")
     receipt = validate_phase_receipt(load_canonical_json_bytes(source.receipt_bytes))
-    release_attested_contract = (
-        trust_domain == "release"
-        and receipt["trustDomain"] == "development"
-        and (receipt["product"], receipt["component"], receipt["phase"], receipt["target"])
-        == ("contract", "contract", "metadata", "common")
-    )
-    if receipt["trustDomain"] != trust_domain and not release_attested_contract:
-        raise ValueError("Product index receipt trust domain does not match the index")
-    if receipt["producer"]["repository"] != repository:
-        raise ValueError("Product index receipt repository does not match the index")
     artifact_path = require_relative_path(source.artifact_path, "Product index entry artifact path")
     artifacts = [
         output for output in receipt["outputs"] if output["relativePath"] == artifact_path
     ]
     if len(artifacts) != 1:
         raise ValueError("Product index artifact must name exactly one receipt output")
-    artifact = artifacts[0]
+    return receipt, artifact_path, artifacts[0]
+
+
+def _mint_release_admission(
+    source: IndexEntrySource,
+    verified_receipt: dict[str, Any],
+    verified_receipt_bytes: bytes,
+    expected_identity: tuple[str, str, str, str],
+) -> ReleaseIndexAdmission:
+    receipt, artifact_path, artifact = _validated_entry_source(source)
+    identity = tuple(receipt[field] for field in ("product", "component", "phase", "target"))
+    if source.release_admission is not None or receipt["trustDomain"] != "development":
+        raise ValueError("Release admission requires an unadmitted development receipt")
+    if identity != expected_identity or receipt != verified_receipt or \
+            source.receipt_bytes != verified_receipt_bytes:
+        raise ValueError("Release admission verifier result does not match the exact receipt")
+    admission = ReleaseIndexAdmission(_RELEASE_ADMISSION_TOKEN)
+    _RELEASE_ADMISSIONS[admission] = _ReleaseAdmissionBinding(
+        _RELEASE_ADMISSION_TOKEN,
+        identity,
+        receipt["buildKey"],
+        sha256_bytes(source.receipt_bytes),
+        canonical_json_bytes(receipt["outputs"]),
+        output_inventory_digest(receipt["outputs"]),
+        artifact_path,
+        artifact["sha256"],
+    )
+    return admission
+
+
+def release_attested_contract_admission(
+    source: IndexEntrySource,
+    *,
+    payload: Path,
+    metadata_receipt: Path,
+    attestation: Path,
+    signature: Path,
+    public_key: Path,
+    keyring: Path,
+    keys_directory: Path,
+) -> ReleaseIndexAdmission:
+    from .contract_attestation import verify_contract_attestation
+
+    _, verified_receipt, _ = verify_contract_attestation(
+        Path(payload), Path(metadata_receipt), Path(attestation), Path(signature),
+        Path(public_key), required_trust_domain="release",
+        keyring=Path(keyring), keys_directory=Path(keys_directory),
+    )
+    receipt_bytes = read_regular_file_bytes(
+        Path(metadata_receipt), max_bytes=_INDEX_LIMIT, reject_symlink_parents=True,
+    )
+    return _mint_release_admission(
+        source, verified_receipt, receipt_bytes,
+        ("contract", "contract", "metadata", "common"),
+    )
+
+
+def release_attested_runtime_variant_admission(
+    source: IndexEntrySource,
+    *,
+    payload: Path,
+    binary_receipt: Path,
+    package_receipt: Path,
+    validation_receipt: Path,
+    metadata_receipt: Path,
+    validation_evidence: Path,
+    attestation: Path,
+    signature: Path,
+    public_key: Path,
+    keyring: Path,
+    keys_directory: Path,
+) -> ReleaseIndexAdmission:
+    from .runtime_attestation import verify_runtime_variant_attestation
+
+    manifest, receipts, _ = verify_runtime_variant_attestation(
+        Path(payload), Path(binary_receipt), Path(package_receipt), Path(validation_receipt),
+        Path(metadata_receipt), Path(attestation), Path(signature), Path(public_key),
+        required_trust_domain="release", validation_evidence=Path(validation_evidence),
+        keyring=Path(keyring), keys_directory=Path(keys_directory),
+    )
+    receipt, _, _ = _validated_entry_source(source)
+    phase = receipt["phase"]
+    paths = {
+        "binary": binary_receipt,
+        "package": package_receipt,
+        "validation": validation_receipt,
+        "metadata": metadata_receipt,
+    }
+    if phase not in paths:
+        raise ValueError("Runtime variant release admission receipt phase is invalid")
+    receipt_bytes = read_regular_file_bytes(
+        Path(paths[phase]), max_bytes=_INDEX_LIMIT, reject_symlink_parents=True,
+    )
+    return _mint_release_admission(
+        source, receipts[phase], receipt_bytes,
+        ("runtime", manifest["target"], phase, manifest["target"]),
+    )
+
+
+def release_attested_runtime_aggregate_admission(
+    source: IndexEntrySource,
+    *,
+    manifest: Path,
+    metadata_receipt: Path,
+    attestation: Path,
+    signature: Path,
+    public_key: Path,
+    variant_bundles: dict[str, Path],
+    variant_phase_receipts: dict[str, dict[str, Path]],
+    variant_attestations: dict[str, Path],
+    variant_attestation_signatures: dict[str, Path],
+    variant_public_keys: dict[str, Path],
+    variant_validation_evidence: dict[str, Path],
+    adapter_receipts: list[dict[str, Any]],
+    keyring: Path,
+    keys_directory: Path,
+    variant_keyring: Path,
+    variant_keys_directory: Path,
+) -> ReleaseIndexAdmission:
+    from .runtime_aggregate import (
+        verify_runtime_aggregate_attestation,
+        verify_runtime_aggregate_attestation_closure,
+    )
+
+    aggregate, verified_receipt, verified_attestation = verify_runtime_aggregate_attestation(
+        Path(manifest), Path(metadata_receipt), Path(attestation), Path(signature),
+        Path(public_key), required_trust_domain="release",
+        keyring=Path(keyring), keys_directory=Path(keys_directory),
+    )
+    verify_runtime_aggregate_attestation_closure(
+        aggregate, verified_attestation,
+        variant_bundles=variant_bundles,
+        variant_phase_receipts=variant_phase_receipts,
+        variant_attestations=variant_attestations,
+        variant_attestation_signatures=variant_attestation_signatures,
+        variant_public_keys=variant_public_keys,
+        adapter_receipts=adapter_receipts,
+        required_variant_trust_domain="release",
+        variant_validation_evidence=variant_validation_evidence,
+        variant_keyring=Path(variant_keyring),
+        variant_keys_directory=Path(variant_keys_directory),
+    )
+    receipt_bytes = read_regular_file_bytes(
+        Path(metadata_receipt), max_bytes=_INDEX_LIMIT, reject_symlink_parents=True,
+    )
+    return _mint_release_admission(
+        source, verified_receipt, receipt_bytes,
+        ("runtime", "runtime-aggregate", "metadata", "aggregate"),
+    )
+
+
+def _entry(
+    source: IndexEntrySource,
+    *,
+    repository: str,
+    trust_domain: str,
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    receipt, artifact_path, artifact = _validated_entry_source(source)
+    identity = tuple(receipt[field] for field in ("product", "component", "phase", "target"))
+    admission = (
+        _RELEASE_ADMISSIONS.get(source.release_admission)
+        if isinstance(source.release_admission, ReleaseIndexAdmission) else None
+    )
+    release_admitted = (
+        trust_domain == "release"
+        and receipt["trustDomain"] == "development"
+        and admission is not None
+        and admission._token is _RELEASE_ADMISSION_TOKEN
+        and admission._identity == identity
+        and admission._build_key == receipt["buildKey"]
+        and admission._receipt_sha256 == sha256_bytes(source.receipt_bytes)
+        and admission._outputs == canonical_json_bytes(receipt["outputs"])
+        and admission._output_inventory_digest
+        == output_inventory_digest(receipt["outputs"])
+        and admission._artifact_name == artifact_path
+        and admission._artifact_sha256 == artifact["sha256"]
+    )
+    if receipt["trustDomain"] != trust_domain and not release_admitted:
+        raise ValueError("Product index receipt trust domain does not match the index")
+    if receipt["trustDomain"] == trust_domain and source.release_admission is not None:
+        raise ValueError("Product index release admission is not applicable to this receipt")
+    if receipt["producer"]["repository"] != repository:
+        raise ValueError("Product index receipt repository does not match the index")
     return ({
         "buildKey": receipt["buildKey"],
         "product": receipt["product"],
@@ -245,7 +444,7 @@ def _entry(
         "artifactName": artifact_path,
         "artifactSha256": artifact["sha256"],
         "receiptSha256": sha256_bytes(source.receipt_bytes),
-    }, receipt)
+    }, receipt, release_admitted)
 
 
 def build_product_index(
@@ -262,7 +461,7 @@ def build_product_index(
         (_entry(source, repository=repository, trust_domain=trust_domain) for source in sources),
         key=lambda pair: pair[0]["buildKey"],
     )
-    entries = [entry for entry, _ in pairs]
+    entries = [entry for entry, _, _ in pairs]
     keys = [entry["buildKey"] for entry in entries]
     if len(keys) != len(set(keys)):
         raise ValueError("Product index entry build keys must be unique")
@@ -282,17 +481,12 @@ def build_product_index(
         if any(
             receipt["producer"]["event"] != "pull_request"
             or receipt["producer"]["pullRequest"] != pull_request
-            for _, receipt in pairs
+            for _, receipt, _ in pairs
         ):
             raise ValueError("Pull-request product index contains a receipt from another context")
     elif any(
-        receipt["producer"]["event"] != "push"
-        and not (
-            receipt["trustDomain"] == "development"
-            and (receipt["product"], receipt["component"], receipt["phase"], receipt["target"])
-            == ("contract", "contract", "metadata", "common")
-        )
-        for _, receipt in pairs
+        receipt["producer"]["event"] != "push" and not release_admitted
+        for _, receipt, release_admitted in pairs
     ):
         raise ValueError("Release product index contains a non-push receipt")
     if index["context"]["kind"] == "stable":

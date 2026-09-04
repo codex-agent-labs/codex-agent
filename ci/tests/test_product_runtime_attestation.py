@@ -4,7 +4,6 @@ import copy
 import unittest
 
 from ci.products.inventory import canonical_json_bytes, sha256_bytes
-from ci.products.receipt import build_key_payload
 from ci.products.runtime_attestation import derive_runtime_component_attestation
 from ci.products.runtime_identity import derive_runtime_identity
 
@@ -83,20 +82,14 @@ def phases() -> list[dict]:
 
 
 def rekey(record: dict) -> None:
-    record["buildKey"] = sha256_bytes(canonical_json_bytes(build_key_payload(
-        product=record["product"],
-        component=record["component"],
-        phase=record["phase"],
-        target=record["target"],
-        inputs={
-            field: value
-            for field, value in record.items()
-            if field in {
-                "versionIdentity", "phaseInputDigest", "upstreamArtifacts",
-                "toolchainProfileDigest", "flagsDigest", "outputSchemaVersion",
-            }
-        },
-    )))
+    record["buildKey"] = sha256_bytes(canonical_json_bytes({
+        field: record[field]
+        for field in {
+            "schemaVersion", "product", "component", "phase", "target",
+            "versionIdentity", "phaseInputDigest", "upstreamArtifacts",
+            "toolchainProfileDigest", "flagsDigest", "outputSchemaVersion",
+        }
+    }))
 
 
 def artifacts() -> list[dict]:

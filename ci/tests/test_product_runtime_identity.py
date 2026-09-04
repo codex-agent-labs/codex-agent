@@ -107,8 +107,6 @@ class ProductRuntimeIdentityTest(unittest.TestCase):
                 },
                 "mavenFiles": [],
                 "evidenceFiles": [],
-                "signing": {},
-                "producer": {},
             }
             flags_digest = load_runtime_binary_flags(
                 root / "codex-agent-runtime-desktop/native/c-api/binary-flags.json"
@@ -267,6 +265,17 @@ class ProductRuntimeIdentityTest(unittest.TestCase):
                     expected_runtime_version="0.2.0",
                     expected_flags_digest=flags_digest,
                 )
+            for field in ("signing", "producer"):
+                with self.subTest(obsolete_contract_field=field):
+                    obsolete_manifest = copy.deepcopy(manifest)
+                    obsolete_manifest[field] = {}
+                    with self.assertRaisesRegex(ValueError, "fields are invalid"):
+                        verify_runtime_binary_plan(
+                            root, revision, complete_plan, obsolete_manifest,
+                            expected_target="macos-arm64",
+                            expected_runtime_version="0.2.0",
+                            expected_flags_digest=flags_digest,
+                        )
 
     def test_derives_exact_component_preimage_and_canonical_no_lf_identity(self) -> None:
         value = source()

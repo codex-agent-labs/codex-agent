@@ -24,6 +24,7 @@ import products.inventory as product_inventory  # noqa: E402
 from products.inventory import canonical_json_bytes, sha256_bytes  # noqa: E402
 from products.plan import plan_phase  # noqa: E402
 from products.receipt import (  # noqa: E402
+    compute_build_key,
     output_inventory_digest,
     validate_phase_receipt,
     write_output_manifest,
@@ -39,6 +40,7 @@ from products.restore import (  # noqa: E402
 )
 from products.selection import phase_git_inventory  # noqa: E402
 from products.signatures import generate_development_key, sign_manifest  # noqa: E402
+from ci.tests.test_runtime_evidence import RuntimeEvidenceFixture  # noqa: E402
 
 
 COMMIT = "a" * 40
@@ -113,6 +115,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "versions": VERSIONS,
             "phaseAuthorities": authorities,
             "contractEvidence": None,
+            "runtimeValidationEvidence": [],
             "availableObjects": [],
             "catalogs": {
                 "stable": [], "promotedMain": None, "samePr": None, "local": None,
@@ -744,6 +747,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 **product_reuse._identity_record(package),
                 "buildKey": package_build_key,
             }], "runtime": [], "sdk": []},
+            "continuationRequirements": [],
         }
         object_path = self.root / "binary.zip"
         catalog = product_reuse.Catalog(
@@ -859,6 +863,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "fullReuse": False,
             "phases": phases,
             "matrices": {"contract": [], "runtime": [], "sdk": []},
+            "continuationRequirements": [],
         }
         catalog = product_reuse.Catalog(
             "stable", {}, sha256_bytes(b"index"), {}, {build_key: self.root / "package.zip"},
@@ -937,6 +942,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 ],
             }],
             "matrices": {"contract": [], "runtime": [], "sdk": []},
+            "continuationRequirements": [],
         }
         catalog = product_reuse.Catalog(
             "same-pr", {}, source["indexSha256"], {}, {
@@ -1235,6 +1241,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "versions": VERSIONS,
             "phaseAuthorities": authorities,
             "contractEvidence": None,
+            "runtimeValidationEvidence": [],
             "availableObjects": [],
             "catalogs": {
                 "stable": [], "promotedMain": None, "samePr": catalog, "local": None,
@@ -1402,6 +1409,18 @@ class ProductReuseAdapterTest(unittest.TestCase):
             with_receipt=True,
         )
 
+        advance_arguments = [
+            "advance-products", "--plan", "plan.json", "--discovery-root", "discovery",
+            "--state-root", "state", "--phase-shard", "one", "--phase-shard", "two",
+            "--destination", "advanced", "--github-output", "output",
+        ]
+        with mock.patch.object(product_reuse, "advance_products") as advance:
+            self.assertEqual(0, product_reuse.main(advance_arguments))
+        advance.assert_called_once_with(
+            Path("plan.json"), Path("discovery"), Path("state"),
+            [Path("one"), Path("two")], Path("advanced"), Path("output"),
+        )
+
     def test_contract_ready_phase_is_exactly_one_known_contract_phase(self) -> None:
         binary = PhaseInstanceId("contract", "contract", "binary", "common")
         package = PhaseInstanceId("contract", "contract", "package", "common")
@@ -1409,6 +1428,549 @@ class ProductReuseAdapterTest(unittest.TestCase):
         self.assertEqual("binary", product_reuse._contract_ready_phase({binary: {}}))
         with self.assertRaisesRegex(ValueError, "more than one"):
             product_reuse._contract_ready_phase({binary: {}, package: {}})
+
+    def test_product_continuation_materializes_ready_runtime_evidence(self) -> None:
+        root = self.root.resolve()
+        metadata = PhaseInstanceId(
+            "runtime", "macos-arm64", "metadata", "macos-arm64",
+        )
+        closure = product_reuse._dependency_closure((metadata,))
+        validation = PhaseInstanceId(
+            "runtime", "macos-arm64", "validation", "macos-arm64",
+        )
+        evidence_fixture = RuntimeEvidenceFixture(root / "runtime-evidence")
+        report = next(
+            path for path in evidence_fixture.write_desktop()
+            if path.name.endswith("macosArm64.json")
+        )
+        plan = impact_plan(changed=["runtime.kt"])
+        producer = product_reuse._consumer(
+            plan, {"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+        )["producer"]
+        sources = {}
+        envelopes = {}
+        for index, instance in enumerate(instance for instance in closure if instance != metadata):
+            stage = root / f"object-{index}-stage"
+            if instance == validation:
+                payload = stage / "outputs/native/validation.json"
+                payload.parent.mkdir(parents=True)
+                payload.write_bytes(report.read_bytes())
+                output_manifest = write_output_manifest(
+                    stage, instance.product, instance.component, instance.phase,
+                    instance.target, "0.2.0", {"native": "outputs/native"},
+                )
+            else:
+                payload = stage / "outputs/value.bin"
+                payload.parent.mkdir(parents=True)
+                payload.write_bytes(f"value-{index}".encode())
+                output_manifest = write_output_manifest(
+                    stage, instance.product, instance.component, instance.phase,
+                    instance.target, "0.2.0", {"artifact": "outputs"},
+                )
+            inventory = [{
+                "relativePath": f"source/{index}.txt",
+                "bytes": 1,
+                "sha256": sha256_bytes(bytes([index])),
+            }]
+            inputs = {
+                "inventory": inventory,
+                "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
+                "versionIdentity": "0.2.0",
+                "upstreamArtifacts": [],
+                "toolchainProfileDigest": sha256_bytes(b"toolchain"),
+                "flagsDigest": sha256_bytes(b"flags"),
+                "outputSchemaVersion": 1,
+            }
+            receipt_producer = dict(producer)
+            if instance == validation:
+                receipt_producer["commit"] = evidence_fixture.commits["macosArm64"]
+            receipt = validate_phase_receipt({
+                "schemaVersion": 1,
+                **product_reuse._identity_record(instance),
+                "productVersion": "0.2.0",
+                "buildKey": compute_build_key(
+                    **product_reuse._identity_record(instance), inputs=inputs,
+                ),
+                "inputs": inputs,
+                "outputs": output_manifest["outputs"],
+                "producer": receipt_producer,
+                "trustDomain": "development",
+                "result": "success",
+            })
+            receipt_path = root / f"object-{index}-receipt.json"
+            receipt_path.write_bytes(canonical_json_bytes(receipt))
+            stored = store_local_object(stage, receipt_path, root / "objects")
+            sources[instance] = stored["path"]
+            envelopes[instance] = {
+                "receipt": receipt,
+                "receiptSha256": stored["receiptSha256"],
+                "objectSha256": stored["objectSha256"],
+            }
+
+        transport = {
+            "kind": "same-pr",
+            "indexSha256": sha256_bytes(b"index"),
+            "artifactName": "product.bin",
+            "artifactSha256": sha256_bytes(b"artifact"),
+        }
+        metadata_inputs = copy.deepcopy(envelopes[validation]["receipt"]["inputs"])
+        metadata_build_key = compute_build_key(
+            **product_reuse._identity_record(metadata), inputs=metadata_inputs,
+        )
+        prior_phases = []
+        advanced_phases = []
+        for instance in closure:
+            if instance == metadata:
+                prior_phases.append({
+                    **product_reuse._identity_record(instance),
+                    "buildKey": None,
+                    "state": "waiting",
+                    "source": None,
+                    "transportSource": None,
+                    "receiptSha256": None,
+                    "objectSha256": None,
+                    "misses": [],
+                })
+                advanced_phases.append({
+                    **product_reuse._identity_record(instance),
+                    "buildKey": metadata_build_key,
+                    "state": "build",
+                    "source": None,
+                    "transportSource": None,
+                    "receiptSha256": None,
+                    "objectSha256": None,
+                    "misses": [
+                        {"source": source, "reason": "fixture-miss"}
+                        for source in product_reuse.SOURCES
+                    ],
+                })
+                continue
+            envelope = envelopes[instance]
+            reused = {
+                **product_reuse._identity_record(instance),
+                "buildKey": envelope["receipt"]["buildKey"],
+                "state": "reused",
+                "source": "same-pr",
+                "transportSource": transport,
+                "receiptSha256": envelope["receiptSha256"],
+                "objectSha256": envelope["objectSha256"],
+                "misses": [
+                    {"source": source, "reason": "fixture-miss"}
+                    for source in product_reuse.SOURCES[:2]
+                ],
+            }
+            prior_phases.append(reused)
+            advanced_phases.append({
+                **reused,
+                "state": "retained",
+                "source": None,
+                "transportSource": None,
+                "misses": [],
+            })
+        requirement = {
+            "kind": "runtime-validation-evidence",
+            **product_reuse._identity_record(metadata),
+            "dependencies": [product_reuse._identity_record(validation)],
+        }
+        prior = {
+            "schemaVersion": 1,
+            "result": "build-required",
+            "fullReuse": False,
+            "phases": prior_phases,
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+            "continuationRequirements": [requirement],
+        }
+        metadata_plan = {
+            "schemaVersion": 1,
+            **product_reuse._identity_record(metadata),
+            "buildKey": metadata_build_key,
+            "inputs": metadata_inputs,
+        }
+        advanced = {
+            "schemaVersion": 1,
+            "result": "build-required",
+            "fullReuse": False,
+            "phases": advanced_phases,
+            "matrices": {"contract": [], "runtime": [{
+                **product_reuse._identity_record(metadata),
+                "buildKey": metadata_plan["buildKey"],
+            }], "sdk": []},
+            "continuationRequirements": [],
+        }
+        discovery = root / "discovery"
+        discovery.mkdir()
+        authorities = [{
+            **product_reuse._identity_record(instance),
+            "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+            "outputSchemaVersion": 1,
+        } for instance in closure]
+        request = {
+            "schemaVersion": 1,
+            "requestType": "reuse-wave",
+            "repository": plan["repository"],
+            "pullRequest": plan["pullRequest"],
+            "repositoryRoot": str(root),
+            "repositoryRevision": COMMIT,
+            "artifactRoot": str(root / "build/product-reuse"),
+            "requested": [product_reuse._identity_record(metadata)],
+            "versions": VERSIONS,
+            "phaseAuthorities": authorities,
+            "contractEvidence": None,
+            "runtimeValidationEvidence": [],
+            "availableObjects": [],
+            "catalogs": {"stable": [], "promotedMain": None, "samePr": None, "local": None},
+        }
+        for name, value in (
+            ("producer.json", producer),
+            ("reuse-wave-request.json", request),
+            ("reuse-wave-result.json", prior),
+        ):
+            (discovery / name).write_bytes(canonical_json_bytes(value))
+        carrier_resolution = {
+            "schemaVersion": 1,
+            "result": "complete",
+            "fullReuse": True,
+            "phases": [
+                phase for phase in prior_phases if product_reuse._identity(phase) != metadata
+            ],
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+        }
+        write_carrier(
+            discovery / "reused-carrier",
+            carrier_resolution,
+            tuple(instance for instance in closure if instance != metadata),
+            sources,
+            {"kind": "ci", "producer": producer},
+        )
+        calls = 0
+
+        def planner(value, *, build_plan_consumer=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                self.assertEqual([], value["runtimeValidationEvidence"])
+                return copy.deepcopy(prior)
+            self.assertEqual(1, len(value["runtimeValidationEvidence"]))
+            report_path = root.joinpath(
+                *Path(value["runtimeValidationEvidence"][0]["reports"][0]).parts,
+            )
+            self.assertEqual(report.read_bytes(), report_path.read_bytes())
+            if calls == 2 and build_plan_consumer is not None:
+                build_plan_consumer(metadata, metadata_plan)
+            return copy.deepcopy(advanced)
+
+        self.write_plan(plan)
+        destination = root / "advanced"
+        with mock.patch.object(product_reuse, "_validate_plan", return_value=plan), \
+                mock.patch.object(product_reuse, "_requested", return_value=(metadata,)), \
+                mock.patch.object(product_reuse, "_authorities", return_value=(authorities, None)), \
+                mock.patch.object(product_reuse, "_versions", return_value=VERSIONS), \
+                mock.patch.object(product_reuse, "plan_reuse_wave", side_effect=planner):
+            result = product_reuse.advance_products(
+                self.plan_path,
+                discovery,
+                None,
+                [],
+                destination,
+                self.output,
+                repository_root=root,
+                environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+        self.assertEqual(advanced, result)
+        self.assertEqual(3, calls)
+        self.assertEqual(
+            report.read_bytes(),
+            next((destination / "runtime-validation-handoffs").glob(
+                "*/validation/*/stage/outputs/native/validation.json",
+            )).read_bytes(),
+        )
+        self.assertTrue((destination / "runtime-validation-handoffs/macos-arm64-macos-arm64/projection.json").is_file())
+        self.assertEqual(
+            canonical_json_bytes(metadata_plan),
+            (destination / "phase-plans/runtime-macos-arm64-metadata-macos-arm64.json").read_bytes(),
+        )
+        rejected_calls = 0
+
+        def reject_staged_replay(value, *, build_plan_consumer=None):
+            nonlocal rejected_calls
+            rejected_calls += 1
+            if rejected_calls == 1:
+                return copy.deepcopy(prior)
+            if rejected_calls == 2:
+                if build_plan_consumer is not None:
+                    build_plan_consumer(metadata, metadata_plan)
+                return copy.deepcopy(advanced)
+            raise ValueError("staged cross-pair")
+
+        rejected_destination = root / "rejected-advanced"
+        with mock.patch.object(product_reuse, "_validate_plan", return_value=plan), \
+                mock.patch.object(product_reuse, "_requested", return_value=(metadata,)), \
+                mock.patch.object(product_reuse, "_authorities", return_value=(authorities, None)), \
+                mock.patch.object(product_reuse, "_versions", return_value=VERSIONS), \
+                mock.patch.object(
+                    product_reuse, "plan_reuse_wave", side_effect=reject_staged_replay,
+                ), self.assertRaisesRegex(ValueError, "staged cross-pair"):
+            product_reuse.advance_products(
+                self.plan_path,
+                discovery,
+                None,
+                [],
+                rejected_destination,
+                root / "rejected-output",
+                repository_root=root,
+                environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+        self.assertFalse(rejected_destination.exists())
+
+        metadata_stage = root / "metadata-stage"
+        metadata_output = metadata_stage / "outputs/evidence/macos-arm64.json"
+        metadata_output.parent.mkdir(parents=True)
+        metadata_output.write_bytes(
+            (destination / "runtime-validation-handoffs/macos-arm64-macos-arm64/projection.json").read_bytes(),
+        )
+        write_output_manifest(
+            metadata_stage,
+            metadata.product,
+            metadata.component,
+            metadata.phase,
+            metadata.target,
+            "0.2.0",
+            {"adapter-evidence": "outputs/evidence"},
+        )
+        metadata_shard = root / "metadata-shard"
+        finalize_phase_object(
+            stage_root=metadata_stage,
+            phase_plan=metadata_plan,
+            producer=producer,
+            product_version="0.2.0",
+            trust_domain="development",
+            destination=metadata_shard,
+        )
+        metadata_descriptor = verify_phase_shard(metadata_shard, metadata)
+        complete_phases = []
+        for phase in advanced_phases:
+            if product_reuse._identity(phase) == metadata:
+                complete_phases.append({
+                    **product_reuse._identity_record(metadata),
+                    "buildKey": metadata_descriptor["buildKey"],
+                    "state": "retained",
+                    "source": None,
+                    "transportSource": None,
+                    "receiptSha256": metadata_descriptor["receiptSha256"],
+                    "objectSha256": metadata_descriptor["objectSha256"],
+                    "misses": [],
+                })
+            else:
+                complete_phases.append(copy.deepcopy(phase))
+        complete = {
+            "schemaVersion": 1,
+            "result": "complete",
+            "fullReuse": True,
+            "phases": complete_phases,
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+            "continuationRequirements": [],
+        }
+        continuation_calls = 0
+
+        def complete_continuation(value, *, build_plan_consumer=None):
+            nonlocal continuation_calls
+            continuation_calls += 1
+            if continuation_calls == 1:
+                return copy.deepcopy(prior)
+            if continuation_calls == 2:
+                if build_plan_consumer is not None:
+                    build_plan_consumer(metadata, metadata_plan)
+                return copy.deepcopy(advanced)
+            return copy.deepcopy(complete)
+
+        complete_destination = root / "complete"
+        with mock.patch.object(product_reuse, "_validate_plan", return_value=plan), \
+                mock.patch.object(product_reuse, "_requested", return_value=(metadata,)), \
+                mock.patch.object(product_reuse, "_authorities", return_value=(authorities, None)), \
+                mock.patch.object(product_reuse, "_versions", return_value=VERSIONS), \
+                mock.patch.object(
+                    product_reuse, "plan_reuse_wave", side_effect=complete_continuation,
+                ):
+            completed = product_reuse.advance_products(
+                self.plan_path,
+                discovery,
+                destination,
+                [metadata_shard],
+                complete_destination,
+                root / "complete-output",
+                repository_root=root,
+                environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+        self.assertEqual(complete, completed)
+        self.assertEqual(4, continuation_calls)
+        self.assertTrue((complete_destination / "carrier/carrier.json").is_file())
+        verified_complete = verify_carrier(
+            complete_destination / "carrier",
+            closure,
+            {"kind": "ci", "producer": producer},
+        )
+        metadata_transport = next(
+            phase for phase in verified_complete["resolution"]["phases"]
+            if product_reuse._identity(phase) == metadata
+        )
+        self.assertEqual("phase-shard", metadata_transport["source"])
+
+    def test_outer_continuation_requires_only_semantic_node_reports(self) -> None:
+        metadata = PhaseInstanceId("runtime", "node-js", "metadata", "node-js")
+        closure = product_reuse._dependency_closure((metadata,))
+        phases = [{
+            **product_reuse._identity_record(instance),
+            "buildKey": None if instance == metadata else sha256_bytes(
+                repr(instance).encode(),
+            ),
+            "state": "waiting" if instance == metadata else "retained",
+            "source": None,
+            "transportSource": None,
+            "receiptSha256": None if instance == metadata else sha256_bytes(
+                f"receipt-{instance}".encode(),
+            ),
+            "objectSha256": None if instance == metadata else sha256_bytes(
+                f"object-{instance}".encode(),
+            ),
+            "misses": [],
+        } for instance in closure]
+        dependencies = product_reuse.runtime_validation_dependencies(metadata)
+        self.assertEqual(5, len(dependencies))
+        self.assertNotIn("node-js-binding", {dependency.target for dependency in dependencies})
+        result = {
+            "schemaVersion": 1,
+            "result": "build-required",
+            "fullReuse": False,
+            "phases": phases,
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+            "continuationRequirements": [{
+                "kind": "runtime-validation-evidence",
+                **product_reuse._identity_record(metadata),
+                "dependencies": [
+                    product_reuse._identity_record(dependency) for dependency in dependencies
+                ],
+            }],
+        }
+        product_reuse._validate_reuse_result(result, (metadata,), require_complete=False)
+
+        binding = next(instance for instance in closure if instance.target == "node-js-binding")
+        cross_paired = copy.deepcopy(result)
+        cross_paired["continuationRequirements"][0]["dependencies"].append(
+            product_reuse._identity_record(binding),
+        )
+        with self.assertRaisesRegex(ValueError, "dependencies are invalid"):
+            product_reuse._validate_reuse_result(
+                cross_paired, (metadata,), require_complete=False,
+            )
+
+        missing = copy.deepcopy(result)
+        missing["continuationRequirements"] = []
+        with self.assertRaisesRegex(ValueError, "do not match ready"):
+            product_reuse._validate_reuse_result(
+                missing, (metadata,), require_complete=False,
+            )
+
+    def test_outer_jvm_handoff_orders_five_reports_and_rejects_cross_pairing(self) -> None:
+        root = self.root.resolve()
+        metadata = PhaseInstanceId("runtime", "jvm", "metadata", "jvm")
+        dependencies = product_reuse.runtime_validation_dependencies(metadata)
+        fixture = RuntimeEvidenceFixture(root / "jvm-evidence")
+        report_paths = {
+            product_inventory.load_canonical_json_bytes(path.read_bytes())["target"]: path
+            for path in fixture.write_jvm()
+        }
+        sources = {dependency: root / f"source-{dependency.target}.zip" for dependency in dependencies}
+        phases = {}
+        receipts = {}
+        for dependency in dependencies:
+            evidence_target = product_reuse.RUNTIME_EVIDENCE_TARGETS[dependency.target]
+            contents = report_paths[evidence_target].read_bytes()
+            inventory = [{
+                "relativePath": f"source/{dependency.target}.txt",
+                "bytes": 1,
+                "sha256": sha256_bytes(dependency.target.encode()),
+            }]
+            inputs = {
+                "inventory": inventory,
+                "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
+                "versionIdentity": "0.2.0",
+                "upstreamArtifacts": [],
+                "toolchainProfileDigest": sha256_bytes(b"toolchain"),
+                "flagsDigest": sha256_bytes(b"flags"),
+                "outputSchemaVersion": 1,
+            }
+            producer = product_reuse._consumer(
+                impact_plan(changed=["runtime.kt"]),
+                {"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )["producer"]
+            producer["commit"] = fixture.commits[evidence_target]
+            output_path = (
+                f"outputs/jvm-evidence/"
+                f"{product_reuse.jvm_evidence_filename(evidence_target)}"
+            )
+            receipt = validate_phase_receipt({
+                "schemaVersion": 1,
+                **product_reuse._identity_record(dependency),
+                "productVersion": "0.2.0",
+                "buildKey": compute_build_key(
+                    **product_reuse._identity_record(dependency), inputs=inputs,
+                ),
+                "inputs": inputs,
+                "outputs": [{
+                    "kind": "jvm-evidence",
+                    "relativePath": output_path,
+                    "bytes": len(contents),
+                    "sha256": sha256_bytes(contents),
+                }],
+                "producer": producer,
+                "trustDomain": "development",
+                "result": "success",
+            })
+            receipts[dependency] = receipt
+            phases[dependency] = {
+                **product_reuse._identity_record(dependency),
+                "buildKey": receipt["buildKey"],
+                "receiptSha256": sha256_bytes(canonical_json_bytes(receipt)),
+                "objectSha256": sha256_bytes(f"object-{dependency.target}".encode()),
+            }
+
+        def restore(source, destination, **_expected):
+            dependency = next(item for item, path in sources.items() if path == source)
+            receipt = receipts[dependency]
+            output = receipt["outputs"][0]
+            target = destination.joinpath(*Path(output["relativePath"]).parts)
+            target.parent.mkdir(parents=True)
+            evidence_target = product_reuse.RUNTIME_EVIDENCE_TARGETS[dependency.target]
+            target.write_bytes(report_paths[evidence_target].read_bytes())
+            return {"receipt": receipt, "receiptBytes": canonical_json_bytes(receipt)}
+
+        with mock.patch.object(product_reuse, "restore_object", side_effect=restore):
+            records = product_reuse._materialize_runtime_validation_handoffs(
+                (metadata,), phases, sources, root / "handoffs", root,
+            )
+        self.assertEqual(1, len(records))
+        self.assertEqual(
+            [product_reuse.RUNTIME_EVIDENCE_TARGETS[target] for target in product_reuse.RUNTIME_TARGETS],
+            [
+                product_inventory.load_canonical_json_bytes(
+                    root.joinpath(*Path(path).parts).read_bytes(),
+                )["target"]
+                for path in records[0]["reports"]
+            ],
+        )
+
+        first = dependencies[0]
+        receipts[first] = copy.deepcopy(receipts[first])
+        receipts[first]["producer"]["commit"] = "f" * 40
+        receipts[first]["buildKey"] = compute_build_key(
+            **product_reuse._identity_record(first), inputs=receipts[first]["inputs"],
+        )
+        with mock.patch.object(product_reuse, "restore_object", side_effect=restore), \
+                self.assertRaisesRegex(ValueError, "candidate commit mismatch"):
+            product_reuse._materialize_runtime_validation_handoffs(
+                (metadata,), phases, sources, root / "cross-paired-handoffs", root,
+            )
 
     def test_contract_advance_replays_the_request_and_preserves_a_fresh_shard(self) -> None:
         resolved_root = self.root.resolve()
@@ -1481,6 +2043,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 **product_reuse._identity_record(binary),
                 "buildKey": binary_plan["buildKey"],
             }], "runtime": [], "sdk": []},
+            "continuationRequirements": [],
         }
         discovery = resolved_root / "discovery"
         discovery.mkdir()
@@ -1496,6 +2059,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "versions": VERSIONS,
             "phaseAuthorities": authorities,
             "contractEvidence": None,
+            "runtimeValidationEvidence": [],
             "availableObjects": [],
             "catalogs": {"stable": [], "promotedMain": None, "samePr": None, "local": None},
         }
@@ -1549,6 +2113,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 **product_reuse._identity_record(package),
                 "buildKey": package_plan["buildKey"],
             }], "runtime": [], "sdk": []},
+            "continuationRequirements": [],
         }
 
         advanced_second = None
@@ -1769,6 +2334,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 **product_reuse._identity_record(validation),
                 "buildKey": validation_plan["buildKey"],
             }], "runtime": [], "sdk": []},
+            "continuationRequirements": [],
         }, (validation, validation_plan))
         second_result, second_destination, _ = reconcile(
             "advanced-second", [package_shard], state=destination,

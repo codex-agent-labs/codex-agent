@@ -9,7 +9,13 @@ from unittest import mock
 
 import ci.products.receipt as product_receipt
 from ci.products.inventory import canonical_json_bytes, sha256_bytes
-from ci.products.receipt import compute_build_key, write_output_manifest, write_phase_receipt
+from ci.products.receipt import (
+    build_key_payload,
+    compute_build_key,
+    validate_receipt_inputs,
+    write_output_manifest,
+    write_phase_receipt,
+)
 
 
 DIGEST_A = sha256_bytes(b"a")
@@ -182,6 +188,86 @@ class ProductReceiptEmissionTest(unittest.TestCase):
         except (NotImplementedError, OSError) as error:
             self.skipTest(f"symbolic links are unavailable: {error}")
         self.assert_failure_removes_stale()
+
+    def test_runtime_validation_projection_normalizes_only_outputs_digest(self) -> None:
+        def inputs(raw_digest: str, semantic_digest: str) -> dict:
+            value = self.inputs()
+            value["upstreamArtifacts"] = [{
+                "product": "runtime",
+                "component": "linux-x64",
+                "phase": "validation",
+                "target": "linux-x64",
+                "buildKey": DIGEST_A,
+                "outputsDigest": raw_digest,
+                "semanticProjection": {
+                    "schemaVersion": 1,
+                    "kind": "runtime-validation-content",
+                    "sha256": semantic_digest,
+                },
+            }]
+            return validate_receipt_inputs(value)
+
+        first = inputs(DIGEST_B, DIGEST_C)
+        second = inputs(DIGEST_A, DIGEST_C)
+        keys = {
+            name: compute_build_key(
+                product="runtime", component="linux-x64", phase="metadata",
+                target="linux-x64", inputs=value,
+            )
+            for name, value in (("first", first), ("second", second))
+        }
+        self.assertEqual(keys["first"], keys["second"])
+        normalized = build_key_payload(
+            product="runtime", component="linux-x64", phase="metadata",
+            target="linux-x64", inputs=first,
+        )["upstreamArtifacts"][0]
+        self.assertEqual(DIGEST_C, normalized["outputsDigest"])
+        self.assertEqual(DIGEST_A, normalized["buildKey"])
+        self.assertNotIn("semanticProjection", normalized)
+        self.assertEqual(DIGEST_B, first["upstreamArtifacts"][0]["outputsDigest"])
+        self.assertIn("semanticProjection", first["upstreamArtifacts"][0])
+
+        changed = inputs(DIGEST_B, DIGEST_A)
+        self.assertNotEqual(
+            keys["first"],
+            compute_build_key(
+                product="runtime", component="linux-x64", phase="metadata",
+                target="linux-x64", inputs=changed,
+            ),
+        )
+
+    def test_runtime_validation_projection_schema_and_edge_are_restricted(self) -> None:
+        upstream = {
+            "product": "runtime",
+            "component": "linux-x64",
+            "phase": "validation",
+            "target": "linux-x64",
+            "buildKey": DIGEST_A,
+            "outputsDigest": DIGEST_B,
+            "semanticProjection": {
+                "schemaVersion": 1,
+                "kind": "runtime-validation-content",
+                "sha256": DIGEST_C,
+            },
+        }
+        for mutation in (
+            {**upstream, "semanticProjection": {**upstream["semanticProjection"], "extra": True}},
+            {**upstream, "semanticProjection": {**upstream["semanticProjection"], "kind": "wrong"}},
+            {**upstream, "semanticProjection": {**upstream["semanticProjection"], "sha256": "bad"}},
+            {**upstream, "contractProjection": {}},
+        ):
+            value = self.inputs()
+            value["upstreamArtifacts"] = [mutation]
+            with self.assertRaises(ValueError):
+                validate_receipt_inputs(value)
+
+        value = self.inputs()
+        value["upstreamArtifacts"] = [upstream]
+        with self.assertRaisesRegex(ValueError, "unauthorized edge"):
+            compute_build_key(
+                product="sdk", component="python", phase="metadata",
+                target="desktop", inputs=value,
+            )
 
     def test_cleanup_rejects_root_swap_without_touching_external_receipt(self) -> None:
         cleanup_root = self.root / "cleanup"

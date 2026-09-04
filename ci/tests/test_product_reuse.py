@@ -19,7 +19,10 @@ from ci.products.inventory import canonical_json_bytes, sha256_bytes, write_cano
 from ci.products.plan import (
     NOT_APPLICABLE_FLAGS_DIGEST,
     NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+    VerifiedRuntimeValidationProjection,
+    _VERIFIED_RUNTIME_VALIDATION_PROJECTION,
     plan_phase,
+    runtime_validation_dependencies,
 )
 from ci.products.receipt import output_inventory_digest, validate_phase_receipt, write_output_manifest
 from ci.products.registry import (
@@ -146,6 +149,16 @@ def all_inputs(instance: PhaseInstanceId) -> dict[PhaseInstanceId, dict[str, obj
     return {value: phase_inputs(value) for value in dependency_closure(instance)}
 
 
+def test_runtime_projection_provider(instance: PhaseInstanceId, _envelopes) -> object:
+    dependencies = runtime_validation_dependencies(instance)
+    return VerifiedRuntimeValidationProjection(
+        instance.component,
+        tuple(dependency.target for dependency in dependencies),
+        DIGEST_A,
+        _VERIFIED_RUNTIME_VALIDATION_PROJECTION,
+    )
+
+
 def product_version(product: str) -> str:
     return VERSIONS["runtime-release"] if product == "runtime" else VERSIONS[product]
 
@@ -200,12 +213,22 @@ def plan_for(
     inputs: dict[PhaseInstanceId, dict[str, object]],
     resolved: dict[PhaseInstanceId, dict[str, object]],
 ) -> dict[str, object]:
+    semantic_dependencies = runtime_validation_dependencies(instance)
     return plan_phase(
         instance,
         upstream_receipts=[
             resolved[dependency]["receipt"]
             for dependency in phase_instance_dependencies(instance)
         ],
+        runtime_validation_projection=(
+            VerifiedRuntimeValidationProjection(
+                instance.component,
+                tuple(dependency.target for dependency in semantic_dependencies),
+                DIGEST_A,
+                _VERIFIED_RUNTIME_VALIDATION_PROJECTION,
+            )
+            if semantic_dependencies else None
+        ),
         **inputs[instance],
     )
 
@@ -552,6 +575,7 @@ class ProductReuseTest(unittest.TestCase):
                 "outputSchemaVersion": 1,
             }],
             "contractEvidence": None,
+            "runtimeValidationEvidence": [],
             "availableObjects": [],
             "catalogs": {
                 "stable": [],
@@ -606,6 +630,13 @@ class ProductReuseTest(unittest.TestCase):
             ),
             "caller inventory": lambda value: value["phaseAuthorities"][0].update(inventory=[]),
             "symbolic revision": lambda value: value.update(repositoryRevision="HEAD"),
+            "claimed semantic digest": lambda value: value.update(
+                runtimeValidationEvidence=[{
+                    **value["requested"][0],
+                    "reports": [],
+                    "sha256": DIGEST_A,
+                }],
+            ),
         }
         for name, mutate in invalid.items():
             with self.subTest(name=name), mock.patch("ci.products.reuse.advance_reuse") as delegated:
@@ -716,6 +747,199 @@ class ProductReuseTest(unittest.TestCase):
         }]
         with self.assertRaises((CacheObjectError, ValueError)):
             plan_reuse_wave(symlink_request)
+
+    def test_reuse_wave_decodes_only_raw_runtime_validation_report_paths(self) -> None:
+        repository, revision = self.reuse_wave_repository()
+        metadata = PhaseInstanceId("runtime", "jvm", "metadata", "jvm")
+        request = self.reuse_wave_request(repository, revision)
+        request["requested"] = [{
+            "product": metadata.product,
+            "component": metadata.component,
+            "phase": metadata.phase,
+            "target": metadata.target,
+        }]
+        request["phaseAuthorities"] = [{
+            **request["requested"][0],
+            "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST,
+            "outputSchemaVersion": 1,
+        }]
+        request["runtimeValidationEvidence"] = [{
+            **request["requested"][0],
+            "reports": [f"reports/{target}.json" for target in (
+                "macosArm64", "macosX64", "linuxArm64", "linuxX64", "mingwX64",
+            )],
+        }]
+        envelopes = tuple({"receipt": {"target": target}} for target in range(5))
+
+        def delegated_advance(*_args, **kwargs):
+            kwargs["runtime_validation_projection_provider"](metadata, envelopes)
+            return {"ok": True}, ()
+
+        with (
+            mock.patch("ci.products.reuse._dependency_closure", return_value=(metadata,)),
+            mock.patch("ci.products.reuse.phase_git_inventory", return_value=[]),
+            mock.patch("ci.products.reuse.advance_reuse", side_effect=delegated_advance) as delegated,
+            mock.patch(
+                "ci.products.reuse.verify_runtime_validation_projection", return_value=object(),
+            ) as verified,
+        ):
+            self.assertEqual({"ok": True}, plan_reuse_wave(request))
+        provider = delegated.call_args.kwargs["runtime_validation_projection_provider"]
+        self.assertTrue(callable(provider))
+        self.assertEqual(
+            tuple(self.root / f"reports/{target}.json" for target in (
+                "macosArm64", "macosX64", "linuxArm64", "linuxX64", "mingwX64",
+            )),
+            tuple(verified.call_args.args[1]),
+        )
+        self.assertEqual([envelope["receipt"] for envelope in envelopes], verified.call_args.args[2])
+
+        early = copy.deepcopy(request)
+        with (
+            mock.patch("ci.products.reuse._dependency_closure", return_value=(metadata,)),
+            mock.patch("ci.products.reuse.phase_git_inventory", return_value=[]),
+            mock.patch("ci.products.reuse.advance_reuse", return_value=({"ok": True}, ())),
+        ):
+            with self.assertRaisesRegex(ValueError, "before its metadata phase was ready"):
+                plan_reuse_wave(early)
+
+        future = copy.deepcopy(request)
+        future["runtimeValidationEvidence"] = []
+        continuation = {"continuationRequirements": [{"kind": "runtime-validation-evidence"}]}
+        with (
+            mock.patch("ci.products.reuse._dependency_closure", return_value=(metadata,)),
+            mock.patch("ci.products.reuse.phase_git_inventory", return_value=[]),
+            mock.patch("ci.products.reuse.advance_reuse", return_value=(continuation, ())),
+        ):
+            self.assertIs(continuation, plan_reuse_wave(future))
+
+        with (
+            mock.patch("ci.products.reuse._dependency_closure", return_value=(metadata,)),
+            mock.patch("ci.products.reuse.phase_git_inventory", return_value=[]),
+            mock.patch("ci.products.reuse.advance_reuse", side_effect=delegated_advance),
+            mock.patch(
+                "ci.products.reuse.verify_runtime_validation_projection",
+                side_effect=ValueError("cross-paired Runtime validation evidence"),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "cross-paired"):
+                plan_reuse_wave(request)
+
+    def test_advance_reuse_requires_internal_authenticated_runtime_projection(self) -> None:
+        metadata = PhaseInstanceId("runtime", "jvm", "metadata", "jvm")
+        early, _ = advance_reuse(
+            [metadata], all_inputs(metadata), [], self.session(),
+        )
+        self.assertEqual([], early["continuationRequirements"])
+        self.assertEqual(
+            ["binary"], [entry["phase"] for entry in early["matrices"]["contract"]],
+        )
+
+        dependencies = tuple(
+            dependency for dependency in phase_instance_dependencies(metadata)
+            if dependency.phase == "validation" and dependency.target != "node-js-binding"
+        )
+        closure = tuple(sorted((*dependencies, metadata)))
+        inputs = {instance: phase_inputs(instance) for instance in closure}
+        envelopes = [{
+            "receipt": {
+                "product": instance.product,
+                "component": instance.component,
+                "phase": instance.phase,
+                "target": instance.target,
+            },
+            "receiptBytes": b"receipt",
+            "receiptSha256": DIGEST_A,
+            "objectSha256": DIGEST_B,
+        } for instance in dependencies]
+
+        def validate(value: dict[str, object], **_: object):
+            receipt = value["receipt"]
+            return PhaseInstanceId(
+                receipt["product"], receipt["component"], receipt["phase"], receipt["target"],
+            ), value
+
+        capability = object()
+
+        def planned(instance: PhaseInstanceId, values, *_args):
+            if instance == metadata:
+                self.assertIs(capability, values[metadata]["runtime_validation_projection"])
+            return {
+                "product": instance.product,
+                "component": instance.component,
+                "phase": instance.phase,
+                "target": instance.target,
+                "buildKey": DIGEST_A,
+                "inputs": {},
+            }
+
+        patches = (
+            mock.patch("ci.products.reuse._dependency_closure", return_value=closure),
+            mock.patch(
+                "ci.products.reuse.phase_instance_dependencies",
+                side_effect=lambda instance: dependencies if instance == metadata else (),
+            ),
+            mock.patch("ci.products.reuse._validate_envelope", side_effect=validate),
+            mock.patch("ci.products.reuse.verify_build_key_output_consistency"),
+            mock.patch("ci.products.reuse._plan", side_effect=planned),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            waiting, _ = advance_reuse([metadata], inputs, envelopes, self.session())
+            self.assertEqual([{
+                "kind": "runtime-validation-evidence",
+                "product": "runtime",
+                "component": "jvm",
+                "phase": "metadata",
+                "target": "jvm",
+                "dependencies": [{
+                    "product": dependency.product,
+                    "component": dependency.component,
+                    "phase": dependency.phase,
+                    "target": dependency.target,
+                } for dependency in dependencies],
+            }], waiting["continuationRequirements"])
+            metadata_phase = next(
+                phase for phase in waiting["phases"]
+                if (phase["product"], phase["component"], phase["phase"], phase["target"])
+                == (metadata.product, metadata.component, metadata.phase, metadata.target)
+            )
+            self.assertEqual("waiting", metadata_phase["state"])
+            self.assertIsNone(metadata_phase["buildKey"])
+            provider = mock.Mock(return_value=capability)
+            result, _ = advance_reuse(
+                [metadata], inputs, envelopes, self.session(),
+                runtime_validation_projection_provider=provider,
+            )
+            self.assertEqual("build-required", result["result"])
+            self.assertEqual([], result["continuationRequirements"])
+            provider.assert_called_once()
+            self.assertEqual(metadata, provider.call_args.args[0])
+            self.assertEqual(tuple(envelopes), provider.call_args.args[1])
+
+            metadata_envelope = {
+                "receipt": {
+                    "product": metadata.product,
+                    "component": metadata.component,
+                    "phase": metadata.phase,
+                    "target": metadata.target,
+                },
+                "receiptBytes": b"metadata receipt",
+                "receiptSha256": DIGEST_A,
+                "objectSha256": DIGEST_B,
+            }
+            complete, _ = advance_reuse(
+                [metadata], inputs, [*envelopes, metadata_envelope], self.session(),
+                runtime_validation_projection_provider=provider,
+            )
+            self.assertTrue(complete["fullReuse"])
+            self.assertEqual([], complete["continuationRequirements"])
+
+        forged = copy.deepcopy(inputs)
+        forged[metadata]["runtime_validation_projection"] = capability
+        with mock.patch("ci.products.reuse._dependency_closure", return_value=closure):
+            with self.assertRaisesRegex(ValueError, "Callers cannot supply"):
+                advance_reuse([metadata], forged, [], self.session())
 
     def test_reuse_wave_loads_available_object_with_existing_verifier(self) -> None:
         repository, revision = self.reuse_wave_repository()
@@ -900,6 +1124,7 @@ class ProductReuseTest(unittest.TestCase):
                 "keyring": None,
                 "keysDirectory": None,
             },
+            "runtimeValidationEvidence": [],
             "availableObjects": [{
                 "product": instance.product,
                 "component": instance.component,
@@ -1339,7 +1564,7 @@ class ProductReuseTest(unittest.TestCase):
         contract_upstream["contractProjection"].update({
             "contractVersion": "1.2.4",
             "receiptSha256": DIGEST_B,
-            "bundlePath": "outputs/repackaged-contract.zip",
+            "bundlePath": "outputs/codex-agent-contract-1.2.4.zip",
             "bundleSha256": DIGEST_A,
             "manifestSha256": DIGEST_B,
         })
@@ -1516,6 +1741,7 @@ class ProductReuseTest(unittest.TestCase):
             self.session(),
             repository_root=flags_repository,
             repository_revision=flags_revision,
+            runtime_validation_projection_provider=test_runtime_projection_provider,
             build_plan_consumer=lambda instance, plan: ready_plans.append((instance, plan)),
         )
 
@@ -1630,6 +1856,7 @@ class ProductReuseTest(unittest.TestCase):
             self.session(),
             repository_root=flags_repository,
             repository_revision=flags_revision,
+            runtime_validation_projection_provider=test_runtime_projection_provider,
         )
 
         owner = next(
@@ -1666,6 +1893,7 @@ class ProductReuseTest(unittest.TestCase):
             self.session(),
             repository_root=flags_repository,
             repository_revision=flags_revision,
+            runtime_validation_projection_provider=test_runtime_projection_provider,
         )
         self.assertEqual(
             ["validation"] * 5,

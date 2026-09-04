@@ -55,10 +55,47 @@ internal fun runRuntimeProductPythonModule(module: String, arguments: List<Strin
     check(module in runtimeProductPythonModules) {
         "Unsupported packaged Runtime product Python module: $module"
     }
+    return runRuntimeProductPython(
+        "ci.products.$module",
+        listOf("python3", "-m", "ci.products.$module") + arguments,
+    )
+}
+
+internal fun verifyRuntimeAdapterProjection(component: String, projection: java.io.File) {
+    check(component in setOf("jvm", "node-js", "node-wasm")) {
+        "Unsupported Runtime adapter projection: $component"
+    }
+    runRuntimeProductPython(
+        "Runtime adapter projection verifier",
+        listOf(
+            "python3",
+            "-c",
+            """
+from pathlib import Path
+import sys
+from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes
+from ci.products.runtime_evidence import validate_runtime_adapter_projection
+
+contents = read_regular_file_bytes(
+    Path(sys.argv[2]), max_bytes=64 * 1024 * 1024, reject_symlink_parents=True
+)
+projection = validate_runtime_adapter_projection(load_canonical_json_bytes(contents))
+if projection["component"] != sys.argv[1]:
+    raise ValueError("Runtime adapter projection component mismatch")
+if canonical_json_bytes(projection) != contents:
+    raise ValueError("Runtime adapter projection is not canonical JSON")
+            """.trimIndent(),
+            component,
+            projection.absolutePath,
+        ),
+    )
+}
+
+private fun runRuntimeProductPython(label: String, command: List<String>): String {
     val root = extractedRuntimeProductPythonRoot
     val log = Files.createTempFile("codex-agent-runtime-product-python-", ".log")
     try {
-        val process = ProcessBuilder(listOf("python3", "-m", "ci.products.$module") + arguments)
+        val process = ProcessBuilder(command)
             .directory(root)
             .redirectErrorStream(true)
             .redirectOutput(log.toFile())
@@ -83,7 +120,7 @@ internal fun runRuntimeProductPythonModule(module: String, arguments: List<Strin
             .decode(ByteBuffer.wrap(Files.readAllBytes(log)))
             .toString()
         check(completed && process.exitValue() == 0) {
-            "ci.products.$module failed (${if (completed) process.exitValue() else "timeout"}): ${text.trim()}"
+            "$label failed (${if (completed) process.exitValue() else "timeout"}): ${text.trim()}"
         }
         return text
     } finally {

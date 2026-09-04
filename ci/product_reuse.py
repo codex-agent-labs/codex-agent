@@ -17,7 +17,7 @@ from typing import Any, Mapping
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
 from receipt import safe_extract
 from reuse import api_json, download_artifact, github_output, paginated_items, run_matches_pr
-from products.aggregate import validate_product_index
+from products.aggregate import RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS, validate_product_index
 from products.contract_attestation import validate_contract_attestation
 from products.inventory import (
     canonical_json_bytes,
@@ -46,8 +46,17 @@ from products.registry import (
     phase_instance_dependencies,
     required_toolchain_profile,
 )
-from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST
+from products.plan import (
+    NOT_APPLICABLE_FLAGS_DIGEST,
+    NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+    runtime_validation_dependencies,
+)
 from products.runtime_flags import load_runtime_binary_flags_bytes
+from products.runtime_evidence import (
+    derive_authenticated_runtime_validation_projection,
+    jvm_evidence_filename,
+    node_evidence_filename,
+)
 from products.restore import (
     PHASE_SHARD_KEYS,
     PHASE_SHARD_NAME,
@@ -72,7 +81,10 @@ _PLAN_KEYS = {
     "unknownPaths", "changedPaths", "lanes",
 }
 _IDENTITY_KEYS = ("product", "component", "phase", "target")
-_REUSE_RESULT_KEYS = {"schemaVersion", "result", "fullReuse", "phases", "matrices"}
+_REUSE_RESULT_KEYS = {
+    "schemaVersion", "result", "fullReuse", "phases", "matrices",
+    "continuationRequirements",
+}
 _REUSE_PHASE_KEYS = {
     *_IDENTITY_KEYS, "buildKey", "state", "source", "transportSource",
     "receiptSha256", "objectSha256", "misses",
@@ -80,7 +92,7 @@ _REUSE_PHASE_KEYS = {
 _WAVE_REQUEST_KEYS = {
     "schemaVersion", "requestType", "repository", "pullRequest", "repositoryRoot",
     "repositoryRevision", "artifactRoot", "requested", "versions", "phaseAuthorities",
-    "contractEvidence", "availableObjects", "catalogs",
+    "contractEvidence", "runtimeValidationEvidence", "availableObjects", "catalogs",
 }
 _VERSION_PATHS = {
     "contract": "gradle/release/versions/contract.txt",
@@ -572,6 +584,7 @@ def _wave_request(
         "versions": versions,
         "phaseAuthorities": [record for record in authorities if _identity(record) in closure],
         "contractEvidence": contract_evidence,
+        "runtimeValidationEvidence": [],
         "availableObjects": [],
         "catalogs": _catalog_request(catalogs),
     }
@@ -737,6 +750,45 @@ def _validate_reuse_result(
         for dependency in phase_instance_dependencies(instance)
     ):
         raise ValueError("Reused product phases are not dependency-closed")
+    requirements = require_array(
+        result["continuationRequirements"], "Reuse result.continuationRequirements",
+    )
+    requirement_instances = []
+    phase_by_instance = {
+        _identity(phase): phase for phase in phases
+    }
+    for index, value in enumerate(requirements):
+        label = f"Reuse result.continuationRequirements[{index}]"
+        requirement = require_exact_keys(
+            value,
+            {"kind", *_IDENTITY_KEYS, "dependencies"},
+            label,
+        )
+        if requirement["kind"] != "runtime-validation-evidence":
+            raise ValueError("Reuse continuation requirement kind is invalid")
+        instance = _identity(requirement)
+        if instance not in phase_by_instance:
+            raise ValueError("Reuse continuation requirement is outside the dependency closure")
+        dependencies = runtime_validation_dependencies(instance)
+        if not dependencies:
+            raise ValueError("Reuse continuation requirement is not applicable")
+        if phase_by_instance[instance]["state"] != "waiting":
+            raise ValueError("Reuse continuation requirement is not waiting")
+        if require_array(requirement["dependencies"], f"{label}.dependencies") != [
+            _identity_record(dependency) for dependency in dependencies
+        ]:
+            raise ValueError("Reuse continuation requirement dependencies are invalid")
+        requirement_instances.append(instance)
+    if requirement_instances != sorted(set(requirement_instances)):
+        raise ValueError("Reuse continuation requirements must be sorted and unique")
+    expected_requirements = [
+        instance for instance in closure
+        if phase_by_instance[instance]["state"] == "waiting"
+        and runtime_validation_dependencies(instance)
+        and all(dependency in selected_set for dependency in phase_instance_dependencies(instance))
+    ]
+    if requirement_instances != expected_requirements:
+        raise ValueError("Reuse continuation requirements do not match ready metadata phases")
     actually_complete = tuple(selected) == closure
     if (
         result["result"] != ("complete" if actually_complete else "build-required")
@@ -988,6 +1040,155 @@ def _catalog_object_sources(request: Mapping[str, Any]) -> dict[tuple[str, str, 
     return result
 
 
+def _rebase_contract_evidence_paths(
+    value: Mapping[str, Any] | None, source_root: Path, repository_root: Path,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    evidence = require_exact_keys(
+        value,
+        {
+            "attestation", "attestationSignature", "publicKey", "expectedTrustDomain",
+            "keyring", "keysDirectory",
+        },
+        "Runtime reuse Contract evidence",
+    )
+
+    def relative(member: Any, label: str) -> str | None:
+        if member is None:
+            return None
+        path = source_root.joinpath(*PurePosixPath(require_relative_path(member, label)).parts)
+        try:
+            return path.relative_to(repository_root).as_posix()
+        except ValueError as error:
+            raise ValueError(f"{label} escapes the repository") from error
+
+    return {
+        "attestation": relative(evidence["attestation"], "Contract attestation"),
+        "attestationSignature": relative(
+            evidence["attestationSignature"], "Contract attestation signature",
+        ),
+        "publicKey": relative(evidence["publicKey"], "Contract public key"),
+        "expectedTrustDomain": require_string(
+            evidence["expectedTrustDomain"], "Contract expected trust domain",
+        ),
+        "keyring": relative(evidence["keyring"], "Contract keyring"),
+        "keysDirectory": relative(evidence["keysDirectory"], "Contract keys directory"),
+    }
+
+
+def _available_object_records(
+    phases: Mapping[PhaseInstanceId, Mapping[str, Any]],
+    sources: Mapping[PhaseInstanceId, Path],
+    artifact_root: Path,
+) -> list[dict[str, Any]]:
+    records = []
+    for instance, source in sorted(sources.items()):
+        phase = phases[instance]
+        try:
+            relative = source.relative_to(artifact_root).as_posix()
+        except ValueError as error:
+            raise ValueError("Product reuse object escapes the artifact root") from error
+        records.append({
+            **_identity_record(instance),
+            "buildKey": phase["buildKey"],
+            "receiptSha256": phase["receiptSha256"],
+            "objectSha256": phase["objectSha256"],
+            "objectPath": relative,
+        })
+    return records
+
+
+def _runtime_report_output(
+    metadata: PhaseInstanceId, dependency: PhaseInstanceId,
+    stage: Path, receipt: Mapping[str, Any],
+) -> Path:
+    evidence_target = RUNTIME_EVIDENCE_TARGETS[dependency.target]
+    if metadata.component == "jvm":
+        expected = (
+            "jvm-evidence",
+            f"outputs/jvm-evidence/{jvm_evidence_filename(evidence_target)}",
+        )
+    elif metadata.component in {"node-js", "node-wasm"}:
+        backend = "js" if metadata.component == "node-js" else "wasm"
+        expected = (
+            "node-evidence",
+            f"outputs/node-evidence/{node_evidence_filename(evidence_target, backend)}",
+        )
+    else:
+        candidates = []
+        for output in receipt["outputs"]:
+            if output["kind"] != "native" or not output["relativePath"].startswith("outputs/native/"):
+                continue
+            path = stage.joinpath(*PurePosixPath(output["relativePath"]).parts)
+            try:
+                report = load_canonical_json_bytes(read_regular_file_bytes(
+                    path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+                ))
+            except (OSError, ValueError):
+                continue
+            if isinstance(report, dict) and report.get("target") == evidence_target:
+                candidates.append(path)
+        if len(candidates) != 1:
+            raise ValueError("Runtime native validation stage lacks one exact report output")
+        return candidates[0]
+    matches = [
+        output for output in receipt["outputs"]
+        if (output["kind"], output["relativePath"]) == expected
+    ]
+    if len(matches) != 1:
+        raise ValueError("Runtime adapter validation stage lacks its exact report output")
+    return stage.joinpath(*PurePosixPath(matches[0]["relativePath"]).parts)
+
+
+def _materialize_runtime_validation_handoffs(
+    closure: tuple[PhaseInstanceId, ...],
+    phases: Mapping[PhaseInstanceId, Mapping[str, Any]],
+    sources: Mapping[PhaseInstanceId, Path],
+    destination: Path,
+    artifact_root: Path,
+) -> list[dict[str, Any]]:
+    records = []
+    for metadata in closure:
+        dependencies = runtime_validation_dependencies(metadata)
+        if not dependencies or any(dependency not in sources for dependency in dependencies):
+            continue
+        handoff = destination / f"{metadata.component}-{metadata.target}"
+        receipts = {}
+        reports = {}
+        for dependency in dependencies:
+            dependency_root = handoff / "validation" / f"{dependency.component}-{dependency.target}"
+            restored = restore_object(
+                sources[dependency],
+                dependency_root / "stage",
+                build_key=phases[dependency]["buildKey"],
+                receipt_sha256=phases[dependency]["receiptSha256"],
+                object_sha256=phases[dependency]["objectSha256"],
+            )
+            receipt_root = dependency_root / "receipt"
+            receipt_root.mkdir()
+            (receipt_root / "phase-receipt.json").write_bytes(restored["receiptBytes"])
+            receipts[dependency.target] = restored["receipt"]
+            reports[dependency.target] = _runtime_report_output(
+                metadata, dependency, dependency_root / "stage", restored["receipt"],
+            )
+        ordered_targets = RUNTIME_TARGETS if metadata.component in {"jvm", "node-js", "node-wasm"} else (
+            dependencies[0].target,
+        )
+        ordered_reports = [reports[target] for target in ordered_targets]
+        projection = derive_authenticated_runtime_validation_projection(
+            metadata.component,
+            ordered_reports,
+            [receipts[dependency.target] for dependency in dependencies],
+        )
+        write_canonical_json(handoff / "projection.json", projection)
+        records.append({
+            **_identity_record(metadata),
+            "reports": [path.relative_to(artifact_root).as_posix() for path in ordered_reports],
+        })
+    return records
+
+
 def advance_contract(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     shard_roots: list[Path], destination: Path,
@@ -1044,6 +1245,7 @@ def advance_contract(
         "versions": _versions(root, plan["validationCommit"]),
         "phaseAuthorities": authorities,
         "contractEvidence": None,
+        "runtimeValidationEvidence": [],
         "availableObjects": [],
     }
     if authorities is None:
@@ -1242,6 +1444,346 @@ def advance_contract(
         "contract_complete": advanced["fullReuse"],
         "next_phase_required": bool(ready_plans),
         "next_phase": _contract_ready_phase(ready_plans),
+    })
+    return advanced
+
+
+def advance_products(
+    plan_path: Path, discovery_root: Path, state_root: Path | None,
+    shard_roots: list[Path], destination: Path,
+    github_output_path: Path, *, repository_root: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    github_output(github_output_path, {
+        "full_reuse": False,
+        "target_jobs_required": True,
+        "product_reuse_reason": "not-evaluated",
+        "runtime_evidence_required": False,
+    })
+    supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
+    destination = _prepare_destination(destination, supplied_root)
+    destination.rmdir()
+    root = supplied_root.resolve()
+    discovery_root = Path(os.path.abspath(discovery_root))
+    state_root = discovery_root if state_root is None else Path(os.path.abspath(state_root))
+    shard_roots = [Path(os.path.abspath(path)) for path in shard_roots]
+    try:
+        discovery_root.relative_to(root)
+        state_root.relative_to(root)
+        for shard_root in shard_roots:
+            shard_root.relative_to(root)
+    except ValueError as error:
+        raise ValueError("Product continuation inputs must remain inside the repository") from error
+
+    plan = _validate_plan(plan_path, root)
+    if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
+        raise ValueError("Product continuation requires an authorized PR or merge-group run")
+    environment = os.environ if environ is None else environ
+    consumer = _consumer(plan, environment)
+    producer = _canonical_control(discovery_root / "producer.json", "Product producer")
+    validate_producer(producer, "Product producer")
+    if producer != consumer["producer"]:
+        raise ValueError("Product producer does not match the current workflow run")
+
+    request = require_exact_keys(
+        _canonical_control(discovery_root / "reuse-wave-request.json", "Reuse-wave request"),
+        _WAVE_REQUEST_KEYS,
+        "Reuse-wave request",
+    )
+    requested = tuple(
+        _identity(value)
+        for value in require_array(request["requested"], "Reuse-wave request.requested")
+    )
+    if requested != tuple(sorted(set(requested))) or requested != _requested(plan):
+        raise ValueError("Reuse-wave request does not match the current product selection")
+    closure = _dependency_closure(requested)
+    authorities, unavailable = _authorities(root, plan["validationCommit"], closure)
+    if authorities is None:
+        raise ValueError(unavailable or "Product phase authority is unavailable")
+    expected_fixed = {
+        "schemaVersion": 1,
+        "requestType": "reuse-wave",
+        "repository": plan["repository"],
+        "pullRequest": plan["pullRequest"],
+        "repositoryRoot": str(root),
+        "repositoryRevision": plan["validationCommit"],
+        "requested": [_identity_record(instance) for instance in requested],
+        "versions": _versions(root, plan["validationCommit"]),
+        "phaseAuthorities": authorities,
+        "runtimeValidationEvidence": [],
+        "availableObjects": [],
+    }
+    for field, expected in expected_fixed.items():
+        if request[field] != expected:
+            raise ValueError(f"Reuse-wave request disagrees with current {field}")
+    if request["artifactRoot"] != str(root / "build/product-reuse"):
+        raise ValueError("Reuse-wave request has an unexpected original artifact root")
+
+    rebased_request = dict(request)
+    rebased_request["artifactRoot"] = str(root)
+    rebased_request["catalogs"] = _rebase_catalog_paths(request["catalogs"], discovery_root, root)
+    rebased_request["contractEvidence"] = _rebase_contract_evidence_paths(
+        request["contractEvidence"], discovery_root, root,
+    )
+
+    def retain(
+        plans: dict[PhaseInstanceId, dict[str, Any]],
+        instance: PhaseInstanceId,
+        value: dict[str, Any],
+    ) -> None:
+        if instance in plans:
+            raise ValueError(f"Duplicate product phase plan: {instance}")
+        plans[instance] = value
+
+    replay_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
+    replay = plan_reuse_wave(
+        rebased_request,
+        build_plan_consumer=lambda instance, value: retain(replay_plans, instance, value),
+    )
+    initial = _canonical_control(discovery_root / "reuse-wave-result.json", "Initial reuse result")
+    if replay != initial:
+        raise ValueError("Initial reuse result is not reproducible from its authenticated request")
+
+    prior = _canonical_control(state_root / "reuse-wave-result.json", "Reuse result")
+    _, prior_materialized, _ = _validate_reuse_result(
+        prior, requested, require_complete=False,
+    )
+    prior_by_instance = {_identity(phase): phase for phase in prior["phases"]}
+    sources: dict[PhaseInstanceId, Path] = {}
+    prior_carrier_phases: dict[PhaseInstanceId, dict[str, Any]] = {}
+    carrier_name = "carrier" if prior["fullReuse"] else "reused-carrier"
+    carrier_root = state_root / carrier_name
+    if prior_materialized:
+        carrier = verify_carrier(carrier_root, prior_materialized, consumer)
+        prior_carrier_phases = {
+            _identity(phase): phase for phase in carrier["resolution"]["phases"]
+        }
+        if any(
+            any(prior_carrier_phases[instance][field] != prior_by_instance[instance][field]
+                for field in (*_IDENTITY_KEYS, "buildKey", "receiptSha256", "objectSha256"))
+            for instance in prior_materialized
+        ):
+            raise ValueError("Prior product carrier disagrees with its reuse result")
+        for record in carrier["objects"]:
+            instance = _identity(record)
+            sources[instance] = carrier_root / object_relative_path(
+                record["buildKey"], record["receiptSha256"],
+            )
+    elif carrier_root.exists() or carrier_root.is_symlink():
+        raise ValueError("Unexpected prior product carrier")
+
+    prior_ready_plans = replay_plans
+    if state_root != discovery_root:
+        with tempfile.TemporaryDirectory(
+            prefix="codex-agent-product-replay-", dir=root,
+        ) as temporary:
+            temporary_root = Path(temporary).resolve()
+            phase_records = {
+                instance: prior_by_instance[instance] for instance in sources
+            }
+            evidence = _materialize_runtime_validation_handoffs(
+                closure, phase_records, sources,
+                temporary_root / "runtime-validation-handoffs", root,
+            )
+            state_request = dict(rebased_request)
+            state_request["availableObjects"] = _available_object_records(
+                phase_records, sources, root,
+            )
+            state_request["runtimeValidationEvidence"] = evidence
+            prior_ready_plans = {}
+            state_replay = plan_reuse_wave(
+                state_request,
+                build_plan_consumer=lambda instance, value: retain(
+                    prior_ready_plans, instance, value,
+                ),
+            )
+        state_by_instance = {_identity(phase): phase for phase in state_replay["phases"]}
+        if any(state_by_instance[instance]["state"] != "retained" for instance in prior_materialized):
+            raise ValueError("A prior carrier object was not retained by the recomputed plan")
+        for instance in prior_materialized:
+            state_by_instance[instance].update({
+                key: prior_by_instance[instance][key]
+                for key in ("state", "source", "transportSource", "misses")
+            })
+        if state_replay != prior:
+            raise ValueError("Product reuse state is not reproducible from its verified carrier")
+
+    expected_builds = {
+        _identity(phase): phase for phase in prior["phases"] if phase["state"] == "build"
+    }
+    shards = {}
+    for shard_root in shard_roots:
+        descriptor = require_exact_keys(
+            _canonical_control(shard_root / PHASE_SHARD_NAME, "Product phase shard"),
+            PHASE_SHARD_KEYS,
+            "Product phase shard",
+        )
+        instance = _identity(descriptor)
+        if instance in shards:
+            raise ValueError(f"Duplicate product phase shard: {instance}")
+        if instance not in expected_builds:
+            raise ValueError(f"Unexpected product phase shard: {instance}")
+        verified = verify_phase_shard(shard_root, instance)
+        receipt = verified["receipt"]
+        expected_version = expected_fixed["versions"][
+            "runtime-release" if instance.product == "runtime" else instance.product
+        ]
+        if (
+            receipt["producer"] != producer
+            or receipt["trustDomain"] != (
+                "development" if plan["event"] == "pull_request" else "release"
+            )
+            or receipt["productVersion"] != expected_version
+            or receipt["buildKey"] != expected_builds[instance]["buildKey"]
+            or prior_ready_plans.get(instance, {}).get("buildKey") != receipt["buildKey"]
+        ):
+            raise ValueError("Product phase shard does not match its elected plan and producer")
+        shards[instance] = {
+            **verified,
+            "transportSource": {
+                "kind": "phase-shard",
+                "descriptorSha256": sha256_bytes(canonical_json_bytes(descriptor)),
+                "producer": producer,
+            },
+        }
+        sources[instance] = shard_root / verified["objectPath"]
+    if set(shards) != set(expected_builds):
+        raise ValueError("Product phase shards do not exactly match the elected build wave")
+
+    phase_records = {
+        instance: (
+            shards[instance] if instance in shards else prior_by_instance[instance]
+        )
+        for instance in sources
+    }
+    with tempfile.TemporaryDirectory(
+        prefix="codex-agent-product-advance-", dir=root,
+    ) as temporary:
+        temporary_root = Path(temporary).resolve()
+        evidence = _materialize_runtime_validation_handoffs(
+            closure, phase_records, sources,
+            temporary_root / "runtime-validation-handoffs", root,
+        )
+        advanced_request = dict(rebased_request)
+        advanced_request["availableObjects"] = _available_object_records(
+            phase_records, sources, root,
+        )
+        advanced_request["runtimeValidationEvidence"] = evidence
+        ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
+        advanced = plan_reuse_wave(
+            advanced_request,
+            build_plan_consumer=lambda instance, value: retain(ready_plans, instance, value),
+        )
+        supplied = set(sources)
+        advanced_by_instance = {_identity(phase): phase for phase in advanced["phases"]}
+        if any(advanced_by_instance[instance]["state"] != "retained" for instance in supplied):
+            raise ValueError("A supplied product object was not retained by the recomputed plan")
+        advanced, selected, selected_phases = _validate_reuse_result(
+            advanced, requested, require_complete=False,
+        )
+        remote_sources = _catalog_object_sources(rebased_request)
+        for instance, phase in zip(selected, selected_phases, strict=True):
+            if instance in sources:
+                continue
+            transport = phase["transportSource"]
+            key = (phase["source"], transport["indexSha256"], phase["buildKey"])
+            try:
+                sources[instance] = remote_sources[key]
+            except KeyError as error:
+                raise ValueError("Advanced product reuse lacks its authenticated object") from error
+
+        carrier_phases = []
+        for instance, phase in zip(selected, selected_phases, strict=True):
+            if instance in shards:
+                carrier_phases.append({
+                    **phase,
+                    "state": "reused",
+                    "source": "phase-shard",
+                    "transportSource": shards[instance]["transportSource"],
+                    "misses": prior_by_instance[instance]["misses"],
+                })
+            elif instance in prior_carrier_phases:
+                carrier_phases.append(prior_carrier_phases[instance])
+            else:
+                carrier_phases.append(phase)
+        normalized = {
+            "schemaVersion": 1,
+            "result": "complete",
+            "fullReuse": True,
+            "phases": carrier_phases,
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+        }
+        final_carrier_name = "carrier" if advanced["fullReuse"] else "reused-carrier"
+        staged_destination = temporary_root / "result"
+        staged_destination.mkdir()
+        write_carrier(
+            staged_destination / final_carrier_name,
+            normalized,
+            selected,
+            sources,
+            consumer,
+        )
+        staged_evidence = _materialize_runtime_validation_handoffs(
+            closure,
+            {instance: phase for instance, phase in zip(selected, selected_phases, strict=True)},
+            sources,
+            staged_destination / "runtime-validation-handoffs",
+            staged_destination,
+        )
+        staged_prefix = staged_destination.relative_to(root).as_posix()
+        staged_request = dict(rebased_request)
+        staged_request["runtimeValidationEvidence"] = [{
+            **record,
+            "reports": [f"{staged_prefix}/{path}" for path in record["reports"]],
+        } for record in staged_evidence]
+        staged_request["availableObjects"] = [{
+            **_identity_record(instance),
+            "buildKey": phase["buildKey"],
+            "receiptSha256": phase["receiptSha256"],
+            "objectSha256": phase["objectSha256"],
+            "objectPath": (
+                f"{staged_prefix}/{final_carrier_name}/"
+                f"{object_relative_path(phase['buildKey'], phase['receiptSha256'])}"
+            ),
+        } for instance, phase in zip(selected, selected_phases, strict=True)]
+        staged_replay = plan_reuse_wave(staged_request)
+        staged_by_instance = {_identity(phase): phase for phase in staged_replay["phases"]}
+        for instance in selected:
+            staged_by_instance[instance].update({
+                key: advanced_by_instance[instance][key]
+                for key in ("state", "source", "transportSource", "misses")
+            })
+        if staged_replay != advanced:
+            raise ValueError("Staged product continuation is not reproducible")
+
+        destination_prefix = destination.relative_to(root).as_posix()
+        final_request = dict(staged_request)
+        final_request["runtimeValidationEvidence"] = [{
+            **record,
+            "reports": [
+                path.replace(f"{staged_prefix}/", f"{destination_prefix}/", 1)
+                for path in record["reports"]
+            ],
+        } for record in staged_request["runtimeValidationEvidence"]]
+        final_request["availableObjects"] = [{
+            **record,
+            "objectPath": record["objectPath"].replace(
+                f"{staged_prefix}/", f"{destination_prefix}/", 1,
+            ),
+        } for record in staged_request["availableObjects"]]
+        write_canonical_json(staged_destination / "reuse-wave-request.json", final_request)
+        write_canonical_json(staged_destination / "reuse-wave-result.json", advanced)
+        _write_ready_plans(staged_destination, ready_plans)
+        if ready_plans:
+            write_canonical_json(staged_destination / "producer.json", producer)
+        publish_regular_tree(staged_destination, destination)
+    github_output(github_output_path, {
+        "full_reuse": advanced["fullReuse"],
+        "target_jobs_required": not advanced["fullReuse"],
+        "product_reuse_reason": (
+            "verified-full-reuse" if advanced["fullReuse"] else "product-build-required"
+        ),
+        "runtime_evidence_required": bool(advanced["continuationRequirements"]),
     })
     return advanced
 
@@ -1468,6 +2010,13 @@ def parser() -> argparse.ArgumentParser:
     advance_command.add_argument("--phase-shard", type=Path, action="append", default=[])
     advance_command.add_argument("--destination", type=Path, required=True)
     advance_command.add_argument("--github-output", type=Path, required=True)
+    products_command = commands.add_parser("advance-products")
+    products_command.add_argument("--plan", type=Path, required=True)
+    products_command.add_argument("--discovery-root", type=Path, required=True)
+    products_command.add_argument("--state-root", type=Path)
+    products_command.add_argument("--phase-shard", type=Path, action="append", default=[])
+    products_command.add_argument("--destination", type=Path, required=True)
+    products_command.add_argument("--github-output", type=Path, required=True)
     materialize_command = commands.add_parser("materialize-contract")
     materialize_command.add_argument("--plan", type=Path, required=True)
     materialize_command.add_argument("--state-root", type=Path, required=True)
@@ -1486,6 +2035,15 @@ def main(argv: list[str] | None = None) -> int:
                 publish_regular_tree(arguments.destination, arguments.handoff)
         elif arguments.command == "advance-contract":
             advance_contract(
+                arguments.plan,
+                arguments.discovery_root,
+                arguments.state_root,
+                arguments.phase_shard,
+                arguments.destination,
+                arguments.github_output,
+            )
+        elif arguments.command == "advance-products":
+            advance_products(
                 arguments.plan,
                 arguments.discovery_root,
                 arguments.state_root,

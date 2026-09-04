@@ -6,8 +6,10 @@ import io
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
+import ci.products.runtime_variant as runtime_variant_module
 from ci.products.aggregate import validate_runtime_variant
 from ci.products.inventory import (
     canonical_json_bytes,
@@ -17,7 +19,16 @@ from ci.products.inventory import (
     verified_zip_contents,
     write_canonical_json,
 )
-from ci.products.receipt import compute_build_key, output_inventory_digest
+from ci.products.receipt import (
+    compute_build_key,
+    output_inventory_digest,
+    write_output_manifest,
+    write_phase_receipt,
+)
+from ci.products.runtime_attestation import (
+    build_runtime_variant_attestation,
+    verify_runtime_variant_attestation,
+)
 from ci.products.runtime_evidence import (
     RUNTIME_TARGETS as EVIDENCE_TARGETS,
     build_desktop_evidence,
@@ -294,9 +305,6 @@ class Fixture:
             "app_server_archive": self.app_server,
             "validation_evidence": self.validation,
             "distribution_manifest": self.distribution_manifest,
-            "signing_metadata": self.signing,
-            "private_key": self.private_key,
-            "public_key": self.public_key,
             "output_directory": self.output,
         }
 
@@ -306,6 +314,50 @@ class Fixture:
             target=value["target"], inputs=value["inputs"],
         )
         write_canonical_json(self.receipt_paths[phase], value)
+
+
+def _write_metadata_receipt(
+    fixture: Fixture,
+    payload: Path,
+    *,
+    version: str = RUNTIME_VERSION,
+    trust_domain: str = "development",
+) -> Path:
+    validation = load_canonical_json_bytes(fixture.receipt_paths["validation"].read_bytes())
+    with zipfile.ZipFile(payload) as archive:
+        manifest = load_canonical_json_bytes(archive.read("runtime-variant-manifest.json"))
+    projection_digest = next(
+        artifact["sha256"] for artifact in manifest["innerArtifacts"]
+        if artifact["role"] == "validation"
+    )
+    upstream = _reference(validation)
+    upstream["semanticProjection"] = {
+        "schemaVersion": 1,
+        "kind": "runtime-validation-content",
+        "sha256": projection_digest,
+    }
+    receipt = _receipt(
+        "metadata",
+        _inputs("metadata", [upstream], fixture.toolchain),
+        [{
+            "kind": "runtime-variant",
+            "relativePath": f"outputs/{payload.name}",
+            "bytes": payload.stat().st_size,
+            "sha256": sha256_file(payload),
+        }],
+        trust_domain,
+    )
+    receipt["productVersion"] = version
+    receipt["producer"]["commit"] = "d" * 40
+    receipt["producer"]["tree"] = "e" * 40
+    path = fixture.root / "metadata-receipt.json"
+    write_canonical_json(path, receipt)
+    return path
+
+
+def _attestation_paths(payload: Path, directory: Path) -> tuple[Path, Path]:
+    stem = payload.stem
+    return directory / f"{stem}.attestation.json", directory / f"{stem}.attestation.sig"
 
 
 class RuntimeVariantProducerTest(unittest.TestCase):
@@ -337,6 +389,10 @@ class RuntimeVariantProducerTest(unittest.TestCase):
             ))
             self.assertNotIn("producer", manifest)
             self.assertNotIn("runtimeVersion", manifest)
+            self.assertNotIn("signing", manifest)
+            self.assertNotIn("runtime-variant-manifest.sig", {
+                record["relativePath"] for record in records
+            })
             self.assertEqual(TARGET, manifest["target"])
             self.assertEqual(TARGET, self.receipts_component(first, "binary"))
 
@@ -477,15 +533,78 @@ class RuntimeVariantProducerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must be empty"):
                 produce_runtime_variant(**extra_fixture.arguments())
 
+    def test_concurrent_destination_is_preserved_and_publication_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            sentinel = b"concurrently published sentinel\n"
+            publish = runtime_variant_module._publish_no_replace
+
+            def inject_race(source: Path, destination: Path) -> bool:
+                destination.write_bytes(sentinel)
+                return publish(source, destination)
+
+            with patch.object(
+                runtime_variant_module, "_publish_no_replace", side_effect=inject_race,
+            ) as publication:
+                with self.assertRaisesRegex(ValueError, "concurrently published"):
+                    produce_runtime_variant(**fixture.arguments())
+            publication.assert_called_once()
+            destination = next(fixture.output.iterdir())
+            self.assertEqual(sentinel, destination.read_bytes())
+            self.assertEqual([destination.name], sorted(path.name for path in fixture.output.iterdir()))
+
+    def test_concurrent_parent_swap_is_preserved_and_publication_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            original_output = fixture.root / "published-original"
+            sentinel = b"substituted non-ZIP bytes\n"
+            publish = runtime_variant_module._publish_no_replace
+            published_name: list[str] = []
+
+            def inject_parent_swap(source: Path, destination: Path) -> bool:
+                published = publish(source, destination)
+                published_name.append(destination.name)
+                try:
+                    destination.parent.rename(original_output)
+                    destination.parent.mkdir()
+                    (destination.parent / destination.name).write_bytes(sentinel)
+                except PermissionError as error:
+                    # A held Windows directory handle may reject the swap itself.
+                    raise ValueError("Runtime variant output parent swap was blocked") from error
+                return published
+
+            with patch.object(
+                runtime_variant_module, "_publish_no_replace", side_effect=inject_parent_swap,
+            ) as publication:
+                with self.assertRaisesRegex(ValueError, "parent changed|parent swap was blocked"):
+                    produce_runtime_variant(**fixture.arguments())
+            publication.assert_called_once()
+            self.assertEqual(1, len(published_name))
+            if original_output.exists():
+                original_bundle = original_output / published_name[0]
+                self.assertTrue(original_bundle.is_file())
+                with zipfile.ZipFile(original_bundle) as archive:
+                    self.assertIn("runtime-variant-manifest.json", archive.namelist())
+                replacement = fixture.output / published_name[0]
+                self.assertEqual(sentinel, replacement.read_bytes())
+                self.assertEqual([published_name[0]], sorted(
+                    path.name for path in fixture.output.iterdir()
+                ))
+            else:
+                # The blocked Windows rename leaves the original publication untouched.
+                self.assertTrue((fixture.output / published_name[0]).is_file())
+
     def test_direct_module_cli_uses_the_same_strict_producer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             private_key, public_key, signing = generate_development_key(root / "keys")
             fixture = Fixture(root / "fixture", private_key, public_key, signing)
             identity = fixture.root / "identity.json"
-            signing_path = fixture.root / "signing.json"
             write_canonical_json(identity, fixture.identity)
-            write_canonical_json(signing_path, signing)
             arguments = [
                 "--identity", str(identity),
                 "--binary-receipt", str(fixture.receipt_paths["binary"]),
@@ -495,14 +614,341 @@ class RuntimeVariantProducerTest(unittest.TestCase):
                 "--app-server-archive", str(fixture.app_server),
                 "--validation-evidence", str(fixture.validation),
                 "--distribution-manifest", str(fixture.distribution_manifest),
-                "--signing-metadata", str(signing_path),
-                "--private-key", str(private_key),
-                "--public-key", str(public_key),
                 "--output-directory", str(fixture.output),
             ]
             with contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(0, main(arguments))
             self.assertEqual(next(fixture.output.iterdir()), Path(output.getvalue().strip()))
+
+    def test_mixed_receipts_can_receive_independent_release_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, development = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, development)
+            for index, phase in enumerate(("binary", "package", "validation"), start=1):
+                receipt = copy.deepcopy(fixture.receipts[phase])
+                receipt["productVersion"] = f"0.2.{index}"
+                receipt["trustDomain"] = "release" if index == 1 else "development"
+                receipt["producer"]["commit"] = f"{index:x}" * 40
+                receipt["producer"]["tree"] = f"{index + 3:x}" * 40
+                receipt["producer"]["runId"] = index + 10
+                if phase == "validation":
+                    report = load_canonical_json_bytes(fixture.validation.read_bytes())
+                    report["candidateCommit"] = receipt["producer"]["commit"]
+                    write_canonical_json(fixture.validation, report)
+                    selected = next(
+                        output for output in receipt["outputs"]
+                        if output["relativePath"] == "outputs/native/validation.json"
+                    )
+                    selected["bytes"] = fixture.validation.stat().st_size
+                    selected["sha256"] = sha256_file(fixture.validation)
+                write_canonical_json(fixture.receipt_paths[phase], receipt)
+            result = produce_runtime_variant(**fixture.arguments())
+            metadata = _write_metadata_receipt(
+                fixture, result["bundlePath"], version="0.2.4", trust_domain="development",
+            )
+
+            signing = {
+                **development,
+                "trustDomain": "release",
+                "keyId": "release-fixture",
+            }
+            keys = root / "release-keys"
+            keys.mkdir()
+            (keys / "release-fixture.pub").write_bytes(public_key.read_bytes())
+            keyring = root / "keyring.json"
+            write_canonical_json(keyring, {
+                "schemaVersion": 1,
+                "namespace": signing["namespace"],
+                "algorithm": signing["algorithm"],
+                "trustDomain": "release",
+                "activeKey": {
+                    "keyId": signing["keyId"],
+                    "fingerprint": signing["fingerprint"],
+                },
+                "retiredKeys": [],
+            })
+            output = root / "attestation"
+            value = build_runtime_variant_attestation(
+                result["bundlePath"], fixture.receipt_paths["binary"],
+                fixture.receipt_paths["package"], fixture.receipt_paths["validation"],
+                metadata, fixture.validation, signing, private_key, public_key, output,
+                keyring=keyring, keys_directory=keys,
+            )
+            attestation, signature = _attestation_paths(result["bundlePath"], output)
+            manifest, receipts, verified = verify_runtime_variant_attestation(
+                result["bundlePath"], fixture.receipt_paths["binary"],
+                fixture.receipt_paths["package"], fixture.receipt_paths["validation"],
+                metadata, attestation, signature, public_key,
+                required_trust_domain="release", validation_evidence=fixture.validation,
+                keyring=keyring, keys_directory=keys,
+            )
+            self.assertEqual(value, verified)
+            self.assertEqual(result["componentId"], manifest["componentId"])
+            self.assertEqual(
+                ["0.2.1", "0.2.2", "0.2.3", "0.2.4"],
+                [receipts[phase]["productVersion"] for phase in (
+                    "binary", "package", "validation", "metadata",
+                )],
+            )
+            self.assertEqual(
+                ["release", "development", "development", "development"],
+                [receipts[phase]["trustDomain"] for phase in (
+                    "binary", "package", "validation", "metadata",
+                )],
+            )
+            self.assertNotIn("producer", verified)
+            self.assertEqual(sha256_file(metadata), verified["phaseReceipts"]["metadata"])
+            _, _, sdk_verified = verify_runtime_variant_attestation(
+                result["bundlePath"], fixture.receipt_paths["binary"],
+                fixture.receipt_paths["package"], fixture.receipt_paths["validation"],
+                metadata, attestation, signature, public_key,
+                required_trust_domain="release", keyring=keyring, keys_directory=keys,
+            )
+            self.assertEqual(value, sdk_verified)
+
+    def test_metadata_receipt_uses_canonical_stage_path_and_rejects_bare_basename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            payload = produce_runtime_variant(**fixture.arguments())["bundlePath"]
+            stage = root / "metadata-stage"
+            (stage / "outputs").mkdir(parents=True)
+            (stage / "outputs" / payload.name).write_bytes(payload.read_bytes())
+            write_output_manifest(
+                stage, "runtime", TARGET, "metadata", TARGET, RUNTIME_VERSION,
+                {"runtime-variant": "outputs"},
+            )
+            receipt_root = root / "receipt"
+            receipt_root.mkdir()
+            validation = load_canonical_json_bytes(
+                fixture.receipt_paths["validation"].read_bytes(),
+            )
+            with zipfile.ZipFile(payload) as archive:
+                manifest = load_canonical_json_bytes(
+                    archive.read("runtime-variant-manifest.json"),
+                )
+            upstream = _reference(validation)
+            upstream["semanticProjection"] = {
+                "schemaVersion": 1,
+                "kind": "runtime-validation-content",
+                "sha256": next(
+                    artifact["sha256"] for artifact in manifest["innerArtifacts"]
+                    if artifact["role"] == "validation"
+                ),
+            }
+            inputs = _inputs("metadata", [upstream], fixture.toolchain)
+            build_key = compute_build_key(
+                product="runtime", component=TARGET, phase="metadata", target=TARGET,
+                inputs=inputs,
+            )
+            receipt = write_phase_receipt(
+                stage, receipt_root, "runtime", TARGET, "metadata", TARGET,
+                RUNTIME_VERSION, build_key, inputs, _producer(), "development",
+            )
+            receipt_path = receipt_root / "phase-receipt.json"
+            self.assertEqual(f"outputs/{payload.name}", receipt["outputs"][0]["relativePath"])
+            build_runtime_variant_attestation(
+                payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                fixture.receipt_paths["validation"], receipt_path, fixture.validation,
+                signing, private_key, public_key, root / "accepted-attestation",
+            )
+
+            receipt["outputs"][0]["relativePath"] = payload.name
+            write_canonical_json(receipt_path, receipt)
+            with self.assertRaisesRegex(ValueError, "does not bind the exact variant payload"):
+                build_runtime_variant_attestation(
+                    payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                    fixture.receipt_paths["validation"], receipt_path, fixture.validation,
+                    signing, private_key, public_key, root / "rejected-attestation",
+                )
+
+    def test_producers_compatible_patches_trust_and_keys_do_not_change_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            first_key, first_public, first_signing = generate_development_key(root / "first-key")
+            second_key, second_public, second_signing = generate_development_key(root / "second-key")
+            first = Fixture(root / "first", first_key, first_public, first_signing)
+            second = Fixture(root / "second", second_key, second_public, second_signing)
+            for index, phase in enumerate(("binary", "package", "validation"), start=1):
+                receipt = copy.deepcopy(second.receipts[phase])
+                receipt["productVersion"] = f"0.2.{index + 7}"
+                receipt["trustDomain"] = "release" if index % 2 else "development"
+                receipt["producer"]["commit"] = f"{index:x}" * 40
+                receipt["producer"]["tree"] = f"{index + 3:x}" * 40
+                if phase == "validation":
+                    report = load_canonical_json_bytes(second.validation.read_bytes())
+                    report["candidateCommit"] = receipt["producer"]["commit"]
+                    write_canonical_json(second.validation, report)
+                    selected = next(
+                        output for output in receipt["outputs"]
+                        if output["relativePath"] == "outputs/native/validation.json"
+                    )
+                    selected["bytes"] = second.validation.stat().st_size
+                    selected["sha256"] = sha256_file(second.validation)
+                write_canonical_json(second.receipt_paths[phase], receipt)
+            first_result = produce_runtime_variant(**first.arguments())
+            second_result = produce_runtime_variant(**second.arguments())
+            self.assertEqual(
+                first_result["bundlePath"].read_bytes(), second_result["bundlePath"].read_bytes(),
+            )
+            first_metadata = _write_metadata_receipt(first, first_result["bundlePath"])
+            second_metadata = _write_metadata_receipt(
+                second, second_result["bundlePath"], version="0.2.11", trust_domain="release",
+            )
+            first_value = build_runtime_variant_attestation(
+                first_result["bundlePath"], first.receipt_paths["binary"],
+                first.receipt_paths["package"], first.receipt_paths["validation"],
+                first_metadata, first.validation, first_signing, first_key, first_public,
+                root / "first-attestation",
+            )
+            second_value = build_runtime_variant_attestation(
+                second_result["bundlePath"], second.receipt_paths["binary"],
+                second.receipt_paths["package"], second.receipt_paths["validation"],
+                second_metadata, second.validation, second_signing, second_key, second_public,
+                root / "second-attestation",
+            )
+            self.assertNotEqual(first_value, second_value)
+            self.assertNotEqual(first_value["phaseReceipts"], second_value["phaseReceipts"])
+            self.assertNotEqual(first_value["signing"], second_value["signing"])
+
+    def test_attestation_payload_receipt_evidence_signature_and_cross_pair_tamper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            other_key, other_public, other_signing = generate_development_key(root / "other-keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            result = produce_runtime_variant(**fixture.arguments())
+            payload = result["bundlePath"]
+            metadata = _write_metadata_receipt(fixture, payload)
+            output = root / "attestation"
+            build_runtime_variant_attestation(
+                payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                fixture.receipt_paths["validation"], metadata, fixture.validation,
+                signing, private_key, public_key, output,
+            )
+            attestation, signature = _attestation_paths(payload, output)
+
+            def verify(**overrides: Path | str) -> None:
+                values = {
+                    "payload": payload,
+                    "binary_receipt": fixture.receipt_paths["binary"],
+                    "package_receipt": fixture.receipt_paths["package"],
+                    "validation_receipt": fixture.receipt_paths["validation"],
+                    "metadata_receipt": metadata,
+                    "validation_evidence": fixture.validation,
+                    "attestation": attestation,
+                    "signature": signature,
+                    "public_key": public_key,
+                    "required_trust_domain": "development",
+                }
+                values.update(overrides)
+                verify_runtime_variant_attestation(
+                    values["payload"], values["binary_receipt"],
+                    values["package_receipt"], values["validation_receipt"],
+                    values["metadata_receipt"], values["attestation"],
+                    values["signature"], values["public_key"],
+                    required_trust_domain=values["required_trust_domain"],
+                    validation_evidence=values["validation_evidence"],
+                )
+
+            tampered_payload_root = root / "tampered-payload"
+            tampered_payload_root.mkdir()
+            tampered_payload = tampered_payload_root / payload.name
+            tampered_payload.write_bytes(payload.read_bytes()[:-1] + b"x")
+            manifest_root = root / "tampered-manifest"
+            manifest_root.mkdir()
+            tampered_manifest = manifest_root / payload.name
+            with zipfile.ZipFile(payload) as archive:
+                members = {name: archive.read(name) for name in archive.namelist()}
+            manifest = load_canonical_json_bytes(members["runtime-variant-manifest.json"])
+            manifest["producer"] = _producer()
+            members["runtime-variant-manifest.json"] = canonical_json_bytes(manifest)
+            _write_zip(tampered_manifest, members)
+            tampered_receipts = {}
+            original_receipts = {
+                "binary_receipt": fixture.receipt_paths["binary"],
+                "package_receipt": fixture.receipt_paths["package"],
+                "validation_receipt": fixture.receipt_paths["validation"],
+                "metadata_receipt": metadata,
+            }
+            for name, original in original_receipts.items():
+                path = root / f"tampered-{name}.json"
+                receipt = load_canonical_json_bytes(original.read_bytes())
+                receipt["producer"]["runId"] += 1
+                write_canonical_json(path, receipt)
+                tampered_receipts[name] = path
+            tampered_evidence = root / "validation.json"
+            evidence = load_canonical_json_bytes(fixture.validation.read_bytes())
+            evidence["tests"] += 1
+            write_canonical_json(tampered_evidence, evidence)
+            tampered_attestation = root / attestation.name
+            value = load_canonical_json_bytes(attestation.read_bytes())
+            value["manifestSha256"] = DIGEST_A
+            write_canonical_json(tampered_attestation, value)
+            signing_root = root / "tampered-signing"
+            signing_root.mkdir()
+            tampered_signing = signing_root / attestation.name
+            value = load_canonical_json_bytes(attestation.read_bytes())
+            value["signing"]["fingerprint"] = DIGEST_A
+            write_canonical_json(tampered_signing, value)
+            tampered_signature = root / signature.name
+            tampered_signature.write_bytes(signature.read_bytes()[:-2] + b"x\n")
+
+            projection_root = root / "tampered-projection"
+            projection_root.mkdir()
+            tampered_projection = projection_root / payload.name
+            with zipfile.ZipFile(payload) as archive:
+                members = {name: archive.read(name) for name in archive.namelist()}
+            members["evidence/sbom.json"] = canonical_json_bytes({"tampered": True})
+            manifest = load_canonical_json_bytes(members["runtime-variant-manifest.json"])
+            sbom = next(
+                artifact for artifact in manifest["innerArtifacts"]
+                if artifact["role"] == "sbom"
+            )
+            sbom["bytes"] = len(members["evidence/sbom.json"])
+            sbom["sha256"] = sha256_bytes(members["evidence/sbom.json"])
+            members["runtime-variant-manifest.json"] = canonical_json_bytes(manifest)
+            _write_zip(tampered_projection, members)
+            projection_receipt = root / "projection-metadata.json"
+            receipt = load_canonical_json_bytes(metadata.read_bytes())
+            receipt["outputs"][0]["bytes"] = tampered_projection.stat().st_size
+            receipt["outputs"][0]["sha256"] = sha256_file(tampered_projection)
+            write_canonical_json(projection_receipt, receipt)
+            with self.assertRaisesRegex(ValueError, "deterministic evidence"):
+                build_runtime_variant_attestation(
+                    tampered_projection, fixture.receipt_paths["binary"],
+                    fixture.receipt_paths["package"], fixture.receipt_paths["validation"],
+                    projection_receipt, fixture.validation, signing, private_key, public_key,
+                    root / "invalid-projection-attestation",
+                )
+
+            for label, arguments in (
+                ("payload", {"payload": tampered_payload}),
+                ("manifest", {"payload": tampered_manifest}),
+                ("evidence", {"validation_evidence": tampered_evidence}),
+                ("attestation", {"attestation": tampered_attestation}),
+                ("signing", {"attestation": tampered_signing}),
+                ("key", {"public_key": other_public}),
+                ("signature", {"signature": tampered_signature}),
+                ("trust", {"required_trust_domain": "release"}),
+            ):
+                with self.subTest(label=label), self.assertRaises(ValueError):
+                    verify(**arguments)
+            for name, path in tampered_receipts.items():
+                with self.subTest(receipt=name), self.assertRaises(ValueError):
+                    verify(**{name: path})
+
+            other_output = root / "other-attestation"
+            build_runtime_variant_attestation(
+                payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                fixture.receipt_paths["validation"], metadata, fixture.validation,
+                other_signing, other_key, other_public, other_output,
+            )
+            _, other_signature = _attestation_paths(payload, other_output)
+            with self.assertRaises(ValueError):
+                verify(signature=other_signature)
 
 
 if __name__ == "__main__":

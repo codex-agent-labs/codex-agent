@@ -26,12 +26,15 @@ from .index import (
     verify_signed_product_index,
 )
 from .plan import (
+    VerifiedRuntimeValidationProjection,
     _validated_versions,
     attach_runtime_binary_identity,
     plan_phase,
+    runtime_validation_dependencies,
     verified_phase_flags_digest,
     verified_phase_toolchain_digest,
     verify_build_key_output_consistency,
+    verify_runtime_validation_projection,
 )
 from .receipt import output_inventory_digest, validate_phase_receipt
 from .receipt import build_key_payload
@@ -94,6 +97,7 @@ _CONTRACT_EVIDENCE_KEYS = {
     "keyring",
     "keysDirectory",
 }
+_RUNTIME_VALIDATION_EVIDENCE_KEYS = _IDENTITY_KEYS | {"reports"}
 
 
 class ReuseLookupError(ValueError):
@@ -718,6 +722,7 @@ def plan_reuse_wave(
             "versions",
             "phaseAuthorities",
             "contractEvidence",
+            "runtimeValidationEvidence",
             "availableObjects",
             "catalogs",
         },
@@ -765,6 +770,34 @@ def plan_reuse_wave(
     contract_evidence = _contract_evidence(artifact_root, request["contractEvidence"])
     if contract_evidence is not None and not contract_components:
         raise ValueError("Reuse-wave request has unexpected Contract evidence")
+    expected_semantic_phases = tuple(
+        instance for instance in closure if runtime_validation_dependencies(instance)
+    )
+    runtime_validation_evidence: dict[PhaseInstanceId, tuple[Path, ...]] = {}
+    ordered_runtime_evidence = []
+    for index, member in enumerate(require_array(
+        request["runtimeValidationEvidence"],
+        "reuse-wave request.runtimeValidationEvidence",
+    )):
+        label = f"reuse-wave request.runtimeValidationEvidence[{index}]"
+        record = require_exact_keys(member, _RUNTIME_VALIDATION_EVIDENCE_KEYS, label)
+        instance = _request_identity(
+            {key: record[key] for key in _IDENTITY_KEYS}, label,
+        )
+        if instance not in expected_semantic_phases:
+            raise ValueError(f"Runtime validation evidence is not applicable: {instance}")
+        if instance in runtime_validation_evidence:
+            raise ValueError(f"Duplicate Runtime validation evidence: {instance}")
+        reports = tuple(
+            _artifact_path(artifact_root, path, f"{label}.reports[{report_index}]")
+            for report_index, path in enumerate(require_array(
+                record["reports"], f"{label}.reports",
+            ))
+        )
+        runtime_validation_evidence[instance] = reports
+        ordered_runtime_evidence.append(instance)
+    if tuple(ordered_runtime_evidence) != tuple(sorted(ordered_runtime_evidence)):
+        raise ValueError("reuse-wave request.runtimeValidationEvidence must be sorted")
     phase_inputs: dict[PhaseInstanceId, dict[str, Any]] = {}
     for instance in closure:
         authority = authorities[instance]
@@ -903,6 +936,21 @@ def plan_reuse_wave(
                 )
             return master_projection.restrict(required_contract_components(instance))
 
+        consumed_runtime_validation_evidence: set[PhaseInstanceId] = set()
+
+        def runtime_validation_projection_provider(
+            instance: PhaseInstanceId,
+            envelopes: tuple[dict[str, Any], ...],
+        ) -> VerifiedRuntimeValidationProjection | None:
+            if instance not in runtime_validation_evidence:
+                return None
+            consumed_runtime_validation_evidence.add(instance)
+            return verify_runtime_validation_projection(
+                instance,
+                runtime_validation_evidence[instance],
+                [envelope["receipt"] for envelope in envelopes],
+            )
+
         result, _ = advance_reuse(
             requested,
             phase_inputs,
@@ -913,8 +961,15 @@ def plan_reuse_wave(
             contract_projection_provider=(
                 contract_projection_provider if contract_components else None
             ),
+            runtime_validation_projection_provider=runtime_validation_projection_provider,
             build_plan_consumer=build_plan_consumer,
         )
+        unused_evidence = set(runtime_validation_evidence) - consumed_runtime_validation_evidence
+        if unused_evidence:
+            raise ValueError(
+                "Runtime validation evidence was supplied before its metadata phase was ready: "
+                f"{sorted(unused_evidence)[0]}"
+            )
         return result
 
 
@@ -929,7 +984,11 @@ def _plan(
     if not isinstance(values, Mapping):
         raise ValueError(f"Phase inputs must be a mapping: {instance}")
     keys = set(values)
-    allowed = _PHASE_INPUT_KEYS | {"output_schema_version", "contract_projection"}
+    allowed = _PHASE_INPUT_KEYS | {
+        "output_schema_version",
+        "contract_projection",
+        "runtime_validation_projection",
+    }
     if not _PHASE_INPUT_KEYS.issubset(keys) or not keys.issubset(allowed):
         raise ValueError(f"Phase inputs fields are invalid: {instance}")
     arguments = dict(values)
@@ -978,6 +1037,10 @@ def advance_reuse(
     contract_projection_provider: Callable[
         [PhaseInstanceId, dict[str, Any]], VerifiedContractProjection
     ] | None = None,
+    runtime_validation_projection_provider: Callable[
+        [PhaseInstanceId, tuple[dict[str, Any], ...]],
+        VerifiedRuntimeValidationProjection | None,
+    ] | None = None,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave."""
@@ -987,6 +1050,11 @@ def advance_reuse(
         raise ValueError("Reuse repository root and revision must be supplied together")
     if contract_projection_provider is not None and not callable(contract_projection_provider):
         raise ValueError("Contract projection provider must be callable")
+    if (
+        runtime_validation_projection_provider is not None
+        and not callable(runtime_validation_projection_provider)
+    ):
+        raise ValueError("Runtime validation projection provider must be callable")
     if build_plan_consumer is not None and not callable(build_plan_consumer):
         raise ValueError("Build plan consumer must be callable")
     resolved_repository_root = None if repository_root is None else Path(repository_root)
@@ -998,6 +1066,8 @@ def advance_reuse(
     for instance, values in phase_inputs.items():
         if not isinstance(values, Mapping):
             raise ValueError(f"Phase inputs must be a mapping: {instance}")
+        if "runtime_validation_projection" in values:
+            raise ValueError("Callers cannot supply a Runtime validation projection")
         effective_inputs[instance] = dict(values)
     envelopes: dict[PhaseInstanceId, dict[str, Any]] = {}
     for value in available_receipts:
@@ -1012,6 +1082,7 @@ def advance_reuse(
     resolved: dict[PhaseInstanceId, dict[str, Any]] = {}
     states: dict[PhaseInstanceId, dict[str, Any]] = {}
     build_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
+    continuation_requirements: dict[PhaseInstanceId, dict[str, Any]] = {}
     while True:
         progressed = False
         ready = [
@@ -1033,6 +1104,33 @@ def advance_reuse(
                     instance,
                     resolved[contract_identity],
                 )
+            semantic_dependencies = runtime_validation_dependencies(instance)
+            if semantic_dependencies:
+                projection = (
+                    None
+                    if runtime_validation_projection_provider is None
+                    else runtime_validation_projection_provider(
+                        instance,
+                        tuple(resolved[dependency] for dependency in semantic_dependencies),
+                    )
+                )
+                if projection is None:
+                    continuation_requirements[instance] = {
+                        "kind": "runtime-validation-evidence",
+                        "product": instance.product,
+                        "component": instance.component,
+                        "phase": instance.phase,
+                        "target": instance.target,
+                        "dependencies": [{
+                            "product": dependency.product,
+                            "component": dependency.component,
+                            "phase": dependency.phase,
+                            "target": dependency.target,
+                        } for dependency in semantic_dependencies],
+                    }
+                    continue
+                effective_inputs[instance]["runtime_validation_projection"] = projection
+                continuation_requirements.pop(instance, None)
             plan = _plan(
                 instance,
                 effective_inputs,
@@ -1126,4 +1224,8 @@ def advance_reuse(
         "fullReuse": full_reuse,
         "phases": phases,
         "matrices": matrices,
+        "continuationRequirements": [
+            continuation_requirements[instance]
+            for instance in sorted(continuation_requirements)
+        ],
     }, tuple(resolved[instance] for instance in sorted(resolved))

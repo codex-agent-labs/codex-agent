@@ -61,6 +61,7 @@ CONTRACT_PROJECTION_KEYS = {
     "contractDigest",
     "componentDigests",
 }
+RUNTIME_VALIDATION_PROJECTION_KEYS = {"schemaVersion", "kind", "sha256"}
 
 
 def _product(value: Any, label: str) -> str:
@@ -328,11 +329,24 @@ def validate_contract_projection(value: Any, label: str) -> dict[str, Any]:
     return projection
 
 
+def validate_runtime_validation_projection(value: Any, label: str) -> dict[str, Any]:
+    projection = require_exact_keys(value, RUNTIME_VALIDATION_PROJECTION_KEYS, label)
+    if require_integer(projection["schemaVersion"], f"{label}.schemaVersion", 1) != 1:
+        raise ValueError("Unsupported Runtime validation projection schemaVersion")
+    if projection["kind"] != "runtime-validation-content":
+        raise ValueError(f"{label}.kind is invalid")
+    require_sha256(projection["sha256"], f"{label}.sha256")
+    return projection
+
+
 def validate_upstream(value: Any, label: str) -> dict[str, Any]:
     if type(value) is not dict:
         raise ValueError(f"{label} must be an object")
     keys = set(value)
-    expected_keys = UPSTREAM_KEYS | ({"contractProjection"} if "contractProjection" in keys else set())
+    projections = keys & {"contractProjection", "semanticProjection"}
+    if len(projections) > 1:
+        raise ValueError(f"{label} has conflicting projection kinds")
+    expected_keys = UPSTREAM_KEYS | projections
     upstream = require_exact_keys(
         value,
         expected_keys,
@@ -353,6 +367,14 @@ def validate_upstream(value: Any, label: str) -> dict[str, Any]:
         ) != ("contract", "contract", "metadata", "common"):
             raise ValueError(f"{label}.contractProjection is attached to a non-Contract upstream")
         validate_contract_projection(upstream["contractProjection"], f"{label}.contractProjection")
+    if "semanticProjection" in upstream:
+        if upstream["product"] != "runtime" or upstream["phase"] != "validation":
+            raise ValueError(
+                f"{label}.semanticProjection is attached to a non-Runtime-validation upstream"
+            )
+        validate_runtime_validation_projection(
+            upstream["semanticProjection"], f"{label}.semanticProjection",
+        )
     return upstream
 
 
@@ -405,8 +427,31 @@ def build_key_payload(
 ) -> dict[str, Any]:
     upstream_artifacts = []
     for upstream in inputs["upstreamArtifacts"]:
+        validate_upstream(upstream, "build key upstream")
         projection = upstream.get("contractProjection")
-        if projection is None:
+        semantic_projection = upstream.get("semanticProjection")
+        if semantic_projection is not None:
+            from .registry import PhaseInstanceId, phase_instance_dependencies
+
+            consumer = PhaseInstanceId(product, component, phase, target)
+            dependency = PhaseInstanceId(
+                upstream["product"], upstream["component"], upstream["phase"],
+                upstream["target"],
+            )
+            if (
+                product != "runtime"
+                or phase != "metadata"
+                or upstream["target"] == "node-js-binding"
+                or dependency not in phase_instance_dependencies(consumer)
+            ):
+                raise ValueError(
+                    "Runtime validation semantic projection is attached to an unauthorized edge"
+                )
+            upstream_artifacts.append({
+                **{key: value for key, value in upstream.items() if key != "semanticProjection"},
+                "outputsDigest": semantic_projection["sha256"],
+            })
+        elif projection is None:
             upstream_artifacts.append(upstream)
         else:
             upstream_artifacts.append({

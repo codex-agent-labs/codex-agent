@@ -8,6 +8,9 @@ class RuntimeProductPhaseMappingTest {
     private val rootBuild = File("../build.gradle.kts").readText()
     private val runtimePlugin = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
     private val nodeBuild = File("../../codex-agent-runtime-desktop/build.gradle.kts").readText()
+    private val adapterMetadataInputs =
+        File("src/main/kotlin/RuntimeAdapterMetadataInputsTask.kt").readText()
+    private val pythonTooling = File("src/main/kotlin/RuntimeProductPythonTooling.kt").readText()
 
     @Test
     fun `standalone lifecycle maps every exact Runtime phase and verification target`() {
@@ -80,9 +83,66 @@ class RuntimeProductPhaseMappingTest {
         assertTrue("writeNodeJsRuntimeBinaryOutputManifest" in nodeJsPackage())
         assertTrue("writeNodeWasmRuntimeBinaryOutputManifest" in nodeWasmPackage())
         assertTrue("dependsOn(invalidate, packagePrerequisite, nativePackagePrerequisite)" in nodeValidation())
-        assertTrue("val runtimeValidationManifestTasks = linkedMapOf(" in nodeBuild)
+        assertTrue("val runtimeNativeValidationManifestTasks = linkedMapOf(" in nodeBuild)
         assertTrue("validation-output-manifest.json" in nodeBuild)
         assertTrue("mustRunAfter(invalidate)" in nodeBuild)
+    }
+
+    @Test
+    fun `adapter metadata owns canonical projection and Maven outputs without product work`() {
+        val metadata = nodeBuild.substringAfter("val runtimeAdapterMetadataComponents = linkedMapOf(")
+            .substringBefore("mavenPublishing {")
+        listOf("jvm", "node-js", "node-wasm").forEach { component ->
+            assertTrue("\"$component\"" in metadata, component)
+        }
+        listOf(
+            "providers.gradleProperty(\"codexAgent.runtimeValidationHandoff\")",
+            "providers.gradleProperty(\"codexAgent.runtimeMavenRepository\")",
+            "ValidateRuntimeAdapterMetadataInputsTask",
+            "it.resolve(\"projection.json\")",
+            "into(\"evidence\")",
+            "rename { \"\$component.json\" }",
+            "from(layout.dir(importedRuntimeMavenRepository)) { into(\"maven\") }",
+            "\"adapter-evidence\" to \"outputs/evidence\"",
+            "\"maven\" to \"outputs/maven\"",
+        ).forEach { contract -> assertTrue(contract in nodeBuild, contract) }
+        listOf(
+            "validation-output-manifest.json",
+            "validation-manifest",
+            "writeJvmRuntimeValidationOutputManifest",
+            "writeNodeJsRuntimeValidationOutputManifest",
+            "writeNodeWasmRuntimeValidationOutputManifest",
+            "publish",
+            "compile",
+            "link",
+        ).forEach { legacy -> assertFalse(legacy in metadata, legacy) }
+        listOf(
+            "@get:Internal\n    abstract val validationHandoff",
+            "@get:InputFile",
+            "@get:Internal\n    abstract val mavenRepository",
+            "generateSequence(normalized) { it.parent }",
+            "verifyRuntimeAdapterProjection(adapter, projectionFile.toFile())",
+        ).forEach { contract -> assertTrue(contract in adapterMetadataInputs, contract) }
+        assertFalse("@get:InputDirectory" in adapterMetadataInputs)
+        assertTrue(metadata.indexOf("val invalidate =") < metadata.indexOf("val verifyInputs ="))
+        assertTrue("dependsOn(invalidate)" in metadata.substringAfter("val verifyInputs =")
+            .substringBefore("val stage ="))
+        assertTrue("dependsOn(verifyInputs)" in metadata.substringAfter("val stage =")
+            .substringBefore("registerRuntimeOutputManifest("))
+        listOf(
+            "validate_runtime_adapter_projection",
+            "canonical_json_bytes(projection) != contents",
+            "reject_symlink_parents=True",
+        ).forEach { contract -> assertTrue(contract in pythonTooling, contract) }
+    }
+
+    @Test
+    fun `adapter raw validation manifests retain their canonical evidence kinds`() {
+        assertTrue("mapOf(\"jvm-evidence\" to \"outputs/jvm-evidence\")" in runtimePlugin)
+        val nodeValidation = nodeValidation()
+        assertTrue("\"node-evidence\" to \"outputs/node-evidence\"" in nodeValidation)
+        assertFalse("adapter-evidence" in nodeValidation)
+        assertFalse("\"maven\" to" in nodeValidation)
     }
 
     private fun jvmPackage() = runtimePlugin.substringAfter("val stageJvmRuntimePackage =")

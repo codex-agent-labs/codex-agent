@@ -5,16 +5,21 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import ci.products.contract_projection as contract_projection
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.plan import (
     NOT_APPLICABLE_FLAGS_DIGEST,
     NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+    VerifiedRuntimeValidationProjection,
+    _VERIFIED_RUNTIME_VALIDATION_PROJECTION,
     plan_phase,
+    runtime_validation_dependencies,
     verified_phase_flags_digest,
     verified_phase_toolchain_digest,
     verify_build_key_output_consistency,
+    verify_runtime_validation_projection,
 )
 from ci.products.receipt import compute_build_key, output_inventory_digest
 from ci.products.registry import (
@@ -142,6 +147,26 @@ def verified_projection(
     }, contract_projection._VERIFIED)
 
 
+def verified_runtime_projection(
+    instance: PhaseInstanceId,
+    digest: str = DIGEST_C,
+) -> VerifiedRuntimeValidationProjection:
+    targets = tuple(
+        dependency.target for dependency in phase_instance_dependencies(instance)
+        if (
+            dependency.product == "runtime"
+            and dependency.phase == "validation"
+            and dependency.target != "node-js-binding"
+        )
+    )
+    return VerifiedRuntimeValidationProjection(
+        instance.component,
+        targets,
+        digest,
+        _VERIFIED_RUNTIME_VALIDATION_PROJECTION,
+    )
+
+
 def plan(
     instance: PhaseInstanceId,
     *,
@@ -150,6 +175,7 @@ def plan(
     inventory: list[dict[str, object]] | None = None,
     projection: contract_projection.VerifiedContractProjection | None = None,
     flags_digest: str = DIGEST_B,
+    runtime_validation_projection: VerifiedRuntimeValidationProjection | None = None,
 ) -> dict[str, object]:
     selected_upstreams = upstreams(instance) if upstream_receipts is None else upstream_receipts
     if projection is None:
@@ -160,6 +186,8 @@ def plan(
             ) == ("contract", "contract", "metadata", "common")
         ), None)
         projection = verified_projection(instance, contract_receipt=contract_receipt)
+    if runtime_validation_projection is None and runtime_validation_dependencies(instance):
+        runtime_validation_projection = verified_runtime_projection(instance)
     return plan_phase(
         instance,
         inventory=[file_record()] if inventory is None else inventory,
@@ -168,6 +196,7 @@ def plan(
         toolchain_profile_digest=DIGEST_A,
         flags_digest=flags_digest,
         contract_projection=projection,
+        runtime_validation_projection=runtime_validation_projection,
     )
 
 
@@ -364,6 +393,107 @@ class ProductPlanTest(unittest.TestCase):
                 inputs=result["inputs"],
             ),
         )
+
+    def test_runtime_metadata_projection_preserves_raw_receipt_but_normalizes_key(self) -> None:
+        instance = PhaseInstanceId("runtime", "jvm", "metadata", "jvm")
+        original = upstreams(instance)
+        changed = copy.deepcopy(original)
+        for receipt_value in changed:
+            receipt_value["outputs"][0]["sha256"] = DIGEST_C
+            receipt_value["producer"] = {
+                **receipt_value["producer"], "commit": "c" * 40, "runId": 99,
+            }
+        projection = verified_runtime_projection(instance)
+        first = plan(
+            instance, upstream_receipts=original,
+            runtime_validation_projection=projection,
+        )
+        second = plan(
+            instance, upstream_receipts=changed,
+            runtime_validation_projection=projection,
+        )
+        self.assertEqual(first["buildKey"], second["buildKey"])
+        self.assertNotEqual(
+            [output_inventory_digest(value["outputs"]) for value in original],
+            [output_inventory_digest(value["outputs"]) for value in changed],
+        )
+        self.assertTrue(all(
+            upstream["outputsDigest"]
+            == output_inventory_digest(receipt_value["outputs"])
+            and upstream["semanticProjection"] == projection.receipt_value()
+            for upstream, receipt_value in zip(
+                first["inputs"]["upstreamArtifacts"], original, strict=True,
+            )
+        ))
+        changed_semantics = plan(
+            instance,
+            upstream_receipts=original,
+            runtime_validation_projection=verified_runtime_projection(instance, DIGEST_A),
+        )
+        self.assertNotEqual(first["buildKey"], changed_semantics["buildKey"])
+
+    def test_runtime_metadata_projection_requires_planner_capability_and_exact_edge(self) -> None:
+        instance = PhaseInstanceId("runtime", "node-js", "metadata", "node-js")
+        with self.assertRaisesRegex(ValueError, "Authenticated"):
+            plan_phase(
+                instance,
+                inventory=[file_record()],
+                versions=VERSIONS,
+                upstream_receipts=upstreams(instance),
+                toolchain_profile_digest=DIGEST_A,
+                flags_digest=DIGEST_B,
+            )
+        with self.assertRaisesRegex(ValueError, "Authenticated"):
+            plan_phase(
+                instance,
+                inventory=[file_record()],
+                versions=VERSIONS,
+                upstream_receipts=upstreams(instance),
+                toolchain_profile_digest=DIGEST_A,
+                flags_digest=DIGEST_B,
+                runtime_validation_projection=verified_runtime_projection(instance).receipt_value(),
+            )
+        wrong_component = VerifiedRuntimeValidationProjection(
+            "node-wasm",
+            verified_runtime_projection(instance).targets,
+            DIGEST_C,
+            _VERIFIED_RUNTIME_VALIDATION_PROJECTION,
+        )
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            plan(
+                instance,
+                runtime_validation_projection=wrong_component,
+            )
+        with self.assertRaisesRegex(ValueError, "Unexpected"):
+            plan(
+                PhaseInstanceId("runtime", "jvm", "validation", "linux-x64"),
+                runtime_validation_projection=VerifiedRuntimeValidationProjection(
+                    "jvm", ("linux-x64",), DIGEST_C,
+                    _VERIFIED_RUNTIME_VALIDATION_PROJECTION,
+                ),
+            )
+
+    def test_runtime_projection_capability_is_minted_only_from_authenticated_derivation(self) -> None:
+        instance = PhaseInstanceId("runtime", "jvm", "metadata", "jvm")
+        receipts = upstreams(instance)
+        reports = [Path(f"report-{index}.json") for index in range(5)]
+        semantic = {"schemaVersion": 1, "component": "jvm", "reports": []}
+        with mock.patch(
+            "ci.products.runtime_evidence.derive_authenticated_runtime_validation_projection",
+            return_value=semantic,
+        ) as derive:
+            projection = verify_runtime_validation_projection(instance, reports, receipts)
+        derive.assert_called_once_with("jvm", reports, receipts)
+        self.assertEqual(
+            sha256_bytes(canonical_json_bytes(semantic)),
+            projection.receipt_value()["sha256"],
+        )
+        with self.assertRaisesRegex(ValueError, "not authenticated"):
+            VerifiedRuntimeValidationProjection(
+                "jvm", projection.targets, DIGEST_A, object(),
+            )
+        with self.assertRaisesRegex(ValueError, "do not match"):
+            verify_runtime_validation_projection(instance, reports, receipts[:-1])
 
     def test_version_identity_is_conditional_and_selected_by_product_owner(self) -> None:
         contract = PhaseInstanceId("contract", "contract", "binary", "common")

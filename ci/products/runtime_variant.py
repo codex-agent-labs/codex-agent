@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import stat
@@ -12,33 +13,34 @@ import zipfile
 
 from .aggregate import RUNTIME_VARIANT_ZIP_LIMITS, validate_runtime_variant
 from .inventory import (
+    _is_windows,
+    _stat_identity,
     canonical_json_bytes,
     load_canonical_json_bytes,
     read_regular_file_bytes,
     require_regular_directory,
     sha256_bytes,
-    sha256_file,
     verified_zip_contents,
-    write_canonical_json,
+)
+from .index import (
+    _held_output_parent,
+    _held_parent_file,
+    _require_held_leaf_identity,
+    _require_parent_identity,
 )
 from .receipt import build_key_payload, output_inventory_digest, validate_phase_receipt
+from .restore import _publish_no_replace
 from .runtime_attestation import (
     derive_desktop_validation_projection,
     derive_runtime_component_attestation,
 )
 from .runtime_evidence import inspect_classifier, read_distribution_manifest
 from .runtime_identity import validate_runtime_identity
-from .signatures import (
-    sign_manifest,
-    validate_signing_metadata,
-    verify_manifest_signature,
-)
 
 
 _JSON_LIMIT = 16 * 1024 * 1024
 _EVIDENCE_LIMIT = 64 * 1024 * 1024
 _MANIFEST_NAME = "runtime-variant-manifest.json"
-_SIGNATURE_NAME = "runtime-variant-manifest.sig"
 _RECEIPT_PATHS = {
     "binary": "evidence/binary-phase.json",
     "package": "evidence/package-phase.json",
@@ -161,6 +163,35 @@ def _safe_output_directory(path: Path) -> Path:
     return root
 
 
+def _held_directory_names(descriptor: int, path: Path) -> list[str]:
+    _require_parent_identity(descriptor, path)
+    names = sorted(os.listdir(path if _is_windows() else descriptor))
+    _require_parent_identity(descriptor, path)
+    return names
+
+
+def _held_file_identity(
+    descriptor: int,
+    identity: os.stat_result,
+    *,
+    max_bytes: int,
+) -> dict[str, Any]:
+    before = os.fstat(descriptor)
+    if _stat_identity(before) != _stat_identity(identity) or before.st_size > max_bytes:
+        raise ValueError("Published Runtime variant changed during final verification")
+    digest = hashlib.sha256()
+    size = 0
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while chunk := os.read(descriptor, 1024 * 1024):
+        digest.update(chunk)
+        size += len(chunk)
+    if size != before.st_size or _stat_identity(before) != _stat_identity(
+        os.fstat(descriptor)
+    ):
+        raise ValueError("Published Runtime variant changed during final verification")
+    return {"bytes": size, "sha256": f"sha256:{digest.hexdigest()}"}
+
+
 def produce_runtime_variant(
     *,
     identity_envelope: Any,
@@ -171,18 +202,12 @@ def produce_runtime_variant(
     app_server_archive: Path,
     validation_evidence: Path,
     distribution_manifest: Path,
-    signing_metadata: Any,
-    private_key: Path,
-    public_key: Path,
     output_directory: Path,
 ) -> dict[str, Any]:
-    """Validate immutable phase outputs and emit one signed component-addressed ZIP."""
+    """Validate immutable phase outputs and emit one reusable component-addressed ZIP."""
     identity = validate_runtime_identity(identity_envelope)
-    signing = validate_signing_metadata(signing_metadata)
     target = identity["target"]
     output_root = _safe_output_directory(Path(output_directory))
-    if any(output_root.iterdir()):
-        raise ValueError("Runtime variant output directory must be empty")
 
     receipt_values: dict[str, dict[str, Any]] = {}
     for phase, path in (
@@ -200,9 +225,7 @@ def produce_runtime_variant(
             or receipt["component"] != target
             or receipt["phase"] != phase
             or receipt["target"] != target
-            or receipt["productVersion"] != source_version
             or receipt["inputs"]["versionIdentity"] != identity["runtimeCompatibilityVersion"]
-            or receipt["trustDomain"] != signing["trustDomain"]
         ):
             raise ValueError(f"Runtime {phase} receipt identity does not match the Runtime variant")
 
@@ -352,27 +375,20 @@ def produce_runtime_variant(
         },
         "innerArtifacts": artifacts,
         "toolchainProfile": identity["toolchainProfile"],
-        "signing": signing,
     })
     bundle_name = (
         f"codex-agent-runtime-variant-{target}-"
         f"{identity['componentId'].removeprefix('sha256:')}.zip"
     )
     destination = output_root / bundle_name
-    try:
-        _read_input(Path(private_key), "Runtime signing private key", max_bytes=1024 * 1024)
-        with tempfile.TemporaryDirectory(prefix=".runtime-variant-", dir=output_root) as temporary:
-            stage = Path(temporary)
-            manifest_path = stage / _MANIFEST_NAME
-            write_canonical_json(manifest_path, manifest)
-            signature_path = sign_manifest(manifest_path, Path(private_key), signing)
-            verify_manifest_signature(manifest_path, signature_path, Path(public_key), signing)
+    with _held_output_parent(output_root) as (output_descriptor, held_output_root):
+        if _held_directory_names(output_descriptor, held_output_root):
+            raise ValueError("Runtime variant output directory must be empty")
+        with tempfile.TemporaryDirectory(prefix="codex-agent-runtime-variant-") as temporary:
+            stage = Path(temporary).resolve()
             zip_members = {
                 **{path: contents for path, (_, contents) in members.items()},
                 _MANIFEST_NAME: canonical_json_bytes(manifest),
-                _SIGNATURE_NAME: _read_input(
-                    signature_path, "Runtime variant signature", max_bytes=1024 * 1024,
-                ),
             }
             staged_bundle = stage / bundle_name
             with zipfile.ZipFile(
@@ -380,23 +396,38 @@ def produce_runtime_variant(
             ) as archive:
                 for path, contents in sorted(zip_members.items()):
                     archive.writestr(_zip_info(path), contents)
-            verified_zip_contents(
+            _, _, staged_identity = verified_zip_contents(
                 staged_bundle,
                 **RUNTIME_VARIANT_ZIP_LIMITS,
                 retained_paths=(),
                 max_retained_bytes=0,
                 canonical_stored=True,
             )
-            os.replace(staged_bundle, destination)
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
-    if sorted(path.name for path in output_root.iterdir()) != [bundle_name]:
-        destination.unlink(missing_ok=True)
-        raise ValueError("Runtime variant output directory contains unexpected entries")
+            if not _publish_no_replace(staged_bundle, destination):
+                raise ValueError("Runtime variant was concurrently published")
+            _require_parent_identity(output_descriptor, held_output_root)
+            with _held_parent_file(
+                output_descriptor, held_output_root, bundle_name,
+            ) as (bundle_descriptor, bundle_identity):
+                published_identity = _held_file_identity(
+                    bundle_descriptor,
+                    bundle_identity,
+                    max_bytes=RUNTIME_VARIANT_ZIP_LIMITS["max_archive_bytes"],
+                )
+                _require_held_leaf_identity(
+                    output_descriptor,
+                    held_output_root,
+                    bundle_name,
+                    bundle_descriptor,
+                    bundle_identity,
+                )
+            if published_identity != staged_identity:
+                raise ValueError("Published Runtime variant differs from the verified payload")
+            if _held_directory_names(output_descriptor, held_output_root) != [bundle_name]:
+                raise ValueError("Runtime variant output directory contains unexpected entries")
     return {
         "bundlePath": destination,
-        "bundleSha256": sha256_file(destination),
+        "bundleSha256": staged_identity["sha256"],
         "componentId": identity["componentId"],
         "manifestSha256": sha256_bytes(canonical_json_bytes(manifest)),
         "sourceRuntimeVersion": source_version,
@@ -414,9 +445,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--app-server-archive", required=True)
     parser.add_argument("--validation-evidence", required=True)
     parser.add_argument("--distribution-manifest", required=True)
-    parser.add_argument("--signing-metadata", required=True)
-    parser.add_argument("--private-key", required=True)
-    parser.add_argument("--public-key", required=True)
     parser.add_argument("--output-directory", required=True)
     arguments = parser.parse_args(argv)
     try:
@@ -431,11 +459,6 @@ def main(argv: list[str] | None = None) -> int:
             app_server_archive=Path(arguments.app_server_archive),
             validation_evidence=Path(arguments.validation_evidence),
             distribution_manifest=Path(arguments.distribution_manifest),
-            signing_metadata=load_canonical_json_bytes(_read_input(
-                Path(arguments.signing_metadata), "Runtime signing metadata", max_bytes=_JSON_LIMIT,
-            )),
-            private_key=Path(arguments.private_key),
-            public_key=Path(arguments.public_key),
             output_directory=Path(arguments.output_directory),
         )
     except (OSError, ValueError) as error:

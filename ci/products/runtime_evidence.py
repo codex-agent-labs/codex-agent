@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import io
@@ -12,7 +13,14 @@ from typing import Any, Iterable, Mapping
 import xml.etree.ElementTree as ET
 import zipfile
 
-from .inventory import load_json, load_json_bytes, read_regular_file_bytes, write_canonical_json
+from .inventory import (
+    canonical_json_bytes,
+    load_canonical_json_bytes,
+    load_json,
+    load_json_bytes,
+    read_regular_file_bytes,
+    write_canonical_json,
+)
 from .test_results import read_canonical_test_report, read_canonical_test_results
 
 
@@ -70,6 +78,13 @@ RUNTIME_TARGETS: dict[str, RuntimeTarget] = {
     "linuxArm64": RuntimeTarget("app-server-linux-arm64", "Linux", "ARM64"),
     "linuxX64": RuntimeTarget("app-server-linux-x64", "Linux", "X64"),
     "mingwX64": RuntimeTarget("app-server-windows-x64", "Windows", "X64"),
+}
+PRODUCT_RUNTIME_TARGETS = {
+    "macosArm64": "macos-arm64",
+    "macosX64": "macos-x64",
+    "linuxArm64": "linux-arm64",
+    "linuxX64": "linux-x64",
+    "mingwX64": "windows-x64",
 }
 
 
@@ -557,6 +572,8 @@ NODE_KEYS = {
     "compiledNodeTestRuntimeFileName", "compiledNodeTestRuntimeBytes",
     "compiledNodeTestRuntimeSha256", "result",
 }
+RUNTIME_ADAPTER_COMPONENTS = ("jvm", "node-js", "node-wasm")
+_EXECUTION_FIELDS = {"candidateCommit", "testTask"}
 
 
 def _check_commits(expected_commits: Mapping[str, str]) -> None:
@@ -587,10 +604,28 @@ def _check_common_report(
     test_class: str,
     test_methods: tuple[str, ...],
 ) -> None:
+    _check_common_adapter_fields(
+        report,
+        schema=schema,
+        target=target,
+        test_class=test_class,
+        test_methods=test_methods,
+    )
+    if report["candidateCommit"] != commit:
+        raise ValueError("Runtime evidence identity or test result mismatch")
+
+
+def _check_common_adapter_fields(
+    report: Mapping[str, Any],
+    *,
+    schema: int,
+    target: str,
+    test_class: str,
+    test_methods: tuple[str, ...],
+) -> None:
     expected = RUNTIME_TARGETS[target]
     if (
         _integer(report["schemaVersion"], "schemaVersion") != schema
-        or report["candidateCommit"] != commit
         or report["target"] != target
         or report["classifier"] != expected.classifier
         or report["runnerOs"] != expected.runner_os
@@ -602,6 +637,276 @@ def _check_common_report(
         or report["result"] != "passed"
     ):
         raise ValueError("Runtime evidence identity or test result mismatch")
+
+
+def _positive_integer(value: Any, label: str) -> int:
+    result = _integer(value, label)
+    if result < 1:
+        raise ValueError(f"{label} must be positive")
+    return result
+
+
+def _check_adapter_fields(
+    report: Mapping[str, Any], component: str, target: str,
+) -> None:
+    if component == "jvm":
+        _check_common_adapter_fields(
+            report,
+            schema=1,
+            target=target,
+            test_class=DESKTOP_RUNTIME_TEST_CLASS,
+            test_methods=DESKTOP_RUNTIME_TEST_METHODS,
+        )
+        _safe_basename(
+            _string(report["classifierArchiveFileName"], "classifier archive filename"),
+            "classifier archive filename",
+        )
+        _positive_integer(report["classifierArchiveBytes"], "classifier archive bytes")
+        _hex(report["classifierArchiveSha256"], SHA256, "classifier archive SHA-256")
+        _hex(report["appServerBinarySha256"], SHA256, "app-server binary SHA-256")
+        _hex(report["supervisorBinarySha256"], SHA256, "supervisor binary SHA-256")
+        if report["compiledJvmTestRuntimeFileName"] != JVM_RUNTIME_RUNNER_ARCHIVE:
+            raise ValueError("Compiled JVM Runtime filename mismatch")
+        _positive_integer(
+            report["compiledJvmTestRuntimeBytes"], "compiled JVM Runtime bytes",
+        )
+        _hex(
+            report["compiledJvmTestRuntimeSha256"], SHA256,
+            "compiled JVM Runtime SHA-256",
+        )
+        return
+
+    backend = {
+        "node-js": NODE_RUNTIME_JS_BACKEND,
+        "node-wasm": NODE_RUNTIME_WASM_BACKEND,
+    }[component]
+    _check_common_adapter_fields(
+        report,
+        schema=2,
+        target=target,
+        test_class=NODE_RUNTIME_TEST_CLASS,
+        test_methods=NODE_RUNTIME_TEST_METHODS,
+    )
+    if report["runtimeBackend"] != backend or report["nodeVersion"] != PINNED_NODE_VERSION:
+        raise ValueError("Node Runtime evidence identity mismatch")
+    _safe_basename(
+        _string(report["classifierArchiveFileName"], "classifier archive filename"),
+        "classifier archive filename",
+    )
+    _positive_integer(report["classifierArchiveBytes"], "classifier archive bytes")
+    _hex(report["classifierArchiveSha256"], SHA256, "classifier archive SHA-256")
+    _hex(report["appServerBinarySha256"], SHA256, "app-server binary SHA-256")
+    _hex(report["processSupervisorSha256"], SHA256, "process supervisor SHA-256")
+    expected_runner = _node_runner_name(backend)
+    if report["compiledNodeTestRuntimeFileName"] != expected_runner:
+        raise ValueError("Compiled Node Runtime filename mismatch")
+    _positive_integer(
+        report["compiledNodeTestRuntimeBytes"], "compiled Node Runtime bytes",
+    )
+    _hex(
+        report["compiledNodeTestRuntimeSha256"], SHA256,
+        "compiled Node Runtime SHA-256",
+    )
+
+
+def _adapter_report_keys(component: str, *, projected: bool) -> set[str]:
+    if component not in RUNTIME_ADAPTER_COMPONENTS:
+        raise ValueError("Runtime adapter component is unsupported")
+    keys = JVM_KEYS if component == "jvm" else NODE_KEYS
+    return keys - _EXECUTION_FIELDS if projected else keys
+
+
+def validate_runtime_adapter_projection(value: Any) -> dict[str, Any]:
+    """Validate one deterministic five-host JVM/Node Runtime evidence projection."""
+    projection = _object(value, "Runtime adapter projection")
+    _exact_keys(
+        projection, {"schemaVersion", "component", "reports"},
+        "Runtime adapter projection",
+    )
+    if _integer(projection["schemaVersion"], "Runtime adapter projection schemaVersion") != 1:
+        raise ValueError("Unsupported Runtime adapter projection schemaVersion")
+    component = _string(projection["component"], "Runtime adapter projection component")
+    expected_keys = _adapter_report_keys(component, projected=True)
+    reports = _array(projection["reports"], "Runtime adapter projection reports")
+    if len(reports) != len(RUNTIME_TARGETS):
+        raise ValueError("Runtime adapter projection must contain exactly five reports")
+    targets: list[str] = []
+    for index, value_report in enumerate(reports):
+        report = _object(value_report, f"Runtime adapter projection report {index}")
+        _exact_keys(report, expected_keys, f"Runtime adapter projection report {index}")
+        target = _string(report["target"], f"Runtime adapter projection report {index} target")
+        if target not in RUNTIME_TARGETS:
+            raise ValueError("Runtime adapter projection report target is unsupported")
+        _check_adapter_fields(report, component, target)
+        targets.append(target)
+    if targets != list(RUNTIME_TARGETS):
+        raise ValueError("Runtime adapter projection reports are not in canonical target order")
+    return projection
+
+
+def derive_runtime_adapter_projection(
+    component: str,
+    reports: Iterable[Mapping[str, Any]],
+    expected_commits: Mapping[str, str],
+) -> dict[str, Any]:
+    """Strip only authenticated execution identity from five strict Runtime reports."""
+    expected_keys = _adapter_report_keys(component, projected=False)
+    _check_commits(expected_commits)
+    if isinstance(reports, (str, bytes, Mapping)):
+        raise ValueError("Runtime adapter reports must be an iterable of objects")
+    try:
+        raw_reports = list(reports)
+    except TypeError as error:
+        raise ValueError("Runtime adapter reports must be an iterable of objects") from error
+    if len(raw_reports) != len(RUNTIME_TARGETS):
+        raise ValueError("Runtime adapter projection must contain exactly five reports")
+    projected: list[dict[str, Any]] = []
+    targets: list[str] = []
+    for index, value_report in enumerate(raw_reports):
+        report = _object(value_report, f"Runtime adapter report {index}")
+        _exact_keys(report, expected_keys, f"Runtime adapter report {index}")
+        target = _string(report["target"], f"Runtime adapter report {index} target")
+        if target not in RUNTIME_TARGETS:
+            raise ValueError("Runtime adapter report target is unsupported")
+        _check_adapter_fields(report, component, target)
+        if report["candidateCommit"] != expected_commits[target]:
+            raise ValueError(f"{target}: candidate commit mismatch")
+        allowed_tasks = (
+            {jvm_test_task(target), IMPORTED_JVM_RUNTIME_EVIDENCE_TASK}
+            if component == "jvm"
+            else {node_test_task(
+                target,
+                NODE_RUNTIME_JS_BACKEND if component == "node-js" else NODE_RUNTIME_WASM_BACKEND,
+            )}
+        )
+        if report["testTask"] not in allowed_tasks:
+            raise ValueError(f"{target}: test task mismatch")
+        targets.append(target)
+        projected.append({
+            key: deepcopy(field) for key, field in report.items()
+            if key not in _EXECUTION_FIELDS
+        })
+    if targets != list(RUNTIME_TARGETS):
+        raise ValueError("Runtime adapter reports are not in canonical target order")
+    return validate_runtime_adapter_projection({
+        "schemaVersion": 1,
+        "component": component,
+        "reports": projected,
+    })
+
+
+def derive_authenticated_runtime_validation_projection(
+    component: str,
+    report_files: Iterable[Path],
+    validation_receipts: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Derive semantic content only from canonical reports bound to exact receipts."""
+    from .receipt import validate_phase_receipt
+
+    if isinstance(report_files, (str, bytes, Mapping)):
+        raise ValueError("Runtime validation report files must be an iterable of paths")
+    if isinstance(validation_receipts, (str, bytes, Mapping)):
+        raise ValueError("Runtime validation receipts must be an iterable of objects")
+    try:
+        paths = [Path(path) for path in report_files]
+        receipt_values = list(validation_receipts)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Runtime validation projection inputs are invalid") from error
+    reports = []
+    report_bytes = []
+    for path in paths:
+        contents = read_regular_file_bytes(
+            Path(path), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+        )
+        value = load_canonical_json_bytes(contents)
+        if canonical_json_bytes(value) != contents:
+            raise ValueError("Runtime validation report is not canonical JSON")
+        reports.append(value)
+        report_bytes.append(contents)
+    receipts = [validate_phase_receipt(value) for value in receipt_values]
+    by_target = {}
+    for receipt in receipts:
+        identity = (
+            receipt["product"], receipt["component"], receipt["phase"], receipt["target"],
+        )
+        if identity[:3] != ("runtime", component, "validation"):
+            raise ValueError("Runtime validation receipt identity does not match its projection")
+        if receipt["target"] in by_target:
+            raise ValueError("Runtime validation projection has duplicate receipt targets")
+        by_target[receipt["target"]] = receipt
+
+    if component in RUNTIME_ADAPTER_COMPONENTS:
+        expected_report_targets = tuple(RUNTIME_TARGETS)
+    elif component in PRODUCT_RUNTIME_TARGETS.values():
+        expected_report_targets = (
+            next(target for target, product_target in PRODUCT_RUNTIME_TARGETS.items()
+                 if product_target == component),
+        )
+    else:
+        raise ValueError("Runtime validation projection component is unsupported")
+    expected_receipt_targets = tuple(
+        PRODUCT_RUNTIME_TARGETS[target] for target in expected_report_targets
+    )
+    if len(reports) != len(expected_report_targets) or set(by_target) != set(expected_receipt_targets):
+        raise ValueError("Runtime validation projection report/receipt set is incomplete")
+
+    expected_commits = {}
+    for index, (report, contents, evidence_target, receipt_target) in enumerate(zip(
+        reports, report_bytes, expected_report_targets, expected_receipt_targets, strict=True,
+    )):
+        if type(report) is not dict or report.get("target") != evidence_target:
+            raise ValueError("Runtime validation reports are not in canonical target order")
+        receipt = by_target[receipt_target]
+        identity = {
+            "bytes": len(contents),
+            "sha256": f"sha256:{_sha256_bytes(contents)}",
+        }
+        if sum(
+            output["bytes"] == identity["bytes"] and output["sha256"] == identity["sha256"]
+            for output in receipt["outputs"]
+        ) != 1:
+            raise ValueError(
+                f"Runtime validation report {index} is not one exact receipt output"
+            )
+        expected_commits[evidence_target] = receipt["producer"]["commit"]
+
+    if component in RUNTIME_ADAPTER_COMPONENTS:
+        return derive_runtime_adapter_projection(component, reports, expected_commits)
+
+    report = reports[0]
+    evidence_target = expected_report_targets[0]
+    _exact_keys(report, DESKTOP_KEYS, "Desktop Runtime validation evidence")
+    _check_common_report(
+        report,
+        schema=3,
+        target=evidence_target,
+        commit=expected_commits[evidence_target],
+        test_class=DESKTOP_RUNTIME_TEST_CLASS,
+        test_methods=DESKTOP_RUNTIME_TEST_METHODS,
+    )
+    if report["testTask"] not in {
+        desktop_test_task(evidence_target), imported_desktop_test_task(evidence_target),
+    }:
+        raise ValueError("Desktop Runtime validation evidence test task mismatch")
+    for field in ("binarySha256", "supervisorSha256", "classifierArchiveSha256"):
+        _hex(report[field], SHA256, f"Desktop Runtime validation evidence.{field}")
+    return {
+        "schemaVersion": 1,
+        "target": component,
+        "classifier": report["classifier"],
+        "runnerOs": report["runnerOs"],
+        "runnerArch": report["runnerArch"],
+        "testClass": report["testClass"],
+        "testMethods": deepcopy(report["testMethods"]),
+        "tests": report["tests"],
+        "skipped": report["skipped"],
+        "failures": report["failures"],
+        "errors": report["errors"],
+        "binarySha256": f"sha256:{report['binarySha256']}",
+        "supervisorSha256": f"sha256:{report['supervisorSha256']}",
+        "classifierArchiveSha256": f"sha256:{report['classifierArchiveSha256']}",
+        "result": report["result"],
+    }
 
 
 def _classifier_proofs(

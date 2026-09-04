@@ -22,6 +22,7 @@ from .inventory import (
     require_integer,
     require_object,
     require_semver,
+    require_sha256,
     require_string,
     sha256_bytes,
     write_canonical_json,
@@ -64,6 +65,46 @@ NOT_APPLICABLE_FLAGS_DIGEST = sha256_bytes(canonical_json_bytes({
     "schemaVersion": 1,
     "state": "not-applicable",
 }))
+_VERIFIED_RUNTIME_VALIDATION_PROJECTION = object()
+
+
+class VerifiedRuntimeValidationProjection:
+    """Planner capability for content-derived Runtime validation identity."""
+
+    __slots__ = ("_canonical", "_component", "_targets", "_token")
+
+    def __init__(
+        self,
+        component: str,
+        targets: tuple[str, ...],
+        sha256: str,
+        token: object,
+    ) -> None:
+        if token is not _VERIFIED_RUNTIME_VALIDATION_PROJECTION:
+            raise ValueError("Runtime validation projection is not authenticated")
+        if not targets or targets != tuple(sorted(set(targets))):
+            raise ValueError("Runtime validation projection targets must be sorted and unique")
+        self._component = component
+        self._targets = targets
+        self._canonical = canonical_json_bytes({
+            "schemaVersion": 1,
+            "kind": "runtime-validation-content",
+            "sha256": require_sha256(sha256, "Runtime validation projection SHA-256"),
+        })
+        self._token = token
+
+    @property
+    def component(self) -> str:
+        return self._component
+
+    @property
+    def targets(self) -> tuple[str, ...]:
+        return self._targets
+
+    def receipt_value(self) -> dict[str, Any]:
+        if self._token is not _VERIFIED_RUNTIME_VALIDATION_PROJECTION:
+            raise ValueError("Runtime validation projection is not authenticated")
+        return load_canonical_json_bytes(self._canonical)
 
 
 def _runtime_compatibility_version(release_version: str) -> str:
@@ -200,6 +241,7 @@ def _receipt_identity(receipt: dict[str, Any]) -> PhaseInstanceId:
 def _upstream_record(
     receipt: dict[str, Any],
     contract_projection: dict[str, Any] | None = None,
+    semantic_projection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     record = {
         "product": receipt["product"],
@@ -211,7 +253,57 @@ def _upstream_record(
     }
     if contract_projection is not None:
         record["contractProjection"] = contract_projection
+    if semantic_projection is not None:
+        record["semanticProjection"] = semantic_projection
     return record
+
+
+def runtime_validation_dependencies(
+    instance: PhaseInstanceId,
+) -> tuple[PhaseInstanceId, ...]:
+    """Return only validation edges whose raw execution identity is projected."""
+    return tuple(
+        identity for identity in sorted(phase_instance_dependencies(instance))
+        if (
+            instance.product == "runtime"
+            and instance.phase == "metadata"
+            and identity.product == "runtime"
+            and identity.phase == "validation"
+            and identity.target != "node-js-binding"
+        )
+    )
+
+
+def verify_runtime_validation_projection(
+    instance: PhaseInstanceId,
+    report_files: Iterable[Path],
+    validation_receipts: Iterable[dict[str, Any]],
+) -> VerifiedRuntimeValidationProjection:
+    """Authenticate raw reports against receipts before minting a planner capability."""
+    semantic_dependencies = runtime_validation_dependencies(instance)
+    if not semantic_dependencies:
+        raise ValueError("Runtime validation projection is not applicable to this phase")
+    receipts = require_array(validation_receipts, "Runtime validation receipts")
+    expected = set(semantic_dependencies)
+    actual = {
+        _receipt_identity(validate_phase_receipt(value))
+        for value in receipts
+    }
+    if len(actual) != len(receipts) or actual != expected:
+        raise ValueError("Runtime validation receipts do not match the metadata edge")
+    from .runtime_evidence import derive_authenticated_runtime_validation_projection
+
+    projection = derive_authenticated_runtime_validation_projection(
+        instance.component,
+        report_files,
+        receipts,
+    )
+    return VerifiedRuntimeValidationProjection(
+        instance.component,
+        tuple(identity.target for identity in semantic_dependencies),
+        sha256_bytes(canonical_json_bytes(projection)),
+        _VERIFIED_RUNTIME_VALIDATION_PROJECTION,
+    )
 
 
 def _contract_projection_value(
@@ -254,6 +346,7 @@ def plan_phase(
     flags_digest: str,
     output_schema_version: int = 1,
     contract_projection: VerifiedContractProjection | None = None,
+    runtime_validation_projection: VerifiedRuntimeValidationProjection | None = None,
 ) -> dict[str, Any]:
     """Return the exact canonical inputs and build key for one registry phase."""
     if instance not in PHASE_INSTANCE_IDS:
@@ -303,11 +396,27 @@ def plan_phase(
         upstream_by_identity[contract_identity] if contract_identity in upstream_by_identity else {},
         contract_projection,
     )
+    semantic_dependencies = runtime_validation_dependencies(instance)
+    semantic_value = None
+    if semantic_dependencies:
+        if type(runtime_validation_projection) is not VerifiedRuntimeValidationProjection:
+            raise ValueError("Authenticated Runtime validation projection is required")
+        if (
+            not semantic_dependencies
+            or runtime_validation_projection.component != instance.component
+            or runtime_validation_projection.targets
+            != tuple(identity.target for identity in semantic_dependencies)
+        ):
+            raise ValueError("Runtime validation projection does not match the metadata edge")
+        semantic_value = runtime_validation_projection.receipt_value()
+    elif runtime_validation_projection is not None:
+        raise ValueError("Unexpected authenticated Runtime validation projection")
     upstream_artifacts = sorted(
         (
             _upstream_record(
                 receipt,
                 contract_value if identity == contract_identity else None,
+                semantic_value if identity in semantic_dependencies else None,
             )
             for identity, receipt in upstream_by_identity.items()
         ),
@@ -457,6 +566,36 @@ def _contract_projection_from_request_components(
     )
 
 
+def _runtime_validation_projection_from_request(
+    instance: PhaseInstanceId,
+    upstream_receipts: Any,
+    value: Any,
+) -> VerifiedRuntimeValidationProjection | None:
+    dependencies = runtime_validation_dependencies(instance)
+    if not dependencies:
+        if value is not None:
+            raise ValueError("Plan request has unexpected Runtime validation evidence")
+        return None
+    evidence = require_exact_keys(
+        require_object(value, "plan request.runtimeValidationEvidence"),
+        {"reports"},
+        "plan request.runtimeValidationEvidence",
+    )
+    reports = [
+        Path(require_string(path, f"plan request.runtimeValidationEvidence.reports[{index}]"))
+        for index, path in enumerate(require_array(
+            evidence["reports"], "plan request.runtimeValidationEvidence.reports",
+        ))
+    ]
+    semantic_identities = set(dependencies)
+    semantic_receipts = [
+        value
+        for value in require_array(upstream_receipts, "plan request.upstreamReceipts")
+        if _receipt_identity(validate_phase_receipt(value)) in semantic_identities
+    ]
+    return verify_runtime_validation_projection(instance, reports, semantic_receipts)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m ci.products plan")
     parser.add_argument("--request", required=True)
@@ -489,6 +628,7 @@ def main(argv: list[str] | None = None) -> int:
                 "versions",
                 "upstreamReceipts",
                 "contractEvidence",
+                "runtimeValidationEvidence",
                 "toolchainProfileDigest",
                 "flagsDigest",
                 "outputSchemaVersion",
@@ -513,6 +653,11 @@ def main(argv: list[str] | None = None) -> int:
             versions,
             request["contractEvidence"],
         )
+        runtime_validation_projection = _runtime_validation_projection_from_request(
+            instance,
+            request["upstreamReceipts"],
+            request["runtimeValidationEvidence"],
+        )
         result = plan_phase(
             instance,
             inventory=phase_git_inventory(
@@ -536,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             output_schema_version=request["outputSchemaVersion"],
             contract_projection=contract_projection,
+            runtime_validation_projection=runtime_validation_projection,
         )
         result = attach_runtime_binary_identity(
             repository_root,

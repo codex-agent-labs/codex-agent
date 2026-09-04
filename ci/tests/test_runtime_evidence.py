@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -11,10 +12,12 @@ import unittest
 import zipfile
 from contextlib import redirect_stdout
 
-from ci.products.inventory import canonical_json_bytes, load_json, write_canonical_json
+from ci.products.inventory import canonical_json_bytes, load_json, sha256_bytes, write_canonical_json
+from ci.products.receipt import compute_build_key
 from ci.products.runtime_evidence import (
     DESKTOP_RUNTIME_TEST_CLASS,
     DESKTOP_RUNTIME_TEST_METHODS,
+    IMPORTED_JVM_RUNTIME_EVIDENCE_TASK,
     JVM_RUNTIME_RUNNER_ARCHIVE,
     JVM_RUNTIME_RUNNER_ENTRYPOINT,
     NODE_RUNTIME_JS_BACKEND,
@@ -27,6 +30,8 @@ from ci.products.runtime_evidence import (
     build_desktop_evidence,
     build_jvm_evidence,
     build_node_evidence,
+    derive_authenticated_runtime_validation_projection,
+    derive_runtime_adapter_projection,
     desktop_evidence_filename,
     inspect_classifier,
     inspect_jvm_runner,
@@ -39,6 +44,7 @@ from ci.products.runtime_evidence import (
     validate_desktop_evidence,
     validate_jvm_evidence,
     validate_node_evidence,
+    validate_runtime_adapter_projection,
     verify_desktop_test_report,
     write_evidence,
 )
@@ -172,12 +178,291 @@ class RuntimeEvidenceFixture:
 
 class RuntimeEvidenceTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = tempfile.TemporaryDirectory(dir="/private/tmp")
         self.root = Path(self.temporary.name)
         self.fixture = RuntimeEvidenceFixture(self.root)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def _adapter_reports(self, component: str) -> list[dict[str, object]]:
+        if component == "jvm":
+            paths = self.fixture.write_jvm()
+        else:
+            backend = (
+                NODE_RUNTIME_JS_BACKEND
+                if component == "node-js"
+                else NODE_RUNTIME_WASM_BACKEND
+            )
+            paths = self.fixture.write_node(backend)
+        return [load_json(path) for path in paths]
+
+    def _validation_receipt(
+        self,
+        component: str,
+        target: str,
+        report: Path,
+        commit: str,
+        *,
+        run_id: int = 1,
+    ) -> dict[str, object]:
+        contents = report.read_bytes()
+        inputs = {
+            "inventory": [],
+            "phaseInputDigest": sha256_bytes(canonical_json_bytes([])),
+            "versionIdentity": "0.2.0",
+            "upstreamArtifacts": [],
+            "toolchainProfileDigest": sha256_bytes(b"toolchain"),
+            "flagsDigest": sha256_bytes(b"flags"),
+            "outputSchemaVersion": 1,
+        }
+        return {
+            "schemaVersion": 1,
+            "product": "runtime",
+            "component": component,
+            "phase": "validation",
+            "target": target,
+            "productVersion": "0.2.0",
+            "buildKey": compute_build_key(
+                product="runtime", component=component, phase="validation",
+                target=target, inputs=inputs,
+            ),
+            "inputs": inputs,
+            "outputs": [{
+                "kind": "runtime-validation-evidence",
+                "relativePath": f"outputs/{report.name}",
+                "bytes": len(contents),
+                "sha256": sha256_bytes(contents),
+            }],
+            "producer": {
+                "repository": "owner/repository",
+                "workflowPath": ".github/workflows/runtime.yml",
+                "commit": commit,
+                "tree": "f" * 40,
+                "event": "pull_request",
+                "runId": run_id,
+                "runAttempt": 1,
+                "pullRequest": 31,
+            },
+            "trustDomain": "development",
+            "result": "success",
+        }
+
+    def _authenticated_adapter_inputs(
+        self, component: str,
+    ) -> tuple[list[Path], list[dict[str, object]]]:
+        paths = (
+            self.fixture.write_jvm()
+            if component == "jvm"
+            else self.fixture.write_node(
+                NODE_RUNTIME_JS_BACKEND if component == "node-js" else NODE_RUNTIME_WASM_BACKEND
+            )
+        )
+        product_targets = (
+            "macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64",
+        )
+        receipts = [
+            self._validation_receipt(
+                component, product_target, path, self.fixture.commits[evidence_target],
+            )
+            for evidence_target, product_target, path in zip(
+                RUNTIME_TARGETS, product_targets, paths, strict=True,
+            )
+        ]
+        return paths, receipts
+
+    def test_authenticated_projection_binds_raw_reports_receipts_and_provenance(self) -> None:
+        paths, receipts = self._authenticated_adapter_inputs("jvm")
+        original = derive_authenticated_runtime_validation_projection("jvm", paths, receipts)
+
+        rerun = copy.deepcopy(receipts)
+        for receipt in rerun:
+            receipt["producer"]["tree"] = "e" * 40
+            receipt["producer"]["runId"] = 99
+        self.assertEqual(
+            original,
+            derive_authenticated_runtime_validation_projection("jvm", paths, rerun),
+        )
+
+        changed_paths, changed_receipts = self._authenticated_adapter_inputs("jvm")
+        report = load_json(changed_paths[0])
+        report["candidateCommit"] = "d" * 40
+        write_canonical_json(changed_paths[0], report)
+        changed_receipts[0] = self._validation_receipt(
+            "jvm", "macos-arm64", changed_paths[0], "d" * 40,
+        )
+        self.assertEqual(
+            original,
+            derive_authenticated_runtime_validation_projection(
+                "jvm", changed_paths, changed_receipts,
+            ),
+        )
+
+        report["compiledJvmTestRuntimeBytes"] += 1
+        write_canonical_json(changed_paths[0], report)
+        changed_receipts[0] = self._validation_receipt(
+            "jvm", "macos-arm64", changed_paths[0], "d" * 40,
+        )
+        self.assertNotEqual(
+            original,
+            derive_authenticated_runtime_validation_projection(
+                "jvm", changed_paths, changed_receipts,
+            ),
+        )
+
+    def test_authenticated_projection_rejects_none_forgery_and_cross_pair(self) -> None:
+        paths, receipts = self._authenticated_adapter_inputs("node-js")
+        with self.assertRaises(ValueError):
+            derive_authenticated_runtime_validation_projection("node-js", None, receipts)
+        forged = copy.deepcopy(receipts)
+        forged[0]["outputs"][0]["sha256"] = sha256_bytes(b"forged")
+        with self.assertRaisesRegex(ValueError, "exact receipt output"):
+            derive_authenticated_runtime_validation_projection("node-js", paths, forged)
+        crossed = copy.deepcopy(receipts)
+        crossed[0]["outputs"], crossed[1]["outputs"] = (
+            crossed[1]["outputs"], crossed[0]["outputs"],
+        )
+        with self.assertRaisesRegex(ValueError, "exact receipt output"):
+            derive_authenticated_runtime_validation_projection("node-js", paths, crossed)
+
+    def test_authenticated_native_projection_uses_exact_receipt_commit(self) -> None:
+        path = self.fixture.write_desktop()[3]
+        receipt = self._validation_receipt(
+            "linux-x64", "linux-x64", path, self.fixture.commits["linuxX64"],
+        )
+        projection = derive_authenticated_runtime_validation_projection(
+            "linux-x64", [path], [receipt],
+        )
+        self.assertEqual("linux-x64", projection["target"])
+        receipt["producer"]["commit"] = "e" * 40
+        with self.assertRaisesRegex(ValueError, "identity"):
+            derive_authenticated_runtime_validation_projection(
+                "linux-x64", [path], [receipt],
+            )
+
+    def test_adapter_projection_is_exact_and_execution_identity_independent(self) -> None:
+        projections = {}
+        for component in ("jvm", "node-js", "node-wasm"):
+            reports = self._adapter_reports(component)
+            projection = derive_runtime_adapter_projection(
+                component, reports, self.fixture.commits,
+            )
+            self.assertEqual(
+                {"schemaVersion", "component", "reports"}, set(projection),
+            )
+            self.assertEqual(list(RUNTIME_TARGETS), [
+                report["target"] for report in projection["reports"]
+            ])
+            self.assertTrue(all(
+                "candidateCommit" not in report and "testTask" not in report
+                for report in projection["reports"]
+            ))
+            self.assertIs(projection, validate_runtime_adapter_projection(projection))
+            projections[component] = canonical_json_bytes(projection)
+
+            changed = copy.deepcopy(reports)
+            changed_commits = {
+                target: f"{index + 20:040x}"
+                for index, target in enumerate(RUNTIME_TARGETS)
+            }
+            for report in changed:
+                report["candidateCommit"] = changed_commits[report["target"]]
+                if component == "jvm":
+                    report["testTask"] = IMPORTED_JVM_RUNTIME_EVIDENCE_TASK
+            self.assertEqual(
+                projections[component],
+                canonical_json_bytes(derive_runtime_adapter_projection(
+                    component, changed, changed_commits,
+                )),
+            )
+
+        self.assertEqual(
+            {"jvm", "node-js", "node-wasm"}, set(projections),
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            derive_runtime_adapter_projection(
+                "node-js-binding", self._adapter_reports("node-js"), self.fixture.commits,
+            )
+
+    def test_adapter_projection_rejects_set_schema_authority_and_cross_component(self) -> None:
+        reports = self._adapter_reports("jvm")
+
+        def rejected(candidate: object, commits: object = None) -> None:
+            with self.assertRaises(ValueError):
+                derive_runtime_adapter_projection(
+                    "jvm", candidate, self.fixture.commits if commits is None else commits,
+                )
+
+        rejected(reports[:-1])
+        rejected([reports[1], reports[0], *reports[2:]])
+        rejected([reports[0], reports[0], *reports[2:]])
+        crossed = copy.deepcopy(reports)
+        crossed[0] = self._adapter_reports("node-js")[0]
+        rejected(crossed)
+        node_js = self._adapter_reports("node-js")
+        node_js[0] = self._adapter_reports("node-wasm")[0]
+        with self.assertRaises(ValueError):
+            derive_runtime_adapter_projection(
+                "node-js", node_js, self.fixture.commits,
+            )
+        unknown = copy.deepcopy(reports)
+        unknown[0]["unknown"] = True
+        rejected(unknown)
+        missing = copy.deepcopy(reports)
+        missing[0].pop("result")
+        rejected(missing)
+        wrong_commit = copy.deepcopy(reports)
+        wrong_commit[0]["candidateCommit"] = "f" * 40
+        rejected(wrong_commit)
+        wrong_task = copy.deepcopy(reports)
+        wrong_task[0]["testTask"] = ":unowned"
+        rejected(wrong_task)
+        rejected({"not": "a report list"})
+        rejected(1)
+        rejected(reports, {target: "f" * 40 for target in tuple(RUNTIME_TARGETS)[:-1]})
+
+        projection = derive_runtime_adapter_projection(
+            "jvm", reports, self.fixture.commits,
+        )
+        for mutation in (
+            {**projection, "unknown": True},
+            {**projection, "schemaVersion": 2},
+            {**projection, "component": "node-js-binding"},
+            {**projection, "reports": list(reversed(projection["reports"]))},
+            {**projection, "reports": [projection["reports"][0]] * 5},
+        ):
+            with self.assertRaises(ValueError):
+                validate_runtime_adapter_projection(mutation)
+        transient = copy.deepcopy(projection)
+        transient["reports"][0]["candidateCommit"] = self.fixture.commits["macosArm64"]
+        with self.assertRaises(ValueError):
+            validate_runtime_adapter_projection(transient)
+
+    def test_adapter_projection_preserves_every_other_semantic_field(self) -> None:
+        for component in ("jvm", "node-js", "node-wasm"):
+            reports = self._adapter_reports(component)
+            original = canonical_json_bytes(derive_runtime_adapter_projection(
+                component, reports, self.fixture.commits,
+            ))
+            for field, value in reports[0].items():
+                if field in {"candidateCommit", "testTask"}:
+                    continue
+                changed = copy.deepcopy(reports)
+                if type(value) is int:
+                    changed[0][field] = value + 1
+                elif type(value) is list:
+                    changed[0][field] = list(reversed(value))
+                elif field.endswith("Sha256"):
+                    changed[0][field] = "f" * 64
+                else:
+                    changed[0][field] = f"{value}-changed"
+                try:
+                    mutated = canonical_json_bytes(derive_runtime_adapter_projection(
+                        component, changed, self.fixture.commits,
+                    ))
+                except ValueError:
+                    continue
+                self.assertNotEqual(original, mutated, f"{component}.{field}")
 
     def test_classifier_and_runner_inspection(self) -> None:
         self.assertEqual(5, len(self.fixture.proofs))

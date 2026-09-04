@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 from typing import Any
 
 from .inventory import (
@@ -14,9 +16,13 @@ from .inventory import (
     require_relative_path,
     require_sha256,
     require_string,
+    publish_regular_tree,
+    read_regular_file_bytes,
     sha256_bytes,
+    verified_zip_contents,
+    write_canonical_json,
 )
-from .receipt import build_key_payload
+from .receipt import build_key_payload, output_inventory_digest, validate_phase_receipt
 from .runtime_evidence import (
     DESKTOP_KEYS,
     DESKTOP_RUNTIME_TEST_CLASS,
@@ -25,7 +31,14 @@ from .runtime_evidence import (
     desktop_test_task,
     imported_desktop_test_task,
 )
-from .runtime_identity import validate_runtime_identity
+from .runtime_identity import derive_runtime_identity, validate_runtime_identity
+from .signatures import (
+    load_keyring,
+    public_key_for_metadata,
+    sign_manifest,
+    validate_signing_metadata,
+    verify_manifest_signature,
+)
 
 
 _PHASES = ("binary", "package", "validation")
@@ -69,6 +82,10 @@ _PRODUCT_TO_EVIDENCE_TARGET = {
     "linux-x64": "linuxX64",
     "windows-x64": "mingwX64",
 }
+_JSON_LIMIT = 16 * 1024 * 1024
+_PAYLOAD_LIMIT = 1024 * 1024 * 1024
+_MANIFEST_NAME = "runtime-variant-manifest.json"
+_ATTESTATION_PHASES = ("binary", "package", "validation", "metadata")
 
 
 def derive_desktop_validation_projection(
@@ -217,20 +234,9 @@ def _phase_evidence(values: Any, identity: dict[str, Any]) -> list[dict[str, Any
             require_sha256(predecessor["buildKey"], f"{label} predecessor buildKey")
             require_sha256(predecessor["outputsDigest"], f"{label} predecessor outputsDigest")
 
-        key_payload = build_key_payload(
-            product=record["product"],
-            component=record["component"],
-            phase=record["phase"],
-            target=record["target"],
-            inputs={
-                "versionIdentity": record["versionIdentity"],
-                "phaseInputDigest": record["phaseInputDigest"],
-                "upstreamArtifacts": record["upstreamArtifacts"],
-                "toolchainProfileDigest": record["toolchainProfileDigest"],
-                "flagsDigest": record["flagsDigest"],
-                "outputSchemaVersion": record["outputSchemaVersion"],
-            },
-        )
+        key_payload = {
+            field: record[field] for field in _PHASE_FIELDS if field != "buildKey"
+        }
         if record["buildKey"] != sha256_bytes(canonical_json_bytes(key_payload)):
             raise ValueError(f"Runtime {phase} phase evidence buildKey mismatch")
         if phase == "binary" and (
@@ -316,3 +322,447 @@ def derive_runtime_component_attestation(
         "componentProvenance": load_canonical_json_bytes(provenance_bytes),
         "componentProvenanceBytes": provenance_bytes,
     }
+
+
+def validate_runtime_variant_attestation(value: Any) -> dict[str, Any]:
+    attestation = require_exact_keys(value, {
+        "schemaVersion", "product", "target", "componentId", "payload",
+        "manifestSha256", "phaseReceipts", "signing",
+    }, "Runtime variant attestation")
+    if require_integer(
+        attestation["schemaVersion"], "Runtime variant attestation.schemaVersion", 1,
+    ) != 1:
+        raise ValueError("Unsupported Runtime variant attestation schemaVersion")
+    if attestation["product"] != "runtime":
+        raise ValueError("Runtime variant attestation product must be runtime")
+    target = require_identifier(attestation["target"], "Runtime variant attestation.target")
+    if target not in _PRODUCT_TO_EVIDENCE_TARGET:
+        raise ValueError("Runtime variant attestation target is unsupported")
+    component_id = require_sha256(
+        attestation["componentId"], "Runtime variant attestation.componentId",
+    )
+    payload = require_exact_keys(
+        attestation["payload"], {"fileName", "bytes", "sha256"},
+        "Runtime variant attestation.payload",
+    )
+    expected_name = (
+        f"codex-agent-runtime-variant-{target}-"
+        f"{component_id.removeprefix('sha256:')}.zip"
+    )
+    if require_string(
+        payload["fileName"], "Runtime variant attestation.payload.fileName",
+    ) != expected_name:
+        raise ValueError("Runtime variant attestation payload filename is invalid")
+    require_integer(payload["bytes"], "Runtime variant attestation.payload.bytes", 1)
+    require_sha256(payload["sha256"], "Runtime variant attestation.payload.sha256")
+    require_sha256(
+        attestation["manifestSha256"], "Runtime variant attestation.manifestSha256",
+    )
+    receipts = require_exact_keys(
+        attestation["phaseReceipts"], set(_ATTESTATION_PHASES),
+        "Runtime variant attestation.phaseReceipts",
+    )
+    for phase in _ATTESTATION_PHASES:
+        require_sha256(receipts[phase], f"Runtime variant attestation.phaseReceipts.{phase}")
+    validate_signing_metadata(attestation["signing"])
+    return attestation
+
+
+def _receipt_reference(receipt: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "product": receipt["product"],
+        "component": receipt["component"],
+        "phase": receipt["phase"],
+        "target": receipt["target"],
+        "buildKey": receipt["buildKey"],
+        "outputsDigest": output_inventory_digest(receipt["outputs"]),
+    }
+
+
+def _read_receipt(path: Path, phase: str) -> tuple[dict[str, Any], bytes]:
+    contents = read_regular_file_bytes(
+        Path(path), max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
+    )
+    if not contents:
+        raise ValueError(f"Runtime {phase} receipt must not be empty")
+    return validate_phase_receipt(load_canonical_json_bytes(contents)), contents
+
+
+def _payload_identity(
+    path: Path,
+) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, bytes]]:
+    payload_bytes = read_regular_file_bytes(
+        Path(path), max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True,
+    )
+    if not payload_bytes:
+        raise ValueError("Runtime variant payload must not be empty")
+    with tempfile.TemporaryDirectory(prefix="runtime-variant-payload-") as temporary:
+        snapshot = Path(temporary).resolve() / Path(path).name
+        snapshot.write_bytes(payload_bytes)
+        # Aggregate owns the shared manifest schema and imports this module.
+        from .aggregate import RUNTIME_VARIANT_ZIP_LIMITS, validate_runtime_variant
+
+        records, retained, archive = verified_zip_contents(
+            snapshot,
+            **RUNTIME_VARIANT_ZIP_LIMITS,
+            retained_paths=(_MANIFEST_NAME,),
+            max_retained_bytes=_JSON_LIMIT,
+            canonical_stored=True,
+        )
+        try:
+            manifest_bytes = retained[_MANIFEST_NAME]
+        except KeyError as error:
+            raise ValueError("Runtime variant payload is missing its manifest") from error
+        manifest = validate_runtime_variant(load_canonical_json_bytes(manifest_bytes))
+        expected_name = (
+            f"codex-agent-runtime-variant-{manifest['target']}-"
+            f"{manifest['componentId'].removeprefix('sha256:')}.zip"
+        )
+        if Path(path).name != expected_name:
+            raise ValueError("Runtime variant payload filename does not match its manifest")
+        inventory = {record["relativePath"]: record for record in records}
+        declared = {
+            member["path"]: {
+                "relativePath": member["path"],
+                "bytes": member["bytes"],
+                "sha256": member["sha256"],
+            }
+            for member in manifest["innerArtifacts"]
+        }
+        if set(inventory) != {_MANIFEST_NAME} | set(declared) or any(
+            inventory[path] != record for path, record in declared.items()
+        ):
+            raise ValueError("Runtime variant payload inventory differs from its manifest")
+        roles = {member["role"]: member for member in manifest["innerArtifacts"]}
+        evidence_paths = {
+            roles[role]["path"] for role in (
+                "binary-phase-evidence", "package-phase-evidence",
+                "validation-phase-evidence", "validation", "provenance", "sbom",
+            )
+        }
+        repeated_records, evidence, repeated_identity = verified_zip_contents(
+            snapshot,
+            **RUNTIME_VARIANT_ZIP_LIMITS,
+            retained_paths=evidence_paths,
+            max_retained_bytes=64 * 1024 * 1024,
+            canonical_stored=True,
+        )
+        if repeated_records != records or repeated_identity != archive:
+            raise ValueError("Runtime variant payload changed during evidence verification")
+        return manifest, {
+            "fileName": expected_name,
+            "bytes": archive["bytes"],
+            "sha256": archive["sha256"],
+        }, sha256_bytes(manifest_bytes), evidence
+
+
+def _project_receipt(
+    receipt: dict[str, Any], *, validation_evidence_digest: str | None = None,
+) -> dict[str, Any]:
+    projection = {
+        **build_key_payload(
+            product=receipt["product"], component=receipt["component"],
+            phase=receipt["phase"], target=receipt["target"], inputs=receipt["inputs"],
+        ),
+        "buildKey": receipt["buildKey"],
+    }
+    if receipt["phase"] == "validation":
+        if validation_evidence_digest is None:
+            raise ValueError("Runtime validation receipt requires deterministic evidence")
+        projection["validationEvidenceDigest"] = validation_evidence_digest
+    else:
+        projection["outputInventoryDigest"] = output_inventory_digest(receipt["outputs"])
+    return projection
+
+
+def _bound_inputs(
+    payload: Path,
+    binary_receipt: Path,
+    package_receipt: Path,
+    validation_receipt: Path,
+    metadata_receipt: Path,
+    validation_evidence: Path | None,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, bytes], dict[str, Any], str]:
+    manifest, payload_identity, manifest_sha256, evidence = _payload_identity(Path(payload))
+    paths = {
+        "binary": binary_receipt,
+        "package": package_receipt,
+        "validation": validation_receipt,
+        "metadata": metadata_receipt,
+    }
+    receipts: dict[str, dict[str, Any]] = {}
+    receipt_bytes: dict[str, bytes] = {}
+    for phase in _ATTESTATION_PHASES:
+        receipts[phase], receipt_bytes[phase] = _read_receipt(Path(paths[phase]), phase)
+    target = manifest["target"]
+    for phase in _ATTESTATION_PHASES:
+        receipt = receipts[phase]
+        if (
+            (receipt["product"], receipt["component"], receipt["phase"], receipt["target"])
+            != ("runtime", target, phase, target)
+            or receipt["inputs"]["versionIdentity"] != manifest["runtimeCompatibilityVersion"]
+        ):
+            raise ValueError(f"Runtime {phase} receipt identity does not match the variant payload")
+    binary = receipts["binary"]
+    package = receipts["package"]
+    validation = receipts["validation"]
+    metadata = receipts["metadata"]
+    if (
+        manifest["inputs"]["binaryBuildKey"] != binary["buildKey"]
+        or manifest["inputs"]["binaryOutputInventoryDigest"]
+        != output_inventory_digest(binary["outputs"])
+    ):
+        raise ValueError("Runtime binary receipt does not bind the variant manifest")
+    upstream = binary["inputs"]["upstreamArtifacts"]
+    projection = upstream[0].get("contractProjection") if len(upstream) == 1 else None
+    component_digests = {} if projection is None else {
+        record["component"]: record["sha256"] for record in projection["componentDigests"]
+    }
+    if projection is None or (
+        projection["contractDigest"] != manifest["contract"]["digest"]
+        or component_digests.get(target) != manifest["contract"]["componentDigest"]
+    ):
+        raise ValueError("Runtime binary receipt Contract projection does not match the payload")
+    for current, previous in ((package, binary), (validation, package)):
+        if current["inputs"]["upstreamArtifacts"] != [_receipt_reference(previous)]:
+            raise ValueError(
+                f"Runtime {current['phase']} receipt does not link exactly "
+                f"to the {previous['phase']} receipt"
+            )
+    expected_output = {
+        "kind": "runtime-variant",
+        "relativePath": f"outputs/{payload_identity['fileName']}",
+        "bytes": payload_identity["bytes"],
+        "sha256": payload_identity["sha256"],
+    }
+    if metadata["outputs"] != [expected_output]:
+        raise ValueError("Runtime metadata receipt does not bind the exact variant payload")
+    roles = {member["role"]: member for member in manifest["innerArtifacts"]}
+    for role, kind, prefix in (
+        ("c-abi-archive", "c-abi", "outputs/c-abi/"),
+        ("app-server-archive", "app-server", "outputs/app-server/"),
+    ):
+        artifact = roles[role]
+        if sum(
+            output["kind"] == kind
+            and output["relativePath"].startswith(prefix)
+            and output["bytes"] == artifact["bytes"]
+            and output["sha256"] == artifact["sha256"]
+            for output in package["outputs"]
+        ) != 1:
+            raise ValueError(f"Runtime variant {role} is not one exact package output")
+    identity = derive_runtime_identity({
+        "schemaVersion": 1,
+        "binaryBuildKey": manifest["inputs"]["binaryBuildKey"],
+        "runtimeCompatibilityVersion": manifest["runtimeCompatibilityVersion"],
+        "target": manifest["target"],
+        "contract": manifest["contract"],
+        "cAbi": manifest["cAbi"],
+        "appServer": manifest["appServer"],
+        "toolchainProfile": manifest["toolchainProfile"],
+    })
+    validation_projection_bytes = evidence[roles["validation"]["path"]]
+    load_canonical_json_bytes(validation_projection_bytes)
+    metadata_upstream = _receipt_reference(validation)
+    metadata_upstream["semanticProjection"] = {
+        "schemaVersion": 1,
+        "kind": "runtime-validation-content",
+        "sha256": sha256_bytes(validation_projection_bytes),
+    }
+    if metadata["inputs"]["upstreamArtifacts"] != [metadata_upstream]:
+        raise ValueError(
+            "Runtime metadata receipt does not link exactly to the validation content",
+        )
+    if validation_evidence is not None:
+        validation_bytes = read_regular_file_bytes(
+            Path(validation_evidence), max_bytes=64 * 1024 * 1024,
+            reject_symlink_parents=True,
+        )
+        matching_validation = [
+            output for output in validation["outputs"]
+            if output["kind"] == "native"
+            and output["relativePath"].startswith("outputs/native/")
+            and output["bytes"] == len(validation_bytes)
+            and output["sha256"] == sha256_bytes(validation_bytes)
+        ]
+        if len(matching_validation) != 1:
+            raise ValueError("Runtime validation evidence is not one exact validation output")
+        validation_projection = derive_desktop_validation_projection(
+            load_canonical_json_bytes(validation_bytes),
+            identity_envelope=identity,
+            expected_commit=validation["producer"]["commit"],
+            classifier_archive_sha256=roles["app-server-archive"]["sha256"],
+        )
+        if validation_projection_bytes != canonical_json_bytes(validation_projection):
+            raise ValueError("Runtime variant validation projection is invalid")
+    phase_evidence = [
+        load_canonical_json_bytes(evidence[roles[f"{phase}-phase-evidence"]["path"]])
+        for phase in ("binary", "package", "validation")
+    ]
+    expected_phase_evidence = [
+        _project_receipt(
+            receipts[phase],
+            validation_evidence_digest=(
+                sha256_bytes(validation_projection_bytes) if phase == "validation" else None
+            ),
+        )
+        for phase in ("binary", "package", "validation")
+    ]
+    if phase_evidence != expected_phase_evidence:
+        raise ValueError("Runtime variant phase receipt projections are invalid")
+    deterministic_artifacts = [
+        member for member in manifest["innerArtifacts"]
+        if member["role"] in {"app-server-archive", "c-abi-archive", "validation"}
+    ]
+    deterministic = derive_runtime_component_attestation(
+        identity, phase_evidence, deterministic_artifacts,
+    )
+    if (
+        evidence[roles["sbom"]["path"]] != deterministic["sbomBytes"]
+        or evidence[roles["provenance"]["path"]] != deterministic["componentProvenanceBytes"]
+    ):
+        raise ValueError("Runtime variant deterministic evidence is invalid")
+    return manifest, receipts, receipt_bytes, payload_identity, manifest_sha256
+
+
+def verify_runtime_variant_attestation(
+    payload: Path,
+    binary_receipt: Path,
+    package_receipt: Path,
+    validation_receipt: Path,
+    metadata_receipt: Path,
+    attestation: Path,
+    signature: Path,
+    public_key: Path,
+    *,
+    required_trust_domain: str,
+    validation_evidence: Path | None = None,
+    keyring: Path | None = None,
+    keys_directory: Path | None = None,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
+    if type(required_trust_domain) is not str or required_trust_domain not in {
+        "development", "release",
+    }:
+        raise ValueError("Expected Runtime variant attestation trust domain is invalid")
+    contents = read_regular_file_bytes(
+        Path(attestation), max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
+    )
+    signature_contents = read_regular_file_bytes(
+        Path(signature), max_bytes=1024 * 1024, reject_symlink_parents=True,
+    )
+    public_key_contents = read_regular_file_bytes(
+        Path(public_key), max_bytes=1024 * 1024, reject_symlink_parents=True,
+    )
+    value = validate_runtime_variant_attestation(load_canonical_json_bytes(contents))
+    stem = Path(value["payload"]["fileName"]).stem
+    if (
+        Path(attestation).name != f"{stem}.attestation.json"
+        or Path(signature).name != f"{stem}.attestation.sig"
+    ):
+        raise ValueError("Runtime variant attestation or signature filename is invalid")
+    signing = validate_signing_metadata(value["signing"], trust_domain=required_trust_domain)
+    manifest, receipts, receipt_bytes, payload_identity, manifest_sha256 = _bound_inputs(
+        Path(payload), Path(binary_receipt), Path(package_receipt),
+        Path(validation_receipt), Path(metadata_receipt),
+        None if validation_evidence is None else Path(validation_evidence),
+    )
+    expected = {
+        "schemaVersion": 1,
+        "product": "runtime",
+        "target": manifest["target"],
+        "componentId": manifest["componentId"],
+        "payload": payload_identity,
+        "manifestSha256": manifest_sha256,
+        "phaseReceipts": {
+            phase: sha256_bytes(receipt_bytes[phase]) for phase in _ATTESTATION_PHASES
+        },
+        "signing": signing,
+    }
+    if value != expected:
+        raise ValueError("Runtime variant attestation does not bind its exact payload and receipts")
+    if required_trust_domain == "release":
+        if keyring is None or keys_directory is None:
+            raise ValueError("Release Runtime variant attestation verification requires a keyring")
+        trusted_key = public_key_for_metadata(
+            signing, load_keyring(Path(keyring), Path(keys_directory)), Path(keys_directory),
+            allow_retired=True,
+        )
+        if read_regular_file_bytes(trusted_key, reject_symlink_parents=True) != public_key_contents:
+            raise ValueError("Runtime variant attestation public key does not match the keyring")
+    elif keyring is not None or keys_directory is not None:
+        raise ValueError("Development Runtime variant attestation rejects release keyring inputs")
+    with tempfile.TemporaryDirectory(prefix="runtime-variant-attestation-verify-") as temporary:
+        root = Path(temporary).resolve()
+        snapshot_attestation = root / Path(attestation).name
+        snapshot_signature = root / Path(signature).name
+        snapshot_public_key = root / "runtime.pub"
+        snapshot_attestation.write_bytes(contents)
+        snapshot_signature.write_bytes(signature_contents)
+        snapshot_public_key.write_bytes(public_key_contents)
+        verify_manifest_signature(
+            snapshot_attestation, snapshot_signature, snapshot_public_key, signing,
+        )
+    return manifest, receipts, value
+
+
+def build_runtime_variant_attestation(
+    payload: Path,
+    binary_receipt: Path,
+    package_receipt: Path,
+    validation_receipt: Path,
+    metadata_receipt: Path,
+    validation_evidence: Path,
+    signing_metadata: Any,
+    private_key: Path,
+    public_key: Path,
+    output_directory: Path,
+    *,
+    keyring: Path | None = None,
+    keys_directory: Path | None = None,
+) -> dict[str, Any]:
+    signing = validate_signing_metadata(signing_metadata)
+    if signing["trustDomain"] == "release":
+        if keyring is None or keys_directory is None:
+            raise ValueError("Release Runtime variant attestation creation requires a keyring")
+        trusted_key = public_key_for_metadata(
+            signing, load_keyring(Path(keyring), Path(keys_directory)), Path(keys_directory),
+            allow_retired=False,
+        )
+        if read_regular_file_bytes(trusted_key, reject_symlink_parents=True) != \
+                read_regular_file_bytes(Path(public_key), reject_symlink_parents=True):
+            raise ValueError("Runtime variant attestation public key is not the active release key")
+    elif keyring is not None or keys_directory is not None:
+        raise ValueError("Development Runtime variant attestation creation rejects keyring inputs")
+    manifest, _, receipt_bytes, payload_identity, manifest_sha256 = _bound_inputs(
+        Path(payload), Path(binary_receipt), Path(package_receipt),
+        Path(validation_receipt), Path(metadata_receipt), Path(validation_evidence),
+    )
+    value = validate_runtime_variant_attestation({
+        "schemaVersion": 1,
+        "product": "runtime",
+        "target": manifest["target"],
+        "componentId": manifest["componentId"],
+        "payload": payload_identity,
+        "manifestSha256": manifest_sha256,
+        "phaseReceipts": {
+            phase: sha256_bytes(receipt_bytes[phase]) for phase in _ATTESTATION_PHASES
+        },
+        "signing": signing,
+    })
+    with tempfile.TemporaryDirectory(prefix="runtime-variant-attestation-build-") as temporary:
+        prepared = Path(temporary).resolve() / "attestation"
+        prepared.mkdir()
+        stem = Path(payload_identity["fileName"]).stem
+        attestation = prepared / f"{stem}.attestation.json"
+        write_canonical_json(attestation, value)
+        signature = sign_manifest(attestation, Path(private_key), signing)
+        verify_runtime_variant_attestation(
+            Path(payload), Path(binary_receipt), Path(package_receipt),
+            Path(validation_receipt), Path(metadata_receipt), attestation, signature,
+            Path(public_key),
+            required_trust_domain=signing["trustDomain"],
+            validation_evidence=Path(validation_evidence),
+            keyring=keyring, keys_directory=keys_directory,
+        )
+        publish_regular_tree(prepared, Path(output_directory))
+    return value

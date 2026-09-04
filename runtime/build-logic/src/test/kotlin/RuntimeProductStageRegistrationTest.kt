@@ -6,6 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
@@ -102,6 +103,44 @@ class RuntimeProductStageRegistrationTest {
             assertFalse(realStage.resolve("output-manifest.json").exists())
         }
 
+    @Test
+    fun `Runtime Maven tree rejects a real symlink parent before traversal`() = withFixture { fixture ->
+        val realParent = fixture.root.resolve("real-maven-parent")
+        realParent.resolve("repository").mkdirs()
+        realParent.resolve("repository/value.bin").writeText("value\n")
+        val linkedParent = fixture.root.resolve("linked-maven-parent")
+        Files.createSymbolicLink(linkedParent.toPath(), realParent.toPath())
+
+        val failure = assertFailsWith<IllegalStateException> {
+            requireRegularRuntimeProductTree(
+                linkedParent.resolve("repository").toPath(),
+                "Runtime Maven repository",
+            )
+        }
+        assertTrue("unsafe parent" in failure.message.orEmpty())
+        assertTrue(linkedParent.absolutePath in failure.message.orEmpty())
+    }
+
+    @Test
+    fun `adapter validation invalidates stale phase output before imported input failure`() =
+        withFixture { fixture ->
+            val phaseRoot = fixture.root.resolve("build/product-stage/runtime/jvm/metadata")
+            phaseRoot.mkdirs()
+            phaseRoot.resolve("output-manifest.json").writeText("stale\n")
+
+            val rejected = fixture.runAndFail("verifyAdapterMetadataInputs")
+            assertEquals(
+                TaskOutcome.SUCCESS,
+                rejected.task(":invalidateAdapterMetadataOutputs")?.outcome,
+            )
+            assertEquals(TaskOutcome.FAILED, rejected.task(":verifyAdapterMetadataInputs")?.outcome)
+            assertTrue(
+                "Runtime Maven repository" in rejected.output,
+                rejected.output,
+            )
+            assertFalse(phaseRoot.exists())
+        }
+
     private fun withFixture(block: (Fixture) -> Unit) {
         val root = createTempDirectory("runtime-product-stage-registration").toFile()
         try {
@@ -123,6 +162,9 @@ class RuntimeProductStageRegistrationTest {
             stage.resolve("outputs/binary/value.bin").writeText("value\n")
             root.resolve("other/outputs").mkdirs()
             root.resolve("other/outputs/value.bin").writeText("other\n")
+            root.resolve("adapter-handoff").mkdirs()
+            root.resolve("adapter-handoff/projection.json").writeText("{}\n")
+            root.resolve("empty-maven-repository").mkdirs()
             copyProductTooling(root.resolve("ci/products"))
             installBuildLogic()
             root.resolve("build.gradle.kts").writeText("plugins { id(\"runtime-stage-fixture\") }\n")
@@ -155,10 +197,12 @@ class RuntimeProductStageRegistrationTest {
             }
 
             private val FIXTURE_PLUGIN = """
+                import org.gradle.api.Action
                 import org.gradle.api.Plugin
                 import org.gradle.api.Project
                 import org.gradle.api.file.Directory
                 import org.gradle.api.provider.Provider
+                import org.gradle.api.tasks.Delete
 
                 class RuntimeStageFixturePlugin : Plugin<Project> {
                     override fun apply(project: Project) {
@@ -209,6 +253,33 @@ class RuntimeProductStageRegistrationTest {
                                 mapOf("binary" to "outputs/binary"), directory("symlink-stage/outputs"),
                                 directory("symlink-stage"), tooling, projectDir,
                             )
+                            val adapterPhaseRoot = layout.buildDirectory.dir(
+                                "product-stage/runtime/jvm/metadata",
+                            )
+                            val invalidateAdapter = tasks.register(
+                                "invalidateAdapterMetadataOutputs", Delete::class.java,
+                            ) {
+                                delete(adapterPhaseRoot)
+                            }
+                            tasks.register(
+                                "verifyAdapterMetadataInputs",
+                                ValidateRuntimeAdapterMetadataInputsTask::class.java,
+                                object : Action<ValidateRuntimeAdapterMetadataInputsTask> {
+                                    override fun execute(adapter: ValidateRuntimeAdapterMetadataInputsTask) {
+                                        adapter.dependsOn(invalidateAdapter)
+                                        adapter.component.set("jvm")
+                                        adapter.validationHandoff.set(
+                                            layout.projectDirectory.dir("adapter-handoff"),
+                                        )
+                                        adapter.projection.set(
+                                            layout.projectDirectory.file("adapter-handoff/projection.json"),
+                                        )
+                                        adapter.mavenRepository.set(
+                                            layout.projectDirectory.dir("empty-maven-repository"),
+                                        )
+                                    }
+                                },
+                            )
                         }
                     }
                 }
@@ -220,6 +291,10 @@ class RuntimeProductStageRegistrationTest {
             val sources = buildLogic.resolve("src/main/kotlin").apply { mkdirs() }
             repository.resolve("runtime/build-logic/src/main/kotlin/RuntimeProductStageRegistration.kt")
                 .copyTo(sources.resolve("RuntimeProductStageRegistration.kt"))
+            repository.resolve("runtime/build-logic/src/main/kotlin/RuntimeAdapterMetadataInputsTask.kt")
+                .copyTo(sources.resolve("RuntimeAdapterMetadataInputsTask.kt"))
+            repository.resolve("runtime/build-logic/src/main/kotlin/RuntimeProductPythonTooling.kt")
+                .copyTo(sources.resolve("RuntimeProductPythonTooling.kt"))
             sources.resolve("RuntimeStageFixturePlugin.kt").writeText(FIXTURE_PLUGIN)
             buildLogic.resolve("settings.gradle.kts").writeText("rootProject.name = \"runtime-stage-fixture\"\n")
             buildLogic.resolve("build.gradle.kts").writeText(

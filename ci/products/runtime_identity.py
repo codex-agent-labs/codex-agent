@@ -437,7 +437,6 @@ def verify_runtime_binary_plan(
             "schemaVersion", "product", "contractVersion", "contractDigest",
             "canonicalApiDigest", "canonicalCoverageDigest", "protocolDigest",
             "capabilityCount", "components", "mavenFiles", "evidenceFiles",
-            "signing", "producer",
         },
         "Verified Contract manifest",
     )

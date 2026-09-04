@@ -22,6 +22,10 @@ val productTooling = layout.dir(providers.provider { repositoryRootFile.resolve(
 val repositoryRootDirectory = layout.dir(providers.provider { repositoryRootFile })
 val runtimeProductTooling = files(productTooling)
 val runtimeProductVersion = providers.provider { project.version.toString() }
+val importedRuntimeValidationHandoff =
+    providers.gradleProperty("codexAgent.runtimeValidationHandoff").map(::file)
+val importedRuntimeMavenRepository =
+    providers.gradleProperty("codexAgent.runtimeMavenRepository").map(::file)
 
 kotlin {
     explicitApi()
@@ -528,17 +532,14 @@ registerRuntimeOutputManifest(
     description = "Writes and verifies the exact Node binding validation handoff manifest."
 }
 
-val runtimeValidationManifestTasks = linkedMapOf(
+val runtimeNativeValidationManifestTasks = linkedMapOf(
     "macos-arm64" to ("MacosArm64" to "writeMacosArm64RuntimeValidationOutputManifest"),
     "macos-x64" to ("MacosX64" to "writeMacosX64RuntimeValidationOutputManifest"),
     "linux-arm64" to ("LinuxArm64" to "writeLinuxArm64RuntimeValidationOutputManifest"),
     "linux-x64" to ("LinuxX64" to "writeLinuxX64RuntimeValidationOutputManifest"),
     "windows-x64" to ("MingwX64" to "writeMingwX64RuntimeValidationOutputManifest"),
-    "jvm" to ("Jvm" to "writeJvmRuntimeValidationOutputManifest"),
-    "node-js" to ("NodeJs" to "writeNodeJsRuntimeValidationOutputManifest"),
-    "node-wasm" to ("NodeWasm" to "writeNodeWasmRuntimeValidationOutputManifest"),
 )
-runtimeValidationManifestTasks.forEach { (component, registration) ->
+runtimeNativeValidationManifestTasks.forEach { (component, registration) ->
     val (title, validationTaskName) = registration
     val phaseRoot = layout.buildDirectory.dir("product-stage/runtime/$component/metadata")
     val outputsRoot = phaseRoot.map { it.dir("outputs") }
@@ -570,6 +571,66 @@ runtimeValidationManifestTasks.forEach { (component, registration) ->
         providers.provider { component },
         runtimeProductVersion,
         mapOf("validation-manifest" to "outputs"),
+        outputsRoot,
+        phaseRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    ).configure {
+        group = "verification"
+        description = "Writes the exact $component Runtime metadata handoff manifest."
+    }
+}
+
+val runtimeAdapterMetadataComponents = linkedMapOf(
+    "jvm" to "Jvm",
+    "node-js" to "NodeJs",
+    "node-wasm" to "NodeWasm",
+)
+runtimeAdapterMetadataComponents.forEach { (component, title) ->
+    val phaseRoot = layout.buildDirectory.dir("product-stage/runtime/$component/metadata")
+    val outputsRoot = phaseRoot.map { it.dir("outputs") }
+    val projection = layout.file(importedRuntimeValidationHandoff.map {
+        it.resolve("projection.json")
+    })
+    val invalidate = tasks.register<Delete>("invalidate${title}RuntimeMetadataOutputs") {
+        group = "verification"
+        delete(phaseRoot)
+    }
+    val verifyInputs = tasks.register<ValidateRuntimeAdapterMetadataInputsTask>(
+        "verify${title}RuntimeMetadataInputs",
+    ) {
+        group = "verification"
+        description = "Verifies the authenticated $component projection and prebuilt Runtime Maven inputs."
+        dependsOn(invalidate)
+        this.component.set(component)
+        validationHandoff.set(layout.dir(importedRuntimeValidationHandoff))
+        this.projection.set(projection)
+        mavenRepository.set(layout.dir(importedRuntimeMavenRepository))
+    }
+    val stage = tasks.register<Sync>("stage${title}RuntimeMetadata") {
+        group = "verification"
+        description = "Stages the authenticated $component projection and prebuilt Runtime Maven bytes."
+        dependsOn(verifyInputs)
+        into(outputsRoot)
+        from(projection) {
+            into("evidence")
+            rename { "$component.json" }
+        }
+        from(layout.dir(importedRuntimeMavenRepository)) { into("maven") }
+        includeEmptyDirs = false
+        duplicatesStrategy = DuplicatesStrategy.FAIL
+    }
+    registerRuntimeOutputManifest(
+        "write${title}RuntimeMetadataOutputManifest",
+        stage,
+        providers.provider { component },
+        "metadata",
+        providers.provider { component },
+        runtimeProductVersion,
+        mapOf(
+            "adapter-evidence" to "outputs/evidence",
+            "maven" to "outputs/maven",
+        ),
         outputsRoot,
         phaseRoot,
         runtimeProductTooling,
