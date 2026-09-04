@@ -59,6 +59,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
     def run_discover(self, plan: dict[str, object], **patches: object) -> dict[str, object]:
         self.write_plan(plan)
         selection = patches.pop("selection", mock.Mock(instances=(), unknown_paths=()))
+        environment = patches.pop("environ", {})
         with mock.patch.object(product_reuse, "validate_remote_build_authorization"), \
                 mock.patch.object(product_reuse, "validate_legacy_lane_projection"), \
                 mock.patch.object(product_reuse, "_git_value", side_effect=(COMMIT, TREE)), \
@@ -66,7 +67,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 (mock.patch.multiple(product_reuse, **patches) if patches else nullcontext()):
             return product_reuse.discover(
                 self.plan_path, self.destination, self.output,
-                repository_root=self.root, environ={},
+                repository_root=self.root, environ=environment,
             )
 
     def outputs(self) -> dict[str, str]:
@@ -291,8 +292,25 @@ class ProductReuseAdapterTest(unittest.TestCase):
             _discover_catalogs=mock.Mock(return_value=[]),
             plan_reuse_wave=mock.Mock(return_value=reuse),
             _reverify_complete=reverify,
+            environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
         )
         reverify.assert_called_once()
+        self.assertEqual(
+            {
+                "kind": "ci",
+                "producer": {
+                    "repository": "codex-agent-labs/codex-agent",
+                    "workflowPath": ".github/workflows/ci.yml",
+                    "commit": COMMIT,
+                    "tree": TREE,
+                    "event": "pull_request",
+                    "runId": 7,
+                    "runAttempt": 2,
+                    "pullRequest": 31,
+                },
+            },
+            reverify.call_args.args[4],
+        )
         self.assertEqual("verified-full-reuse", result["reason"])
         self.assertFalse(result["targetJobsRequired"])
 

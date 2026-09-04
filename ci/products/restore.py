@@ -23,6 +23,9 @@ from .inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
     read_regular_file_bytes,
+    regular_file_inventory,
+    require_array,
+    require_boolean,
     require_exact_keys,
     require_identifier,
     require_integer,
@@ -41,6 +44,7 @@ from .receipt import (
     validate_producer,
     verify_output_manifest,
 )
+from .registry import PHASE_INSTANCE_IDS, PhaseInstanceId
 
 
 PHASE_RECEIPT_NAME = "phase-receipt.json"
@@ -56,6 +60,17 @@ OBJECT_ZIP_LIMITS = {
 }
 PRODUCT_JSON_LIMIT = 16 * 1024 * 1024
 REMOTE_SOURCES = {"stable", "promoted-main", "same-pr"}
+CARRIER_NAME = "carrier.json"
+CARRIER_RESOLUTION_NAME = "resolution.json"
+CARRIER_RECORD_KEYS = {
+    "product", "component", "phase", "target", "buildKey", "receiptSha256",
+    "objectSha256", "transportSha256",
+}
+CARRIER_RESOLUTION_KEYS = {"schemaVersion", "result", "fullReuse", "phases", "matrices"}
+CARRIER_PHASE_KEYS = {
+    "product", "component", "phase", "target", "buildKey", "state", "source",
+    "transportSource", "receiptSha256", "objectSha256", "misses",
+}
 
 
 class CacheObjectError(ValueError):
@@ -192,6 +207,224 @@ def validate_transport(value: Any) -> dict[str, Any]:
     else:
         raise ValueError("transport.consumer.kind is unsupported")
     return transport
+
+
+def _carrier_identity(value: Mapping[str, Any], label: str) -> PhaseInstanceId:
+    instance = PhaseInstanceId(*(
+        require_identifier(value[field], f"{label}.{field}")
+        for field in ("product", "component", "phase", "target")
+    ))
+    if instance not in PHASE_INSTANCE_IDS:
+        raise ValueError(f"{label} is not a registered product phase")
+    return instance
+
+
+def validate_carrier(value: Any) -> dict[str, Any]:
+    carrier = require_exact_keys(
+        value, {"schemaVersion", "resolutionSha256", "objects"}, "Product carrier",
+    )
+    if require_integer(carrier["schemaVersion"], "Product carrier.schemaVersion", 1) != 1:
+        raise ValueError("Unsupported product carrier schemaVersion")
+    require_sha256(carrier["resolutionSha256"], "Product carrier.resolutionSha256")
+    records = require_array(carrier["objects"], "Product carrier.objects")
+    identities = []
+    for index, value in enumerate(records):
+        label = f"Product carrier.objects[{index}]"
+        record = require_exact_keys(value, CARRIER_RECORD_KEYS, label)
+        identities.append(_carrier_identity(record, label))
+        for field in ("buildKey", "receiptSha256", "objectSha256", "transportSha256"):
+            require_sha256(record[field], f"{label}.{field}")
+    if not records or identities != sorted(set(identities)):
+        raise ValueError("Product carrier objects must be nonempty, sorted, and unique")
+    return carrier
+
+
+def _validate_carrier_resolution(
+    value: Any,
+    expected_instances: tuple[PhaseInstanceId, ...],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    resolution = require_exact_keys(value, CARRIER_RESOLUTION_KEYS, "Product carrier resolution")
+    if require_integer(
+        resolution["schemaVersion"], "Product carrier resolution.schemaVersion", 1,
+    ) != 1 or resolution["result"] != "complete" or require_boolean(
+        resolution["fullReuse"], "Product carrier resolution.fullReuse",
+    ) is not True:
+        raise ValueError("Product carrier resolution is not a complete reuse result")
+    matrices = require_exact_keys(
+        resolution["matrices"], {"contract", "runtime", "sdk"},
+        "Product carrier resolution.matrices",
+    )
+    if any(require_array(matrices[name], f"Product carrier resolution.matrices.{name}") for name in matrices):
+        raise ValueError("Complete product carrier resolution must have empty build matrices")
+    phases = []
+    identities = []
+    for index, value in enumerate(require_array(
+        resolution["phases"], "Product carrier resolution.phases",
+    )):
+        label = f"Product carrier resolution.phases[{index}]"
+        phase = require_exact_keys(value, CARRIER_PHASE_KEYS, label)
+        instance = _carrier_identity(phase, label)
+        identities.append(instance)
+        if phase["state"] != "reused" or phase["source"] not in REMOTE_SOURCES | {"local"}:
+            raise ValueError("Product carrier resolution contains a non-reused phase")
+        if not isinstance(phase["transportSource"], dict) or phase["transportSource"].get("kind") != phase["source"]:
+            raise ValueError("Product carrier resolution source and transport disagree")
+        for field in ("buildKey", "receiptSha256", "objectSha256"):
+            require_sha256(phase[field], f"{label}.{field}")
+        require_array(phase["misses"], f"{label}.misses")
+        phases.append(phase)
+    if tuple(identities) != expected_instances:
+        raise ValueError("Product carrier resolution does not match the exact expected phase closure")
+    return resolution, phases
+
+
+def _carrier_expected_instances(values: Any) -> tuple[PhaseInstanceId, ...]:
+    instances = tuple(values)
+    if not instances or any(
+        not isinstance(instance, PhaseInstanceId) or instance not in PHASE_INSTANCE_IDS
+        for instance in instances
+    ) or instances != tuple(sorted(set(instances))):
+        raise ValueError("Expected product carrier phases must be nonempty, sorted, and unique")
+    return instances
+
+
+def verify_carrier(
+    root: Path,
+    expected_instances: Any,
+    consumer: Any,
+) -> dict[str, Any]:
+    root = Path(root)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("Product carrier directory is missing or unsafe")
+    expected = _carrier_expected_instances(expected_instances)
+    carrier_bytes = _read_safe_regular(root / CARRIER_NAME, max_bytes=PRODUCT_JSON_LIMIT)
+    resolution_bytes = _read_safe_regular(
+        root / CARRIER_RESOLUTION_NAME, max_bytes=PRODUCT_JSON_LIMIT,
+    )
+    carrier = validate_carrier(load_canonical_json_bytes(carrier_bytes))
+    if carrier["resolutionSha256"] != sha256_bytes(resolution_bytes):
+        raise ValueError("Product carrier resolution digest is invalid")
+    resolution, phases = _validate_carrier_resolution(
+        load_canonical_json_bytes(resolution_bytes), expected,
+    )
+    records = carrier["objects"]
+    if tuple(_carrier_identity(record, "Product carrier object") for record in records) != expected:
+        raise ValueError("Product carrier objects do not match the exact expected phase closure")
+    expected_consumer = validate_transport({
+        "schemaVersion": 1,
+        "buildKey": records[0]["buildKey"],
+        "receiptSha256": records[0]["receiptSha256"],
+        "objectSha256": records[0]["objectSha256"],
+        "source": phases[0]["transportSource"],
+        "consumer": consumer,
+    })["consumer"]
+    expected_paths = {CARRIER_NAME, CARRIER_RESOLUTION_NAME}
+    verified = []
+    for record, phase in zip(records, phases, strict=True):
+        for field in ("product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256"):
+            if record[field] != phase[field]:
+                raise ValueError("Product carrier object and resolution phase disagree")
+        object_path = object_relative_path(record["buildKey"], record["receiptSha256"])
+        transport_path = transport_relative_path(
+            record["buildKey"], record["receiptSha256"], record["transportSha256"],
+        )
+        expected_paths.update((object_path, transport_path))
+        object_value = verify_object(
+            root / object_path,
+            build_key=record["buildKey"],
+            receipt_sha256=record["receiptSha256"],
+            object_sha256=record["objectSha256"],
+        )
+        if _carrier_identity(object_value["receipt"], "Product carrier receipt") != _carrier_identity(
+            record, "Product carrier object",
+        ):
+            raise ValueError("Product carrier receipt identity is invalid")
+        transport_bytes = _read_safe_regular(root / transport_path, max_bytes=PRODUCT_JSON_LIMIT)
+        if sha256_bytes(transport_bytes) != record["transportSha256"]:
+            raise ValueError("Product carrier transport digest is invalid")
+        transport = validate_transport(load_canonical_json_bytes(transport_bytes))
+        if (
+            transport["buildKey"] != record["buildKey"]
+            or transport["receiptSha256"] != record["receiptSha256"]
+            or transport["objectSha256"] != record["objectSha256"]
+            or transport["source"] != phase["transportSource"]
+            or transport["consumer"] != expected_consumer
+        ):
+            raise ValueError("Product carrier transport does not match its resolution or consumer")
+        verified.append({**record, "receipt": object_value["receipt"], "receiptBytes": object_value["receiptBytes"]})
+    actual_paths = {record["relativePath"] for record in regular_file_inventory(root)}
+    if actual_paths != expected_paths:
+        raise ValueError("Product carrier file inventory is incomplete or unexpected")
+    return {"carrier": carrier, "resolution": resolution, "objects": verified}
+
+
+def write_carrier(
+    destination: Path,
+    resolution: Any,
+    expected_instances: Any,
+    sources: Mapping[PhaseInstanceId, Path],
+    consumer: Any,
+) -> dict[str, Any]:
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Product carrier destination must not exist")
+    expected = _carrier_expected_instances(expected_instances)
+    resolution_value, phases = _validate_carrier_resolution(resolution, expected)
+    if not isinstance(sources, Mapping) or set(sources) != set(expected):
+        raise ValueError("Product carrier sources must exactly match the expected phase closure")
+    with tempfile.TemporaryDirectory(prefix="codex-agent-product-carrier-") as temporary:
+        root = Path(temporary).resolve() / "carrier"
+        root.mkdir()
+        resolution_bytes = canonical_json_bytes(resolution_value)
+        (root / CARRIER_RESOLUTION_NAME).write_bytes(resolution_bytes)
+        records = []
+        for instance, phase in zip(expected, phases, strict=True):
+            with _verified_object_snapshot(
+                Path(sources[instance]),
+                build_key=phase["buildKey"],
+                receipt_sha256=phase["receiptSha256"],
+                object_sha256=phase["objectSha256"],
+            ) as (snapshot, verification):
+                object_relative = object_relative_path(phase["buildKey"], phase["receiptSha256"])
+                object_target = root / object_relative
+                object_target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(snapshot, object_target)
+                if _carrier_identity(verification["receipt"], "Product carrier source receipt") != instance:
+                    raise ValueError("Product carrier source receipt identity is invalid")
+            transport = validate_transport({
+                "schemaVersion": 1,
+                "buildKey": phase["buildKey"],
+                "receiptSha256": phase["receiptSha256"],
+                "objectSha256": phase["objectSha256"],
+                "source": phase["transportSource"],
+                "consumer": consumer,
+            })
+            transport_bytes = canonical_json_bytes(transport)
+            transport_sha256 = sha256_bytes(transport_bytes)
+            transport_target = root / transport_relative_path(
+                phase["buildKey"], phase["receiptSha256"], transport_sha256,
+            )
+            transport_target.parent.mkdir(parents=True, exist_ok=True)
+            transport_target.write_bytes(transport_bytes)
+            records.append({
+                "product": instance.product,
+                "component": instance.component,
+                "phase": instance.phase,
+                "target": instance.target,
+                "buildKey": phase["buildKey"],
+                "receiptSha256": phase["receiptSha256"],
+                "objectSha256": phase["objectSha256"],
+                "transportSha256": transport_sha256,
+            })
+        carrier = validate_carrier({
+            "schemaVersion": 1,
+            "resolutionSha256": sha256_bytes(resolution_bytes),
+            "objects": records,
+        })
+        write_canonical_json(root / CARRIER_NAME, carrier)
+        verify_carrier(root, expected, consumer)
+        snapshot_regular_tree(root, destination)
+    return verify_carrier(destination, expected, consumer)
 
 
 def _snapshot_archive(source: Path, destination: Path) -> dict[str, Any]:

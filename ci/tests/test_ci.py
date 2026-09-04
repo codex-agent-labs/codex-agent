@@ -201,6 +201,14 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("--destination build/product-reuse", product_reuse)
         self.assertIn("cp build/product-reuse/request.json build/product-reuse/result.json", product_reuse)
         self.assertNotIn("--destination build/ci/", product_reuse)
+        self.assertIn(
+            "name: codex-agent-product-carrier-${{ steps.impact.outputs.validation_tree }}",
+            plan_job,
+        )
+        self.assertIn(
+            "if: steps.product-reuse.outputs.full_reuse == 'true' && steps.product-reuse.outputs.product_reuse_reason == 'verified-full-reuse'",
+            plan_job,
+        )
         for name in (
             "product", "android", "android-runtime-evidence", "desktop", "apple", "consumers",
             "sdk-javascript", "merge-gate",

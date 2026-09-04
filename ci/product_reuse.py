@@ -39,7 +39,7 @@ from products.registry import (
     required_contract_components,
     required_toolchain_profile,
 )
-from products.restore import object_relative_path, restore_object, verify_object
+from products.restore import object_relative_path, restore_object, verify_object, write_carrier
 from products.reuse import _dependency_closure, plan_reuse_wave
 from products.selection import classify_paths
 from products.signatures import load_keyring, public_key_for_metadata
@@ -550,13 +550,14 @@ def _contract_evidence(
 
 def _reverify_complete(
     result: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...],
-    catalogs: list[Catalog], destination: Path,
+    catalogs: list[Catalog], destination: Path, consumer: Mapping[str, Any],
 ) -> None:
     closure = _dependency_closure(requested)
     phases = result.get("phases")
     if not isinstance(phases, list) or len(phases) != len(closure):
         raise ValueError("Complete reuse result does not cover its exact dependency closure")
     actual = []
+    sources: dict[PhaseInstanceId, Path] = {}
     for phase in phases:
         instance = _identity(phase)
         actual.append(instance)
@@ -574,11 +575,32 @@ def _reverify_complete(
         )
         if _identity(verified["receipt"]) != instance:
             raise ValueError("Persisted product object identity disagrees with the reuse result")
-        receipt = destination / "receipts" / instance.product / instance.component / instance.phase / instance.target / "phase-receipt.json"
-        receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_bytes(verified["receiptBytes"])
+        sources[instance] = object_path
     if tuple(actual) != closure:
         raise ValueError("Complete reuse result phase order or identity is invalid")
+    write_carrier(destination / "carrier", result, closure, sources, consumer)
+
+
+def _consumer(plan: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
+    event = require_string(plan["event"], "impact plan.event")
+    def positive_environment_integer(name: str) -> int:
+        value = environ.get(name)
+        if not isinstance(value, str) or re.fullmatch(r"[1-9][0-9]*", value) is None:
+            raise ValueError(f"{name} must be a positive decimal integer")
+        return int(value)
+    return {
+        "kind": "ci",
+        "producer": {
+            "repository": plan["repository"],
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": plan["validationCommit"],
+            "tree": plan["validationTree"],
+            "event": event,
+            "runId": positive_environment_integer("GITHUB_RUN_ID"),
+            "runAttempt": positive_environment_integer("GITHUB_RUN_ATTEMPT"),
+            "pullRequest": plan["pullRequest"] if event == "pull_request" else None,
+        },
+    }
 
 
 def _discovery_request(plan: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...]) -> dict[str, Any]:
@@ -691,7 +713,7 @@ def discover(
         and all(value == [] for value in matrices.values())
     )
     if complete:
-        _reverify_complete(reuse, requested, catalogs, destination)
+        _reverify_complete(reuse, requested, catalogs, destination, _consumer(plan, environment))
     return _finish(destination, request, _result(
         requested,
         complete=complete,

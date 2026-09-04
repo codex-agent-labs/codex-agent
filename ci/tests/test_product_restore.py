@@ -12,6 +12,7 @@ import zipfile
 import ci.products.restore as product_restore
 from ci.products.inventory import canonical_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.receipt import compute_build_key, write_output_manifest
+from ci.products.registry import PhaseInstanceId
 from ci.products.restore import (
     CacheObjectError,
     native_cache_root,
@@ -21,7 +22,9 @@ from ci.products.restore import (
     store_local_object,
     transport_relative_path,
     validate_transport,
+    verify_carrier,
     verify_object,
+    write_carrier,
     write_transport,
 )
 
@@ -245,6 +248,52 @@ class ProductRestoreTest(unittest.TestCase):
         self.assertFalse((restored / "stage").exists())
         self.assertFalse((restored / "phase-receipt.json").exists())
         self.assertEqual("existing", self.store()["status"])
+
+    def test_carrier_preserves_exact_object_receipt_and_transport_bytes(self) -> None:
+        stored = self.store()
+        instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+        source = self.remote_transport()["source"]
+        resolution = {
+            "schemaVersion": 1,
+            "result": "complete",
+            "fullReuse": True,
+            "phases": [{
+                "product": instance.product,
+                "component": instance.component,
+                "phase": instance.phase,
+                "target": instance.target,
+                "buildKey": self.receipt["buildKey"],
+                "state": "reused",
+                "source": "stable",
+                "transportSource": source,
+                "receiptSha256": self.receipt_sha256,
+                "objectSha256": stored["objectSha256"],
+                "misses": [],
+            }],
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+        }
+        carrier_root = self.root / "carrier"
+        consumer = self.remote_transport()["consumer"]
+        value = write_carrier(
+            carrier_root,
+            resolution,
+            (instance,),
+            {instance: stored["path"]},
+            consumer,
+        )
+        self.assertEqual(self.receipt_bytes, value["objects"][0]["receiptBytes"])
+        self.assertEqual(self.receipt_bytes, self.receipt_path.read_bytes())
+        self.assertEqual(
+            self.receipt_bytes,
+            verify_carrier(carrier_root, (instance,), consumer)["objects"][0]["receiptBytes"],
+        )
+        wrong_consumer = copy.deepcopy(consumer)
+        wrong_consumer["producer"]["runId"] = 13
+        with self.assertRaisesRegex(ValueError, "consumer"):
+            verify_carrier(carrier_root, (instance,), wrong_consumer)
+        (carrier_root / "extra").write_bytes(b"no")
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            verify_carrier(carrier_root, (instance,), consumer)
 
     def test_identity_and_allow_list_mutations_fail_before_materialization(self) -> None:
         stored = self.store()
