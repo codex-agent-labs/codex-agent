@@ -14,6 +14,7 @@ from ci.products.inventory import (
     sha256_bytes,
     write_canonical_json,
 )
+from ci.products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST
 from ci.products.receipt import compute_build_key, write_output_manifest, write_phase_receipt
 from ci.products.restore import object_relative_path
 
@@ -146,8 +147,8 @@ class ProductControlCliTest(unittest.TestCase):
             },
             "upstreamReceipts": [],
             "contractEvidence": None,
-            "toolchainProfileDigest": DIGEST_A,
-            "flagsDigest": DIGEST_B,
+            "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST,
             "outputSchemaVersion": 1,
         })
         stdout = self.run_cli("plan", "--request", str(request), "--output", "-")
@@ -484,8 +485,8 @@ class ProductControlCliTest(unittest.TestCase):
                 "component": "contract",
                 "phase": "binary",
                 "target": "common",
-                "toolchainProfileDigest": DIGEST_A,
-                "flagsDigest": DIGEST_B,
+                "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST,
                 "outputSchemaVersion": 1,
             }],
             "contractEvidence": None,

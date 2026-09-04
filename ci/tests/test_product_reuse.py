@@ -15,7 +15,11 @@ import ci.products.index as product_index
 import ci.products.reuse as product_reuse
 from ci.products.contract import build_contract_bundle
 from ci.products.inventory import canonical_json_bytes, sha256_bytes, write_canonical_json
-from ci.products.plan import plan_phase
+from ci.products.plan import (
+    NOT_APPLICABLE_FLAGS_DIGEST,
+    NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+    plan_phase,
+)
 from ci.products.receipt import output_inventory_digest, validate_phase_receipt, write_output_manifest
 from ci.products.registry import (
     NATIVE_TARGETS,
@@ -125,14 +129,14 @@ def phase_inputs(instance: PhaseInstanceId) -> dict[str, object]:
             if instance.product == "runtime"
             and instance.component in NATIVE_TARGETS
             and instance.phase == "binary"
-            else DIGEST_A
+            else NOT_APPLICABLE_TOOLCHAIN_DIGEST
         ),
         "flags_digest": (
             RUNTIME_FLAGS_DIGESTS[instance.component]
             if instance.product == "runtime"
             and instance.component in NATIVE_TARGETS
             and instance.phase == "binary"
-            else DIGEST_B
+            else NOT_APPLICABLE_FLAGS_DIGEST
         ),
     }
 
@@ -542,8 +546,8 @@ class ProductReuseTest(unittest.TestCase):
                 "component": CONTRACT_BINARY.component,
                 "phase": CONTRACT_BINARY.phase,
                 "target": CONTRACT_BINARY.target,
-                "toolchainProfileDigest": DIGEST_A,
-                "flagsDigest": DIGEST_B,
+                "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST,
                 "outputSchemaVersion": 1,
             }],
             "contractEvidence": None,
@@ -710,8 +714,8 @@ class ProductReuseTest(unittest.TestCase):
         inputs = {
             "inventory": phase_git_inventory(repository, revision, CONTRACT_BINARY),
             "versions": VERSIONS,
-            "toolchain_profile_digest": DIGEST_A,
-            "flags_digest": DIGEST_B,
+            "toolchain_profile_digest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flags_digest": NOT_APPLICABLE_FLAGS_DIGEST,
         }
         planned = plan_phase(CONTRACT_BINARY, upstream_receipts=[], **inputs)
         envelope, object_path = self.object_for_plan(planned, trust_domain="development")
@@ -761,8 +765,8 @@ class ProductReuseTest(unittest.TestCase):
             instance: {
                 "inventory": phase_git_inventory(repository, revision, instance),
                 "versions": VERSIONS,
-                "toolchain_profile_digest": DIGEST_A,
-                "flags_digest": DIGEST_B,
+                "toolchain_profile_digest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                "flags_digest": NOT_APPLICABLE_FLAGS_DIGEST,
             }
             for instance in closure
         }
@@ -864,8 +868,8 @@ class ProductReuseTest(unittest.TestCase):
                 "component": instance.component,
                 "phase": instance.phase,
                 "target": instance.target,
-                "toolchainProfileDigest": DIGEST_A,
-                "flagsDigest": DIGEST_B,
+                "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST,
                 "outputSchemaVersion": 1,
             } for instance in closure],
             "contractEvidence": {
@@ -1305,7 +1309,13 @@ class ProductReuseTest(unittest.TestCase):
                 repository_root=flags_repository,
                 repository_revision="HEAD",
             )
-        verified.assert_called_once()
+        self.assertEqual(5, verified.call_count)
+        verified.assert_called_with(
+            flags_repository,
+            "HEAD",
+            RUNTIME_BINARY,
+            inputs[RUNTIME_BINARY]["toolchain_profile_digest"],
+        )
 
     def test_catalog_is_loaded_validated_and_verified_only_once_per_session(self) -> None:
         inputs = all_inputs(CONTRACT_METADATA)

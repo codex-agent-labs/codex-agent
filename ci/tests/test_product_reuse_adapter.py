@@ -20,6 +20,12 @@ from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId  # noqa: E402
 
 COMMIT = "a" * 40
 TREE = "b" * 40
+VERSIONS = {
+    "contract": "0.2.0",
+    "runtime-release": "0.2.0",
+    "runtime-compatibility": "0.2.0",
+    "sdk": "0.2.0",
+}
 
 
 def impact_plan(*, changed: list[str], full_requested: bool = False, event: str = "pull_request") -> dict[str, object]:
@@ -73,6 +79,122 @@ class ProductReuseAdapterTest(unittest.TestCase):
     def outputs(self) -> dict[str, str]:
         return dict(line.split("=", 1) for line in self.output.read_text().splitlines())
 
+    def test_authorities_are_derived_and_native_profiles_fail_closed(self) -> None:
+        contract = PhaseInstanceId("contract", "contract", "binary", "common")
+        native = PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64")
+        with mock.patch.object(product_reuse, "tree_entries", return_value=[]), \
+                mock.patch.object(product_reuse, "git_regular_blob_bytes") as read_blob:
+            records, reason = product_reuse._authorities(self.root, COMMIT, (contract,))
+            self.assertIsNone(reason)
+            self.assertEqual([{
+                **product_reuse._identity_record(contract),
+                "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+                "outputSchemaVersion": 1,
+            }], records)
+            read_blob.assert_not_called()
+
+            records, reason = product_reuse._authorities(self.root, COMMIT, (native,))
+            self.assertIsNone(records)
+            self.assertEqual("toolchain-profile-unavailable", reason)
+            read_blob.assert_not_called()
+
+    def test_malformed_present_authority_is_a_hard_failure(self) -> None:
+        native = PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64")
+        profile = product_reuse.required_toolchain_profile(native)
+        with mock.patch.object(
+            product_reuse,
+            "tree_entries",
+            return_value=[(f"{product_reuse._PROFILE_ROOT}/{profile}.json", object())],
+        ), mock.patch.object(
+            product_reuse, "git_regular_blob_bytes", return_value=b"{}"
+        ), self.assertRaises(ValueError):
+            product_reuse._authorities(self.root, COMMIT, (native,))
+
+    def test_native_profile_lookup_waits_until_contract_is_fully_reused(self) -> None:
+        native = PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64")
+        contract_records = [{
+            **product_reuse._identity_record(instance),
+            "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+            "outputSchemaVersion": 1,
+        } for instance in product_reuse._dependency_closure((
+            PhaseInstanceId("contract", "contract", "metadata", "common"),
+        ))]
+        contract_result = {
+            "schemaVersion": 1,
+            "result": "complete",
+            "fullReuse": True,
+            "phases": [],
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+        }
+        authorities = mock.Mock(side_effect=(
+            (contract_records, None),
+            (None, "toolchain-profile-unavailable"),
+        ))
+        wave = mock.Mock(return_value=contract_result)
+        result = self.run_discover(
+            impact_plan(changed=["native.kt"]),
+            selection=mock.Mock(instances=(native,), unknown_paths=()),
+            _authorities=authorities,
+            _versions=mock.Mock(return_value=VERSIONS),
+            _release_trust=mock.Mock(return_value=None),
+            _discover_catalogs=mock.Mock(return_value=[]),
+            _wave_request=mock.Mock(return_value={}),
+            plan_reuse_wave=wave,
+            _contract_evidence=mock.Mock(return_value=object()),
+        )
+        self.assertEqual("toolchain-profile-unavailable", result["reason"])
+        self.assertEqual(2, authorities.call_count)
+        wave.assert_called_once()
+
+    def test_native_request_emits_only_the_ready_contract_plan_without_profiles(self) -> None:
+        native = PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64")
+        contract_binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        contract_records = [{
+            **product_reuse._identity_record(instance),
+            "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+            "outputSchemaVersion": 1,
+        } for instance in product_reuse._dependency_closure((
+            PhaseInstanceId("contract", "contract", "metadata", "common"),
+        ))]
+        phase_plan = {
+            "schemaVersion": 1,
+            **product_reuse._identity_record(contract_binary),
+            "buildKey": sha256_bytes(b"contract-build"),
+            "inputs": {"authority": "planner-owned"},
+        }
+
+        def contract_wave(_request, *, build_plan_consumer):
+            build_plan_consumer(contract_binary, phase_plan)
+            return {
+                "schemaVersion": 1,
+                "result": "build-required",
+                "fullReuse": False,
+                "phases": [],
+                "matrices": {"contract": [{}], "runtime": [], "sdk": []},
+            }
+
+        authorities = mock.Mock(return_value=(contract_records, None))
+        result = self.run_discover(
+            impact_plan(changed=["native.kt"]),
+            selection=mock.Mock(instances=(native,), unknown_paths=()),
+            _authorities=authorities,
+            _versions=mock.Mock(return_value=VERSIONS),
+            _release_trust=mock.Mock(return_value=None),
+            _discover_catalogs=mock.Mock(return_value=[]),
+            _wave_request=mock.Mock(return_value={}),
+            plan_reuse_wave=mock.Mock(side_effect=contract_wave),
+            environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+        )
+        self.assertEqual("product-build-required", result["reason"])
+        authorities.assert_called_once()
+        self.assertEqual(
+            canonical_json_bytes(phase_plan),
+            (self.destination / "phase-plans/contract-contract-binary-common.json").read_bytes(),
+        )
+
     def test_no_product_work_is_the_only_vacuous_full_reuse(self) -> None:
         result = self.run_discover(impact_plan(changed=["README.md"]))
         self.assertEqual("no-product-work", result["reason"])
@@ -90,28 +212,69 @@ class ProductReuseAdapterTest(unittest.TestCase):
             selection=selection,
             _dependency_closure=mock.Mock(return_value=(selected,)),
             _authorities=mock.Mock(return_value=(None, "phase-authority-unavailable")),
+            _versions=mock.Mock(return_value=VERSIONS),
+            _release_trust=mock.Mock(return_value=None),
+            _discover_catalogs=mock.Mock(return_value=[]),
         )
         self.assertEqual([product_reuse._identity_record(selected)], result["requested"])
         self.assertTrue(result["targetJobsRequired"])
 
     def test_explicit_full_request_selects_every_registered_phase(self) -> None:
+        contract_closure = tuple(
+            instance for instance in PHASE_INSTANCE_IDS if instance.product == "contract"
+        )
         result = self.run_discover(
             impact_plan(changed=["known.kt"], full_requested=True),
             selection=mock.Mock(instances=(), unknown_paths=()),
-            _dependency_closure=mock.Mock(return_value=PHASE_INSTANCE_IDS),
-            _authorities=mock.Mock(return_value=(None, "toolchain-profile-unavailable")),
+            _dependency_closure=mock.Mock(side_effect=lambda requested: (
+                contract_closure if requested == (
+                    PhaseInstanceId("contract", "contract", "metadata", "common"),
+                ) else PHASE_INSTANCE_IDS
+            )),
+            _authorities=mock.Mock(return_value=([{
+                **product_reuse._identity_record(instance),
+                "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+                "outputSchemaVersion": 1,
+            } for instance in contract_closure], None)),
+            _versions=mock.Mock(return_value=VERSIONS),
+            _release_trust=mock.Mock(return_value=None),
+            _discover_catalogs=mock.Mock(return_value=[]),
+            plan_reuse_wave=mock.Mock(return_value={
+                "schemaVersion": 1, "result": "build-required", "fullReuse": False,
+                "phases": [], "matrices": {"contract": [{}], "runtime": [], "sdk": []},
+            }),
         )
         self.assertEqual(len(PHASE_INSTANCE_IDS), len(result["requested"]))
-        self.assertEqual("toolchain-profile-unavailable", result["reason"])
+        self.assertEqual("product-build-required", result["reason"])
 
     def test_unknown_path_selects_every_registered_phase(self) -> None:
         plan = impact_plan(changed=["unknown/new.file"])
         plan["unknownPaths"] = ["unknown/new.file"]
+        contract_closure = tuple(
+            instance for instance in PHASE_INSTANCE_IDS if instance.product == "contract"
+        )
         result = self.run_discover(
             plan,
             selection=mock.Mock(instances=PHASE_INSTANCE_IDS, unknown_paths=("unknown/new.file",)),
-            _dependency_closure=mock.Mock(return_value=PHASE_INSTANCE_IDS),
-            _authorities=mock.Mock(return_value=(None, "phase-authority-unavailable")),
+            _dependency_closure=mock.Mock(side_effect=lambda requested: (
+                contract_closure if requested == (
+                    PhaseInstanceId("contract", "contract", "metadata", "common"),
+                ) else PHASE_INSTANCE_IDS
+            )),
+            _authorities=mock.Mock(return_value=([{
+                **product_reuse._identity_record(instance),
+                "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+                "outputSchemaVersion": 1,
+            } for instance in contract_closure], None)),
+            _versions=mock.Mock(return_value=VERSIONS),
+            _release_trust=mock.Mock(return_value=None),
+            _discover_catalogs=mock.Mock(return_value=[]),
+            plan_reuse_wave=mock.Mock(return_value={
+                "schemaVersion": 1, "result": "build-required", "fullReuse": False,
+                "phases": [], "matrices": {"contract": [{}], "runtime": [], "sdk": []},
+            }),
         )
         self.assertEqual(len(PHASE_INSTANCE_IDS), len(result["requested"]))
 

@@ -26,7 +26,6 @@ from products.inventory import (
     require_exact_keys,
     require_integer,
     require_semver,
-    require_sha256,
     require_string,
     sha256_bytes,
     tree_entries,
@@ -34,15 +33,18 @@ from products.inventory import (
     write_canonical_json,
 )
 from products.registry import (
+    NATIVE_TARGETS,
     PHASE_INSTANCE_IDS,
     PhaseInstanceId,
-    required_contract_components,
     required_toolchain_profile,
 )
+from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST
+from products.runtime_flags import load_runtime_binary_flags_bytes
 from products.restore import object_relative_path, restore_object, verify_object, write_carrier
 from products.reuse import _dependency_closure, plan_reuse_wave
 from products.selection import classify_paths
 from products.signatures import load_keyring, public_key_for_metadata
+from products.toolchain import load_toolchain_profile_bytes
 
 
 _PLAN_KEYS = {
@@ -52,10 +54,6 @@ _PLAN_KEYS = {
     "unknownPaths", "changedPaths", "lanes",
 }
 _IDENTITY_KEYS = ("product", "component", "phase", "target")
-_AUTHORITY_KEYS = {
-    *_IDENTITY_KEYS, "toolchainProfileDigest", "flagsDigest", "outputSchemaVersion",
-}
-_AUTHORITY_PATH = "gradle/release/product-phase-authorities.json"
 _VERSION_PATHS = {
     "contract": "gradle/release/versions/contract.txt",
     "runtime-release": "gradle/release/versions/runtime.txt",
@@ -219,40 +217,42 @@ def _authorities(
     closure: tuple[PhaseInstanceId, ...],
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     paths = {path for path, _ in tree_entries(root, revision)}
-    if _AUTHORITY_PATH not in paths:
-        return None, "phase-authority-unavailable"
-    value = require_exact_keys(
-        load_canonical_json_bytes(git_regular_blob_bytes(
-            root, revision, _AUTHORITY_PATH, max_bytes=2 * 1024 * 1024,
-        )),
-        {"schemaVersion", "phases"},
-        "product phase authorities",
-    )
-    if require_integer(value["schemaVersion"], "product phase authorities.schemaVersion", 1) != 1:
-        raise ValueError("Unsupported product phase-authority schemaVersion")
-    records: dict[PhaseInstanceId, dict[str, Any]] = {}
-    ordered: list[PhaseInstanceId] = []
-    for index, member in enumerate(require_array(value["phases"], "product phase authorities.phases")):
-        label = f"product phase authorities.phases[{index}]"
-        record = require_exact_keys(member, _AUTHORITY_KEYS, label)
-        instance = _identity(record)
-        if instance in records:
-            raise ValueError(f"Duplicate product phase authority: {instance}")
-        require_sha256(record["toolchainProfileDigest"], f"{label}.toolchainProfileDigest")
-        require_sha256(record["flagsDigest"], f"{label}.flagsDigest")
-        if require_integer(record["outputSchemaVersion"], f"{label}.outputSchemaVersion", 1) != 1:
-            raise ValueError("Unsupported product output schema version")
-        records[instance] = record
-        ordered.append(instance)
-    if ordered != sorted(ordered):
-        raise ValueError("Product phase authorities must be sorted")
-    if any(instance not in records for instance in closure):
-        return None, "phase-authority-unavailable"
+    native_flags = None
+    records = []
     for instance in closure:
         profile = required_toolchain_profile(instance)
-        if profile is not None and f"{_PROFILE_ROOT}/{profile}.json" not in paths:
-            return None, "toolchain-profile-unavailable"
-    return [records[instance] for instance in closure], None
+        if profile is None:
+            toolchain_digest = NOT_APPLICABLE_TOOLCHAIN_DIGEST
+        else:
+            profile_path = f"{_PROFILE_ROOT}/{profile}.json"
+            if profile_path not in paths:
+                return None, "toolchain-profile-unavailable"
+            toolchain_digest = load_toolchain_profile_bytes(
+                git_regular_blob_bytes(root, revision, profile_path, max_bytes=65_536),
+                profile,
+            ).digest
+        if (
+            instance.product == "runtime"
+            and instance.component in NATIVE_TARGETS
+            and instance.phase == "binary"
+        ):
+            if native_flags is None:
+                native_flags = load_runtime_binary_flags_bytes(git_regular_blob_bytes(
+                    root,
+                    revision,
+                    "codex-agent-runtime-desktop/native/c-api/binary-flags.json",
+                    max_bytes=65_536,
+                ))
+            flags_digest = native_flags[instance.component].digest
+        else:
+            flags_digest = NOT_APPLICABLE_FLAGS_DIGEST
+        records.append({
+            **_identity_record(instance),
+            "toolchainProfileDigest": toolchain_digest,
+            "flagsDigest": flags_digest,
+            "outputSchemaVersion": 1,
+        })
+    return records, None
 
 
 def _release_trust(root: Path, revision: str, destination: Path) -> ReleaseTrust | None:
@@ -688,29 +688,51 @@ def discover(
         ), github_output_path)
 
     closure = _dependency_closure(requested)
-    authorities, unavailable = _authorities(root, plan["validationCommit"], closure)
-    if authorities is None:
-        return _finish(destination, request, _result(
-            requested, complete=False, reason=unavailable or "phase-authority-unavailable",
-        ), github_output_path)
     versions = _versions(root, plan["validationCommit"])
     environment = os.environ if environ is None else environ
     trust = _release_trust(root, plan["validationCommit"], destination)
     catalogs = _discover_catalogs(plan, destination, trust, environment, versions)
 
     contract_evidence = None
-    if any(required_contract_components(instance) for instance in closure) and catalogs:
-        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+    contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+    if contract in closure:
+        contract_closure = _dependency_closure((contract,))
+        contract_authorities, unavailable = _authorities(
+            root, plan["validationCommit"], contract_closure,
+        )
+        if contract_authorities is None:
+            raise ValueError(unavailable or "Contract phase authority is unavailable")
         contract_request = _wave_request(
-            plan, root, destination, (contract,), versions, authorities, catalogs, None,
+            plan, root, destination, (contract,), versions, contract_authorities, catalogs, None,
         )
         write_canonical_json(destination / "contract-reuse-request.json", contract_request)
-        contract_result = plan_reuse_wave(contract_request)
+        contract_ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
+        contract_result = plan_reuse_wave(
+            contract_request,
+            build_plan_consumer=lambda instance, phase_plan: contract_ready_plans.setdefault(
+                instance, phase_plan,
+            ),
+        )
         write_canonical_json(destination / "contract-reuse-result.json", contract_result)
-        if contract_result["fullReuse"] is True:
-            contract_evidence = _contract_evidence(
-                plan, destination, catalogs, contract_result, trust,
-            )
+        if contract_result["fullReuse"] is not True:
+            _write_ready_plans(destination, contract_ready_plans)
+            if contract_ready_plans:
+                write_canonical_json(
+                    destination / "producer.json", _consumer(plan, environment)["producer"],
+                )
+            write_canonical_json(destination / "reuse-wave-result.json", contract_result)
+            return _finish(destination, request, _result(
+                requested, complete=False, reason="product-build-required", reuse=contract_result,
+            ), github_output_path)
+        contract_evidence = _contract_evidence(
+            plan, destination, catalogs, contract_result, trust,
+        )
+
+    authorities, unavailable = _authorities(root, plan["validationCommit"], closure)
+    if authorities is None:
+        return _finish(destination, request, _result(
+            requested, complete=False, reason=unavailable or "phase-authority-unavailable",
+        ), github_output_path)
 
     wave_request = _wave_request(
         plan, root, destination, requested, versions, authorities, catalogs, contract_evidence,

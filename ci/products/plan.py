@@ -54,6 +54,16 @@ from .toolchain import load_toolchain_profile_bytes
 _RUNTIME_BINARY_FLAGS_PATH = "codex-agent-runtime-desktop/native/c-api/binary-flags.json"
 _RUNTIME_TOOLCHAIN_PROFILE_ROOT = "gradle/release/toolchains/runtime"
 _GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+NOT_APPLICABLE_TOOLCHAIN_DIGEST = sha256_bytes(canonical_json_bytes({
+    "authority": "toolchain-profile",
+    "schemaVersion": 1,
+    "state": "not-applicable",
+}))
+NOT_APPLICABLE_FLAGS_DIGEST = sha256_bytes(canonical_json_bytes({
+    "authority": "flags",
+    "schemaVersion": 1,
+    "state": "not-applicable",
+}))
 
 
 def _runtime_compatibility_version(release_version: str) -> str:
@@ -62,18 +72,18 @@ def _runtime_compatibility_version(release_version: str) -> str:
 
 
 def verified_phase_flags_digest(
-    root: Path,
-    revision: str,
+    root: Path | None,
+    revision: str | None,
     instance: PhaseInstanceId,
     supplied_digest: str,
 ) -> str:
-    if type(revision) is not str or _GIT_OBJECT_ID.fullmatch(revision) is None:
-        raise ValueError("Repository revision must be an exact lowercase Git object ID")
     if (
         instance.product == "runtime"
         and instance.component in NATIVE_TARGETS
         and instance.phase == "binary"
     ):
+        if type(revision) is not str or _GIT_OBJECT_ID.fullmatch(revision) is None:
+            raise ValueError("Repository revision must be an exact lowercase Git object ID")
         expected = load_runtime_binary_flags_bytes(
             git_regular_blob_bytes(
                 root,
@@ -85,18 +95,22 @@ def verified_phase_flags_digest(
         if supplied_digest != expected:
             raise ValueError("Plan request flagsDigest does not match the tracked target authority")
         return expected
-    return supplied_digest
+    if supplied_digest != NOT_APPLICABLE_FLAGS_DIGEST:
+        raise ValueError("Plan request flagsDigest must use the not-applicable authority")
+    return NOT_APPLICABLE_FLAGS_DIGEST
 
 
 def verified_phase_toolchain_digest(
-    root: Path,
-    revision: str,
+    root: Path | None,
+    revision: str | None,
     instance: PhaseInstanceId,
     supplied_digest: str,
 ) -> str:
     profile_id = required_toolchain_profile(instance)
     if profile_id is None:
-        return supplied_digest
+        if supplied_digest != NOT_APPLICABLE_TOOLCHAIN_DIGEST:
+            raise ValueError("Plan request toolchainProfileDigest must use the not-applicable authority")
+        return NOT_APPLICABLE_TOOLCHAIN_DIGEST
     if type(revision) is not str or _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Repository revision must be an exact lowercase Git object ID")
     profile = load_toolchain_profile_bytes(

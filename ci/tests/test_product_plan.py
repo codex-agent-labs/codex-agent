@@ -9,6 +9,8 @@ import unittest
 import ci.products.contract_projection as contract_projection
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.plan import (
+    NOT_APPLICABLE_FLAGS_DIGEST,
+    NOT_APPLICABLE_TOOLCHAIN_DIGEST,
     plan_phase,
     verified_phase_flags_digest,
     verified_phase_toolchain_digest,
@@ -188,6 +190,23 @@ def toolchain_profile(profile_id: str) -> dict[str, object]:
 
 
 class ProductPlanTest(unittest.TestCase):
+    def test_ordinary_phases_require_canonical_not_applicable_authorities(self) -> None:
+        instance = PhaseInstanceId("contract", "contract", "binary", "common")
+        self.assertEqual(
+            NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            verified_phase_toolchain_digest(
+                None, None, instance, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            ),
+        )
+        self.assertEqual(
+            NOT_APPLICABLE_FLAGS_DIGEST,
+            verified_phase_flags_digest(None, None, instance, NOT_APPLICABLE_FLAGS_DIGEST),
+        )
+        with self.assertRaisesRegex(ValueError, "not-applicable authority"):
+            verified_phase_toolchain_digest(None, None, instance, DIGEST_A)
+        with self.assertRaisesRegex(ValueError, "not-applicable authority"):
+            verified_phase_flags_digest(None, None, instance, DIGEST_B)
+
     def test_native_toolchain_is_derived_from_the_exact_target_profile_revision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

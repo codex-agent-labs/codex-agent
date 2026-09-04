@@ -870,22 +870,22 @@ def _plan(
     if needs_native_authority:
         if repository_root is None or repository_revision is None:
             raise ValueError("Native Runtime reuse requires an exact repository root and revision")
-    if required_toolchain_profile(instance) is not None:
-        if repository_root is None or repository_revision is None:
-            raise ValueError("Profiled reuse requires an exact repository root and revision")
-        arguments["toolchain_profile_digest"] = verified_phase_toolchain_digest(
-            repository_root,
-            repository_revision,
-            instance,
-            arguments["toolchain_profile_digest"],
-        )
-    if needs_native_authority:
-        arguments["flags_digest"] = verified_phase_flags_digest(
-            repository_root,
-            repository_revision,
-            instance,
-            arguments["flags_digest"],
-        )
+    if required_toolchain_profile(instance) is not None and (
+        repository_root is None or repository_revision is None
+    ):
+        raise ValueError("Profiled reuse requires an exact repository root and revision")
+    arguments["toolchain_profile_digest"] = verified_phase_toolchain_digest(
+        repository_root,
+        repository_revision,
+        instance,
+        arguments["toolchain_profile_digest"],
+    )
+    arguments["flags_digest"] = verified_phase_flags_digest(
+        repository_root,
+        repository_revision,
+        instance,
+        arguments["flags_digest"],
+    )
     plan = plan_phase(instance, upstream_receipts=upstream_receipts, **arguments)
     return attach_runtime_binary_identity(
         repository_root,
