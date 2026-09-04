@@ -247,6 +247,253 @@ jobs:
           metadata: ${{ matrix.metadata }}
           node-version: ${{ (matrix.lane == 'contracts' || contains(matrix.lane, 'node')) && '24.18.0' || 'none' }}
 
+  contract-continuation:
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.validation_reused != 'true' &&
+      needs.plan.outputs.contract_reconciliation_required == 'true' &&
+      needs.plan.outputs.contract_next_phase != 'none' &&
+      needs.plan.outputs.contract_next_phase != 'metadata'
+    needs: [workflow-lint, plan, product]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.plan.outputs.plan_artifact }}
+          path: build/ci
+      - if: needs.plan.outputs.contract_next_phase == 'binary'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-product-phase-contract-contract-binary-common-${{ needs.plan.outputs.validation_tree }}
+          path: build/product-phase/contract-contract-binary-common
+      - uses: ./.github/actions/setup-kmp
+        with:
+          cache-read-only: "true"
+      - name: Select Contract producer trust
+        shell: bash
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) trust_domain=development ;;
+            merge_group) trust_domain=release ;;
+            *) exit 1 ;;
+          esac
+          printf 'CONTRACT_TRUST_DOMAIN=%s\n' "$trust_domain" >> "$GITHUB_ENV"
+      - name: Reconcile the fresh Contract binary phase
+        id: reconcile_binary
+        if: needs.plan.outputs.contract_next_phase == 'binary'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py advance-contract \
+            --plan build/ci/impact-plan.json \
+            --discovery-root build/ci/product-reuse \
+            --phase-shard build/product-phase/contract-contract-binary-common \
+            --destination build/contract-state/after-binary \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Select Contract state after binary reconciliation
+        id: select_after_binary
+        env:
+          INITIAL_NEXT_PHASE: ${{ needs.plan.outputs.contract_next_phase }}
+          RECONCILED_COMPLETE: ${{ steps.reconcile_binary.outputs.contract_complete }}
+          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_binary.outputs.next_phase }}
+        shell: bash
+        run: |
+          state=build/ci/product-reuse
+          next_phase=$INITIAL_NEXT_PHASE
+          complete=false
+          if [ "$INITIAL_NEXT_PHASE" = binary ]; then
+            state=build/contract-state/after-binary
+            next_phase=$RECONCILED_NEXT_PHASE
+            complete=$RECONCILED_COMPLETE
+          fi
+          case "$next_phase:$complete" in
+            package:false|validation:false|metadata:false|none:true) ;;
+            *) exit 1 ;;
+          esac
+          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
+            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
+      - name: Materialize the exact Contract binary stage and receipt
+        if: steps.select_after_binary.outputs.next_phase == 'package' || steps.select_after_binary.outputs.next_phase == 'validation'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py materialize-contract \
+            --plan build/ci/impact-plan.json \
+            --state-root "${{ steps.select_after_binary.outputs.state }}" \
+            --phase binary \
+            --destination build/contract-handoff/binary \
+            --with-receipt
+      - name: Produce and finalize the Contract package phase
+        if: steps.select_after_binary.outputs.next_phase == 'package'
+        env:
+          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+        shell: bash
+        run: |
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=contract \
+            -PcodexAgent.component=contract \
+            -PcodexAgent.phase=package \
+            -PcodexAgent.contractBinaryStageRoot="$PWD/build/contract-handoff/binary/stage" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+          IFS= read -r contract_version < gradle/release/versions/contract.txt
+          python3 -m ci.products restore store-phase \
+            --stage-root build/product-stage/contract/contract/package \
+            --phase-plan "${{ steps.select_after_binary.outputs.state }}/phase-plans/contract-contract-package-common.json" \
+            --producer "${{ steps.select_after_binary.outputs.state }}/producer.json" \
+            --product-version "$contract_version" \
+            --trust-domain "$CONTRACT_TRUST_DOMAIN" \
+            --destination build/product-phase/contract-contract-package-common
+      - name: Upload the Contract package phase
+        if: steps.select_after_binary.outputs.next_phase == 'package'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-product-phase-contract-contract-package-common-${{ needs.plan.outputs.validation_tree }}
+          path: build/product-phase/contract-contract-package-common
+          compression-level: 0
+          retention-days: 90
+      - name: Reconcile the fresh Contract package phase
+        id: reconcile_package
+        if: steps.select_after_binary.outputs.next_phase == 'package'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py advance-contract \
+            --plan build/ci/impact-plan.json \
+            --discovery-root build/ci/product-reuse \
+            --state-root "${{ steps.select_after_binary.outputs.state }}" \
+            --phase-shard build/product-phase/contract-contract-package-common \
+            --destination build/contract-state/after-package \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Select Contract state after package reconciliation
+        id: select_after_package
+        env:
+          CURRENT_COMPLETE: ${{ steps.select_after_binary.outputs.contract_complete }}
+          CURRENT_NEXT_PHASE: ${{ steps.select_after_binary.outputs.next_phase }}
+          CURRENT_STATE: ${{ steps.select_after_binary.outputs.state }}
+          RECONCILED_COMPLETE: ${{ steps.reconcile_package.outputs.contract_complete }}
+          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_package.outputs.next_phase }}
+        shell: bash
+        run: |
+          state=$CURRENT_STATE
+          next_phase=$CURRENT_NEXT_PHASE
+          complete=$CURRENT_COMPLETE
+          if [ "$CURRENT_NEXT_PHASE" = package ]; then
+            state=build/contract-state/after-package
+            next_phase=$RECONCILED_NEXT_PHASE
+            complete=$RECONCILED_COMPLETE
+          fi
+          case "$next_phase:$complete" in
+            validation:false|metadata:false|none:true) ;;
+            *) exit 1 ;;
+          esac
+          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
+            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
+      - name: Materialize the exact Contract package stage and receipt
+        if: steps.select_after_package.outputs.next_phase == 'validation'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py materialize-contract \
+            --plan build/ci/impact-plan.json \
+            --state-root "${{ steps.select_after_package.outputs.state }}" \
+            --phase package \
+            --destination build/contract-handoff/package \
+            --with-receipt
+      - name: Produce and finalize the Contract validation phase
+        if: steps.select_after_package.outputs.next_phase == 'validation'
+        env:
+          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+        shell: bash
+        run: |
+          binary_receipt=$PWD/build/contract-handoff/binary/receipt/phase-receipt.json
+          package_receipt=$PWD/build/contract-handoff/package/receipt/phase-receipt.json
+          binary_digest=sha256:$(sha256sum "$binary_receipt" | cut -d' ' -f1)
+          package_digest=sha256:$(sha256sum "$package_receipt" | cut -d' ' -f1)
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=contract \
+            -PcodexAgent.component=contract \
+            -PcodexAgent.phase=validation \
+            -PcodexAgent.contractPackageStageRoot="$PWD/build/contract-handoff/package/stage" \
+            -PcodexAgent.contractPackageReceipt="$package_receipt" \
+            -PcodexAgent.contractPackageReceiptSha256="$package_digest" \
+            -PcodexAgent.contractBinaryReceipt="$binary_receipt" \
+            -PcodexAgent.contractBinaryReceiptSha256="$binary_digest" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+          IFS= read -r contract_version < gradle/release/versions/contract.txt
+          python3 -m ci.products restore store-phase \
+            --stage-root build/product-stage/contract/contract/validation \
+            --phase-plan "${{ steps.select_after_package.outputs.state }}/phase-plans/contract-contract-validation-common.json" \
+            --producer "${{ steps.select_after_package.outputs.state }}/producer.json" \
+            --product-version "$contract_version" \
+            --trust-domain "$CONTRACT_TRUST_DOMAIN" \
+            --destination build/product-phase/contract-contract-validation-common
+      - name: Upload the Contract validation phase
+        if: steps.select_after_package.outputs.next_phase == 'validation'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-product-phase-contract-contract-validation-common-${{ needs.plan.outputs.validation_tree }}
+          path: build/product-phase/contract-contract-validation-common
+          compression-level: 0
+          retention-days: 90
+      - name: Reconcile the fresh Contract validation phase
+        id: reconcile_validation
+        if: steps.select_after_package.outputs.next_phase == 'validation'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py advance-contract \
+            --plan build/ci/impact-plan.json \
+            --discovery-root build/ci/product-reuse \
+            --state-root "${{ steps.select_after_package.outputs.state }}" \
+            --phase-shard build/product-phase/contract-contract-validation-common \
+            --destination build/contract-state/after-validation \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Select final Contract continuation state
+        id: select_final_state
+        env:
+          CURRENT_COMPLETE: ${{ steps.select_after_package.outputs.contract_complete }}
+          CURRENT_NEXT_PHASE: ${{ steps.select_after_package.outputs.next_phase }}
+          CURRENT_STATE: ${{ steps.select_after_package.outputs.state }}
+          RECONCILED_COMPLETE: ${{ steps.reconcile_validation.outputs.contract_complete }}
+          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_validation.outputs.next_phase }}
+        shell: bash
+        run: |
+          state=$CURRENT_STATE
+          next_phase=$CURRENT_NEXT_PHASE
+          complete=$CURRENT_COMPLETE
+          if [ "$CURRENT_NEXT_PHASE" = validation ]; then
+            state=build/contract-state/after-validation
+            next_phase=$RECONCILED_NEXT_PHASE
+            complete=$RECONCILED_COMPLETE
+          fi
+          case "$next_phase:$complete" in
+            metadata:false|none:true) ;;
+            *) exit 1 ;;
+          esac
+          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
+            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
+      - name: Preserve Contract state through the metadata boundary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-phase-state-${{ needs.plan.outputs.validation_tree }}
+          path: ${{ steps.select_final_state.outputs.state }}
+          compression-level: 0
+          retention-days: 90
+
   android:
     if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
     needs: [workflow-lint, plan]
@@ -439,7 +686,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites

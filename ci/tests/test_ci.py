@@ -198,6 +198,7 @@ class RunLaneContractTest(unittest.TestCase):
         planner_guard = "needs.plan.outputs.remote_build_authorized == 'true'"
         for name in (
             "product",
+            "contract-continuation",
             "android",
             "android-runtime-evidence",
             "desktop",
@@ -265,6 +266,79 @@ class RunLaneContractTest(unittest.TestCase):
             gate.index('if [ "$REMOTE_BUILD_AUTHORIZED" != true ]'),
             gate.index("uses: actions/checkout@"),
         )
+
+    def test_contract_package_and_validation_continue_from_exact_phase_artifacts(self) -> None:
+        workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(
+            r"^  contract-continuation:\n(?P<body>.*?)(?=^  android:\n)",
+            workflow,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        job = match.group("body")
+        for guard in (
+            "needs.plan.outputs.event_authorized == 'true'",
+            "needs.plan.outputs.remote_build_authorized == 'true'",
+            "needs.plan.outputs.validation_reused != 'true'",
+            "needs.plan.outputs.contract_reconciliation_required == 'true'",
+            "needs.plan.outputs.contract_next_phase != 'none'",
+            "needs.plan.outputs.contract_next_phase != 'metadata'",
+        ):
+            self.assertIn(guard, job)
+        self.assertIn("needs: [workflow-lint, plan, product]", job)
+        self.assertNotIn("contains(needs.*.result", job)
+        self.assertIn("cache-read-only: \"true\"", job)
+        self.assertEqual(3, job.count("python3 ci/product_reuse.py advance-contract"))
+        self.assertEqual(2, job.count("python3 ci/product_reuse.py materialize-contract"))
+        self.assertEqual(2, job.count("--with-receipt"))
+        self.assertEqual(2, job.count("python3 -m ci.products restore store-phase"))
+        self.assertIn("-PcodexAgent.phase=package", job)
+        self.assertIn("-PcodexAgent.phase=validation", job)
+        self.assertNotIn("-PcodexAgent.phase=metadata", job)
+        self.assertIn(
+            "codex-agent-product-phase-contract-contract-binary-common-${{ needs.plan.outputs.validation_tree }}",
+            job,
+        )
+        for phase in ("package", "validation"):
+            self.assertIn(
+                f"codex-agent-product-phase-contract-contract-{phase}-common-${{{{ needs.plan.outputs.validation_tree }}}}",
+                job,
+            )
+        self.assertIn("binary/receipt/phase-receipt.json", job)
+        self.assertIn("package/receipt/phase-receipt.json", job)
+        self.assertIn('id: reconcile_binary', job)
+        self.assertIn('id: reconcile_package', job)
+        self.assertIn('id: reconcile_validation', job)
+        self.assertIn('steps.reconcile_binary.outputs.next_phase', job)
+        self.assertIn('steps.reconcile_package.outputs.next_phase', job)
+        self.assertIn('steps.reconcile_validation.outputs.next_phase', job)
+        self.assertIn(
+            "if: steps.select_after_binary.outputs.next_phase == 'package'",
+            job,
+        )
+        self.assertIn(
+            "if: steps.select_after_package.outputs.next_phase == 'validation'",
+            job,
+        )
+        self.assertIn("metadata:false|none:true", job)
+        self.assertIn("path: ${{ steps.select_final_state.outputs.state }}", job)
+        ordered = (
+            "Reconcile the fresh Contract binary phase",
+            "Materialize the exact Contract binary stage and receipt",
+            "Produce and finalize the Contract package phase",
+            "Reconcile the fresh Contract package phase",
+            "Materialize the exact Contract package stage and receipt",
+            "Produce and finalize the Contract validation phase",
+            "Reconcile the fresh Contract validation phase",
+            "Preserve Contract state through the metadata boundary",
+        )
+        positions = [job.index(value) for value in ordered]
+        self.assertEqual(sorted(positions), positions)
+        self.assertIn("codex-agent-contract-phase-state-${{ needs.plan.outputs.validation_tree }}", job)
+        merge_gate = workflow.split("\n  merge-gate:\n", 1)[1]
+        self.assertIn("contract-continuation", merge_gate.split("\n    runs-on:", 1)[0])
 
     def test_c_abi_evidence_inputs_are_lf_canonical(self) -> None:
         root = CI_ROOT.parent
