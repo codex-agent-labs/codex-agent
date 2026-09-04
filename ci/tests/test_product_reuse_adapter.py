@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stderr
+import io
+import os
 from pathlib import Path
+import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,11 +19,25 @@ CI_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_ROOT))
 
 import product_reuse  # noqa: E402
+import products.inventory as product_inventory  # noqa: E402
 from products.inventory import canonical_json_bytes, sha256_bytes  # noqa: E402
 from products.plan import plan_phase  # noqa: E402
-from products.receipt import write_output_manifest  # noqa: E402
-from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId  # noqa: E402
-from products.restore import finalize_phase_object, verify_carrier, verify_phase_shard  # noqa: E402
+from products.receipt import (  # noqa: E402
+    output_inventory_digest,
+    validate_phase_receipt,
+    write_output_manifest,
+)
+from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId, published_coordinate  # noqa: E402
+from products.restore import (  # noqa: E402
+    finalize_phase_object,
+    store_local_object,
+    transport_relative_path,
+    verify_carrier,
+    verify_phase_shard,
+    write_carrier,
+)
+from products.selection import phase_git_inventory  # noqa: E402
+from products.signatures import generate_development_key, sign_manifest  # noqa: E402
 
 
 COMMIT = "a" * 40
@@ -64,6 +83,149 @@ class ProductReuseAdapterTest(unittest.TestCase):
 
     def write_plan(self, value: dict[str, object]) -> None:
         self.plan_path.write_text(json.dumps(value), encoding="utf-8")
+
+    def contract_advance_controls(self) -> dict[str, object]:
+        root = self.root.resolve()
+        plan = impact_plan(changed=["known.kt"])
+        producer = product_reuse._consumer(
+            plan, {"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+        )["producer"]
+        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+        closure = product_reuse._dependency_closure((contract,))
+        authorities = [{
+            **product_reuse._identity_record(instance),
+            "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+            "outputSchemaVersion": 1,
+        } for instance in closure]
+        discovery = root / "discovery-controls"
+        discovery.mkdir()
+        request = {
+            "schemaVersion": 1,
+            "requestType": "reuse-wave",
+            "repository": plan["repository"],
+            "pullRequest": plan["pullRequest"],
+            "repositoryRoot": str(root),
+            "repositoryRevision": COMMIT,
+            "artifactRoot": str(root / "build/product-reuse"),
+            "requested": [product_reuse._identity_record(contract)],
+            "versions": VERSIONS,
+            "phaseAuthorities": authorities,
+            "contractEvidence": None,
+            "availableObjects": [],
+            "catalogs": {
+                "stable": [], "promotedMain": None, "samePr": None, "local": None,
+            },
+        }
+        for name, value in (
+            ("producer.json", producer),
+            ("contract-reuse-request.json", request),
+        ):
+            (discovery / name).write_bytes(canonical_json_bytes(value))
+        self.write_plan(plan)
+        return {
+            "root": root,
+            "plan": plan,
+            "producer": producer,
+            "contract": contract,
+            "authorities": authorities,
+            "discovery": discovery,
+            "request": request,
+        }
+
+    def contract_repository(self) -> tuple[Path, str, str]:
+        repository = self.root.resolve() / "contract-repository"
+        files = {
+            "codex-agent-core/src/commonMain/kotlin/example.kt": "package example\n",
+            "gradle/release/versions/contract.txt": "0.2.0\n",
+            "gradle/release/versions/runtime.txt": "0.2.0\n",
+            "gradle/release/versions/sdk.txt": "0.2.0\n",
+        }
+        for relative, value in files.items():
+            path = repository / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value, encoding="utf-8")
+        subprocess.run(("git", "init", "-q"), cwd=repository, check=True)
+        subprocess.run(
+            ("git", "config", "user.email", "fixture@example.invalid"),
+            cwd=repository,
+            check=True,
+        )
+        subprocess.run(("git", "config", "user.name", "Fixture"), cwd=repository, check=True)
+        subprocess.run(("git", "add", "."), cwd=repository, check=True)
+        subprocess.run(("git", "commit", "-qm", "fixture"), cwd=repository, check=True)
+        commit = subprocess.run(
+            ("git", "rev-parse", "HEAD"), cwd=repository, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ("git", "rev-parse", "HEAD^{tree}"), cwd=repository, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        return repository, commit, tree
+
+    @staticmethod
+    def phase_object(
+        root: Path,
+        name: str,
+        phase_plan: dict[str, object],
+        producer: dict[str, object],
+    ) -> tuple[dict[str, object], Path]:
+        stage = root / f"{name}-stage"
+        payload = stage / f"outputs/{name}.bin"
+        payload.parent.mkdir(parents=True)
+        payload.write_bytes(str(phase_plan["buildKey"]).encode())
+        manifest = write_output_manifest(
+            stage,
+            phase_plan["product"],
+            phase_plan["component"],
+            phase_plan["phase"],
+            phase_plan["target"],
+            "0.2.0",
+            {"artifact": "outputs"},
+        )
+        receipt = validate_phase_receipt({
+            "schemaVersion": 1,
+            "product": phase_plan["product"],
+            "component": phase_plan["component"],
+            "phase": phase_plan["phase"],
+            "target": phase_plan["target"],
+            "productVersion": "0.2.0",
+            "buildKey": phase_plan["buildKey"],
+            "inputs": phase_plan["inputs"],
+            "outputs": manifest["outputs"],
+            "producer": producer,
+            "trustDomain": "development",
+            "result": "success",
+        })
+        receipt_path = root / f"{name}-receipt.json"
+        receipt_path.write_bytes(canonical_json_bytes(receipt))
+        stored = store_local_object(stage, receipt_path, root / "remote-objects")
+        return {
+            "receipt": receipt,
+            "receiptBytes": receipt_path.read_bytes(),
+            "receiptSha256": stored["receiptSha256"],
+            "objectSha256": stored["objectSha256"],
+        }, stored["path"]
+
+    @staticmethod
+    def product_index_entry(envelope: dict[str, object]) -> dict[str, object]:
+        receipt = envelope["receipt"]
+        artifact = receipt["outputs"][0]
+        return {
+            "buildKey": receipt["buildKey"],
+            "product": receipt["product"],
+            "component": receipt["component"],
+            "phase": receipt["phase"],
+            "target": receipt["target"],
+            "productVersion": receipt["productVersion"],
+            "coordinate": published_coordinate(receipt["product"], receipt["component"]),
+            "outputInventoryDigest": output_inventory_digest(receipt["outputs"]),
+            "outputs": receipt["outputs"],
+            "artifactName": artifact["relativePath"],
+            "artifactSha256": artifact["sha256"],
+            "receiptSha256": envelope["receiptSha256"],
+        }
 
     def run_discover(self, plan: dict[str, object], **patches: object) -> dict[str, object]:
         self.write_plan(plan)
@@ -731,6 +893,915 @@ class ProductReuseAdapterTest(unittest.TestCase):
             (shard / "phase-receipt.json").read_bytes(),
             verified_carrier["objects"][0]["receiptBytes"],
         )
+
+    def test_contract_advance_rejects_mutated_request_and_producer_controls(self) -> None:
+        fixture = self.contract_advance_controls()
+        request_path = fixture["discovery"] / "contract-reuse-request.json"
+        producer_path = fixture["discovery"] / "producer.json"
+        cases = (
+            ("schemaVersion", 2, "schemaVersion"),
+            ("repository", "other/repository", "repository"),
+            ("availableObjects", [{}], "availableObjects"),
+            ("unexpected", True, "fields are invalid"),
+        )
+        for field, value, message in cases:
+            with self.subTest(field=field):
+                mutated = json.loads(json.dumps(fixture["request"]))
+                mutated[field] = value
+                request_path.write_bytes(canonical_json_bytes(mutated))
+                with mock.patch.object(
+                    product_reuse, "_validate_plan", return_value=fixture["plan"],
+                ), mock.patch.object(
+                    product_reuse,
+                    "_authorities",
+                    return_value=(fixture["authorities"], None),
+                ), mock.patch.object(
+                    product_reuse, "_versions", return_value=VERSIONS,
+                ), self.assertRaisesRegex(ValueError, message):
+                    product_reuse.advance_contract(
+                        self.plan_path,
+                        fixture["discovery"],
+                        None,
+                        [],
+                        fixture["root"] / f"rejected-{field}",
+                        fixture["root"] / f"output-{field}",
+                        repository_root=fixture["root"],
+                        environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+                    )
+                self.assertFalse((fixture["root"] / f"rejected-{field}").exists())
+                self.assertEqual(
+                    {"contract_complete": "false", "next_phase_required": "false"},
+                    dict(
+                        line.split("=", 1)
+                        for line in (fixture["root"] / f"output-{field}").read_text().splitlines()
+                    ),
+                )
+        request_path.write_bytes(canonical_json_bytes(fixture["request"]))
+
+        mutated_producer = dict(fixture["producer"])
+        mutated_producer["runAttempt"] = 3
+        producer_path.write_bytes(canonical_json_bytes(mutated_producer))
+        with mock.patch.object(
+            product_reuse, "_validate_plan", return_value=fixture["plan"],
+        ), self.assertRaisesRegex(ValueError, "current workflow run"):
+            product_reuse.advance_contract(
+                self.plan_path,
+                fixture["discovery"],
+                None,
+                [],
+                fixture["root"] / "rejected-producer",
+                fixture["root"] / "output-producer",
+                repository_root=fixture["root"],
+                environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+        self.assertFalse((fixture["root"] / "rejected-producer").exists())
+
+        producer_path.write_bytes(canonical_json_bytes(fixture["producer"]))
+        (fixture["discovery"] / "contract-reuse-result.json").write_bytes(
+            canonical_json_bytes({"stale": True})
+        )
+        with mock.patch.object(
+            product_reuse, "_validate_plan", return_value=fixture["plan"],
+        ), mock.patch.object(
+            product_reuse, "_authorities", return_value=(fixture["authorities"], None),
+        ), mock.patch.object(
+            product_reuse, "_versions", return_value=VERSIONS,
+        ), mock.patch.object(
+            product_reuse, "plan_reuse_wave", return_value={"current": True},
+        ), self.assertRaisesRegex(ValueError, "not reproducible"):
+            product_reuse.advance_contract(
+                self.plan_path,
+                fixture["discovery"],
+                None,
+                [],
+                fixture["root"] / "rejected-stale-result",
+                fixture["root"] / "output-stale-result",
+                repository_root=fixture["root"],
+                environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+        self.assertFalse((fixture["root"] / "rejected-stale-result").exists())
+
+    def test_contract_advance_control_files_are_canonical_regular_files(self) -> None:
+        root = self.root.resolve()
+        control = root / "control.json"
+        control.write_text('{"value": 1}\n', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            product_reuse._canonical_control(control, "Control")
+
+        target = root / "target.json"
+        target.write_bytes(canonical_json_bytes({"value": 1}))
+        linked = root / "linked.json"
+        try:
+            linked.symlink_to(target)
+        except (NotImplementedError, OSError) as error:
+            self.skipTest(f"symbolic links are unavailable: {error}")
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            product_reuse._canonical_control(linked, "Control")
+
+    def test_contract_catalog_paths_rebase_without_weakening_path_rules(self) -> None:
+        root = self.root.resolve()
+        discovery = root / "discovery-rebase"
+        discovery.mkdir()
+        record = {
+            "manifest": "catalog/index.json",
+            "signature": "catalog/index.sig",
+            "publicKey": "trust/key.pub",
+            "keyring": None,
+            "keysDirectory": None,
+            "objects": [{"buildKey": sha256_bytes(b"key"), "objectPath": "objects/value.zip"}],
+        }
+        catalogs = {"stable": [], "promotedMain": None, "samePr": record, "local": None}
+        rebased = product_reuse._rebase_catalog_paths(catalogs, discovery, root)
+        self.assertEqual("discovery-rebase/catalog/index.json", rebased["samePr"]["manifest"])
+        self.assertEqual(
+            "discovery-rebase/objects/value.zip",
+            rebased["samePr"]["objects"][0]["objectPath"],
+        )
+
+        for value in ("../index.json", "/index.json"):
+            with self.subTest(value=value):
+                mutated = json.loads(json.dumps(catalogs))
+                mutated["samePr"]["manifest"] = value
+                with self.assertRaisesRegex(ValueError, "normalized|relative POSIX"):
+                    product_reuse._rebase_catalog_paths(mutated, discovery, root)
+        mutated = json.loads(json.dumps(catalogs))
+        mutated["local"] = {}
+        with self.assertRaisesRegex(ValueError, "does not accept a local catalog"):
+            product_reuse._rebase_catalog_paths(mutated, discovery, root)
+
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
+    def test_contract_advance_reuses_newly_unblocked_signed_catalog_object(self) -> None:
+        repository, commit, tree = self.contract_repository()
+        discovery = repository / "build/product-reuse"
+        discovery.mkdir(parents=True)
+        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+        binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        package = PhaseInstanceId("contract", "contract", "package", "common")
+        validation = PhaseInstanceId("contract", "contract", "validation", "common")
+        closure = product_reuse._dependency_closure((contract,))
+        authorities = [{
+            **product_reuse._identity_record(instance),
+            "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+            "outputSchemaVersion": 1,
+        } for instance in closure]
+
+        def phase_plan(
+            instance: PhaseInstanceId, upstream: list[dict[str, object]],
+        ) -> dict[str, object]:
+            return plan_phase(
+                instance,
+                inventory=phase_git_inventory(repository, commit, instance),
+                versions=VERSIONS,
+                upstream_receipts=upstream,
+                toolchain_profile_digest=product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                flags_digest=product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+            )
+
+        remote_producer = {
+            "repository": "codex-agent-labs/codex-agent",
+            "workflowPath": ".github/workflows/products.yml",
+            "commit": commit,
+            "tree": tree,
+            "event": "pull_request",
+            "runId": 7,
+            "runAttempt": 1,
+            "pullRequest": 31,
+        }
+        binary_plan = phase_plan(binary, [])
+        binary_envelope, binary_object = self.phase_object(
+            discovery, "remote-binary", binary_plan, remote_producer,
+        )
+        package_plan = phase_plan(package, [binary_envelope["receipt"]])
+        impact = impact_plan(changed=["known.kt"])
+        impact.update({
+            "headCommit": commit,
+            "validationCommit": commit,
+            "validationTree": tree,
+        })
+        current_producer = product_reuse._consumer(
+            impact, {"GITHUB_RUN_ID": "9", "GITHUB_RUN_ATTEMPT": "2"},
+        )["producer"]
+        package_stage = discovery / "fresh-package-stage"
+        package_payload = package_stage / "outputs/package.zip"
+        package_payload.parent.mkdir(parents=True)
+        package_payload.write_bytes(b"fresh package")
+        write_output_manifest(
+            package_stage, "contract", "contract", "package", "common", "0.2.0",
+            {"artifact": "outputs"},
+        )
+        package_shard = discovery / "fresh-package-shard"
+        finalize_phase_object(
+            stage_root=package_stage,
+            phase_plan=package_plan,
+            producer=current_producer,
+            product_version="0.2.0",
+            trust_domain="development",
+            destination=package_shard,
+        )
+        package_receipt = verify_phase_shard(package_shard, package)["receipt"]
+        validation_plan = phase_plan(validation, [package_receipt])
+        validation_envelope, validation_object = self.phase_object(
+            discovery, "remote-validation", validation_plan, remote_producer,
+        )
+
+        private_key, public_key, signing = generate_development_key(
+            self.root.resolve() / "catalog-signing",
+        )
+        catalog_root = discovery / "catalog"
+        catalog_root.mkdir()
+        index = {
+            "schemaVersion": 1,
+            "repository": impact["repository"],
+            "context": {
+                "kind": "pull-request",
+                "pullRequest": 31,
+                "commit": commit,
+                "tree": tree,
+                "runId": 7,
+                "runAttempt": 1,
+            },
+            "entries": sorted(
+                (
+                    self.product_index_entry(binary_envelope),
+                    self.product_index_entry(validation_envelope),
+                ),
+                key=lambda value: value["buildKey"],
+            ),
+            "trustDomain": "development",
+            "signing": signing,
+            "producer": remote_producer,
+        }
+        manifest = catalog_root / "product-index.json"
+        product_reuse.write_canonical_json(manifest, index)
+        signature = sign_manifest(manifest, private_key, signing)
+        transported_key = catalog_root / "development.pub"
+        shutil.copyfile(public_key, transported_key)
+        objects = sorted(
+            (
+                (binary_envelope["receipt"]["buildKey"], binary_object),
+                (validation_envelope["receipt"]["buildKey"], validation_object),
+            ),
+        )
+        catalog = {
+            "manifest": manifest.relative_to(discovery).as_posix(),
+            "signature": signature.relative_to(discovery).as_posix(),
+            "publicKey": transported_key.relative_to(discovery).as_posix(),
+            "keyring": None,
+            "keysDirectory": None,
+            "objects": [{
+                "buildKey": build_key,
+                "objectPath": object_path.relative_to(discovery).as_posix(),
+            } for build_key, object_path in objects],
+        }
+        request = {
+            "schemaVersion": 1,
+            "requestType": "reuse-wave",
+            "repository": impact["repository"],
+            "pullRequest": 31,
+            "repositoryRoot": str(repository),
+            "repositoryRevision": commit,
+            "artifactRoot": str(discovery),
+            "requested": [product_reuse._identity_record(contract)],
+            "versions": VERSIONS,
+            "phaseAuthorities": authorities,
+            "contractEvidence": None,
+            "availableObjects": [],
+            "catalogs": {
+                "stable": [], "promotedMain": None, "samePr": catalog, "local": None,
+            },
+        }
+        initial_plans = {}
+        initial = product_reuse.plan_reuse_wave(
+            request,
+            build_plan_consumer=lambda instance, value: initial_plans.setdefault(instance, value),
+        )
+        initial_by_instance = {
+            product_reuse._identity(phase): phase for phase in initial["phases"]
+        }
+        self.assertEqual("reused", initial_by_instance[binary]["state"])
+        self.assertEqual("same-pr", initial_by_instance[binary]["source"])
+        self.assertEqual("build", initial_by_instance[package]["state"])
+        self.assertEqual("waiting", initial_by_instance[validation]["state"])
+        self.assertEqual({package: package_plan}, initial_plans)
+
+        for name, value in (
+            ("contract-reuse-request.json", request),
+            ("contract-reuse-result.json", initial),
+            ("producer.json", current_producer),
+        ):
+            (discovery / name).write_bytes(canonical_json_bytes(value))
+        initial_resolution = {
+            "schemaVersion": 1,
+            "result": "complete",
+            "fullReuse": True,
+            "phases": [initial_by_instance[binary]],
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+        }
+        consumer = {"kind": "ci", "producer": current_producer}
+        initial_carrier = write_carrier(
+            discovery / "reused-carrier",
+            initial_resolution,
+            (binary,),
+            {binary: binary_object},
+            consumer,
+        )
+        initial_record = initial_carrier["objects"][0]
+        initial_transport = (
+            discovery / "reused-carrier" / transport_relative_path(
+                initial_record["buildKey"],
+                initial_record["receiptSha256"],
+                initial_record["transportSha256"],
+            )
+        ).read_bytes()
+        plan_path = repository / "impact-plan.json"
+        plan_path.write_bytes(canonical_json_bytes(impact))
+        destination = repository / "advanced"
+        github_output_path = repository / "advance-output"
+        with mock.patch.object(product_reuse, "validate_remote_build_authorization"), \
+                mock.patch.object(product_reuse, "validate_legacy_lane_projection"):
+            advanced = product_reuse.advance_contract(
+                plan_path,
+                discovery,
+                None,
+                [package_shard],
+                destination,
+                github_output_path,
+                repository_root=repository,
+                environ={"GITHUB_RUN_ID": "9", "GITHUB_RUN_ATTEMPT": "2"},
+            )
+
+        advanced_by_instance = {
+            product_reuse._identity(phase): phase for phase in advanced["phases"]
+        }
+        self.assertEqual(
+            {
+                binary: ("retained", None),
+                package: ("retained", None),
+                validation: ("reused", "same-pr"),
+                contract: ("build", None),
+            },
+            {
+                instance: (phase["state"], phase["source"])
+                for instance, phase in advanced_by_instance.items()
+            },
+        )
+        verified = verify_carrier(
+            destination / "reused-carrier", (binary, package, validation), consumer,
+        )
+        final_binary = verified["objects"][0]
+        self.assertEqual(binary_envelope["receiptBytes"], final_binary["receiptBytes"])
+        self.assertEqual(initial_record["transportSha256"], final_binary["transportSha256"])
+        final_transport = (
+            destination / "reused-carrier" / transport_relative_path(
+                final_binary["buildKey"],
+                final_binary["receiptSha256"],
+                final_binary["transportSha256"],
+            )
+        ).read_bytes()
+        self.assertEqual(initial_transport, final_transport)
+        self.assertEqual(
+            sha256_bytes(manifest.read_bytes()),
+            advanced_by_instance[validation]["transportSource"]["indexSha256"],
+        )
+        carrier_by_instance = {
+            product_reuse._identity(phase): phase
+            for phase in verified["resolution"]["phases"]
+        }
+        self.assertEqual(
+            initial_by_instance[binary]["transportSource"],
+            carrier_by_instance[binary]["transportSource"],
+        )
+        self.assertEqual("phase-shard", carrier_by_instance[package]["source"])
+        self.assertEqual(
+            current_producer,
+            carrier_by_instance[package]["transportSource"]["producer"],
+        )
+        self.assertTrue(
+            (destination / "phase-plans/contract-contract-metadata-common.json").is_file()
+        )
+
+    def test_product_reuse_cli_dispatches_advance_and_fails_closed(self) -> None:
+        arguments = [
+            "advance-contract", "--plan", "plan.json",
+            "--discovery-root", "discovery", "--state-root", "state",
+            "--phase-shard", "one", "--phase-shard", "two",
+            "--destination", "destination", "--github-output", "output",
+        ]
+        with mock.patch.object(product_reuse, "advance_contract") as advance:
+            self.assertEqual(0, product_reuse.main(arguments))
+        self.assertEqual(
+            (
+                Path("plan.json"), Path("discovery"), Path("state"),
+                [Path("one"), Path("two")], Path("destination"), Path("output"),
+            ),
+            advance.call_args.args,
+        )
+
+        with mock.patch.object(
+            product_reuse, "advance_contract", side_effect=ValueError("rejected"),
+        ), redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as failure:
+            product_reuse.main(arguments)
+        self.assertEqual(2, failure.exception.code)
+        self.assertIn("rejected", stderr.getvalue())
+
+        with mock.patch.object(
+            product_reuse, "advance_contract", side_effect=RuntimeError("programmer defect"),
+        ), self.assertRaisesRegex(RuntimeError, "programmer defect"):
+            product_reuse.main(arguments)
+
+    def test_contract_advance_replays_the_request_and_preserves_a_fresh_shard(self) -> None:
+        resolved_root = self.root.resolve()
+        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+        closure = product_reuse._dependency_closure((contract,))
+        binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        package = PhaseInstanceId("contract", "contract", "package", "common")
+        authorities = [{
+            **product_reuse._identity_record(instance),
+            "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+            "outputSchemaVersion": 1,
+        } for instance in closure]
+        plan = impact_plan(changed=["known.kt"])
+        producer = {
+            "repository": plan["repository"],
+            "workflowPath": ".github/workflows/ci.yml",
+            "commit": COMMIT,
+            "tree": TREE,
+            "event": "pull_request",
+            "runId": 7,
+            "runAttempt": 2,
+            "pullRequest": 31,
+        }
+        binary_plan = plan_phase(
+            binary,
+            inventory=[{"relativePath": "input.kt", "bytes": 1, "sha256": sha256_bytes(b"i")}],
+            versions=VERSIONS,
+            upstream_receipts=[],
+            toolchain_profile_digest=product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            flags_digest=product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+        )
+        stage = resolved_root / "stage"
+        output = stage / "outputs/value.bin"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"value")
+        write_output_manifest(
+            stage, "contract", "contract", "binary", "common", "0.2.0",
+            {"artifact": "outputs"},
+        )
+        shard = resolved_root / "binary-shard"
+        finalize_phase_object(
+            stage_root=stage,
+            phase_plan=binary_plan,
+            producer=producer,
+            product_version="0.2.0",
+            trust_domain="development",
+            destination=shard,
+        )
+        descriptor = verify_phase_shard(shard, binary)
+        prior_phases = [{
+            **product_reuse._identity_record(instance),
+            "buildKey": binary_plan["buildKey"] if instance == binary else None,
+            "state": "build" if instance == binary else "waiting",
+            "source": None,
+            "transportSource": None,
+            "receiptSha256": None,
+            "objectSha256": None,
+            "misses": [
+                {"source": source, "reason": "fixture-miss"}
+                for source in product_reuse.SOURCES
+            ] if instance == binary else [],
+        } for instance in closure]
+        prior = {
+            "schemaVersion": 1,
+            "result": "build-required",
+            "fullReuse": False,
+            "phases": prior_phases,
+            "matrices": {"contract": [{
+                **product_reuse._identity_record(binary),
+                "buildKey": binary_plan["buildKey"],
+            }], "runtime": [], "sdk": []},
+        }
+        discovery = resolved_root / "discovery"
+        discovery.mkdir()
+        request = {
+            "schemaVersion": 1,
+            "requestType": "reuse-wave",
+            "repository": plan["repository"],
+            "pullRequest": 31,
+            "repositoryRoot": str(resolved_root),
+            "repositoryRevision": COMMIT,
+            "artifactRoot": str(resolved_root / "build/product-reuse"),
+            "requested": [product_reuse._identity_record(contract)],
+            "versions": VERSIONS,
+            "phaseAuthorities": authorities,
+            "contractEvidence": None,
+            "availableObjects": [],
+            "catalogs": {"stable": [], "promotedMain": None, "samePr": None, "local": None},
+        }
+        for name, value in (
+            ("contract-reuse-request.json", request),
+            ("contract-reuse-result.json", prior),
+            ("producer.json", producer),
+        ):
+            (discovery / name).write_bytes(canonical_json_bytes(value))
+        package_plan = plan_phase(
+            package,
+            inventory=[{"relativePath": "package.py", "bytes": 1, "sha256": sha256_bytes(b"p")}],
+            versions=VERSIONS,
+            upstream_receipts=[descriptor["receipt"]],
+            toolchain_profile_digest=product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            flags_digest=product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
+        )
+        advanced_phases = []
+        for instance in closure:
+            if instance == binary:
+                advanced_phases.append({
+                    **product_reuse._identity_record(instance),
+                    "buildKey": descriptor["buildKey"],
+                    "state": "retained",
+                    "source": None,
+                    "transportSource": None,
+                    "receiptSha256": descriptor["receiptSha256"],
+                    "objectSha256": descriptor["objectSha256"],
+                    "misses": [],
+                })
+            else:
+                advanced_phases.append({
+                    **product_reuse._identity_record(instance),
+                    "buildKey": package_plan["buildKey"] if instance == package else None,
+                    "state": "build" if instance == package else "waiting",
+                    "source": None,
+                    "transportSource": None,
+                    "receiptSha256": None,
+                    "objectSha256": None,
+                    "misses": [
+                        {"source": source, "reason": "fixture-miss"}
+                        for source in product_reuse.SOURCES
+                    ] if instance == package else [],
+                })
+        advanced = {
+            "schemaVersion": 1,
+            "result": "build-required",
+            "fullReuse": False,
+            "phases": advanced_phases,
+            "matrices": {"contract": [{
+                **product_reuse._identity_record(package),
+                "buildKey": package_plan["buildKey"],
+            }], "runtime": [], "sdk": []},
+        }
+
+        advanced_second = None
+
+        def wave(value, *, build_plan_consumer):
+            if not value["availableObjects"]:
+                build_plan_consumer(binary, binary_plan)
+                return prior
+            if len(value["availableObjects"]) == 1:
+                build_plan_consumer(package, package_plan)
+                return json.loads(json.dumps(advanced))
+            assert advanced_second is not None
+            validation_plan = advanced_second[1]
+            build_plan_consumer(validation_plan[0], validation_plan[1])
+            return json.loads(json.dumps(advanced_second[0]))
+
+        def reconcile(name, shards, *, state=None, planner=wave):
+            destination = resolved_root / name
+            output = resolved_root / f"{name}-output"
+            with mock.patch.object(product_reuse, "_validate_plan", return_value=plan), \
+                    mock.patch.object(product_reuse, "_authorities", return_value=(authorities, None)), \
+                    mock.patch.object(product_reuse, "_versions", return_value=VERSIONS), \
+                    mock.patch.object(product_reuse, "plan_reuse_wave", side_effect=planner):
+                result = product_reuse.advance_contract(
+                    self.plan_path,
+                    discovery,
+                    state,
+                    shards,
+                    destination,
+                    output,
+                    repository_root=resolved_root,
+                    environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+                )
+            return result, destination, output
+
+        self.write_plan(plan)
+        result, destination, output = reconcile("advanced", [shard])
+        self.assertEqual(advanced, result)
+        self.assertEqual(
+            canonical_json_bytes(package_plan),
+            (destination / "phase-plans/contract-contract-package-common.json").read_bytes(),
+        )
+        verified = verify_carrier(
+            destination / "reused-carrier",
+            (binary,),
+            {"kind": "ci", "producer": producer},
+        )
+        self.assertEqual(
+            (shard / "phase-receipt.json").read_bytes(),
+            verified["objects"][0]["receiptBytes"],
+        )
+        self.assertEqual("phase-shard", verified["resolution"]["phases"][0]["source"])
+        self.assertEqual(list(product_reuse.SOURCES), [
+            miss["source"] for miss in verified["resolution"]["phases"][0]["misses"]
+        ])
+        self.assertEqual(
+            {"contract_complete": "false", "next_phase_required": "true"},
+            dict(line.split("=", 1) for line in output.read_text().splitlines()),
+        )
+
+        package_stage = resolved_root / "package-stage"
+        package_output = package_stage / "outputs/value.zip"
+        package_output.parent.mkdir(parents=True)
+        package_output.write_bytes(b"package")
+        write_output_manifest(
+            package_stage, "contract", "contract", "package", "common", "0.2.0",
+            {"artifact": "outputs"},
+        )
+        package_shard = resolved_root / "package-shard"
+        finalize_phase_object(
+            stage_root=package_stage,
+            phase_plan=package_plan,
+            producer=producer,
+            product_version="0.2.0",
+            trust_domain="development",
+            destination=package_shard,
+        )
+        package_descriptor = verify_phase_shard(package_shard, package)
+        validation = PhaseInstanceId("contract", "contract", "validation", "common")
+        validation_plan = {
+            "schemaVersion": 1,
+            **product_reuse._identity_record(validation),
+            "buildKey": sha256_bytes(b"validation"),
+            "inputs": {"planner": "owned"},
+        }
+        second_phases = []
+        for instance in closure:
+            retained_descriptor = descriptor if instance == binary else (
+                package_descriptor if instance == package else None
+            )
+            second_phases.append({
+                **product_reuse._identity_record(instance),
+                "buildKey": retained_descriptor["buildKey"] if retained_descriptor else (
+                    validation_plan["buildKey"] if instance == validation else None
+                ),
+                "state": "retained" if retained_descriptor else (
+                    "build" if instance == validation else "waiting"
+                ),
+                "source": None,
+                "transportSource": None,
+                "receiptSha256": retained_descriptor["receiptSha256"] if retained_descriptor else None,
+                "objectSha256": retained_descriptor["objectSha256"] if retained_descriptor else None,
+                "misses": [
+                    {"source": source, "reason": "fixture-miss"}
+                    for source in product_reuse.SOURCES
+                ] if instance == validation else [],
+            })
+        advanced_second = ({
+            "schemaVersion": 1,
+            "result": "build-required",
+            "fullReuse": False,
+            "phases": second_phases,
+            "matrices": {"contract": [{
+                **product_reuse._identity_record(validation),
+                "buildKey": validation_plan["buildKey"],
+            }], "runtime": [], "sdk": []},
+        }, (validation, validation_plan))
+        second_result, second_destination, _ = reconcile(
+            "advanced-second", [package_shard], state=destination,
+        )
+        self.assertEqual(
+            ["retained", "waiting", "retained", "build"],
+            [phase["state"] for phase in second_result["phases"]],
+        )
+        second_carrier = verify_carrier(
+            second_destination / "reused-carrier",
+            (binary, package),
+            {"kind": "ci", "producer": producer},
+        )
+        self.assertEqual(
+            (package_shard / "phase-receipt.json").read_bytes(),
+            second_carrier["objects"][1]["receiptBytes"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "do not exactly match"):
+            reconcile("missing-shard", [])
+        self.assertFalse((resolved_root / "missing-shard").exists())
+
+        rejected_cases = (
+            ("duplicate", [shard, shard], "Duplicate Contract phase shard"),
+            ("unexpected", [package_shard], "Unexpected Contract phase shard"),
+        )
+        for name, supplied_shards, message in rejected_cases:
+            with self.subTest(shards=name), self.assertRaisesRegex(ValueError, message):
+                reconcile(f"rejected-{name}", supplied_shards)
+            self.assertFalse((resolved_root / f"rejected-{name}").exists())
+
+        linked_shard = resolved_root / "linked-shard"
+        try:
+            linked_shard.symlink_to(shard, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            linked_shard = None
+        if linked_shard is not None:
+            with self.assertRaisesRegex(ValueError, "unsafe"):
+                reconcile("rejected-linked-shard", [linked_shard])
+            self.assertFalse((resolved_root / "rejected-linked-shard").exists())
+
+        wrong_trust_shard = resolved_root / "wrong-trust-shard"
+        finalize_phase_object(
+            stage_root=stage,
+            phase_plan=binary_plan,
+            producer=producer,
+            product_version="0.2.0",
+            trust_domain="release",
+            destination=wrong_trust_shard,
+        )
+        with self.assertRaisesRegex(ValueError, "elected plan and producer"):
+            reconcile("rejected-trust", [wrong_trust_shard])
+        self.assertFalse((resolved_root / "rejected-trust").exists())
+
+        def not_retained(value, *, build_plan_consumer):
+            if not value["availableObjects"]:
+                build_plan_consumer(binary, binary_plan)
+                return prior
+            rejected = json.loads(json.dumps(advanced))
+            rejected["phases"][0]["state"] = "build"
+            return rejected
+
+        with self.assertRaisesRegex(ValueError, "supplied Contract object was not retained"):
+            reconcile("rejected-retention", [shard], planner=not_retained)
+        self.assertFalse((resolved_root / "rejected-retention").exists())
+
+        missing_carrier_state = resolved_root / "missing-carrier-state"
+        missing_carrier_state.mkdir()
+        (missing_carrier_state / "contract-reuse-result.json").write_bytes(
+            (destination / "contract-reuse-result.json").read_bytes()
+        )
+        with self.assertRaisesRegex(ValueError, "carrier"):
+            reconcile(
+                "rejected-missing-carrier", [package_shard], state=missing_carrier_state,
+            )
+        self.assertFalse((resolved_root / "rejected-missing-carrier").exists())
+
+        unexpected_carrier = discovery / "reused-carrier"
+        unexpected_carrier.mkdir()
+        with self.assertRaisesRegex(ValueError, "Unexpected prior Contract carrier"):
+            reconcile("rejected-unexpected-carrier", [shard])
+        self.assertFalse((resolved_root / "rejected-unexpected-carrier").exists())
+
+    def test_contract_advance_publishes_only_a_complete_snapshot(self) -> None:
+        root = self.root.resolve()
+        source = root / "source"
+        source.mkdir()
+        (source / "complete.txt").write_bytes(b"complete")
+        destination = root / "published"
+
+        def interrupted(_source: int, staged: int) -> None:
+            partial = os.open(
+                "partial.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=staged,
+            )
+            os.write(partial, b"partial")
+            os.close(partial)
+            raise ValueError("interrupted snapshot")
+
+        with mock.patch.object(
+            product_inventory, "_copy_directory_descriptor", side_effect=interrupted,
+        ):
+            with self.assertRaisesRegex(ValueError, "interrupted snapshot"):
+                product_inventory.publish_regular_tree(source, destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual([], list(root.glob(".published-snapshot-*")))
+
+        product_inventory.publish_regular_tree(source, destination)
+        self.assertEqual(b"complete", (destination / "complete.txt").read_bytes())
+        self.assertFalse((destination / "partial.txt").exists())
+
+    def test_contract_advance_publication_rejects_a_replaced_parent(self) -> None:
+        root = self.root.resolve()
+        source = root / "source-parent-race"
+        source.mkdir()
+        (source / "complete.txt").write_bytes(b"complete")
+        parent = root / "parent"
+        parent.mkdir()
+        moved_parent = root / "moved-parent"
+        outside = root / "outside"
+        outside.mkdir()
+        destination = parent / "published"
+        real_copy = product_inventory._copy_directory_descriptor
+
+        def replace_parent(source_descriptor: int, destination_descriptor: int) -> None:
+            real_copy(source_descriptor, destination_descriptor)
+            parent.rename(moved_parent)
+            parent.symlink_to(outside, target_is_directory=True)
+
+        with mock.patch.object(
+            product_inventory, "_copy_directory_descriptor", side_effect=replace_parent,
+        ), self.assertRaisesRegex(ValueError, "parent changed"):
+            product_inventory.publish_regular_tree(source, destination)
+        self.assertFalse((outside / "published").exists())
+        self.assertEqual([], list(moved_parent.iterdir()))
+
+    def test_contract_advance_publication_rejects_a_replaced_staging_entry(self) -> None:
+        root = self.root.resolve()
+        source = root / "source-staging-race"
+        source.mkdir()
+        (source / "complete.txt").write_bytes(b"complete")
+        parent = root / "staging-parent"
+        parent.mkdir()
+        destination = parent / "published"
+        real_rename = os.rename
+
+        def replace_staging(source_name, destination_name, **kwargs) -> None:
+            held_name = f"{source_name}-held"
+            real_rename(source_name, held_name, **kwargs)
+            staged = product_inventory._open_created_directory(
+                kwargs["src_dir_fd"], source_name, 0o700, "replacement",
+            )
+            try:
+                evil = os.open(
+                    "evil", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=staged,
+                )
+                os.write(evil, b"evil")
+                os.close(evil)
+            finally:
+                os.close(staged)
+            real_rename(source_name, destination_name, **kwargs)
+
+        with mock.patch.object(os, "rename", side_effect=replace_staging), \
+                self.assertRaisesRegex(ValueError, "changed during publication"):
+            product_inventory.publish_regular_tree(source, destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual([], list(parent.iterdir()))
+
+    def test_contract_advance_publication_rejects_staging_content_mutation(self) -> None:
+        root = self.root.resolve()
+        source = root / "source-content-race"
+        source.mkdir()
+        (source / "complete.txt").write_bytes(b"complete")
+        parent = root / "content-parent"
+        parent.mkdir()
+        destination = parent / "published"
+        real_rename = os.rename
+
+        def mutate_staging(source_name, destination_name, **kwargs) -> None:
+            descriptor = os.open(
+                f"{source_name}/complete.txt",
+                os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=kwargs["src_dir_fd"],
+            )
+            os.write(descriptor, b"evil")
+            os.close(descriptor)
+            real_rename(source_name, destination_name, **kwargs)
+
+        with mock.patch.object(os, "rename", side_effect=mutate_staging), \
+                self.assertRaisesRegex(ValueError, "contents changed during publication"):
+            product_inventory.publish_regular_tree(source, destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual([], list(parent.iterdir()))
+
+    def test_contract_advance_publication_rejects_post_copy_mutation(self) -> None:
+        root = self.root.resolve()
+        source = root / "source-copy-race"
+        source.mkdir()
+        (source / "complete.txt").write_bytes(b"complete")
+        destination = root / "copy-race-parent/published"
+        real_copy = product_inventory._copy_directory_descriptor
+
+        def mutate_after_copy(source_descriptor: int, staged_descriptor: int) -> None:
+            real_copy(source_descriptor, staged_descriptor)
+            descriptor = os.open(
+                "complete.txt",
+                os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=staged_descriptor,
+            )
+            os.write(descriptor, b"evil")
+            os.close(descriptor)
+
+        with mock.patch.object(
+            product_inventory, "_copy_directory_descriptor", side_effect=mutate_after_copy,
+        ), self.assertRaisesRegex(ValueError, "do not match the source"):
+            product_inventory.publish_regular_tree(source, destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual([], list(destination.parent.iterdir()))
+
+    def test_contract_advance_publication_preserves_directory_modes(self) -> None:
+        root = self.root.resolve()
+        source = root / "source-modes"
+        source.mkdir()
+        previous_umask = os.umask(0)
+        try:
+            nested = source / "nested"
+            nested.mkdir(mode=0o777)
+        finally:
+            os.umask(previous_umask)
+        (nested / "value").write_bytes(b"value")
+        destination = root / "mode-parent/published"
+
+        previous_umask = os.umask(0o022)
+        try:
+            product_inventory.publish_regular_tree(source, destination)
+        finally:
+            os.umask(previous_umask)
+        self.assertEqual(0o777, stat.S_IMODE((destination / "nested").stat().st_mode))
 
     def test_incomplete_result_keeps_target_jobs_required(self) -> None:
         selected = PhaseInstanceId("contract", "contract", "binary", "common")

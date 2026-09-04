@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import stat
 import struct
 import subprocess
@@ -461,6 +462,7 @@ def _copy_directory_descriptor(source: int, destination: int) -> None:
                     if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
                         raise ValueError(f"Snapshot directory changed while opening: {name}")
                     _copy_directory_descriptor(child, target)
+                    os.fchmod(target, stat.S_IMODE(metadata.st_mode))
                 finally:
                     os.close(target)
             finally:
@@ -533,6 +535,61 @@ def _validate_snapshot_source(source: int) -> None:
                 os.close(descriptor)
         else:
             raise ValueError(f"Snapshot source contains an unsafe or empty entry: {name}")
+
+
+def _directory_inventory(
+    directory: int,
+    prefix: str = "",
+) -> tuple[tuple[str, str, int, str], ...]:
+    before = os.fstat(directory)
+    names = sorted(os.listdir(directory))
+    records: list[tuple[str, str, int, str]] = []
+    for name in names:
+        relative = f"{prefix}/{name}" if prefix else name
+        metadata = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            child = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory,
+            )
+            try:
+                opened = os.fstat(child)
+                if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise ValueError(f"Snapshot directory changed while verifying: {relative}")
+                records.append((relative, "directory", opened.st_mode, ""))
+                records.extend(_directory_inventory(child, relative))
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0:
+            file_descriptor = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory,
+            )
+            try:
+                opened = os.fstat(file_descriptor)
+                if _stat_identity(metadata) != _stat_identity(opened):
+                    raise ValueError(f"Snapshot file changed while verifying: {relative}")
+                digest = hashlib.sha256()
+                with os.fdopen(file_descriptor, "rb", closefd=False) as source:
+                    remaining = opened.st_size
+                    while remaining:
+                        chunk = source.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise ValueError(f"Snapshot file was truncated: {relative}")
+                        digest.update(chunk)
+                        remaining -= len(chunk)
+                    if source.read(1) or _stat_identity(opened) != _stat_identity(os.fstat(file_descriptor)):
+                        raise ValueError(f"Snapshot file changed while verifying: {relative}")
+                records.append((relative, "file", opened.st_mode, f"sha256:{digest.hexdigest()}"))
+            finally:
+                os.close(file_descriptor)
+        else:
+            raise ValueError(f"Snapshot tree contains an unsafe or empty entry: {relative}")
+    if _stat_identity(before) != _stat_identity(os.fstat(directory)) or names != sorted(os.listdir(directory)):
+        raise ValueError("Snapshot directory changed while verifying")
+    return tuple(records)
 
 
 def _windows_directory_path(path: Path, label: str, *, create: bool = False) -> Path:
@@ -693,6 +750,126 @@ def snapshot_regular_tree(source: Path, destination: Path) -> None:
         os.close(source_descriptor)
         if destination_descriptor is not None:
             os.close(destination_descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+
+
+def _remove_directory_contents(descriptor: int) -> None:
+    for name in os.listdir(descriptor):
+        metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            child = os.open(name, flags, dir_fd=descriptor)
+            try:
+                _remove_directory_contents(child)
+            finally:
+                os.close(child)
+            os.rmdir(name, dir_fd=descriptor)
+        else:
+            os.unlink(name, dir_fd=descriptor)
+
+
+def _remove_directory_link(parent: int, descriptor: int) -> None:
+    identity = os.fstat(descriptor)
+    for name in os.listdir(parent):
+        metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (metadata.st_dev, metadata.st_ino) == (identity.st_dev, identity.st_ino):
+            os.rmdir(name, dir_fd=parent)
+            return
+
+
+def publish_regular_tree(source: Path, destination: Path) -> None:
+    """Publish a verified tree atomically without following a replaced parent path."""
+    if _is_windows():
+        _snapshot_regular_tree_windows(Path(source), Path(destination))
+        return
+    source = Path(os.path.abspath(source))
+    destination = Path(os.path.abspath(destination))
+    resolved_source = source.resolve(strict=True)
+    resolved_destination = destination.parent.resolve(strict=False) / destination.name
+    for left, right in ((source, destination), (resolved_source, resolved_destination)):
+        if left == right or left in right.parents or right in left.parents:
+            raise ValueError("Snapshot source and destination must not overlap")
+    source_descriptor = _open_directory(source, "Snapshot source")
+    parent_descriptor: int | None = None
+    staged_descriptor: int | None = None
+    staged_name: str | None = None
+    published = False
+    try:
+        source_inventory = _directory_inventory(source_descriptor)
+        parent_descriptor = _open_directory(destination.parent, "Snapshot destination", create=True)
+        try:
+            os.stat(destination.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError(f"Snapshot destination must not exist: {destination}")
+        while staged_descriptor is None:
+            staged_name = f".{destination.name}-snapshot-{secrets.token_hex(12)}"
+            try:
+                staged_descriptor = _open_created_directory(
+                    parent_descriptor, staged_name, 0o700, "Snapshot staging directory",
+                )
+            except FileExistsError:
+                continue
+        _copy_directory_descriptor(source_descriptor, staged_descriptor)
+        staged_inventory = _directory_inventory(staged_descriptor)
+        if _directory_inventory(source_descriptor) != source_inventory:
+            raise ValueError("Snapshot source contents changed during publication")
+        if staged_inventory != source_inventory:
+            raise ValueError("Snapshot staged contents do not match the source")
+        named = os.stat(staged_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if _stat_identity(named) != _stat_identity(os.fstat(staged_descriptor)):
+            raise ValueError("Snapshot staging directory changed before publication")
+        parent_named = os.stat(destination.parent, follow_symlinks=False)
+        if (
+            stat.S_ISLNK(parent_named.st_mode)
+            or _is_reparse_point(parent_named)
+            or _stat_identity(parent_named) != _stat_identity(os.fstat(parent_descriptor))
+        ):
+            raise ValueError("Snapshot destination parent changed before publication")
+        try:
+            os.stat(destination.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError(f"Snapshot destination must not exist: {destination}")
+        os.rename(
+            staged_name,
+            destination.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        published_named = os.stat(
+            destination.name, dir_fd=parent_descriptor, follow_symlinks=False,
+        )
+        if _stat_identity(published_named) != _stat_identity(os.fstat(staged_descriptor)):
+            rejected_descriptor = os.open(
+                destination.name,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_descriptor,
+            )
+            try:
+                if _stat_identity(published_named) == _stat_identity(os.fstat(rejected_descriptor)):
+                    _remove_directory_contents(rejected_descriptor)
+            finally:
+                os.close(rejected_descriptor)
+            try:
+                os.rmdir(destination.name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+            raise ValueError("Snapshot staging directory changed during publication")
+        if _directory_inventory(staged_descriptor) != staged_inventory:
+            raise ValueError("Snapshot contents changed during publication")
+        published = True
+    finally:
+        os.close(source_descriptor)
+        if staged_descriptor is not None:
+            if not published:
+                _remove_directory_contents(staged_descriptor)
+                if parent_descriptor is not None:
+                    _remove_directory_link(parent_descriptor, staged_descriptor)
+            os.close(staged_descriptor)
         if parent_descriptor is not None:
             os.close(parent_descriptor)
 

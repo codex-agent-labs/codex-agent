@@ -19,13 +19,17 @@ from receipt import safe_extract
 from reuse import api_json, download_artifact, github_output, paginated_items, run_matches_pr
 from products.aggregate import validate_product_index
 from products.inventory import (
+    canonical_json_bytes,
     git_regular_blob_bytes,
     load_canonical_json_bytes,
     load_json_bytes,
+    publish_regular_tree,
+    read_regular_file_bytes,
     require_array,
     require_boolean,
     require_exact_keys,
     require_integer,
+    require_relative_path,
     require_semver,
     require_sha256,
     require_string,
@@ -43,7 +47,17 @@ from products.registry import (
 )
 from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST
 from products.runtime_flags import load_runtime_binary_flags_bytes
-from products.restore import object_relative_path, restore_object, verify_object, write_carrier
+from products.restore import (
+    PHASE_SHARD_KEYS,
+    PHASE_SHARD_NAME,
+    object_relative_path,
+    restore_object,
+    verify_carrier,
+    verify_object,
+    verify_phase_shard,
+    write_carrier,
+)
+from products.receipt import validate_producer
 from products.reuse import SOURCES, _dependency_closure, plan_reuse_wave
 from products.selection import classify_paths
 from products.signatures import load_keyring, public_key_for_metadata
@@ -61,6 +75,11 @@ _REUSE_RESULT_KEYS = {"schemaVersion", "result", "fullReuse", "phases", "matrice
 _REUSE_PHASE_KEYS = {
     *_IDENTITY_KEYS, "buildKey", "state", "source", "transportSource",
     "receiptSha256", "objectSha256", "misses",
+}
+_WAVE_REQUEST_KEYS = {
+    "schemaVersion", "requestType", "repository", "pullRequest", "repositoryRoot",
+    "repositoryRevision", "artifactRoot", "requested", "versions", "phaseAuthorities",
+    "contractEvidence", "availableObjects", "catalogs",
 }
 _VERSION_PATHS = {
     "contract": "gradle/release/versions/contract.txt",
@@ -556,11 +575,10 @@ def _contract_evidence(
     }
 
 
-def _write_reused_carrier(
+def _validate_reuse_result(
     result: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...],
-    catalogs: list[Catalog], destination: Path, consumer: Mapping[str, Any],
     *, require_complete: bool,
-) -> bool:
+) -> tuple[dict[str, Any], tuple[PhaseInstanceId, ...], list[dict[str, Any]]]:
     result = require_exact_keys(result, _REUSE_RESULT_KEYS, "Reuse result")
     if require_integer(result["schemaVersion"], "Reuse result.schemaVersion", 1) != 1:
         raise ValueError("Unsupported reuse result schemaVersion")
@@ -579,7 +597,6 @@ def _write_reused_carrier(
     actual = []
     selected: list[PhaseInstanceId] = []
     selected_phases = []
-    sources: dict[PhaseInstanceId, Path] = {}
     expected_matrices = {"contract": [], "runtime": [], "sdk": []}
     for index, value in enumerate(phases):
         phase = require_exact_keys(value, _REUSE_PHASE_KEYS, f"Reuse result.phases[{index}]")
@@ -597,6 +614,14 @@ def _write_reused_carrier(
                 raise ValueError("Reuse result miss source is invalid")
             require_string(miss["reason"], "Reuse result miss reason")
             miss_sources.append(miss["source"])
+        if phase.get("state") == "retained":
+            if phase["source"] is not None or phase["transportSource"] is not None or misses:
+                raise ValueError("Retained reuse phase contains transport evidence")
+            for field in ("buildKey", "receiptSha256", "objectSha256"):
+                require_sha256(phase[field], f"Reuse result.phases[{index}].{field}")
+            selected.append(instance)
+            selected_phases.append(phase)
+            continue
         if phase.get("state") != "reused":
             if phase.get("state") not in {"build", "waiting"}:
                 raise ValueError("Reuse result contains an unsupported phase state")
@@ -617,28 +642,15 @@ def _write_reused_carrier(
                     **_identity_record(instance), "buildKey": build_key,
                 })
             continue
-        if phase.get("source") not in {
-            "stable", "promoted-main", "same-pr",
-        }:
+        if phase.get("source") not in SOURCES:
             raise ValueError("Reuse result contains an unmaterialized phase")
         source_index = SOURCES.index(phase["source"])
         if miss_sources != list(SOURCES[:source_index]):
             raise ValueError("Reused product phase lookup misses are not source ordered")
         for field in ("buildKey", "receiptSha256", "objectSha256"):
             require_sha256(phase[field], f"Reuse result.phases[{index}].{field}")
-        catalog = _catalog_for_phase(catalogs, phase)
-        object_path = catalog.objects.get(phase["buildKey"])
-        if object_path is None:
-            raise ValueError("Reuse result lacks a persisted object")
-        verified = verify_object(
-            object_path, build_key=phase["buildKey"], receipt_sha256=phase["receiptSha256"],
-            object_sha256=phase["objectSha256"],
-        )
-        if _identity(verified["receipt"]) != instance:
-            raise ValueError("Persisted product object identity disagrees with the reuse result")
         selected.append(instance)
         selected_phases.append(phase)
-        sources[instance] = object_path
     if tuple(actual) != closure:
         raise ValueError("Reuse result phase order or identity is invalid")
     if actual_matrices != expected_matrices:
@@ -658,7 +670,33 @@ def _write_reused_carrier(
         raise ValueError("Reuse result completion state contradicts its phases")
     if require_complete and not actually_complete:
         raise ValueError("Complete reuse result contains an unresolved phase")
-    if not selected:
+    return dict(result), tuple(selected), selected_phases
+
+
+def _write_reused_carrier(
+    result: Mapping[str, Any], requested: tuple[PhaseInstanceId, ...],
+    catalogs: list[Catalog], destination: Path, consumer: Mapping[str, Any],
+    *, require_complete: bool,
+) -> bool:
+    result, selected_instances, selected_phases = _validate_reuse_result(
+        result, requested, require_complete=require_complete,
+    )
+    if any(phase["source"] == "local" for phase in selected_phases):
+        raise ValueError("Discovery reuse result unexpectedly contains a local object")
+    sources: dict[PhaseInstanceId, Path] = {}
+    for instance, phase in zip(selected_instances, selected_phases, strict=True):
+        catalog = _catalog_for_phase(catalogs, phase)
+        object_path = catalog.objects.get(phase["buildKey"])
+        if object_path is None:
+            raise ValueError("Reuse result lacks a persisted object")
+        verified = verify_object(
+            object_path, build_key=phase["buildKey"],
+            receipt_sha256=phase["receiptSha256"], object_sha256=phase["objectSha256"],
+        )
+        if _identity(verified["receipt"]) != instance:
+            raise ValueError("Persisted product object identity disagrees with the reuse result")
+        sources[instance] = object_path
+    if not selected_instances:
         return False
     normalized = {
         "schemaVersion": 1,
@@ -667,7 +705,7 @@ def _write_reused_carrier(
         "phases": selected_phases,
         "matrices": {"contract": [], "runtime": [], "sdk": []},
     }
-    write_carrier(destination, normalized, tuple(selected), sources, consumer)
+    write_carrier(destination, normalized, selected_instances, sources, consumer)
     return True
 
 
@@ -755,6 +793,353 @@ def _finish(
         "product_reuse_reason": result["reason"],
     })
     return dict(result)
+
+
+def _canonical_control(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = load_canonical_json_bytes(read_regular_file_bytes(
+            path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+        ))
+    except OSError as error:
+        raise ValueError(f"{label} is missing or unsafe") from error
+    if type(value) is not dict:
+        raise ValueError(f"{label} must be an object")
+    return value
+
+
+def _rebase_catalog_paths(
+    catalogs: Mapping[str, Any], source_root: Path, repository_root: Path,
+) -> dict[str, Any]:
+    value = require_exact_keys(
+        catalogs, {"stable", "promotedMain", "samePr", "local"}, "Contract reuse catalogs",
+    )
+    if value["local"] is not None:
+        raise ValueError("Contract workflow reconciliation does not accept a local catalog")
+
+    def relative(member: Any, label: str) -> str | None:
+        if member is None:
+            return None
+        path = source_root.joinpath(*PurePosixPath(require_relative_path(member, label)).parts)
+        try:
+            return path.relative_to(repository_root).as_posix()
+        except ValueError as error:
+            raise ValueError(f"{label} escapes the repository") from error
+
+    def catalog(member: Any, label: str) -> dict[str, Any]:
+        record = require_exact_keys(
+            member,
+            {"manifest", "signature", "publicKey", "keyring", "keysDirectory", "objects"},
+            label,
+        )
+        objects = []
+        for index, object_value in enumerate(require_array(record["objects"], f"{label}.objects")):
+            object_label = f"{label}.objects[{index}]"
+            item = require_exact_keys(object_value, {"buildKey", "objectPath"}, object_label)
+            objects.append({
+                "buildKey": item["buildKey"],
+                "objectPath": relative(item["objectPath"], f"{object_label}.objectPath"),
+            })
+        return {
+            "manifest": relative(record["manifest"], f"{label}.manifest"),
+            "signature": relative(record["signature"], f"{label}.signature"),
+            "publicKey": relative(record["publicKey"], f"{label}.publicKey"),
+            "keyring": relative(record["keyring"], f"{label}.keyring"),
+            "keysDirectory": relative(record["keysDirectory"], f"{label}.keysDirectory"),
+            "objects": objects,
+        }
+
+    return {
+        "stable": [
+            catalog(member, f"Contract reuse catalogs.stable[{index}]")
+            for index, member in enumerate(require_array(value["stable"], "Contract reuse catalogs.stable"))
+        ],
+        "promotedMain": None if value["promotedMain"] is None else catalog(
+            value["promotedMain"], "Contract reuse catalogs.promotedMain",
+        ),
+        "samePr": None if value["samePr"] is None else catalog(
+            value["samePr"], "Contract reuse catalogs.samePr",
+        ),
+        "local": None,
+    }
+
+
+def _catalog_object_sources(request: Mapping[str, Any]) -> dict[tuple[str, str, str], Path]:
+    root = Path(request["artifactRoot"])
+    catalogs = request["catalogs"]
+    values = [
+        *(('stable', member) for member in catalogs["stable"]),
+        *((('promoted-main', catalogs["promotedMain"]),) if catalogs["promotedMain"] else ()),
+        *((('same-pr', catalogs["samePr"]),) if catalogs["samePr"] else ()),
+    ]
+    result = {}
+    for source, catalog in values:
+        manifest_path = root.joinpath(*PurePosixPath(catalog["manifest"]).parts)
+        manifest_bytes = read_regular_file_bytes(
+            manifest_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+        )
+        index_sha256 = sha256_bytes(manifest_bytes)
+        for record in catalog["objects"]:
+            if record["objectPath"] is not None:
+                result[(source, index_sha256, record["buildKey"])] = root.joinpath(
+                    *PurePosixPath(record["objectPath"]).parts,
+                )
+    return result
+
+
+def advance_contract(
+    plan_path: Path, discovery_root: Path, state_root: Path | None,
+    shard_roots: list[Path], destination: Path,
+    github_output_path: Path, *, repository_root: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    github_output(github_output_path, {
+        "contract_complete": False,
+        "next_phase_required": False,
+    })
+    supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
+    destination = _prepare_destination(destination, supplied_root)
+    destination.rmdir()
+    root = supplied_root.resolve()
+    discovery_root = Path(os.path.abspath(discovery_root))
+    state_root = discovery_root if state_root is None else Path(os.path.abspath(state_root))
+    shard_roots = [Path(os.path.abspath(path)) for path in shard_roots]
+    try:
+        discovery_root.relative_to(root)
+        state_root.relative_to(root)
+        for shard_root in shard_roots:
+            shard_root.relative_to(root)
+    except ValueError as error:
+        raise ValueError("Contract reconciliation inputs must remain inside the repository") from error
+    plan = _validate_plan(plan_path, root)
+    if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
+        raise ValueError("Contract reconciliation requires an authorized PR or merge-group run")
+    environment = os.environ if environ is None else environ
+    consumer = _consumer(plan, environment)
+    producer = _canonical_control(discovery_root / "producer.json", "Contract producer")
+    validate_producer(producer, "Contract producer")
+    if producer != consumer["producer"]:
+        raise ValueError("Contract producer does not match the current workflow run")
+
+    request = require_exact_keys(
+        _canonical_control(
+            discovery_root / "contract-reuse-request.json", "Contract reuse request",
+        ),
+        _WAVE_REQUEST_KEYS,
+        "Contract reuse request",
+    )
+    contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+    contract_closure = _dependency_closure((contract,))
+    authorities, unavailable = _authorities(root, plan["validationCommit"], contract_closure)
+    expected_fixed = {
+        "schemaVersion": 1,
+        "requestType": "reuse-wave",
+        "repository": plan["repository"],
+        "pullRequest": plan["pullRequest"],
+        "repositoryRoot": str(root),
+        "repositoryRevision": plan["validationCommit"],
+        "requested": [_identity_record(contract)],
+        "versions": _versions(root, plan["validationCommit"]),
+        "phaseAuthorities": authorities,
+        "contractEvidence": None,
+        "availableObjects": [],
+    }
+    if authorities is None:
+        raise ValueError(unavailable or "Contract phase authority is unavailable")
+    for field, expected in expected_fixed.items():
+        if request[field] != expected:
+            raise ValueError(f"Contract reuse request disagrees with current {field}")
+    expected_artifact_root = root / "build/product-reuse"
+    if request["artifactRoot"] != str(expected_artifact_root):
+        raise ValueError("Contract reuse request has an unexpected original artifact root")
+
+    rebased_request = dict(request)
+    rebased_request["artifactRoot"] = str(root)
+    rebased_request["catalogs"] = _rebase_catalog_paths(request["catalogs"], discovery_root, root)
+    replay_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
+
+    def retain(plans: dict[PhaseInstanceId, dict[str, Any]], instance: PhaseInstanceId,
+               value: dict[str, Any]) -> None:
+        if instance in plans:
+            raise ValueError(f"Duplicate Contract phase plan: {instance}")
+        plans[instance] = value
+
+    replay = plan_reuse_wave(
+        rebased_request,
+        build_plan_consumer=lambda instance, value: retain(replay_plans, instance, value),
+    )
+    initial = _canonical_control(
+        discovery_root / "contract-reuse-result.json", "Initial Contract reuse result",
+    )
+    if replay != initial:
+        raise ValueError("Initial Contract reuse result is not reproducible from its authenticated request")
+    prior = _canonical_control(
+        state_root / "contract-reuse-result.json", "Contract reuse result",
+    )
+    _, prior_materialized, prior_phases = _validate_reuse_result(
+        prior, (contract,), require_complete=False,
+    )
+    prior_by_instance = {_identity(phase): phase for phase in prior["phases"]}
+    sources: dict[PhaseInstanceId, Path] = {}
+    prior_carrier_phases: dict[PhaseInstanceId, dict[str, Any]] = {}
+    carrier_root = state_root / "reused-carrier"
+    if prior_materialized:
+        verified_carrier = verify_carrier(carrier_root, prior_materialized, consumer)
+        prior_carrier_phases = {
+            _identity(phase): phase for phase in verified_carrier["resolution"]["phases"]
+        }
+        if any(
+            any(prior_carrier_phases[instance][field] != prior_by_instance[instance][field]
+                for field in (*_IDENTITY_KEYS, "buildKey", "receiptSha256", "objectSha256"))
+            for instance in prior_materialized
+        ):
+            raise ValueError("Prior Contract carrier disagrees with its reuse result")
+        for record in verified_carrier["objects"]:
+            instance = _identity(record)
+            sources[instance] = carrier_root / object_relative_path(
+                record["buildKey"], record["receiptSha256"],
+            )
+    elif carrier_root.exists() or carrier_root.is_symlink():
+        raise ValueError("Unexpected prior Contract carrier")
+
+    if state_root != discovery_root:
+        state_request = dict(rebased_request)
+        state_request["availableObjects"] = [{
+            **_identity_record(instance),
+            "buildKey": prior_by_instance[instance]["buildKey"],
+            "receiptSha256": prior_by_instance[instance]["receiptSha256"],
+            "objectSha256": prior_by_instance[instance]["objectSha256"],
+            "objectPath": path.relative_to(root).as_posix(),
+        } for instance, path in sorted(sources.items())]
+        replay_plans = {}
+        state_replay = plan_reuse_wave(
+            state_request,
+            build_plan_consumer=lambda instance, value: retain(replay_plans, instance, value),
+        )
+        state_by_instance = {_identity(phase): phase for phase in state_replay["phases"]}
+        if any(state_by_instance[instance]["state"] != "retained" for instance in prior_materialized):
+            raise ValueError("A prior Contract carrier object was not retained by the recomputed plan")
+        for instance in prior_materialized:
+            state_by_instance[instance].update({
+                key: prior_by_instance[instance][key]
+                for key in ("state", "source", "transportSource", "misses")
+            })
+        if state_replay != prior:
+            raise ValueError("Contract reuse state is not reproducible from its verified carrier")
+
+    expected_builds = {
+        _identity(phase): phase for phase in prior["phases"] if phase["state"] == "build"
+    }
+    shards = {}
+    for shard_root in shard_roots:
+        descriptor = require_exact_keys(
+            _canonical_control(shard_root / PHASE_SHARD_NAME, "Contract phase shard"),
+            PHASE_SHARD_KEYS,
+            "Contract phase shard",
+        )
+        instance = _identity(descriptor)
+        if instance in shards:
+            raise ValueError(f"Duplicate Contract phase shard: {instance}")
+        if instance not in expected_builds:
+            raise ValueError(f"Unexpected Contract phase shard: {instance}")
+        verified = verify_phase_shard(shard_root, instance)
+        receipt = verified["receipt"]
+        if (
+            receipt["producer"] != producer
+            or receipt["trustDomain"] != ("development" if plan["event"] == "pull_request" else "release")
+            or receipt["productVersion"] != expected_fixed["versions"]["contract"]
+            or receipt["buildKey"] != expected_builds[instance]["buildKey"]
+            or replay_plans.get(instance, {}).get("buildKey") != receipt["buildKey"]
+        ):
+            raise ValueError("Contract phase shard does not match its elected plan and producer")
+        shards[instance] = {
+            **verified,
+            "transportSource": {
+                "kind": "phase-shard",
+                "descriptorSha256": sha256_bytes(canonical_json_bytes(descriptor)),
+                "producer": producer,
+            },
+        }
+        sources[instance] = shard_root / verified["objectPath"]
+    if set(shards) != set(expected_builds):
+        raise ValueError("Contract phase shards do not exactly match the elected build wave")
+
+    available = []
+    for instance, path in sorted(sources.items()):
+        phase = prior_by_instance.get(instance)
+        verified = shards.get(instance)
+        available.append({
+            **_identity_record(instance),
+            "buildKey": verified["buildKey"] if verified else phase["buildKey"],
+            "receiptSha256": verified["receiptSha256"] if verified else phase["receiptSha256"],
+            "objectSha256": verified["objectSha256"] if verified else phase["objectSha256"],
+            "objectPath": path.relative_to(root).as_posix(),
+        })
+    advanced_request = dict(rebased_request)
+    advanced_request["availableObjects"] = available
+    ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
+    advanced = plan_reuse_wave(
+        advanced_request,
+        build_plan_consumer=lambda instance, value: retain(ready_plans, instance, value),
+    )
+    supplied = set(sources)
+    advanced_by_instance = {_identity(phase): phase for phase in advanced["phases"]}
+    if any(advanced_by_instance[instance]["state"] != "retained" for instance in supplied):
+        raise ValueError("A supplied Contract object was not retained by the recomputed plan")
+
+    advanced, selected, selected_phases = _validate_reuse_result(
+        advanced, (contract,), require_complete=False,
+    )
+    remote_sources = _catalog_object_sources(rebased_request)
+    for instance, phase in zip(selected, selected_phases, strict=True):
+        if instance in sources:
+            continue
+        transport = phase["transportSource"]
+        key = (phase["source"], transport["indexSha256"], phase["buildKey"])
+        try:
+            sources[instance] = remote_sources[key]
+        except KeyError as error:
+            raise ValueError("Advanced Contract reuse lacks its authenticated object") from error
+
+    carrier_phases = []
+    for instance, phase in zip(selected, selected_phases, strict=True):
+        if instance in shards:
+            misses = prior_by_instance[instance]["misses"]
+            if [value["source"] for value in misses] != list(SOURCES):
+                raise ValueError("Fresh Contract phase lacks its exact prior lookup misses")
+            carrier_phases.append({
+                **phase,
+                "state": "reused",
+                "source": "phase-shard",
+                "transportSource": shards[instance]["transportSource"],
+                "misses": misses,
+            })
+        elif instance in prior_carrier_phases:
+            carrier_phases.append(prior_carrier_phases[instance])
+        else:
+            carrier_phases.append(phase)
+
+    normalized = {
+        "schemaVersion": 1,
+        "result": "complete",
+        "fullReuse": True,
+        "phases": carrier_phases,
+        "matrices": {"contract": [], "runtime": [], "sdk": []},
+    }
+    carrier_name = "carrier" if advanced["fullReuse"] else "reused-carrier"
+    with tempfile.TemporaryDirectory(prefix="codex-agent-contract-advance-") as temporary:
+        staged_destination = Path(temporary).resolve() / "result"
+        staged_destination.mkdir()
+        write_carrier(staged_destination / carrier_name, normalized, selected, sources, consumer)
+        write_canonical_json(staged_destination / "contract-reuse-result.json", advanced)
+        _write_ready_plans(staged_destination, ready_plans)
+        if ready_plans:
+            write_canonical_json(staged_destination / "producer.json", producer)
+        publish_regular_tree(staged_destination, destination)
+    github_output(github_output_path, {
+        "contract_complete": advanced["fullReuse"],
+        "next_phase_required": bool(ready_plans),
+    })
+    return advanced
 
 
 def discover(
@@ -892,13 +1277,30 @@ def parser() -> argparse.ArgumentParser:
     discover_command.add_argument("--plan", type=Path, required=True)
     discover_command.add_argument("--destination", type=Path, required=True)
     discover_command.add_argument("--github-output", type=Path, required=True)
+    advance_command = commands.add_parser("advance-contract")
+    advance_command.add_argument("--plan", type=Path, required=True)
+    advance_command.add_argument("--discovery-root", type=Path, required=True)
+    advance_command.add_argument("--state-root", type=Path)
+    advance_command.add_argument("--phase-shard", type=Path, action="append", default=[])
+    advance_command.add_argument("--destination", type=Path, required=True)
+    advance_command.add_argument("--github-output", type=Path, required=True)
     return result
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     try:
-        discover(arguments.plan, arguments.destination, arguments.github_output)
+        if arguments.command == "discover":
+            discover(arguments.plan, arguments.destination, arguments.github_output)
+        else:
+            advance_contract(
+                arguments.plan,
+                arguments.discovery_root,
+                arguments.state_root,
+                arguments.phase_shard,
+                arguments.destination,
+                arguments.github_output,
+            )
     except (OSError, ValueError) as error:
         parser().error(str(error))
     return 0

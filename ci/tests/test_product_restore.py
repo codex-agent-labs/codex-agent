@@ -202,6 +202,13 @@ class ProductRestoreTest(unittest.TestCase):
             "cacheRelativePath": object_relative_path(self.receipt["buildKey"], self.receipt_sha256),
         }
         validate_transport(local)
+        phase_shard = self.remote_transport()
+        phase_shard["source"] = {
+            "kind": "phase-shard",
+            "descriptorSha256": DIGEST_B,
+            "producer": self.producer(),
+        }
+        validate_transport(phase_shard)
         result = write_transport(self.cache, local)
         self.assertEqual("published", result["status"])
         self.assertEqual(canonical_json_bytes(local), result["path"].read_bytes())
@@ -214,6 +221,7 @@ class ProductRestoreTest(unittest.TestCase):
         fake_ci = copy.deepcopy(local); fake_ci["consumer"]["runId"] = 1; invalid_values.append(fake_ci)
         bad_oid = copy.deepcopy(local); bad_oid["consumer"]["commit"] = "ABC"; invalid_values.append(bad_oid)
         wrong_union = copy.deepcopy(local); wrong_union["source"]["artifactSha256"] = DIGEST_A; invalid_values.append(wrong_union)
+        bad_shard = copy.deepcopy(phase_shard); bad_shard["source"]["descriptorSha256"] = "bad"; invalid_values.append(bad_shard)
         for invalid in invalid_values:
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 validate_transport(invalid)

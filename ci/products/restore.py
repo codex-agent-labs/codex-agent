@@ -194,6 +194,12 @@ def validate_transport(value: Any) -> dict[str, Any]:
         expected = object_relative_path(build_key, receipt_sha256)
         if require_relative_path(source["cacheRelativePath"], "transport.source.cacheRelativePath") != expected:
             raise ValueError("Local transport cacheRelativePath does not match its receipt-qualified object")
+    elif kind == "phase-shard":
+        source = require_exact_keys(
+            source, {"kind", "descriptorSha256", "producer"}, "transport.source",
+        )
+        require_sha256(source["descriptorSha256"], "transport.source.descriptorSha256")
+        validate_producer(source["producer"], "transport.source.producer")
     else:
         raise ValueError("transport.source.kind is unsupported")
 
@@ -274,7 +280,7 @@ def _validate_carrier_resolution(
         phase = require_exact_keys(value, CARRIER_PHASE_KEYS, label)
         instance = _carrier_identity(phase, label)
         identities.append(instance)
-        if phase["state"] != "reused" or phase["source"] not in REMOTE_SOURCES | {"local"}:
+        if phase["state"] != "reused" or phase["source"] not in REMOTE_SOURCES | {"local", "phase-shard"}:
             raise ValueError("Product carrier resolution contains a non-reused phase")
         if not isinstance(phase["transportSource"], dict) or phase["transportSource"].get("kind") != phase["source"]:
             raise ValueError("Product carrier resolution source and transport disagree")
