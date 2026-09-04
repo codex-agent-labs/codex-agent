@@ -772,6 +772,43 @@ class ProductIndexTest(unittest.TestCase):
             )
         self.assertFalse(bypass.exists())
 
+    def test_runtime_stable_version_rejects_different_aggregate_bytes(self) -> None:
+        runtime_context = {"kind": "stable", "tag": f"runtime/v{VERSION}"}
+        original = source(
+            product="runtime",
+            component="runtime-aggregate",
+            target="aggregate",
+            payload=b"runtime aggregate A",
+        )
+        first = self.root / "runtime-first" / "product-index.json"
+        first.parent.mkdir()
+        self.publish(
+            "release",
+            first,
+            sources=[original],
+            context_value=runtime_context,
+        )
+
+        changed = source(
+            product="runtime",
+            component="runtime-aggregate",
+            target="aggregate",
+            flags_digest=DIGEST_B,
+            payload=b"runtime aggregate B",
+        )
+        second = self.root / "runtime-second" / "product-index.json"
+        second.parent.mkdir()
+        with self.assertRaisesRegex(ValueError, "Stable product identity|conflicting output"):
+            self.publish(
+                "release",
+                second,
+                sources=[changed],
+                prior=[SignedProductIndex(first, first.with_suffix(".sig"))],
+                context_value=runtime_context,
+            )
+        self.assertFalse(second.exists())
+        self.assertFalse(second.with_suffix(".sig").exists())
+
     def test_receipt_trust_repository_stable_tag_and_signer_are_bound(self) -> None:
         cases = (
             {
