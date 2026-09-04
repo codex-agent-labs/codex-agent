@@ -147,6 +147,68 @@ val writeContractBinaryOutputManifest = tasks.register<WriteProductOutputManifes
     stageRoot.set(contractBinaryPhaseRoot)
     manifestFile.set(contractBinaryPhaseRoot.map { it.file("output-manifest.json") })
 }
+val importedContractBinaryStage = layout.dir(
+    providers.gradleProperty("codexAgent.contractBinaryStageRoot").map(::file),
+)
+val importedContractBinarySnapshot = contractProductRoot.map { it.dir("imported/binary") }
+val contractPackagePhaseRoot = layout.buildDirectory.dir("product-stage/contract/contract/package")
+val contractPackageOutputs = contractPackagePhaseRoot.map { it.dir("outputs") }
+val invalidateContractPackagePhase = tasks.register<Delete>("invalidateContractPackagePhase") {
+    delete(importedContractBinarySnapshot, contractPackagePhaseRoot)
+}
+val snapshotImportedContractBinaryStage = tasks.register<SnapshotImportedProductStageTask>(
+    "snapshotImportedContractBinaryStage",
+) {
+    dependsOn(invalidateContractPackagePhase)
+    sourceDirectory.set(importedContractBinaryStage)
+    outputDirectory.set(importedContractBinarySnapshot)
+    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(layout.projectDirectory)
+}
+val verifyImportedContractBinaryOutputManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
+    "verifyImportedContractBinaryOutputManifest",
+) {
+    dependsOn(snapshotImportedContractBinaryStage)
+    product.set("contract")
+    component.set("contract")
+    phase.set("binary")
+    target.set("common")
+    productVersion.set(contractVersion)
+    stageRoot.set(importedContractBinarySnapshot)
+    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(layout.projectDirectory)
+}
+val stageContractPackageFromImportedBinary = tasks.register<Sync>(
+    "stageContractPackageFromImportedBinary",
+) {
+    dependsOn(verifyImportedContractBinaryOutputManifest)
+    into(contractPackageOutputs)
+    from(importedContractBinarySnapshot.map { it.dir("outputs") })
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
+val writeContractPackageOutputManifest = tasks.register<WriteProductOutputManifestTask>(
+    "writeContractPackageOutputManifest",
+) {
+    group = "publishing"
+    description = "Stages the Contract package payload from one authenticated binary phase."
+    dependsOn(stageContractPackageFromImportedBinary)
+    product.set("contract")
+    component.set("contract")
+    phase.set("package")
+    target.set("common")
+    productVersion.set(contractVersion)
+    outputRoots.set(mapOf(
+        "maven" to "outputs/maven",
+        "evidence" to "outputs/evidence",
+        "inventory" to "outputs/inventories",
+    ))
+    outputsDirectory.set(contractPackageOutputs)
+    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(layout.projectDirectory)
+    stageRoot.set(contractPackagePhaseRoot)
+    manifestFile.set(contractPackagePhaseRoot.map { it.file("output-manifest.json") })
+}
 val sdk = providers.provider {
     checkNotNull(findProject(":codex-agent-sdk")) {
         "SDK product phases require :codex-agent-sdk"
@@ -264,6 +326,7 @@ tasks.register("ciProductPhase") {
         val selection = Triple(requestedProduct.get(), requestedComponent.get(), requestedPhase.get())
         when (selection) {
             Triple("contract", "contract", "binary") -> writeContractBinaryOutputManifest
+            Triple("contract", "contract", "package") -> writeContractPackageOutputManifest
             Triple("sdk", "sdk-core", "binary") -> checkNotNull(writeSdkCoreBinaryOutputManifest) {
                 "SDK Core binary producer was not authenticated during settings evaluation"
             }

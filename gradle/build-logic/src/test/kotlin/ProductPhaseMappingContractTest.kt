@@ -19,6 +19,7 @@ class ProductPhaseMappingContractTest {
         val mapping = between(contract, "val requestedProduct =", "val contractBundleDirectory =")
         val expected = linkedMapOf(
             Triple("contract", "contract", "binary") to "writeContractBinaryOutputManifest",
+            Triple("contract", "contract", "package") to "writeContractPackageOutputManifest",
             Triple("sdk", "sdk-core", "binary") to "writeSdkCoreBinaryOutputManifest",
             Triple("sdk", "sdk-core", "package") to "writeSdkCorePackageOutputManifest",
             Triple("sdk", "sdk-android", "binary") to "writeSdkAndroidBinaryOutputManifest",
@@ -55,6 +56,35 @@ class ProductPhaseMappingContractTest {
             assertFalse(fallback in mapping, fallback)
         }
         assertFalse("Triple(\"runtime\"" in mapping)
+    }
+
+    @Test
+    fun Contract_package_consumes_only_an_imported_verified_binary_stage() {
+        val packagePhase = between(
+            contract,
+            "val importedContractBinaryStage =",
+            "val sdk = providers.provider",
+        )
+        assertTrue("codexAgent.contractBinaryStageRoot" in packagePhase)
+        assertTrue("tasks.register<SnapshotImportedProductStageTask>" in packagePhase)
+        assertTrue("tasks.register<VerifyImportedProductOutputManifestTask>" in packagePhase)
+        assertTrue("product.set(\"contract\")" in packagePhase)
+        assertTrue("component.set(\"contract\")" in packagePhase)
+        assertTrue("phase.set(\"binary\")" in packagePhase)
+        assertTrue("target.set(\"common\")" in packagePhase)
+        assertTrue("from(importedContractBinarySnapshot.map { it.dir(\"outputs\") })" in packagePhase)
+        assertTrue("writeContractPackageOutputManifest" in packagePhase)
+        for (forbidden in listOf(
+            "writeContractBinaryOutputManifest",
+            "stageContractBundleInputs",
+            "prepareContractInputs",
+            "assembleContractBundle",
+            "verifyContractBundle",
+            "contractPublicationTasks",
+            ":codex-agent-core:",
+        )) {
+            assertFalse(forbidden in packagePhase, forbidden)
+        }
     }
 
     @Test
