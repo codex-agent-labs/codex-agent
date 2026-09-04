@@ -13,6 +13,7 @@ import zipfile
 import ci.products.contract_projection as contract_projection
 import ci.products.index as product_index
 import ci.products.reuse as product_reuse
+from ci.products.contract import build_contract_bundle
 from ci.products.inventory import canonical_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.plan import plan_phase
 from ci.products.receipt import output_inventory_digest, validate_phase_receipt, write_output_manifest
@@ -22,7 +23,7 @@ from ci.products.registry import (
     phase_instance_dependencies,
     required_contract_components,
 )
-from ci.products.restore import object_relative_path, store_local_object, validate_transport
+from ci.products.restore import CacheObjectError, object_relative_path, store_local_object, validate_transport
 from ci.products.runtime_flags import load_runtime_binary_flags
 from ci.products.selection import classify_paths, phase_git_inventory
 from ci.products.toolchain import PROFILE_SHAPES, PROFILE_TOOL_NAMES
@@ -33,8 +34,10 @@ from ci.products.reuse import (
     RemoteCatalog,
     ReuseLookupError,
     advance_reuse,
+    plan_reuse_wave,
 )
 from ci.products.signatures import generate_development_key, sign_manifest
+from ci.tests.test_contract_bundle import PRODUCER as CONTRACT_PRODUCER, _write_staging
 
 
 DIGEST_A = sha256_bytes(b"a")
@@ -89,6 +92,7 @@ CONTRACT_METADATA = PhaseInstanceId("contract", "contract", "metadata", "common"
 RUNTIME_BINARY = PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64")
 RUNTIME_PACKAGE = PhaseInstanceId("runtime", "linux-x64", "package", "linux-x64")
 RUNTIME_VALIDATION = PhaseInstanceId("runtime", "linux-x64", "validation", "linux-x64")
+RUNTIME_JVM = PhaseInstanceId("runtime", "jvm", "binary", "jvm")
 PYTHON_PACKAGE = PhaseInstanceId("sdk", "python", "package", "desktop")
 PYTHON_METADATA = PhaseInstanceId("sdk", "python", "metadata", "desktop")
 
@@ -497,6 +501,461 @@ class ProductReuseTest(unittest.TestCase):
             ("git", "rev-parse", "HEAD"), cwd=repository, check=True, capture_output=True, text=True,
         ).stdout.strip()
         return repository, revision, load_runtime_binary_flags(authority)["linux-x64"].digest
+
+    def reuse_wave_repository(self) -> tuple[Path, str]:
+        repository = self.root / "reuse-wave-repository"
+        source = repository / "codex-agent-core/src/commonMain/kotlin/example.kt"
+        source.parent.mkdir(parents=True)
+        source.write_text("package example\n", encoding="utf-8")
+        subprocess.run(("git", "init", "-q"), cwd=repository, check=True)
+        subprocess.run(("git", "config", "user.email", "fixture@example.invalid"), cwd=repository, check=True)
+        subprocess.run(("git", "config", "user.name", "Fixture"), cwd=repository, check=True)
+        subprocess.run(("git", "add", "."), cwd=repository, check=True)
+        subprocess.run(("git", "commit", "-qm", "fixture"), cwd=repository, check=True)
+        revision = subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        return repository, revision
+
+    def reuse_wave_request(self, repository: Path, revision: str) -> dict[str, object]:
+        return {
+            "schemaVersion": 1,
+            "requestType": "reuse-wave",
+            "repository": REPOSITORY,
+            "pullRequest": PULL_REQUEST,
+            "repositoryRoot": str(repository),
+            "repositoryRevision": revision,
+            "artifactRoot": str(self.root),
+            "requested": [{
+                "product": CONTRACT_BINARY.product,
+                "component": CONTRACT_BINARY.component,
+                "phase": CONTRACT_BINARY.phase,
+                "target": CONTRACT_BINARY.target,
+            }],
+            "versions": VERSIONS,
+            "phaseAuthorities": [{
+                "product": CONTRACT_BINARY.product,
+                "component": CONTRACT_BINARY.component,
+                "phase": CONTRACT_BINARY.phase,
+                "target": CONTRACT_BINARY.target,
+                "toolchainProfileDigest": DIGEST_A,
+                "flagsDigest": DIGEST_B,
+                "outputSchemaVersion": 1,
+            }],
+            "contractEvidence": None,
+            "availableObjects": [],
+            "catalogs": {
+                "stable": [],
+                "promotedMain": None,
+                "samePr": None,
+                "local": None,
+            },
+        }
+
+    def test_reuse_wave_derives_git_inventory_and_returns_advance_result_unchanged(self) -> None:
+        repository, revision = self.reuse_wave_repository()
+        request = self.reuse_wave_request(repository, revision)
+        (repository / "codex-agent-core/src/commonMain/kotlin/example.kt").write_text(
+            "package dirty\n",
+            encoding="utf-8",
+        )
+        expected = {
+            "schemaVersion": 1,
+            "result": "distinctive",
+            "fullReuse": False,
+            "phases": [],
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+        }
+        with mock.patch("ci.products.reuse.advance_reuse", return_value=(expected, ())) as delegated:
+            result = plan_reuse_wave(request)
+        self.assertIs(expected, result)
+        args, kwargs = delegated.call_args
+        self.assertEqual((CONTRACT_BINARY,), args[0])
+        self.assertEqual({CONTRACT_BINARY}, set(args[1]))
+        self.assertEqual(
+            phase_git_inventory(repository, revision, CONTRACT_BINARY),
+            args[1][CONTRACT_BINARY]["inventory"],
+        )
+        self.assertEqual(repository, kwargs["repository_root"])
+        self.assertEqual(revision, kwargs["repository_revision"])
+        self.assertIsInstance(args[3], LookupSession)
+
+    def test_reuse_wave_rejects_nonexact_authorities_and_unsafe_paths_before_planning(self) -> None:
+        repository, revision = self.reuse_wave_repository()
+        base = self.reuse_wave_request(repository, revision)
+        outside = {
+            **base["phaseAuthorities"][0],
+            "phase": "package",
+        }
+        invalid = {
+            "missing": lambda value: value.update(phaseAuthorities=[]),
+            "duplicate": lambda value: value.update(
+                phaseAuthorities=[*value["phaseAuthorities"], *value["phaseAuthorities"]],
+            ),
+            "outside": lambda value: value.update(
+                phaseAuthorities=[*value["phaseAuthorities"], outside],
+            ),
+            "caller inventory": lambda value: value["phaseAuthorities"][0].update(inventory=[]),
+            "symbolic revision": lambda value: value.update(repositoryRevision="HEAD"),
+        }
+        for name, mutate in invalid.items():
+            with self.subTest(name=name), mock.patch("ci.products.reuse.advance_reuse") as delegated:
+                request = copy.deepcopy(base)
+                mutate(request)
+                with self.assertRaises(ValueError):
+                    plan_reuse_wave(request)
+                delegated.assert_not_called()
+
+        for path in ("../escape.zip", "nested\\escape.zip", "/absolute/object.zip"):
+            with self.subTest(path=path), mock.patch("ci.products.reuse.advance_reuse") as delegated:
+                request = copy.deepcopy(base)
+                request["availableObjects"] = [{
+                    **request["requested"][0],
+                    "buildKey": DIGEST_A,
+                    "receiptSha256": DIGEST_B,
+                    "objectSha256": DIGEST_A,
+                    "objectPath": path,
+                }]
+                with self.assertRaises(ValueError):
+                    plan_reuse_wave(request)
+                delegated.assert_not_called()
+
+        for path in ("../contract.pub", "/absolute/contract.pub", "nested\\contract.pub"):
+            with self.subTest(contract_path=path), mock.patch("ci.products.reuse.advance_reuse") as delegated:
+                request = copy.deepcopy(base)
+                request["contractEvidence"] = {
+                    "publicKey": path,
+                    "expectedTrustDomain": "development",
+                    "keyring": None,
+                    "keysDirectory": None,
+                }
+                with self.assertRaises(ValueError):
+                    plan_reuse_wave(request)
+                delegated.assert_not_called()
+
+        duplicate_object = {
+            **base["requested"][0],
+            "buildKey": DIGEST_A,
+            "receiptSha256": DIGEST_B,
+            "objectSha256": DIGEST_A,
+            "objectPath": "object.zip",
+        }
+        duplicate_request = copy.deepcopy(base)
+        duplicate_request["availableObjects"] = [
+            duplicate_object,
+            {**duplicate_object, "buildKey": DIGEST_B, "receiptSha256": DIGEST_A},
+        ]
+        duplicate_request["catalogs"]["stable"] = [{
+            "manifest": "indexes/product-index.json",
+            "signature": "indexes/product-index.json.sig",
+            "publicKey": None,
+            "keyring": "keys/keyring.json",
+            "keysDirectory": "keys",
+            "objects": [],
+        }]
+        with mock.patch("ci.products.reuse.LookupSession._load_catalog") as catalog_io, \
+                mock.patch("ci.products.reuse.verify_object") as verified:
+            with self.assertRaisesRegex(ValueError, "unique by phase identity"):
+                plan_reuse_wave(duplicate_request)
+            catalog_io.assert_not_called()
+            verified.assert_not_called()
+
+        catalog = {
+            "manifest": "indexes/product-index.json",
+            "signature": "indexes/product-index.json.sig",
+            "publicKey": None,
+            "keyring": "keys/keyring.json",
+            "keysDirectory": "keys",
+            "objects": [],
+        }
+        duplicate_catalog = copy.deepcopy(base)
+        duplicate_catalog["catalogs"]["stable"] = [catalog, catalog]
+        with mock.patch("ci.products.reuse._remote_catalog") as decoded:
+            with self.assertRaisesRegex(ValueError, "sorted and unique"):
+                plan_reuse_wave(duplicate_catalog)
+            decoded.assert_not_called()
+
+        local_escape = copy.deepcopy(base)
+        local_escape["catalogs"]["local"] = {
+            "cacheRoot": str(self.root / "cache"),
+            "restoreRoot": str(self.root.parent),
+            "candidates": [],
+        }
+        with self.assertRaisesRegex(ValueError, "fields are invalid"):
+            plan_reuse_wave(local_escape)
+
+        external = self.root / "external"
+        external.mkdir()
+        (external / "object.zip").write_bytes(b"not-an-object")
+        linked = self.root / "linked"
+        try:
+            linked.symlink_to(external, target_is_directory=True)
+        except (NotImplementedError, OSError) as error:
+            self.skipTest(f"symbolic links are unavailable: {error}")
+        symlink_request = copy.deepcopy(base)
+        symlink_request["availableObjects"] = [{
+            **duplicate_object,
+            "objectPath": "linked/object.zip",
+        }]
+        with self.assertRaises((CacheObjectError, ValueError)):
+            plan_reuse_wave(symlink_request)
+
+    def test_reuse_wave_loads_available_object_with_existing_verifier(self) -> None:
+        repository, revision = self.reuse_wave_repository()
+        request = self.reuse_wave_request(repository, revision)
+        inputs = {
+            "inventory": phase_git_inventory(repository, revision, CONTRACT_BINARY),
+            "versions": VERSIONS,
+            "toolchain_profile_digest": DIGEST_A,
+            "flags_digest": DIGEST_B,
+        }
+        planned = plan_phase(CONTRACT_BINARY, upstream_receipts=[], **inputs)
+        envelope, object_path = self.object_for_plan(planned, trust_domain="development")
+        request["availableObjects"] = [{
+            **request["requested"][0],
+            "buildKey": envelope["receipt"]["buildKey"],
+            "receiptSha256": envelope["receiptSha256"],
+            "objectSha256": envelope["objectSha256"],
+            "objectPath": object_path.relative_to(self.root).as_posix(),
+        }]
+        with mock.patch("ci.products.reuse.verify_object", wraps=product_reuse.verify_object) as verified:
+            result = plan_reuse_wave(request)
+        self.assertTrue(result["fullReuse"])
+        self.assertEqual("retained", result["phases"][0]["state"])
+        self.assertEqual({"contract": [], "runtime": [], "sdk": []}, result["matrices"])
+        self.assertEqual(envelope["receiptSha256"], result["phases"][0]["receiptSha256"])
+        self.assertEqual(envelope["objectSha256"], result["phases"][0]["objectSha256"])
+        verified.assert_called_once_with(
+            object_path,
+            build_key=envelope["receipt"]["buildKey"],
+            receipt_sha256=envelope["receiptSha256"],
+            object_sha256=envelope["objectSha256"],
+        )
+
+        request["availableObjects"][0]["objectSha256"] = DIGEST_A
+        with self.assertRaises((CacheObjectError, ValueError)):
+            plan_reuse_wave(request)
+
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
+    def test_reuse_wave_restores_and_authenticates_contract_metadata_repeatably(self) -> None:
+        repository, revision = self.reuse_wave_repository()
+        runtime_source = repository / "codex-agent-runtime-desktop/src/jvmMain/kotlin/example.kt"
+        runtime_source.parent.mkdir(parents=True)
+        runtime_source.write_text("package example\n", encoding="utf-8")
+        subprocess.run(("git", "add", "."), cwd=repository, check=True)
+        subprocess.run(("git", "commit", "-qm", "runtime"), cwd=repository, check=True)
+        revision = subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        closure = dependency_closure(RUNTIME_JVM)
+        inputs = {
+            instance: {
+                "inventory": phase_git_inventory(repository, revision, instance),
+                "versions": VERSIONS,
+                "toolchain_profile_digest": DIGEST_A,
+                "flags_digest": DIGEST_B,
+            }
+            for instance in closure
+        }
+        resolved: dict[PhaseInstanceId, dict[str, object]] = {}
+        objects: dict[PhaseInstanceId, tuple[dict[str, object], Path]] = {}
+        pending = set(dependency_closure(CONTRACT_METADATA))
+        metadata_stage = self.root / "contract-metadata-stage"
+        while pending:
+            ready = sorted(
+                instance for instance in pending
+                if all(dependency in resolved for dependency in phase_instance_dependencies(instance))
+            )
+            self.assertTrue(ready)
+            for instance in ready:
+                planned = plan_for(instance, inputs, resolved)
+                if instance == CONTRACT_METADATA:
+                    contract_staging = self.root / "contract-input"
+                    _write_staging(contract_staging, contract_version=VERSIONS["contract"])
+                    bundle = metadata_stage / "outputs" / (
+                        f"codex-agent-contract-{VERSIONS['contract']}.zip"
+                    )
+                    build_contract_bundle(
+                        contract_staging,
+                        bundle,
+                        VERSIONS["contract"],
+                        CONTRACT_PRODUCER,
+                        self.private_key,
+                        self.public_key,
+                        self.development_signing,
+                    )
+                    manifest = write_output_manifest(
+                        metadata_stage,
+                        "contract",
+                        "contract",
+                        "metadata",
+                        "common",
+                        VERSIONS["contract"],
+                        {"contract-bundle": "outputs"},
+                    )
+                    envelope = envelope_for_plan(planned, trust_domain="development")
+                    envelope["receipt"]["outputs"] = manifest["outputs"]
+                    envelope["receipt"]["producer"] = copy.deepcopy(CONTRACT_PRODUCER)
+                    envelope["receiptBytes"] = canonical_json_bytes(envelope["receipt"])
+                    envelope["receiptSha256"] = sha256_bytes(envelope["receiptBytes"])
+                    receipt_path = self.root / "contract-metadata-receipt.json"
+                    write_canonical_json(receipt_path, envelope["receipt"])
+                    stored = store_local_object(
+                        metadata_stage,
+                        receipt_path,
+                        self.root / "contract-metadata-cache",
+                    )
+                    envelope["objectSha256"] = stored["objectSha256"]
+                    object_path = stored["path"]
+                else:
+                    envelope, object_path = self.object_for_plan(
+                        planned,
+                        trust_domain="development",
+                    )
+                resolved[instance] = envelope
+                objects[instance] = (envelope, object_path)
+                pending.remove(instance)
+
+        projection = contract_projection.verify_contract_component_projection(
+            metadata_stage,
+            resolved[CONTRACT_METADATA]["receiptBytes"],
+            self.public_key,
+            expected_trust_domain="development",
+            expected_contract_version=VERSIONS["contract"],
+            required_components=("jvm",),
+        )
+        inputs[RUNTIME_JVM]["contract_projection"] = projection
+        runtime_plan = plan_for(RUNTIME_JVM, inputs, resolved)
+        runtime_envelope, runtime_object = self.object_for_plan(
+            runtime_plan,
+            trust_domain="development",
+        )
+        objects[RUNTIME_JVM] = (runtime_envelope, runtime_object)
+
+        public_key = self.root / "keys/development.pub"
+        public_key.parent.mkdir()
+        shutil.copyfile(self.public_key, public_key)
+        request = {
+            "schemaVersion": 1,
+            "requestType": "reuse-wave",
+            "repository": REPOSITORY,
+            "pullRequest": PULL_REQUEST,
+            "repositoryRoot": str(repository),
+            "repositoryRevision": revision,
+            "artifactRoot": str(self.root),
+            "requested": [{
+                "product": RUNTIME_JVM.product,
+                "component": RUNTIME_JVM.component,
+                "phase": RUNTIME_JVM.phase,
+                "target": RUNTIME_JVM.target,
+            }],
+            "versions": VERSIONS,
+            "phaseAuthorities": [{
+                "product": instance.product,
+                "component": instance.component,
+                "phase": instance.phase,
+                "target": instance.target,
+                "toolchainProfileDigest": DIGEST_A,
+                "flagsDigest": DIGEST_B,
+                "outputSchemaVersion": 1,
+            } for instance in closure],
+            "contractEvidence": {
+                "publicKey": public_key.relative_to(self.root).as_posix(),
+                "expectedTrustDomain": "development",
+                "keyring": None,
+                "keysDirectory": None,
+            },
+            "availableObjects": [{
+                "product": instance.product,
+                "component": instance.component,
+                "phase": instance.phase,
+                "target": instance.target,
+                "buildKey": envelope["receipt"]["buildKey"],
+                "receiptSha256": envelope["receiptSha256"],
+                "objectSha256": envelope["objectSha256"],
+                "objectPath": object_path.relative_to(self.root).as_posix(),
+            } for instance, (envelope, object_path) in sorted(objects.items())],
+            "catalogs": {
+                "stable": [],
+                "promotedMain": None,
+                "samePr": None,
+                "local": None,
+            },
+        }
+
+        first = plan_reuse_wave(request)
+        second = plan_reuse_wave(request)
+
+        self.assertTrue(first["fullReuse"])
+        self.assertEqual(first, second)
+        self.assertEqual({"contract": [], "runtime": [], "sdk": []}, first["matrices"])
+        self.assertFalse((self.root / "restored").exists())
+
+    def test_reuse_resolution_bootstraps_contract_projection_after_metadata_restore(self) -> None:
+        instance = PhaseInstanceId("runtime", "jvm", "binary", "jvm")
+        inputs = all_inputs(instance)
+        resolved = retained_chain(CONTRACT_METADATA, inputs)
+        contract = resolved[CONTRACT_METADATA]
+        bundle_path = f"outputs/codex-agent-contract-{VERSIONS['contract']}.zip"
+        contract["receipt"]["outputs"] = [{
+            "kind": "contract-bundle",
+            "relativePath": bundle_path,
+            "bytes": 1,
+            "sha256": DIGEST_B,
+        }]
+        contract["receiptBytes"] = canonical_json_bytes(contract["receipt"])
+        contract["receiptSha256"] = sha256_bytes(contract["receiptBytes"])
+        projection = contract_projection.VerifiedContractProjection({
+            "schemaVersion": 1,
+            "receiptSha256": contract["receiptSha256"],
+            "bundlePath": bundle_path,
+            "bundleSha256": DIGEST_B,
+            "manifestSha256": DIGEST_A,
+            "contractVersion": VERSIONS["contract"],
+            "contractDigest": DIGEST_A,
+            "componentDigests": [{"component": "jvm", "sha256": DIGEST_B}],
+        }, contract_projection._VERIFIED)
+        inputs[instance]["contract_projection"] = projection
+        runtime = envelope_for_plan(plan_for(instance, inputs, resolved))
+        del inputs[instance]["contract_projection"]
+        provider = mock.Mock(return_value=projection)
+
+        result, _ = advance_reuse(
+            [instance],
+            inputs,
+            [*resolved.values(), runtime],
+            self.session(),
+            contract_projection_provider=provider,
+        )
+
+        self.assertTrue(result["fullReuse"])
+        provider.assert_called_once_with(instance, contract)
+
+    def test_advance_reuse_rejects_invalid_inputs_at_its_public_boundary(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be a mapping"):
+            advance_reuse(
+                [CONTRACT_BINARY],
+                {CONTRACT_BINARY: object()},
+                [],
+                self.session(),
+            )
+        with self.assertRaisesRegex(ValueError, "provider must be callable"):
+            advance_reuse(
+                [CONTRACT_BINARY],
+                {CONTRACT_BINARY: phase_inputs(CONTRACT_BINARY)},
+                [],
+                self.session(),
+                contract_projection_provider=object(),
+            )
 
     def test_development_signed_stable_index_is_rejected(self) -> None:
         inputs = all_inputs(CONTRACT_BINARY)

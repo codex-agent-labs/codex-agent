@@ -1,17 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
+import tempfile
 from typing import Any
 
 from .aggregate import verify_immutable_product_indexes
+from .contract_projection import VerifiedContractProjection, verify_contract_component_projection
 from .inventory import (
     load_canonical_json_bytes,
+    require_array,
     require_exact_keys,
     require_integer,
     require_relative_path,
     require_sha256,
+    require_string,
     sha256_bytes,
 )
 from .index import (
@@ -21,6 +26,7 @@ from .index import (
     verify_signed_product_index,
 )
 from .plan import (
+    _validated_versions,
     attach_runtime_binary_identity,
     plan_phase,
     verified_phase_flags_digest,
@@ -34,9 +40,17 @@ from .registry import (
     PHASE_INSTANCE_IDS,
     PhaseInstanceId,
     phase_instance_dependencies,
+    required_contract_components,
     required_toolchain_profile,
 )
-from .restore import CacheObjectError, object_relative_path, restore_local_object, verify_object
+from .restore import (
+    CacheObjectError,
+    object_relative_path,
+    restore_local_object,
+    restore_object,
+    verify_object,
+)
+from .selection import phase_git_inventory
 
 
 SOURCES = ("stable", "promoted-main", "same-pr", "local")
@@ -47,6 +61,33 @@ _PHASE_INPUT_KEYS = {
     "versions",
     "toolchain_profile_digest",
     "flags_digest",
+}
+_GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+_IDENTITY_KEYS = {"product", "component", "phase", "target"}
+_AUTHORITY_KEYS = _IDENTITY_KEYS | {
+    "toolchainProfileDigest",
+    "flagsDigest",
+    "outputSchemaVersion",
+}
+_AVAILABLE_OBJECT_KEYS = _IDENTITY_KEYS | {
+    "buildKey",
+    "receiptSha256",
+    "objectSha256",
+    "objectPath",
+}
+_REMOTE_CATALOG_KEYS = {
+    "manifest",
+    "signature",
+    "publicKey",
+    "keyring",
+    "keysDirectory",
+    "objects",
+}
+_CONTRACT_EVIDENCE_KEYS = {
+    "publicKey",
+    "expectedTrustDomain",
+    "keyring",
+    "keysDirectory",
 }
 
 
@@ -200,6 +241,7 @@ class LookupSession:
         *,
         repository: str,
         pull_request: int | None,
+        restore_root: Path | None = None,
         stable: Iterable[RemoteCatalog] = (),
         promoted_main: RemoteCatalog | None = None,
         same_pr: RemoteCatalog | None = None,
@@ -211,6 +253,8 @@ class LookupSession:
         self.pull_request = (
             None if pull_request is None else require_integer(pull_request, "lookup pull request", 1)
         )
+        self._restore_root = None if restore_root is None else Path(restore_root)
+        self._contract_stages: dict[tuple[str, str], Path] = {}
         self._remote: dict[str, dict[str, list[_RemoteCandidate]]] = {
             source: {} for source in SOURCES[:-1]
         }
@@ -342,6 +386,10 @@ class LookupSession:
                 if envelope["receipt"]["trustDomain"] != expected_trust:
                     raise ValueError("Restored receipt trust does not match its product index source")
                 _verify_index_receipt(candidate.entry, envelope)
+                if _identity(envelope["receipt"]) == PhaseInstanceId(
+                    "contract", "contract", "metadata", "common"
+                ) and self._restore_root is not None:
+                    self._restore_contract_stage(path, envelope)
             except (CacheObjectError, TypeError, ValueError) as error:
                 raise ReuseLookupError(f"{source} matching object or index entry is corrupt") from error
             return _LookupResult(envelope, None, {
@@ -384,6 +432,10 @@ class LookupSession:
                 _validate_envelope(envelope, expected_plan=plan)
             except (TypeError, ValueError) as error:
                 raise ReuseLookupError("Local restored object is incompatible with the plan") from error
+            if _identity(envelope["receipt"]) == PhaseInstanceId(
+                "contract", "contract", "metadata", "common"
+            ):
+                self._contract_stages[(plan["buildKey"], candidate.receipt_sha256)] = candidate.destination
             return _LookupResult(envelope, None, {
                 "kind": "local",
                 "cacheRelativePath": object_relative_path(
@@ -399,6 +451,38 @@ class LookupSession:
         if source not in self._remote:
             raise ValueError(f"Unsupported lookup source: {source}")
         return self._remote_lookup(source, plan)
+
+    def _restore_contract_stage(self, archive: Path, envelope: dict[str, Any]) -> Path:
+        if self._restore_root is None:
+            raise ValueError("Contract reuse requires a fixed restore root")
+        key = (envelope["receipt"]["buildKey"], envelope["receiptSha256"])
+        existing = self._contract_stages.get(key)
+        if existing is not None:
+            return existing
+        destination = self._restore_root / "contract-metadata"
+        restore_object(
+            archive,
+            destination,
+            build_key=key[0],
+            receipt_sha256=key[1],
+            object_sha256=envelope["objectSha256"],
+        )
+        self._contract_stages[key] = destination
+        return destination
+
+    def register_contract_stage(
+        self,
+        archive: Path,
+        envelope: dict[str, Any],
+    ) -> None:
+        self._restore_contract_stage(archive, envelope)
+
+    def contract_stage(self, envelope: dict[str, Any]) -> Path:
+        key = (envelope["receipt"]["buildKey"], envelope["receiptSha256"])
+        try:
+            return self._contract_stages[key]
+        except KeyError as error:
+            raise ValueError("Authenticated Contract metadata stage was not restored") from error
 
 
 def _dependency_closure(requested: Iterable[PhaseInstanceId]) -> tuple[PhaseInstanceId, ...]:
@@ -416,6 +500,346 @@ def _dependency_closure(requested: Iterable[PhaseInstanceId]) -> tuple[PhaseInst
     for instance in requested:
         add(instance)
     return tuple(sorted(closure))
+
+
+def _absolute_path(value: Any, label: str) -> Path:
+    path = Path(require_string(value, label))
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be absolute")
+    return path
+
+
+def _artifact_path(root: Path, value: Any, label: str) -> Path:
+    relative = require_relative_path(value, label)
+    return root.joinpath(*PurePosixPath(relative).parts)
+
+
+def _request_identity(value: Any, label: str) -> PhaseInstanceId:
+    record = require_exact_keys(value, _IDENTITY_KEYS, label)
+    instance = PhaseInstanceId(
+        require_string(record["product"], f"{label}.product"),
+        require_string(record["component"], f"{label}.component"),
+        require_string(record["phase"], f"{label}.phase"),
+        require_string(record["target"], f"{label}.target"),
+    )
+    if instance not in PHASE_INSTANCE_IDS:
+        raise ValueError(f"{label} is not a registered phase instance: {instance}")
+    return instance
+
+
+def _request_identities(value: Any, label: str) -> tuple[PhaseInstanceId, ...]:
+    instances = tuple(
+        _request_identity(member, f"{label}[{index}]")
+        for index, member in enumerate(require_array(value, label))
+    )
+    if not instances or instances != tuple(sorted(set(instances))):
+        raise ValueError(f"{label} must be nonempty, sorted, and unique")
+    return instances
+
+
+def _optional_artifact_path(root: Path, value: Any, label: str) -> Path | None:
+    return None if value is None else _artifact_path(root, value, label)
+
+
+def _contract_evidence(root: Path, value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    label = "reuse-wave request.contractEvidence"
+    evidence = require_exact_keys(value, _CONTRACT_EVIDENCE_KEYS, label)
+    return {
+        "publicKey": _artifact_path(root, evidence["publicKey"], f"{label}.publicKey"),
+        "expectedTrustDomain": require_string(
+            evidence["expectedTrustDomain"],
+            f"{label}.expectedTrustDomain",
+        ),
+        "keyring": _optional_artifact_path(root, evidence["keyring"], f"{label}.keyring"),
+        "keysDirectory": _optional_artifact_path(
+            root,
+            evidence["keysDirectory"],
+            f"{label}.keysDirectory",
+        ),
+    }
+
+
+def _remote_catalog(root: Path, value: Any, label: str) -> RemoteCatalog:
+    catalog = require_exact_keys(value, _REMOTE_CATALOG_KEYS, label)
+    object_records = require_array(catalog["objects"], f"{label}.objects")
+    objects: dict[str, Path | None] = {}
+    previous: str | None = None
+    for index, member in enumerate(object_records):
+        record = require_exact_keys(
+            member,
+            {"buildKey", "objectPath"},
+            f"{label}.objects[{index}]",
+        )
+        build_key = require_sha256(record["buildKey"], f"{label}.objects[{index}].buildKey")
+        if previous is not None and build_key <= previous:
+            raise ValueError(f"{label}.objects must be sorted and unique by buildKey")
+        previous = build_key
+        objects[build_key] = _optional_artifact_path(
+            root,
+            record["objectPath"],
+            f"{label}.objects[{index}].objectPath",
+        )
+    return RemoteCatalog(
+        manifest=_artifact_path(root, catalog["manifest"], f"{label}.manifest"),
+        signature=_artifact_path(root, catalog["signature"], f"{label}.signature"),
+        objects=objects,
+        public_key=_optional_artifact_path(root, catalog["publicKey"], f"{label}.publicKey"),
+        keyring=_optional_artifact_path(root, catalog["keyring"], f"{label}.keyring"),
+        keys_directory=_optional_artifact_path(
+            root,
+            catalog["keysDirectory"],
+            f"{label}.keysDirectory",
+        ),
+    )
+
+
+def _local_catalog(restore_root: Path, value: Any) -> LocalCatalog | None:
+    if value is None:
+        return None
+    local = require_exact_keys(
+        value,
+        {"cacheRoot", "candidates"},
+        "reuse-wave request.catalogs.local",
+    )
+    cache_root = _absolute_path(local["cacheRoot"], "reuse-wave request.catalogs.local.cacheRoot")
+    candidates: dict[str, list[LocalCandidate]] = {}
+    ordered = []
+    for index, member in enumerate(require_array(
+        local["candidates"],
+        "reuse-wave request.catalogs.local.candidates",
+    )):
+        label = f"reuse-wave request.catalogs.local.candidates[{index}]"
+        record = require_exact_keys(
+            member,
+            {"buildKey", "receiptSha256"},
+            label,
+        )
+        build_key = require_sha256(record["buildKey"], f"{label}.buildKey")
+        receipt_sha256 = require_sha256(record["receiptSha256"], f"{label}.receiptSha256")
+        destination = restore_root / build_key.removeprefix("sha256:") / receipt_sha256.removeprefix("sha256:")
+        identity = (build_key, receipt_sha256)
+        ordered.append(identity)
+        candidates.setdefault(build_key, []).append(LocalCandidate(receipt_sha256, destination))
+    if ordered != sorted(set(ordered)):
+        raise ValueError("reuse-wave request.catalogs.local.candidates must be sorted and unique")
+    return LocalCatalog(cache_root, {
+        build_key: tuple(values) for build_key, values in candidates.items()
+    })
+
+
+def plan_reuse_wave(value: Any) -> dict[str, Any]:
+    """Decode one strict control request and delegate all resolution to advance_reuse."""
+    request = require_exact_keys(
+        value,
+        {
+            "schemaVersion",
+            "requestType",
+            "repository",
+            "pullRequest",
+            "repositoryRoot",
+            "repositoryRevision",
+            "artifactRoot",
+            "requested",
+            "versions",
+            "phaseAuthorities",
+            "contractEvidence",
+            "availableObjects",
+            "catalogs",
+        },
+        "reuse-wave request",
+    )
+    if require_integer(request["schemaVersion"], "reuse-wave request.schemaVersion", 1) != 1:
+        raise ValueError("Unsupported reuse-wave request schemaVersion")
+    if request["requestType"] != "reuse-wave":
+        raise ValueError("Unsupported plan requestType")
+    repository_root = _absolute_path(request["repositoryRoot"], "reuse-wave request.repositoryRoot")
+    artifact_root = _absolute_path(request["artifactRoot"], "reuse-wave request.artifactRoot")
+    revision = require_string(request["repositoryRevision"], "reuse-wave request.repositoryRevision")
+    if _GIT_OBJECT_ID.fullmatch(revision) is None:
+        raise ValueError("Reuse-wave repositoryRevision must be an exact lowercase Git object ID")
+    requested = _request_identities(request["requested"], "reuse-wave request.requested")
+    closure = _dependency_closure(requested)
+    versions = _validated_versions(request["versions"])
+
+    authorities: dict[PhaseInstanceId, dict[str, Any]] = {}
+    ordered_authorities = []
+    for index, member in enumerate(require_array(
+        request["phaseAuthorities"],
+        "reuse-wave request.phaseAuthorities",
+    )):
+        label = f"reuse-wave request.phaseAuthorities[{index}]"
+        record = require_exact_keys(member, _AUTHORITY_KEYS, label)
+        instance = _request_identity(
+            {key: record[key] for key in _IDENTITY_KEYS},
+            label,
+        )
+        if instance in authorities:
+            raise ValueError(f"Duplicate reuse-wave phase authority: {instance}")
+        authorities[instance] = record
+        ordered_authorities.append(instance)
+    if tuple(ordered_authorities) != tuple(sorted(ordered_authorities)):
+        raise ValueError("reuse-wave request.phaseAuthorities must be sorted")
+    if set(authorities) != set(closure):
+        raise ValueError("Reuse-wave phase authorities must exactly match the dependency closure")
+
+    contract_components = tuple(sorted({
+        component
+        for instance in closure
+        for component in required_contract_components(instance)
+    }))
+    contract_evidence = _contract_evidence(artifact_root, request["contractEvidence"])
+    if contract_evidence is not None and not contract_components:
+        raise ValueError("Reuse-wave request has unexpected Contract evidence")
+    phase_inputs: dict[PhaseInstanceId, dict[str, Any]] = {}
+    for instance in closure:
+        authority = authorities[instance]
+        values = {
+            "inventory": phase_git_inventory(repository_root, revision, instance),
+            "versions": versions,
+            "toolchain_profile_digest": require_sha256(
+                authority["toolchainProfileDigest"],
+                f"reuse-wave authority {instance}.toolchainProfileDigest",
+            ),
+            "flags_digest": require_sha256(
+                authority["flagsDigest"],
+                f"reuse-wave authority {instance}.flagsDigest",
+            ),
+            "output_schema_version": require_integer(
+                authority["outputSchemaVersion"],
+                f"reuse-wave authority {instance}.outputSchemaVersion",
+                1,
+            ),
+        }
+        phase_inputs[instance] = values
+
+    catalogs = require_exact_keys(
+        request["catalogs"],
+        {"stable", "promotedMain", "samePr", "local"},
+        "reuse-wave request.catalogs",
+    )
+    stable_values = require_array(catalogs["stable"], "reuse-wave request.catalogs.stable")
+    stable_manifests = [
+        require_relative_path(
+            require_exact_keys(member, _REMOTE_CATALOG_KEYS, label)["manifest"],
+            f"{label}.manifest",
+        )
+        for index, member in enumerate(stable_values)
+        for label in (f"reuse-wave request.catalogs.stable[{index}]",)
+    ]
+    if stable_manifests != sorted(set(stable_manifests)):
+        raise ValueError("reuse-wave request.catalogs.stable must be sorted and unique by manifest")
+    stable = tuple(
+        _remote_catalog(artifact_root, member, f"reuse-wave request.catalogs.stable[{index}]")
+        for index, member in enumerate(stable_values)
+    )
+    promoted_main = None if catalogs["promotedMain"] is None else _remote_catalog(
+        artifact_root,
+        catalogs["promotedMain"],
+        "reuse-wave request.catalogs.promotedMain",
+    )
+    same_pr = None if catalogs["samePr"] is None else _remote_catalog(
+        artifact_root,
+        catalogs["samePr"],
+        "reuse-wave request.catalogs.samePr",
+    )
+    pull_request = request["pullRequest"]
+    if pull_request is not None:
+        pull_request = require_integer(pull_request, "reuse-wave request.pullRequest", 1)
+    decoded_objects = []
+    for index, member in enumerate(require_array(
+        request["availableObjects"],
+        "reuse-wave request.availableObjects",
+    )):
+        label = f"reuse-wave request.availableObjects[{index}]"
+        record = require_exact_keys(member, _AVAILABLE_OBJECT_KEYS, label)
+        instance = _request_identity(
+            {key: record[key] for key in _IDENTITY_KEYS},
+            label,
+        )
+        build_key = require_sha256(record["buildKey"], f"{label}.buildKey")
+        receipt_sha256 = require_sha256(record["receiptSha256"], f"{label}.receiptSha256")
+        object_sha256 = require_sha256(record["objectSha256"], f"{label}.objectSha256")
+        if instance not in closure:
+            raise ValueError(f"Available object is outside the requested dependency closure: {instance}")
+        decoded_objects.append((
+            instance,
+            build_key,
+            receipt_sha256,
+            object_sha256,
+            _artifact_path(artifact_root, record["objectPath"], f"{label}.objectPath"),
+        ))
+    available_identities = [record[0] for record in decoded_objects]
+    if available_identities != sorted(set(available_identities)):
+        raise ValueError("reuse-wave request.availableObjects must be sorted and unique by phase identity")
+
+    with tempfile.TemporaryDirectory(prefix="codex-agent-reuse-wave-") as temporary:
+        restore_root = Path(temporary).resolve()
+        session = LookupSession(
+            repository=require_string(request["repository"], "reuse-wave request.repository"),
+            pull_request=pull_request,
+            restore_root=restore_root / "remote",
+            stable=stable,
+            promoted_main=promoted_main,
+            same_pr=same_pr,
+            local=_local_catalog(restore_root / "local", catalogs["local"]),
+        )
+        available = []
+        for instance, build_key, receipt_sha256, object_sha256, object_path in decoded_objects:
+            verified = verify_object(
+                object_path,
+                build_key=build_key,
+                receipt_sha256=receipt_sha256,
+                object_sha256=object_sha256,
+            )
+            receipt = verified["receipt"]
+            if _identity(receipt) != instance:
+                raise ValueError("Available object identity does not match its request record")
+            envelope = {
+                "receipt": receipt,
+                "receiptBytes": verified["receiptBytes"],
+                "receiptSha256": receipt_sha256,
+                "objectSha256": object_sha256,
+            }
+            available.append(envelope)
+            if instance == PhaseInstanceId("contract", "contract", "metadata", "common"):
+                session.register_contract_stage(object_path, envelope)
+
+        master_projection: VerifiedContractProjection | None = None
+
+        def contract_projection_provider(
+            instance: PhaseInstanceId,
+            envelope: dict[str, Any],
+        ) -> VerifiedContractProjection:
+            nonlocal master_projection
+            if contract_evidence is None:
+                raise ValueError("Contract-consuming reuse requires authenticated Contract evidence")
+            if master_projection is None:
+                master_projection = verify_contract_component_projection(
+                    session.contract_stage(envelope),
+                    envelope["receiptBytes"],
+                    contract_evidence["publicKey"],
+                    expected_trust_domain=contract_evidence["expectedTrustDomain"],
+                    expected_contract_version=versions["contract"],
+                    required_components=contract_components,
+                    keyring=contract_evidence["keyring"],
+                    keys_directory=contract_evidence["keysDirectory"],
+                )
+            return master_projection.restrict(required_contract_components(instance))
+
+        result, _ = advance_reuse(
+            requested,
+            phase_inputs,
+            available,
+            session,
+            repository_root=repository_root,
+            repository_revision=revision,
+            contract_projection_provider=(
+                contract_projection_provider if contract_components else None
+            ),
+        )
+        return result
 
 
 def _plan(
@@ -475,17 +899,27 @@ def advance_reuse(
     *,
     repository_root: Path | None = None,
     repository_revision: str | None = None,
+    contract_projection_provider: Callable[
+        [PhaseInstanceId, dict[str, Any]], VerifiedContractProjection
+    ] | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave."""
     if not isinstance(session, LookupSession):
         raise ValueError("Reuse resolution requires a LookupSession")
     if (repository_root is None) != (repository_revision is None):
         raise ValueError("Reuse repository root and revision must be supplied together")
+    if contract_projection_provider is not None and not callable(contract_projection_provider):
+        raise ValueError("Contract projection provider must be callable")
     resolved_repository_root = None if repository_root is None else Path(repository_root)
     closure = _dependency_closure(requested_instances)
     if not isinstance(phase_inputs, Mapping) or set(phase_inputs) != set(closure):
         raise ValueError("Phase inputs must exactly match the requested dependency closure")
 
+    effective_inputs = {}
+    for instance, values in phase_inputs.items():
+        if not isinstance(values, Mapping):
+            raise ValueError(f"Phase inputs must be a mapping: {instance}")
+        effective_inputs[instance] = dict(values)
     envelopes: dict[PhaseInstanceId, dict[str, Any]] = {}
     for value in available_receipts:
         instance, envelope = _validate_envelope(value)
@@ -508,9 +942,21 @@ def advance_reuse(
             and all(dependency in resolved for dependency in phase_instance_dependencies(instance))
         ]
         for instance in ready:
+            if (
+                required_contract_components(instance)
+                and "contract_projection" not in effective_inputs[instance]
+                and contract_projection_provider is not None
+            ):
+                contract_identity = PhaseInstanceId(
+                    "contract", "contract", "metadata", "common"
+                )
+                effective_inputs[instance]["contract_projection"] = contract_projection_provider(
+                    instance,
+                    resolved[contract_identity],
+                )
             plan = _plan(
                 instance,
-                phase_inputs,
+                effective_inputs,
                 [resolved[dependency]["receipt"] for dependency in phase_instance_dependencies(instance)],
                 resolved_repository_root,
                 repository_revision,

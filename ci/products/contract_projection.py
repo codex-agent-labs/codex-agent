@@ -41,6 +41,20 @@ class VerifiedContractProjection:
             raise TypeError("Contract projection is not authenticated")
         return load_canonical_json_bytes(self._canonical)
 
+    def restrict(self, required_components: Iterable[str]) -> VerifiedContractProjection:
+        components = _required_components(required_components)
+        value = self.receipt_value()
+        available = {
+            record["component"]: record
+            for record in value["componentDigests"]
+        }
+        if not set(components).issubset(available):
+            raise ValueError("Authenticated Contract projection does not contain the required components")
+        return VerifiedContractProjection({
+            **value,
+            "componentDigests": [available[component] for component in components],
+        }, _VERIFIED)
+
     @property
     def components(self) -> tuple[str, ...]:
         return tuple(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
 import re
 import stat
@@ -388,6 +389,15 @@ def _contract_projection_from_request(
     value: Any,
 ) -> VerifiedContractProjection | None:
     components = required_contract_components(instance)
+    return _contract_projection_from_request_components(versions, value, components)
+
+
+def _contract_projection_from_request_components(
+    versions: dict[str, Any],
+    value: Any,
+    components: Iterable[str],
+) -> VerifiedContractProjection | None:
+    components = tuple(components)
     if not components:
         if value is not None:
             raise ValueError("Plan request has unexpected Contract evidence")
@@ -435,14 +445,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", required=True)
     arguments = parser.parse_args(argv)
     try:
-        request = require_exact_keys(
-            load_canonical_json_bytes(
-                read_regular_file_bytes(
-                    Path(arguments.request),
-                    max_bytes=16 * 1024 * 1024,
-                    reject_symlink_parents=True,
-                ),
+        request_value = load_canonical_json_bytes(
+            read_regular_file_bytes(
+                Path(arguments.request),
+                max_bytes=16 * 1024 * 1024,
+                reject_symlink_parents=True,
             ),
+        )
+        if type(request_value) is dict and "requestType" in request_value:
+            from .reuse import plan_reuse_wave
+
+            result = plan_reuse_wave(request_value)
+            _write_output(arguments.output, result)
+            return 0
+        request = require_exact_keys(
+            request_value,
             {
                 "schemaVersion",
                 "product",

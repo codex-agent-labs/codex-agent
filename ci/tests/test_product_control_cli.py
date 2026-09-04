@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 
+from ci.products.__main__ import COMMANDS
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
@@ -414,6 +415,81 @@ class ProductControlCliTest(unittest.TestCase):
             result = self.run_cli("plan", "--request", str(request), "--output", str(output))
             self.assertEqual(2, result.returncode, result.stderr)
             self.assertFalse(output.exists())
+
+    def test_reuse_wave_uses_plan_command_and_preserves_cli_surface(self) -> None:
+        repository = self.root / "reuse-wave-repository"
+        source = repository / "codex-agent-core/src/commonMain/kotlin/example.kt"
+        source.parent.mkdir(parents=True)
+        source.write_text("package example\\n", encoding="utf-8")
+        subprocess.run(("git", "init", "-q"), cwd=repository, check=True)
+        subprocess.run(("git", "config", "user.email", "fixture@example.invalid"), cwd=repository, check=True)
+        subprocess.run(("git", "config", "user.name", "Fixture"), cwd=repository, check=True)
+        subprocess.run(("git", "add", "."), cwd=repository, check=True)
+        subprocess.run(("git", "commit", "-qm", "fixture"), cwd=repository, check=True)
+        revision = subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        request_value = {
+            "schemaVersion": 1,
+            "requestType": "reuse-wave",
+            "repository": "owner/repository",
+            "pullRequest": 31,
+            "repositoryRoot": str(repository),
+            "repositoryRevision": revision,
+            "artifactRoot": str(self.root),
+            "requested": [{
+                "product": "contract",
+                "component": "contract",
+                "phase": "binary",
+                "target": "common",
+            }],
+            "versions": {
+                "contract": "1.2.3",
+                "runtime-compatibility": "2.3.0",
+                "runtime-release": "2.3.4",
+                "sdk": "3.4.5",
+            },
+            "phaseAuthorities": [{
+                "product": "contract",
+                "component": "contract",
+                "phase": "binary",
+                "target": "common",
+                "toolchainProfileDigest": DIGEST_A,
+                "flagsDigest": DIGEST_B,
+                "outputSchemaVersion": 1,
+            }],
+            "contractEvidence": None,
+            "availableObjects": [],
+            "catalogs": {
+                "stable": [],
+                "promotedMain": None,
+                "samePr": None,
+                "local": None,
+            },
+        }
+        request = self.write_request("reuse-wave.json", request_value)
+        stdout = self.run_cli("plan", "--request", str(request), "--output", "-")
+        self.assertEqual(0, stdout.returncode, stdout.stderr)
+        self.assertEqual(canonical_json_bytes(load_canonical_json_bytes(stdout.stdout)), stdout.stdout)
+
+        output = self.root / "reuse-wave-output.json"
+        file_result = self.run_cli(
+            "plan", "--request", str(request), "--output", str(output),
+        )
+        self.assertEqual(0, file_result.returncode, file_result.stderr)
+        self.assertEqual(stdout.stdout, output.read_bytes())
+        self.assertEqual({"aggregate", "plan", "receipt", "restore"}, set(COMMANDS))
+
+        output.write_bytes(b"stale")
+        request_value["unexpected"] = True
+        write_canonical_json(request, request_value)
+        failed = self.run_cli("plan", "--request", str(request), "--output", str(output))
+        self.assertEqual(2, failed.returncode)
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

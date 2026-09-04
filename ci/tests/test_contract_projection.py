@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -186,18 +187,30 @@ class ContractProjectionTest(unittest.TestCase):
     def test_plan_cli_derives_projection_from_evidence_paths(self) -> None:
         request = self.root / "plan-request.json"
         output = self.root / "plan-output.json"
-        inventory = [{
-            "relativePath": "runtime/Runtime.kt",
-            "bytes": 1,
-            "sha256": sha256_bytes(b"r"),
-        }]
+        repository = self.root / "repository"
+        source = repository / "codex-agent-runtime-desktop/src/jvmMain/kotlin/example/Runtime.kt"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"r")
+        subprocess.run(("git", "init", "-q"), cwd=repository, check=True)
+        subprocess.run(("git", "config", "user.email", "fixture@example.invalid"), cwd=repository, check=True)
+        subprocess.run(("git", "config", "user.name", "Fixture"), cwd=repository, check=True)
+        subprocess.run(("git", "add", "."), cwd=repository, check=True)
+        subprocess.run(("git", "commit", "-qm", "fixture"), cwd=repository, check=True)
+        revision = subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         write_canonical_json(request, {
             "schemaVersion": 1,
             "product": "runtime",
             "component": "jvm",
             "phase": "binary",
             "target": "jvm",
-            "inventory": inventory,
+            "repositoryRoot": str(repository),
+            "repositoryRevision": revision,
             "versions": {
                 "contract": VERSION,
                 "runtime-compatibility": VERSION,
