@@ -1159,6 +1159,7 @@ def advance_contract(
 
 def materialize_contract(
     plan_path: Path, state_root: Path, phase: str, destination: Path, *,
+    with_receipt: bool = False,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if phase not in {"binary", "package", "validation", "metadata"}:
@@ -1200,13 +1201,34 @@ def materialize_contract(
     ):
         raise ValueError("Contract materialization carrier disagrees with its reuse result")
     record = next(value for value in carrier["objects"] if _identity(value) == requested)
-    return restore_object(
-        carrier_root / object_relative_path(record["buildKey"], record["receiptSha256"]),
-        destination,
-        build_key=record["buildKey"],
-        receipt_sha256=record["receiptSha256"],
-        object_sha256=record["objectSha256"],
+    object_path = carrier_root / object_relative_path(
+        record["buildKey"], record["receiptSha256"],
     )
+    if not with_receipt:
+        return restore_object(
+            object_path,
+            destination,
+            build_key=record["buildKey"],
+            receipt_sha256=record["receiptSha256"],
+            object_sha256=record["objectSha256"],
+        )
+    with tempfile.TemporaryDirectory(
+        prefix="codex-agent-contract-handoff-", dir=root,
+    ) as temporary:
+        prepared = Path(temporary).resolve() / "handoff"
+        prepared.mkdir()
+        restored = restore_object(
+            object_path,
+            prepared / "stage",
+            build_key=record["buildKey"],
+            receipt_sha256=record["receiptSha256"],
+            object_sha256=record["objectSha256"],
+        )
+        receipt = prepared / "receipt"
+        receipt.mkdir()
+        (receipt / "phase-receipt.json").write_bytes(restored["receiptBytes"])
+        publish_regular_tree(prepared, destination)
+        return restored
 
 
 def discover(
@@ -1362,6 +1384,7 @@ def parser() -> argparse.ArgumentParser:
     materialize_command.add_argument("--state-root", type=Path, required=True)
     materialize_command.add_argument("--phase", required=True)
     materialize_command.add_argument("--destination", type=Path, required=True)
+    materialize_command.add_argument("--with-receipt", action="store_true")
     return result
 
 
@@ -1383,7 +1406,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             materialize_contract(
-                arguments.plan, arguments.state_root, arguments.phase, arguments.destination,
+                arguments.plan,
+                arguments.state_root,
+                arguments.phase,
+                arguments.destination,
+                with_receipt=arguments.with_receipt,
             )
     except (OSError, ValueError) as error:
         parser().error(str(error))
