@@ -390,6 +390,14 @@ def runtime_aggregate():
             "bundleSha256": sha256_bytes(f"bundle-{index}".encode()),
             "manifestSha256": sha256_bytes(f"manifest-{index}".encode()),
         })
+    maven_files = []
+    for component in sorted(RUNTIME_MAVEN_COMPONENTS):
+        primary = f"maven/{component}/runtime.bin"
+        maven_files.append(artifact(primary, component=component))
+        maven_files.extend(
+            artifact(primary + suffix, role="checksum", component=component)
+            for suffix in CONTRACT_CHECKSUM_SUFFIXES
+        )
     return {
         "schemaVersion": 1,
         "product": "runtime",
@@ -397,10 +405,7 @@ def runtime_aggregate():
         "runtimeCompatibilityVersion": "0.2.0",
         "contract": {"version": "0.2.0", "digest": DIGEST_A},
         "variants": variants,
-        "runtimeMavenFiles": [
-            artifact(f"maven/{component}/runtime.bin", component=component)
-            for component in sorted(RUNTIME_MAVEN_COMPONENTS)
-        ],
+        "runtimeMavenFiles": sorted(maven_files, key=lambda record: record["path"]),
         "adapterEvidence": [
             artifact("evidence/jvm.json", role="adapter", target="jvm"),
             artifact("evidence/node-js.json", role="adapter", target="node-js"),

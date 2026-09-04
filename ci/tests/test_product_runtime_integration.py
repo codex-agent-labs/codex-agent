@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from ci.products.aggregate import (
     RUNTIME_TARGETS,
     verify_runtime_aggregate_artifacts,
 )
+from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
@@ -169,6 +171,22 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
                 else receipt_map[(component, "metadata", component)]
             )
             owner["outputs"].append(_output("maven", f"outputs/{logical_path}", contents))
+            for suffix in CONTRACT_CHECKSUM_SUFFIXES:
+                sidecar_contents = (
+                    hashlib.new(suffix[1:], contents).hexdigest().encode("ascii") + b"\n"
+                )
+                sidecar_path = logical_path + suffix
+                sidecar = root / sidecar_path
+                sidecar.write_bytes(sidecar_contents)
+                maven_files.append({
+                    "path": sidecar_path,
+                    "role": "checksum",
+                    "component": component,
+                    "file": sidecar,
+                })
+                owner["outputs"].append(_output(
+                    "maven", f"outputs/{sidecar_path}", sidecar_contents,
+                ))
 
         contract_bytes = contract_receipt_path.read_bytes()
         for component in RUNTIME_ADAPTERS:
@@ -487,9 +505,10 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
             )
             output = next(
                 candidate for candidate in receipt["outputs"]
-                if candidate["kind"] == "maven"
+                if candidate["relativePath"] == "outputs/maven/jvm/runtime.bin"
             )
             output["relativePath"] = "outputs/maven/jvm/wrong.bin"
+            receipt["outputs"].sort(key=lambda value: value["relativePath"])
             refresh_reference(wrong_maven_path["aggregate_receipt"], receipt)
             with self.assertRaisesRegex(ValueError, "owned by exactly one"):
                 self.verify(wrong_maven_path)

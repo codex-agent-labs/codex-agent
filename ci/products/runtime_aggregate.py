@@ -12,6 +12,7 @@ from .aggregate import (
     RUNTIME_ADAPTERS,
     RUNTIME_TARGETS,
     validate_runtime_aggregate,
+    validate_runtime_maven_inventory,
     verify_runtime_aggregate_artifacts,
 )
 from .contract_attestation import verify_contract_attestation
@@ -273,16 +274,22 @@ def produce_runtime_aggregate(
         raise ValueError("Runtime variants do not reference the authenticated Contract")
 
     maven_records = []
+    maven_contents: dict[str, bytes] = {}
     for index, value in enumerate(require_array(runtime_maven_files, "Runtime Maven file inputs")):
         record = require_exact_keys(
             value, {"path", "role", "component", "file"},
             f"Runtime Maven file input[{index}]",
         )
-        maven_records.append(_file_record(
+        file_record = _file_record(
             Path(record["file"]), record["path"], record["role"],
             component=record["component"],
-        ))
+        )
+        maven_records.append(file_record)
+        maven_contents[file_record["path"]] = read_regular_file_bytes(
+            Path(record["file"]), reject_symlink_parents=True,
+        )
     maven_records.sort(key=lambda record: record["path"])
+    validate_runtime_maven_inventory(maven_records, maven_contents)
     if type(adapter_evidence) is not dict or set(adapter_evidence) != set(RUNTIME_ADAPTERS):
         raise ValueError("Runtime adapter evidence must contain exactly JVM, Node JS, and Node Wasm")
     adapter_records = sorted((

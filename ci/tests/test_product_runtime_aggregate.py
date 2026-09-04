@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import ci.products.runtime_aggregate as runtime_aggregate_module
-from ci.products.aggregate import RUNTIME_MAVEN_COMPONENTS, RUNTIME_TARGETS
+from ci.products.aggregate import (
+    RUNTIME_MAVEN_COMPONENTS,
+    RUNTIME_TARGETS,
+)
+from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
@@ -15,7 +20,12 @@ from ci.products.inventory import (
     sha256_file,
     write_canonical_json,
 )
-from ci.products.receipt import compute_build_key, write_output_manifest, write_phase_receipt
+from ci.products.receipt import (
+    compute_build_key,
+    output_inventory_digest,
+    write_output_manifest,
+    write_phase_receipt,
+)
 from ci.products.runtime_aggregate import (
     build_runtime_aggregate_attestation,
     produce_runtime_aggregate,
@@ -51,6 +61,22 @@ def _adapter_identities() -> list[tuple[str, str, str]]:
         *(("node-wasm", phase, "node-wasm") for phase in ("binary", "package", "metadata")),
         *(("node-wasm", "validation", target) for target in RUNTIME_TARGETS),
     ])
+
+
+def _checksum_input(primary: dict, suffix: str, contents: bytes | None = None) -> dict:
+    source = Path(f"{primary['file']}{suffix}")
+    if contents is None:
+        contents = (
+            hashlib.new(suffix[1:], Path(primary["file"]).read_bytes()).hexdigest().encode()
+            + b"\n"
+        )
+    source.write_bytes(contents)
+    return {
+        "path": f"{primary['path']}{suffix}",
+        "role": "checksum",
+        "component": primary["component"],
+        "file": source,
+    }
 
 
 class Fixture:
@@ -153,6 +179,12 @@ class Fixture:
                 "component": component,
                 "file": source,
             })
+        primaries = list(self.maven_inputs)
+        self.maven_inputs.extend(
+            _checksum_input(primary, suffix)
+            for primary in primaries
+            for suffix in CONTRACT_CHECKSUM_SUFFIXES
+        )
         self.adapter_evidence = {}
         for target in ("jvm", "node-js", "node-wasm"):
             path = root / f"{target}-projection.json"
@@ -326,6 +358,172 @@ class RuntimeAggregateProducerTest(unittest.TestCase):
             third_output.mkdir()
             third = fixture.produce(third_output)
             self.assertEqual(first["manifestPath"].read_bytes(), third["manifestPath"].read_bytes())
+
+    def test_runtime_maven_checksums_are_accepted_and_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture = Fixture(root / "fixture")
+            first_output = root / "first"
+            second_output = root / "second"
+            first_output.mkdir()
+            second_output.mkdir()
+            first = fixture.produce(first_output)
+            second = fixture.produce(second_output)
+
+            self.assertEqual(first["manifestPath"].read_bytes(), second["manifestPath"].read_bytes())
+            checksums = [
+                record for record in first["manifest"]["runtimeMavenFiles"]
+                if record["role"] == "checksum"
+            ]
+            self.assertEqual(
+                len(RUNTIME_MAVEN_COMPONENTS) * len(CONTRACT_CHECKSUM_SUFFIXES),
+                len(checksums),
+            )
+            for record in checksums:
+                source = next(
+                    value["file"] for value in fixture.maven_inputs
+                    if value["path"] == record["path"]
+                )
+                self.assertEqual(sha256_file(source), record["sha256"])
+
+    def test_runtime_maven_checksum_is_owned_by_the_exact_publication_receipt(self) -> None:
+        from ci.tests.test_product_runtime_integration import (
+            RuntimeAggregateIntegrationTest,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            integration = RuntimeAggregateIntegrationTest()
+            baseline = integration.fixture(root)
+            self.assertEqual(baseline["aggregate"], integration.verify(baseline))
+
+            for mode in ("moved", "duplicated"):
+                fixture = copy.deepcopy(baseline)
+                owner = next(
+                    receipt for receipt in fixture["adapter_receipt_values"]
+                    if (receipt["component"], receipt["phase"], receipt["target"])
+                    == ("jvm", "metadata", "jvm")
+                )
+                sidecar_path = "outputs/maven/jvm/runtime.bin.sha256"
+                sidecar_output = next(
+                    value for value in owner["outputs"]
+                    if value["relativePath"] == sidecar_path
+                )
+                wrong_owner = next(
+                    receipt for receipt in fixture["adapter_receipt_values"]
+                    if (receipt["component"], receipt["phase"], receipt["target"])
+                    == ("node-js", "metadata", "node-js")
+                )
+                if mode == "moved":
+                    owner["outputs"].remove(sidecar_output)
+                wrong_owner["outputs"].append(copy.deepcopy(sidecar_output))
+                wrong_owner["outputs"].sort(key=lambda value: value["relativePath"])
+                for receipt in (owner, wrong_owner):
+                    upstream = next(
+                        value
+                        for value in fixture["aggregate_receipt"]["inputs"]["upstreamArtifacts"]
+                        if (value["component"], value["phase"], value["target"])
+                        == (receipt["component"], receipt["phase"], receipt["target"])
+                    )
+                    upstream["outputsDigest"] = output_inventory_digest(receipt["outputs"])
+                with self.subTest(mode=mode), self.assertRaisesRegex(
+                    ValueError, "owned by exactly one",
+                ):
+                    integration.verify(fixture)
+
+    def test_runtime_maven_sidecar_boundary_rejects_invalid_publications(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture = Fixture(root / "fixture")
+            primary = fixture.maven_inputs[0]
+            primary_bytes = Path(primary["file"]).read_bytes()
+            sha256 = hashlib.sha256(primary_bytes).hexdigest().encode() + b"\n"
+            files = root / "invalid-maven-inputs"
+            files.mkdir()
+
+            def record(label: str, path: str, role: str, component: str, contents: bytes) -> dict:
+                source = files / label
+                source.write_bytes(contents)
+                return {
+                    "path": path,
+                    "role": role,
+                    "component": component,
+                    "file": source,
+                }
+
+            base = list(fixture.maven_inputs)
+            sidecar_path = f"{primary['path']}.sha256"
+            without_sidecar = [value for value in base if value["path"] != sidecar_path]
+            cases = {
+                "signature-role": (base + [record(
+                    "signature-role", f"{primary['path']}.sig", "signature",
+                    primary["component"], b"signature",
+                )], "signatures and checksums"),
+                "signature-laundering": (base + [record(
+                    "signature-laundering", f"{primary['path']}.sig", "runtime-resolution",
+                    primary["component"], b"signature",
+                )], "signatures and checksums"),
+                "asc": (base + [record(
+                    "asc", f"{primary['path']}.asc", "runtime-resolution",
+                    primary["component"], b"signature",
+                )], "signatures and checksums"),
+                "checksum-of-asc": (base + [record(
+                    "checksum-of-asc", f"{primary['path']}.asc.sha256", "checksum",
+                    primary["component"], sha256,
+                )], "signatures and checksums"),
+                "orphan": (base + [record(
+                    "orphan", "maven/jvm/orphan.jar.sha256", "checksum",
+                    primary["component"], sha256,
+                )], "orphaned"),
+                "wrong-component": (without_sidecar + [record(
+                    "wrong-component", sidecar_path, "checksum", "linux-x64", sha256,
+                )], "path does not match|component differs"),
+                "wrong-content": (without_sidecar + [record(
+                    "wrong-content", sidecar_path, "checksum",
+                    primary["component"], b"0" * 64,
+                )], "content is noncanonical"),
+                "noncanonical-content": (without_sidecar + [record(
+                    "noncanonical-content", sidecar_path, "checksum",
+                    primary["component"], sha256.removesuffix(b"\n"),
+                )], "content is noncanonical"),
+                "duplicate": (base + [dict(primary)], "paths must be unique"),
+                "unsupported-suffix": (base + [record(
+                    "unsupported-suffix", f"{primary['path']}.sha384", "checksum",
+                    primary["component"], hashlib.sha384(primary_bytes).hexdigest().encode(),
+                )], "suffix is unsupported"),
+                "sidecar-primary-role": (without_sidecar + [record(
+                    "sidecar-primary-role", sidecar_path, "runtime-resolution",
+                    primary["component"], sha256,
+                )], "sidecar role is not canonical"),
+                "publication-inventory": (base + [record(
+                    "publication-inventory", "maven/jvm/publication-inventory.json",
+                    "runtime-resolution", "jvm", b"{}\n",
+                )], "publication inventories are forbidden"),
+                "swapped-primary-component": ([
+                    ({**value, "component": "linux-x64"} if value["path"] == primary["path"] else value)
+                    for value in base
+                ], "path does not match"),
+                "incomplete-publication": (without_sidecar, "inventory is incomplete"),
+            }
+            with patch.object(
+                runtime_aggregate_module,
+                "verify_contract_attestation",
+                return_value=({
+                    "contractVersion": "0.2.0",
+                    "contractDigest": CONTRACT_DIGEST,
+                }, {}, {}),
+            ), patch.object(
+                runtime_aggregate_module,
+                "verify_runtime_variant_attestation",
+                side_effect=fixture.verify_variant,
+            ):
+                for label, (maven_inputs, message) in cases.items():
+                    output = root / label
+                    output.mkdir()
+                    arguments = fixture.produce_arguments(output)
+                    arguments["runtime_maven_files"] = maven_inputs
+                    with self.subTest(label=label), self.assertRaisesRegex(ValueError, message):
+                        produce_runtime_aggregate(**arguments)
 
     def test_external_attestation_binds_payload_receipts_and_mixed_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

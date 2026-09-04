@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -49,7 +50,6 @@ from .contract_model import (
     CONTRACT_ARTIFACT_COMPONENTS,
     CONTRACT_CHECKSUM_SUFFIXES,
     CONTRACT_COMPONENTS,
-    CONTRACT_MAVEN_ROLES,
     contract_component_digest,
     contract_digest,
     contract_evidence_identity,
@@ -80,6 +80,9 @@ RUNTIME_MAVEN_COMPONENTS = (
     "node-wasm",
     "windows-x64",
 )
+RUNTIME_MAVEN_PRIMARY_ROLES = {
+    "runtime-resolution", "module-metadata", "sources", "javadoc",
+}
 RUNTIME_VARIANT_ZIP_LIMITS = {
     "max_archive_bytes": 512 * 1024 * 1024,
     "max_central_directory_bytes": 32 * 1024 * 1024,
@@ -620,6 +623,80 @@ def _runtime_variant_record(value: Any, label: str) -> dict[str, Any]:
     return record
 
 
+def validate_runtime_maven_inventory(
+    records: list[dict[str, Any]],
+    contents: dict[str, bytes] | None = None,
+) -> list[dict[str, Any]]:
+    records_by_path = {record["path"]: record for record in records}
+    if len(records_by_path) != len(records):
+        raise ValueError("Runtime Maven publication inventory paths must be unique")
+    primaries: list[str] = []
+    sidecars: list[tuple[str, str]] = []
+    for record in records:
+        path = record["path"]
+        role = record["role"]
+        component = record["component"]
+        if component not in RUNTIME_MAVEN_COMPONENTS or not path.startswith(
+            f"maven/{component}/"
+        ):
+            raise ValueError("Runtime Maven path does not match its component")
+        suffix = next(
+            (value for value in CONTRACT_CHECKSUM_SUFFIXES if path.endswith(value)),
+            None,
+        )
+        primary_path = path.removesuffix(suffix) if suffix else path
+        filename = PurePosixPath(path).name
+        primary_filename = PurePosixPath(primary_path).name
+        if (
+            primary_filename.endswith((".asc", ".sig"))
+            or filename.endswith((".asc", ".sig"))
+            or ".asc." in filename
+            or ".sig." in filename
+        ):
+            raise ValueError("Runtime Maven signatures and checksums of signatures are forbidden")
+        if filename.endswith(("-inventory.json", ".inventory.json")):
+            raise ValueError("Runtime Maven publication inventories are forbidden")
+        if suffix is None and re.search(r"\.(?:md|sha)[0-9]+$", path):
+            raise ValueError("Runtime Maven checksum suffix is unsupported")
+        if suffix is not None:
+            if role != "checksum":
+                raise ValueError("Runtime Maven checksum sidecar role is not canonical")
+            primary = records_by_path.get(primary_path)
+            if primary is None:
+                raise ValueError("Runtime Maven checksum sidecar is orphaned")
+            if primary["component"] != record["component"]:
+                raise ValueError("Runtime Maven checksum sidecar component differs from its primary")
+            if primary["role"] not in RUNTIME_MAVEN_PRIMARY_ROLES:
+                raise ValueError("Runtime Maven checksum sidecar primary role is unsupported")
+            sidecars.append((path, suffix))
+        elif role not in RUNTIME_MAVEN_PRIMARY_ROLES:
+            raise ValueError("Runtime Maven primary role is unsupported")
+        else:
+            primaries.append(path)
+    expected_sidecars = {
+        primary + suffix for primary in primaries for suffix in CONTRACT_CHECKSUM_SUFFIXES
+    }
+    actual_sidecars = {path for path, _ in sidecars}
+    if actual_sidecars != expected_sidecars:
+        raise ValueError("Runtime Maven checksum inventory is incomplete or unexpected")
+    if contents is not None:
+        if set(contents) != set(records_by_path):
+            raise ValueError("Runtime Maven publication contents differ from its inventory")
+        for path, record in records_by_path.items():
+            member = contents[path]
+            if len(member) != record["bytes"] or sha256_bytes(member) != record["sha256"]:
+                raise ValueError(f"Runtime Maven declared bytes or digest mismatch: {path}")
+        for path, suffix in sidecars:
+            primary_path = path.removesuffix(suffix)
+            expected = (
+                hashlib.new(suffix[1:], contents[primary_path]).hexdigest().encode("ascii")
+                + b"\n"
+            )
+            if contents[path] != expected:
+                raise ValueError(f"Runtime Maven checksum content is noncanonical: {path}")
+    return records
+
+
 def validate_runtime_aggregate(value: Any) -> dict[str, Any]:
     aggregate = require_exact_keys(
         value,
@@ -656,11 +733,9 @@ def validate_runtime_aggregate(value: Any) -> dict[str, Any]:
     if len({record["componentId"] for record in variants}) != len(variants):
         raise ValueError("Runtime aggregate component IDs must be distinct")
     maven_files = _artifact_records(aggregate["runtimeMavenFiles"], "Runtime aggregate.runtimeMavenFiles", component=True)
-    if any(
-        not record["path"].startswith("maven/") or record["role"] not in CONTRACT_MAVEN_ROLES
-        for record in maven_files
-    ):
+    if any(not record["path"].startswith("maven/") for record in maven_files):
         raise ValueError("Runtime aggregate Maven inventory has an unsupported scope or role")
+    validate_runtime_maven_inventory(maven_files)
     if set(record["component"] for record in maven_files) != set(RUNTIME_MAVEN_COMPONENTS):
         raise ValueError("Runtime aggregate Maven inventory must cover JVM, Native, Node JS, and Node Wasm")
     if {
@@ -830,7 +905,7 @@ def verify_runtime_aggregate_artifacts(
 
     def require_owner(
         kind: str, relative_path: str, byte_count: int, digest: str, label: str,
-        receipts: list[dict[str, Any]] = all_receipts,
+        expected_receipt: dict[str, Any] | None = None,
     ) -> None:
         expected = {
             "kind": kind,
@@ -840,14 +915,17 @@ def verify_runtime_aggregate_artifacts(
         }
         matches = [
             (receipt, output)
-            for receipt in receipts
+            for receipt in all_receipts
             for output in receipt["outputs"]
             if all(output[field] == value for field, value in expected.items())
         ]
-        if len(matches) != 1:
+        if len(matches) != 1 or (
+            expected_receipt is not None and matches[0][0] is not expected_receipt
+        ):
             raise ValueError(f"{label} must be owned by exactly one immutable receipt output")
 
     actual_maven = []
+    actual_maven_contents: dict[str, bytes] = {}
     for index, value in enumerate(require_array(runtime_maven_files, "Runtime Maven file inputs")):
         source = require_exact_keys(
             value, {"path", "role", "component", "file"},
@@ -873,11 +951,18 @@ def verify_runtime_aggregate_artifacts(
             "sha256": sha256_bytes(contents),
         }
         actual_maven.append(record)
+        actual_maven_contents[logical_path] = contents
+        owner_receipt = (
+            variant_receipts[component]["package"]
+            if component in RUNTIME_TARGETS
+            else adapter_receipt_map[(component, "metadata", component)]
+        )
         require_owner(
             "maven", f"outputs/{logical_path}", record["bytes"], record["sha256"],
-            f"Runtime Maven input {logical_path}",
+            f"Runtime Maven input {logical_path}", owner_receipt,
         )
     actual_maven.sort(key=lambda record: record["path"])
+    validate_runtime_maven_inventory(actual_maven, actual_maven_contents)
     if actual_maven != aggregate["runtimeMavenFiles"]:
         raise ValueError("Runtime aggregate Maven files differ from the verified inputs")
 

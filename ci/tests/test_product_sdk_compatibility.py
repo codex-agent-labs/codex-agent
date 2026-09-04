@@ -20,6 +20,7 @@ from ci.products.aggregate import (
 from ci.products.c_abi import TARGET_SPECS
 from ci.products.contract import build_contract_bundle
 from ci.products.contract_attestation import build_contract_attestation
+from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
@@ -302,6 +303,14 @@ class Fixture:
                 "phaseReceipts": dict(variant_attestation["phaseReceipts"]),
             })
 
+        maven_files = []
+        for component in sorted(RUNTIME_MAVEN_COMPONENTS):
+            primary = f"maven/{component}/runtime.bin"
+            maven_files.append(_artifact(primary, component=component))
+            maven_files.extend(
+                _artifact(primary + suffix, role="checksum", component=component)
+                for suffix in CONTRACT_CHECKSUM_SUFFIXES
+            )
         self.aggregate = {
             "schemaVersion": 1,
             "product": "runtime",
@@ -312,10 +321,7 @@ class Fixture:
                 "digest": self.contract["contractDigest"],
             },
             "variants": aggregate_variants,
-            "runtimeMavenFiles": [
-                _artifact(f"maven/{component}/runtime.bin", component=component)
-                for component in sorted(RUNTIME_MAVEN_COMPONENTS)
-            ],
+            "runtimeMavenFiles": sorted(maven_files, key=lambda record: record["path"]),
             "adapterEvidence": [
                 _artifact("evidence/jvm.json", role="adapter", target="jvm"),
                 _artifact("evidence/node-js.json", role="adapter", target="node-js"),
