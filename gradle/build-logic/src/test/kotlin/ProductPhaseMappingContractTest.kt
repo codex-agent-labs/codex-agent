@@ -20,6 +20,7 @@ class ProductPhaseMappingContractTest {
         val expected = linkedMapOf(
             Triple("contract", "contract", "binary") to "writeContractBinaryOutputManifest",
             Triple("contract", "contract", "package") to "writeContractPackageOutputManifest",
+            Triple("contract", "contract", "validation") to "writeContractValidationOutputManifest",
             Triple("sdk", "sdk-core", "binary") to "writeSdkCoreBinaryOutputManifest",
             Triple("sdk", "sdk-core", "package") to "writeSdkCorePackageOutputManifest",
             Triple("sdk", "sdk-android", "binary") to "writeSdkAndroidBinaryOutputManifest",
@@ -84,6 +85,40 @@ class ProductPhaseMappingContractTest {
             ":codex-agent-core:",
         )) {
             assertFalse(forbidden in packagePhase, forbidden)
+        }
+    }
+
+    @Test
+    fun Contract_validation_consumes_only_an_imported_package_and_authenticated_receipts() {
+        val validation = between(
+            contract,
+            "val importedContractPackageStage =",
+            "val sdk = providers.provider",
+        )
+        for (required in listOf(
+            "codexAgent.contractPackageStageRoot",
+            "codexAgent.contractPackageReceipt",
+            "codexAgent.contractPackageReceiptSha256",
+            "codexAgent.contractBinaryReceipt",
+            "codexAgent.contractBinaryReceiptSha256",
+            "tasks.register<SnapshotImportedProductStageTask>",
+            "tasks.register<VerifyImportedProductOutputManifestTask>",
+            "validate-package",
+            "writeContractValidationOutputManifest",
+        )) {
+            assertTrue(required in validation, required)
+        }
+        for (forbidden in listOf(
+            "writeContractBinaryOutputManifest",
+            "writeContractPackageOutputManifest",
+            "stageContractBundleInputs",
+            "prepareContractInputs",
+            "assembleContractBundle",
+            "verifyContractBundle",
+            "contractPublicationTasks",
+            ":codex-agent-core:",
+        )) {
+            assertFalse(forbidden in validation, forbidden)
         }
     }
 

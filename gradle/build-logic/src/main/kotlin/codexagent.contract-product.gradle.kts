@@ -209,6 +209,105 @@ val writeContractPackageOutputManifest = tasks.register<WriteProductOutputManife
     stageRoot.set(contractPackagePhaseRoot)
     manifestFile.set(contractPackagePhaseRoot.map { it.file("output-manifest.json") })
 }
+val importedContractPackageStage = layout.dir(
+    providers.gradleProperty("codexAgent.contractPackageStageRoot").map(::file),
+)
+val importedContractPackageSnapshot = contractProductRoot.map { it.dir("imported/package") }
+val importedContractPackageReceipt = layout.file(
+    providers.gradleProperty("codexAgent.contractPackageReceipt").map(::file),
+)
+val importedContractPackageReceiptSha256 = providers.gradleProperty(
+    "codexAgent.contractPackageReceiptSha256",
+)
+val importedContractBinaryReceipt = layout.file(
+    providers.gradleProperty("codexAgent.contractBinaryReceipt").map(::file),
+)
+val importedContractBinaryReceiptSha256 = providers.gradleProperty(
+    "codexAgent.contractBinaryReceiptSha256",
+)
+val contractValidationPhaseRoot = layout.buildDirectory.dir("product-stage/contract/contract/validation")
+val contractValidationOutputs = contractValidationPhaseRoot.map { it.dir("outputs") }
+val contractValidationEvidence = contractValidationOutputs.map { it.dir("validation") }
+val invalidateContractValidationPhase = tasks.register<Delete>("invalidateContractValidationPhase") {
+    delete(importedContractPackageSnapshot, contractValidationPhaseRoot)
+}
+val snapshotImportedContractPackageStage = tasks.register<SnapshotImportedProductStageTask>(
+    "snapshotImportedContractPackageStage",
+) {
+    dependsOn(invalidateContractValidationPhase)
+    sourceDirectory.set(importedContractPackageStage)
+    outputDirectory.set(importedContractPackageSnapshot)
+    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(layout.projectDirectory)
+}
+val verifyImportedContractPackageOutputManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
+    "verifyImportedContractPackageOutputManifest",
+) {
+    dependsOn(snapshotImportedContractPackageStage)
+    product.set("contract")
+    component.set("contract")
+    phase.set("package")
+    target.set("common")
+    productVersion.set(contractVersion)
+    stageRoot.set(importedContractPackageSnapshot)
+    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(layout.projectDirectory)
+}
+val stageContractValidationFromImportedPackage = tasks.register<Sync>(
+    "stageContractValidationFromImportedPackage",
+) {
+    dependsOn(verifyImportedContractPackageOutputManifest)
+    into(contractValidationOutputs)
+    from(importedContractPackageSnapshot.map { it.dir("outputs") })
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
+val validateImportedContractPackage = tasks.register<Exec>("validateImportedContractPackage") {
+    group = "verification"
+    description = "Validates one authenticated Contract package and its exact predecessor receipts."
+    dependsOn(stageContractValidationFromImportedPackage)
+    inputs.file(importedContractPackageReceipt)
+    inputs.file(importedContractBinaryReceipt)
+    inputs.property("packageReceiptSha256", importedContractPackageReceiptSha256)
+    inputs.property("binaryReceiptSha256", importedContractBinaryReceiptSha256)
+    outputs.dir(contractValidationEvidence)
+    environment("PYTHONDONTWRITEBYTECODE", "1")
+    executable("python3")
+    args("-m", "ci.products.contract", "validate-package", "--package-stage")
+    args(importedContractPackageSnapshot.map { it.asFile.absolutePath })
+    args("--package-receipt")
+    args(importedContractPackageReceipt.map { it.asFile.absolutePath })
+    args("--package-receipt-sha256", importedContractPackageReceiptSha256)
+    args("--binary-receipt")
+    args(importedContractBinaryReceipt.map { it.asFile.absolutePath })
+    args("--binary-receipt-sha256", importedContractBinaryReceiptSha256)
+    args("--output-directory")
+    args(contractValidationEvidence.map { it.asFile.absolutePath })
+    args("--contract-version", contractVersion)
+}
+val writeContractValidationOutputManifest = tasks.register<WriteProductOutputManifestTask>(
+    "writeContractValidationOutputManifest",
+) {
+    group = "verification"
+    description = "Stages the validated Contract payload and deterministic validation evidence."
+    dependsOn(validateImportedContractPackage)
+    product.set("contract")
+    component.set("contract")
+    phase.set("validation")
+    target.set("common")
+    productVersion.set(contractVersion)
+    outputRoots.set(mapOf(
+        "maven" to "outputs/maven",
+        "evidence" to "outputs/evidence",
+        "inventory" to "outputs/inventories",
+        "validation" to "outputs/validation",
+    ))
+    outputsDirectory.set(contractValidationOutputs)
+    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(layout.projectDirectory)
+    stageRoot.set(contractValidationPhaseRoot)
+    manifestFile.set(contractValidationPhaseRoot.map { it.file("output-manifest.json") })
+}
 val sdk = providers.provider {
     checkNotNull(findProject(":codex-agent-sdk")) {
         "SDK product phases require :codex-agent-sdk"
@@ -327,6 +426,7 @@ tasks.register("ciProductPhase") {
         when (selection) {
             Triple("contract", "contract", "binary") -> writeContractBinaryOutputManifest
             Triple("contract", "contract", "package") -> writeContractPackageOutputManifest
+            Triple("contract", "contract", "validation") -> writeContractValidationOutputManifest
             Triple("sdk", "sdk-core", "binary") -> checkNotNull(writeSdkCoreBinaryOutputManifest) {
                 "SDK Core binary producer was not authenticated during settings evaluation"
             }

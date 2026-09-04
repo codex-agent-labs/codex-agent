@@ -32,13 +32,26 @@ from .inventory import (
     git_inventory as inventory,
     git_inventory_paths as inventory_paths,
     load_canonical_json,
+    load_canonical_json_bytes,
+    read_regular_file_bytes,
     regular_file_inventory,
+    require_array,
+    require_exact_keys,
+    require_integer,
+    require_sha256,
     require_semver,
     run_git,
+    sha256_bytes,
     sha256_file,
+    snapshot_regular_tree,
     write_canonical_json,
 )
-from .receipt import validate_producer
+from .receipt import (
+    output_inventory_digest,
+    validate_phase_receipt,
+    validate_producer,
+    verify_output_manifest_identity,
+)
 from .signatures import (
     generate_development_key,
     sign_manifest,
@@ -97,28 +110,15 @@ def _write_contract_zip(root: Path, output: Path) -> None:
             archive.writestr(info, (root / record["relativePath"]).read_bytes())
 
 
-def build_contract_bundle(
-    staging_root: Path,
-    output: Path,
+def _contract_payload_identity(
+    root: Path,
     contract_version: str,
     producer: dict[str, Any],
-    private_key: Path,
-    public_key: Path,
-    signing: dict[str, Any],
-) -> dict[str, Any]:
-    root = Path(staging_root)
-    output = Path(output)
+) -> tuple[dict[str, Any], dict[str, bytes]]:
     require_semver(contract_version, "Contract version")
     validate_producer(producer, "Contract manifest.producer")
-    validate_signing_metadata(signing, trust_domain="development")
     if root.is_symlink() or not root.is_dir():
         raise ValueError("Contract staging root is missing or unsafe")
-    _reject_symlinked_output_parent(output, root)
-    if output.resolve().is_relative_to(root.resolve()):
-        raise ValueError("Contract Bundle output must be outside the staging root")
-    expected_name = f"codex-agent-contract-{contract_version}.zip"
-    if output.name != expected_name:
-        raise ValueError(f"Contract Bundle output must be named {expected_name}")
     existing = regular_file_inventory(root)
     if any(record["relativePath"] in {"contract-manifest.json", "contract-manifest.sig"} for record in existing):
         raise ValueError("Contract staging root contains a stale manifest or signature")
@@ -152,7 +152,7 @@ def build_contract_bundle(
             "sha256": contract_component_digest(records, contract_version, maven_contents),
         }
     identity = contract_evidence_identity(root)
-    manifest = {
+    return ({
         "schemaVersion": 1,
         "product": "contract",
         "contractVersion": contract_version,
@@ -165,6 +165,30 @@ def build_contract_bundle(
         "components": components,
         "mavenFiles": maven_files,
         "evidenceFiles": evidence_files,
+    }, maven_contents)
+
+
+def build_contract_bundle(
+    staging_root: Path,
+    output: Path,
+    contract_version: str,
+    producer: dict[str, Any],
+    private_key: Path,
+    public_key: Path,
+    signing: dict[str, Any],
+) -> dict[str, Any]:
+    root = Path(staging_root)
+    output = Path(output)
+    validate_signing_metadata(signing, trust_domain="development")
+    _reject_symlinked_output_parent(output, root)
+    if output.resolve().is_relative_to(root.resolve()):
+        raise ValueError("Contract Bundle output must be outside the staging root")
+    expected_name = f"codex-agent-contract-{contract_version}.zip"
+    if output.name != expected_name:
+        raise ValueError(f"Contract Bundle output must be named {expected_name}")
+    payload, maven_contents = _contract_payload_identity(root, contract_version, producer)
+    manifest = {
+        **payload,
         "signing": signing,
         "producer": producer,
     }
@@ -346,6 +370,186 @@ def build_development_contract_bundle(
         )
         _publish_prepared_directory(prepared, output)
     return manifest
+
+
+CONTRACT_VALIDATION_REPORT_NAME = "contract-validation.json"
+
+
+def _receipt_reference(receipt: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "product": receipt["product"],
+        "component": receipt["component"],
+        "phase": receipt["phase"],
+        "target": receipt["target"],
+        "buildKey": receipt["buildKey"],
+        "outputsDigest": output_inventory_digest(receipt["outputs"]),
+    }
+
+
+def _read_contract_receipt(
+    path: Path,
+    expected_sha256: str,
+    phase: str,
+    contract_version: str,
+) -> tuple[dict[str, Any], bytes]:
+    expected = require_sha256(expected_sha256, f"expected Contract {phase} receipt SHA-256")
+    contents = read_regular_file_bytes(
+        Path(path), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+    )
+    if sha256_bytes(contents) != expected:
+        raise ValueError(f"Contract {phase} receipt does not match its authenticated digest")
+    receipt = validate_phase_receipt(load_canonical_json_bytes(contents))
+    if (
+        receipt["product"],
+        receipt["component"],
+        receipt["phase"],
+        receipt["target"],
+        receipt["productVersion"],
+    ) != ("contract", "contract", phase, "common", contract_version):
+        raise ValueError(f"Contract {phase} receipt identity is invalid")
+    return receipt, contents
+
+
+def validate_contract_validation_report(value: Any) -> dict[str, Any]:
+    report = require_exact_keys(
+        value,
+        {
+            "schemaVersion",
+            "product",
+            "component",
+            "phase",
+            "target",
+            "contractVersion",
+            "packageOutputManifestSha256",
+            "contractDigest",
+            "canonicalApiDigest",
+            "canonicalCoverageDigest",
+            "protocolDigest",
+            "capabilityCount",
+            "componentDigests",
+            "result",
+        },
+        "Contract validation report",
+    )
+    if require_integer(report["schemaVersion"], "Contract validation report.schemaVersion", 1) != 1:
+        raise ValueError("Unsupported Contract validation report schemaVersion")
+    for field, expected in {
+        "product": "contract",
+        "component": "contract",
+        "phase": "validation",
+        "target": "common",
+        "result": "passed",
+    }.items():
+        if report[field] != expected:
+            raise ValueError(f"Contract validation report {field} is invalid")
+    require_semver(report["contractVersion"], "Contract validation report.contractVersion")
+    for field in (
+        "packageOutputManifestSha256",
+        "contractDigest",
+        "canonicalApiDigest",
+        "canonicalCoverageDigest",
+        "protocolDigest",
+    ):
+        require_sha256(report[field], f"Contract validation report.{field}")
+    if require_integer(
+        report["capabilityCount"], "Contract validation report.capabilityCount", 1,
+    ) != 556:
+        raise ValueError("Contract validation report capabilityCount must be 556")
+    component_digests = require_array(
+        report["componentDigests"], "Contract validation report.componentDigests",
+    )
+    expected_components = sorted(CONTRACT_COMPONENTS)
+    if [record.get("component") if type(record) is dict else None for record in component_digests] != expected_components:
+        raise ValueError("Contract validation report component digests are incomplete or unordered")
+    for index, record in enumerate(component_digests):
+        value = require_exact_keys(
+            record, {"component", "sha256"},
+            f"Contract validation report.componentDigests[{index}]",
+        )
+        require_sha256(
+            value["sha256"], f"Contract validation report.componentDigests[{index}].sha256",
+        )
+    return report
+
+
+def validate_contract_package_stage(
+    package_stage: Path,
+    package_receipt_path: Path,
+    package_receipt_sha256: str,
+    binary_receipt_path: Path,
+    binary_receipt_sha256: str,
+    output_directory: Path,
+    contract_version: str,
+) -> dict[str, Any]:
+    require_semver(contract_version, "Contract version")
+    output = Path(output_directory)
+    package_stage = Path(package_stage)
+    _reject_symlinked_output_parent(output, package_stage)
+    lexical_output = Path(os.path.abspath(output))
+    lexical_package = Path(os.path.abspath(package_stage))
+    resolved_output = lexical_output.parent.resolve(strict=False) / lexical_output.name
+    resolved_package = lexical_package.resolve(strict=True)
+    for left, right in (
+        (lexical_output, lexical_package),
+        (resolved_output, resolved_package),
+    ):
+        if left == right or left in right.parents or right in left.parents:
+            raise ValueError("Contract validation output overlaps its package input")
+    if output.exists() or output.is_symlink():
+        raise ValueError("Contract validation output directory must not exist")
+    package_receipt, _ = _read_contract_receipt(
+        package_receipt_path, package_receipt_sha256, "package", contract_version,
+    )
+    binary_receipt, _ = _read_contract_receipt(
+        binary_receipt_path, binary_receipt_sha256, "binary", contract_version,
+    )
+    if package_receipt["inputs"]["upstreamArtifacts"] != [_receipt_reference(binary_receipt)]:
+        raise ValueError("Contract package receipt does not bind the supplied binary receipt")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="contract-package-validation-", dir=output.parent) as temporary:
+        workspace = Path(temporary)
+        snapshot = workspace / "package"
+        snapshot_regular_tree(package_stage, snapshot)
+        manifest = verify_output_manifest_identity(
+            snapshot, "contract", "contract", "package", "common", contract_version,
+        )
+        if package_receipt["outputs"] != manifest["outputs"]:
+            raise ValueError("Contract package receipt and output manifest disagree")
+        if binary_receipt["outputs"] != manifest["outputs"]:
+            raise ValueError("Contract package payload differs from its binary predecessor")
+        payload, _ = _contract_payload_identity(
+            snapshot / "outputs", contract_version, binary_receipt["producer"],
+        )
+        report = validate_contract_validation_report({
+            "schemaVersion": 1,
+            "product": "contract",
+            "component": "contract",
+            "phase": "validation",
+            "target": "common",
+            "contractVersion": contract_version,
+            "packageOutputManifestSha256": sha256_bytes(canonical_json_bytes(manifest)),
+            "contractDigest": payload["contractDigest"],
+            "canonicalApiDigest": payload["canonicalApiDigest"],
+            "canonicalCoverageDigest": payload["canonicalCoverageDigest"],
+            "protocolDigest": payload["protocolDigest"],
+            "capabilityCount": payload["capabilityCount"],
+            "componentDigests": [
+                {"component": component, "sha256": payload["components"][component]["sha256"]}
+                for component in sorted(CONTRACT_COMPONENTS)
+            ],
+            "result": "passed",
+        })
+        prepared = workspace / "result"
+        write_canonical_json(prepared / CONTRACT_VALIDATION_REPORT_NAME, report)
+        if regular_file_inventory(prepared) != [{
+            "relativePath": CONTRACT_VALIDATION_REPORT_NAME,
+            "bytes": len(canonical_json_bytes(report)),
+            "sha256": sha256_bytes(canonical_json_bytes(report)),
+        }]:
+            raise ValueError("Contract validation output inventory is invalid")
+        _publish_prepared_directory(prepared, output)
+    return report
 
 
 CONTRACT_INPUT_PATHSPEC_FILES = {
@@ -552,6 +756,14 @@ def main(argv: list[str] | None = None) -> int:
     development_build.add_argument("--output-directory", type=Path, required=True)
     development_build.add_argument("--contract-version", required=True)
     development_build.add_argument("--producer", type=Path, required=True)
+    validate_package = commands.add_parser("validate-package")
+    validate_package.add_argument("--package-stage", type=Path, required=True)
+    validate_package.add_argument("--package-receipt", type=Path, required=True)
+    validate_package.add_argument("--package-receipt-sha256", required=True)
+    validate_package.add_argument("--binary-receipt", type=Path, required=True)
+    validate_package.add_argument("--binary-receipt-sha256", required=True)
+    validate_package.add_argument("--output-directory", type=Path, required=True)
+    validate_package.add_argument("--contract-version", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("--archive", type=Path, required=True)
     verify.add_argument("--public-key", type=Path, required=True)
@@ -615,6 +827,16 @@ def main(argv: list[str] | None = None) -> int:
             arguments.output_directory,
             arguments.contract_version,
             load_canonical_json(arguments.producer),
+        )
+    elif arguments.command == "validate-package":
+        validate_contract_package_stage(
+            arguments.package_stage,
+            arguments.package_receipt,
+            arguments.package_receipt_sha256,
+            arguments.binary_receipt,
+            arguments.binary_receipt_sha256,
+            arguments.output_directory,
+            arguments.contract_version,
         )
     elif arguments.command == "verify":
         verify_contract_bundle(arguments.archive, arguments.public_key, expected_trust_domain="development")

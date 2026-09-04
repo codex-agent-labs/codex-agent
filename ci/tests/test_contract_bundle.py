@@ -17,11 +17,17 @@ import zipfile
 
 import ci.products.contract as contract_product
 from ci.impact import read_pathspecs
-from ci.products.contract_model import verify_contract_bundle, verify_contract_git_inventories
+from ci.products.contract_model import (
+    CONTRACT_COMPONENTS,
+    verify_contract_bundle,
+    verify_contract_git_inventories,
+)
 from ci.products.contract import (
     build_contract_bundle,
     build_development_contract_bundle,
     prepare_contract_inputs,
+    validate_contract_package_stage,
+    validate_contract_validation_report,
 )
 from ci.products.inventory import (
     canonical_json_bytes,
@@ -31,6 +37,9 @@ from ci.products.inventory import (
     verified_zip_contents,
     write_canonical_json,
 )
+from ci.products.plan import plan_phase
+from ci.products.receipt import write_output_manifest, write_phase_receipt
+from ci.products.registry import PhaseInstanceId
 from ci.products.signatures import generate_development_key, sign_manifest
 
 
@@ -743,6 +752,250 @@ class ContractBundleTest(unittest.TestCase):
             ],
         )
         return archive
+
+    def _product_phase_stages(self, root: Path):
+        versions = {
+            "contract": VERSION,
+            "runtime-release": VERSION,
+            "runtime-compatibility": VERSION,
+            "sdk": VERSION,
+        }
+        output_roots = {
+            "maven": "outputs/maven",
+            "evidence": "outputs/evidence",
+            "inventory": "outputs/inventories",
+        }
+        binary_id = PhaseInstanceId("contract", "contract", "binary", "common")
+        binary_stage = root / "binary-stage"
+        _write_staging(binary_stage / "outputs")
+        write_output_manifest(
+            binary_stage, "contract", "contract", "binary", "common", VERSION, output_roots,
+        )
+        binary_plan = plan_phase(
+            binary_id,
+            inventory=[{
+                "relativePath": "contract-input", "bytes": 1, "sha256": sha256_bytes(b"b"),
+            }],
+            versions=versions,
+            upstream_receipts=[],
+            toolchain_profile_digest=sha256_bytes(b"not-applicable-toolchain"),
+            flags_digest=sha256_bytes(b"not-applicable-flags"),
+        )
+        binary_receipt_root = root / "binary-receipt"
+        binary_receipt_root.mkdir()
+        binary_receipt = write_phase_receipt(
+            binary_stage,
+            binary_receipt_root,
+            "contract",
+            "contract",
+            "binary",
+            "common",
+            VERSION,
+            binary_plan["buildKey"],
+            binary_plan["inputs"],
+            PRODUCER,
+            "development",
+        )
+
+        package_id = PhaseInstanceId("contract", "contract", "package", "common")
+        package_stage = root / "package-stage"
+        shutil.copytree(binary_stage / "outputs", package_stage / "outputs")
+        write_output_manifest(
+            package_stage, "contract", "contract", "package", "common", VERSION, output_roots,
+        )
+        package_plan = plan_phase(
+            package_id,
+            inventory=[{
+                "relativePath": "contract-package", "bytes": 1, "sha256": sha256_bytes(b"p"),
+            }],
+            versions=versions,
+            upstream_receipts=[binary_receipt],
+            toolchain_profile_digest=sha256_bytes(b"not-applicable-toolchain"),
+            flags_digest=sha256_bytes(b"not-applicable-flags"),
+        )
+        package_receipt_root = root / "package-receipt"
+        package_receipt_root.mkdir()
+        package_receipt = write_phase_receipt(
+            package_stage,
+            package_receipt_root,
+            "contract",
+            "contract",
+            "package",
+            "common",
+            VERSION,
+            package_plan["buildKey"],
+            package_plan["inputs"],
+            PRODUCER,
+            "development",
+        )
+        return {
+            "binary_stage": binary_stage,
+            "binary_receipt": binary_receipt,
+            "binary_receipt_path": binary_receipt_root / "phase-receipt.json",
+            "package_receipt": package_receipt,
+            "package_receipt_path": package_receipt_root / "phase-receipt.json",
+            "package_stage": package_stage,
+        }
+
+    def test_package_validation_is_deterministic_and_receipt_bound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            phase = self._product_phase_stages(root)
+            binary_digest = sha256_file(phase["binary_receipt_path"])
+            package_digest = sha256_file(phase["package_receipt_path"])
+            first = validate_contract_package_stage(
+                phase["package_stage"],
+                phase["package_receipt_path"],
+                package_digest,
+                phase["binary_receipt_path"],
+                binary_digest,
+                root / "first",
+                VERSION,
+            )
+            second = validate_contract_package_stage(
+                phase["package_stage"],
+                phase["package_receipt_path"],
+                package_digest,
+                phase["binary_receipt_path"],
+                binary_digest,
+                root / "second",
+                VERSION,
+            )
+            self.assertEqual(first, second)
+            self.assertEqual(
+                (root / "first/contract-validation.json").read_bytes(),
+                (root / "second/contract-validation.json").read_bytes(),
+            )
+            self.assertEqual(556, first["capabilityCount"])
+            self.assertEqual(sorted(CONTRACT_COMPONENTS), [
+                value["component"] for value in first["componentDigests"]
+            ])
+
+            alternate_binary_plan = plan_phase(
+                PhaseInstanceId("contract", "contract", "binary", "common"),
+                inventory=[{
+                    "relativePath": "other-input", "bytes": 1, "sha256": sha256_bytes(b"o"),
+                }],
+                versions={
+                    "contract": VERSION,
+                    "runtime-release": VERSION,
+                    "runtime-compatibility": VERSION,
+                    "sdk": VERSION,
+                },
+                upstream_receipts=[],
+                toolchain_profile_digest=sha256_bytes(b"not-applicable-toolchain"),
+                flags_digest=sha256_bytes(b"not-applicable-flags"),
+            )
+            alternate_binary_root = root / "alternate-binary-receipt"
+            alternate_binary_root.mkdir()
+            alternate_binary = write_phase_receipt(
+                phase["binary_stage"],
+                alternate_binary_root,
+                "contract", "contract", "binary", "common", VERSION,
+                alternate_binary_plan["buildKey"], alternate_binary_plan["inputs"],
+                PRODUCER, "development",
+            )
+            alternate_package_plan = plan_phase(
+                PhaseInstanceId("contract", "contract", "package", "common"),
+                inventory=[{
+                    "relativePath": "contract-package", "bytes": 1,
+                    "sha256": sha256_bytes(b"p"),
+                }],
+                versions={
+                    "contract": VERSION,
+                    "runtime-release": VERSION,
+                    "runtime-compatibility": VERSION,
+                    "sdk": VERSION,
+                },
+                upstream_receipts=[alternate_binary],
+                toolchain_profile_digest=sha256_bytes(b"not-applicable-toolchain"),
+                flags_digest=sha256_bytes(b"not-applicable-flags"),
+            )
+            alternate_package_root = root / "alternate-package-receipt"
+            alternate_package_root.mkdir()
+            write_phase_receipt(
+                phase["package_stage"],
+                alternate_package_root,
+                "contract", "contract", "package", "common", VERSION,
+                alternate_package_plan["buildKey"], alternate_package_plan["inputs"],
+                PRODUCER, "development",
+            )
+            with self.assertRaisesRegex(ValueError, "does not bind"):
+                validate_contract_package_stage(
+                    phase["package_stage"],
+                    alternate_package_root / "phase-receipt.json",
+                    sha256_file(alternate_package_root / "phase-receipt.json"),
+                    phase["binary_receipt_path"], binary_digest,
+                    root / "rejected-upstream", VERSION,
+                )
+            self.assertFalse((root / "rejected-upstream").exists())
+
+            package_before = regular_file_inventory(phase["package_stage"])
+            nested_parent = phase["package_stage"] / "unexpected-empty-parent"
+            with self.assertRaisesRegex(ValueError, "overlaps its package input"):
+                validate_contract_package_stage(
+                    phase["package_stage"],
+                    phase["package_receipt_path"], package_digest,
+                    phase["binary_receipt_path"], binary_digest,
+                    nested_parent / "output", VERSION,
+                )
+            self.assertEqual(package_before, regular_file_inventory(phase["package_stage"]))
+            self.assertFalse(nested_parent.exists())
+
+            for name, arguments, message in (
+                ("package-digest", {"package_receipt_sha256": sha256_bytes(b"wrong")}, "authenticated digest"),
+                ("binary-digest", {"binary_receipt_sha256": sha256_bytes(b"wrong")}, "authenticated digest"),
+            ):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
+                    validate_contract_package_stage(
+                        phase["package_stage"],
+                        phase["package_receipt_path"],
+                        arguments.get("package_receipt_sha256", package_digest),
+                        phase["binary_receipt_path"],
+                        arguments.get("binary_receipt_sha256", binary_digest),
+                        root / f"rejected-{name}",
+                        VERSION,
+                    )
+                self.assertFalse((root / f"rejected-{name}").exists())
+
+    def test_package_validation_rejects_payload_and_original_producer_mismatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            phase = self._product_phase_stages(root)
+            package_digest = sha256_file(phase["package_receipt_path"])
+            payload = phase["package_stage"] / "outputs/evidence/canonical-api.json"
+            payload.write_bytes(payload.read_bytes() + b" ")
+            with self.assertRaisesRegex(ValueError, "inventory"):
+                validate_contract_package_stage(
+                    phase["package_stage"],
+                    phase["package_receipt_path"],
+                    package_digest,
+                    phase["binary_receipt_path"],
+                    sha256_file(phase["binary_receipt_path"]),
+                    root / "tampered-output",
+                    VERSION,
+                )
+            self.assertFalse((root / "tampered-output").exists())
+
+            phase = self._product_phase_stages(root / "producer-case")
+            binary_receipt = copy.deepcopy(phase["binary_receipt"])
+            binary_receipt["producer"]["tree"] = "f" * 40
+            write_canonical_json(phase["binary_receipt_path"], binary_receipt)
+            with self.assertRaisesRegex(ValueError, "producer tree"):
+                validate_contract_package_stage(
+                    phase["package_stage"],
+                    phase["package_receipt_path"],
+                    sha256_file(phase["package_receipt_path"]),
+                    phase["binary_receipt_path"],
+                    sha256_file(phase["binary_receipt_path"]),
+                    root / "wrong-producer-output",
+                    VERSION,
+                )
+            self.assertFalse((root / "wrong-producer-output").exists())
+
+    def test_contract_validation_report_rejects_unknown_fields(self):
+        with self.assertRaisesRegex(ValueError, "fields are invalid"):
+            validate_contract_validation_report({"schemaVersion": 1, "extra": True})
 
     def test_development_build_keeps_only_public_verification_material(self):
         with tempfile.TemporaryDirectory() as temporary:
