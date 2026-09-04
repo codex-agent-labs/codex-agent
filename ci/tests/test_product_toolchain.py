@@ -3,17 +3,30 @@ from __future__ import annotations
 import copy
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
+import ci.products.runtime_identity as runtime_identity
 from ci.products.inventory import canonical_json_bytes, sha256_bytes
+from ci.products.receipt import compute_build_key
+from ci.products.runtime_identity import derive_runtime_identity
 from ci.products.toolchain import (
     PROFILE_SHAPES,
     PROFILE_TOOL_NAMES,
+    assemble_profile,
     load_and_verify_toolchain_profile,
     load_toolchain_profile,
     load_toolchain_profile_bytes,
+    observe_producer,
+    validate_producer_observation,
+    validate_verification_record,
+    verify_capture,
+    _verification_record,
     verify_toolchain_profile,
 )
 
@@ -22,16 +35,8 @@ FIXTURE_SHA = "sha256:" + "1" * 64
 
 
 def identity(name: str, os_name: str, arch: str) -> str:
-    return {
-        "gradleWrapper": "Gradle 9.4.1;distributionSha256=" + FIXTURE_SHA,
-        "javaRuntime": "Temurin 17.0.20+8;VM=17.0.20+8",
-        "konanDependencies": "targetClosureSha256=" + FIXTURE_SHA,
-        "kotlinNativeCompiler": (
-            f"Kotlin/Native 2.3.10;build=fixture;host={os_name}-{arch};archiveSha256={FIXTURE_SHA}"
-        ),
-        "kotlinPlugin": "Kotlin Gradle plugin 2.3.10",
-        "supervisorCompiler": f"native compiler;build=fixture;target={os_name}-{arch}",
-    }[name]
+    value = tool_value(name, os_name, arch)
+    return sha256_bytes(canonical_json_bytes({"name": name, "value": value}))
 
 
 def producer(role: str, os_name: str, arch: str) -> dict[str, object]:
@@ -61,6 +66,63 @@ def profile(profile_id: str) -> dict[str, object]:
 def observed_tools(value: dict[str, object], role: str) -> dict[str, str]:
     record = next(item for item in value["producers"] if item["role"] == role)
     return {item["name"]: item["identity"] for item in record["tools"]}
+
+
+def tool_value(name: str, os_name: str, arch: str) -> dict[str, object]:
+    return {
+        "gradleWrapper": {
+            "distributionSha256": FIXTURE_SHA, "launcherSha256": FIXTURE_SHA, "version": "9.4.1",
+        },
+        "javaRuntime": {
+            "arch": arch.lower(), "binarySha256": FIXTURE_SHA,
+            "runtimeVersion": "17.0.20+8", "vendor": "Eclipse Adoptium",
+            "vendorVersion": "Temurin-17.0.20+8", "vmName": "OpenJDK VM", "vmVersion": "17.0.20+8",
+        },
+        "konanDependencies": {
+            "entries": [{"name": "llvm", "treeSha256": FIXTURE_SHA}],
+            "host": f"{os_name.lower()}_{arch.lower()}", "target": "fixture_target",
+        },
+        "kotlinNativeCompiler": {
+            "archiveName": "kotlin-native.tar.gz", "archiveSha256": FIXTURE_SHA,
+            "compilerFingerprint": "1" * 40, "compilerTreeSha256": FIXTURE_SHA,
+            "compilerVersion": "2.3.10",
+            "host": f"{os_name.lower()}_{arch.lower()}",
+        },
+        "kotlinPlugin": {
+            "artifactName": "kotlin-gradle-plugin.jar", "artifactSha256": FIXTURE_SHA,
+            "version": "2.3.10",
+        },
+        "supervisorCompiler": {
+            "compilerBinarySha256": FIXTURE_SHA, "compilerVersion": "compiler 1",
+            "family": "fixture", "linkerBinarySha256": FIXTURE_SHA,
+            "linkerVersion": "linker 1", "platformBuild": "none",
+            "platformVersion": "none", "target": f"{os_name}-{arch}",
+        },
+    }[name]
+
+
+def observation(profile_id: str, role: str, os_name: str, arch: str) -> dict[str, object]:
+    details = []
+    for name in PROFILE_TOOL_NAMES[(profile_id, role)]:
+        value = tool_value(name, os_name, arch)
+        details.append({
+            "identity": sha256_bytes(canonical_json_bytes({"name": name, "value": value})),
+            "name": name,
+            "value": value,
+        })
+    return {
+        "imageProvenance": {"image": "fixture", "imageVersion": "fixture-1"},
+        "producer": {
+            "role": role,
+            "runner": {"arch": arch, "os": os_name},
+            "tools": [{"identity": item["identity"], "name": item["name"]} for item in details],
+        },
+        "profileId": profile_id,
+        "repositoryRevision": "a" * 40,
+        "repositoryTree": "b" * 40,
+        "schemaVersion": 1,
+        "toolObservations": details,
+    }
 
 
 class ProductToolchainTest(unittest.TestCase):
@@ -167,9 +229,7 @@ class ProductToolchainTest(unittest.TestCase):
         _, digest = self.write(value)
         loaded = load_toolchain_profile(self.profiles, "linux-arm64")
         tools = observed_tools(value, "cross-builder")
-        tools["kotlinNativeCompiler"] = (
-            f"Kotlin/Native 2.3.10;build=changed;host=Linux-X64;archiveSha256={FIXTURE_SHA}"
-        )
+        tools["kotlinNativeCompiler"] = "sha256:" + "2" * 64
         calls = []
 
         with self.assertRaisesRegex(ValueError, "identities do not match"):
@@ -269,6 +329,263 @@ class ProductToolchainTest(unittest.TestCase):
         self.write(mismatched, "windows-x64.json")
         with self.assertRaisesRegex(ValueError, "file name"):
             load_toolchain_profile(self.profiles, "windows-x64")
+
+    def test_observer_hashes_all_exact_tool_objects_without_product_compilation(self) -> None:
+        gradle_home = self.root / "gradle-home"
+        konan_home = self.root / "konan-home"
+        kgp = gradle_home / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-gradle-plugin/2.3.10/x/kotlin-gradle-plugin-2.3.10-gradle813.jar"
+        archive = gradle_home / "caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-native-prebuilt/2.3.10/x/kotlin-native-prebuilt-2.3.10-linux-x86_64.tar.gz"
+        compiler = konan_home / "kotlin-native-prebuilt-linux-x86_64-2.3.10"
+        cc, ld, java = self.root / "tools/cc", self.root / "tools/ld", self.root / "tools/java"
+        for path, contents in (
+            (kgp, b"kgp"), (archive, b"native"), (cc, b"cc"), (ld, b"ld"), (java, b"java"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(contents)
+        (compiler / "bin").mkdir(parents=True)
+        (compiler / "bin/konanc").write_bytes(b"konanc")
+        (compiler / "konan").mkdir()
+        (compiler / "konan/compiler.fingerprint").write_text("1" * 40, encoding="ascii")
+        (compiler / "konan/konan.properties").write_text(
+            "llvmHome.linux_x64=$llvm.linux_x64.dev\n"
+            "llvm.linux_x64.dev=llvm-1\n"
+            "libffiDir.linux_x64=libffi-1\n"
+            "dependencies.linux_x64=toolchain-1 lldb-1\n",
+            encoding="utf-8",
+        )
+        for name in ("llvm-1", "libffi-1", "toolchain-1", "lldb-1"):
+            path = konan_home / "dependencies" / name / "payload"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(name.encode())
+        kgp_sha = sha256_bytes(b"kgp").removeprefix("sha256:")
+        archive_sha = sha256_bytes(b"native").removeprefix("sha256:")
+        authorities = {
+            "gradle/wrapper/gradle-wrapper.properties": (
+                b"distributionUrl=https\\://services.gradle.org/distributions/gradle-9.4.1-bin.zip\n"
+                b"distributionSha256Sum=" + (b"1" * 64) + b"\n"
+            ),
+            "gradlew": b"#!/bin/sh\n",
+            "gradle/libs.versions.toml": b'[versions]\nkotlin = "2.3.10"\n',
+            "runtime/gradle/verification-metadata.xml": (
+                '<verification-metadata><components><component>'
+                f'<artifact name="{kgp.name}"><sha256 value="{kgp_sha}"/></artifact>'
+                f'<artifact name="{archive.name}"><sha256 value="{archive_sha}"/></artifact>'
+                '</component></components></verification-metadata>'
+            ).encode(),
+        }
+        commands = []
+
+        def execute(command: tuple[str, ...], root: Path) -> str:
+            commands.append(command)
+            if command[0].endswith("gradlew"):
+                return "Gradle 9.4.1\n"
+            if command[0] == str(java):
+                return (
+                    " java.runtime.version = 17.0.20+8\n java.vendor = Eclipse Adoptium\n"
+                    " java.vendor.version = Temurin-17.0.20+8\n java.vm.name = OpenJDK VM\n"
+                    " java.vm.version = 17.0.20+8\n os.arch = amd64\n"
+                )
+            if command[0].endswith("konanc"):
+                return "Kotlin/Native: 2.3.10\n"
+            if command[0] == str(cc):
+                return {"--version": "gcc 14.1", "-dumpmachine": "x86_64-linux-gnu", "-print-prog-name=ld": str(ld)}[command[1]]
+            if command[0] == str(ld):
+                return "GNU ld 2.42"
+            raise AssertionError(command)
+
+        with mock.patch("ci.products.toolchain._authority", side_effect=lambda _, __, path: authorities[path]), \
+                mock.patch("ci.products.toolchain.run_git", return_value="b" * 40 + "\n"):
+            result = observe_producer(
+                self.root, "a" * 40, "linux-x64", "builder", "linux-x64",
+                gradle_user_home=gradle_home,
+                konan_data_dir=konan_home,
+                environment={"RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"},
+                execute=execute,
+                find_executable=lambda name: {
+                    "cc": str(cc), "java": str(java), "ld": str(ld),
+                }.get(name),
+            )
+        validated = validate_producer_observation(result)
+        self.assertEqual(PROFILE_TOOL_NAMES[("linux-x64", "builder")], tuple(
+            item["name"] for item in validated["toolObservations"]
+        ))
+        self.assertTrue(all(item["identity"].startswith("sha256:") for item in validated["toolObservations"]))
+        self.assertEqual({
+            "--no-daemon", "--version", "-XshowSettings:properties", "-dumpmachine",
+            "-print-prog-name=ld", "-version",
+        }, {
+            argument for command in commands for argument in command[1:] if argument.startswith("-")
+        })
+        self.assertFalse(any("compile" in " ".join(command).lower() for command in commands))
+
+    def test_observer_rejects_unpinned_native_archive_before_invoking_konanc(self) -> None:
+        with self.assertRaisesRegex(ValueError, "metadata lacks one exact checksum"):
+            from ci.products.toolchain import _metadata_checksum
+            _metadata_checksum(b"<verification-metadata/>", "kotlin-native-prebuilt.tar.gz")
+
+    def test_linux_arm64_assembly_requires_both_exact_producers(self) -> None:
+        cross = observation("linux-arm64", "cross-builder", "Linux", "X64")
+        supervisor = observation("linux-arm64", "supervisor-builder", "Linux", "ARM64")
+        value = assemble_profile([supervisor, cross], "linux-arm64")
+        self.assertEqual(["cross-builder", "supervisor-builder"], [item["role"] for item in value["producers"]])
+        with self.assertRaisesRegex(ValueError, "topology"):
+            assemble_profile([cross], "linux-arm64")
+        changed = copy.deepcopy(supervisor)
+        changed["repositoryTree"] = "c" * 40
+        with self.assertRaisesRegex(ValueError, "one exact repository"):
+            assemble_profile([cross, changed], "linux-arm64")
+
+    def test_direct_module_cli_assembles_canonical_profile_and_removes_stale_failure(self) -> None:
+        observed = observation("linux-x64", "builder", "Linux", "X64")
+        producer_path = self.root / "builder.json"
+        producer_path.write_bytes(canonical_json_bytes(observed))
+        output = self.root / "linux-x64.json"
+        environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        command = [
+            sys.executable, "-m", "ci.products.toolchain", "assemble-profile",
+            "--profile-id", "linux-x64", "--producer", str(producer_path),
+            "--output", str(output),
+        ]
+        result = subprocess.run(
+            command, cwd=Path(__file__).resolve().parents[2], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(canonical_json_bytes(assemble_profile([observed], "linux-x64")), output.read_bytes())
+        producer_path.write_text('{"stale":true}\n', encoding="utf-8")
+        result = subprocess.run(
+            command, cwd=Path(__file__).resolve().parents[2], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse(output.exists())
+
+    def test_capture_requires_exact_five_profile_six_observation_inventory(self) -> None:
+        capture = self.root / "capture"
+        for profile_id, shapes in PROFILE_SHAPES.items():
+            records = [observation(profile_id, *shape) for shape in shapes]
+            for record in records:
+                path = capture / "observations" / profile_id / f"{record['producer']['role']}.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(canonical_json_bytes(record))
+            path = capture / "profiles" / f"{profile_id}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(canonical_json_bytes(assemble_profile(records, profile_id)))
+        verify_capture(capture, "a" * 40, "b" * 40)
+        (capture / "extra.json").write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            verify_capture(capture, "a" * 40, "b" * 40)
+
+    def test_verification_record_binds_exact_git_profile_and_binary_plan(self) -> None:
+        repository = self.root / "repository"
+        profile_value = assemble_profile([
+            observation("linux-x64", "builder", "Linux", "X64")
+        ], "linux-x64")
+        profile_path = repository / "gradle/release/toolchains/runtime/linux-x64.json"
+        profile_path.parent.mkdir(parents=True)
+        profile_path.write_bytes(canonical_json_bytes(profile_value))
+        subprocess.run(["git", "init", "-q", repository], check=True)
+        subprocess.run(["git", "-C", repository, "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", repository, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"],
+            check=True,
+        )
+        revision = subprocess.check_output(["git", "-C", repository, "rev-parse", "HEAD"], text=True).strip()
+        tree = subprocess.check_output(["git", "-C", repository, "rev-parse", "HEAD^{tree}"], text=True).strip()
+        observed = observation("linux-x64", "builder", "Linux", "X64")
+        observed["repositoryRevision"], observed["repositoryTree"] = revision, tree
+        profile_digest = sha256_bytes(canonical_json_bytes(profile_value))
+        inputs = {
+            "inventory": [], "phaseInputDigest": sha256_bytes(canonical_json_bytes([])),
+            "versionIdentity": "0.2.0", "upstreamArtifacts": [],
+            "toolchainProfileDigest": profile_digest, "flagsDigest": FIXTURE_SHA,
+            "outputSchemaVersion": 1,
+        }
+        plan = {
+            "buildKey": compute_build_key(
+                product="runtime", component="linux-x64", phase="binary", target="linux-x64", inputs=inputs,
+            ),
+            "component": "linux-x64", "inputs": inputs, "phase": "binary", "product": "runtime",
+            "runtimeBinaryIdentity": derive_runtime_identity({
+                "schemaVersion": 1,
+                "binaryBuildKey": compute_build_key(
+                    product="runtime", component="linux-x64", phase="binary",
+                    target="linux-x64", inputs=inputs,
+                ),
+                "runtimeCompatibilityVersion": "0.2.0",
+                "target": "linux-x64",
+                "contract": {"digest": FIXTURE_SHA, "componentDigest": FIXTURE_SHA},
+                "cAbi": {
+                    "version": "1.13.0", "minimumCompatibleVersion": "1.0.0",
+                    "identitySchemaVersion": 1, "headerSha256": FIXTURE_SHA,
+                    "symbolSetSha256": FIXTURE_SHA, "symbolCount": 778,
+                },
+                "appServer": {
+                    "version": "0.149.0", "releaseTag": "rust-v0.149.0",
+                    "binarySha256": FIXTURE_SHA,
+                },
+                "toolchainProfile": {"id": "linux-x64", "digest": profile_digest},
+            }),
+            "schemaVersion": 1, "target": "linux-x64",
+        }
+        plan_path = repository / "plan.json"
+        plan_path.write_bytes(canonical_json_bytes(plan))
+        record = _verification_record(repository, revision, plan, observed)
+        self.assertEqual(profile_digest, validate_verification_record(record)["profileDigest"])
+        record["profileDigest"] = FIXTURE_SHA
+        with self.assertRaisesRegex(ValueError, "current authorities"):
+            current = _verification_record(repository, revision, plan, observed)
+            if current != record:
+                raise ValueError("Toolchain verification record does not match current authorities")
+
+    def test_verify_cli_rejects_invalid_binary_plan_before_observing_tools(self) -> None:
+        plan = self.root / "invalid-plan.json"
+        plan.write_bytes(canonical_json_bytes({"invalid": True}))
+        output = self.root / "stale.json"
+        output.write_text("stale", encoding="utf-8")
+        observe = mock.Mock()
+        arguments = [
+            "verify-producer", "--repository-root", str(self.root),
+            "--repository-revision", "a" * 40, "--profile-id", "linux-x64",
+            "--producer-role", "builder", "--target", "linux-x64",
+            "--binary-plan", str(plan), "--output", str(output),
+            "--verified-contract-manifest", str(plan),
+            "--expected-runtime-version", "0.2.0",
+            "--expected-flags-digest", FIXTURE_SHA,
+        ]
+        with mock.patch("ci.products.toolchain.observe_producer", observe), \
+                mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            from ci.products.toolchain import main
+            main(arguments)
+        observe.assert_not_called()
+        self.assertFalse(output.exists())
+
+    def test_verify_cli_delegates_all_runtime_authorities_before_observing_tools(self) -> None:
+        plan = self.root / "plan.json"
+        manifest = self.root / "contract-manifest.json"
+        plan.write_bytes(canonical_json_bytes({"plan": True}))
+        manifest.write_bytes(canonical_json_bytes({"manifest": True}))
+        output = self.root / "stale.json"
+        output.write_text("stale", encoding="utf-8")
+        observe = mock.Mock()
+        arguments = [
+            "verify-producer", "--repository-root", str(self.root),
+            "--repository-revision", "a" * 40, "--profile-id", "linux-x64",
+            "--producer-role", "builder", "--target", "linux-x64",
+            "--binary-plan", str(plan), "--output", str(output),
+            "--verified-contract-manifest", str(manifest),
+            "--expected-runtime-version", "0.2.0",
+            "--expected-flags-digest", FIXTURE_SHA,
+        ]
+        authority = mock.Mock(side_effect=ValueError("Runtime Contract authority mismatch"))
+        with mock.patch.object(runtime_identity, "verify_runtime_binary_plan", authority), \
+                mock.patch("ci.products.toolchain.observe_producer", observe), \
+                mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            from ci.products.toolchain import main
+            main(arguments)
+        authority.assert_called_once()
+        observe.assert_not_called()
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
