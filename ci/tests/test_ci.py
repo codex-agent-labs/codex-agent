@@ -58,6 +58,37 @@ from validation_reuse import (  # noqa: E402
 
 
 class RunLaneContractTest(unittest.TestCase):
+    def test_contract_binary_is_finalized_only_from_the_elected_phase_plan(self) -> None:
+        action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(1, action.count("python3 -m ci.products restore store-phase"))
+        self.assertIn(
+            "plan=build/ci/product-reuse/phase-plans/contract-contract-binary-common.json",
+            action,
+        )
+        self.assertIn("producer=build/ci/product-reuse/producer.json", action)
+        self.assertIn("stage=build/product-stage/contract/contract/binary", action)
+        self.assertIn("--phase-plan \"$plan\"", action)
+        self.assertIn("--producer \"$producer\"", action)
+        self.assertIn("--trust-domain \"$trust_domain\"", action)
+        self.assertIn("pull_request) trust_domain=development ;;", action)
+        self.assertIn("merge_group) trust_domain=release ;;", action)
+        self.assertIn("*) exit 1 ;;", action)
+        self.assertIn(
+            "name: codex-agent-product-phase-contract-contract-binary-common-${{ inputs.validation-tree }}",
+            action,
+        )
+        self.assertIn("steps.contract-product-shard.outputs.ready == 'true'", action)
+        self.assertIn("overwrite: false", action)
+        upload = action.split("    - id: contract-product-shard-upload\n", 1)[1].split(
+            "\n    - name: Stage the exact Desktop Runtime binary product", 1,
+        )[0]
+        self.assertIn("continue-on-error: true", upload)
+        self.assertEqual(2, action.count("steps.contract-product.outcome"))
+        self.assertEqual(1, action.count("steps.contract-product-shard.outcome"))
+        self.assertEqual(1, action.count("steps.contract-product-shard-upload.outcome"))
+
     def test_ci_caller_pins_the_reviewed_product_workflow(self) -> None:
         caller = (CI_ROOT.parent / ".github/workflows/ci.yml").read_text(
             encoding="utf-8"

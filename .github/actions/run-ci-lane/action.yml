@@ -417,6 +417,49 @@ runs:
           -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
           -PcodexAgent.candidateTree="$VALIDATION_TREE" \
           --stacktrace
+    - id: contract-product-shard
+      name: Finalize the elected Contract binary phase
+      if: inputs.lane == 'contracts' && steps.contract-product.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      run: |
+        plan=build/ci/product-reuse/phase-plans/contract-contract-binary-common.json
+        if [ -L "$plan" ]; then
+          exit 1
+        elif [ ! -e "$plan" ]; then
+          exit 0
+        fi
+        producer=build/ci/product-reuse/producer.json
+        stage=build/product-stage/contract/contract/binary
+        test -f "$plan" && test ! -L "$plan"
+        test -f "$producer" && test ! -L "$producer"
+        test -f "$stage/output-manifest.json" && test ! -L "$stage/output-manifest.json"
+        IFS= read -r contract_version < gradle/release/versions/contract.txt
+        case "$GITHUB_EVENT_NAME" in
+          pull_request) trust_domain=development ;;
+          merge_group) trust_domain=release ;;
+          *) exit 1 ;;
+        esac
+        python3 -m ci.products restore store-phase \
+          --stage-root "$stage" \
+          --phase-plan "$plan" \
+          --producer "$producer" \
+          --product-version "$contract_version" \
+          --trust-domain "$trust_domain" \
+          --destination build/product-phase/contract-contract-binary-common
+        printf 'ready=true\n' >> "$GITHUB_OUTPUT"
+    - id: contract-product-shard-upload
+      name: Upload the elected Contract binary phase
+      if: steps.contract-product-shard.outputs.ready == 'true'
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        if-no-files-found: error
+        overwrite: false
+        name: codex-agent-product-phase-contract-contract-binary-common-${{ inputs.validation-tree }}
+        path: build/product-phase/contract-contract-binary-common
+        compression-level: 0
+        retention-days: 90
     - name: Stage the exact Desktop Runtime binary product
       if: >-
         startsWith(inputs.lane, 'desktop-') && inputs.reuse-only != 'true' &&
@@ -472,7 +515,6 @@ runs:
       if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         steps.production-execution.outcome != 'failure' &&
-        steps.contract-product.outcome != 'failure' &&
         steps.portable-runtime-products.outcome != 'failure' &&
         (inputs.force-build == 'true' || steps.selection.outputs.test == 'true' ||
         steps.selection.outputs.metadata == 'true' ||
@@ -724,6 +766,9 @@ runs:
       if: >-
         inputs.reuse-only != 'true' && always() && steps.reuse.outputs.reused != 'true' &&
         (steps.production-execution.outcome == 'failure' ||
+        steps.contract-product.outcome == 'failure' ||
+        steps.contract-product-shard.outcome == 'failure' ||
+        steps.contract-product-shard-upload.outcome == 'failure' ||
         steps.portable-runtime-products.outcome == 'failure' ||
         steps.execution.outcome == 'failure' ||
         steps.runtime-validation-handoff.outcome == 'failure')
