@@ -16,7 +16,7 @@ from .aggregate import (
     validate_sdk_compatibility,
 )
 from .c_abi import TARGET_SPECS
-from .contract_model import validate_contract_manifest
+from .contract_attestation import verify_contract_attestation
 from .inventory import (
     load_canonical_json_bytes,
     read_regular_file_bytes,
@@ -207,8 +207,10 @@ def produce_sdk_compatibility(
     sdk_version: str,
     compatible_release_range: str,
     compatible_runtime_compatibility_range: str,
-    contract_manifest: Path,
-    contract_signature: Path,
+    contract_payload: Path,
+    contract_metadata_receipt: Path,
+    contract_attestation: Path,
+    contract_attestation_signature: Path,
     contract_public_key: Path,
     runtime_manifest: Path,
     runtime_signature: Path,
@@ -217,16 +219,21 @@ def produce_sdk_compatibility(
     variant_public_keys: dict[str, Path],
     required_trust_domain: str,
     output: Path,
+    contract_keyring: Path | None = None,
+    contract_keys_directory: Path | None = None,
 ) -> dict[str, Any]:
     """Verify the selected embedded products and emit one canonical declaration."""
     if required_trust_domain not in {"development", "release"}:
         raise ValueError("SDK compatibility trust domain is invalid")
-    if Path(contract_manifest).name != "contract-manifest.json" or Path(contract_signature).name != \
-            "contract-manifest.sig":
-        raise ValueError("Contract manifest or signature identity mismatch")
-    contract, _ = _authenticated_manifest(
-        Path(contract_manifest), Path(contract_signature), Path(contract_public_key),
-        validate_contract_manifest, "Contract manifest",
+    contract, _, _ = verify_contract_attestation(
+        Path(contract_payload),
+        Path(contract_metadata_receipt),
+        Path(contract_attestation),
+        Path(contract_attestation_signature),
+        Path(contract_public_key),
+        required_trust_domain=required_trust_domain,
+        keyring=contract_keyring,
+        keys_directory=contract_keys_directory,
     )
     aggregate, aggregate_bytes = _authenticated_manifest(
         Path(runtime_manifest), Path(runtime_signature), Path(runtime_public_key),
@@ -235,8 +242,7 @@ def produce_sdk_compatibility(
     if Path(runtime_manifest).name != f"codex-agent-runtime-{aggregate['runtimeVersion']}-manifest.json" or \
             Path(runtime_signature).name != f"codex-agent-runtime-{aggregate['runtimeVersion']}-manifest.sig":
         raise ValueError("Runtime aggregate manifest or signature identity mismatch")
-    if contract["signing"]["trustDomain"] != required_trust_domain or \
-            aggregate["signing"]["trustDomain"] != required_trust_domain:
+    if aggregate["signing"]["trustDomain"] != required_trust_domain:
         raise ValueError("SDK compatibility input trust domain mismatch")
     if aggregate["contract"] != {
         "version": contract["contractVersion"], "digest": contract["contractDigest"],
@@ -339,17 +345,24 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         request_path = Path(arguments.request)
-        request = require_exact_keys(
-            load_canonical_json_bytes(read_regular_file_bytes(
+        raw_request = load_canonical_json_bytes(read_regular_file_bytes(
                 request_path, max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
-            )),
+            ))
+        optional_contract_fields = {"contractKeyring", "contractKeysDirectory"}
+        present_optional_fields = (
+            set(raw_request) & optional_contract_fields if type(raw_request) is dict else set()
+        )
+        request = require_exact_keys(
+            raw_request,
             {
                 "schemaVersion",
                 "sdkVersion",
                 "compatibleReleaseRange",
                 "compatibleRuntimeCompatibilityRange",
-                "contractManifest",
-                "contractSignature",
+                "contractPayload",
+                "contractMetadataReceipt",
+                "contractAttestation",
+                "contractAttestationSignature",
                 "contractPublicKey",
                 "runtimeManifest",
                 "runtimeSignature",
@@ -357,9 +370,13 @@ def main(argv: list[str] | None = None) -> int:
                 "variantBundles",
                 "variantPublicKeys",
                 "requiredTrustDomain",
-            },
+            } | present_optional_fields,
             "SDK compatibility request",
         )
+        if present_optional_fields not in (set(), optional_contract_fields):
+            raise ValueError(
+                "SDK compatibility request Contract keyring and keys directory must be supplied together"
+            )
         if require_integer(
             request["schemaVersion"], "SDK compatibility request.schemaVersion", 1,
         ) != 1:
@@ -377,14 +394,24 @@ def main(argv: list[str] | None = None) -> int:
                 request["compatibleRuntimeCompatibilityRange"],
                 "SDK compatibility request.compatibleRuntimeCompatibilityRange",
             ),
-            contract_manifest=_request_path(
-                request["contractManifest"],
-                "SDK compatibility request.contractManifest",
+            contract_payload=_request_path(
+                request["contractPayload"],
+                "SDK compatibility request.contractPayload",
                 request_directory,
             ),
-            contract_signature=_request_path(
-                request["contractSignature"],
-                "SDK compatibility request.contractSignature",
+            contract_metadata_receipt=_request_path(
+                request["contractMetadataReceipt"],
+                "SDK compatibility request.contractMetadataReceipt",
+                request_directory,
+            ),
+            contract_attestation=_request_path(
+                request["contractAttestation"],
+                "SDK compatibility request.contractAttestation",
+                request_directory,
+            ),
+            contract_attestation_signature=_request_path(
+                request["contractAttestationSignature"],
+                "SDK compatibility request.contractAttestationSignature",
                 request_directory,
             ),
             contract_public_key=_request_path(
@@ -422,6 +449,22 @@ def main(argv: list[str] | None = None) -> int:
                 "SDK compatibility request.requiredTrustDomain",
             ),
             output=Path(arguments.output),
+            contract_keyring=(
+                _request_path(
+                    request["contractKeyring"],
+                    "SDK compatibility request.contractKeyring",
+                    request_directory,
+                )
+                if "contractKeyring" in request else None
+            ),
+            contract_keys_directory=(
+                _request_path(
+                    request["contractKeysDirectory"],
+                    "SDK compatibility request.contractKeysDirectory",
+                    request_directory,
+                )
+                if "contractKeysDirectory" in request else None
+            ),
         )
     except (OSError, ValueError) as error:
         parser.error(str(error))

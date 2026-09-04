@@ -7,19 +7,48 @@ import tempfile
 import unittest
 
 from ci.products.aggregate import RUNTIME_TARGETS
+from ci.products.contract_attestation import build_contract_attestation
 from ci.products.inventory import load_canonical_json, sha256_bytes, write_canonical_json
 from ci.products.receipt import validate_phase_receipt
 from ci.products.runtime_aggregate import produce_runtime_aggregate
-from ci.products.signatures import generate_development_key
+from ci.products.signatures import generate_development_key, public_key_fingerprint
 from ci.tests.test_products import runtime_aggregate_artifacts
 
 
 class Fixture:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, trust_domain: str = "development") -> None:
         self.root = root
-        self.private_key, self.public_key, self.signing = generate_development_key(root / "keys")
+        self.private_key, self.public_key, development_signing = generate_development_key(
+            root / "keys",
+        )
+        self.signing = {**development_signing, "trustDomain": trust_domain}
+        self.contract_keyring = None
+        self.contract_keys_directory = None
+        if trust_domain == "release":
+            self.contract_keys_directory = root / "contract-keys"
+            self.contract_keys_directory.mkdir()
+            (self.contract_keys_directory / f"{self.signing['keyId']}.pub").write_bytes(
+                self.public_key.read_bytes(),
+            )
+            self.contract_keyring = root / "contract-keyring.json"
+            write_canonical_json(self.contract_keyring, {
+                "schemaVersion": 1,
+                "namespace": self.signing["namespace"],
+                "algorithm": self.signing["algorithm"],
+                "trustDomain": "release",
+                "activeKey": {
+                    "keyId": self.signing["keyId"],
+                    "fingerprint": public_key_fingerprint(self.public_key.read_bytes()),
+                },
+                "retiredKeys": [],
+            })
         values = runtime_aggregate_artifacts(
-            root / "inputs", self.private_key, self.public_key, self.signing,
+            root / "inputs",
+            self.private_key,
+            self.public_key,
+            self.signing,
+            contract_keyring=self.contract_keyring,
+            contract_keys_directory=self.contract_keys_directory,
         )
         (
             _,
@@ -33,6 +62,9 @@ class Fixture:
             self.variant_keys,
             self.maven_inputs,
             self.adapters,
+            self.contract_metadata_receipt,
+            self.contract_attestation,
+            self.contract_attestation_signature,
         ) = values
         for target_index, target in enumerate(RUNTIME_TARGETS):
             metadata = load_canonical_json(self.metadata_receipts[target])
@@ -45,9 +77,12 @@ class Fixture:
     def arguments(self, output: Path) -> dict:
         return {
             "runtime_version": "0.2.2",
-            "contract_bundle": self.contract_bundle,
+            "contract_payload": self.contract_bundle,
+            "contract_metadata_receipt": self.contract_metadata_receipt,
+            "contract_attestation": self.contract_attestation,
+            "contract_attestation_signature": self.contract_attestation_signature,
             "contract_public_key": self.public_key,
-            "required_trust_domain": "development",
+            "required_trust_domain": self.signing["trustDomain"],
             "variant_bundles": self.bundles,
             "phase_receipts": self.phase_receipts,
             "metadata_receipts": self.metadata_receipts,
@@ -59,6 +94,8 @@ class Fixture:
             "private_key": self.private_key,
             "public_key": self.public_key,
             "output_directory": output,
+            "contract_keyring": self.contract_keyring,
+            "contract_keys_directory": self.contract_keys_directory,
         }
 
 
@@ -193,6 +230,91 @@ class RuntimeAggregateProducerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 produce_runtime_aggregate(**fixture.arguments(output))
             self.assertFalse(any(output.iterdir()))
+
+    def test_contract_payload_signature_and_cross_pair_tampering_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture = Fixture(root)
+
+            tampered_payload_directory = root / "tampered-payload"
+            tampered_payload_directory.mkdir()
+            tampered_payload = tampered_payload_directory / fixture.contract_bundle.name
+            tampered_payload.write_bytes(fixture.contract_bundle.read_bytes() + b"tampered")
+
+            tampered_signature_directory = root / "tampered-signature"
+            tampered_signature_directory.mkdir()
+            tampered_signature = tampered_signature_directory / \
+                fixture.contract_attestation_signature.name
+            tampered_signature.write_bytes(
+                fixture.contract_attestation_signature.read_bytes() + b"tampered\n",
+            )
+
+            paired_receipt = root / "paired-metadata-receipt.json"
+            paired_receipt_value = load_canonical_json(fixture.contract_metadata_receipt)
+            paired_receipt_value["producer"]["runId"] += 1
+            write_canonical_json(paired_receipt, paired_receipt_value)
+            paired_attestation_directory = root / "paired-attestation"
+            build_contract_attestation(
+                fixture.contract_bundle,
+                paired_receipt,
+                fixture.signing,
+                fixture.private_key,
+                fixture.public_key,
+                paired_attestation_directory,
+            )
+            paired_attestation = paired_attestation_directory / fixture.contract_attestation.name
+            paired_signature = paired_attestation_directory / \
+                fixture.contract_attestation_signature.name
+
+            cases = (
+                {"contract_payload": tampered_payload},
+                {"contract_attestation_signature": tampered_signature},
+                {"contract_metadata_receipt": paired_receipt},
+                {
+                    "contract_attestation": paired_attestation,
+                    "contract_attestation_signature": paired_signature,
+                },
+            )
+            for index, replacements in enumerate(cases):
+                output = root / f"rejected-{index}"
+                output.mkdir()
+                arguments = fixture.arguments(output)
+                arguments.update(replacements)
+                with self.subTest(replacements=tuple(replacements)), self.assertRaises(ValueError):
+                    produce_runtime_aggregate(**arguments)
+                self.assertFalse(any(output.iterdir()))
+
+    def test_contract_attestation_trust_domain_and_keyring_are_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            release = Fixture(root / "release", trust_domain="release")
+            output = root / "release-output"
+            output.mkdir()
+            self.assertEqual(
+                "release",
+                produce_runtime_aggregate(**release.arguments(output))["manifest"]["signing"][
+                    "trustDomain"
+                ],
+            )
+
+            for missing in ("contract_keyring", "contract_keys_directory"):
+                rejected = root / f"missing-{missing}"
+                rejected.mkdir()
+                arguments = release.arguments(rejected)
+                arguments[missing] = None
+                with self.subTest(missing=missing), self.assertRaises(ValueError):
+                    produce_runtime_aggregate(**arguments)
+                self.assertFalse(any(rejected.iterdir()))
+
+            development = Fixture(root / "development")
+            rejected = root / "development-keyring"
+            rejected.mkdir()
+            arguments = development.arguments(rejected)
+            arguments["contract_keyring"] = release.contract_keyring
+            arguments["contract_keys_directory"] = release.contract_keys_directory
+            with self.assertRaises(ValueError):
+                produce_runtime_aggregate(**arguments)
+            self.assertFalse(any(rejected.iterdir()))
 
 
 if __name__ == "__main__":

@@ -235,13 +235,17 @@ class ReleaseToolingCliFunctionalTest {
         val runtimeDriver = driver.substringAfter("runtime_gradle() {").substringBefore("\n}")
         assertTrue("./gradlew -p runtime" in runtimeDriver)
         listOf(
-            "codexAgent.contractRepository",
-            "codexAgent.contractManifest",
+            "codexAgent.contractPayload",
+            "codexAgent.contractMetadataReceipt",
+            "codexAgent.contractAttestation",
+            "codexAgent.contractAttestationSignature",
             "codexAgent.contractPublicKey",
             "codexAgent.contractVersion",
             "codexAgent.runtimeVersion",
             "codexAgent.target",
-        ).forEach { property -> assertEquals(1, Regex(Regex.escape(property)).findAll(runtimeDriver).count(), property) }
+        ).forEach { property ->
+            assertEquals(1, Regex(Regex.escape("-P$property=")).findAll(runtimeDriver).count(), property)
+        }
         assertTrue("runtime_gradle jvm" in portable)
         assertTrue("runtime_gradle node-js" in portable)
         assertTrue("runtime_gradle node-wasm" in nodeWasm)

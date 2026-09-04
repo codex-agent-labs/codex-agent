@@ -20,6 +20,7 @@ class RuntimeIsolationFixtureTest {
         "ci/products/__init__.py",
         "ci/products/c_abi.py",
         "ci/products/contract.py",
+        "ci/products/contract_attestation.py",
         "ci/products/contract_projection.py",
         "ci/products/contract_model.py",
         "ci/products/inventory.py",
@@ -31,6 +32,7 @@ class RuntimeIsolationFixtureTest {
         "ci/products/selection.py",
         "ci/products/signatures.py",
         "ci/products/test_results.py",
+        "ci/products/toolchain.py",
     )
 
     @Test
@@ -45,7 +47,6 @@ class RuntimeIsolationFixtureTest {
             val contract = workspace.resolve("contract")
             createSignedContract(signing, contract)
             val publicKey = signing.resolve("key/development-ed25519.pub")
-            val privateKey = signing.resolve("key/development-ed25519")
             val wrongPublicKey = signing.resolve("wrong-key/development-ed25519.pub")
             val target = currentHostTarget()
 
@@ -58,8 +59,7 @@ class RuntimeIsolationFixtureTest {
                 "tampered-manifest",
                 "canonical",
             ) { directory ->
-                val manifest = directory.resolve("contract-manifest.json")
-                manifest.writeBytes(manifest.readBytes().dropLast(1).toByteArray())
+                mutatePayload(directory, "truncate-manifest")
             }
             rejectedBeforeBuildLogic(
                 workspace,
@@ -100,7 +100,7 @@ class RuntimeIsolationFixtureTest {
                 "wrong-target-component",
                 "Contract component $target digest mismatch",
             ) { directory ->
-                resignWithWrongTargetComponent(directory, privateKey, target)
+                mutatePayload(directory, "wrong-component", target)
             }
             rejectedBeforeBuildLogic(
                 workspace,
@@ -111,28 +111,25 @@ class RuntimeIsolationFixtureTest {
                 "extra-contract-file",
                 "complete allow-list",
             ) { directory ->
-                directory.resolve("evidence/unlisted.json").writeText("{}\n")
+                mutatePayload(directory, "extra")
             }
             rejectedBeforeBuildLogic(
                 workspace, base, contract, publicKey, target,
                 "missing-contract-file", "complete allow-list",
             ) { directory ->
-                directory.resolve("evidence/canonical-api.json").delete()
+                mutatePayload(directory, "missing")
             }
             rejectedBeforeBuildLogic(
                 workspace, base, contract, publicKey, target,
-                "empty-contract-file", "unsafe or empty entry",
+                "empty-contract-file", "empty or truncated member",
             ) { directory ->
-                directory.resolve("evidence/canonical-api.json").writeBytes(byteArrayOf())
+                mutatePayload(directory, "empty")
             }
             rejectedBeforeBuildLogic(
                 workspace, base, contract, publicKey, target,
-                "symlink-contract-file", "unsafe",
+                "symlink-contract-file", "not canonical",
             ) { directory ->
-                val evidence = directory.resolve("evidence/canonical-api.json")
-                val outside = workspace.resolve("outside-canonical-api.json").apply { writeText("{}\n") }
-                evidence.delete()
-                java.nio.file.Files.createSymbolicLink(evidence.toPath(), outside.toPath())
+                mutatePayload(directory, "symlink")
             }
 
             rejectedBeforeBuildLogic(
@@ -174,12 +171,30 @@ class RuntimeIsolationFixtureTest {
                 extraArguments = listOf("--include-build", includedBuild.absolutePath),
             )
 
+            val positive = workspace.resolve("positive")
+            copyTree(base, positive)
+            val positiveContract = positive.resolve("inputs/contract")
+            val positiveSigning = positive.resolve("inputs/signing")
+            createRealContract(positiveSigning, positiveContract)
+            val positiveKey = positiveSigning.resolve("key/development-ed25519.pub")
+            val testKit = workspace.resolve("test-kit")
+            val projects = runner(
+                positive,
+                positiveContract,
+                positiveKey,
+                target,
+                testKit,
+                "projects",
+            ).build()
+            assertAccepted(projects, ":projects")
+            assertTrue("Project ':codex-agent-runtime-desktop'" in projects.output)
             rejectedBeforeRuntimeCompilation(
                 workspace,
                 base,
                 contract,
                 publicKey,
                 target,
+                testKit,
                 "project-core-dependency",
                 "Project with path ':codex-agent-core' could not be found",
             ) { fixture ->
@@ -198,29 +213,13 @@ class RuntimeIsolationFixtureTest {
                 contract,
                 publicKey,
                 target,
+                testKit,
                 "project-repository-fallback",
                 "repositories over project repositories",
             ) { fixture ->
                 fixture.resolve("codex-agent-runtime-desktop/build.gradle.kts")
                     .appendText("\nrepositories { mavenCentral() }\n")
             }
-
-            val positive = workspace.resolve("positive")
-            copyTree(base, positive)
-            val positiveContract = positive.resolve("inputs/contract")
-            val positiveKey = positive.resolve("inputs/development-ed25519.pub")
-            createRealContract(positiveContract, positiveKey)
-            val testKit = workspace.resolve("test-kit")
-            val projects = runner(
-                positive,
-                positiveContract,
-                positiveKey,
-                target,
-                testKit,
-                "projects",
-            ).build()
-            assertAccepted(projects, ":projects")
-            assertTrue("Project ':codex-agent-runtime-desktop'" in projects.output)
             val verifiedSnapshots = positive.resolve("runtime/.gradle/verified-contracts")
                 .listFiles().orEmpty().map(File::getName).toSet()
             assertEquals(1, verifiedSnapshots.size)
@@ -240,10 +239,10 @@ class RuntimeIsolationFixtureTest {
                     .listFiles().orEmpty().map(File::getName).toSet(),
             )
 
-            val canonicalApi = positiveContract.resolve("evidence/canonical-api.json")
-            val canonicalApiBytes = canonicalApi.readBytes()
+            val payload = contractPayload(positiveContract)
+            val payloadBytes = payload.readBytes()
             try {
-                canonicalApi.writeBytes(canonicalApiBytes + byteArrayOf(' '.code.toByte()))
+                payload.writeBytes(payloadBytes + byteArrayOf(' '.code.toByte()))
                 val rejectedContractMutation = runner(
                     positive, positiveContract, positiveKey, target, testKit, "projects",
                 ).buildAndFail()
@@ -251,9 +250,9 @@ class RuntimeIsolationFixtureTest {
                     rejectedContractMutation.tasks.none { it.path.startsWith(":codex-agent-runtime-desktop:compile") },
                 )
                 val contractFailure = contractVerifierFailure(positiveContract, positiveKey, target, "0.2.0")
-                assertTrue("declared file bytes or digest differ" in contractFailure, contractFailure)
+                assertTrue("end-of-central-directory record is malformed" in contractFailure, contractFailure)
             } finally {
-                canonicalApi.writeBytes(canonicalApiBytes)
+                payload.writeBytes(payloadBytes)
             }
 
             val publicKeyBytes = positiveKey.readBytes()
@@ -364,6 +363,7 @@ class RuntimeIsolationFixtureTest {
         sourceContract: File,
         publicKey: File,
         target: String,
+        testKit: File,
         name: String,
         expectedFailure: String,
         mutateFixture: (File) -> Unit,
@@ -378,7 +378,7 @@ class RuntimeIsolationFixtureTest {
             contract,
             publicKey,
             target,
-            workspace.resolve("negative-test-kit"),
+            testKit,
             "projects",
         ).buildAndFail()
         assertTrue(expectedFailure in result.output, "$name did not fail for the expected reason:\n${result.output}")
@@ -407,8 +407,10 @@ class RuntimeIsolationFixtureTest {
         }
         val arguments = mutableListOf(
             task,
-            "-PcodexAgent.contractRepository=${contract.resolve("maven").absolutePath}",
-            "-PcodexAgent.contractManifest=${contract.resolve("contract-manifest.json").absolutePath}",
+            "-PcodexAgent.contractPayload=${contractPayload(contract).absolutePath}",
+            "-PcodexAgent.contractMetadataReceipt=${contract.resolve("phase-receipt.json").absolutePath}",
+            "-PcodexAgent.contractAttestation=${contract.resolve("attestation/codex-agent-contract-0.2.0.attestation.json").absolutePath}",
+            "-PcodexAgent.contractAttestationSignature=${contract.resolve("attestation/codex-agent-contract-0.2.0.attestation.sig").absolutePath}",
             "-PcodexAgent.contractPublicKey=${publicKey.absolutePath}",
             "-PcodexAgent.contractVersion=$contractVersion",
             "-PcodexAgent.runtimeVersion=0.2.0",
@@ -519,37 +521,57 @@ class RuntimeIsolationFixtureTest {
             fixture.resolve("ci").regularFiles().toSortedSet(),
             "Standalone Runtime Python closure differs",
         )
-    }
-
-    private fun createSignedContract(signing: File, extracted: File) {
-        runPython(
-            """
-            import sys, zipfile
-            from pathlib import Path
-            from ci.products.contract import build_contract_bundle
-            from ci.products.signatures import generate_development_key
-            from ci.tests.test_contract_bundle import PRODUCER, VERSION, _write_staging
-            root = Path(sys.argv[1]).resolve()
-            extracted = Path(sys.argv[2]).resolve()
-            private_key, public_key, metadata = generate_development_key(root / "key")
-            generate_development_key(root / "wrong-key")
-            staging = root / "staging"
-            _write_staging(staging)
-            archive = root / f"codex-agent-contract-{VERSION}.zip"
-            build_contract_bundle(staging, archive, VERSION, PRODUCER, private_key, public_key, metadata)
-            with zipfile.ZipFile(archive) as source:
-                source.extractall(extracted)
-            """.trimIndent(),
-            signing.absolutePath,
-            extracted.absolutePath,
+        val verificationMetadata = fixture.resolve("runtime/gradle/verification-metadata.xml").readText()
+        listOf(
+            "codex-agent-core",
+            "codex-agent-core-js",
+            "codex-agent-core-jvm",
+            "codex-agent-core-linuxarm64",
+            "codex-agent-core-linuxx64",
+            "codex-agent-core-macosarm64",
+            "codex-agent-core-macosx64",
+            "codex-agent-core-mingwx64",
+            "codex-agent-core-wasm-js",
+        ).forEach { module ->
+            assertTrue(
+                "<trust group=\"io.github.codex-agent-labs\" name=\"$module\" " in verificationMetadata,
+                "Authenticated Contract module is not narrowly trusted: $module",
+            )
+        }
+        assertFalse(
+            "<component group=\"io.github.codex-agent-labs\"" in verificationMetadata,
+            "Authenticated Contract bytes must not be duplicated in static dependency checksums",
         )
     }
 
-    private fun createRealContract(extracted: File, publicKey: File) {
-        val bundleRoot = repository.resolve("build/contract-product/bundle")
-        val archive = bundleRoot.resolve("codex-agent-contract-0.2.0.zip")
-        val sourceKey = bundleRoot.resolve("development-ed25519.pub")
-        if (!archive.isFile || !sourceKey.isFile) {
+    private fun createSignedContract(signing: File, contract: File) {
+        runPython(
+            """
+            import sys
+            from pathlib import Path
+            from ci.products.contract_attestation import build_contract_attestation
+            from ci.products.signatures import generate_development_key
+            from ci.tests.test_contract_attestation import VERSION, _payload, _producer, _receipt
+            root, contract = map(lambda value: Path(value).resolve(), sys.argv[1:])
+            contract.mkdir(parents=True)
+            private_key, public_key, metadata = generate_development_key(root / "key")
+            generate_development_key(root / "wrong-key")
+            payload = contract / f"codex-agent-contract-{VERSION}.zip"
+            receipt = contract / "phase-receipt.json"
+            _payload(payload)
+            _receipt(receipt, payload, _producer(7), "development")
+            build_contract_attestation(
+                payload, receipt, metadata, private_key, public_key, contract / "attestation",
+            )
+            """.trimIndent(),
+            signing.absolutePath,
+            contract.absolutePath,
+        )
+    }
+
+    private fun createRealContract(signing: File, contract: File) {
+        val stage = repository.resolve("build/contract-product/imported/binary/outputs")
+        if (!stage.isDirectory) {
             val process = ProcessBuilder(
                 repository.resolve("gradlew").absolutePath,
                 "assembleContractBundle",
@@ -558,43 +580,77 @@ class RuntimeIsolationFixtureTest {
                 "--stacktrace",
             ).directory(repository).redirectErrorStream(true).start()
             val output = process.inputStream.bufferedReader().use { it.readText() }
-            check(process.waitFor() == 0) { "Real Contract Bundle build failed:\n$output" }
+            check(process.waitFor() == 0) { "Real Contract inputs build failed:\n$output" }
         }
         runPython(
             """
-            import sys, zipfile
+            import shutil, sys, tempfile
             from pathlib import Path
-            from ci.products.contract import verify_contract_bundle
-            archive, public_key, output = map(lambda value: Path(value).resolve(), sys.argv[1:])
-            verify_contract_bundle(archive, public_key, expected_trust_domain="development")
-            with zipfile.ZipFile(archive) as source:
-                source.extractall(output)
+            from ci.products.contract_attestation import build_contract_attestation
+            from ci.products.contract import build_contract_bundle
+            from ci.products.signatures import generate_development_key
+            from ci.tests.test_contract_attestation import VERSION, _producer, _receipt
+            source, root, contract = map(lambda value: Path(value).resolve(), sys.argv[1:])
+            contract.mkdir(parents=True)
+            payload = contract / f"codex-agent-contract-{VERSION}.zip"
+            with tempfile.TemporaryDirectory(prefix="runtime-real-contract-") as temporary:
+                staging = Path(temporary) / "staging"
+                shutil.copytree(source, staging)
+                for inventory in (staging / "inventories").iterdir():
+                    lines = inventory.read_bytes().splitlines(keepends=True)
+                    if lines and lines[0].startswith(b"tree\t"):
+                        inventory.write_bytes(b"".join(lines[1:]))
+                build_contract_bundle(staging, payload, VERSION)
+            receipt = contract / "phase-receipt.json"
+            _receipt(receipt, payload, _producer(7), "development")
+            private_key, public_key, metadata = generate_development_key(root / "key")
+            build_contract_attestation(
+                payload, receipt, metadata, private_key, public_key, contract / "attestation",
+            )
             """.trimIndent(),
-            archive.canonicalPath,
-            sourceKey.canonicalPath,
-            extracted.canonicalPath,
+            stage.absolutePath,
+            signing.absolutePath,
+            contract.absolutePath,
         )
-        publicKey.parentFile.mkdirs()
-        sourceKey.copyTo(publicKey)
     }
 
-    private fun resignWithWrongTargetComponent(contract: File, privateKey: File, target: String) {
+    private fun mutatePayload(contract: File, mutation: String, target: String = "") {
         runPython(
             """
-            import sys
+            import json, stat, sys
             from pathlib import Path
-            from ci.products.inventory import load_canonical_json, write_canonical_json
-            from ci.products.signatures import sign_manifest
-            root, private_key, target = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-            manifest_path = root / "contract-manifest.json"
-            manifest = load_canonical_json(manifest_path)
-            manifest["components"][target]["sha256"] = "sha256:" + "0" * 64
-            write_canonical_json(manifest_path, manifest)
-            (root / "contract-manifest.sig").unlink()
-            sign_manifest(manifest_path, private_key, manifest["signing"])
+            from ci.products.inventory import canonical_json_bytes
+            from ci.tests.test_contract_bundle import ARCHIVE_NAME, _write_zip, _zip_entries
+            contract, mutation, target = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+            archive = contract / ARCHIVE_NAME
+            entries = _zip_entries(archive)
+            if mutation == "missing":
+                entries = [entry for entry in entries if entry[0] != "evidence/canonical-api.json"]
+            elif mutation == "extra":
+                entries.append(("evidence/unlisted.json", b"{}\n", (stat.S_IFREG | 0o644) << 16))
+            elif mutation == "empty":
+                entries = [(path, b"" if path == "evidence/canonical-api.json" else contents, mode)
+                           for path, contents, mode in entries]
+            elif mutation == "symlink":
+                entries = [(path, contents, (stat.S_IFLNK | 0o777) << 16)
+                           if path == "evidence/canonical-api.json" else (path, contents, mode)
+                           for path, contents, mode in entries]
+            else:
+                manifest = json.loads(next(contents for path, contents, _ in entries
+                                           if path == "contract-manifest.json"))
+                if mutation == "wrong-component":
+                    manifest["components"][target]["sha256"] = "sha256:" + "0" * 64
+                    replacement = canonical_json_bytes(manifest)
+                elif mutation == "truncate-manifest":
+                    replacement = canonical_json_bytes(manifest)[:-1]
+                else:
+                    raise ValueError(f"unknown mutation: {mutation}")
+                entries = [(path, replacement if path == "contract-manifest.json" else contents, mode)
+                           for path, contents, mode in entries]
+            _write_zip(archive, sorted(entries, key=lambda entry: entry[0]))
             """.trimIndent(),
             contract.absolutePath,
-            privateKey.absolutePath,
+            mutation,
             target,
         )
     }
@@ -608,20 +664,32 @@ class RuntimeIsolationFixtureTest {
         check(process.waitFor() == 0) { "Contract fixture preparation failed:\n$output" }
     }
 
+    private fun contractPayload(contract: File) =
+        contract.resolve("codex-agent-contract-0.2.0.zip")
+
     private fun contractVerifierFailure(
         contract: File,
         publicKey: File,
         target: String,
         contractVersion: String,
     ): String {
+        val outputDirectory = contract.parentFile.resolve("verifier-${System.nanoTime()}")
         val process = ProcessBuilder(
-            "python3", "-m", "ci.products.contract", "verify-directory",
-            "--directory", contract.absolutePath,
+            "python3", "-m", "ci.products.contract_attestation", "materialize",
+            "--payload", contractPayload(contract).absolutePath,
+            "--metadata-receipt", contract.resolve("phase-receipt.json").absolutePath,
+            "--attestation", contract.resolve(
+                "attestation/codex-agent-contract-0.2.0.attestation.json",
+            ).absolutePath,
+            "--signature", contract.resolve(
+                "attestation/codex-agent-contract-0.2.0.attestation.sig",
+            ).absolutePath,
             "--public-key", publicKey.absolutePath,
-            "--expected-trust-domain", "development",
+            "--required-trust-domain", "development",
             "--expected-contract-version", contractVersion,
             "--required-component", "common",
             "--required-component", target,
+            "--output-directory", outputDirectory.absolutePath,
         ).directory(repository).redirectErrorStream(true).start()
         val output = process.inputStream.bufferedReader().use { it.readText() }
         check(process.waitFor() != 0) { "Mutated Contract unexpectedly passed canonical verification" }

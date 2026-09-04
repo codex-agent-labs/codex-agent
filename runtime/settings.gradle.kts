@@ -1,8 +1,10 @@
 pluginManagement {
     val repositoryRoot = settingsDir.parentFile.toPath().toAbsolutePath().normalize()
     val requiredProperties = listOf(
-        "codexAgent.contractRepository",
-        "codexAgent.contractManifest",
+        "codexAgent.contractPayload",
+        "codexAgent.contractMetadataReceipt",
+        "codexAgent.contractAttestation",
+        "codexAgent.contractAttestationSignature",
         "codexAgent.contractPublicKey",
         "codexAgent.contractVersion",
         "codexAgent.runtimeVersion",
@@ -25,15 +27,12 @@ pluginManagement {
     ).also { path ->
         require(path.isAbsolute && path.normalize() == path) { "$name must be an absolute normalized path" }
     }
-    val contractRepository = absoluteNormalizedPath("codexAgent.contractRepository")
-    val contractManifest = absoluteNormalizedPath("codexAgent.contractManifest")
+    val contractPayload = absoluteNormalizedPath("codexAgent.contractPayload")
+    val contractMetadataReceipt = absoluteNormalizedPath("codexAgent.contractMetadataReceipt")
+    val contractAttestation = absoluteNormalizedPath("codexAgent.contractAttestation")
+    val contractAttestationSignature =
+        absoluteNormalizedPath("codexAgent.contractAttestationSignature")
     val contractPublicKey = absoluteNormalizedPath("codexAgent.contractPublicKey")
-    require(contractManifest.fileName.toString() == "contract-manifest.json") {
-        "codexAgent.contractManifest must name contract-manifest.json"
-    }
-    require(contractRepository == contractManifest.parent.resolve("maven")) {
-        "codexAgent.contractRepository must be the manifest sibling named maven"
-    }
 
     val runtimeVersionFile = repositoryRoot.resolve("gradle/release/versions/runtime.txt")
     require(java.nio.file.Files.isRegularFile(runtimeVersionFile) &&
@@ -147,10 +146,13 @@ pluginManagement {
     }
     val verifiedContract = verifiedContractParent.resolve("contract-${java.util.UUID.randomUUID()}")
     val verifyCommand = mutableListOf(
-        "python3", "-m", "ci.products.contract", "verify-directory",
-        "--directory", contractManifest.parent.toString(),
+        "python3", "-m", "ci.products.contract_attestation", "materialize",
+        "--payload", contractPayload.toString(),
+        "--metadata-receipt", contractMetadataReceipt.toString(),
+        "--attestation", contractAttestation.toString(),
+        "--signature", contractAttestationSignature.toString(),
         "--public-key", contractPublicKey.toString(),
-        "--expected-trust-domain", expectedTrustDomain,
+        "--required-trust-domain", expectedTrustDomain,
         "--expected-contract-version", values.getValue("codexAgent.contractVersion"),
         "--required-component", "common",
         "--required-component", values.getValue("codexAgent.target"),
@@ -222,8 +224,13 @@ pluginManagement {
     settings.extensions.extraProperties.set("codexAgent.verifiedContractValues", values)
     settings.extensions.extraProperties.set("codexAgent.verifiedRepositoryRoot", repositoryRoot)
     settings.extensions.extraProperties.set("codexAgent.verifiedContractRepository", verifiedContract.resolve("maven"))
+    settings.extensions.extraProperties.set("codexAgent.verifiedContractDirectory", verifiedContract)
     settings.extensions.extraProperties.set("codexAgent.verifiedDesktopRuntimeSources", desktopRuntimeSources)
     gradle.beforeProject(org.gradle.api.Action<org.gradle.api.Project> {
+        extensions.extraProperties.set(
+            "codexAgent.verifiedContractDirectory",
+            verifiedContract.toFile(),
+        )
         extensions.extraProperties.set(
             "codexAgent.verifiedContractManifest",
             verifiedContractManifest.toFile(),

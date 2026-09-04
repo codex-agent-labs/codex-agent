@@ -181,7 +181,7 @@ class CrossLanguageBindingTasksTest {
             val cAbiWiring = File(
                 "../../runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts",
             ).readText()
-            assertTrue("providers.gradleProperty(\"codexAgent.contractManifest\")" in cAbiWiring)
+            assertTrue("rootProject.extra[\"codexAgent.verifiedContractDirectory\"]" in cAbiWiring)
             assertTrue("mustRunAfter(invalidateCAbiBootstrapEvidence)" in cAbiWiring)
             assertFalse("prepareContractInputs" in cAbiWiring)
             assertFalse(":codex-agent-core" in cAbiWiring)

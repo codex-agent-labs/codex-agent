@@ -37,8 +37,10 @@ if (sdkBinaryRequest) {
         else -> error("Unsupported SDK binary component: $component")
     }
     val requiredProperties = listOf(
-        "codexAgent.contractRepository",
-        "codexAgent.contractManifest",
+        "codexAgent.contractPayload",
+        "codexAgent.contractMetadataReceipt",
+        "codexAgent.contractAttestation",
+        "codexAgent.contractAttestationSignature",
         "codexAgent.contractPublicKey",
         "codexAgent.contractVersion",
     )
@@ -56,15 +58,13 @@ if (sdkBinaryRequest) {
                 "$name must be an absolute normalized path"
             }
         }
-    val contractRepository = absoluteNormalizedPath("codexAgent.contractRepository")
-    val contractManifest = absoluteNormalizedPath("codexAgent.contractManifest")
+    val contractPayload = absoluteNormalizedPath("codexAgent.contractPayload")
+    val contractMetadataReceipt = absoluteNormalizedPath("codexAgent.contractMetadataReceipt")
+    val contractAttestation = absoluteNormalizedPath("codexAgent.contractAttestation")
+    val contractAttestationSignature = absoluteNormalizedPath(
+        "codexAgent.contractAttestationSignature",
+    )
     val contractPublicKey = absoluteNormalizedPath("codexAgent.contractPublicKey")
-    require(contractManifest.fileName.toString() == "contract-manifest.json") {
-        "codexAgent.contractManifest must name contract-manifest.json"
-    }
-    require(contractRepository == contractManifest.parent.resolve("maven")) {
-        "codexAgent.contractRepository must be the manifest sibling named maven"
-    }
     val versionBytes = java.nio.file.Files.readAllBytes(
         settingsDir.toPath().resolve("gradle/release/versions/contract.txt"),
     )
@@ -92,10 +92,13 @@ if (sdkBinaryRequest) {
     val verifiedContract = verifiedParent.resolve("sdk-${java.util.UUID.randomUUID()}")
     val expectedTrustDomain = if (System.getenv("GITHUB_ACTIONS") == "true") "release" else "development"
     val verifyCommand = mutableListOf(
-        "python3", "-m", "ci.products.contract", "verify-directory",
-        "--directory", contractManifest.parent.toString(),
+        "python3", "-m", "ci.products.contract_attestation", "materialize",
+        "--payload", contractPayload.toString(),
+        "--metadata-receipt", contractMetadataReceipt.toString(),
+        "--attestation", contractAttestation.toString(),
+        "--signature", contractAttestationSignature.toString(),
         "--public-key", contractPublicKey.toString(),
-        "--expected-trust-domain", expectedTrustDomain,
+        "--required-trust-domain", expectedTrustDomain,
         "--expected-contract-version", contractVersion,
         "--output-directory", verifiedContract.toString(),
         "--reuse-output-directory",

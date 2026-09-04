@@ -59,12 +59,6 @@ class ContractOutputContainmentTest(unittest.TestCase):
             repository,
             output,
             "HEAD",
-            "codex-agent-labs/codex-agent",
-            ".github/workflows/contract.yml",
-            "pull_request",
-            7,
-            1,
-            31,
         )
 
     def test_rejects_symlinked_output_ancestor_without_writing_through_it(self):
@@ -90,12 +84,11 @@ class ContractOutputContainmentTest(unittest.TestCase):
             output = root / "arbitrary-output" / "prepared"
             _write(output / "stale", b"stale\n")
 
-            producer = self._prepare(repository, output)
+            identity = self._prepare(repository, output)
 
-            self.assertEqual(_git(repository, "rev-parse", "HEAD"), producer["commit"])
+            self.assertEqual(_git(repository, "rev-parse", "HEAD"), identity["commit"])
             self.assertEqual(
                 {
-                    "producer.json",
                     "inventories/contract-binary-inputs.git-tree",
                     "inventories/contract-validation-inputs.git-tree",
                 },

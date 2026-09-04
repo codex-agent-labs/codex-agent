@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
@@ -15,30 +15,18 @@ import ci.products.contract_model as contract_model
 from ci.products.contract import build_contract_bundle
 from ci.products.contract_model import verify_extracted_contract_directory
 from ci.products.inventory import sha256_bytes, write_canonical_json
-from ci.products.signatures import generate_development_key, sign_manifest
-from ci.tests.test_contract_bundle import ARCHIVE_NAME, PRODUCER, VERSION, _write_staging
+from ci.tests.test_contract_bundle import ARCHIVE_NAME, VERSION, _write_staging
 
 
 class ExtractedContractDirectoryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if shutil.which("ssh-keygen") is None:
-            raise unittest.SkipTest("ssh-keygen is required for Contract directory tests")
         cls._temporary = tempfile.TemporaryDirectory(prefix="contract-directory-")
         root = Path(cls._temporary.name).resolve()
-        cls.private_key, cls.public_key, cls.signing = generate_development_key(root / "key")
         staging = root / "staging"
         _write_staging(staging)
         archive = root / ARCHIVE_NAME
-        build_contract_bundle(
-            staging,
-            archive,
-            VERSION,
-            PRODUCER,
-            cls.private_key,
-            cls.public_key,
-            cls.signing,
-        )
+        build_contract_bundle(staging, archive, VERSION)
         cls.extracted = root / "extracted"
         with zipfile.ZipFile(archive) as source:
             source.extractall(cls.extracted)
@@ -55,8 +43,6 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
         ) as snapshot:
             manifest = verify_extracted_contract_directory(
                 self.extracted,
-                self.public_key,
-                expected_trust_domain="development",
                 expected_contract_version=VERSION,
                 required_components=("common", "macos-arm64"),
             )
@@ -68,8 +54,6 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
             contract_product.main([
                 "verify-directory",
                 "--directory", str(self.extracted),
-                "--public-key", str(self.public_key),
-                "--expected-trust-domain", "development",
                 "--expected-contract-version", VERSION,
                 "--required-component", "common",
                 "--required-component", "macos-arm64",
@@ -78,46 +62,17 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected Contract version"):
             verify_extracted_contract_directory(
                 self.extracted,
-                self.public_key,
-                expected_trust_domain="development",
                 expected_contract_version="0.2.1",
             )
         with self.assertRaisesRegex(ValueError, "unsupported component"):
             verify_extracted_contract_directory(
                 self.extracted,
-                self.public_key,
-                expected_trust_domain="development",
                 required_components=("not-a-contract-component",),
             )
-        with self.assertRaisesRegex(ValueError, "requires a keyring"):
+        with self.assertRaisesRegex(ValueError, "must be unique"):
             verify_extracted_contract_directory(
                 self.extracted,
-                self.public_key,
-                expected_trust_domain="release",
-            )
-        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as release_cli:
-            contract_product.main([
-                "verify-directory",
-                "--directory", str(self.extracted),
-                "--public-key", str(self.public_key),
-                "--expected-trust-domain", "release",
-            ])
-        self.assertEqual(2, release_cli.exception.code)
-        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as development_cli:
-            contract_product.main([
-                "verify-directory",
-                "--directory", str(self.extracted),
-                "--public-key", str(self.public_key),
-                "--expected-trust-domain", "development",
-                "--keyring", str(self.extracted / "contract-manifest.json"),
-                "--keys-directory", str(self.extracted),
-            ])
-        self.assertEqual(2, development_cli.exception.code)
-        with self.assertRaisesRegex(ValueError, "development or release"):
-            verify_extracted_contract_directory(
-                self.extracted,
-                self.public_key,
-                expected_trust_domain="other",
+                required_components=("common", "common"),
             )
 
     def test_runtime_cli_prints_the_fully_verified_canonical_projection(self) -> None:
@@ -128,8 +83,6 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
                 contract_product.main([
                     "verify-directory",
                     "--directory", str(self.extracted),
-                    "--public-key", str(self.public_key),
-                    "--expected-trust-domain", "development",
                     "--expected-contract-version", VERSION,
                     "--required-component", "common",
                     "--required-component", "macos-arm64",
@@ -166,8 +119,6 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
                     contract_product.main([
                         "verify-directory",
                         "--directory", str(self.extracted),
-                        "--public-key", str(self.public_key),
-                        "--expected-trust-domain", "development",
                         "--expected-contract-version", VERSION,
                         "--required-component", "common",
                         "--required-component", "macos-arm64",
@@ -200,8 +151,6 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
                     self.assertEqual(0, contract_product.main([
                         "verify-directory",
                         "--directory", str(self.extracted),
-                        "--public-key", str(self.public_key),
-                        "--expected-trust-domain", "development",
                         "--expected-contract-version", VERSION,
                         "--required-component", "common",
                         "--required-component", "macos-arm64",
@@ -214,29 +163,23 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must not exist"):
                 verify_extracted_contract_directory(
                     self.extracted,
-                    self.public_key,
-                    expected_trust_domain="development",
                     output_directory=output,
                 )
             self.assertEqual(0, contract_product.main([
                 "verify-directory",
                 "--directory", str(self.extracted),
-                "--public-key", str(self.public_key),
-                "--expected-trust-domain", "development",
                 "--output-directory", str(output),
                 "--reuse-output-directory",
             ]))
             (output / "evidence/canonical-api.json").write_bytes(original + b" ")
-            with self.assertRaisesRegex(ValueError, "differs from the authenticated snapshot"):
+            with self.assertRaisesRegex(ValueError, "differs from the content snapshot"):
                 verify_extracted_contract_directory(
                     self.extracted,
-                    self.public_key,
-                    expected_trust_domain="development",
                     output_directory=output,
                     reuse_output_directory=True,
                 )
 
-    def test_complete_tree_canonical_signature_and_maven_mutations_fail(self) -> None:
+    def test_complete_tree_canonical_and_maven_mutations_fail(self) -> None:
         with tempfile.TemporaryDirectory(prefix="contract-directory-mutations-") as temporary:
             root = Path(temporary).resolve() / "tree"
             shutil.copytree(self.extracted, root)
@@ -272,13 +215,6 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
                 self._verify(root)
             manifest_path.write_bytes(canonical)
 
-            signature = root / "contract-manifest.sig"
-            signed = signature.read_bytes()
-            signature.write_bytes(signed[:-2] + b"A\n")
-            with self.assertRaises(ValueError):
-                self._verify(root)
-            signature.write_bytes(signed)
-
             outside = Path(temporary) / "maven-primary"
             outside.write_bytes(original)
             maven.unlink()
@@ -286,7 +222,7 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unsafe entry"):
                 self._verify(root)
 
-    def test_resigned_stale_evidence_identity_fails(self) -> None:
+    def test_stale_evidence_identity_fails_even_when_manifest_inventory_matches(self) -> None:
         with tempfile.TemporaryDirectory(prefix="contract-directory-evidence-") as temporary:
             root = Path(temporary).resolve() / "tree"
             shutil.copytree(self.extracted, root)
@@ -301,74 +237,11 @@ class ExtractedContractDirectoryTest(unittest.TestCase):
             record["bytes"] = len(contents)
             record["sha256"] = sha256_bytes(contents)
             write_canonical_json(manifest_path, manifest)
-            (root / "contract-manifest.sig").unlink()
-            sign_manifest(manifest_path, self.private_key, self.signing)
             with self.assertRaises(ValueError):
                 self._verify(root)
 
-    def test_release_directory_requires_an_allowed_tracked_key(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="contract-directory-release-") as temporary:
-            base = Path(temporary).resolve()
-            root = base / "tree"
-            shutil.copytree(self.extracted, root)
-            release_signing = {**self.signing, "trustDomain": "release"}
-            manifest_path = root / "contract-manifest.json"
-            manifest = json.loads(manifest_path.read_bytes())
-            manifest["signing"] = release_signing
-            write_canonical_json(manifest_path, manifest)
-            (root / "contract-manifest.sig").unlink()
-            sign_manifest(manifest_path, self.private_key, release_signing)
-
-            keys = base / "keys"
-            keys.mkdir()
-            tracked_key = keys / f"{release_signing['keyId']}.pub"
-            shutil.copyfile(self.public_key, tracked_key)
-            keyring = base / "keyring.json"
-            write_canonical_json(keyring, {
-                "schemaVersion": 1,
-                "namespace": release_signing["namespace"],
-                "algorithm": release_signing["algorithm"],
-                "trustDomain": "release",
-                "activeKey": None,
-                "retiredKeys": [{
-                    "keyId": release_signing["keyId"],
-                    "fingerprint": release_signing["fingerprint"],
-                }],
-            })
-            verified = verify_extracted_contract_directory(
-                root,
-                self.public_key,
-                expected_trust_domain="release",
-                expected_contract_version=VERSION,
-                required_components=("common",),
-                keyring=keyring,
-                keys_directory=keys,
-            )
-            self.assertEqual("release", verified["signing"]["trustDomain"])
-
-            write_canonical_json(keyring, {
-                "schemaVersion": 1,
-                "namespace": release_signing["namespace"],
-                "algorithm": release_signing["algorithm"],
-                "trustDomain": "release",
-                "activeKey": None,
-                "retiredKeys": [],
-            })
-            with self.assertRaisesRegex(ValueError, "allowed release key"):
-                verify_extracted_contract_directory(
-                    root,
-                    self.public_key,
-                    expected_trust_domain="release",
-                    keyring=keyring,
-                    keys_directory=keys,
-                )
-
     def _verify(self, root: Path) -> dict:
-        return verify_extracted_contract_directory(
-            root,
-            self.public_key,
-            expected_trust_domain="development",
-        )
+        return verify_extracted_contract_directory(root)
 
 
 if __name__ == "__main__":

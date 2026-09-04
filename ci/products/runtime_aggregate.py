@@ -15,7 +15,7 @@ from .aggregate import (
     validate_runtime_variant,
     verify_runtime_aggregate_artifacts,
 )
-from .contract_model import verify_contract_bundle
+from .contract_attestation import verify_contract_attestation
 from .inventory import (
     load_canonical_json_bytes,
     read_regular_file_bytes,
@@ -97,7 +97,10 @@ def _file_record(path: Path, logical_path: str, role: str, **identity: str) -> d
 def produce_runtime_aggregate(
     *,
     runtime_version: str,
-    contract_bundle: Path,
+    contract_payload: Path,
+    contract_metadata_receipt: Path,
+    contract_attestation: Path,
+    contract_attestation_signature: Path,
     contract_public_key: Path,
     required_trust_domain: str,
     variant_bundles: dict[str, Path],
@@ -111,13 +114,20 @@ def produce_runtime_aggregate(
     private_key: Path,
     public_key: Path,
     output_directory: Path,
+    contract_keyring: Path | None = None,
+    contract_keys_directory: Path | None = None,
 ) -> dict[str, Any]:
     """Validate exact product inputs, sign, and reverify one Runtime aggregate."""
     require_semver(runtime_version, "Runtime aggregate version")
-    contract = verify_contract_bundle(
-        Path(contract_bundle),
+    contract, _, _ = verify_contract_attestation(
+        Path(contract_payload),
+        Path(contract_metadata_receipt),
+        Path(contract_attestation),
+        Path(contract_attestation_signature),
         Path(contract_public_key),
-        expected_trust_domain=required_trust_domain,
+        required_trust_domain=required_trust_domain,
+        keyring=contract_keyring,
+        keys_directory=contract_keys_directory,
     )
     signing = validate_signing_metadata(signing_metadata, trust_domain=required_trust_domain)
     output = _safe_empty_output(Path(output_directory))
@@ -232,7 +242,10 @@ def produce_runtime_aggregate(
             manifest_path,
             aggregate_signature=signature_path,
             aggregate_public_key=Path(public_key),
-            contract_bundle=Path(contract_bundle),
+            contract_payload=Path(contract_payload),
+            contract_metadata_receipt=Path(contract_metadata_receipt),
+            contract_attestation=Path(contract_attestation),
+            contract_attestation_signature=Path(contract_attestation_signature),
             contract_public_key=Path(contract_public_key),
             variant_bundles=variant_bundles,
             metadata_receipts=metadata_receipts,
@@ -244,6 +257,8 @@ def produce_runtime_aggregate(
             ],
             adapter_evidence=adapter_evidence,
             required_trust_domain=required_trust_domain,
+            contract_keyring=contract_keyring,
+            contract_keys_directory=contract_keys_directory,
         )
         if verified != aggregate:
             raise ValueError("Verified Runtime aggregate differs from the produced manifest")

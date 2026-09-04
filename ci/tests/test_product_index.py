@@ -323,6 +323,7 @@ class ProductIndexTest(unittest.TestCase):
             before,
             (manifest.read_bytes(), manifest.with_suffix(".sig").read_bytes()),
         )
+
         verify_manifest_signature(
             manifest,
             manifest.with_suffix(".sig"),
@@ -347,6 +348,36 @@ class ProductIndexTest(unittest.TestCase):
             before,
             (manifest.read_bytes(), manifest.with_suffix(".sig").read_bytes()),
         )
+
+    def test_release_index_preserves_only_a_development_contract_metadata_receipt(self) -> None:
+        original = source("metadata", trust_domain="development")
+        value = build_product_index(
+            [original],
+            repository=REPOSITORY,
+            context={
+                "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
+                "promotionRunId": 7, "promotionRunAttempt": 1,
+            },
+            trust_domain="release",
+            signing=self.release_signing,
+            producer=producer("release"),
+            stable_history=None,
+        )
+        self.assertEqual(sha256_bytes(original.receipt_bytes), value["entries"][0]["receiptSha256"])
+
+        with self.assertRaisesRegex(ValueError, "trust domain"):
+            build_product_index(
+                [source("binary", trust_domain="development")],
+                repository=REPOSITORY,
+                context={
+                    "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
+                    "promotionRunId": 7, "promotionRunAttempt": 1,
+                },
+                trust_domain="release",
+                signing=self.release_signing,
+                producer=producer("release"),
+                stable_history=None,
+            )
 
     def test_exact_schema_context_and_build_key_order(self) -> None:
         values = [

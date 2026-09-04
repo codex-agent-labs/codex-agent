@@ -1,42 +1,45 @@
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 
-private val productPythonResources = listOf(
-    "ci/products/__init__.py",
-    "ci/products/inventory.py",
-    "ci/products/test_results.py",
-    "ci/products/runtime_evidence.py",
-    "ci/products/c_abi.py",
-    "codex-agent-runtime-desktop/native/c-api/abi-contract.json",
-    "codex-agent-runtime-desktop/native/c-api/exports/linux.map",
-    "codex-agent-runtime-desktop/native/c-api/exports/macos.exports",
-    "codex-agent-runtime-desktop/native/c-api/exports/windows.def",
+private val productPythonResources = mapOf(
+    "test_results" to listOf("ci/products/test_results.py"),
+    "runtime_evidence" to listOf("ci/products/runtime_evidence.py", "ci/products/test_results.py"),
+    "c_abi" to listOf(
+        "ci/products/c_abi.py",
+        "codex-agent-runtime-desktop/native/c-api/abi-contract.json",
+        "codex-agent-runtime-desktop/native/c-api/exports/linux.map",
+        "codex-agent-runtime-desktop/native/c-api/exports/macos.exports",
+        "codex-agent-runtime-desktop/native/c-api/exports/windows.def",
+    ),
 )
 
-private val extractedProductPythonRoot: java.io.File by lazy {
-    val root = Files.createTempDirectory("codex-agent-product-python-").toFile().also {
-        it.deleteOnExit()
+private val extractedProductPythonRoots = mutableMapOf<String, java.io.File>()
+
+private fun extractedProductPythonRoot(module: String): java.io.File = synchronized(extractedProductPythonRoots) {
+    extractedProductPythonRoots.getOrPut(module) {
+        val root = Files.createTempDirectory("codex-agent-product-python-").toFile().also {
+            it.deleteOnExit()
+        }
+        val resources = listOf("ci/products/__init__.py", "ci/products/inventory.py") +
+            checkNotNull(productPythonResources[module]) { "Unsupported packaged product Python module: $module" }
+        resources.forEach { relative ->
+            val resource = "python/$relative"
+            val output = root.resolve(relative)
+            output.parentFile.mkdirs()
+            val input = ProductPythonToolingMarker::class.java.classLoader.getResourceAsStream(resource)
+                ?: error("Packaged product Python resource is missing: $resource")
+            input.use { source -> output.outputStream().use(source::copyTo) }
+            output.deleteOnExit()
+        }
+        root
     }
-    productPythonResources.forEach { relative ->
-        val resource = "python/$relative"
-        val output = root.resolve(relative)
-        output.parentFile.mkdirs()
-        val input = ProductPythonToolingMarker::class.java.classLoader.getResourceAsStream(resource)
-            ?: error("Packaged product Python resource is missing: $resource")
-        input.use { source -> output.outputStream().use(source::copyTo) }
-        output.deleteOnExit()
-    }
-    root
 }
 
 private object ProductPythonToolingMarker
 
 internal fun runProductPythonModule(module: String, arguments: List<String>): String {
-    check(module in setOf("runtime_evidence", "c_abi", "test_results")) {
-        "Unsupported packaged product Python module: $module"
-    }
     val output = ByteArrayOutputStream()
-    val root = extractedProductPythonRoot
+    val root = extractedProductPythonRoot(module)
     val process = ProcessBuilder(listOf("python3", "-m", "ci.products.$module") + arguments)
         .directory(root)
         .redirectInput(ProcessBuilder.Redirect.PIPE)

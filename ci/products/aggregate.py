@@ -48,6 +48,7 @@ from .runtime_attestation import (
     derive_runtime_component_attestation,
 )
 from .runtime_identity import derive_runtime_identity
+from .contract_attestation import verify_contract_attestation
 from .contract_model import (
     CONTRACT_ARTIFACT_COMPONENTS,
     CONTRACT_CHECKSUM_SUFFIXES,
@@ -60,7 +61,6 @@ from .contract_model import (
     contract_required_primary_paths,
     validate_contract_manifest,
     validate_contract_maven_inventory,
-    verify_contract_bundle,
     verify_contract_git_inventories,
 )
 
@@ -743,7 +743,10 @@ def verify_runtime_aggregate_artifacts(
     *,
     aggregate_signature: Path,
     aggregate_public_key: Path,
-    contract_bundle: Path,
+    contract_payload: Path,
+    contract_metadata_receipt: Path,
+    contract_attestation: Path,
+    contract_attestation_signature: Path,
     contract_public_key: Path,
     variant_bundles: dict[str, Path],
     metadata_receipts: dict[str, Path],
@@ -753,6 +756,8 @@ def verify_runtime_aggregate_artifacts(
     runtime_maven_files: list[dict[str, Any]],
     adapter_evidence: dict[str, Path],
     required_trust_domain: str,
+    contract_keyring: Path | None = None,
+    contract_keys_directory: Path | None = None,
 ) -> dict[str, Any]:
     aggregate_path = Path(aggregate_manifest)
     aggregate_bytes = read_regular_file_bytes(
@@ -784,10 +789,15 @@ def verify_runtime_aggregate_artifacts(
         )
     if required_trust_domain not in {"development", "release"}:
         raise ValueError("Required Runtime aggregate trust domain is invalid")
-    contract = verify_contract_bundle(
-        Path(contract_bundle),
+    contract, _, _ = verify_contract_attestation(
+        Path(contract_payload),
+        Path(contract_metadata_receipt),
+        Path(contract_attestation),
+        Path(contract_attestation_signature),
         Path(contract_public_key),
-        expected_trust_domain=required_trust_domain,
+        required_trust_domain=required_trust_domain,
+        keyring=contract_keyring,
+        keys_directory=contract_keys_directory,
     )
     for mapping, label in (
         (variant_bundles, "Runtime variant bundles"),
@@ -802,8 +812,6 @@ def verify_runtime_aggregate_artifacts(
         raise ValueError("Runtime adapter evidence must contain exactly JVM, Node JS, and Node Wasm")
     if aggregate["signing"]["trustDomain"] != required_trust_domain:
         raise ValueError("Runtime aggregate signing trust domain mismatch")
-    if contract["signing"]["trustDomain"] != required_trust_domain:
-        raise ValueError("Contract signing trust domain mismatch")
     if (
         aggregate["contract"]["version"] != contract["contractVersion"]
         or aggregate["contract"]["digest"] != contract["contractDigest"]

@@ -281,10 +281,12 @@ private fun CrossLanguageBindingReceipt.normalized(): CrossLanguageBindingReceip
         requireSha256(artifact.sha256, "binding artifact ${artifact.id}")
     }
     val artifactDigests = artifacts.associate { it.id to it.sha256 }
-    val expectedHostProofs = crossLanguageCAbiTargetSpecs.values.associateBy {
-        it.classifier.removePrefix("c-abi-")
-    }
     val nativeWrapper = language in nativeWrapperBindings
+    val expectedHostProofs = if (nativeWrapper) {
+        crossLanguageCAbiTargetSpecs.values.associateBy { it.classifier.removePrefix("c-abi-") }
+    } else {
+        emptyMap()
+    }
     if (nativeWrapper) {
         check(language.isActive(phase)) { "Native wrapper host proof language is inactive at ${phase.name}" }
         check(hostConsumerProofs.map(CrossLanguageBindingHostConsumerProof::classifier).toSet() ==

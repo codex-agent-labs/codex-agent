@@ -22,9 +22,9 @@ val runtimeProductVersion = providers.provider { project.version.toString() }
 val verifiedContractManifestFile = layout.file(providers.provider {
     rootProject.extra["codexAgent.verifiedContractManifest"] as File
 })
-val contractBundleRoot = providers.gradleProperty("codexAgent.contractManifest")
-    .map(::File)
-    .map { it.parentFile }
+val verifiedContractDirectory = layout.dir(providers.provider {
+    rootProject.extra["codexAgent.verifiedContractDirectory"] as File
+})
 val desktopManifestFile = layout.projectDirectory.file("codex-app-server-distributions.json")
 val runtimeAbiContractFile = layout.projectDirectory.file("native/c-api/abi-contract.json")
 val runtimeBinaryFlagsFile = layout.projectDirectory.file("native/c-api/binary-flags.json")
@@ -548,8 +548,7 @@ val generateCAbiBootstrapEvidence =
         "linkReleaseSharedMacosArm64",
         "macosArm64Test",
     )
-    contractDirectory.set(layout.dir(contractBundleRoot))
-    contractPublicKey.set(layout.file(providers.gradleProperty("codexAgent.contractPublicKey").map(::File)))
+    contractDirectory.set(verifiedContractDirectory)
     contractVersion.set(providers.gradleProperty("codexAgent.contractVersion"))
     contractComponent.set("macos-arm64")
     expectedPublicSymbolCount.set(cAbiCatalog.symbolCount)

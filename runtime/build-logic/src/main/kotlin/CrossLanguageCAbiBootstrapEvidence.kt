@@ -3443,9 +3443,6 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val contractDirectory: DirectoryProperty
 
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
-    abstract val contractPublicKey: RegularFileProperty
-
     @get:Input abstract val contractVersion: org.gradle.api.provider.Property<String>
     @get:Input abstract val contractComponent: org.gradle.api.provider.Property<String>
     @get:Input abstract val expectedPublicSymbolCount: org.gradle.api.provider.Property<Int>
@@ -3587,7 +3584,6 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
             processes,
             repositoryRoot.get().asFile,
             contractDirectory.get().asFile,
-            contractPublicKey.get().asFile,
             contractVersion.get(),
             contractComponent.get(),
         )

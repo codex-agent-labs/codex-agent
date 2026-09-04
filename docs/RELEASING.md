@@ -57,11 +57,12 @@ workflow derives the release version from the tag instead of accepting an
 unrelated version input, and fails if the promoted and candidate trees differ.
 
 The protected `release-candidate` environment contains only the signing
-material needed to assemble the payload. Its configured reviewers approve
-access to those credentials. `release-publication` separately controls Maven
-Central publication credentials and approval. `GRADLE_ENCRYPTION_KEY` is a CI
-secret used only to encrypt reusable Gradle configuration-cache entries; it is
-not publication authority.
+material needed to attest or sign already promoted inputs. For the Contract
+product, that material never assembles, rebuilds, or repacks the content ZIP.
+Its configured reviewers approve access to those credentials.
+`release-publication` separately controls Maven Central publication credentials
+and approval. `GRADLE_ENCRYPTION_KEY` is a CI secret used only to encrypt
+reusable Gradle configuration-cache entries; it is not publication authority.
 
 ## Evidence is produced once
 
@@ -83,6 +84,23 @@ not publication authority.
    receipt, signs the unsigned Maven primaries, generates mandated sidecars,
    and assembles the Central bundle, aggregate SBOM, and schema-16 release
    manifest without compiling, linking, or running platform tests.
+
+## Contract handoff in Phases 10 and 11
+
+`codex-agent-contract-<version>.zip` is a deterministic content-only artifact.
+The ZIP and its embedded Contract manifest contain no producer identity,
+signature, or signing material. Complete producer provenance lives outside the
+ZIP in the immutable Contract metadata receipt.
+
+Phase 10 verifies the exact previously built ZIP bytes, embedded manifest
+bytes, and immutable metadata receipt. It then creates the detached files
+`codex-agent-contract-<version>.attestation.json` and
+`codex-agent-contract-<version>.attestation.sig`. This step does not rebuild,
+repack, or modify the ZIP, and it does not rewrite the receipt.
+
+Phase 11 publishes the exact Phase 10 ZIP, metadata receipt, attestation, and
+signature bytes. It may verify and forward them, but it may not rebuild or
+repackage the Contract payload.
 
 ## Native-wrapper release assets
 
@@ -115,8 +133,10 @@ build/protected-candidate/<candidate-commit>/payload/
 The aggregate verifies the imported evidence, iOS runtime, Swift package,
 privacy declarations, Maven inventories, pre-merge consumer receipts, Central
 bundle, and canonical candidate manifest. Candidate tasks may
-inspect, inventory, sign, and assemble promoted files; they may not compile,
-link, run Xcode, boot a simulator, or execute a platform test.
+inspect and inventory promoted files, create detached Contract attestations,
+sign the permitted non-Contract inputs, and assemble non-Contract release
+payloads; they may not rebuild or repackage the Contract ZIP, compile, link,
+run Xcode, boot a simulator, or execute a platform test.
 
 Candidate output is immutable. A rerun reuses an already successful candidate;
 it never silently deletes or replaces one with the same identity.
@@ -198,9 +218,12 @@ bytes and never rebuilds Maven, native, or runtime artifacts. It:
    assets, and 14 receipt-bound native-wrapper packages, comparing every
    official GitHub asset digest with the manifest-bound artifact without
    downloading it again.
-5. Runs one downstream macOS job whose only public asset download is the clean
+5. Publishes the exact Phase 10 Contract ZIP, metadata receipt, detached
+   attestation, and detached signature bytes without rebuilding or repacking
+   the ZIP.
+6. Runs one downstream macOS job whose only public asset download is the clean
    Swift Package resolution check.
-6. On rerun, reuses matching validated or published records and fails closed on
+7. On rerun, reuses matching validated or published records and fails closed on
    identity mismatches. It does not compare a new rebuild with the old one.
 
 Do not store `OPENAI_API_KEY`, ChatGPT credentials, generated tokens, or Google

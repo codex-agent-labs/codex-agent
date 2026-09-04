@@ -215,7 +215,13 @@ def _entry(
     if not isinstance(source, IndexEntrySource) or type(source.receipt_bytes) is not bytes:
         raise ValueError("Product index entry source is invalid")
     receipt = validate_phase_receipt(load_canonical_json_bytes(source.receipt_bytes))
-    if receipt["trustDomain"] != trust_domain:
+    release_attested_contract = (
+        trust_domain == "release"
+        and receipt["trustDomain"] == "development"
+        and (receipt["product"], receipt["component"], receipt["phase"], receipt["target"])
+        == ("contract", "contract", "metadata", "common")
+    )
+    if receipt["trustDomain"] != trust_domain and not release_attested_contract:
         raise ValueError("Product index receipt trust domain does not match the index")
     if receipt["producer"]["repository"] != repository:
         raise ValueError("Product index receipt repository does not match the index")
@@ -279,7 +285,15 @@ def build_product_index(
             for _, receipt in pairs
         ):
             raise ValueError("Pull-request product index contains a receipt from another context")
-    elif any(receipt["producer"]["event"] != "push" for _, receipt in pairs):
+    elif any(
+        receipt["producer"]["event"] != "push"
+        and not (
+            receipt["trustDomain"] == "development"
+            and (receipt["product"], receipt["component"], receipt["phase"], receipt["target"])
+            == ("contract", "contract", "metadata", "common")
+        )
+        for _, receipt in pairs
+    ):
         raise ValueError("Release product index contains a non-push receipt")
     if index["context"]["kind"] == "stable":
         stable_index_identity(index)

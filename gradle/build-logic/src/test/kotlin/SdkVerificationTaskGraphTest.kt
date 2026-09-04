@@ -42,7 +42,7 @@ class SdkVerificationTaskGraphTest {
                 "--no-configuration-cache", "--console=plain",
             )
             .buildAndFail()
-        assertTrue("Missing mandatory explicit -P project property: codexAgent.contractRepository" in canonical.output)
+        assertTrue("Missing mandatory explicit -P project property: codexAgent.contractPayload" in canonical.output)
         assertFalse(Regex("(?m)^:codex-agent-core:").containsMatchIn(canonical.output), canonical.output)
     }
 

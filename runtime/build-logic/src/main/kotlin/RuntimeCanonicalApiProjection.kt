@@ -23,27 +23,17 @@ internal fun verifiedRuntimeCanonicalApiProjection(
     processes: ExecOperations,
     repositoryRoot: File,
     contractDirectory: File,
-    publicKey: File,
     contractVersion: String,
     requiredComponent: String,
 ): RuntimeCanonicalApiProjection {
-    val trustDomain = if (System.getenv("GITHUB_ACTIONS") == "true") "release" else "development"
-    val command = mutableListOf(
+    val command = listOf(
         "python3", "-m", "ci.products.contract", "verify-directory",
         "--directory", contractDirectory.absolutePath,
-        "--public-key", publicKey.absolutePath,
-        "--expected-trust-domain", trustDomain,
         "--expected-contract-version", contractVersion,
         "--required-component", "common",
         "--required-component", requiredComponent,
         "--print-canonical-api",
     )
-    if (trustDomain == "release") {
-        command += listOf(
-            "--keyring", repositoryRoot.resolve("gradle/release/product-signing-keys.json").absolutePath,
-            "--keys-directory", repositoryRoot.resolve("gradle/release/keys").absolutePath,
-        )
-    }
     val root = releaseJson.parseToJsonElement(
         processes.captureRuntimeProcess(
             command,

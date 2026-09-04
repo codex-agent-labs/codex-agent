@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
@@ -19,6 +20,7 @@ class ContractIsolationFixtureTest {
 
     private val contractBuildLogicSourceFiles = listOf(
         "CanonicalTestResultsClient.kt",
+        "CentralBundleTasks.kt",
         "CodexAgentBuild.kt",
         "CrossLanguageApiCoverage.kt",
         "CrossLanguageApiDiscovery.kt",
@@ -32,6 +34,7 @@ class ContractIsolationFixtureTest {
         "CrossLanguageBindingTasks.kt",
         "CrossLanguageCAbiClient.kt",
         "CrossLanguageKotlinBindingEvidence.kt",
+        "MavenRepositoryTasks.kt",
         "ProductOutputManifestGradleTask.kt",
         "ProductPythonTooling.kt",
         "ProductVersions.kt",
@@ -215,7 +218,7 @@ class ContractIsolationFixtureTest {
 
             val bundle = fixture.resolve("build/contract-product/bundle/codex-agent-contract-0.2.0.zip")
             assertTrue(bundle.isFile)
-            assertTrue(fixture.resolve("build/contract-product/bundle/development-ed25519.pub").isFile)
+            assertFalse(fixture.resolve("build/contract-product/bundle/development-ed25519.pub").exists())
             assertFalse(fixture.walkTopDown().any { it.name == "development-ed25519" })
             ZipFile(bundle).use { archive ->
                 val entry = assertNotNull(archive.getEntry("contract-manifest.json"))
@@ -223,10 +226,9 @@ class ContractIsolationFixtureTest {
                     Json.parseToJsonElement(reader.readText()).jsonObject
                 }
                 assertEquals(556, manifest.getValue("capabilityCount").jsonPrimitive.int)
-                assertEquals(
-                    "development",
-                    manifest.getValue("signing").jsonObject.getValue("trustDomain").jsonPrimitive.content,
-                )
+                assertFalse("producer" in manifest)
+                assertFalse("signing" in manifest)
+                assertNull(archive.getEntry("contract-manifest.sig"))
             }
 
             val dirtyInput = fixture.resolve("codex-agent-core/src/commonMain/kotlin")

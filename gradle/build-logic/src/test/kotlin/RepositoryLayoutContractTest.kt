@@ -54,14 +54,30 @@ class RepositoryLayoutContractTest {
     fun `SDK owners switch from the root Core project to the authenticated Contract coordinate`() {
         val settings = repository.resolve("settings.gradle.kts").readText()
         listOf(
-            "ci.products.contract\", \"verify-directory",
+            "ci.products.contract_attestation\", \"materialize",
             "AUTHENTICATED_SDK_CONTRACT_BUNDLE",
-            "codexAgent.contractRepository",
-            "codexAgent.contractManifest",
+            "codexAgent.contractPayload",
+            "codexAgent.contractMetadataReceipt",
+            "codexAgent.contractAttestation",
+            "codexAgent.contractAttestationSignature",
             "codexAgent.contractPublicKey",
             "codexAgent.contractVersion",
+            "--payload",
+            "--metadata-receipt",
+            "--attestation",
+            "--signature",
+            "--public-key",
+            "--required-trust-domain",
+            "--expected-contract-version",
             "--required-component",
+            "--output-directory",
+            "--reuse-output-directory",
+            "--keyring",
+            "--keys-directory",
+            "if (expectedTrustDomain == \"release\")",
         ).forEach { assertTrue(it in settings, it) }
+        assertFalse("codexAgent.contractRepository" in settings)
+        assertFalse("codexAgent.contractManifest" in settings)
         listOf(
             "common", "android", "ios-arm64", "ios-simulator-arm64", "jvm",
             "linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "node-js",

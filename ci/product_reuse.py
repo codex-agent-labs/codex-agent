@@ -18,6 +18,7 @@ from impact import validate_legacy_lane_projection, validate_remote_build_author
 from receipt import safe_extract
 from reuse import api_json, download_artifact, github_output, paginated_items, run_matches_pr
 from products.aggregate import validate_product_index
+from products.contract_attestation import validate_contract_attestation
 from products.inventory import (
     canonical_json_bytes,
     git_regular_blob_bytes,
@@ -115,6 +116,8 @@ class Catalog:
     index_sha256: str
     request: dict[str, Any]
     objects: Mapping[str, Path]
+    contract_attestation: Path | None = None
+    contract_attestation_signature: Path | None = None
 
 
 def _identity(value: Mapping[str, Any]) -> PhaseInstanceId:
@@ -175,6 +178,7 @@ def _prepare_destination(destination: Path, repository_root: Path) -> Path:
 
 def _same_pr_run(
     artifact: Mapping[str, Any], api: str, repository: str, pull_request: int, token: str,
+    expected_commit: str, expected_tree: str,
 ) -> dict[str, Any]:
     transport = artifact.get("workflow_run")
     if not isinstance(transport, dict):
@@ -184,6 +188,8 @@ def _same_pr_run(
     if _OID.fullmatch(head_sha) is None:
         raise ValueError("Product catalog workflow head SHA is malformed")
     run = api_json(f"{api}/repos/{repository}/actions/runs/{run_id}", token)
+    head_commit = run.get("head_commit")
+    tree = head_commit.get("tree_id") if isinstance(head_commit, dict) else None
     if (
         require_integer(run.get("id"), "product catalog workflow run ID", 1) != run_id
         or run.get("status") != "completed"
@@ -191,6 +197,8 @@ def _same_pr_run(
         or run.get("event") != "pull_request"
         or run.get("path") != ".github/workflows/ci.yml"
         or run.get("head_sha") != head_sha
+        or head_sha != expected_commit
+        or tree != expected_tree
         or not run_matches_pr(run, pull_request)
     ):
         raise ValueError("Same-PR product catalog did not come from an allowed successful CI run")
@@ -363,6 +371,14 @@ def _materialize_catalog(
         head_sha = require_string(
             workflow_run.get("head_sha"), "product catalog workflow head SHA",
         )
+        workflow_path = require_string(
+            workflow_run.get("path"), "product catalog workflow path",
+        )
+        head_commit = workflow_run.get("head_commit")
+        tree = require_string(
+            head_commit.get("tree_id") if isinstance(head_commit, dict) else None,
+            "product catalog workflow tree",
+        )
         if (
             index["context"]["runId"] != run_id
             or index["producer"]["runId"] != run_id
@@ -370,6 +386,9 @@ def _materialize_catalog(
             or index["producer"]["runAttempt"] != run_attempt
             or index["context"]["commit"] != head_sha
             or index["producer"]["commit"] != head_sha
+            or index["context"]["tree"] != tree
+            or index["producer"]["tree"] != tree
+            or index["producer"]["workflowPath"] != workflow_path
         ):
             raise ValueError("Same-PR product catalog claims different workflow provenance")
     controls = {"product-index.json", "product-index.sig"}
@@ -385,9 +404,41 @@ def _materialize_catalog(
         path = extracted.joinpath(*PurePosixPath(relative).parts)
         if path.is_file() and not path.is_symlink():
             objects[entry["buildKey"]] = path
+    contract_entries = [
+        entry for entry in index["entries"]
+        if (entry["product"], entry["component"], entry["phase"], entry["target"])
+        == ("contract", "contract", "metadata", "common")
+    ]
+    if len(contract_entries) > 1:
+        raise ValueError("Product catalog contains duplicate Contract metadata entries")
+    contract_attestation = None
+    contract_attestation_signature = None
+    if contract_entries:
+        version = contract_entries[0]["productVersion"]
+        contract_attestation = extracted / f"codex-agent-contract-{version}.attestation.json"
+        contract_attestation_signature = extracted / f"codex-agent-contract-{version}.attestation.sig"
+        controls.update({contract_attestation.name, contract_attestation_signature.name})
     actual = _catalog_files(extracted)
     if not controls.issubset(actual) or not actual.issubset(controls | set(expected_objects.values())):
         raise ValueError("Product catalog file set is incomplete or unexpected")
+    contract_public_key = None
+    if contract_attestation is not None:
+        attestation = validate_contract_attestation(load_canonical_json_bytes(
+            read_regular_file_bytes(
+                contract_attestation,
+                max_bytes=16 * 1024 * 1024,
+                reject_symlink_parents=True,
+            ),
+        ))
+        if source == "same-pr":
+            contract_public_key = public_key
+        elif release_trust is not None:
+            contract_public_key = public_key_for_metadata(
+                attestation["signing"],
+                load_keyring(release_trust.keyring, release_trust.keys),
+                release_trust.keys,
+                allow_retired=True,
+            )
     request_objects = [{
         "buildKey": entry["buildKey"],
         "objectPath": _relative(destination, objects[entry["buildKey"]])
@@ -401,9 +452,23 @@ def _materialize_catalog(
         if source != "same-pr" and release_trust is not None else None,
         "keysDirectory": _relative(destination, release_trust.keys)
         if source != "same-pr" and release_trust is not None else None,
+        "contractAttestation": _relative(destination, contract_attestation)
+        if contract_attestation is not None else None,
+        "contractAttestationSignature": _relative(destination, contract_attestation_signature)
+        if contract_attestation_signature is not None else None,
+        "contractPublicKey": _relative(destination, contract_public_key)
+        if contract_public_key is not None else None,
         "objects": request_objects,
     }
-    return Catalog(source, index, sha256_bytes(index_bytes), request, objects)
+    return Catalog(
+        source,
+        index,
+        sha256_bytes(index_bytes),
+        request,
+        objects,
+        contract_attestation,
+        contract_attestation_signature,
+    )
 
 
 def _candidate_artifacts(
@@ -466,6 +531,7 @@ def _discover_catalogs(
         for artifact in _candidate_artifacts(artifacts, source, plan["pullRequest"], versions):
             workflow_run = _same_pr_run(
                 artifact, api, repository, plan["pullRequest"], token,
+                plan["validationCommit"], plan["validationTree"],
             ) if source == "same-pr" else None
             result.append(_materialize_catalog(
                 source, artifact, token, destination, repository, plan["pullRequest"], release_trust,
@@ -533,6 +599,8 @@ def _contract_evidence(
     if phase is None or phase["state"] != "reused":
         raise ValueError("Complete Contract reuse lacks its metadata phase")
     catalog = _catalog_for_phase(catalogs, phase)
+    if catalog.contract_attestation is None or catalog.contract_attestation_signature is None:
+        raise ValueError("Complete Contract reuse lacks its detached attestation")
     object_path = catalog.objects.get(phase["buildKey"])
     if object_path is None:
         raise ValueError("Complete Contract reuse lacks its persisted object")
@@ -545,17 +613,20 @@ def _contract_evidence(
         bundles = [output for output in restored["receipt"]["outputs"] if output["kind"] == "contract-bundle"]
         if len(bundles) != 1:
             raise ValueError("Contract metadata object has no unique Contract Bundle")
-        bundle = stage.joinpath(*PurePosixPath(bundles[0]["relativePath"]).parts)
-        _, retained, _ = verified_zip_contents(
-            bundle, retained_paths=("contract-manifest.json",),
-            max_archive_bytes=512 * 1024 * 1024, max_members=4096,
-            max_entry_bytes=256 * 1024 * 1024, max_total_bytes=1024 * 1024 * 1024,
-            max_compression_ratio=200,
-        )
-        manifest = load_canonical_json_bytes(retained["contract-manifest.json"])
+    attestation = validate_contract_attestation(load_canonical_json_bytes(
+        read_regular_file_bytes(
+            catalog.contract_attestation,
+            max_bytes=16 * 1024 * 1024,
+            reject_symlink_parents=True,
+        ),
+    ))
     if catalog.source == "same-pr":
         public_key = destination / catalog.request["publicKey"]
         return {
+            "attestation": _relative(destination, catalog.contract_attestation),
+            "attestationSignature": _relative(
+                destination, catalog.contract_attestation_signature,
+            ),
             "publicKey": _relative(destination, public_key),
             "expectedTrustDomain": "development",
             "keyring": None,
@@ -564,10 +635,14 @@ def _contract_evidence(
     if release_trust is None:
         raise ValueError("Release Contract reuse lacks tracked release trust")
     public_key = public_key_for_metadata(
-        manifest["signing"], load_keyring(release_trust.keyring, release_trust.keys),
+        attestation["signing"], load_keyring(release_trust.keyring, release_trust.keys),
         release_trust.keys, allow_retired=True,
     )
     return {
+        "attestation": _relative(destination, catalog.contract_attestation),
+        "attestationSignature": _relative(
+            destination, catalog.contract_attestation_signature,
+        ),
         "publicKey": _relative(destination, public_key),
         "expectedTrustDomain": "release",
         "keyring": _relative(destination, release_trust.keyring),
@@ -841,7 +916,11 @@ def _rebase_catalog_paths(
     def catalog(member: Any, label: str) -> dict[str, Any]:
         record = require_exact_keys(
             member,
-            {"manifest", "signature", "publicKey", "keyring", "keysDirectory", "objects"},
+            {
+                "manifest", "signature", "publicKey", "keyring", "keysDirectory",
+                "contractAttestation", "contractAttestationSignature", "contractPublicKey",
+                "objects",
+            },
             label,
         )
         objects = []
@@ -858,6 +937,16 @@ def _rebase_catalog_paths(
             "publicKey": relative(record["publicKey"], f"{label}.publicKey"),
             "keyring": relative(record["keyring"], f"{label}.keyring"),
             "keysDirectory": relative(record["keysDirectory"], f"{label}.keysDirectory"),
+            "contractAttestation": relative(
+                record["contractAttestation"], f"{label}.contractAttestation",
+            ),
+            "contractAttestationSignature": relative(
+                record["contractAttestationSignature"],
+                f"{label}.contractAttestationSignature",
+            ),
+            "contractPublicKey": relative(
+                record["contractPublicKey"], f"{label}.contractPublicKey",
+            ),
             "objects": objects,
         }
 

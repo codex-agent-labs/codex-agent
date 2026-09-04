@@ -22,8 +22,10 @@ runtime_gradle() {
   local target=$1
   shift
   ./gradlew -p runtime "$@" "${args[@]}" \
-    -PcodexAgent.contractRepository="${RUNTIME_CONTRACT_REPOSITORY:?standalone Runtime Contract repository is required}" \
-    -PcodexAgent.contractManifest="${RUNTIME_CONTRACT_MANIFEST:?standalone Runtime Contract manifest is required}" \
+    -PcodexAgent.contractPayload="${RUNTIME_CONTRACT_PAYLOAD:?standalone Runtime Contract payload is required}" \
+    -PcodexAgent.contractMetadataReceipt="${RUNTIME_CONTRACT_METADATA_RECEIPT:?standalone Runtime Contract metadata receipt is required}" \
+    -PcodexAgent.contractAttestation="${RUNTIME_CONTRACT_ATTESTATION:?standalone Runtime Contract attestation is required}" \
+    -PcodexAgent.contractAttestationSignature="${RUNTIME_CONTRACT_ATTESTATION_SIGNATURE:?standalone Runtime Contract attestation signature is required}" \
     -PcodexAgent.contractPublicKey="${RUNTIME_CONTRACT_PUBLIC_KEY:?standalone Runtime Contract public key is required}" \
     -PcodexAgent.contractVersion="${CONTRACT_VERSION:?Contract version is required}" \
     -PcodexAgent.runtimeVersion="${RUNTIME_VERSION:?Runtime version is required}" \

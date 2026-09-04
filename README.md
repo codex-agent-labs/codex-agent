@@ -419,8 +419,17 @@ A push to `main` only promotes equal-tree validation receipts, their exact
 GitHub-hosted artifacts, and selected cache seeds; it never compiles or tests.
 A protected `candidate/v<version>-rc.N` tag consumes those promoted bytes and
 performs verification, signing, sidecar generation, and release assembly only.
-Publication consumes the exact candidate bytes. Protected environments hold
-the Android evidence, signing, and publication authority.
+For the Contract product, `codex-agent-contract-<version>.zip` is a
+deterministic content-only artifact: neither it nor its embedded manifest
+contains producer identity, a signature, or other signing material. Full
+producer provenance is preserved in the immutable Contract metadata receipt.
+Phase 10 verifies the exact ZIP, embedded manifest, and receipt, then creates
+detached `codex-agent-contract-<version>.attestation.json` and
+`codex-agent-contract-<version>.attestation.sig` files without rebuilding,
+repacking, or modifying the ZIP or receipt. Phase 11 publishes those exact
+Phase 10 ZIP, receipt, attestation, and signature bytes. Publication consumes
+the exact candidate bytes. Protected environments hold the Android evidence,
+signing, and publication authority.
 
 Git commit, tree, and blob identities determine whether inputs changed.
 Checksums remain only where a format or integrity boundary requires them; they

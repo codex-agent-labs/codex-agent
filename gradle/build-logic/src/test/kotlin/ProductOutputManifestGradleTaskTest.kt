@@ -135,6 +135,19 @@ class ProductOutputManifestGradleTaskTest {
     }
 
     @Test
+    fun `one payload file is inventoried beneath its declared output root`() {
+        withFixture { fixture ->
+            fixture.write("outputs/codex-agent-contract-0.2.0.zip", "payload")
+
+            execute(fixture.task(mapOf("contract-bundle" to "outputs")))
+
+            val manifest = fixture.manifest.readText()
+            assertTrue("\"kind\":\"contract-bundle\"" in manifest)
+            assertTrue("\"relativePath\":\"outputs/codex-agent-contract-0.2.0.zip\"" in manifest)
+        }
+    }
+
+    @Test
     fun `import verifier accepts a canonical stage without changing any byte`() {
         withFixture { fixture ->
             fixture.write("outputs/binary/value.bin", "value")

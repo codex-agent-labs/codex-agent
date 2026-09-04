@@ -27,27 +27,10 @@ val contractPublicationTaskNames = contractPublicationNames.map { publication ->
     "publish${publication}PublicationToCONTRACT_BUNDLE_STAGINGRepository"
 }
 val contractPublicationTasks = contractPublicationTaskNames.map { ":codex-agent-core:$it" }
-val contractProducerEvent = providers.gradleProperty("codexAgent.producerEvent")
-    .orElse(providers.environmentVariable("GITHUB_EVENT_NAME"))
-    .orElse("workflow_dispatch")
-val contractProducerRunId = providers.gradleProperty("codexAgent.producerRunId")
-    .orElse(providers.environmentVariable("GITHUB_RUN_ID"))
-    .orElse("1")
-val contractProducerRunAttempt = providers.gradleProperty("codexAgent.producerRunAttempt")
-    .orElse(providers.environmentVariable("GITHUB_RUN_ATTEMPT"))
-    .orElse("1")
-val contractProducerPullRequest = providers.gradleProperty("codexAgent.pullRequest")
-val contractProducerWorkflowPath = providers.gradleProperty("codexAgent.producerWorkflowPath")
-    .orElse(".github/workflows/product-validation.yml")
 val contractMetadataDirectory = contractProductRoot.map { it.dir("metadata") }
 val prepareContractInputs = tasks.register<Exec>("prepareContractInputs") {
     group = "publishing"
-    description = "Binds Contract evidence inventories and producer identity to the current Git tree."
-    inputs.property("producerEvent", contractProducerEvent)
-    inputs.property("producerRunId", contractProducerRunId)
-    inputs.property("producerRunAttempt", contractProducerRunAttempt)
-    inputs.property("producerPullRequest", contractProducerPullRequest.orElse(""))
-    inputs.property("producerWorkflowPath", contractProducerWorkflowPath)
+    description = "Binds Contract evidence inventories to the selected content."
     outputs.dir(contractMetadataDirectory)
     outputs.upToDateWhen { false }
     environment("PYTHONDONTWRITEBYTECODE", "1")
@@ -56,15 +39,7 @@ val prepareContractInputs = tasks.register<Exec>("prepareContractInputs") {
         "--repository-root", layout.projectDirectory.asFile.absolutePath,
         "--output-directory", contractMetadataDirectory.get().asFile.absolutePath,
         "--revision", "HEAD",
-        "--repository", CodexAgentBuild.REPOSITORY,
-        "--workflow-path", contractProducerWorkflowPath.get(),
-        "--event", contractProducerEvent.get(),
-        "--run-id", contractProducerRunId.get(),
-        "--run-attempt", contractProducerRunAttempt.get(),
     )
-    if (contractProducerEvent.get() == "pull_request") {
-        arguments += listOf("--pull-request", contractProducerPullRequest.get())
-    }
     commandLine(arguments)
 }
 tasks.configureEach {
@@ -308,14 +283,90 @@ val writeContractValidationOutputManifest = tasks.register<WriteProductOutputMan
     stageRoot.set(contractValidationPhaseRoot)
     manifestFile.set(contractValidationPhaseRoot.map { it.file("output-manifest.json") })
 }
+val importedContractValidationStage = layout.dir(
+    providers.gradleProperty("codexAgent.contractValidationStageRoot").map(::file),
+)
+val importedContractValidationSnapshot = contractProductRoot.map { it.dir("imported/validation") }
+val contractMetadataPayload = contractProductRoot.map { it.dir("imported/metadata-payload") }
+val contractMetadataPhaseRoot = layout.buildDirectory.dir("product-stage/contract/contract/metadata")
+val contractMetadataOutputs = contractMetadataPhaseRoot.map { it.dir("outputs") }
+val contractMetadataBundle = contractMetadataOutputs.map {
+    it.file("codex-agent-contract-$contractVersion.zip")
+}
+val invalidateContractMetadataPhase = tasks.register<Delete>("invalidateContractMetadataPhase") {
+    delete(importedContractValidationSnapshot, contractMetadataPayload, contractMetadataPhaseRoot)
+}
+val snapshotImportedContractValidationStage = tasks.register<SnapshotImportedProductStageTask>(
+    "snapshotImportedContractValidationStage",
+) {
+    dependsOn(invalidateContractMetadataPhase)
+    sourceDirectory.set(importedContractValidationStage)
+    outputDirectory.set(importedContractValidationSnapshot)
+    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(layout.projectDirectory)
+}
+val verifyImportedContractValidationOutputManifest = tasks.register<VerifyImportedProductOutputManifestTask>(
+    "verifyImportedContractValidationOutputManifest",
+) {
+    dependsOn(snapshotImportedContractValidationStage)
+    product.set("contract")
+    component.set("contract")
+    phase.set("validation")
+    target.set("common")
+    productVersion.set(contractVersion)
+    stageRoot.set(importedContractValidationSnapshot)
+    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(layout.projectDirectory)
+}
+val stageContractMetadataPayload = tasks.register<Sync>("stageContractMetadataPayload") {
+    dependsOn(verifyImportedContractValidationOutputManifest)
+    into(contractMetadataPayload)
+    from(importedContractValidationSnapshot.map { it.dir("outputs") }) {
+        include("maven/**", "evidence/**", "inventories/**")
+    }
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
+val assembleContractMetadataPayload = tasks.register<Exec>("assembleContractMetadataPayload") {
+    group = "publishing"
+    description = "Builds the deterministic Contract payload from an authenticated validation stage."
+    dependsOn(stageContractMetadataPayload)
+    inputs.dir(contractMetadataPayload)
+    inputs.property("contractVersion", contractVersion)
+    outputs.file(contractMetadataBundle)
+    environment("PYTHONDONTWRITEBYTECODE", "1")
+    commandLine(
+        "python3", "-m", "ci.products.contract", "build",
+        "--staging-root", contractMetadataPayload.get().asFile.absolutePath,
+        "--output", contractMetadataBundle.get().asFile.absolutePath,
+        "--contract-version", contractVersion,
+    )
+}
+val writeContractMetadataOutputManifest = tasks.register<WriteProductOutputManifestTask>(
+    "writeContractMetadataOutputManifest",
+) {
+    group = "publishing"
+    description = "Stages the deterministic provenance-free Contract payload."
+    dependsOn(assembleContractMetadataPayload)
+    product.set("contract")
+    component.set("contract")
+    phase.set("metadata")
+    target.set("common")
+    productVersion.set(contractVersion)
+    outputRoots.set(mapOf(
+        "contract-bundle" to "outputs",
+    ))
+    outputsDirectory.set(contractMetadataOutputs)
+    producerSources.from(layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(layout.projectDirectory)
+    stageRoot.set(contractMetadataPhaseRoot)
+    manifestFile.set(contractMetadataPhaseRoot.map { it.file("output-manifest.json") })
+}
 val sdk = providers.provider {
     checkNotNull(findProject(":codex-agent-sdk")) {
         "SDK product phases require :codex-agent-sdk"
     }
 }
-val sdkFacade = project(":codex-agent-sdk")
-val sdkAndroid = project(":codex-agent-runtime-android")
-val sdkIos = project(":codex-agent-runtime-ios")
 
 fun registerSdkBinaryPhase(
     component: String,
@@ -384,7 +435,7 @@ val writeSdkCoreBinaryOutputManifest = if (authenticatedSdkComponent == "sdk-cor
         title = "SdkCore",
         target = "common",
         repositoryName = "SDK_CORE_BINARY_STAGING",
-        publishingProjects = listOf(rootProject, sdkFacade),
+        publishingProjects = listOf(rootProject, project(":codex-agent-sdk")),
         publicationTaskPaths = listOf(":publishMavenPublicationToSDK_CORE_BINARY_STAGINGRepository") +
             contractPublicationNames.map {
                 ":codex-agent-sdk:publish${it}PublicationToSDK_CORE_BINARY_STAGINGRepository"
@@ -397,7 +448,7 @@ val writeSdkAndroidBinaryOutputManifest = if (authenticatedSdkComponent == "sdk-
         title = "SdkAndroid",
         target = "android",
         repositoryName = "SDK_ANDROID_BINARY_STAGING",
-        publishingProjects = listOf(sdkAndroid),
+        publishingProjects = listOf(project(":codex-agent-runtime-android")),
         publicationTaskPaths = listOf(
             ":codex-agent-runtime-android:publishMavenPublicationToSDK_ANDROID_BINARY_STAGINGRepository",
         ),
@@ -409,7 +460,7 @@ val writeSdkIosBinaryOutputManifest = if (authenticatedSdkComponent == "sdk-ios"
         title = "SdkIos",
         target = "ios",
         repositoryName = "SDK_IOS_BINARY_STAGING",
-        publishingProjects = listOf(sdkIos),
+        publishingProjects = listOf(project(":codex-agent-runtime-ios")),
         publicationTaskPaths = listOf("KotlinMultiplatform", "IosArm64", "IosSimulatorArm64").map {
             ":codex-agent-runtime-ios:publish${it}PublicationToSDK_IOS_BINARY_STAGINGRepository"
         },
@@ -427,6 +478,7 @@ tasks.register("ciProductPhase") {
             Triple("contract", "contract", "binary") -> writeContractBinaryOutputManifest
             Triple("contract", "contract", "package") -> writeContractPackageOutputManifest
             Triple("contract", "contract", "validation") -> writeContractValidationOutputManifest
+            Triple("contract", "contract", "metadata") -> writeContractMetadataOutputManifest
             Triple("sdk", "sdk-core", "binary") -> checkNotNull(writeSdkCoreBinaryOutputManifest) {
                 "SDK Core binary producer was not authenticated during settings evaluation"
             }
@@ -460,45 +512,41 @@ tasks.register("ciProductPhase") {
 }
 val contractBundleDirectory = contractProductRoot.map { it.dir("bundle") }
 val contractBundle = contractBundleDirectory.map { it.file("codex-agent-contract-$contractVersion.zip") }
-val contractDevelopmentPublicKey = contractBundleDirectory.map { it.file("development-ed25519.pub") }
 val deleteLegacyContractDevelopmentKey = tasks.register<Delete>("deleteLegacyContractDevelopmentKey") {
     group = "verification"
-    description = "Deletes private development signing material left by the pre-ephemeral lifecycle."
+    description = "Deletes signing material left by the pre-deterministic Contract lifecycle."
     dependsOn(prepareContractInputs)
     delete(contractProductRoot.map { it.dir("development-key") })
+    delete(contractBundleDirectory.map { it.file("development-ed25519.pub") })
 }
 val assembleContractBundle = tasks.register<Exec>("assembleContractBundle") {
     group = "publishing"
-    description = "Builds and verifies the Contract Bundle with an ephemeral development private key."
+    description = "Builds the deterministic provenance-free Contract Bundle."
     dependsOn(writeContractBinaryOutputManifest, deleteLegacyContractDevelopmentKey)
     inputs.dir(contractStage)
-    inputs.file(contractMetadataDirectory.map { it.file("producer.json") })
     inputs.property("contractVersion", contractVersion)
-    outputs.dir(contractBundleDirectory)
+    outputs.file(contractBundle)
     environment("PYTHONDONTWRITEBYTECODE", "1")
     commandLine(
-        "python3", "-m", "ci.products.contract", "development-build",
+        "python3", "-m", "ci.products.contract", "build",
         "--staging-root", contractStage.get().asFile.absolutePath,
-        "--output-directory", contractBundleDirectory.get().asFile.absolutePath,
+        "--output", contractBundle.get().asFile.absolutePath,
         "--contract-version", contractVersion,
-        "--producer", contractMetadataDirectory.get().file("producer.json").asFile.absolutePath,
     )
 }
 val verifyContractBundle = tasks.register<Exec>("verifyContractBundle") {
     group = "verification"
-    description = "Verifies the exact development-signed Contract Bundle."
+    description = "Verifies the exact deterministic Contract Bundle."
     dependsOn(assembleContractBundle)
     inputs.file(contractBundle)
-    inputs.file(contractDevelopmentPublicKey)
     environment("PYTHONDONTWRITEBYTECODE", "1")
     commandLine(
         "python3", "-m", "ci.products.contract", "verify",
         "--archive", contractBundle.get().asFile.absolutePath,
-        "--public-key", contractDevelopmentPublicKey.get().asFile.absolutePath,
     )
 }
 tasks.register("verifyContract") {
     group = "verification"
-    description = "Verifies the isolated Contract publication, behavior evidence, and signed bundle."
+    description = "Verifies the isolated Contract publication, behavior evidence, and deterministic bundle."
     dependsOn(verifyContractBundle)
 }

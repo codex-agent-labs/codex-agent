@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 from typing import Any
@@ -31,7 +30,6 @@ from .inventory import (
     canonical_json_bytes,
     git_inventory as inventory,
     git_inventory_paths as inventory_paths,
-    load_canonical_json,
     load_canonical_json_bytes,
     read_regular_file_bytes,
     regular_file_inventory,
@@ -49,13 +47,7 @@ from .inventory import (
 from .receipt import (
     output_inventory_digest,
     validate_phase_receipt,
-    validate_producer,
     verify_output_manifest_identity,
-)
-from .signatures import (
-    generate_development_key,
-    sign_manifest,
-    validate_signing_metadata,
 )
 
 
@@ -113,10 +105,8 @@ def _write_contract_zip(root: Path, output: Path) -> None:
 def _contract_payload_identity(
     root: Path,
     contract_version: str,
-    producer: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     require_semver(contract_version, "Contract version")
-    validate_producer(producer, "Contract manifest.producer")
     if root.is_symlink() or not root.is_dir():
         raise ValueError("Contract staging root is missing or unsafe")
     existing = regular_file_inventory(root)
@@ -128,7 +118,7 @@ def _contract_payload_identity(
     maven_files = _maven_records(root, contract_version)
     maven_contents = {record["path"]: (root / record["path"]).read_bytes() for record in maven_files}
     evidence_files = _evidence_records(root)
-    verify_contract_git_inventories(root, producer)
+    verify_contract_git_inventories(root)
     resolution = {
         component: [
             record for record in maven_files
@@ -172,37 +162,25 @@ def build_contract_bundle(
     staging_root: Path,
     output: Path,
     contract_version: str,
-    producer: dict[str, Any],
-    private_key: Path,
-    public_key: Path,
-    signing: dict[str, Any],
 ) -> dict[str, Any]:
     root = Path(staging_root)
     output = Path(output)
-    validate_signing_metadata(signing, trust_domain="development")
     _reject_symlinked_output_parent(output, root)
     if output.resolve().is_relative_to(root.resolve()):
         raise ValueError("Contract Bundle output must be outside the staging root")
     expected_name = f"codex-agent-contract-{contract_version}.zip"
     if output.name != expected_name:
         raise ValueError(f"Contract Bundle output must be named {expected_name}")
-    payload, maven_contents = _contract_payload_identity(root, contract_version, producer)
-    manifest = {
-        **payload,
-        "signing": signing,
-        "producer": producer,
-    }
+    manifest, maven_contents = _contract_payload_identity(root, contract_version)
     manifest_path = root / "contract-manifest.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary_directory = tempfile.TemporaryDirectory(prefix=f".{output.name}-", dir=output.parent)
     temporary = Path(temporary_directory.name) / output.name
-    signature_path = root / "contract-manifest.sig"
     try:
         validate_contract_manifest(manifest, maven_contents)
         write_canonical_json(manifest_path, manifest)
-        sign_manifest(manifest_path, private_key, signing)
         _write_contract_zip(root, temporary)
-        verify_contract_bundle(temporary, public_key, expected_trust_domain="development")
+        verify_contract_bundle(temporary)
         if output.exists() or output.is_symlink():
             if output.is_symlink() or not output.is_file() or sha256_file(output) != sha256_file(temporary):
                 raise ValueError("Stable Contract Bundle version already exists with different bytes")
@@ -212,17 +190,11 @@ def build_contract_bundle(
             except FileExistsError:
                 if output.is_symlink() or not output.is_file() or sha256_file(output) != sha256_file(temporary):
                     raise ValueError("Stable Contract Bundle version was concurrently published with different bytes")
-        verify_contract_bundle(output, public_key, expected_trust_domain="development")
+        verify_contract_bundle(output)
     finally:
         temporary_directory.cleanup()
-        signature_path.unlink(missing_ok=True)
         manifest_path.unlink(missing_ok=True)
     return manifest
-
-
-def _development_key(directory: Path) -> None:
-    private_key, _, signing = generate_development_key(directory)
-    write_canonical_json(private_key.parent / "signing-metadata.json", signing)
 
 
 def _atomic_write(path: Path, contents: bytes) -> None:
@@ -330,46 +302,6 @@ def _publish_prepared_directory(source: Path, output: Path) -> None:
     finally:
         if (published or not replaced) and (backup.exists() or backup.is_symlink()):
             _remove_directory_entry(backup)
-
-
-def build_development_contract_bundle(
-    staging_root: Path,
-    output_directory: Path,
-    contract_version: str,
-    producer: dict[str, Any],
-) -> dict[str, Any]:
-    output = Path(output_directory)
-    requested_staging = Path(os.path.abspath(staging_root))
-    staging = requested_staging.resolve()
-    _reject_symlinked_output_parent(output, requested_staging)
-    if output.is_symlink() or (output.exists() and not output.is_dir()):
-        raise ValueError("Contract development Bundle directory is unsafe")
-    for candidate in {Path(os.path.abspath(output)), Path(os.path.abspath(output)).resolve()}:
-        if candidate == staging or candidate.is_relative_to(staging) or staging.is_relative_to(candidate):
-            raise ValueError("Contract development Bundle directory overlaps its staging input")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="contract-development-signing-", dir=output.parent) as temporary:
-        workspace = Path(temporary)
-        private_key, public_key, signing = generate_development_key(workspace / "key")
-        prepared = workspace / "bundle"
-        archive_name = f"codex-agent-contract-{contract_version}.zip"
-        manifest = build_contract_bundle(
-            staging_root,
-            prepared / archive_name,
-            contract_version,
-            producer,
-            private_key,
-            public_key,
-            signing,
-        )
-        _atomic_write(prepared / "development-ed25519.pub", public_key.read_bytes())
-        verify_contract_bundle(
-            prepared / archive_name,
-            prepared / "development-ed25519.pub",
-            expected_trust_domain="development",
-        )
-        _publish_prepared_directory(prepared, output)
-    return manifest
 
 
 CONTRACT_VALIDATION_REPORT_NAME = "contract-validation.json"
@@ -518,9 +450,7 @@ def validate_contract_package_stage(
             raise ValueError("Contract package receipt and output manifest disagree")
         if binary_receipt["outputs"] != manifest["outputs"]:
             raise ValueError("Contract package payload differs from its binary predecessor")
-        payload, _ = _contract_payload_identity(
-            snapshot / "outputs", contract_version, binary_receipt["producer"],
-        )
+        payload, _ = _contract_payload_identity(snapshot / "outputs", contract_version)
         report = validate_contract_validation_report({
             "schemaVersion": 1,
             "product": "contract",
@@ -647,12 +577,6 @@ def prepare_contract_inputs(
     repository_root: Path,
     output_directory: Path,
     revision: str,
-    repository: str,
-    workflow_path: str,
-    event: str,
-    run_id: int,
-    run_attempt: int,
-    pull_request: int | None,
 ) -> dict[str, Any]:
     requested_root = Path(os.path.abspath(repository_root))
     root = requested_root.resolve()
@@ -660,21 +584,6 @@ def prepare_contract_inputs(
     _reject_symlinked_output_parent(output, requested_root)
     commit = str(run_git(root, "rev-parse", f"{revision}^{{commit}}")).strip()
     tree = str(run_git(root, "rev-parse", f"{commit}^{{tree}}")).strip()
-    producer = {
-        "repository": repository,
-        "workflowPath": workflow_path,
-        "commit": commit,
-        "tree": tree,
-        "event": event,
-        "runId": run_id,
-        "runAttempt": run_attempt,
-        "pullRequest": pull_request,
-    }
-    validate_producer(producer, "Contract input producer")
-    try:
-        run_git(root, "cat-file", "-e", f"{commit}:{workflow_path}")
-    except subprocess.CalledProcessError as error:
-        raise ValueError("Contract producer workflow does not exist at the requested revision") from error
     pathspecs = _contract_input_pathspecs(root, commit)
     git_directory = Path(str(run_git(root, "rev-parse", "--absolute-git-dir")).strip())
     common_git_directory = Path(str(run_git(root, "rev-parse", "--git-common-dir")).strip())
@@ -687,7 +596,7 @@ def prepare_contract_inputs(
         if not records:
             raise ValueError(f"Contract Git inventory is empty: {name}")
         contract_input_paths.update(inventory_paths(records))
-        inventory_contents[name] = f"tree\t{tree}\n{records}".encode("utf-8")
+        inventory_contents[name] = records.encode("utf-8")
     verify_contract_worktree_matches_revision(root, commit, pathspecs)
     _reject_contract_output_overlap(
         root,
@@ -706,17 +615,13 @@ def prepare_contract_inputs(
     )
     prepared = Path(temporary_directory.name)
     try:
-        write_canonical_json(prepared / "producer.json", producer)
         for name, contents in inventory_contents.items():
             path = prepared / "inventories" / name
             _atomic_write(path, contents)
             if path.read_bytes() != contents:
                 raise ValueError(f"Prepared Contract Git inventory does not match revision: {name}")
-        if load_canonical_json(prepared / "producer.json") != producer:
-            raise ValueError("Prepared Contract producer does not match its canonical bytes")
-        verify_contract_git_inventories(prepared, producer)
+        verify_contract_git_inventories(prepared)
         expected = {
-            "producer.json",
             "inventories/contract-binary-inputs.git-tree",
             "inventories/contract-validation-inputs.git-tree",
         }
@@ -725,37 +630,20 @@ def prepare_contract_inputs(
         _publish_prepared_directory(prepared, output)
     finally:
         temporary_directory.cleanup()
-    return producer
+    return {"commit": commit, "tree": tree}
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build and verify the signed Codex Contract Bundle")
+    parser = argparse.ArgumentParser(description="Build and verify the deterministic Codex Contract Bundle")
     commands = parser.add_subparsers(dest="command", required=True)
-    key = commands.add_parser("development-key")
-    key.add_argument("--directory", type=Path, required=True)
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--repository-root", type=Path, required=True)
     prepare.add_argument("--output-directory", type=Path, required=True)
     prepare.add_argument("--revision", default="HEAD")
-    prepare.add_argument("--repository", required=True)
-    prepare.add_argument("--workflow-path", required=True)
-    prepare.add_argument("--event", required=True)
-    prepare.add_argument("--run-id", type=int, required=True)
-    prepare.add_argument("--run-attempt", type=int, required=True)
-    prepare.add_argument("--pull-request", type=int)
     build = commands.add_parser("build")
     build.add_argument("--staging-root", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--contract-version", required=True)
-    build.add_argument("--producer", type=Path, required=True)
-    build.add_argument("--private-key", type=Path, required=True)
-    build.add_argument("--public-key", type=Path, required=True)
-    build.add_argument("--signing-metadata", type=Path, required=True)
-    development_build = commands.add_parser("development-build")
-    development_build.add_argument("--staging-root", type=Path, required=True)
-    development_build.add_argument("--output-directory", type=Path, required=True)
-    development_build.add_argument("--contract-version", required=True)
-    development_build.add_argument("--producer", type=Path, required=True)
     validate_package = commands.add_parser("validate-package")
     validate_package.add_argument("--package-stage", type=Path, required=True)
     validate_package.add_argument("--package-receipt", type=Path, required=True)
@@ -766,15 +654,8 @@ def main(argv: list[str] | None = None) -> int:
     validate_package.add_argument("--contract-version", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("--archive", type=Path, required=True)
-    verify.add_argument("--public-key", type=Path, required=True)
     verify_directory = commands.add_parser("verify-directory")
     verify_directory.add_argument("--directory", type=Path, required=True)
-    verify_directory.add_argument("--public-key", type=Path, required=True)
-    verify_directory.add_argument(
-        "--expected-trust-domain",
-        choices=("development", "release"),
-        required=True,
-    )
     verify_directory.add_argument("--expected-contract-version")
     verify_directory.add_argument(
         "--required-component",
@@ -782,51 +663,24 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         choices=CONTRACT_COMPONENTS,
     )
-    verify_directory.add_argument("--keyring", type=Path)
-    verify_directory.add_argument("--keys-directory", type=Path)
     verify_directory.add_argument("--print-canonical-api", action="store_true")
     verify_directory.add_argument("--output-directory", type=Path)
     verify_directory.add_argument("--reuse-output-directory", action="store_true")
     arguments = parser.parse_args(argv)
     if arguments.command == "verify-directory":
-        release = arguments.expected_trust_domain == "release"
-        has_keyring = arguments.keyring is not None or arguments.keys_directory is not None
-        if release and (arguments.keyring is None or arguments.keys_directory is None):
-            parser.error("verify-directory release trust requires --keyring and --keys-directory")
-        if not release and has_keyring:
-            parser.error("verify-directory development trust rejects --keyring and --keys-directory")
         if arguments.reuse_output_directory and arguments.output_directory is None:
             parser.error("verify-directory --reuse-output-directory requires --output-directory")
-    if arguments.command == "development-key":
-        _development_key(arguments.directory)
-    elif arguments.command == "prepare":
+    if arguments.command == "prepare":
         prepare_contract_inputs(
             arguments.repository_root,
             arguments.output_directory,
             arguments.revision,
-            arguments.repository,
-            arguments.workflow_path,
-            arguments.event,
-            arguments.run_id,
-            arguments.run_attempt,
-            arguments.pull_request,
         )
     elif arguments.command == "build":
         build_contract_bundle(
             arguments.staging_root,
             arguments.output,
             arguments.contract_version,
-            load_canonical_json(arguments.producer),
-            arguments.private_key,
-            arguments.public_key,
-            load_canonical_json(arguments.signing_metadata),
-        )
-    elif arguments.command == "development-build":
-        build_development_contract_bundle(
-            arguments.staging_root,
-            arguments.output_directory,
-            arguments.contract_version,
-            load_canonical_json(arguments.producer),
         )
     elif arguments.command == "validate-package":
         validate_contract_package_stage(
@@ -839,30 +693,22 @@ def main(argv: list[str] | None = None) -> int:
             arguments.contract_version,
         )
     elif arguments.command == "verify":
-        verify_contract_bundle(arguments.archive, arguments.public_key, expected_trust_domain="development")
+        verify_contract_bundle(arguments.archive)
     else:
         if arguments.print_canonical_api:
             if arguments.output_directory is not None or arguments.reuse_output_directory:
                 parser.error("verify-directory --print-canonical-api rejects output-directory options")
             projection = verify_extracted_contract_directory_projection(
                 arguments.directory,
-                arguments.public_key,
-                expected_trust_domain=arguments.expected_trust_domain,
                 expected_contract_version=arguments.expected_contract_version,
                 required_components=arguments.required_component,
-                keyring=arguments.keyring,
-                keys_directory=arguments.keys_directory,
             )
             sys.stdout.write(canonical_json_bytes(projection).decode())
         else:
             verify_extracted_contract_directory(
                 arguments.directory,
-                arguments.public_key,
-                expected_trust_domain=arguments.expected_trust_domain,
                 expected_contract_version=arguments.expected_contract_version,
                 required_components=arguments.required_component,
-                keyring=arguments.keyring,
-                keys_directory=arguments.keys_directory,
                 output_directory=arguments.output_directory,
                 reuse_output_directory=arguments.reuse_output_directory,
             )

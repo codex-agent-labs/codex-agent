@@ -81,9 +81,14 @@ _REMOTE_CATALOG_KEYS = {
     "publicKey",
     "keyring",
     "keysDirectory",
+    "contractAttestation",
+    "contractAttestationSignature",
+    "contractPublicKey",
     "objects",
 }
 _CONTRACT_EVIDENCE_KEYS = {
+    "attestation",
+    "attestationSignature",
     "publicKey",
     "expectedTrustDomain",
     "keyring",
@@ -103,6 +108,9 @@ class RemoteCatalog:
     public_key: Path | None = None
     keyring: Path | None = None
     keys_directory: Path | None = None
+    contract_attestation: Path | None = None
+    contract_attestation_signature: Path | None = None
+    contract_public_key: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +130,7 @@ class _RemoteCandidate:
     entry: dict[str, Any]
     object_path: Path | None
     index_sha256: str
+    catalog: RemoteCatalog
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,7 +331,7 @@ class LookupSession:
             supplied = catalog.objects.get(build_key)
             object_path = None if supplied is None else Path(supplied)
             self._remote[source].setdefault(build_key, []).append(
-                _RemoteCandidate(entry, object_path, sha256_bytes(contents))
+                _RemoteCandidate(entry, object_path, sha256_bytes(contents), catalog)
             )
         return index
 
@@ -382,11 +391,18 @@ class LookupSession:
                     "objectSha256": verified["objectSha256"],
                 }
                 _validate_envelope(envelope, expected_plan=plan)
+                _verify_index_receipt(candidate.entry, envelope)
+                identity = _identity(envelope["receipt"])
                 expected_trust = "development" if source == "same-pr" else "release"
                 if envelope["receipt"]["trustDomain"] != expected_trust:
-                    raise ValueError("Restored receipt trust does not match its product index source")
-                _verify_index_receipt(candidate.entry, envelope)
-                if _identity(envelope["receipt"]) == PhaseInstanceId(
+                    if not (
+                        source in {"stable", "promoted-main"}
+                        and envelope["receipt"]["trustDomain"] == "development"
+                        and identity == PhaseInstanceId("contract", "contract", "metadata", "common")
+                    ):
+                        raise ValueError("Restored receipt trust does not match its product index source")
+                    self._verify_release_attested_contract(path, envelope, candidate.catalog)
+                if identity == PhaseInstanceId(
                     "contract", "contract", "metadata", "common"
                 ) and self._restore_root is not None:
                     self._restore_contract_stage(path, envelope)
@@ -399,6 +415,42 @@ class LookupSession:
                 "artifactSha256": candidate.entry["artifactSha256"],
             })
         return _LookupResult(None, "artifact-unavailable")
+
+    @staticmethod
+    def _verify_release_attested_contract(
+        archive: Path,
+        envelope: dict[str, Any],
+        catalog: RemoteCatalog,
+    ) -> None:
+        if (
+            catalog.contract_attestation is None
+            or catalog.contract_attestation_signature is None
+            or catalog.contract_public_key is None
+            or catalog.keyring is None
+            or catalog.keys_directory is None
+        ):
+            raise ValueError("Release Contract reuse lacks its detached release attestation")
+        with tempfile.TemporaryDirectory(prefix="release-contract-reuse-") as temporary:
+            stage = Path(temporary).resolve() / "stage"
+            restore_object(
+                archive,
+                stage,
+                build_key=envelope["receipt"]["buildKey"],
+                receipt_sha256=envelope["receiptSha256"],
+                object_sha256=envelope["objectSha256"],
+            )
+            verify_contract_component_projection(
+                stage,
+                envelope["receiptBytes"],
+                catalog.contract_attestation,
+                catalog.contract_attestation_signature,
+                catalog.contract_public_key,
+                expected_trust_domain="release",
+                expected_contract_version=envelope["receipt"]["productVersion"],
+                required_components=("common",),
+                keyring=catalog.keyring,
+                keys_directory=catalog.keys_directory,
+            )
 
     def _local_lookup(self, plan: dict[str, Any]) -> _LookupResult:
         if self._local is None:
@@ -547,6 +599,12 @@ def _contract_evidence(root: Path, value: Any) -> dict[str, Any] | None:
     label = "reuse-wave request.contractEvidence"
     evidence = require_exact_keys(value, _CONTRACT_EVIDENCE_KEYS, label)
     return {
+        "attestation": _artifact_path(root, evidence["attestation"], f"{label}.attestation"),
+        "attestationSignature": _artifact_path(
+            root,
+            evidence["attestationSignature"],
+            f"{label}.attestationSignature",
+        ),
         "publicKey": _artifact_path(root, evidence["publicKey"], f"{label}.publicKey"),
         "expectedTrustDomain": require_string(
             evidence["expectedTrustDomain"],
@@ -591,6 +649,17 @@ def _remote_catalog(root: Path, value: Any, label: str) -> RemoteCatalog:
             root,
             catalog["keysDirectory"],
             f"{label}.keysDirectory",
+        ),
+        contract_attestation=_optional_artifact_path(
+            root, catalog["contractAttestation"], f"{label}.contractAttestation",
+        ),
+        contract_attestation_signature=_optional_artifact_path(
+            root,
+            catalog["contractAttestationSignature"],
+            f"{label}.contractAttestationSignature",
+        ),
+        contract_public_key=_optional_artifact_path(
+            root, catalog["contractPublicKey"], f"{label}.contractPublicKey",
         ),
     )
 
@@ -823,6 +892,8 @@ def plan_reuse_wave(
                 master_projection = verify_contract_component_projection(
                     session.contract_stage(envelope),
                     envelope["receiptBytes"],
+                    contract_evidence["attestation"],
+                    contract_evidence["attestationSignature"],
                     contract_evidence["publicKey"],
                     expected_trust_domain=contract_evidence["expectedTrustDomain"],
                     expected_contract_version=versions["contract"],

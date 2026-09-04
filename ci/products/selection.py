@@ -194,6 +194,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/legacy_lanes.py",
     "ci/product_legacy.py",
     "ci/product_reuse.py",
+    "ci/products/contract_attestation.py",
     "ci/products/contract_projection.py",
     "ci/products/plan.py",
     "ci/products/registry.py",

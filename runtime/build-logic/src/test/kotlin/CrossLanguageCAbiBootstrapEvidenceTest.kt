@@ -227,7 +227,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
             "tasks.register<GenerateCAbiBootstrapEvidenceTask>(\"generateCodexAgentCAbiBootstrapEvidence\")",
         ).substringBefore("\nval nodeRuntimeEvidenceRunnerArchive")
         listOf(
-            "providers.gradleProperty(\"codexAgent.contractManifest\")",
+            "rootProject.extra[\"codexAgent.verifiedContractDirectory\"]",
             "reports/cross-language-api/c-abi/bootstrap-evidence.json",
             "c-abi-bootstrap/consumers",
             "tasks.register<Delete>(",
@@ -238,8 +238,7 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
         }
         listOf(
             "invalidateCAbiBootstrapEvidence",
-            "contractDirectory.set(layout.dir(contractBundleRoot))",
-            "contractPublicKey.set(layout.file(providers.gradleProperty(\"codexAgent.contractPublicKey\").map(::File)))",
+            "contractDirectory.set(verifiedContractDirectory)",
             "contractVersion.set(providers.gradleProperty(\"codexAgent.contractVersion\"))",
             "contractComponent.set(\"macos-arm64\")",
             "repositoryRoot.set(repositoryRootDirectory)",
@@ -285,23 +284,18 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
         ).forEach { contract ->
             assertTrue(contract in generator, "Missing C bootstrap generator contract: $contract")
         }
+        assertFalse("codexAgent.contractManifest" in wiring)
+        assertFalse("contractPublicKey" in generator)
         assertFalse("canonical-api.json" in generator)
         assertFalse("canonical-coverage.json" in generator)
         val projection = File("src/main/kotlin/RuntimeCanonicalApiProjection.kt").readText()
         listOf(
-            "System.getenv(\"GITHUB_ACTIONS\") == \"true\"",
-            "\"release\" else \"development\"",
             "\"python3\", \"-m\", \"ci.products.contract\", \"verify-directory\"",
             "\"--directory\", contractDirectory.absolutePath",
-            "\"--public-key\", publicKey.absolutePath",
-            "\"--expected-trust-domain\", trustDomain",
             "\"--expected-contract-version\", contractVersion",
             "\"--required-component\", \"common\"",
             "\"--required-component\", requiredComponent",
             "\"--print-canonical-api\"",
-            "if (trustDomain == \"release\")",
-            "\"--keyring\", repositoryRoot.resolve(\"gradle/release/product-signing-keys.json\").absolutePath",
-            "\"--keys-directory\", repositoryRoot.resolve(\"gradle/release/keys\").absolutePath",
             "\"PYTHONPATH\" to repositoryRoot.absolutePath",
             "\"PYTHONNOUSERSITE\" to \"1\"",
             "\"PYTHONSAFEPATH\" to \"1\"",
@@ -312,6 +306,9 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
         ).forEach { contract ->
             assertTrue(contract in projection, "Missing authenticated Contract projection contract: $contract")
         }
+        assertFalse("--public-key" in projection)
+        assertFalse("--expected-trust-domain" in projection)
+        assertFalse("--keyring" in projection)
         listOf(
             "ordinaryEnumsCConsumer" to "codex_agent_ordinary_enums_compile.c",
             "formHookValuesCConsumer" to "codex_agent_form_hook_values_compile.c",

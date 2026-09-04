@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from contextlib import nullcontext, redirect_stderr
 import io
@@ -507,7 +508,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             },
             "producer": {
                 "repository": "codex-agent-labs/codex-agent",
-                "workflowPath": ".github/workflows/product-validation.yml",
+                "workflowPath": ".github/workflows/ci.yml",
                 "commit": COMMIT, "tree": TREE, "event": "pull_request", "runId": 7,
                 "runAttempt": 1, "pullRequest": 31,
             },
@@ -529,8 +530,58 @@ class ProductReuseAdapterTest(unittest.TestCase):
                     "same-pr", artifact, "token", self.root / "materialized",
                     "codex-agent-labs/codex-agent", 31, None, {
                         "id": 7, "run_attempt": 1, "head_sha": COMMIT,
+                        "path": ".github/workflows/ci.yml",
+                        "head_commit": {"tree_id": TREE},
                     },
                 )
+
+    def test_same_pr_catalog_binds_signed_workflow_path_and_tree(self) -> None:
+        base = {
+            "schemaVersion": 1,
+            "repository": "codex-agent-labs/codex-agent",
+            "context": {
+                "kind": "pull-request", "pullRequest": 31, "commit": COMMIT, "tree": TREE,
+                "runId": 7, "runAttempt": 1,
+            },
+            "entries": [],
+            "trustDomain": "development",
+            "signing": {
+                "algorithm": "ssh-ed25519", "namespace": "codex-agent-product-v1",
+                "keyId": "development", "fingerprint": sha256_bytes(b"key"),
+            },
+            "producer": {
+                "repository": "codex-agent-labs/codex-agent",
+                "workflowPath": ".github/workflows/ci.yml",
+                "commit": COMMIT, "tree": TREE, "event": "pull_request", "runId": 7,
+                "runAttempt": 1, "pullRequest": 31,
+            },
+        }
+        workflow_run = {
+            "id": 7, "run_attempt": 1, "head_sha": COMMIT,
+            "path": ".github/workflows/ci.yml", "head_commit": {"tree_id": TREE},
+        }
+        for field, value in (("workflowPath", ".github/workflows/other.yml"), ("tree", "d" * 40)):
+            with self.subTest(field=field):
+                index = copy.deepcopy(base)
+                index["producer"][field] = value
+                catalog = self.root / f"catalog-{field}.zip"
+                with zipfile.ZipFile(catalog, "w") as archive:
+                    archive.writestr("product-index.json", canonical_json_bytes(index))
+                    archive.writestr("product-index.sig", b"signature")
+                    archive.writestr("public-key.pub", b"key")
+                artifact = {
+                    "id": 8 if field == "workflowPath" else 9,
+                    "archive_download_url": "https://example.invalid/archive",
+                    "digest": sha256_bytes(catalog.read_bytes()),
+                }
+                with mock.patch.object(
+                    product_reuse, "download_artifact", return_value=catalog.read_bytes(),
+                ), mock.patch.object(product_reuse, "validate_product_index", return_value=index):
+                    with self.assertRaisesRegex(ValueError, "different workflow provenance"):
+                        product_reuse._materialize_catalog(
+                            "same-pr", artifact, "token", self.root / f"materialized-{field}",
+                            "codex-agent-labs/codex-agent", 31, None, workflow_run,
+                        )
 
     def test_catalog_discovery_is_source_ordered_and_downloads_one_artifact_per_index(self) -> None:
         artifacts = [
@@ -575,6 +626,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         good_run = {
             "id": 7, "run_attempt": 2, "status": "completed", "conclusion": "success",
             "event": "pull_request", "path": ".github/workflows/ci.yml", "head_sha": COMMIT,
+            "head_commit": {"tree_id": TREE},
             "pull_requests": [{"number": 31}],
         }
         with mock.patch.object(product_reuse, "api_json", return_value=good_run):
@@ -582,12 +634,14 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 good_run,
                 product_reuse._same_pr_run(
                     artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token",
+                    COMMIT, TREE,
                 ),
             )
         for change in (
             {"conclusion": "failure"},
             {"path": ".github/workflows/untrusted.yml"},
             {"head_sha": "d" * 40},
+            {"head_commit": {"tree_id": "d" * 40}},
             {"pull_requests": [{"number": 32}]},
         ):
             with self.subTest(change=change), mock.patch.object(
@@ -596,6 +650,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "allowed successful CI run"):
                     product_reuse._same_pr_run(
                         artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token",
+                        COMMIT, TREE,
                     )
 
     def test_complete_result_is_reverified_before_jobs_can_be_skipped(self) -> None:
@@ -1016,6 +1071,9 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "publicKey": "trust/key.pub",
             "keyring": None,
             "keysDirectory": None,
+            "contractAttestation": "catalog/contract.attestation.json",
+            "contractAttestationSignature": "catalog/contract.attestation.sig",
+            "contractPublicKey": "trust/key.pub",
             "objects": [{"buildKey": sha256_bytes(b"key"), "objectPath": "objects/value.zip"}],
         }
         catalogs = {"stable": [], "promotedMain": None, "samePr": record, "local": None}
@@ -1157,6 +1215,9 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "publicKey": transported_key.relative_to(discovery).as_posix(),
             "keyring": None,
             "keysDirectory": None,
+            "contractAttestation": None,
+            "contractAttestationSignature": None,
+            "contractPublicKey": None,
             "objects": [{
                 "buildKey": build_key,
                 "objectPath": object_path.relative_to(discovery).as_posix(),

@@ -21,6 +21,7 @@ class ProductPhaseMappingContractTest {
             Triple("contract", "contract", "binary") to "writeContractBinaryOutputManifest",
             Triple("contract", "contract", "package") to "writeContractPackageOutputManifest",
             Triple("contract", "contract", "validation") to "writeContractValidationOutputManifest",
+            Triple("contract", "contract", "metadata") to "writeContractMetadataOutputManifest",
             Triple("sdk", "sdk-core", "binary") to "writeSdkCoreBinaryOutputManifest",
             Triple("sdk", "sdk-core", "package") to "writeSdkCorePackageOutputManifest",
             Triple("sdk", "sdk-android", "binary") to "writeSdkAndroidBinaryOutputManifest",
@@ -119,6 +120,42 @@ class ProductPhaseMappingContractTest {
             ":codex-agent-core:",
         )) {
             assertFalse(forbidden in validation, forbidden)
+        }
+    }
+
+    @Test
+    fun Contract_metadata_consumes_only_an_imported_validation_stage_and_emits_content_only_payload() {
+        val metadata = between(
+            contract,
+            "val importedContractValidationStage =",
+            "val sdk = providers.provider",
+        )
+        for (required in listOf(
+            "codexAgent.contractValidationStageRoot",
+            "snapshotImportedContractValidationStage",
+            "verifyImportedContractValidationOutputManifest",
+            "stageContractMetadataPayload",
+            "assembleContractMetadataPayload",
+            "writeContractMetadataOutputManifest",
+            "ci.products.contract\", \"build",
+            "contract-bundle\" to \"outputs",
+        )) {
+            assertTrue(required in metadata, required)
+        }
+        for (forbidden in listOf(
+            "writeContractBinaryOutputManifest",
+            "writeContractPackageOutputManifest",
+            "writeContractValidationOutputManifest",
+            "stageContractBundleInputs",
+            "prepareContractInputs",
+            "contractPublicationTasks",
+            "private-key",
+            "public-key",
+            "signing-metadata",
+            "producer.json",
+            ":codex-agent-core:",
+        )) {
+            assertFalse(forbidden in metadata, forbidden)
         }
     }
 
@@ -585,7 +622,11 @@ class ProductPhaseMappingContractTest {
 
     @Test
     fun SDK_Maven_binary_phases_publish_to_three_disjoint_raw_repositories() {
-        val binary = between(contract, "val sdkFacade =", "tasks.register(\"ciProductPhase\")")
+        val binary = between(
+            contract,
+            "fun registerSdkBinaryPhase(",
+            "tasks.register(\"ciProductPhase\")",
+        )
         mapOf(
             "sdk-core" to "SDK_CORE_BINARY_STAGING",
             "sdk-android" to "SDK_ANDROID_BINARY_STAGING",

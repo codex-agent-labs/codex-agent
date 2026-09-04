@@ -421,6 +421,8 @@ def _contract_projection_from_request_components(
         {
             "stageRoot",
             "phaseReceipt",
+            "attestation",
+            "attestationSignature",
             "publicKey",
             "expectedTrustDomain",
             "keyring",
@@ -438,6 +440,8 @@ def _contract_projection_from_request_components(
     return verify_contract_component_projection(
         path("stageRoot"),
         path("phaseReceipt"),
+        path("attestation"),
+        path("attestationSignature"),
         path("publicKey"),
         expected_trust_domain=require_string(
             evidence["expectedTrustDomain"],

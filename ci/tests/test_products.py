@@ -29,12 +29,12 @@ from ci.products.aggregate import (
     validate_runtime_aggregate,
     validate_runtime_variant,
     validate_sdk_compatibility,
-    verify_contract_bundle,
     verify_immutable_product_indexes,
     verify_repository_carrier,
     verify_repository_evidence,
     verify_runtime_aggregate_artifacts,
 )
+from ci.products.contract_model import verify_contract_bundle
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json,
@@ -345,8 +345,6 @@ def contract_manifest():
             artifact("inventories/contract-binary-inputs.git-tree", role="inventory"),
             artifact("inventories/contract-validation-inputs.git-tree", role="inventory"),
         ],
-        "signing": signing(),
-        "producer": producer(),
     }
     value["contractDigest"] = contract_digest(DIGEST_A, DIGEST_C, components["common"]["sha256"])
     return value
@@ -523,9 +521,12 @@ def runtime_aggregate_artifacts(
     receipt_mutator=None,
     phase_receipt_mutator=None,
     variant_mutator=None,
+    contract_keyring=None,
+    contract_keys_directory=None,
 ):
     root.mkdir()
     from ci.products.contract import build_contract_bundle
+    from ci.products.contract_attestation import build_contract_attestation
     from ci.tests.test_contract_bundle import _write_staging
 
     contract_staging = root / "contract-staging"
@@ -535,11 +536,44 @@ def runtime_aggregate_artifacts(
         contract_staging,
         contract_bundle,
         "0.2.0",
-        producer(),
+    )
+    contract_receipt = phase_receipt(signing_metadata["trustDomain"])
+    contract_receipt["product"] = "contract"
+    contract_receipt["component"] = "contract"
+    contract_receipt["phase"] = "metadata"
+    contract_receipt["target"] = "common"
+    contract_receipt["productVersion"] = "0.2.0"
+    contract_receipt["inputs"]["versionIdentity"] = "0.2.0"
+    contract_receipt["outputs"] = [{
+        "kind": "contract-bundle",
+        "relativePath": f"outputs/{contract_bundle.name}",
+        "bytes": contract_bundle.stat().st_size,
+        "sha256": sha256_file(contract_bundle),
+    }]
+    contract_receipt["buildKey"] = compute_build_key(
+        product=contract_receipt["product"],
+        component=contract_receipt["component"],
+        phase=contract_receipt["phase"],
+        target=contract_receipt["target"],
+        inputs=contract_receipt["inputs"],
+    )
+    contract_receipt_path = root / "contract" / "metadata-receipt.json"
+    write_canonical_json(contract_receipt_path, contract_receipt)
+    contract_attestation_directory = root / "contract-attestation"
+    build_contract_attestation(
+        contract_bundle,
+        contract_receipt_path,
+        signing_metadata,
         private_key,
         public_key,
-        signing_metadata,
+        contract_attestation_directory,
+        keyring=contract_keyring,
+        keys_directory=contract_keys_directory,
     )
+    contract_attestation_stem = "codex-agent-contract-0.2.0.attestation"
+    contract_attestation = contract_attestation_directory / f"{contract_attestation_stem}.json"
+    contract_attestation_signature = contract_attestation_directory / \
+        f"{contract_attestation_stem}.sig"
     aggregate = runtime_aggregate()
     aggregate["signing"] = signing_metadata
     aggregate["contract"] = {
@@ -884,6 +918,9 @@ def runtime_aggregate_artifacts(
         public_keys,
         runtime_maven_files,
         adapter_evidence,
+        contract_receipt_path,
+        contract_attestation,
+        contract_attestation_signature,
     )
 
 
@@ -1501,7 +1538,7 @@ class ProductAggregateTest(unittest.TestCase):
             elif mutation == "component":
                 invalid["components"]["common"]["sha256"] = DIGEST_B
             else:
-                invalid["producer"]["commit"] = "invalid"
+                invalid["producer"] = producer()
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 validate_contract_manifest(invalid)
 
@@ -1518,7 +1555,6 @@ class ProductAggregateTest(unittest.TestCase):
     def test_contract_bundle_verifies_complete_declared_tree(self):
         from ci.products.contract import build_contract_bundle
         from ci.tests.test_contract_bundle import (
-            PRODUCER,
             VERSION,
             _write_staging,
             _write_zip,
@@ -1529,18 +1565,9 @@ class ProductAggregateTest(unittest.TestCase):
             root = Path(temporary).resolve()
             staging = root / "staging"
             _write_staging(staging)
-            private_key, public_key, signing_metadata = generate_development_key(root / "key")
             archive = root / f"codex-agent-contract-{VERSION}.zip"
-            build_contract_bundle(
-                staging,
-                archive,
-                VERSION,
-                PRODUCER,
-                private_key,
-                public_key,
-                signing_metadata,
-            )
-            verify_contract_bundle(archive, public_key, expected_trust_domain="development")
+            build_contract_bundle(staging, archive, VERSION)
+            verify_contract_bundle(archive)
             entries = _zip_entries(archive)
             declared = next(entry for entry in entries if entry[0].startswith("maven/"))
             variants = {
@@ -1559,7 +1586,7 @@ class ProductAggregateTest(unittest.TestCase):
                 mutated = root / f"{name}.zip"
                 _write_zip(mutated, mutated_entries)
                 with self.subTest(name=name), self.assertRaises(ValueError):
-                    verify_contract_bundle(mutated, public_key, expected_trust_domain="development")
+                    verify_contract_bundle(mutated)
 
     def test_runtime_variant_excludes_aggregate_and_self_identity(self):
         variant = runtime_variant()
@@ -1840,7 +1867,8 @@ class ProductSigningTest(unittest.TestCase):
             (
                 aggregate_manifest, aggregate_signature, aggregate_public_key, contract_bundle,
                 bundles, receipts, phase_receipts, validation_evidence, public_keys,
-                runtime_maven_files, adapter_evidence,
+                runtime_maven_files, adapter_evidence, contract_metadata_receipt,
+                contract_attestation, contract_attestation_signature,
             ) = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
             )
@@ -1856,7 +1884,10 @@ class ProductSigningTest(unittest.TestCase):
                         manifest,
                         aggregate_signature=signature,
                         aggregate_public_key=aggregate_public_key,
-                        contract_bundle=contract_bundle,
+                        contract_payload=contract_bundle,
+                        contract_metadata_receipt=contract_metadata_receipt,
+                        contract_attestation=contract_attestation,
+                        contract_attestation_signature=contract_attestation_signature,
                         contract_public_key=aggregate_public_key,
                         variant_bundles=bundles,
                         metadata_receipts=receipts,
@@ -1904,7 +1935,10 @@ class ProductSigningTest(unittest.TestCase):
                     aggregate_manifest,
                     aggregate_signature=aggregate_signature,
                     aggregate_public_key=aggregate_public_key,
-                    contract_bundle=contract_bundle,
+                    contract_payload=contract_bundle,
+                    contract_metadata_receipt=contract_metadata_receipt,
+                    contract_attestation=contract_attestation,
+                    contract_attestation_signature=contract_attestation_signature,
                     contract_public_key=aggregate_public_key,
                     variant_bundles=missing_bundle,
                     metadata_receipts=receipts,
@@ -1956,7 +1990,10 @@ class ProductSigningTest(unittest.TestCase):
                         values[0],
                         aggregate_signature=values[1],
                         aggregate_public_key=values[2],
-                        contract_bundle=values[3],
+                        contract_payload=values[3],
+                        contract_metadata_receipt=values[11],
+                        contract_attestation=values[12],
+                        contract_attestation_signature=values[13],
                         contract_public_key=values[2],
                         variant_bundles=values[4],
                         metadata_receipts=values[5],
@@ -2000,14 +2037,18 @@ class ProductSigningTest(unittest.TestCase):
             (
                 aggregate_manifest, aggregate_signature, aggregate_public_key, contract_bundle,
                 bundles, receipts, phase_receipts, validation_evidence, public_keys,
-                runtime_maven_files, adapter_evidence,
+                runtime_maven_files, adapter_evidence, contract_metadata_receipt,
+                contract_attestation, contract_attestation_signature,
             ) = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
             )
             arguments = {
                 "aggregate_signature": aggregate_signature,
                 "aggregate_public_key": aggregate_public_key,
-                "contract_bundle": contract_bundle,
+                "contract_payload": contract_bundle,
+                "contract_metadata_receipt": contract_metadata_receipt,
+                "contract_attestation": contract_attestation,
+                "contract_attestation_signature": contract_attestation_signature,
                 "contract_public_key": aggregate_public_key,
                 "variant_bundles": bundles,
                 "metadata_receipts": receipts,
@@ -2039,7 +2080,8 @@ class ProductSigningTest(unittest.TestCase):
             (
                 aggregate_manifest, aggregate_signature, aggregate_public_key, contract_bundle,
                 bundles, receipts, phase_receipts, validation_evidence, public_keys,
-                runtime_maven_files, adapter_evidence,
+                runtime_maven_files, adapter_evidence, contract_metadata_receipt,
+                contract_attestation, contract_attestation_signature,
             ) = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
             )
@@ -2084,7 +2126,10 @@ class ProductSigningTest(unittest.TestCase):
                     candidate_manifest,
                     aggregate_signature=candidate_signature,
                     aggregate_public_key=aggregate_public_key,
-                    contract_bundle=contract_bundle,
+                    contract_payload=contract_bundle,
+                    contract_metadata_receipt=contract_metadata_receipt,
+                    contract_attestation=contract_attestation,
+                    contract_attestation_signature=contract_attestation_signature,
                     contract_public_key=aggregate_public_key,
                     variant_bundles=bundles,
                     metadata_receipts=receipts,
@@ -2103,7 +2148,8 @@ class ProductSigningTest(unittest.TestCase):
             (
                 aggregate_manifest, aggregate_signature, aggregate_public_key, contract_bundle,
                 bundles, receipts, phase_receipts, validation_evidence, public_keys,
-                runtime_maven_files, adapter_evidence,
+                runtime_maven_files, adapter_evidence, contract_metadata_receipt,
+                contract_attestation, contract_attestation_signature,
             ) = runtime_aggregate_artifacts(
                 root / "variants", private_key, public_key, metadata,
             )
@@ -2134,7 +2180,10 @@ class ProductSigningTest(unittest.TestCase):
                     aggregate_manifest,
                     aggregate_signature=aggregate_signature,
                     aggregate_public_key=aggregate_public_key,
-                    contract_bundle=contract_bundle,
+                    contract_payload=contract_bundle,
+                    contract_metadata_receipt=contract_metadata_receipt,
+                    contract_attestation=contract_attestation,
+                    contract_attestation_signature=contract_attestation_signature,
                     contract_public_key=aggregate_public_key,
                     variant_bundles=bundles,
                     metadata_receipts=receipts,

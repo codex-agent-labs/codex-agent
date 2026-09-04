@@ -17,21 +17,19 @@ from ci.products.aggregate import (
     validate_sdk_compatibility,
 )
 from ci.products.c_abi import TARGET_SPECS
-from ci.products.contract_model import (
-    CONTRACT_CHECKSUM_SUFFIXES,
-    CONTRACT_COMPONENTS,
-    contract_digest,
-    contract_maven_identity,
-    contract_required_primary_paths,
-)
+from ci.products.contract import build_contract_bundle
+from ci.products.contract_attestation import build_contract_attestation
 from ci.products.inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
+    public_key_fingerprint,
     sha256_bytes,
     write_canonical_json,
 )
+from ci.products.receipt import compute_build_key
 from ci.products.sdk_compatibility import produce_sdk_compatibility
 from ci.products.signatures import generate_development_key, sign_manifest
+from ci.tests.test_contract_bundle import _write_staging
 
 
 DIGEST_A = sha256_bytes(b"a")
@@ -79,65 +77,47 @@ def _artifact(
     return value
 
 
-def _contract(signing: dict) -> dict:
-    version = "0.2.0"
-    primary = contract_required_primary_paths(version)
-    paths = primary | {path + suffix for path in primary for suffix in CONTRACT_CHECKSUM_SUFFIXES}
-    maven = []
-    for path in sorted(paths):
-        identity = contract_maven_identity(path, version)
-        maven.append(_artifact(path, role=identity["role"], component=identity["component"]))
-    components = {}
-    for component in CONTRACT_COMPONENTS:
-        owners = ("common",) if component == "common" else ("common", component)
-        records = sorted(
-            [
-                record for record in maven
-                if record["component"] in owners and (
-                    record["role"] == "runtime-resolution"
-                    or (
-                        record["role"] == "module-metadata"
-                        and contract_maven_identity(record["path"], version)["kind"]
-                        in {"pom", "gradle-module"}
-                    )
-                )
-            ],
-            key=lambda record: record["path"],
-        )
-        components[component] = {
-            "mavenPaths": [record["path"] for record in records],
-            "sha256": sha256_bytes(component.encode()),
-        }
-    value = {
+def _contract_receipt(path: Path, payload: Path, trust_domain: str) -> None:
+    inventory = [{
+        "relativePath": "contract-input",
+        "bytes": 1,
+        "sha256": sha256_bytes(b"i"),
+    }]
+    inputs = {
+        "inventory": inventory,
+        "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
+        "versionIdentity": "0.2.0",
+        "upstreamArtifacts": [],
+        "toolchainProfileDigest": sha256_bytes(b"toolchain"),
+        "flagsDigest": sha256_bytes(b"flags"),
+        "outputSchemaVersion": 1,
+    }
+    payload_bytes = payload.read_bytes()
+    write_canonical_json(path, {
         "schemaVersion": 1,
         "product": "contract",
-        "contractVersion": version,
-        "contractDigest": "",
-        "canonicalApiDigest": DIGEST_A,
-        "canonicalCoverageDigest": DIGEST_B,
-        "protocolDigest": DIGEST_C,
-        "capabilityCount": 556,
-        "components": components,
-        "mavenFiles": maven,
-        "evidenceFiles": [
-            _artifact("evidence/canonical-api.json", role="canonical-api"),
-            _artifact("evidence/canonical-coverage.json", role="canonical-coverage"),
-            _artifact("evidence/codex_app_server_protocol.schemas.json", role="protocol-schema"),
-            _artifact("evidence/codex_app_server_protocol.v2.schemas.json", role="protocol-schema"),
-            _artifact("evidence/descriptors.json", role="protocol-descriptor"),
-            _artifact("evidence/kotlin-parity.json", role="kotlin-parity"),
-            _artifact("evidence/protocol-source-verification.json", role="protocol-source-verification"),
-            _artifact("evidence/provenance.json", role="protocol-provenance"),
-            _artifact("inventories/contract-binary-inputs.git-tree", role="inventory"),
-            _artifact("inventories/contract-validation-inputs.git-tree", role="inventory"),
-        ],
-        "signing": signing,
+        "component": "contract",
+        "phase": "metadata",
+        "target": "common",
+        "productVersion": "0.2.0",
+        "buildKey": compute_build_key(
+            product="contract",
+            component="contract",
+            phase="metadata",
+            target="common",
+            inputs=inputs,
+        ),
+        "inputs": inputs,
+        "outputs": [{
+            "kind": "contract-bundle",
+            "relativePath": f"outputs/{payload.name}",
+            "bytes": len(payload_bytes),
+            "sha256": sha256_bytes(payload_bytes),
+        }],
         "producer": _producer(),
-    }
-    value["contractDigest"] = contract_digest(
-        value["canonicalApiDigest"], value["protocolDigest"], components["common"]["sha256"],
-    )
-    return value
+        "trustDomain": trust_domain,
+        "result": "success",
+    })
 
 
 def _zip(path: Path, members: dict[str, bytes]) -> None:
@@ -151,16 +131,65 @@ def _zip(path: Path, members: dict[str, bytes]) -> None:
 
 
 class Fixture:
-    def __init__(self, root: Path, *, runtime_version: str = "0.2.0") -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        runtime_version: str = "0.2.0",
+        trust_domain: str = "development",
+    ) -> None:
         self.root = root
         root.mkdir()
-        self.private_key, self.public_key, self.signing = generate_development_key(root / "keys")
-        self.contract = _contract(self.signing)
-        self.contract_manifest = root / "contract-manifest.json"
-        write_canonical_json(self.contract_manifest, self.contract)
-        self.contract_signature = sign_manifest(
-            self.contract_manifest, self.private_key, self.signing,
+        self.private_key, self.public_key, development_signing = generate_development_key(
+            root / "keys",
         )
+        self.signing = {**development_signing, "trustDomain": trust_domain}
+        contract_staging = root / "contract-staging"
+        _write_staging(contract_staging)
+        self.contract_payload = root / "codex-agent-contract-0.2.0.zip"
+        self.contract = build_contract_bundle(
+            contract_staging, self.contract_payload, "0.2.0",
+        )
+        self.contract_metadata_receipt = root / "contract-metadata-receipt.json"
+        _contract_receipt(
+            self.contract_metadata_receipt, self.contract_payload, trust_domain,
+        )
+        self.contract_keyring = None
+        self.contract_keys_directory = None
+        if trust_domain == "release":
+            self.contract_keys_directory = root / "contract-release-keys"
+            self.contract_keys_directory.mkdir()
+            (self.contract_keys_directory / f"{self.signing['keyId']}.pub").write_bytes(
+                self.public_key.read_bytes(),
+            )
+            self.contract_keyring = root / "contract-keyring.json"
+            write_canonical_json(self.contract_keyring, {
+                "schemaVersion": 1,
+                "namespace": self.signing["namespace"],
+                "algorithm": self.signing["algorithm"],
+                "trustDomain": "release",
+                "activeKey": {
+                    "keyId": self.signing["keyId"],
+                    "fingerprint": public_key_fingerprint(self.public_key.read_bytes()),
+                },
+                "retiredKeys": [],
+            })
+        contract_attestation_directory = root / "contract-attestation"
+        build_contract_attestation(
+            self.contract_payload,
+            self.contract_metadata_receipt,
+            self.signing,
+            self.private_key,
+            self.public_key,
+            contract_attestation_directory,
+            keyring=self.contract_keyring,
+            keys_directory=self.contract_keys_directory,
+        )
+        contract_attestation_stem = "codex-agent-contract-0.2.0.attestation"
+        self.contract_attestation = contract_attestation_directory / \
+            f"{contract_attestation_stem}.json"
+        self.contract_attestation_signature = contract_attestation_directory / \
+            f"{contract_attestation_stem}.sig"
         self.variant_bundles = {}
         self.variant_public_keys = {}
         aggregate_variants = []
@@ -302,26 +331,32 @@ class Fixture:
             "sdk_version": "0.2.0",
             "compatible_release_range": ">=0.2.0 <0.3.0",
             "compatible_runtime_compatibility_range": ">=0.2.0 <0.3.0",
-            "contract_manifest": self.contract_manifest,
-            "contract_signature": self.contract_signature,
+            "contract_payload": self.contract_payload,
+            "contract_metadata_receipt": self.contract_metadata_receipt,
+            "contract_attestation": self.contract_attestation,
+            "contract_attestation_signature": self.contract_attestation_signature,
             "contract_public_key": self.public_key,
             "runtime_manifest": self.runtime_manifest,
             "runtime_signature": self.runtime_signature,
             "runtime_public_key": self.public_key,
             "variant_bundles": self.variant_bundles,
             "variant_public_keys": self.variant_public_keys,
-            "required_trust_domain": "development",
+            "required_trust_domain": self.signing["trustDomain"],
             "output": output,
+            "contract_keyring": self.contract_keyring,
+            "contract_keys_directory": self.contract_keys_directory,
         }
 
     def request(self) -> dict:
-        return {
+        request = {
             "schemaVersion": 1,
             "sdkVersion": "0.2.0",
             "compatibleReleaseRange": ">=0.2.0 <0.3.0",
             "compatibleRuntimeCompatibilityRange": ">=0.2.0 <0.3.0",
-            "contractManifest": str(self.contract_manifest),
-            "contractSignature": str(self.contract_signature),
+            "contractPayload": str(self.contract_payload),
+            "contractMetadataReceipt": str(self.contract_metadata_receipt),
+            "contractAttestation": str(self.contract_attestation),
+            "contractAttestationSignature": str(self.contract_attestation_signature),
             "contractPublicKey": str(self.public_key),
             "runtimeManifest": str(self.runtime_manifest),
             "runtimeSignature": str(self.runtime_signature),
@@ -332,8 +367,12 @@ class Fixture:
             "variantPublicKeys": {
                 target: str(path) for target, path in self.variant_public_keys.items()
             },
-            "requiredTrustDomain": "development",
+            "requiredTrustDomain": self.signing["trustDomain"],
         }
+        if self.contract_keyring is not None and self.contract_keys_directory is not None:
+            request["contractKeyring"] = str(self.contract_keyring)
+            request["contractKeysDirectory"] = str(self.contract_keys_directory)
+        return request
 
 
 class SdkCompatibilityProducerTest(unittest.TestCase):
@@ -392,10 +431,46 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
             root = Path(temporary).resolve()
             fixture = Fixture(root / "fixture")
             cases = []
-            bad_contract_signature = root / "contract-manifest.sig"
-            bad_contract_signature.write_bytes(fixture.contract_signature.read_bytes()[:-1] + b"x")
+            bad_contract_signature = root / fixture.contract_attestation_signature.name
+            bad_contract_signature.write_bytes(
+                fixture.contract_attestation_signature.read_bytes()[:-1] + b"x",
+            )
             arguments = fixture.arguments(root / "bad-contract" / "sdk-compatibility.json")
-            arguments["contract_signature"] = bad_contract_signature
+            arguments["contract_attestation_signature"] = bad_contract_signature
+            cases.append(arguments)
+
+            bad_contract_payload_directory = root / "contract-payload"
+            bad_contract_payload_directory.mkdir()
+            bad_contract_payload = bad_contract_payload_directory / fixture.contract_payload.name
+            bad_contract_payload.write_bytes(fixture.contract_payload.read_bytes() + b"x")
+            arguments = fixture.arguments(root / "bad-contract-payload" / "sdk-compatibility.json")
+            arguments["contract_payload"] = bad_contract_payload
+            cases.append(arguments)
+
+            bad_contract_receipt = root / "contract-metadata-receipt.json"
+            receipt_value = load_canonical_json_bytes(
+                fixture.contract_metadata_receipt.read_bytes(),
+            )
+            receipt_value["producer"]["runId"] += 1
+            write_canonical_json(bad_contract_receipt, receipt_value)
+            arguments = fixture.arguments(root / "bad-contract-receipt" / "sdk-compatibility.json")
+            arguments["contract_metadata_receipt"] = bad_contract_receipt
+            cases.append(arguments)
+
+            bad_attestation_directory = root / "contract-attestation"
+            bad_attestation_directory.mkdir()
+            bad_contract_attestation = bad_attestation_directory / fixture.contract_attestation.name
+            attestation_value = load_canonical_json_bytes(
+                fixture.contract_attestation.read_bytes(),
+            )
+            attestation_value["manifestSha256"] = DIGEST_C
+            write_canonical_json(bad_contract_attestation, attestation_value)
+            bad_contract_attestation_signature = sign_manifest(
+                bad_contract_attestation, fixture.private_key, fixture.signing,
+            )
+            arguments = fixture.arguments(root / "bad-contract-attestation" / "sdk-compatibility.json")
+            arguments["contract_attestation"] = bad_contract_attestation
+            arguments["contract_attestation_signature"] = bad_contract_attestation_signature
             cases.append(arguments)
 
             runtime_signature_directory = root / "runtime-signature"
@@ -437,6 +512,48 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     produce_sdk_compatibility(**arguments)
                 self.assertFalse(arguments["output"].exists())
+
+    def test_contract_attestation_trust_inputs_are_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            release = Fixture(root / "release", trust_domain="release")
+            output = root / "release-output" / "sdk-compatibility.json"
+            output.parent.mkdir()
+            self.assertEqual(
+                "0.2.0",
+                produce_sdk_compatibility(**release.arguments(output))["contract"]["version"],
+            )
+            request_path = root / "release-request.json"
+            write_canonical_json(request_path, release.request())
+            cli_output = root / "release-cli" / "sdk-compatibility.json"
+            cli_output.parent.mkdir()
+            cli_result = self.run_cli(
+                "--request", str(request_path), "--output", str(cli_output),
+            )
+            self.assertEqual(0, cli_result.returncode, cli_result.stderr)
+
+            for field in ("contract_keyring", "contract_keys_directory"):
+                arguments = release.arguments(
+                    root / f"missing-{field}" / "sdk-compatibility.json",
+                )
+                arguments[field] = None
+                arguments["output"].parent.mkdir()
+                with self.subTest(field=field), self.assertRaisesRegex(
+                    ValueError, "requires a keyring",
+                ):
+                    produce_sdk_compatibility(**arguments)
+                self.assertFalse(arguments["output"].exists())
+
+            development = Fixture(root / "development")
+            arguments = development.arguments(
+                root / "development-keyring" / "sdk-compatibility.json",
+            )
+            arguments["contract_keyring"] = release.contract_keyring
+            arguments["contract_keys_directory"] = release.contract_keys_directory
+            arguments["output"].parent.mkdir()
+            with self.assertRaisesRegex(ValueError, "rejects release keyring inputs"):
+                produce_sdk_compatibility(**arguments)
+            self.assertFalse(arguments["output"].exists())
 
     def test_selecting_a_new_embedded_default_changes_declared_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -501,8 +618,26 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
             cases = {
                 "unknown": {**valid, "unknown": "value"},
                 "missing": {key: value for key, value in valid.items() if key != "sdkVersion"},
+                "unsupported-schema": {**valid, "schemaVersion": 2},
                 "non-string": {**valid, "sdkVersion": 2},
-                "traversal": {**valid, "contractManifest": "../contract-manifest.json"},
+                "traversal": {**valid, "contractPayload": "../contract-payload.zip"},
+                "legacy-contract-fields": {
+                    **{
+                        key: value for key, value in valid.items()
+                        if key not in {
+                            "contractPayload",
+                            "contractMetadataReceipt",
+                            "contractAttestation",
+                            "contractAttestationSignature",
+                        }
+                    },
+                    "contractManifest": "contract-manifest.json",
+                    "contractSignature": "contract-manifest.sig",
+                },
+                "keyring-without-directory": {
+                    **valid,
+                    "contractKeyring": str(fixture.contract_metadata_receipt),
+                },
                 "missing-target": {
                     **valid,
                     "variantBundles": {

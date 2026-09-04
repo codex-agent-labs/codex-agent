@@ -14,6 +14,7 @@ import ci.products.contract_projection as contract_projection
 import ci.products.index as product_index
 import ci.products.reuse as product_reuse
 from ci.products.contract import build_contract_bundle
+from ci.products.contract_attestation import build_contract_attestation
 from ci.products.inventory import canonical_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.plan import (
     NOT_APPLICABLE_FLAGS_DIGEST,
@@ -632,6 +633,8 @@ class ProductReuseTest(unittest.TestCase):
             with self.subTest(contract_path=path), mock.patch("ci.products.reuse.advance_reuse") as delegated:
                 request = copy.deepcopy(base)
                 request["contractEvidence"] = {
+                    "attestation": "contract.attestation.json",
+                    "attestationSignature": "contract.attestation.sig",
                     "publicKey": path,
                     "expectedTrustDomain": "development",
                     "keyring": None,
@@ -659,6 +662,9 @@ class ProductReuseTest(unittest.TestCase):
             "publicKey": None,
             "keyring": "keys/keyring.json",
             "keysDirectory": "keys",
+            "contractAttestation": None,
+            "contractAttestationSignature": None,
+            "contractPublicKey": None,
             "objects": [],
         }]
         with mock.patch("ci.products.reuse.LookupSession._load_catalog") as catalog_io, \
@@ -674,6 +680,9 @@ class ProductReuseTest(unittest.TestCase):
             "publicKey": None,
             "keyring": "keys/keyring.json",
             "keysDirectory": "keys",
+            "contractAttestation": None,
+            "contractAttestationSignature": None,
+            "contractPublicKey": None,
             "objects": [],
         }
         duplicate_catalog = copy.deepcopy(base)
@@ -792,10 +801,6 @@ class ProductReuseTest(unittest.TestCase):
                         contract_staging,
                         bundle,
                         VERSIONS["contract"],
-                        CONTRACT_PRODUCER,
-                        self.private_key,
-                        self.public_key,
-                        self.development_signing,
                     )
                     manifest = write_output_manifest(
                         metadata_stage,
@@ -813,6 +818,19 @@ class ProductReuseTest(unittest.TestCase):
                     envelope["receiptSha256"] = sha256_bytes(envelope["receiptBytes"])
                     receipt_path = self.root / "contract-metadata-receipt.json"
                     write_canonical_json(receipt_path, envelope["receipt"])
+                    attestation_directory = self.root / "contract-attestation"
+                    build_contract_attestation(
+                        bundle,
+                        receipt_path,
+                        self.development_signing,
+                        self.private_key,
+                        self.public_key,
+                        attestation_directory,
+                    )
+                    attestation = attestation_directory / (
+                        f"codex-agent-contract-{VERSIONS['contract']}.attestation.json"
+                    )
+                    attestation_signature = attestation.with_suffix(".sig")
                     stored = store_local_object(
                         metadata_stage,
                         receipt_path,
@@ -832,6 +850,8 @@ class ProductReuseTest(unittest.TestCase):
         projection = contract_projection.verify_contract_component_projection(
             metadata_stage,
             resolved[CONTRACT_METADATA]["receiptBytes"],
+            attestation,
+            attestation_signature,
             self.public_key,
             expected_trust_domain="development",
             expected_contract_version=VERSIONS["contract"],
@@ -873,6 +893,8 @@ class ProductReuseTest(unittest.TestCase):
                 "outputSchemaVersion": 1,
             } for instance in closure],
             "contractEvidence": {
+                "attestation": attestation.relative_to(self.root).as_posix(),
+                "attestationSignature": attestation_signature.relative_to(self.root).as_posix(),
                 "publicKey": public_key.relative_to(self.root).as_posix(),
                 "expectedTrustDomain": "development",
                 "keyring": None,
@@ -969,6 +991,78 @@ class ProductReuseTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "release trust"):
             self.session(stable=[catalog])
+
+    def test_release_attestation_authenticates_unchanged_development_contract_receipt(self) -> None:
+        inputs = all_inputs(CONTRACT_METADATA)
+        resolved = retained_chain(CONTRACT_VALIDATION, inputs)
+        plan = plan_for(CONTRACT_METADATA, inputs, resolved)
+        stage = self.root / "release-attested-stage"
+        payload = stage / "outputs" / f"codex-agent-contract-{VERSIONS['contract']}.zip"
+        contract_input = self.root / "release-attested-input"
+        _write_staging(contract_input, contract_version=VERSIONS["contract"])
+        build_contract_bundle(contract_input, payload, VERSIONS["contract"])
+        output_manifest = write_output_manifest(
+            stage, "contract", "contract", "metadata", "common", VERSIONS["contract"],
+            {"contract-bundle": "outputs"},
+        )
+        envelope = envelope_for_plan(plan, trust_domain="development")
+        envelope["receipt"]["outputs"] = output_manifest["outputs"]
+        envelope["receiptBytes"] = canonical_json_bytes(envelope["receipt"])
+        envelope["receiptSha256"] = sha256_bytes(envelope["receiptBytes"])
+        receipt = self.root / "release-attested-receipt.json"
+        receipt.write_bytes(envelope["receiptBytes"])
+        stored = store_local_object(stage, receipt, self.root / "release-attested-cache")
+        envelope["objectSha256"] = stored["objectSha256"]
+
+        attestation_root = self.root / "release-attestation"
+        build_contract_attestation(
+            payload,
+            receipt,
+            self.release_signing,
+            self.private_key,
+            self.public_key,
+            attestation_root,
+            keyring=self.release_keyring,
+            keys_directory=self.release_keys,
+        )
+        stem = f"codex-agent-contract-{VERSIONS['contract']}.attestation"
+        attestation = attestation_root / f"{stem}.json"
+        attestation_signature = attestation_root / f"{stem}.sig"
+        indexed = self.catalog("promoted-main", [(envelope, stored["path"])])
+        catalog = RemoteCatalog(
+            indexed.manifest,
+            indexed.signature,
+            indexed.objects,
+            keyring=indexed.keyring,
+            keys_directory=indexed.keys_directory,
+            contract_attestation=attestation,
+            contract_attestation_signature=attestation_signature,
+            contract_public_key=self.release_keys / "release-test.pub",
+        )
+        result = self.session(
+            promoted_main=catalog,
+            restore_root=self.root / "release-attested-restore",
+        ).lookup("promoted-main", plan)
+        self.assertEqual(envelope["receiptSha256"], result.envelope["receiptSha256"])
+        self.assertEqual("development", result.envelope["receipt"]["trustDomain"])
+
+        missing = RemoteCatalog(
+            indexed.manifest,
+            indexed.signature,
+            indexed.objects,
+            keyring=indexed.keyring,
+            keys_directory=indexed.keys_directory,
+        )
+        with self.assertRaisesRegex(ReuseLookupError, "corrupt"):
+            self.session(promoted_main=missing).lookup("promoted-main", plan)
+
+        binary_plan = plan_for(CONTRACT_BINARY, all_inputs(CONTRACT_BINARY), {})
+        binary_envelope, binary_path = self.object_for_plan(
+            binary_plan, trust_domain="development",
+        )
+        binary_catalog = self.catalog("promoted-main", [(binary_envelope, binary_path)])
+        with self.assertRaisesRegex(ReuseLookupError, "corrupt"):
+            self.session(promoted_main=binary_catalog).lookup("promoted-main", binary_plan)
 
     def test_release_signed_prerelease_index_is_not_a_stable_source(self) -> None:
         inputs = all_inputs(CONTRACT_BINARY)

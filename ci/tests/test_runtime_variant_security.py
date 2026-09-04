@@ -69,15 +69,19 @@ class RuntimeVariantSecurityTest(unittest.TestCase):
 
     def verify(self, values, *, manifest=None, signature=None, aggregate_key=None):
         (
-            aggregate_manifest, aggregate_signature, aggregate_public_key, contract_bundle,
+            aggregate_manifest, aggregate_signature, aggregate_public_key, contract_payload,
             bundles, receipts, phase_receipts, validation_evidence, keys,
             runtime_maven_files, adapter_evidence,
+            contract_metadata_receipt, contract_attestation, contract_attestation_signature,
         ) = values
         return verify_runtime_aggregate_artifacts(
             manifest or aggregate_manifest,
             aggregate_signature=signature or aggregate_signature,
             aggregate_public_key=aggregate_key or aggregate_public_key,
-            contract_bundle=contract_bundle,
+            contract_payload=contract_payload,
+            contract_metadata_receipt=contract_metadata_receipt,
+            contract_attestation=contract_attestation,
+            contract_attestation_signature=contract_attestation_signature,
             contract_public_key=aggregate_public_key,
             variant_bundles=bundles,
             metadata_receipts=receipts,

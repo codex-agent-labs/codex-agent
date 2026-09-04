@@ -24,7 +24,6 @@ from ci.products.contract_model import (
 )
 from ci.products.contract import (
     build_contract_bundle,
-    build_development_contract_bundle,
     prepare_contract_inputs,
     validate_contract_package_stage,
     validate_contract_validation_report,
@@ -40,7 +39,6 @@ from ci.products.inventory import (
 from ci.products.plan import plan_phase
 from ci.products.receipt import write_output_manifest, write_phase_receipt
 from ci.products.registry import PhaseInstanceId
-from ci.products.signatures import generate_development_key, sign_manifest
 
 
 VERSION = "0.2.0"
@@ -586,7 +584,6 @@ def _write_staging(
     )
 
     inventory = (
-        f"tree\t{TREE}\n"
         "100644\tblob\t0123456789abcdef0123456789abcdef01234567\t"
         "codex-agent-core/src/commonMain/kotlin/Contract.kt\n"
     ).encode()
@@ -675,19 +672,6 @@ def _insert_zip_central_directory_gap(archive: Path) -> None:
 
 
 class ContractBundleTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        if shutil.which("ssh-keygen") is None:
-            raise unittest.SkipTest("ssh-keygen is required for Contract Bundle tests")
-        cls._key_directory = tempfile.TemporaryDirectory(prefix="contract-bundle-key-")
-        cls.private_key, cls.public_key, cls.signing = generate_development_key(
-            Path(cls._key_directory.name).resolve()
-        )
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls._key_directory.cleanup()
-
     def _build(
         self,
         root: Path,
@@ -703,22 +687,11 @@ class ContractBundleTest(unittest.TestCase):
             staging,
             archive,
             contract_version,
-            PRODUCER,
-            self.private_key,
-            self.public_key,
-            self.signing,
         )
-        self.assertEqual(
-            manifest,
-            verify_contract_bundle(
-                archive,
-                self.public_key,
-                expected_trust_domain="development",
-            ),
-        )
+        self.assertEqual(manifest, verify_contract_bundle(archive))
         return staging, archive, manifest
 
-    def _resigned_archive(
+    def _rebuilt_archive(
         self,
         root: Path,
         name: str,
@@ -734,14 +707,9 @@ class ContractBundleTest(unittest.TestCase):
             )
             record["bytes"] = len(contents)
             record["sha256"] = sha256_bytes(contents)
-        signing_directory = root / f"{name}-signing"
-        manifest_path = signing_directory / "contract-manifest.json"
-        write_canonical_json(manifest_path, manifest)
-        signature_path = sign_manifest(manifest_path, self.private_key, self.signing)
         replacements = {
             **updates,
-            "contract-manifest.json": manifest_path.read_bytes(),
-            "contract-manifest.sig": signature_path.read_bytes(),
+            "contract-manifest.json": canonical_json_bytes(manifest),
         }
         archive = root / name / ARCHIVE_NAME
         _write_zip(
@@ -958,7 +926,7 @@ class ContractBundleTest(unittest.TestCase):
                     )
                 self.assertFalse((root / f"rejected-{name}").exists())
 
-    def test_package_validation_rejects_payload_and_original_producer_mismatch(self):
+    def test_package_validation_rejects_payload_mismatch(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             phase = self._product_phase_stages(root)
@@ -977,85 +945,82 @@ class ContractBundleTest(unittest.TestCase):
                 )
             self.assertFalse((root / "tampered-output").exists())
 
-            phase = self._product_phase_stages(root / "producer-case")
-            binary_receipt = copy.deepcopy(phase["binary_receipt"])
-            binary_receipt["producer"]["tree"] = "f" * 40
-            write_canonical_json(phase["binary_receipt_path"], binary_receipt)
-            with self.assertRaisesRegex(ValueError, "producer tree"):
-                validate_contract_package_stage(
-                    phase["package_stage"],
-                    phase["package_receipt_path"],
-                    sha256_file(phase["package_receipt_path"]),
-                    phase["binary_receipt_path"],
-                    sha256_file(phase["binary_receipt_path"]),
-                    root / "wrong-producer-output",
-                    VERSION,
-                )
-            self.assertFalse((root / "wrong-producer-output").exists())
-
     def test_contract_validation_report_rejects_unknown_fields(self):
         with self.assertRaisesRegex(ValueError, "fields are invalid"):
             validate_contract_validation_report({"schemaVersion": 1, "extra": True})
 
-    def test_development_build_keeps_only_public_verification_material(self):
+    def test_bundle_is_content_only_across_producer_key_and_commit_context(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            staging = root / "staging"
-            _write_staging(staging)
-            staging_before = regular_file_inventory(staging)
-            with self.assertRaisesRegex(ValueError, "overlaps its staging input"):
-                build_development_contract_bundle(staging, staging / "output", VERSION, PRODUCER)
-            self.assertEqual(staging_before, regular_file_inventory(staging))
-            output = root / "output"
-            manifest = build_development_contract_bundle(staging, output, VERSION, PRODUCER)
-            archive = output / ARCHIVE_NAME
-            public_key = output / "development-ed25519.pub"
-            self.assertTrue(archive.is_file())
-            self.assertTrue(public_key.is_file())
-            self.assertFalse(any(path.name == "development-ed25519" for path in root.rglob("*")))
-            self.assertEqual(
-                manifest,
-                verify_contract_bundle(archive, public_key, expected_trust_domain="development"),
-            )
-            first_fingerprint = manifest["signing"]["fingerprint"]
-            replaced = build_development_contract_bundle(staging, output, VERSION, PRODUCER)
-            self.assertNotEqual(first_fingerprint, replaced["signing"]["fingerprint"])
-            self.assertEqual(
-                replaced,
-                verify_contract_bundle(archive, public_key, expected_trust_domain="development"),
-            )
-            self.assertFalse(any(path.name == "development-ed25519" for path in root.rglob("*")))
+            first_staging = root / "first-staging"
+            second_staging = root / "second-staging"
+            _write_staging(first_staging)
+            shutil.copytree(first_staging, second_staging)
+            staging_before = regular_file_inventory(first_staging)
+            with self.assertRaisesRegex(ValueError, "outside the staging root"):
+                build_contract_bundle(
+                    first_staging,
+                    first_staging / ARCHIVE_NAME,
+                    VERSION,
+                )
+            self.assertEqual(staging_before, regular_file_inventory(first_staging))
+            first_archive = root / "first" / ARCHIVE_NAME
+            second_archive = root / "second" / ARCHIVE_NAME
+            with mock.patch.dict("os.environ", {
+                "GITHUB_REPOSITORY": "codex-agent-labs/first-producer",
+                "GITHUB_SHA": "1" * 40,
+                "GITHUB_RUN_ID": "1",
+                "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "first-key-context",
+            }):
+                first = build_contract_bundle(first_staging, first_archive, VERSION)
+            with mock.patch.dict("os.environ", {
+                "GITHUB_REPOSITORY": "codex-agent-labs/second-producer",
+                "GITHUB_SHA": "2" * 40,
+                "GITHUB_RUN_ID": "2",
+                "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "second-key-context",
+            }):
+                second = build_contract_bundle(second_staging, second_archive, VERSION)
 
-    def test_development_build_verifies_pair_before_replacing_prior_output(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve()
-            staging = root / "staging"
-            output = root / "output"
-            _write_staging(staging)
-            build_development_contract_bundle(staging, output, VERSION, PRODUCER)
-            prior = regular_file_inventory(output)
-            original_verify = contract_product.verify_contract_bundle
-
-            def fail_prepublication_pair(archive, public_key, **arguments):
-                if Path(archive).parent == Path(public_key).parent:
-                    raise ValueError("simulated prepared-pair verification failure")
-                return original_verify(archive, public_key, **arguments)
-
-            with mock.patch.object(
-                contract_product,
-                "verify_contract_bundle",
-                side_effect=fail_prepublication_pair,
+            self.assertEqual(first, second)
+            self.assertEqual(first_archive.read_bytes(), second_archive.read_bytes())
+            self.assertNotIn("producer", first)
+            self.assertNotIn("signing", first)
+            self.assertNotIn("contract-manifest.sig", dict(
+                (path, contents) for path, contents, _ in _zip_entries(first_archive)
+            ))
+            for name in (
+                "contract-binary-inputs.git-tree",
+                "contract-validation-inputs.git-tree",
             ):
-                with self.assertRaisesRegex(ValueError, "prepared-pair verification failure"):
-                    build_development_contract_bundle(staging, output, VERSION, PRODUCER)
+                contents = (
+                    first_staging / "inventories" / name
+                ).read_text(encoding="utf-8")
+                self.assertFalse(contents.startswith("tree\t"))
+                self.assertTrue(all(len(line.split("\t")) == 4 for line in contents.splitlines()))
 
-            self.assertEqual(prior, regular_file_inventory(output))
-            verify_contract_bundle(
-                output / ARCHIVE_NAME,
-                output / "development-ed25519.pub",
-                expected_trust_domain="development",
-            )
-            self.assertFalse(any(path.name == "development-ed25519" for path in root.rglob("*")))
+            entries = _zip_entries(first_archive)
+            manifest = json.loads(next(
+                contents for path, contents, _ in entries
+                if path == "contract-manifest.json"
+            ))
+            for field in ("producer", "signing"):
+                mutated = copy.deepcopy(manifest)
+                mutated[field] = {}
+                archive = root / field / ARCHIVE_NAME
+                _write_zip(archive, [
+                    (
+                        path,
+                        canonical_json_bytes(mutated)
+                        if path == "contract-manifest.json" else contents,
+                        attributes,
+                    )
+                    for path, contents, attributes in entries
+                ])
+                with self.subTest(field=field), self.assertRaisesRegex(
+                    ValueError,
+                    "fields are invalid",
+                ):
+                    verify_contract_bundle(archive)
 
     def test_build_is_deterministic_and_component_closures_are_exact(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1136,10 +1101,6 @@ class ContractBundleTest(unittest.TestCase):
                     stale,
                     root / "stale" / ARCHIVE_NAME,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
 
             for index, relative in enumerate(sorted(expected)):
@@ -1151,10 +1112,6 @@ class ContractBundleTest(unittest.TestCase):
                         incomplete,
                         root / f"missing-{index:02d}" / ARCHIVE_NAME,
                         VERSION,
-                        PRODUCER,
-                        self.private_key,
-                        self.public_key,
-                        self.signing,
                     )
 
             missing_checksum = root / "missing-checksum-staging"
@@ -1166,13 +1123,9 @@ class ContractBundleTest(unittest.TestCase):
                     missing_checksum,
                     root / "missing-checksum" / ARCHIVE_NAME,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
 
-    def test_unverified_maven_signatures_are_rejected_before_manifest_signing(self):
+    def test_unverified_maven_signatures_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             staging = root / "staging"
@@ -1191,10 +1144,6 @@ class ContractBundleTest(unittest.TestCase):
                     staging,
                     root / "bundle" / ARCHIVE_NAME,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
             self.assertFalse((root / "bundle" / ARCHIVE_NAME).exists())
 
@@ -1259,10 +1208,6 @@ class ContractBundleTest(unittest.TestCase):
                 ancillary_stage,
                 root / "ancillary" / ARCHIVE_NAME,
                 VERSION,
-                PRODUCER,
-                self.private_key,
-                self.public_key,
-                self.signing,
             )
             self.assertEqual(baseline["components"], ancillary["components"])
             self.assertEqual(baseline["contractDigest"], ancillary["contractDigest"])
@@ -1277,10 +1222,6 @@ class ContractBundleTest(unittest.TestCase):
                 target_stage,
                 root / "target" / ARCHIVE_NAME,
                 VERSION,
-                PRODUCER,
-                self.private_key,
-                self.public_key,
-                self.signing,
             )
             for component in ARTIFACT_COMPONENTS.values():
                 if component == "jvm":
@@ -1298,10 +1239,6 @@ class ContractBundleTest(unittest.TestCase):
                 common_stage,
                 root / "common" / ARCHIVE_NAME,
                 VERSION,
-                PRODUCER,
-                self.private_key,
-                self.public_key,
-                self.signing,
             )
             for component in ARTIFACT_COMPONENTS.values():
                 self.assertNotEqual(baseline["components"][component], common["components"][component])
@@ -1337,11 +1274,7 @@ class ContractBundleTest(unittest.TestCase):
                     ],
                 )
                 with self.subTest(name=name), self.assertRaisesRegex(ValueError, "role or component"):
-                    verify_contract_bundle(
-                        mutated,
-                        self.public_key,
-                        expected_trust_domain="development",
-                    )
+                    verify_contract_bundle(mutated)
 
             wrong_version = root / "wrong-version-staging"
             _write_staging(wrong_version)
@@ -1356,10 +1289,6 @@ class ContractBundleTest(unittest.TestCase):
                     wrong_version,
                     root / "wrong-version" / ARCHIVE_NAME,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
 
             for name, suffix in (("pom-self-version", ".pom"), ("module-self-version", ".module")):
@@ -1384,10 +1313,6 @@ class ContractBundleTest(unittest.TestCase):
                         mismatched,
                         root / name / ARCHIVE_NAME,
                         VERSION,
-                        PRODUCER,
-                        self.private_key,
-                        self.public_key,
-                        self.signing,
                     )
 
             incomplete = root / "incomplete-staging"
@@ -1398,10 +1323,6 @@ class ContractBundleTest(unittest.TestCase):
                     incomplete,
                     root / "incomplete" / ARCHIVE_NAME,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
 
     def test_maven_checksums_module_files_and_pom_resolution_semantics_fail(self):
@@ -1419,10 +1340,6 @@ class ContractBundleTest(unittest.TestCase):
                     bad_checksum,
                     root / "bad-checksum" / ARCHIVE_NAME,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
 
             stale_module = root / "stale-module-staging"
@@ -1435,10 +1352,6 @@ class ContractBundleTest(unittest.TestCase):
                     stale_module,
                     root / "stale-module" / ARCHIVE_NAME,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
 
             incomplete_module = root / "incomplete-module-staging"
@@ -1453,10 +1366,6 @@ class ContractBundleTest(unittest.TestCase):
                     incomplete_module,
                     root / "incomplete-module" / ARCHIVE_NAME,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
 
             for name, injected in (
@@ -1485,13 +1394,9 @@ class ContractBundleTest(unittest.TestCase):
                         staging,
                         root / name / ARCHIVE_NAME,
                         VERSION,
-                        PRODUCER,
-                        self.private_key,
-                        self.public_key,
-                        self.signing,
                     )
 
-    def test_archive_structure_metadata_size_evidence_and_signature_mutations_fail(self):
+    def test_archive_structure_metadata_size_and_evidence_mutations_fail(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             _, archive, _ = self._build(root, "valid")
@@ -1527,43 +1432,27 @@ class ContractBundleTest(unittest.TestCase):
             renamed.parent.mkdir(parents=True)
             shutil.copyfile(archive, renamed)
             with self.assertRaisesRegex(ValueError, "named codex-agent-contract"):
-                verify_contract_bundle(
-                    renamed,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
+                verify_contract_bundle(renamed)
 
             prefixed = root / "prefixed" / ARCHIVE_NAME
             prefixed.parent.mkdir(parents=True)
             prefixed.write_bytes(b"self-extracting-stub" + archive.read_bytes())
             with self.assertRaisesRegex(ValueError, "[Cc]anonical"):
-                verify_contract_bundle(
-                    prefixed,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
+                verify_contract_bundle(prefixed)
 
             central_gap = root / "central-gap" / ARCHIVE_NAME
             central_gap.parent.mkdir(parents=True)
             shutil.copyfile(archive, central_gap)
             _insert_zip_central_directory_gap(central_gap)
             with self.assertRaisesRegex(ValueError, "[Cc]anonical"):
-                verify_contract_bundle(
-                    central_gap,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
+                verify_contract_bundle(central_gap)
 
             local_header = root / "local-header" / ARCHIVE_NAME
             local_header.parent.mkdir(parents=True)
             shutil.copyfile(archive, local_header)
             _patch_first_zip_local_timestamp(local_header)
             with self.assertRaisesRegex(ValueError, "[Cc]anonical"):
-                verify_contract_bundle(
-                    local_header,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
+                verify_contract_bundle(local_header)
 
             missing_path = next(path for path, _, _ in entries if path.startswith("maven/"))
             structural = {
@@ -1589,11 +1478,7 @@ class ContractBundleTest(unittest.TestCase):
                     warnings.simplefilter("ignore", UserWarning)
                     _write_zip(mutated, mutated_entries)
                 with self.subTest(name=name), self.assertRaises(ValueError):
-                    verify_contract_bundle(
-                        mutated,
-                        self.public_key,
-                        expected_trust_domain="development",
-                    )
+                    verify_contract_bundle(mutated)
 
             for name, options in (
                 ("compressed", {"compression": zipfile.ZIP_DEFLATED}),
@@ -1606,31 +1491,19 @@ class ContractBundleTest(unittest.TestCase):
                 mutated = root / name / ARCHIVE_NAME
                 _write_zip(mutated, entries, **options)
                 with self.subTest(name=name), self.assertRaisesRegex(ValueError, "[Cc]anonical"):
-                    verify_contract_bundle(
-                        mutated,
-                        self.public_key,
-                        expected_trust_domain="development",
-                    )
+                    verify_contract_bundle(mutated)
 
             flags_archive = root / "flag-bits" / ARCHIVE_NAME
             _write_zip(flags_archive, entries)
             _patch_first_zip_flags(flags_archive, 0x0800)
             with self.assertRaisesRegex(ValueError, "[Cc]anonical"):
-                verify_contract_bundle(
-                    flags_archive,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
+                verify_contract_bundle(flags_archive)
 
             volume_archive = root / "volume" / ARCHIVE_NAME
             _write_zip(volume_archive, entries)
             _patch_first_zip_volume(volume_archive, 1)
             with self.assertRaisesRegex(ValueError, "[Cc]anonical"):
-                verify_contract_bundle(
-                    volume_archive,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
+                verify_contract_bundle(volume_archive)
 
             extra_count = 4097 - len(entries)
             too_many = sorted(
@@ -1643,77 +1516,29 @@ class ContractBundleTest(unittest.TestCase):
             too_many_archive = root / "too-many" / ARCHIVE_NAME
             _write_zip(too_many_archive, too_many)
             with self.assertRaisesRegex(ValueError, "too many members"):
-                verify_contract_bundle(
-                    too_many_archive,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
+                verify_contract_bundle(too_many_archive)
 
             api_name = "evidence/canonical-api.json"
             api = json.loads(next(contents for path, contents, _ in entries if path == api_name))
             api["owners"][0]["capabilities"].pop()
-            bad_api = self._resigned_archive(
+            bad_api = self._rebuilt_archive(
                 root,
                 "api-count",
                 entries,
                 {api_name: canonical_json_bytes(api)},
             )
             with self.assertRaisesRegex(ValueError, "exactly 556"):
-                verify_contract_bundle(
-                    bad_api,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
+                verify_contract_bundle(bad_api)
 
             descriptor = b'{"descriptors":["changed"]}\n'
-            bad_evidence = self._resigned_archive(
+            bad_evidence = self._rebuilt_archive(
                 root,
                 "evidence",
                 entries,
                 {"evidence/descriptors.json": descriptor},
             )
             with self.assertRaises(ValueError):
-                verify_contract_bundle(
-                    bad_evidence,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
-
-            signature = bytearray(
-                next(contents for path, contents, _ in entries if path == "contract-manifest.sig")
-            )
-            body_positions = [
-                index
-                for index in range(signature.index(b"\n") + 1, signature.rindex(b"-----END"))
-                if signature[index:index + 1].isalnum()
-            ]
-            position = body_positions[len(body_positions) // 2]
-            signature[position] = ord("A") if signature[position] != ord("A") else ord("B")
-            bad_signature = root / "signature" / ARCHIVE_NAME
-            _write_zip(
-                bad_signature,
-                [
-                    (
-                        path,
-                        bytes(signature) if path == "contract-manifest.sig" else contents,
-                        attributes,
-                    )
-                    for path, contents, attributes in entries
-                ],
-            )
-            with self.assertRaises(ValueError):
-                verify_contract_bundle(
-                    bad_signature,
-                    self.public_key,
-                    expected_trust_domain="development",
-                )
-
-            with self.assertRaises(ValueError):
-                verify_contract_bundle(
-                    archive,
-                    self.public_key,
-                    expected_trust_domain="release",
-                )
+                verify_contract_bundle(bad_evidence)
 
     def test_existing_different_output_is_not_overwritten_and_failed_build_can_retry(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1728,14 +1553,9 @@ class ContractBundleTest(unittest.TestCase):
                     staging,
                     archive,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
             self.assertEqual(original, archive.read_bytes())
             self.assertFalse((staging / "contract-manifest.json").exists())
-            self.assertFalse((staging / "contract-manifest.sig").exists())
             self.assertFalse(list(archive.parent.glob(f".{ARCHIVE_NAME}-*")))
 
             retry = root / "retry" / ARCHIVE_NAME
@@ -1743,19 +1563,8 @@ class ContractBundleTest(unittest.TestCase):
                 staging,
                 retry,
                 VERSION,
-                PRODUCER,
-                self.private_key,
-                self.public_key,
-                self.signing,
             )
-            self.assertEqual(
-                manifest,
-                verify_contract_bundle(
-                    retry,
-                    self.public_key,
-                    expected_trust_domain="development",
-                ),
-            )
+            self.assertEqual(manifest, verify_contract_bundle(retry))
 
     def test_bundle_rejects_symlinked_output_ancestor_without_writing_through_it(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1773,18 +1582,13 @@ class ContractBundleTest(unittest.TestCase):
                     staging,
                     linked_parent / ARCHIVE_NAME,
                     VERSION,
-                    PRODUCER,
-                    self.private_key,
-                    self.public_key,
-                    self.signing,
                 )
 
             self.assertEqual(b"external\n", (external / "must-survive").read_bytes())
             self.assertFalse((external / ARCHIVE_NAME).exists())
             self.assertFalse((staging / "contract-manifest.json").exists())
-            self.assertFalse((staging / "contract-manifest.sig").exists())
 
-    def test_prepared_git_provenance_rejects_dirty_inputs_and_stale_inventories(self):
+    def test_prepared_git_inputs_reject_dirty_inputs_and_stale_inventories(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             repository = root / "repository"
@@ -1809,24 +1613,8 @@ class ContractBundleTest(unittest.TestCase):
             commit = _git(repository, "rev-parse", "HEAD")
             tree = _git(repository, "rev-parse", "HEAD^{tree}")
 
-            missing_workflow_output = root / "missing-workflow-output"
-            with self.assertRaisesRegex(ValueError, "producer workflow does not exist"):
-                prepare_contract_inputs(
-                    repository,
-                    missing_workflow_output,
-                    "HEAD",
-                    "codex-agent-labs/codex-agent",
-                    ".github/workflows/missing.yml",
-                    "pull_request",
-                    6,
-                    1,
-                    31,
-                )
-            self.assertFalse(missing_workflow_output.exists())
-
             prepared = root / "prepared"
             forged = (
-                f"tree\t{tree}\n"
                 f"100644\tblob\t{'0' * 40}\tcontract/Forged.kt\n"
             ).encode()
             for name in (
@@ -1839,16 +1627,10 @@ class ContractBundleTest(unittest.TestCase):
                 repository,
                 prepared,
                 "HEAD",
-                "codex-agent-labs/codex-agent",
-                ".github/workflows/contract.yml",
-                "pull_request",
-                7,
-                1,
-                31,
             )
             self.assertEqual(commit, producer["commit"])
             self.assertEqual(tree, producer["tree"])
-            verify_contract_git_inventories(prepared, producer)
+            verify_contract_git_inventories(prepared)
             self.assertNotIn(b"contract/Forged.kt", (prepared / "inventories/contract-binary-inputs.git-tree").read_bytes())
             self.assertFalse((prepared / "unexpected-stale-file").exists())
 
@@ -1859,12 +1641,6 @@ class ContractBundleTest(unittest.TestCase):
                     repository,
                     tracked_output,
                     "HEAD",
-                    "codex-agent-labs/codex-agent",
-                    ".github/workflows/contract.yml",
-                    "pull_request",
-                    8,
-                    1,
-                    31,
                 )
             self.assertFalse(tracked_output.exists())
             (repository / "contract/Contract.kt").write_bytes(b"contract\n")
@@ -1876,12 +1652,6 @@ class ContractBundleTest(unittest.TestCase):
                     repository,
                     untracked_output,
                     "HEAD",
-                    "codex-agent-labs/codex-agent",
-                    ".github/workflows/contract.yml",
-                    "pull_request",
-                    9,
-                    1,
-                    31,
                 )
             self.assertFalse(untracked_output.exists())
             (repository / "contract/Untracked.kt").unlink()
@@ -1893,12 +1663,6 @@ class ContractBundleTest(unittest.TestCase):
                     repository,
                     ignored_output,
                     "HEAD",
-                    "codex-agent-labs/codex-agent",
-                    ".github/workflows/contract.yml",
-                    "pull_request",
-                    10,
-                    1,
-                    31,
                 )
             self.assertFalse(ignored_output.exists())
             (repository / "contract/ignored.kt").unlink()
@@ -1913,12 +1677,6 @@ class ContractBundleTest(unittest.TestCase):
                     repository,
                     symlink_output,
                     "HEAD",
-                    "codex-agent-labs/codex-agent",
-                    ".github/workflows/contract.yml",
-                    "pull_request",
-                    11,
-                    1,
-                    31,
                 )
             self.assertEqual(b"external\n", (external / "must-survive").read_bytes())
 
@@ -1943,12 +1701,6 @@ class ContractBundleTest(unittest.TestCase):
                         repository,
                         prepared,
                         "HEAD",
-                        "codex-agent-labs/codex-agent",
-                        ".github/workflows/contract.yml",
-                        "pull_request",
-                        12,
-                        1,
-                        31,
                     )
             self.assertEqual(
                 before_failure,
@@ -1960,9 +1712,11 @@ class ContractBundleTest(unittest.TestCase):
             )
 
             inventory_path = prepared / "inventories/contract-binary-inputs.git-tree"
-            inventory_path.write_bytes(inventory_path.read_bytes().replace(tree.encode(), b"0" * 40, 1))
-            with self.assertRaisesRegex(ValueError, "not bound to its producer tree"):
-                verify_contract_git_inventories(prepared, producer)
+            inventory_path.write_bytes(
+                f"tree\t{tree}\n".encode() + inventory_path.read_bytes()
+            )
+            with self.assertRaisesRegex(ValueError, "incomplete or noncanonical"):
+                verify_contract_git_inventories(prepared)
 
     def test_prepared_git_provenance_uses_commit_bound_pathspec_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2003,12 +1757,6 @@ class ContractBundleTest(unittest.TestCase):
                     repository,
                     output,
                     "HEAD",
-                    "codex-agent-labs/codex-agent",
-                    ".github/workflows/product-validation.yml",
-                    "pull_request",
-                    13,
-                    1,
-                    31,
                 )
             self.assertFalse(output.exists())
 
@@ -2075,7 +1823,6 @@ class ContractBundleTest(unittest.TestCase):
                 "ci/products/contract_model.py",
                 "ci/products/inventory.py",
                 "ci/products/receipt.py",
-                "ci/products/signatures.py",
             },
             imported,
         )
