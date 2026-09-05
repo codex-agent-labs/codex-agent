@@ -7,7 +7,7 @@ import re
 import tempfile
 from typing import Any
 
-from .aggregate import verify_immutable_product_indexes
+from .aggregate import verified_index_content, verify_immutable_product_indexes
 from .contract_projection import VerifiedContractProjection, VerifiedContractExecutionProjection, verify_contract_component_projection
 from .inventory import (
     load_canonical_json_bytes,
@@ -269,6 +269,7 @@ class LookupSession:
         )
         self._restore_root = None if restore_root is None else Path(restore_root)
         self._contract_stages: dict[tuple[str, str], Path] = {}
+        self._execution_projections: dict[tuple[str, str, str], VerifiedContractExecutionProjection] = {}
         self._remote: dict[str, dict[str, list[_RemoteCandidate]]] = {
             source: {} for source in SOURCES[:-1]
         }
@@ -277,7 +278,9 @@ class LookupSession:
         for catalog in stable:
             index = self._load_catalog("stable", catalog)
             for prior in stable_indexes:
-                verify_immutable_product_indexes(prior, index)
+                verify_immutable_product_indexes(
+                    prior, index, contract_execution_projection=self._catalog_execution_projection,
+                )
             stable_indexes.append(index)
             loaded_indexes.append(index)
         if promoted_main is not None:
@@ -340,15 +343,49 @@ class LookupSession:
             )
         return index
 
-    @staticmethod
-    def _reject_conflicting_catalog_outputs(indexes: list[dict[str, Any]]) -> None:
-        outputs_by_key: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+    def _catalog_execution_projection(self, entry: dict[str, Any]) -> VerifiedContractExecutionProjection:
+        key = (entry["buildKey"], entry["receiptSha256"], entry["outputInventoryDigest"])
+        if key in self._execution_projections:
+            return self._execution_projections[key]
+        for catalog in self._remote.values():
+            for candidate in catalog.get(entry["buildKey"], ()):
+                if candidate.entry != entry or candidate.object_path is None:
+                    continue
+                try:
+                    verified = verify_object(
+                        candidate.object_path, build_key=key[0], receipt_sha256=key[1],
+                    )
+                except FileNotFoundError:
+                    continue
+                envelope = {
+                    "receipt": verified["receipt"], "receiptBytes": verified["receiptBytes"],
+                    "receiptSha256": key[1], "objectSha256": verified["objectSha256"],
+                }
+                _validate_envelope(envelope)
+                _verify_index_receipt(entry, envelope)
+                with tempfile.TemporaryDirectory(prefix="contract-index-execution-") as temporary:
+                    stage = Path(temporary).resolve() / "stage"
+                    restore_object(
+                        candidate.object_path, stage, build_key=key[0], receipt_sha256=key[1],
+                        object_sha256=verified["objectSha256"],
+                    )
+                    proof = verify_contract_execution_projection(
+                        stage, verified["receiptBytes"], expected_receipt_sha256=key[1],
+                    )
+                self._execution_projections[key] = proof
+                return proof
+        raise ValueError("Conflicting Contract execution inventories require both authenticated objects")
+
+    def _reject_conflicting_catalog_outputs(self, indexes: list[dict[str, Any]]) -> None:
+        entries_by_key: dict[str, dict[str, Any]] = {}
         for index in indexes:
             for entry in index["entries"]:
-                current = (entry["outputInventoryDigest"], entry["outputs"])
-                prior = outputs_by_key.setdefault(entry["buildKey"], current)
-                if prior != current:
-                    raise ValueError("Signed product indexes conflict for an identical build key")
+                prior = entries_by_key.setdefault(entry["buildKey"], entry)
+                if prior["outputs"] != entry["outputs"]:
+                    left = verified_index_content(prior, self._catalog_execution_projection)
+                    right = verified_index_content(entry, self._catalog_execution_projection)
+                    if left["outputs"] != right["outputs"]:
+                        raise ValueError("Signed product indexes conflict for an identical build key")
 
     @staticmethod
     def _snapshot_local(local: LocalCatalog | None) -> LocalCatalog | None:

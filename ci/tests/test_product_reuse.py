@@ -167,12 +167,15 @@ def product_version(product: str) -> str:
 
 
 @functools.cache
-def binary_stage_files(version: str, target_hash_salt: bytes = b"") -> dict[str, bytes]:
+def binary_stage_files(version: str, target_hash_salt: bytes = b"", execution_context: bytes = b"first") -> dict[str, bytes]:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary).resolve()
         raw, classes, results = contract_fixture.ContractBundleTest()._execution_projection_fixture(
             root / "raw", contract_version=version, target_hash_salt=target_hash_salt,
         )
+        report = results / "TEST-Contract.xml"
+        report.write_bytes(report.read_bytes().replace(b"first", execution_context))
+        contract_fixture.ContractBundleTest()._bind_execution_fixture(raw, classes, results)
         stage = root / "stage"
         shutil.copytree(raw, stage / "outputs")
         capture_contract_execution_evidence(stage / "outputs", classes, results)
@@ -416,6 +419,7 @@ class ProductReuseTest(unittest.TestCase):
         producer_commit: str = COMMIT,
         producer_tree: str = TREE,
         binary_salt: bytes = b"",
+        execution_context: bytes = b"first",
     ) -> tuple[dict[str, object], Path]:
         self.counter += 1
         root = self.root / f"object-{self.counter}"
@@ -425,7 +429,7 @@ class ProductReuseTest(unittest.TestCase):
         version = release_version or product_version(str(plan["product"]))
         binary = (plan["product"], plan["phase"]) == ("contract", "binary")
         if binary:
-            for relative, data in binary_stage_files(version, binary_salt).items():
+            for relative, data in binary_stage_files(version, binary_salt, execution_context).items():
                 path = stage / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
@@ -484,6 +488,7 @@ class ProductReuseTest(unittest.TestCase):
         *,
         trust_domain: str | None = None,
         pull_request: int = PULL_REQUEST,
+        execution_artifact: bool = False,
     ) -> RemoteCatalog:
         self.counter += 1
         root = self.root / f"catalog-{self.counter}"
@@ -534,6 +539,10 @@ class ProductReuseTest(unittest.TestCase):
             "signing": signing,
             "producer": producer,
         }
+        if execution_artifact:
+            for entry in index["entries"]:
+                archive = next(output for output in entry["outputs"] if output["kind"] == "contract-execution")
+                entry.update(artifactName=archive["relativePath"], artifactSha256=archive["sha256"])
         manifest = root / "product-index.json"
         write_canonical_json(manifest, index)
         signature = sign_manifest(
@@ -1979,6 +1988,36 @@ class ProductReuseTest(unittest.TestCase):
                 self.catalog("stable", [(first, first_path)]),
                 self.catalog("stable", [(second, second_path)]),
             ])
+
+    def test_contract_catalog_consistency_authenticates_both_execution_objects(self) -> None:
+        inputs = all_inputs(CONTRACT_BINARY)
+        plan = plan_for(CONTRACT_BINARY, inputs, {})
+        first, first_path = self.object_for_plan(plan, trust_domain="release")
+        second, second_path = self.object_for_plan(
+            plan, trust_domain="release", execution_context=b"another-run",
+            producer_commit="c" * 40, producer_tree="d" * 40,
+        )
+        self.assertNotEqual(first["receipt"]["outputs"], second["receipt"]["outputs"])
+        originals = (first_path.read_bytes(), second_path.read_bytes(), first["receiptBytes"], second["receiptBytes"])
+        stable = self.catalog("stable", [(first, first_path)])
+        for source in ("stable", "promoted-main"):
+            with self.subTest(source=source):
+                other = self.catalog(source, [(second, second_path)])
+                arguments = {"stable": [stable, other]} if source == "stable" else {"stable": [stable], "promoted_main": other}
+                session = self.session(**arguments)
+                hit = session.lookup(source, plan)
+                self.assertEqual(first["receiptBytes"] if source == "stable" else second["receiptBytes"], hit.envelope["receiptBytes"])
+        self.assertEqual(originals, (first_path.read_bytes(), second_path.read_bytes(), first["receiptBytes"], second["receiptBytes"]))
+        self.session(stable=[
+            self.catalog("stable", [(first, first_path)], execution_artifact=True),
+            self.catalog("stable", [(second, second_path)], execution_artifact=True),
+        ])
+        for path in (None, first_path):
+            with self.subTest(invalid_object=path), self.assertRaises((ValueError, CacheObjectError)):
+                self.session(stable=[stable], promoted_main=self.catalog("promoted-main", [(second, path)]))
+        changed, changed_path = self.object_for_plan(plan, trust_domain="release", binary_salt=b"changed-product")
+        with self.assertRaisesRegex(ValueError, "conflict"):
+            self.session(stable=[stable], promoted_main=self.catalog("promoted-main", [(changed, changed_path)]))
 
     def test_safe_misses_emit_only_the_ready_wave_and_preserve_predecessors(self) -> None:
         inputs = all_inputs(CONTRACT_METADATA)

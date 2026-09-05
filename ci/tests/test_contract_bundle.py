@@ -42,7 +42,7 @@ from ci.products.inventory import (
     verified_zip_contents,
     write_canonical_json,
 )
-from ci.products.plan import plan_phase
+from ci.products.plan import plan_phase, verify_build_key_output_consistency
 from ci.products.receipt import write_output_manifest, write_phase_receipt
 from ci.products.registry import PhaseInstanceId
 
@@ -1028,6 +1028,7 @@ class ContractBundleTest(unittest.TestCase):
             self.assertEqual(first["package_receipt"]["outputs"], second["package_receipt"]["outputs"])
             self.assertNotEqual(first["binary_receipt"], second["binary_receipt"])
             values = []
+            proofs = {}
             for phase in (first, second):
                 projection = verify_contract_execution_projection(
                     phase["binary_stage"], phase["binary_receipt_path"],
@@ -1036,8 +1037,20 @@ class ContractBundleTest(unittest.TestCase):
                 value = projection.receipt_value()
                 self.assertEqual(sha256_file(phase["binary_receipt_path"]), value["receiptSha256"])
                 values.append(value)
+                proofs[value["receiptSha256"]] = projection
             self.assertEqual(values[0]["sha256"], values[1]["sha256"])
             self.assertNotEqual(values[0]["receiptSha256"], values[1]["receiptSha256"])
+            receipts = [first["binary_receipt"], second["binary_receipt"]]
+            original = canonical_json_bytes(receipts)
+            with self.assertRaisesRegex(ValueError, "conflicting output inventories"):
+                verify_build_key_output_consistency(receipts)
+            verify_build_key_output_consistency(
+                receipts, contract_execution_projection=lambda receipt: proofs[sha256_bytes(canonical_json_bytes(receipt))],
+            )
+            self.assertEqual(original, canonical_json_bytes(receipts))
+            for invalid in (lambda receipt: values[0], lambda receipt: next(iter(proofs.values()))):
+                with self.assertRaises(ValueError):
+                    verify_build_key_output_consistency(receipts, contract_execution_projection=invalid)
             with self.assertRaisesRegex(ValueError, "receipt and stage inventory differ"):
                 verify_contract_execution_projection(
                     first["binary_stage"], second["binary_receipt_path"],

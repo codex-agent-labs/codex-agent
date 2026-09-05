@@ -469,14 +469,27 @@ def plan_phase(
     }
 
 
-def verify_build_key_output_consistency(receipts: list[dict[str, Any]]) -> None:
-    """Reject a build key observed with more than one exact output inventory."""
-    outputs_by_key: dict[str, str] = {}
+def verify_build_key_output_consistency(
+    receipts: list[dict[str, Any]], *, contract_execution_projection=None,
+) -> None:
+    """Reject conflicting content; differing raw execution requires verified proof."""
+    receipts_by_key: dict[str, dict[str, Any]] = {}
     for value in require_array(receipts, "phase receipts"):
         receipt = validate_phase_receipt(value)
-        outputs_digest = output_inventory_digest(receipt["outputs"])
-        previous = outputs_by_key.setdefault(receipt["buildKey"], outputs_digest)
-        if previous != outputs_digest:
+        previous = receipts_by_key.setdefault(receipt["buildKey"], receipt)
+        if previous["outputs"] != receipt["outputs"]:
+            if contract_execution_projection is not None and all(
+                _receipt_identity(member) == PhaseInstanceId("contract", "contract", "binary", "common")
+                for member in (previous, receipt)
+            ):
+                content = []
+                for member in (previous, receipt):
+                    proof = contract_execution_projection(member)
+                    if type(proof) is not VerifiedContractExecutionProjection:
+                        raise ValueError("Verified Contract execution projection is required for consistency")
+                    content.append(proof.output_inventory(sha256_bytes(canonical_json_bytes(member)), member["outputs"]))
+                if content[0] == content[1]:
+                    continue
             raise ValueError(
                 f"Build key has conflicting output inventories: {receipt['buildKey']}"
             )

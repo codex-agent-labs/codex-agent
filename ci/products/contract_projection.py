@@ -30,18 +30,32 @@ _VERIFIED = object()
 class VerifiedContractExecutionProjection:
     """Exact binary-receipt capability; execution provenance stays outside keys."""
 
-    __slots__ = ("_canonical", "_verified")
+    __slots__ = ("_canonical", "_verified", "_receipt")
 
-    def __init__(self, value: dict[str, Any], verified: object) -> None:
+    def __init__(self, value: dict[str, Any], verified: object, receipt: bytes | None = None) -> None:
         if verified is not _VERIFIED:
             raise TypeError("Contract execution projections must be produced by verification")
         self._canonical = canonical_json_bytes(value)
         self._verified = verified
+        self._receipt = receipt
 
     def receipt_value(self) -> dict[str, Any]:
         if self._verified is not _VERIFIED:
             raise TypeError("Contract execution projection is not authenticated")
         return load_canonical_json_bytes(self._canonical)
+
+    def output_inventory(self, receipt_sha256: str, outputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        value = self.receipt_value()
+        if self._receipt is None or sha256_bytes(self._receipt) != receipt_sha256 or \
+                value["receiptSha256"] != receipt_sha256:
+            raise ValueError("Contract execution content requires its exact verified receipt")
+        receipt = validate_phase_receipt(load_canonical_json_bytes(self._receipt))
+        if receipt["outputs"] != outputs:
+            raise ValueError("Contract execution content and supplied output inventory differ")
+        content = [record for record in receipt["outputs"] if record["kind"] != "contract-execution"]
+        if output_inventory_digest(content) != value["sha256"]:
+            raise ValueError("Contract execution content digest differs from its verified inventory")
+        return content
 
 
 def verify_contract_execution_projection(
@@ -84,7 +98,7 @@ def verify_contract_execution_projection(
             "kind": "contract-execution-content",
             "sha256": output_inventory_digest(semantic_outputs),
             "receiptSha256": expected_receipt_sha256,
-        }, _VERIFIED)
+        }, _VERIFIED, receipt_bytes)
 
 
 class VerifiedContractProjection:

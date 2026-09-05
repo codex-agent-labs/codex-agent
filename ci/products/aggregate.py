@@ -46,6 +46,7 @@ from .restore import (
 from .signatures import validate_signing_metadata
 from .runtime_identity import derive_runtime_identity
 from .contract_attestation import verify_contract_attestation
+from .contract_projection import VerifiedContractExecutionProjection
 from .contract_model import (
     CONTRACT_ARTIFACT_COMPONENTS,
     CONTRACT_CHECKSUM_SUFFIXES,
@@ -1350,7 +1351,23 @@ def validate_product_index(value: Any) -> dict[str, Any]:
     return index
 
 
-def verify_immutable_product_indexes(existing: Any, candidate: Any) -> None:
+def verified_index_content(entry: dict[str, Any], contract_execution_projection=None) -> dict[str, Any]:
+    """Comparison-only view; never rewrite the signed index or original receipt."""
+    if contract_execution_projection is None or tuple(entry[field] for field in (
+        "product", "component", "phase", "target",
+    )) != ("contract", "contract", "binary", "common"):
+        return entry
+    proof = contract_execution_projection(entry)
+    if type(proof) is not VerifiedContractExecutionProjection:
+        raise ValueError("Verified Contract execution projection is required for index consistency")
+    outputs = proof.output_inventory(entry["receiptSha256"], entry["outputs"])
+    result = {**entry, "outputs": outputs, "outputInventoryDigest": output_inventory_digest(outputs)}
+    if entry["artifactName"] == "outputs/execution/contract-execution.zip":
+        result.update(artifactName=None, artifactSha256=None)
+    return result
+
+
+def verify_immutable_product_indexes(existing: Any, candidate: Any, *, contract_execution_projection=None) -> None:
     prior = validate_product_index(existing)["entries"]
     proposed = validate_product_index(candidate)["entries"]
     by_build_key = {entry["buildKey"]: entry for entry in prior}
@@ -1365,11 +1382,21 @@ def verify_immutable_product_indexes(existing: Any, candidate: Any) -> None:
             by_build_key[entry["buildKey"]]["outputInventoryDigest"] != entry["outputInventoryDigest"]
             or by_build_key[entry["buildKey"]]["outputs"] != entry["outputs"]
         ):
-            raise ValueError("Identical product build key has a conflicting output inventory")
+            left = verified_index_content(by_build_key[entry["buildKey"]], contract_execution_projection)
+            right = verified_index_content(entry, contract_execution_projection)
+            if left["outputs"] != right["outputs"]:
+                raise ValueError("Identical product build key has a conflicting output inventory")
     for identity in set(prior_releases) & set(proposed_releases):
         if _release_output_projection(prior_releases[identity]) != \
                 _release_output_projection(proposed_releases[identity]):
-            raise ValueError("Stable product identity has different asset names or output bytes")
+            left = _release_output_projection([
+                verified_index_content(entry, contract_execution_projection) for entry in prior_releases[identity]
+            ])
+            right = _release_output_projection([
+                verified_index_content(entry, contract_execution_projection) for entry in proposed_releases[identity]
+            ])
+            if left != right:
+                raise ValueError("Stable product identity has different asset names or output bytes")
 
 
 def main(arguments: list[str] | None = None) -> int:
