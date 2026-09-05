@@ -1,0 +1,163 @@
+import java.io.File
+import kotlin.io.path.createTempDirectory
+import kotlin.test.Test
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import org.gradle.testkit.runner.GradleRunner
+
+class RuntimeToolchainSettingsContractTest {
+    private val settings = File("../settings.gradle.kts").readText()
+    private val plugin = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
+
+    @Test
+    fun `native binary observes its actual producer before every compiler path`() {
+        val observer = plugin.substringAfter("val verifyRuntimeProducerToolchain =")
+            .substringBefore("private val cAbiTargetSpecs =")
+        listOf(
+            "requestedRuntimeTarget in runtimeBinaryFlags",
+            "requestedRuntimePhase == null || requestedRuntimePhase == \"binary\"",
+            "System.getProperty(\"os.name\")",
+            "System.getProperty(\"os.arch\")",
+            "tasks.register<Exec>(\"verifyRuntimeProducerToolchain\")",
+            "outputs.upToDateWhen { false }",
+            "\"python3\", \"-m\", \"ci.products.toolchain\", \"verify-producer\"",
+            "\"--repository-root\"",
+            "\"--repository-revision\"",
+            "\"--profile-id\"",
+            "\"--producer-role\"",
+            "\"--target\"",
+            "\"--gradle-user-home\"",
+            "\"--binary-plan\"",
+            "\"--verified-contract-manifest\"",
+            "\"--expected-runtime-version\"",
+            "\"--expected-flags-digest\"",
+            "\"--output\"",
+            "put(\"RUNNER_OS\", runnerOs)",
+            "put(\"RUNNER_ARCH\", runnerArch)",
+        ).forEach { contract -> assertTrue(contract in observer, contract) }
+        assertFalse("System.getenv(\"RUNNER_OS\")" in observer)
+        assertFalse("System.getenv(\"RUNNER_ARCH\")" in observer)
+
+        val abiGenerator = plugin.substringAfter("generateRuntimeAbiSource.configure {")
+            .substringBefore("private val cAbiTargetSpecs =")
+        val supervisor = plugin.substringAfter("val compileDesktopProcessSupervisor =")
+            .substringBefore("val desktopPackageTasks =")
+        val nativeTargets = plugin.substringAfter("desktopTargets.forEach { target ->")
+            .substringBefore("sourceSets.getByName(\"commonMain\")")
+        assertTrue("verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in abiGenerator)
+        assertTrue("verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in supervisor)
+        assertTrue(
+            "linkTaskProvider.configure {\n                verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in
+                nativeTargets,
+        )
+        assertTrue(
+            nativeTargets.lineSequence().count {
+                "verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in it
+            } == 3,
+            "Native link and both C interop compiler paths must depend on producer verification",
+        )
+        assertTrue("sourceSets.getByName(\"nativeMain\").kotlin.srcDir(generateRuntimeAbiSource)" in plugin)
+    }
+
+    @Test
+    fun `Linux ARM supervisor role is confined to the explicit supervisor-only invocation`() {
+        val observer = plugin.substringAfter("val verifyRuntimeProducerToolchain =")
+            .substringBefore("private val cAbiTargetSpecs =")
+        listOf(
+            "requestedRuntimePhase == null",
+            "gradle.startParameter.taskNames.size == 1",
+            "gradle.startParameter.taskNames.single().substringAfterLast(':')",
+            "\"compileDesktopProcessSupervisor\"",
+            "requestedRuntimeTarget == \"linux-arm64\" && supervisorOnly -> \"supervisor-builder\"",
+            "requestedRuntimeTarget == \"linux-arm64\" -> \"cross-builder\"",
+            "else -> \"builder\"",
+        ).forEach { contract -> assertTrue(contract in observer, contract) }
+    }
+
+    @Test
+    fun `observer consumes the same admitted plan and remains outside product payload`() {
+        listOf(
+            "codexAgent.runtimeBinaryFlagsDigest",
+            "codexAgent.runtimeBinaryPlan",
+            "codexAgent.repositoryRevision",
+            "ci.products.runtime_identity",
+            "--verified-contract-manifest",
+        ).forEach { contract -> assertTrue(contract in settings, contract) }
+        val observer = plugin.substringAfter("val verifyRuntimeProducerToolchain =")
+            .substringBefore("private val cAbiTargetSpecs =")
+        assertTrue("verifiedContractManifestFile" in observer)
+        assertTrue("toolchain-verification/" in observer)
+
+        val nativeBinaryStage = plugin.substringAfter(
+            "val stage = tasks.register<Sync>(\"stage\${title}RuntimeBinaryOutputs\")",
+        )
+            .substringBefore("val writeBinaryManifest =")
+        assertFalse("toolchain-verification" in nativeBinaryStage)
+        assertFalse("verifyRuntimeProducerToolchain" in nativeBinaryStage)
+    }
+
+    @Test
+    fun `native artifact-only phases reject absent predecessors before project configuration`() {
+        val boundary = "val nativePredecessorProperty =" + settings
+            .substringAfter("    val nativePredecessorProperty =")
+            .substringBefore(
+                "    if (values.getValue(\"codexAgent.target\") in nativeRuntimeTargets &&",
+            )
+        val pluginGuard = plugin.substringAfter("private val requestedRuntimePhase =")
+            .substringBefore(
+                "if (requestedRuntimeTarget in runtimeBinaryFlags && " +
+                    "(requestedRuntimePhase == null || requestedRuntimePhase == \"binary\"))",
+            )
+        listOf(
+            "\"package\" -> require(importedRuntimeBinaryStage.isPresent)",
+            "\"validation\", \"metadata\" -> require(importedRuntimePackageStage.isPresent)",
+        ).forEach { contract -> assertTrue(contract in pluginGuard, contract) }
+        assertTrue(
+            plugin.indexOf("private val requestedRuntimePhase =") <
+                plugin.indexOf("extensions.configure<KotlinMultiplatformExtension>"),
+        )
+
+        mapOf(
+            "package" to "codexAgent.runtimeBinaryStage",
+            "validation" to "codexAgent.runtimePackageStage",
+            "metadata" to "codexAgent.runtimePackageStage",
+        ).forEach { (phase, predecessor) ->
+            val root = createTempDirectory("runtime-$phase-predecessor").toFile().canonicalFile
+            try {
+                val configured = root.resolve("project-configured")
+                root.resolve("settings.gradle.kts").writeText(
+                    """
+                    val values = mapOf("codexAgent.target" to "macos-arm64")
+                    val nativeRuntimeTargets = setOf("macos-arm64")
+                    val commandLineProperties = gradle.startParameter.projectProperties
+                    val requestedPhase = commandLineProperties["codexAgent.phase"]
+                    fun absoluteNormalizedPath(name: String) = file(commandLineProperties.getValue(name)).toPath()
+                    $boundary
+                    java.io.File(${quote(configured.absolutePath)}).writeText("configured")
+                    rootProject.name = "missing-native-predecessor"
+                    """.trimIndent() + "\n",
+                )
+                val environment = System.getenv().toMutableMap().apply {
+                    remove("ORG_GRADLE_PROJECT_$predecessor")
+                }
+                val result = GradleRunner.create()
+                    .withProjectDir(root)
+                    .withEnvironment(environment)
+                    .withArguments(
+                        "help", "-PcodexAgent.phase=$phase", "--offline", "--no-configuration-cache",
+                        "--stacktrace",
+                    )
+                    .buildAndFail()
+                assertTrue(
+                    "Missing mandatory explicit -P project property: $predecessor" in result.output,
+                    result.output,
+                )
+                assertFalse(configured.exists(), "$phase configured the project without $predecessor")
+            } finally {
+                root.deleteRecursively()
+            }
+        }
+    }
+
+    private fun quote(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}

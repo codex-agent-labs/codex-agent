@@ -36,7 +36,7 @@ class RuntimeIsolationFixtureTest {
     )
 
     @Test
-    fun `standalone Runtime verifies from an authenticated artifact-only Contract boundary`() {
+    fun `standalone Runtime authenticates Contract and requires artifact-only Runtime predecessors`() {
         val workspace = createTempDirectory("runtime-isolation").toFile().canonicalFile
         try {
             val base = workspace.resolve("base")
@@ -177,7 +177,7 @@ class RuntimeIsolationFixtureTest {
             val positiveSigning = positive.resolve("inputs/signing")
             createRealContract(positiveSigning, positiveContract)
             val positiveKey = positiveSigning.resolve("key/development-ed25519.pub")
-            val testKit = workspace.resolve("test-kit")
+            val testKit = existingGradleUserHome()
             val projects = runner(
                 positive,
                 positiveContract,
@@ -274,6 +274,9 @@ class RuntimeIsolationFixtureTest {
                 positiveKey.writeBytes(publicKeyBytes)
             }
 
+            // No authenticated native Runtime package stage exists in this isolated fixture.
+            // Prove the final lifecycle refuses the selection-only empty directory without compiling;
+            // real package acceptance remains an integration proof over a finalized product stage.
             val verification = runner(
                 positive,
                 positiveContract,
@@ -300,8 +303,21 @@ class RuntimeIsolationFixtureTest {
                 "-PcodexAgent.phase=metadata",
                 "-PcodexAgent.candidateCommit=0123456789abcdef0123456789abcdef01234567",
                 "-PcodexAgent.candidateTree=89abcdef0123456789abcdef0123456789abcdef",
-            ).build()
-            assertAccepted(verification, ":verifyRuntime")
+            ).buildAndFail()
+            assertTrue(
+                "output-manifest.json" in verification.output &&
+                    "missing or unsafe" in verification.output,
+                verification.output,
+            )
+            assertTrue(
+                verification.tasks.none { task ->
+                    val name = task.path.substringAfterLast(':')
+                    task.path.startsWith(":codex-agent-runtime-desktop:") &&
+                        (name.startsWith("compile") || name.startsWith("cinterop") ||
+                            name.startsWith("link") || name == "verifyRuntimeProducerToolchain")
+                },
+                "An empty imported package reached Runtime compilation: ${verification.tasks.map { it.path }}",
+            )
             assertFalse(workspace.resolve("hostile-python-ran").exists(), "Hostile Python startup code executed")
         } finally {
             workspace.deleteRecursively()
@@ -405,8 +421,12 @@ class RuntimeIsolationFixtureTest {
             parentFile.mkdirs()
             if (!exists()) writeText("{}\n")
         }
+        // Configuration checks need only selection; the final lifecycle negative deliberately
+        // exercises rejection of this unauthenticated directory before Runtime compilation.
+        val unusedPackageStage = fixture.resolve("inputs/runtime-package-stage-unused").apply { mkdirs() }
         val arguments = mutableListOf(
             task,
+            "--offline",
             "-PcodexAgent.contractPayload=${contractPayload(contract).absolutePath}",
             "-PcodexAgent.contractMetadataReceipt=${contract.resolve("phase-receipt.json").absolutePath}",
             "-PcodexAgent.contractAttestation=${contract.resolve("attestation/codex-agent-contract-0.2.0.attestation.json").absolutePath}",
@@ -419,6 +439,7 @@ class RuntimeIsolationFixtureTest {
             "-PcodexAgent.runtimeBinaryPlan=${unusedBinaryPlan.absolutePath}",
             "-PcodexAgent.repositoryRevision=${"0".repeat(40)}",
             "-PcodexAgent.phase=metadata",
+            "-PcodexAgent.runtimePackageStage=${unusedPackageStage.absolutePath}",
             "--configuration-cache",
             "--configuration-cache-problems=fail",
             "--stacktrace",
@@ -437,6 +458,16 @@ class RuntimeIsolationFixtureTest {
             .withTestKitDir(testKit)
             .withEnvironment(environment)
             .withArguments(arguments)
+    }
+
+    private fun existingGradleUserHome(): File {
+        val configured = System.getProperty("gradle.user.home")
+            ?.takeIf(String::isNotBlank)
+            ?.let(::File)
+            ?: File(System.getProperty("user.home"), ".gradle")
+        return configured.canonicalFile.also {
+            check(it.isDirectory) { "Existing offline Gradle user home is unavailable: $it" }
+        }
     }
 
     private fun runtimeBinaryFlagsDigest(target: String): String = readRuntimeBinaryFlags(
@@ -570,37 +601,34 @@ class RuntimeIsolationFixtureTest {
     }
 
     private fun createRealContract(signing: File, contract: File) {
-        val stage = repository.resolve("build/contract-product/imported/binary/outputs")
-        if (!stage.isDirectory) {
-            val process = ProcessBuilder(
-                repository.resolve("gradlew").absolutePath,
-                "assembleContractBundle",
-                "--configuration-cache",
-                "--configuration-cache-problems=fail",
-                "--stacktrace",
-            ).directory(repository).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }
-            check(process.waitFor() == 0) { "Real Contract inputs build failed:\n$output" }
+        val stage = repository.resolve("build/product-stage/contract/contract/package/outputs")
+        check(stage.isDirectory) {
+            "Runtime isolation requires explicitly staged Contract inputs; it never starts a product build"
         }
         runPython(
             """
-            import shutil, sys, tempfile
+            import json, shutil, sys, tempfile
             from pathlib import Path
             from ci.products.contract_attestation import build_contract_attestation
-            from ci.products.contract import build_contract_bundle
+            from ci.products.contract import build_contract_bundle, capture_contract_execution_evidence
             from ci.products.signatures import generate_development_key
             from ci.tests.test_contract_attestation import VERSION, _producer, _receipt
             source, root, contract = map(lambda value: Path(value).resolve(), sys.argv[1:])
             contract.mkdir(parents=True)
             payload = contract / f"codex-agent-contract-{VERSION}.zip"
             with tempfile.TemporaryDirectory(prefix="runtime-real-contract-") as temporary:
-                staging = Path(temporary) / "staging"
+                staging = Path(temporary).resolve() / "staging"
                 shutil.copytree(source, staging)
+                if json.loads((staging / "evidence/canonical-coverage.json").read_bytes())["schema"] == 2:
+                    core = Path.cwd() / "codex-agent-core/build"
+                    capture_contract_execution_evidence(staging, core / "classes/kotlin/jvm/test", core / "test-results/jvmTest")
                 for inventory in (staging / "inventories").iterdir():
                     lines = inventory.read_bytes().splitlines(keepends=True)
                     if lines and lines[0].startswith(b"tree\t"):
                         inventory.write_bytes(b"".join(lines[1:]))
-                build_contract_bundle(staging, payload, VERSION)
+                content = Path(temporary).resolve() / "content"
+                shutil.copytree(staging, content, ignore=shutil.ignore_patterns("execution"))
+                build_contract_bundle(content, payload, VERSION)
             receipt = contract / "phase-receipt.json"
             _receipt(receipt, payload, _producer(7), "development")
             private_key, public_key, metadata = generate_development_key(root / "key")

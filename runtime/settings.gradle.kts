@@ -62,6 +62,29 @@ pluginManagement {
     }
     val nativeRuntimeTargets = runtimeTargets - setOf("jvm", "node-js", "node-wasm")
     val requestedPhase = commandLineProperties["codexAgent.phase"]
+    val nativePredecessorProperty = if (values.getValue("codexAgent.target") in nativeRuntimeTargets) {
+        when (requestedPhase) {
+            "package" -> "codexAgent.runtimeBinaryStage"
+            "validation", "metadata" -> "codexAgent.runtimePackageStage"
+            else -> null
+        }
+    } else {
+        null
+    }
+    nativePredecessorProperty?.let { name ->
+        require(System.getProperty("org.gradle.project.$name") == null &&
+            System.getenv("ORG_GRADLE_PROJECT_$name") == null) {
+            "$name must be supplied only as an explicit -P project property"
+        }
+        require(commandLineProperties[name]?.isNotBlank() == true) {
+            "Missing mandatory explicit -P project property: $name"
+        }
+        val predecessor = absoluteNormalizedPath(name)
+        require(java.nio.file.Files.isDirectory(predecessor, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
+            !java.nio.file.Files.isSymbolicLink(predecessor)) {
+            "$name must be an existing non-symbolic directory"
+        }
+    }
     if (values.getValue("codexAgent.target") in nativeRuntimeTargets &&
         (requestedPhase == null || requestedPhase == "binary")) {
         val binaryProperties = listOf(
