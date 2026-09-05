@@ -58,6 +58,7 @@ from products.runtime_evidence import (
     node_evidence_filename,
 )
 from products.restore import (
+    OBJECT_ZIP_LIMITS,
     PHASE_SHARD_KEYS,
     PHASE_SHARD_NAME,
     object_relative_path,
@@ -104,12 +105,12 @@ _KEYS_ROOT = "gradle/release/keys"
 _PROFILE_ROOT = "gradle/release/toolchains/runtime"
 _OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _CATALOG_PREFIX = "codex-agent-product-catalog-v1-"
-_CATALOG_LIMIT = 2 * 1024 * 1024 * 1024
+_CATALOG_LIMIT = 4 * 1024 * 1024 * 1024
 _CATALOG_ZIP_LIMITS = {
     "max_archive_bytes": _CATALOG_LIMIT,
     "max_central_directory_bytes": 32 * 1024 * 1024,
     "max_members": 8192,
-    "max_entry_bytes": 512 * 1024 * 1024,
+    "max_entry_bytes": OBJECT_ZIP_LIMITS["max_archive_bytes"],
     "max_total_bytes": 4 * 1024 * 1024 * 1024,
     "max_compression_ratio": 200,
 }

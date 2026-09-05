@@ -295,6 +295,26 @@ class ProductRestoreTest(unittest.TestCase):
         self.assertFalse((restored / "phase-receipt.json").exists())
         self.assertEqual("existing", self.store()["status"])
 
+    def test_real_ios_sizes_fit_but_archive_entry_and_total_limits_remain_enforced(self) -> None:
+        limits = product_restore.OBJECT_ZIP_LIMITS
+        self.assertEqual(2 * 1024**3, limits["max_archive_bytes"])
+        self.assertEqual(1024**3, limits["max_entry_bytes"])
+        self.assertEqual(2 * 1024**3, limits["max_total_bytes"])
+        self.assertLess(607_745_834, limits["max_entry_bytes"])
+        self.assertLess(1_215_911_124 + 2 * product_restore.PRODUCT_JSON_LIMIT,
+                        limits["max_archive_bytes"])
+        stored = self.store()
+        for limit in ("max_archive_bytes", "max_entry_bytes", "max_total_bytes"):
+            with self.subTest(limit=limit), mock.patch.dict(limits, {limit: 1}):
+                destination = self.root / limit
+                with self.assertRaises(CacheObjectError):
+                    restore_object(
+                        stored["path"], destination, build_key=self.receipt["buildKey"],
+                        receipt_sha256=self.receipt_sha256,
+                        object_sha256=stored["objectSha256"],
+                    )
+                self.assertFalse(destination.exists())
+
     def test_carrier_preserves_exact_object_receipt_and_transport_bytes(self) -> None:
         stored = self.store()
         instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")

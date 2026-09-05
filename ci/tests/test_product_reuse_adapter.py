@@ -90,6 +90,24 @@ def impact_plan(*, changed: list[str], full_requested: bool = False, event: str 
 
 
 class ProductReuseAdapterTest(unittest.TestCase):
+    def test_catalog_accepts_object_bound_and_rejects_oversized_member_before_extraction(self) -> None:
+        limits = product_reuse._CATALOG_ZIP_LIMITS
+        self.assertEqual(product_reuse.OBJECT_ZIP_LIMITS["max_archive_bytes"],
+                         limits["max_entry_bytes"])
+        self.assertGreater(limits["max_archive_bytes"], limits["max_entry_bytes"])
+        catalog = self.root / "bounded-catalog.zip"
+        with zipfile.ZipFile(catalog, "w") as archive:
+            archive.writestr("object.zip", b"object-bytes")
+        with mock.patch.dict(limits, {"max_entry_bytes": 1}), \
+                mock.patch.object(product_reuse, "download_artifact", return_value=catalog.read_bytes()), \
+                mock.patch.object(product_reuse, "safe_extract") as extract:
+            with self.assertRaises(ValueError):
+                product_reuse._materialize_catalog(
+                    "same-pr", {"id": 1}, "unused", self.root / "oversized",
+                    "codex-agent-labs/codex-agent", 31, None,
+                )
+            extract.assert_not_called()
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

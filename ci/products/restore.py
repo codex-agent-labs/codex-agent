@@ -52,11 +52,12 @@ PHASE_RECEIPT_NAME = "phase-receipt.json"
 STAGE_PREFIX = "stage/"
 STAGE_MANIFEST_NAME = f"{STAGE_PREFIX}{OUTPUT_MANIFEST_NAME}"
 OBJECT_ZIP_LIMITS = {
-    "max_archive_bytes": 512 * 1024 * 1024,
+    # SDK-iOS stages contain two ~608 MB native KLIBs; keep finite transport bounds.
+    "max_archive_bytes": 2 * 1024 * 1024 * 1024,
     "max_central_directory_bytes": 32 * 1024 * 1024,
     "max_members": 4096,
-    "max_entry_bytes": 256 * 1024 * 1024,
-    "max_total_bytes": 1024 * 1024 * 1024,
+    "max_entry_bytes": 1024 * 1024 * 1024,
+    "max_total_bytes": 2 * 1024 * 1024 * 1024,
     "max_compression_ratio": 200,
 }
 PRODUCT_JSON_LIMIT = 16 * 1024 * 1024
