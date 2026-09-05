@@ -920,6 +920,9 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/restore.py",
             "ci/products/reuse.py",
             "ci/products/selection.py",
+            "ci/products/sdk_inputs.py",
+            "ci/products/sdk_native.py",
+            "ci/products/sdk_package.py",
         )
         result = classify_paths(paths)
         self.assertEqual(set(PHASE_INSTANCE_IDS), identities(result))

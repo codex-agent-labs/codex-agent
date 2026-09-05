@@ -25,6 +25,7 @@ from ci.products.sdk_maven import (
     package_sdk_maven,
     verify_packaged_sdk_maven_phase,
     verify_packaged_sdk_maven_repository,
+    verify_sdk_maven_binary_predecessor,
     verify_sdk_maven_repository,
 )
 from ci.products.inventory import (
@@ -212,6 +213,22 @@ def _refresh_module_file(source: Path, component: str, artifact: str, version: s
     module.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
     _checksums(primary)
     _checksums(module)
+
+
+def _write_binary_inventory(stage: Path, component: str, version: str) -> None:
+    files = [{"path": record["relativePath"], "bytes": record["bytes"],
+              "sha256": record["sha256"].removeprefix("sha256:")}
+             for record in regular_file_inventory(stage / "outputs/maven")
+             if not record["relativePath"].endswith((".md5", ".sha1", ".sha256", ".sha512"))]
+    evidence = stage / "outputs/evidence/maven-primary-inventory.json"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    # Match the existing Gradle authority, including its noncanonical formatting.
+    evidence.write_text(json.dumps({
+        "schemaVersion": 1, "product": "sdk", "component": component,
+        "groupId": MAVEN_GROUPS[component], "sdkVersion": version,
+        "artifactIds": sorted(COMPONENT_ARTIFACTS[component]),
+        "primaryArtifactCount": len(files), "files": files,
+    }, indent=2) + "\n")
 
 
 class SdkMavenPackagingTest(unittest.TestCase):
@@ -688,35 +705,44 @@ class SdkMavenPhaseVerificationTest(unittest.TestCase):
         cls.request = cls.root / "sdk-compatibility-request.json"
         cls.request.write_bytes(canonical_json_bytes(_request(cls.chain["compatibility_args"])))
         cls.stages = {}
+        cls.binary_stages = {}
         for component in COMPONENT_CARRIERS:
             stage = cls.root / component / "stage"
             compatibility = stage / "outputs/evidence/sdk-compatibility.json"
             compatibility.parent.mkdir(parents=True)
             compatibility.write_bytes(cls.chain["compatibility"].read_bytes())
+            binary_stage = cls.root / component / "binary-stage"
+            snapshot_regular_tree(
+                _repository(cls.root / component, component, "0.2.9"), binary_stage / "outputs/maven",
+            )
+            _write_binary_inventory(binary_stage, component, "0.2.9")
             package_sdk_maven(
-                _repository(cls.root / component, component, "0.2.9"),
+                binary_stage / "outputs/maven",
                 stage / "outputs/maven", compatibility,
                 MAVEN_GROUPS[component], "0.2.9", component,
             )
             target, = phase_targets(PhaseId("sdk", component, "package"))
-            write_output_manifest(
-                stage, "sdk", component, "package", target, "0.2.9",
-                {"maven": "outputs/maven", "evidence": "outputs/evidence"},
-            )
-            fixture = phase_receipt()
-            inputs = fixture["inputs"]
-            inputs["versionIdentity"] = "0.2.9"
-            # Deliberately no planned upstream proof: this API verifies only
-            # final-stage semantics and must never produce an admission token.
-            receipt_root = cls.root / component / "receipt"
-            receipt_root.mkdir()
-            write_phase_receipt(
-                stage, receipt_root, "sdk", component, "package", target, "0.2.9",
-                compute_build_key(product="sdk", component=component, phase="package",
-                                  target=target, inputs=inputs),
-                inputs, cls.chain["context"]["producer"], "development",
-            )
-            cls.stages[component] = (stage, receipt_root / "phase-receipt.json")
+            for phase, phase_stage, destination in (
+                ("binary", binary_stage, cls.binary_stages), ("package", stage, cls.stages),
+            ):
+                write_output_manifest(
+                    phase_stage, "sdk", component, phase, target, "0.2.9",
+                    {"maven": "outputs/maven", "evidence": "outputs/evidence"},
+                )
+                fixture = phase_receipt()
+                inputs = fixture["inputs"]
+                inputs["versionIdentity"] = "0.2.9"
+                # Deliberately no planned upstream proof: these APIs verify only
+                # byte transformations/semantics and never produce admission.
+                receipt_root = cls.root / component / f"{phase}-receipt"
+                receipt_root.mkdir()
+                write_phase_receipt(
+                    phase_stage, receipt_root, "sdk", component, phase, target, "0.2.9",
+                    compute_build_key(product="sdk", component=component, phase=phase,
+                                      target=target, inputs=inputs),
+                    inputs, cls.chain["context"]["producer"], "development",
+                )
+                destination[component] = (phase_stage, receipt_root / "phase-receipt.json")
 
     def _copy(self, root: Path, component: str = "sdk-android") -> tuple[Path, Path]:
         source, original = self.stages[component]
@@ -878,6 +904,134 @@ class SdkMavenPhaseVerificationTest(unittest.TestCase):
         self.assertEqual(result["productVersion"], "0.2.9")
         self.assertEqual(encoded, receipt.read_bytes())
         self.assertEqual(request.read_bytes(), original)
+
+    def _copy_predecessor(self, root: Path) -> tuple[Path, Path, Path, Path]:
+        package, package_receipt = self._copy(root)
+        binary = root / "binary"
+        original_stage, original_receipt = self.binary_stages["sdk-android"]
+        snapshot_regular_tree(original_stage, binary)
+        binary_receipt = root / "binary-receipt.json"
+        binary_receipt.write_bytes(original_receipt.read_bytes())
+        return binary, binary_receipt, package, package_receipt
+
+    def test_exact_binary_predecessor_transformation_for_all_maven_families(self) -> None:
+        for component in COMPONENT_CARRIERS:
+            with self.subTest(component=component):
+                binary, binary_receipt = self.binary_stages[component]
+                package, package_receipt = self.stages[component]
+                originals = {
+                    "binary": regular_file_inventory(binary), "package": regular_file_inventory(package),
+                    "binary_receipt": binary_receipt.read_bytes(),
+                    "package_receipt": package_receipt.read_bytes(),
+                }
+                with patch("subprocess.run", side_effect=AssertionError("No subprocess in Maven replay")):
+                    receipt, encoded = verify_sdk_maven_binary_predecessor(
+                        binary, binary_receipt, package, package_receipt, self.chain["compatibility"],
+                    )
+                self.assertIs(type(receipt), dict)
+                self.assertEqual(encoded, originals["binary_receipt"])
+                self.assertEqual(receipt, load_canonical_json_bytes(encoded))
+                self.assertEqual(originals, {
+                    "binary": regular_file_inventory(binary), "package": regular_file_inventory(package),
+                    "binary_receipt": binary_receipt.read_bytes(),
+                    "package_receipt": package_receipt.read_bytes(),
+                })
+
+    def test_changed_raw_or_packaged_carrier_cannot_cross_pair(self) -> None:
+        for case in ("raw", "raw-rebound", "package-rebound", "raw-with-compatibility"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                binary, binary_receipt, package, package_receipt = self._copy_predecessor(Path(temporary).resolve())
+                stage = package if case == "package-rebound" else binary
+                maven = stage / "outputs/maven"
+                artifact = "codex-agent-runtime-android"
+                carrier = maven / "io/github/codex-agent-labs" / artifact / "0.2.9" / f"{artifact}-0.2.9.aar"
+                members = {"payload": b"changed raw binary"}
+                if case in {"package-rebound", "raw-with-compatibility"}:
+                    members[RESOURCE] = self.chain["compatibility"].read_bytes()
+                _zip(carrier, {"classes.jar": _zip_bytes(members)})
+                if case != "raw":
+                    _refresh_module_file(maven, "sdk-android", artifact, "0.2.9", carrier)
+                    if stage == binary:
+                        _write_binary_inventory(binary, "sdk-android", "0.2.9")
+                    self._rebind(stage, package_receipt if stage == package else binary_receipt)
+                    verify_sdk_maven_repository(maven, MAVEN_GROUPS["sdk-android"], "0.2.9", "sdk-android")
+                    if stage == package:
+                        # Valid final coordinates/resources are insufficient:
+                        # these bytes did not come from the supplied predecessor.
+                        verify_packaged_sdk_maven_repository(
+                            maven, self.chain["compatibility"], MAVEN_GROUPS["sdk-android"], "0.2.9", "sdk-android",
+                        )
+                with self.assertRaises(ValueError):
+                    verify_sdk_maven_binary_predecessor(
+                        binary, binary_receipt, package, package_receipt, self.chain["compatibility"],
+                    )
+
+    def test_binary_missing_extra_evidence_and_receipt_identity_fail(self) -> None:
+        for case in ("missing", "extra", "rebound-extra", "evidence", "wrong-kind", "version", "target",
+                     "component", "crosspaired-receipt", "noncanonical", "symlink"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                binary, binary_receipt, package, package_receipt = self._copy_predecessor(Path(temporary).resolve())
+                evidence = binary / "outputs/evidence/maven-primary-inventory.json"
+                if case == "missing":
+                    evidence.unlink()
+                elif case in {"extra", "rebound-extra"}:
+                    (binary / "outputs/maven/extra.json").write_bytes(b"{}\n")
+                    if case == "rebound-extra":
+                        self._rebind(binary, binary_receipt)
+                elif case == "evidence":
+                    value = json.loads(evidence.read_bytes())
+                    value["primaryArtifactCount"] += 1
+                    evidence.write_bytes(canonical_json_bytes(value))
+                    self._rebind(binary, binary_receipt)
+                elif case == "wrong-kind":
+                    value = load_canonical_json_bytes(binary_receipt.read_bytes())
+                    value["outputs"][0]["kind"] = "maven"
+                    binary_receipt.write_bytes(canonical_json_bytes(value))
+                    path = binary / "output-manifest.json"
+                    manifest = load_canonical_json_bytes(path.read_bytes())
+                    manifest["outputs"] = value["outputs"]
+                    path.write_bytes(canonical_json_bytes(manifest))
+                elif case in {"version", "target", "component"}:
+                    changed = {"version": {"productVersion": "0.2.10"}, "target": {"target": "common"},
+                               "component": {"component": "python"}}[case]
+                    self._rebind(binary, binary_receipt, **changed)
+                elif case == "crosspaired-receipt":
+                    binary_receipt.write_bytes(self.binary_stages["sdk-ios"][1].read_bytes())
+                elif case == "noncanonical":
+                    binary_receipt.write_text(json.dumps(json.loads(binary_receipt.read_bytes()), indent=2))
+                else:
+                    (binary / "outputs/evidence/unsafe.json").symlink_to(evidence)
+                with self.assertRaises(ValueError):
+                    verify_sdk_maven_binary_predecessor(
+                        binary, binary_receipt, package, package_receipt, self.chain["compatibility"],
+                    )
+
+    def test_predecessor_replay_preserves_originals_and_rejects_source_swaps(self) -> None:
+        for case in ("binary", "binary-receipt", "package", "package-receipt", "compatibility"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                binary, binary_receipt, package, package_receipt = self._copy_predecessor(root)
+                compatibility = root / "sdk-compatibility.json"
+                compatibility.write_bytes(self.chain["compatibility"].read_bytes())
+
+                def replay_then_mutate(source, output, declaration, *args):
+                    self.assertNotEqual(source, binary / "outputs/maven")
+                    self.assertNotEqual(output, package / "outputs/maven")
+                    self.assertNotEqual(declaration, compatibility)
+                    package_sdk_maven(source, output, declaration, *args)
+                    changed = {
+                        "binary": binary / "outputs/evidence/maven-primary-inventory.json",
+                        "binary-receipt": binary_receipt,
+                        "package": package / "outputs/evidence/sdk-compatibility.json",
+                        "package-receipt": package_receipt, "compatibility": compatibility,
+                    }[case]
+                    changed.write_bytes(changed.read_bytes() + b"\n")
+
+                with patch("ci.products.sdk_maven.package_sdk_maven", side_effect=replay_then_mutate):
+                    with self.assertRaisesRegex(ValueError, "inputs changed"):
+                        verify_sdk_maven_binary_predecessor(
+                            binary, binary_receipt, package, package_receipt, compatibility,
+                        )
 
 
 if __name__ == "__main__":

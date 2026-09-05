@@ -216,6 +216,9 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/restore.py",
     "ci/products/reuse.py",
     "ci/products/selection.py",
+    "ci/products/sdk_inputs.py",
+    "ci/products/sdk_native.py",
+    "ci/products/sdk_package.py",
 })
 _CONTROL_ONLY_PREFIXES = (
     ".github/actions/",

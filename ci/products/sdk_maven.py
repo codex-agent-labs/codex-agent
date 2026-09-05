@@ -18,6 +18,7 @@ from .inventory import (
     SEMVER,
     _open_regular_file,
     _stat_identity,
+    canonical_json_bytes,
     load_canonical_json_bytes,
     load_json_bytes,
     read_regular_file_bytes,
@@ -493,6 +494,26 @@ def verify_packaged_sdk_maven_repository(
         _verify_archive(archive, kind, resource_path, compatibility)
 
 
+def _verify_sdk_maven_stage(stage: Path, receipt: dict[str, Any], phase: str) -> None:
+    component = receipt["component"]
+    if (receipt["product"] != "sdk" or receipt["phase"] != phase or
+            component not in COMPONENT_CARRIERS or
+            receipt["target"] not in phase_targets(PhaseId("sdk", component, phase))):
+        raise ValueError(f"SDK Maven verification requires an exact Maven {phase} phase")
+    manifest = verify_output_manifest_identity(
+        stage, "sdk", component, phase, receipt["target"], receipt["productVersion"],
+    )
+    if manifest["outputs"] != receipt["outputs"]:
+        raise ValueError("SDK Maven receipt and stage output inventories differ")
+    evidence_name = "maven-primary-inventory.json" if phase == "binary" else "sdk-compatibility.json"
+    evidence = [record for record in receipt["outputs"] if record["kind"] == "evidence"]
+    if (len(evidence) != 1 or evidence[0]["relativePath"] != f"outputs/evidence/{evidence_name}" or
+            any(record["kind"] != "maven" or
+                not record["relativePath"].startswith("outputs/maven/")
+                for record in receipt["outputs"] if record not in evidence)):
+        raise ValueError(f"SDK Maven {phase} output kinds or paths are invalid")
+
+
 def verify_packaged_sdk_maven_phase(
     stage_root: Path, receipt_path: Path, compatibility_request: Path,
 ) -> tuple[dict[str, Any], bytes]:
@@ -524,22 +545,8 @@ def verify_packaged_sdk_maven_phase(
         (private / "phase-receipt.json").write_bytes(receipt_bytes)
         receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
         component = receipt["component"]
-        if (receipt["product"] != "sdk" or receipt["phase"] != "package" or
-                component not in COMPONENT_CARRIERS or
-                receipt["target"] not in phase_targets(PhaseId("sdk", component, "package"))):
-            raise ValueError("SDK Maven verification requires an exact Maven package phase")
-        manifest = verify_output_manifest_identity(
-            stage, "sdk", component, "package", receipt["target"], receipt["productVersion"],
-        )
-        if manifest["outputs"] != receipt["outputs"]:
-            raise ValueError("SDK Maven receipt and stage output inventories differ")
+        _verify_sdk_maven_stage(stage, receipt, "package")
         evidence_path = "outputs/evidence/sdk-compatibility.json"
-        evidence = [record for record in receipt["outputs"] if record["kind"] == "evidence"]
-        if (len(evidence) != 1 or evidence[0]["relativePath"] != evidence_path or
-                any(record["kind"] != "maven" or
-                    not record["relativePath"].startswith("outputs/maven/")
-                    for record in receipt["outputs"] if record not in evidence)):
-            raise ValueError("SDK Maven package output kinds or paths are invalid")
 
         private_request = private / "sdk-compatibility-request.json"
         private_request.write_bytes(request_bytes)
@@ -563,6 +570,83 @@ def verify_packaged_sdk_maven_phase(
                                         reject_symlink_parents=True) != request_bytes):
             raise ValueError("SDK Maven verification inputs changed during verification")
         return receipt, receipt_bytes
+
+
+def verify_sdk_maven_binary_predecessor(
+    binary_stage_root: Path,
+    binary_receipt_path: Path,
+    package_stage_root: Path,
+    package_receipt_path: Path,
+    compatibility_file: Path,
+) -> tuple[dict[str, Any], bytes]:
+    """Prove exact binary-to-package transformation, not execution or admission.
+
+    The caller authenticates compatibility and planned upstream inputs. Replay
+    uses only the existing Python archive/metadata transformation in private
+    storage; it never invokes a build or rewrites original evidence.
+    """
+    stages = {"binary": Path(binary_stage_root), "package": Path(package_stage_root)}
+    receipt_paths = {"binary": Path(binary_receipt_path), "package": Path(package_receipt_path)}
+    compatibility_file = Path(compatibility_file)
+    if compatibility_file.name != "sdk-compatibility.json":
+        raise ValueError("SDK compatibility input has the wrong name")
+    receipt_bytes = {
+        phase: read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        for phase, path in receipt_paths.items()
+    }
+    compatibility = read_regular_file_bytes(
+        compatibility_file, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+    )
+    original_inventories = {phase: regular_file_inventory(path) for phase, path in stages.items()}
+    with tempfile.TemporaryDirectory(prefix="sdk-maven-predecessor-verification-") as temporary:
+        private = Path(temporary).resolve()
+        receipts = {}
+        for phase, source in stages.items():
+            snapshot_regular_tree(source, private / phase)
+            if regular_file_inventory(private / phase) != original_inventories[phase]:
+                raise ValueError(f"SDK Maven {phase} stage changed during snapshot")
+            receipts[phase] = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes[phase]))
+            _verify_sdk_maven_stage(private / phase, receipts[phase], phase)
+        binary, package = receipts["binary"], receipts["package"]
+        if any(binary[field] != package[field] for field in ("component", "target", "productVersion")):
+            raise ValueError("SDK Maven binary predecessor and package identities differ")
+        component, version = binary["component"], binary["productVersion"]
+        raw_maven = private / "binary/outputs/maven"
+        verify_sdk_maven_repository(raw_maven, MAVEN_GROUPS[component], version, component)
+        # This is the existing Gradle primary-inventory authority, not a new
+        # receipt/parser. Accept its formatting while comparing exact fields.
+        primaries = [record for record in regular_file_inventory(raw_maven)
+                     if not any(record["relativePath"].endswith(suffix) for suffix in CHECKSUMS)]
+        expected_evidence = {
+            "schemaVersion": 1, "product": "sdk", "component": component,
+            "groupId": MAVEN_GROUPS[component], "sdkVersion": version,
+            "artifactIds": sorted(COMPONENT_ARTIFACTS[component]),
+            "primaryArtifactCount": len(primaries),
+            "files": [{"path": record["relativePath"], "bytes": record["bytes"],
+                       "sha256": record["sha256"].removeprefix("sha256:")} for record in primaries],
+        }
+        evidence = load_json_bytes(read_regular_file_bytes(
+            private / "binary/outputs/evidence/maven-primary-inventory.json",
+            max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+        ))
+        if canonical_json_bytes(evidence) != canonical_json_bytes(expected_evidence):
+            raise ValueError("SDK Maven binary primary inventory differs from its exact artifacts")
+        private_compatibility = private / "sdk-compatibility.json"
+        private_compatibility.write_bytes(compatibility)
+        if (private / "package/outputs/evidence/sdk-compatibility.json").read_bytes() != compatibility:
+            raise ValueError("SDK Maven package evidence differs from supplied compatibility")
+        replay = private / "replayed-maven"
+        package_sdk_maven(raw_maven, replay, private_compatibility, MAVEN_GROUPS[component], version, component)
+        if regular_file_inventory(replay) != regular_file_inventory(private / "package/outputs/maven"):
+            raise ValueError("SDK Maven package differs from its exact binary predecessor transformation")
+        if (any(regular_file_inventory(path) != original_inventories[phase] for phase, path in stages.items()) or
+                any(read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024,
+                                            reject_symlink_parents=True) != receipt_bytes[phase]
+                    for phase, path in receipt_paths.items()) or
+                read_regular_file_bytes(compatibility_file, max_bytes=16 * 1024 * 1024,
+                                        reject_symlink_parents=True) != compatibility):
+            raise ValueError("SDK Maven predecessor inputs changed during verification")
+        return binary, receipt_bytes["binary"]
 
 
 def _update_module_metadata(repository: Path, changed: dict[str, bytes]) -> None:
