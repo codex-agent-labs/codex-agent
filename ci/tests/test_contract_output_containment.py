@@ -9,6 +9,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 import ci.products.contract as contract_product
+from ci.products.inventory import git_file_inventory
+from ci.products.plan import plan_phase, NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST
+from ci.products.registry import PhaseInstanceId
+from ci.products.selection import phase_git_inventory
 from ci.products.contract import (
     _publish_prepared_directory,
     _reject_symlinked_output_parent,
@@ -60,6 +64,43 @@ class ContractOutputContainmentTest(unittest.TestCase):
             output,
             "HEAD",
         )
+
+    def test_source_mode_only_commit_preserves_content_inventory_and_original_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repository = self._repository(root)
+            source = repository / "contract/Contract.kt"
+            first = self._prepare(repository, root / "first")
+            before = {path.name: path.read_bytes() for path in (root / "first/inventories").iterdir()}
+            inputs = git_file_inventory(repository, first["commit"], ["contract/Contract.kt"])
+            _git(repository, "config", "core.fileMode", "true")
+            source.chmod(0o755)
+            _git(repository, "add", "contract/Contract.kt")
+            _git(repository, "commit", "--quiet", "-m", "mode only")
+            second = self._prepare(repository, root / "second")
+            self.assertNotEqual(first["commit"], second["commit"])
+            self.assertNotEqual(first["tree"], second["tree"])
+            self.assertEqual(inputs, git_file_inventory(repository, second["commit"], ["contract/Contract.kt"]))
+            instance = PhaseInstanceId("contract", "contract", "binary", "common")
+            keys = [plan_phase(
+                instance, inventory=phase_git_inventory(repository, identity["commit"], instance),
+                versions={name: "0.2.0" for name in
+                          ("contract", "runtime-release", "runtime-compatibility", "sdk")},
+                upstream_receipts=[], toolchain_profile_digest=NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, output_schema_version=1,
+            )["buildKey"] for identity in (first, second)]
+            self.assertEqual(*keys)
+            self.assertTrue(_git(repository, "ls-tree", "HEAD", "contract/Contract.kt").startswith("100755 "))
+            for directory in ("first", "second"):
+                self.assertEqual(before, {path.name: path.read_bytes()
+                                         for path in (root / directory / "inventories").iterdir()})
+            source.unlink()
+            source.symlink_to("../tests/ContractTest.kt")
+            _git(repository, "add", "contract/Contract.kt")
+            _git(repository, "commit", "--quiet", "-m", "symbolic source")
+            with self.assertRaises(ValueError):
+                self._prepare(repository, root / "symbolic")
+            self.assertFalse((root / "symbolic").exists())
 
     def test_rejects_symlinked_output_ancestor_without_writing_through_it(self):
         with tempfile.TemporaryDirectory() as temporary:

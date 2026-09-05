@@ -674,6 +674,12 @@ def prepare_contract_inputs(
         records = inventory(root, commit, specs)
         if not records:
             raise ValueError(f"Contract Git inventory is empty: {name}")
+        # Payload identity binds content, not source executable bits. The original
+        # modes remain recoverable from producer commit/tree; non-regular modes fail validation.
+        records = "".join(sorted(
+            line.replace("100755\tblob\t", "100644\tblob\t", 1) + "\n"
+            for line in records.splitlines()
+        ))
         contract_input_paths.update(inventory_paths(records))
         inventory_contents[name] = records.encode("utf-8")
     verify_contract_worktree_matches_revision(root, commit, pathspecs)
