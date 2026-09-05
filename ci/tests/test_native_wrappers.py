@@ -18,8 +18,10 @@ from unittest.mock import patch
 
 
 CI_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(CI_ROOT.parent))
 sys.path.insert(0, str(CI_ROOT))
 
+from ci.native_wrappers import verify_native_wrapper_sdk_packages  # noqa: E402
 from native_wrappers import (  # noqa: E402
     DART_RELEASE_EXCLUDES,
     HOSTS,
@@ -300,6 +302,89 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             write_zip_file(package, "wrong/location/sdk-compatibility.json", compatibility.decode())
             with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
                 require_embedded_sdk_compatibility(root / "packages", sdks, "0.2.0", ("csharp",))
+
+    def test_public_native_package_verifier_is_read_only_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packages = root / "packages"
+            sdks = root / "sdks"
+            version = "0.2.0"
+            compatibility = (
+                CI_ROOT.parent / "codex-agent-bindings/csharp/native/sdk-compatibility.json"
+            ).read_bytes()
+            (sdks / "sdk-compatibility.json").parent.mkdir(parents=True)
+            (sdks / "sdk-compatibility.json").write_bytes(compatibility)
+            libraries: dict[str, bytes] = {}
+            for classifier in HOSTS:
+                library = sdks / classifier / HOSTS[classifier][4]
+                library.parent.mkdir(parents=True)
+                libraries[classifier] = f"library:{classifier}".encode()
+                library.write_bytes(libraries[classifier])
+            toolchain = packages / "csharp/codex-agent-csharp-package-toolchain.tsv"
+            toolchain.parent.mkdir(parents=True)
+            toolchain.write_text("tool\tversion\nfixture\t1\n", encoding="utf-8")
+            archive = packages / f"csharp/CodexAgent.{version}.nupkg"
+
+            def write_package(
+                *,
+                package_version: str = version,
+                embedded_compatibility: bytes = compatibility,
+                duplicate_compatibility: bool = False,
+                tampered_classifier: str | None = None,
+            ) -> None:
+                with zipfile.ZipFile(archive, "w") as output:
+                    output.writestr(
+                        "CodexAgent.nuspec",
+                        f"<package><metadata><version>{package_version}</version></metadata></package>",
+                    )
+                    output.writestr(
+                        "META-INF/codex-agent/sdk-compatibility.json",
+                        embedded_compatibility,
+                    )
+                    if duplicate_compatibility:
+                        output.writestr("other/sdk-compatibility.json", embedded_compatibility)
+                    for classifier, package_classifier in PACKAGE_CLASSIFIERS.items():
+                        contents = b"tampered" if classifier == tampered_classifier else libraries[classifier]
+                        output.writestr(
+                            f"runtimes/{package_classifier}/native/{Path(HOSTS[classifier][4]).name}",
+                            contents,
+                        )
+
+            def snapshot() -> list[tuple[str, str]]:
+                return [
+                    (path.relative_to(root).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest())
+                    for path in files(root)
+                ]
+
+            write_package()
+            before = snapshot()
+            verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
+            self.assertEqual(before, snapshot())
+
+            with self.assertRaisesRegex(ValueError, "unsupported native wrapper language"):
+                verify_native_wrapper_sdk_packages(packages, sdks, version, "javascript")
+            with self.assertRaisesRegex(ValueError, "SDK product version"):
+                verify_native_wrapper_sdk_packages(packages, sdks, "invalid", "csharp")
+            with self.assertRaisesRegex(ValueError, "compatibility version mismatch"):
+                verify_native_wrapper_sdk_packages(packages, sdks, "0.2.1", "csharp")
+
+            (sdks / "sdk-compatibility.json").write_bytes(b" " + compatibility)
+            with self.assertRaisesRegex(ValueError, "canonical"):
+                verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
+            (sdks / "sdk-compatibility.json").write_bytes(compatibility)
+
+            write_package(duplicate_compatibility=True)
+            with self.assertRaisesRegex(ValueError, "exact SDK compatibility"):
+                verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
+            write_package(package_version="0.2.1")
+            with self.assertRaisesRegex(ValueError, "embeds SDK version"):
+                verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
+            write_package(tampered_classifier="linux-x64")
+            with self.assertRaisesRegex(ValueError, "native library differs"):
+                verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
+            archive.unlink()
+            with self.assertRaisesRegex(ValueError, "has no release archive"):
+                verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
 
     def test_release_archive_native_assets_match_the_staged_sdk(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -994,6 +1079,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
         consumer = ast.unparse(functions["_consume"])
         self.assertIn("normalize_python_sdist", calls["package_python"])
         self.assertIn("normalize_nupkg", calls["package_once"])
+        self.assertIn("verify_native_wrapper_sdk_packages", calls["package_once"])
         self.assertIn("-p:PathMap=", ast.unparse(functions["package_once"]))
         self.assertIn("work = Path(temporary).resolve()", ast.unparse(functions["package_once"]))
         self.assertIn("-DCODEX_AGENT_CPP_PACKAGE_ONLY=ON", ast.unparse(functions["package_once"]))

@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import tempfile
+from typing import Any
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -17,12 +18,15 @@ from .inventory import (
     SEMVER,
     _open_regular_file,
     _stat_identity,
+    load_canonical_json_bytes,
     load_json_bytes,
     read_regular_file_bytes,
     regular_file_inventory,
     require_regular_directory,
+    snapshot_regular_tree,
 )
-from .registry import PUBLISHED_COORDINATES
+from .receipt import validate_phase_receipt, verify_output_manifest_identity
+from .registry import PUBLISHED_COORDINATES, PhaseId, phase_targets
 from .sdk_archive import validate_sdk_compatibility_bytes
 
 
@@ -487,6 +491,78 @@ def verify_packaged_sdk_maven_repository(
     for artifact, (kind, resource_path) in carriers.items():
         archive = group / artifact / product_version / f"{artifact}-{product_version}.{kind}"
         _verify_archive(archive, kind, resource_path, compatibility)
+
+
+def verify_packaged_sdk_maven_phase(
+    stage_root: Path, receipt_path: Path, compatibility_request: Path,
+) -> tuple[dict[str, Any], bytes]:
+    """Verify final-stage semantics; not upstream execution or release admission.
+
+    Return the original receipt and its unchanged canonical bytes. Authenticating
+    the selected binary predecessor and planned upstream closure remains the
+    caller's responsibility; a self-consistent receipt alone cannot prove them.
+    """
+    # The compatibility producer imports Maven-independent archive authorities.
+    from .sdk_compatibility import load_sdk_compatibility_request, produce_sdk_compatibility
+
+    stage_root, receipt_path, compatibility_request = map(
+        Path, (stage_root, receipt_path, compatibility_request),
+    )
+    receipt_bytes = read_regular_file_bytes(
+        receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+    )
+    request_bytes = read_regular_file_bytes(
+        compatibility_request, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+    )
+    original_inventory = regular_file_inventory(stage_root)
+    with tempfile.TemporaryDirectory(prefix="sdk-maven-phase-verification-") as temporary:
+        private = Path(temporary).resolve()
+        stage = private / "stage"
+        snapshot_regular_tree(stage_root, stage)
+        if regular_file_inventory(stage) != original_inventory:
+            raise ValueError("SDK Maven stage changed during snapshot")
+        (private / "phase-receipt.json").write_bytes(receipt_bytes)
+        receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+        component = receipt["component"]
+        if (receipt["product"] != "sdk" or receipt["phase"] != "package" or
+                component not in COMPONENT_CARRIERS or
+                receipt["target"] not in phase_targets(PhaseId("sdk", component, "package"))):
+            raise ValueError("SDK Maven verification requires an exact Maven package phase")
+        manifest = verify_output_manifest_identity(
+            stage, "sdk", component, "package", receipt["target"], receipt["productVersion"],
+        )
+        if manifest["outputs"] != receipt["outputs"]:
+            raise ValueError("SDK Maven receipt and stage output inventories differ")
+        evidence_path = "outputs/evidence/sdk-compatibility.json"
+        evidence = [record for record in receipt["outputs"] if record["kind"] == "evidence"]
+        if (len(evidence) != 1 or evidence[0]["relativePath"] != evidence_path or
+                any(record["kind"] != "maven" or
+                    not record["relativePath"].startswith("outputs/maven/")
+                    for record in receipt["outputs"] if record not in evidence)):
+            raise ValueError("SDK Maven package output kinds or paths are invalid")
+
+        private_request = private / "sdk-compatibility-request.json"
+        private_request.write_bytes(request_bytes)
+        arguments = load_sdk_compatibility_request(
+            private_request, request_directory=compatibility_request.parent,
+        )
+        authenticated = private / "sdk-compatibility.json"
+        declaration = produce_sdk_compatibility(output=authenticated, **arguments)
+        if declaration["sdkVersion"] != receipt["productVersion"]:
+            raise ValueError("Authenticated SDK compatibility version differs from package receipt")
+        if authenticated.read_bytes() != (stage / evidence_path).read_bytes():
+            raise ValueError("SDK Maven evidence differs from authenticated compatibility")
+        verify_packaged_sdk_maven_repository(
+            stage / "outputs/maven", authenticated,
+            MAVEN_GROUPS[component], receipt["productVersion"], component,
+        )
+        if (regular_file_inventory(stage_root) != original_inventory or
+                read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024,
+                                        reject_symlink_parents=True) != receipt_bytes or
+                read_regular_file_bytes(compatibility_request, max_bytes=16 * 1024 * 1024,
+                                        reject_symlink_parents=True) != request_bytes):
+            raise ValueError("SDK Maven verification inputs changed during verification")
+        return receipt, receipt_bytes
 
 
 def _update_module_metadata(repository: Path, changed: dict[str, bytes]) -> None:

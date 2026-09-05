@@ -21,8 +21,12 @@ import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 
-from products.aggregate import validate_sdk_compatibility
-from products.inventory import load_canonical_json_bytes, require_semver
+if __package__:
+    from .products.aggregate import validate_sdk_compatibility
+    from .products.inventory import load_canonical_json_bytes, require_semver
+else:
+    from products.aggregate import validate_sdk_compatibility
+    from products.inventory import load_canonical_json_bytes, require_semver
 
 
 HOSTS = {
@@ -614,9 +618,8 @@ def package_once(
                     f"codex-agent-cpp-{sdk_version}-{classifier}",
                 )
         write_package_toolchains(output, languages)
-        require_embedded_package_versions(output, sdk_version, languages)
-        require_embedded_sdk_compatibility(output, sdks, sdk_version, languages)
-        require_embedded_native_assets(output, sdks, sdk_version, languages)
+        for language in languages:
+            verify_native_wrapper_sdk_packages(output, sdks, sdk_version, language)
 
 
 def package_all(
@@ -1025,6 +1028,22 @@ def require_embedded_native_assets(
                         not staged_license.is_file() or staged_license.is_symlink() or
                         sha256(packaged_license) != sha256(staged_license)):
                     raise ValueError(f"C++ package legal artifact differs: {classifier}/LICENSE.txt")
+
+
+def verify_native_wrapper_sdk_packages(
+    packages: Path,
+    staged_sdks: Path,
+    product_version: str,
+    language: str,
+) -> None:
+    """Verify one final package family against supplied, unauthenticated staged SDK bytes."""
+    if language not in LANGUAGES:
+        raise ValueError(f"unsupported native wrapper language: {language}")
+    version = require_semver(product_version, "SDK product version")
+    selected = (language,)
+    require_embedded_sdk_compatibility(packages, staged_sdks, version, selected)
+    require_embedded_package_versions(packages, version, selected)
+    require_embedded_native_assets(packages, staged_sdks, version, selected)
 
 
 def set_consumer_sdk_version(csharp: Path, rust: Path, dart: Path, sdk_version: str) -> None:

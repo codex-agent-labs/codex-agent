@@ -439,7 +439,9 @@ def _phase_path_mapping(
     }
 
 
-def load_sdk_compatibility_request(request_path: Path) -> dict[str, Any]:
+def load_sdk_compatibility_request(
+    request_path: Path, *, request_directory: Path | None = None,
+) -> dict[str, Any]:
     """Decode exact request/path syntax; product and trust authentication remains in the producer."""
     request_path = Path(request_path)
     raw_request = load_canonical_json_bytes(read_regular_file_bytes(
@@ -491,7 +493,7 @@ def load_sdk_compatibility_request(request_path: Path) -> dict[str, Any]:
         request["schemaVersion"], "SDK compatibility request.schemaVersion", 1,
     ) != 1:
         raise ValueError("Unsupported SDK compatibility request schemaVersion")
-    request_directory = request_path.parent
+    request_directory = request_path.parent if request_directory is None else Path(request_directory)
     return dict(
         sdk_version=require_string(
             request["sdkVersion"], "SDK compatibility request.sdkVersion",

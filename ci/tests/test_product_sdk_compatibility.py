@@ -811,6 +811,10 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
             relative_request = root / "relative-request.json"
             write_canonical_json(relative_request, relative)
             decoded = load_sdk_compatibility_request(relative_request)
+            captured = root / "private/request.json"
+            captured.parent.mkdir()
+            captured.write_bytes(relative_request.read_bytes())
+            self.assertEqual(decoded, load_sdk_compatibility_request(captured, request_directory=root))
             self.assertEqual(root / "contract/payload.zip", decoded["contract_payload"])
             self.assertEqual(root / "variants/linux-x64.zip", decoded["variant_bundles"]["linux-x64"])
             self.assertEqual(root / "receipts/binary.json", decoded["variant_phase_receipts"]["linux-x64"]["binary"])

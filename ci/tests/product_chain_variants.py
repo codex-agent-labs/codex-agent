@@ -309,13 +309,25 @@ def build_variants(root: Path, contract: dict[str, Any], context: dict[str, Any]
             proof.archive_sha256,
             test_task=imported_desktop_test_task(evidence_target),
         ))
+        references = validation_stage / "outputs/c-abi-reference"
+        reference_files = {
+            "include/codex_agent.h": C_ABI_REVIEWED_HEADER_PATH,
+            "legal/LICENSE": license_path,
+            "legal/THIRD_PARTY_NOTICES.md": notice_path,
+            f"export-policy/{C_ABI_REVIEWED_EXPORT_PATHS[spec.format].name}": C_ABI_REVIEWED_EXPORT_PATHS[spec.format],
+            **{f"consumer/{source.name}": source for source in consumer_sources},
+        }
+        for relative, source in reference_files.items():
+            destination = references / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
         package_outputs = write_output_manifest(
             package_stage, "runtime", target, "package", target, _VERSION,
             {"c-abi": "outputs/c-abi", "app-server": "outputs/app-server", "maven": "outputs/maven"},
         )["outputs"]
         validation_outputs = write_output_manifest(
             validation_stage, "runtime", target, "validation", target, _VERSION,
-            {"c-abi": "outputs/c-abi", "native": "outputs/native"},
+            {"c-abi": "outputs/c-abi", "native": "outputs/native", "c-abi-reference": "outputs/c-abi-reference"},
         )["outputs"]
 
         receipt_paths = {
