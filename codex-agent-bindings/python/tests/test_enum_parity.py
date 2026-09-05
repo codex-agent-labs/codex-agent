@@ -25,7 +25,12 @@ CLAIMS_HEADER = (
     "compilerEvidenceIds",
     "sharedScenarios",
 )
-EVIDENCE_DIRECTORY = ROOT / "build" / "cross-language-evidence"
+EVIDENCE_DIRECTORY = Path(
+    os.environ.get(
+        "CODEX_AGENT_PYTHON_EVIDENCE_DIRECTORY",
+        ROOT / "build" / "cross-language-evidence",
+    )
+).expanduser().resolve()
 
 
 def _exact_list(value: str, label: str) -> tuple[str, ...]:
