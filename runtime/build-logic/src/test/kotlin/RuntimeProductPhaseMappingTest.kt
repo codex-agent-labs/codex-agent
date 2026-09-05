@@ -13,6 +13,17 @@ class RuntimeProductPhaseMappingTest {
     private val pythonTooling = File("src/main/kotlin/RuntimeProductPythonTooling.kt").readText()
 
     @Test
+    fun `binding validation settings select Node Contract and require imported package`() {
+        val settings = File("../settings.gradle.kts").readText()
+        assertTrue("val bindingValidation = values.getValue(\"codexAgent.target\") == \"node-js-binding\" &&" in settings)
+        assertTrue("commandLineProperties[\"codexAgent.component\"] == \"node-js\" && requestedPhase == \"validation\"" in settings)
+        assertTrue("val contractComponent = if (bindingValidation) \"node-js\" else values.getValue(\"codexAgent.target\")" in settings)
+        assertTrue("\"--required-component\", contractComponent," in settings)
+        assertTrue("val nativePredecessorProperty = if (bindingValidation) {\n        \"codexAgent.runtimePackageStage\"" in settings)
+        assertTrue("component == \"node-js\" && phase == \"validation\" && target == \"node-js-binding\"" in rootBuild)
+    }
+
+    @Test
     fun `standalone lifecycle maps every exact Runtime phase and verification target`() {
         val mapping = rootBuild.substringAfter("val runtimePhaseTasks = mapOf(")
             .substringBefore("\ntasks.register(\"ciProductPhase\")")

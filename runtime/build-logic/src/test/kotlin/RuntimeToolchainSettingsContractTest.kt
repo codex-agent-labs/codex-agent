@@ -186,6 +186,7 @@ class RuntimeToolchainSettingsContractTest {
                     val nativeRuntimeTargets = setOf("macos-arm64")
                     val commandLineProperties = gradle.startParameter.projectProperties
                     val requestedPhase = commandLineProperties["codexAgent.phase"]
+                    val bindingValidation = false
                     fun absoluteNormalizedPath(name: String) = file(commandLineProperties.getValue(name)).toPath()
                     $boundary
                     java.io.File(${quote(configured.absolutePath)}).writeText("configured")

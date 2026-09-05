@@ -30,6 +30,8 @@ class ProductPhaseMappingContractTest {
             Triple("sdk", "sdk-ios", "package") to "writeSdkIosPackageOutputManifest",
             Triple("sdk", "javascript", "package") to
                 "writeJavaScriptSdkPackageOutputManifest",
+            Triple("sdk", "javascript", "validation") to
+                "writeJavaScriptSdkValidationOutputManifest",
             Triple("sdk", "python", "package") to
                 "writePythonNativeWrapperSdkPackageOutputManifest",
             Triple("sdk", "csharp", "package") to
@@ -295,7 +297,7 @@ class ProductPhaseMappingContractTest {
     }
 
     @Test
-    fun JVM_and_Node_binary_and_package_stages_declare_only_adapter_and_validation_runner() {
+    fun JVM_and_Node_stages_declare_exact_adapter_and_required_validation_runners() {
         val expected = mapOf(
             "adapter" to "outputs/adapter",
             "validation-runner" to "outputs/validation-runner",
@@ -321,7 +323,10 @@ class ProductPhaseMappingContractTest {
                 "writeNodeWasmRuntimePackageOutputManifest",
         )
         stages.forEach { (stage, task) ->
-            assertEquals(expected, outputRoots(stage), task)
+            val actualExpected = if (task.startsWith("writeNodeJs")) {
+                expected + ("binding-test-runner" to "outputs/binding-test-runner")
+            } else expected
+            assertEquals(actualExpected, outputRoots(stage), task)
             assertTrue("into(\"adapter\")" in stage, task)
             assertTrue("into(\"validation-runner\")" in stage, task)
             assertTrue("registerRuntimeOutputManifest(" in stage, task)
@@ -540,9 +545,9 @@ class ProductPhaseMappingContractTest {
         ).forEach { contract -> assertTrue(contract in runtimeManifest, contract) }
         listOf(
             "product.set(\"runtime\")",
-            "component.set(\"node-js-binding\")",
+            "component.set(\"node-js\")",
             "phase.set(\"validation\")",
-            "target.set(\"node-js\")",
+            "target.set(\"node-js-binding\")",
             "stageRoot.set(importedNpmRuntimeValidationSnapshotRoot)",
         ).forEach { contract -> assertTrue(contract in behaviorManifest, contract) }
 
@@ -747,7 +752,7 @@ class ProductPhaseMappingContractTest {
     private fun nodeValidation(): String = between(
         node,
         "val importedNodeRuntimePackageStage =",
-        "mavenPublishing {",
+        "val nodeJsBindingValidationRoot =",
     )
 
     private fun javascriptImportedHandoff(): String = between(

@@ -55,7 +55,7 @@ OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "test",
             "codex-agent-runtime-desktop/build/product-stage/runtime/"
-            "node-js-binding/validation/**/*",
+            "node-js/validation/node-js-binding/**/*",
             "runtime-binding-validation-stage-member",
         ),
     ),

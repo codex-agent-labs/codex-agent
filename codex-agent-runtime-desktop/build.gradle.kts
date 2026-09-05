@@ -117,18 +117,40 @@ val packageNodeWasmRuntimeEvidenceRunner = tasks.register<Zip>(
     }
 }
 
+val stageNodeBindingValidationRunner = tasks.register<StageNodeBindingValidationRunnerTask>(
+    "stageNodeBindingValidationRunner",
+) {
+    dependsOn("jsTestTestDevelopmentExecutableCompileSync", rootProject.tasks.named("kotlinNpmInstall"))
+    compiledProgram.set(layout.buildDirectory.dir("compileSync/js/test/testDevelopmentExecutable/kotlin"))
+    nodeModules.set(rootProject.layout.buildDirectory.dir("js/node_modules"))
+    npmLock.set(rootProject.layout.projectDirectory.file("gradle/kotlin-js-store/package-lock.json"))
+    outputDirectory.set(layout.buildDirectory.dir("node-binding-validation-runner"))
+}
+val packageNodeBindingValidationRunner = tasks.register<Zip>("packageNodeBindingValidationRunner") {
+    dependsOn(stageNodeBindingValidationRunner)
+    from(stageNodeBindingValidationRunner.flatMap { it.outputDirectory })
+    archiveFileName.set("codex-agent-node-binding-validation-runner.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("distributions"))
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+    includeEmptyDirs = false
+    entryCompression = ZipEntryCompression.STORED
+    filePermissions { unix("0644") }
+}
+
 val nodeJsRuntimeBinaryPhaseRoot = layout.buildDirectory.dir("product-stage/runtime/node-js/binary")
 val nodeJsRuntimeBinaryOutputs = nodeJsRuntimeBinaryPhaseRoot.map { it.dir("outputs") }
 val stageNodeJsRuntimeBinaryOutputs = tasks.register<Sync>("stageNodeJsRuntimeBinaryOutputs") {
     group = "distribution"
     description = "Stages the exact raw Node JS Runtime binary outputs once."
-    dependsOn("jsProductionExecutableCompileSync", packageNodeRuntimeEvidenceRunner)
+    dependsOn("jsProductionExecutableCompileSync", packageNodeRuntimeEvidenceRunner, packageNodeBindingValidationRunner)
     into(nodeJsRuntimeBinaryOutputs)
     from(layout.buildDirectory.dir("compileSync/js/main/productionExecutable/kotlin")) {
         include("*.js", "*.js.map", "*.d.ts")
         into("adapter")
     }
     from(packageNodeRuntimeEvidenceRunner.flatMap { it.archiveFile }) { into("validation-runner") }
+    from(packageNodeBindingValidationRunner.flatMap { it.archiveFile }) { into("binding-test-runner") }
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
@@ -143,6 +165,7 @@ val writeNodeJsRuntimeBinaryOutputManifest =
         mapOf(
             "adapter" to "outputs/adapter",
             "validation-runner" to "outputs/validation-runner",
+            "binding-test-runner" to "outputs/binding-test-runner",
         ),
         nodeJsRuntimeBinaryOutputs,
         nodeJsRuntimeBinaryPhaseRoot,
@@ -241,6 +264,9 @@ val stageNodeJsRuntimePackage = tasks.register<Sync>("stageNodeJsRuntimePackage"
     from(nodeJsPackageInput.map { it.dir("outputs/validation-runner") }) {
         into("validation-runner")
     }
+    from(nodeJsPackageInput.map { it.dir("outputs/binding-test-runner") }) {
+        into("binding-test-runner")
+    }
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
@@ -254,6 +280,7 @@ registerRuntimeOutputManifest(
     mapOf(
         "adapter" to "outputs/adapter",
         "validation-runner" to "outputs/validation-runner",
+        "binding-test-runner" to "outputs/binding-test-runner",
     ),
     nodeJsRuntimePackageOutputs,
     nodeJsRuntimePackagePhaseRoot,
@@ -496,28 +523,55 @@ registerNodeRuntimeValidation(
 )
 
 val nodeJsBindingValidationRoot =
-    layout.buildDirectory.dir("product-stage/runtime/node-js-binding/validation")
+    layout.buildDirectory.dir("product-stage/runtime/node-js/validation/node-js-binding")
 val nodeJsBindingValidationOutputs = nodeJsBindingValidationRoot.map { it.dir("outputs") }
+val importedNodeBindingPackageRoot = layout.buildDirectory.dir(
+    nodeCandidateTree.map { "imported-runtime-package-stages/$it/node-js-binding" },
+)
+val invalidateNodeJsBindingValidation = tasks.register<Delete>("invalidateNodeJsBindingValidation") {
+    delete(nodeJsBindingValidationRoot, importedNodeBindingPackageRoot)
+    delete(layout.buildDirectory.dir("node-binding-validation-results"))
+}
+val snapshotNodeBindingPackage = registerRuntimeStageSnapshot(
+    "snapshotNodeBindingRuntimePackage", layout.dir(importedNodeRuntimePackageStage),
+    importedNodeBindingPackageRoot, runtimeProductTooling, repositoryRootFile,
+).also { it.configure { dependsOn(invalidateNodeJsBindingValidation) } }
+val verifyNodeBindingPackage = registerRuntimeOutputVerification(
+    "verifyNodeBindingRuntimePackage", snapshotNodeBindingPackage,
+    providers.provider { "node-js" }, "package", providers.provider { "node-js" },
+    providers.gradleProperty("codexAgent.runtimePackageVersion"),
+    importedNodeBindingPackageRoot, runtimeProductTooling, repositoryRootFile,
+)
+val executeNodeBindingValidation = tasks.register<ExecuteNodeBindingValidationTask>("executeNodeBindingValidation") {
+    dependsOn(invalidateNodeJsBindingValidation)
+    val packageRoot = if (importedNodeRuntimePackageStage.isPresent) {
+        dependsOn(verifyNodeBindingPackage)
+        importedNodeBindingPackageRoot
+    } else {
+        dependsOn("writeNodeJsRuntimePackageOutputManifest")
+        nodeJsRuntimePackagePhaseRoot
+    }
+    runnerArchive.set(packageRoot.map {
+        it.file("outputs/binding-test-runner/codex-agent-node-binding-validation-runner.zip")
+    })
+    nodeExecutable.set(providers.gradleProperty("codexAgent.nodeExecutable").orElse("node"))
+    outputDirectory.set(layout.buildDirectory.dir("node-binding-validation-results"))
+}
 val stageNodeJsBindingValidation = tasks.register<Sync>("stageNodeJsBindingValidation") {
     group = "verification"
     description = "Stages the exact compiler-backed Node binding behavior evidence for SDK parity."
-    dependsOn("jsNodeTest")
+    dependsOn(executeNodeBindingValidation)
     into(nodeJsBindingValidationOutputs)
-    from(layout.buildDirectory.dir("compileSync/js/test/testDevelopmentExecutable/kotlin")) {
-        into("test-program")
-    }
-    from(layout.buildDirectory.file(
-        "test-results/jsNodeTest/TEST-jsNodeTest.CodexNodeApiTest.xml",
-    )) { into("test-report") }
+    from(executeNodeBindingValidation.flatMap { it.outputDirectory })
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
 registerRuntimeOutputManifest(
     "writeNodeJsBindingValidationOutputManifest",
     stageNodeJsBindingValidation,
-    providers.provider { "node-js-binding" },
-    "validation",
     providers.provider { "node-js" },
+    "validation",
+    providers.provider { "node-js-binding" },
     runtimeProductVersion,
     mapOf(
         "test-program" to "outputs/test-program",

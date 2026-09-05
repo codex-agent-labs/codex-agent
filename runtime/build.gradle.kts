@@ -73,6 +73,9 @@ tasks.register("ciProductPhase") {
         val component = requestedComponent.get()
         val phase = requestedPhase.get()
         val target = providers.gradleProperty("codexAgent.target").get()
+        if (component == "node-js" && phase == "validation" && target == "node-js-binding") {
+            return@provider desktopRuntime.tasks.named("writeNodeJsBindingValidationOutputManifest")
+        }
         check(target == component) { "Runtime target must match component: $component" }
         val taskName = runtimePhaseTasks[component to phase]
             ?: error("Unsupported Runtime phase: $component/$phase for target $target")

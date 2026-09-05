@@ -361,6 +361,8 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(("jvm",), "validation")
     if name in _RUNTIME_BUILD_LOGIC_NODE:
         return _runtime(("node-js", "node-wasm"), "validation")
+    if name == "NodeBindingValidationTask.kt":
+        return _runtime(("node-js",))
     if name == "LinuxArm64RuntimeEvidenceBundle.kt":
         return _runtime(("linux-arm64",), "validation")
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_VALIDATION:
@@ -577,11 +579,11 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     }
     for source_set, components in runtime_tests.items():
         if _is_prefix(path, f"codex-agent-runtime-desktop/src/{source_set}/"):
-            # JVM/native binary stages contain compiled test runners; Node
-            # binary runners contain main programs, not js/wasm test sources.
+            # JVM/native and Node JS stages contain compiled test runners.
+            # Node Wasm still stages only its main-program validation runner.
             selected = _runtime(components, "validation")
             compiled_runners = tuple(component for component in components
-                                     if component in (*NATIVE_TARGETS, "jvm"))
+                                     if component in (*NATIVE_TARGETS, "jvm", "node-js"))
             return selected | (_runtime(compiled_runners) if compiled_runners else set())
 
     runtime_sources = {

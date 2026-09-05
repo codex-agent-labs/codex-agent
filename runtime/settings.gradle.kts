@@ -57,12 +57,18 @@ pluginManagement {
     val runtimeTargets = setOf(
         "macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64", "jvm", "node-js", "node-wasm",
     )
-    require(values.getValue("codexAgent.target") in runtimeTargets) {
+    val requestedPhase = commandLineProperties["codexAgent.phase"]
+    val bindingValidation = values.getValue("codexAgent.target") == "node-js-binding" &&
+        commandLineProperties["codexAgent.product"] == "runtime" &&
+        commandLineProperties["codexAgent.component"] == "node-js" && requestedPhase == "validation"
+    val contractComponent = if (bindingValidation) "node-js" else values.getValue("codexAgent.target")
+    require(contractComponent in runtimeTargets) {
         "Unsupported standalone Desktop Runtime target: ${values.getValue("codexAgent.target")}"
     }
     val nativeRuntimeTargets = runtimeTargets - setOf("jvm", "node-js", "node-wasm")
-    val requestedPhase = commandLineProperties["codexAgent.phase"]
-    val nativePredecessorProperty = if (values.getValue("codexAgent.target") in nativeRuntimeTargets) {
+    val nativePredecessorProperty = if (bindingValidation) {
+        "codexAgent.runtimePackageStage"
+    } else if (values.getValue("codexAgent.target") in nativeRuntimeTargets) {
         when (requestedPhase) {
             "package" -> "codexAgent.runtimeBinaryStage"
             "validation", "metadata" -> "codexAgent.runtimePackageStage"
@@ -178,7 +184,7 @@ pluginManagement {
         "--required-trust-domain", expectedTrustDomain,
         "--expected-contract-version", values.getValue("codexAgent.contractVersion"),
         "--required-component", "common",
-        "--required-component", values.getValue("codexAgent.target"),
+        "--required-component", contractComponent,
         "--output-directory", verifiedContract.toString(),
         "--reuse-output-directory",
     )

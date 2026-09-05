@@ -146,7 +146,9 @@ case "$lane" in
         -PcodexAgent.runtimeBinaryStage="$runtime_binary" \
         -PcodexAgent.candidateCommit="$commit" \
         -PcodexAgent.candidateTree="$tree"
-      runtime_gradle node-js :codex-agent-runtime-desktop:writeNodeJsBindingValidationOutputManifest
+      runtime_gradle node-js :codex-agent-runtime-desktop:writeNodeJsBindingValidationOutputManifest \
+        -PcodexAgent.runtimePackageVersion="$RUNTIME_VERSION" \
+        -PcodexAgent.runtimePackageStage="$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/node-js/package"
     fi
     ;;
   node-wasm)

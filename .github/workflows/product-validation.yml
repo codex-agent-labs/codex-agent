@@ -656,11 +656,15 @@ jobs:
           }
           contract=$(one_directory build/ci/sdk-contract '*/payload/build/product-stage/contract/contract/binary')
           package=$(one_directory build/ci/sdk-runtime '*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/node-js/package')
-          validation=$(one_directory build/ci/sdk-runtime '*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/node-js-binding/validation')
+          validation=$(one_directory build/ci/sdk-runtime '*/payload/codex-agent-runtime-desktop/build/product-stage/runtime/node-js/validation/node-js-binding')
+          package_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["productVersion"])' "$package/output-manifest.json")
+          validation_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["productVersion"])' "$validation/output-manifest.json")
           product_args=(
             -PcodexAgent.contractBinaryStage="$PWD/$contract"
             -PcodexAgent.runtimePackageStage="$PWD/$package"
+            -PcodexAgent.runtimePackageVersion="$package_version"
             -PcodexAgent.runtimeBindingValidationStage="$PWD/$validation"
+            -PcodexAgent.runtimeBindingValidationVersion="$validation_version"
             -PcodexAgent.candidateTree="$VALIDATION_TREE"
           )
           ./gradlew ciProductPhase \

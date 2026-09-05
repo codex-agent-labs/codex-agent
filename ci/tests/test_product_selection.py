@@ -62,14 +62,14 @@ class ProductSelectionTest(unittest.TestCase):
     def test_runtime_compiled_runner_and_distribution_inputs_change_exact_binary_keys(self) -> None:
         from ci.tests.test_product_plan import plan
 
-        runners = {*NATIVE_TARGETS, "jvm"}
+        runners = {*NATIVE_TARGETS, "jvm", "node-js"}
         cases = {
             "codex-agent-runtime-desktop/src/jvmTest/kotlin/Runner.kt": {"jvm"},
             "codex-agent-runtime-desktop/src/nativeTest/kotlin/Runner.kt": set(NATIVE_TARGETS),
             "codex-agent-runtime-desktop/src/commonTest/kotlin/Runner.kt": runners,
-            "codex-agent-runtime-desktop/src/desktopTest/kotlin/Runner.kt": runners,
-            "codex-agent-runtime-desktop/src/jsTest/kotlin/Runner.kt": set(),
-            "codex-agent-runtime-desktop/src/webTest/kotlin/Runner.kt": set(),
+            "codex-agent-runtime-desktop/src/desktopTest/kotlin/Runner.kt": {*NATIVE_TARGETS, "jvm"},
+            "codex-agent-runtime-desktop/src/jsTest/kotlin/Runner.kt": {"node-js"},
+            "codex-agent-runtime-desktop/src/webTest/kotlin/Runner.kt": {"node-js"},
             "codex-agent-runtime-desktop/src/wasmJsTest/kotlin/Runner.kt": set(),
             "runtime/build-logic/src/main/kotlin/JvmRuntimeEvidenceExecution.kt": set(),
             "runtime/build-logic/src/main/kotlin/NodeRuntimeEvidenceExecution.kt": set(),

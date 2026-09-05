@@ -17,8 +17,10 @@ val importedNpmContractBinaryStage = providers.gradleProperty("codexAgent.contra
 val importedNpmRuntimePackageStage = providers.gradleProperty("codexAgent.runtimePackageStage").map(::file)
 val importedNpmRuntimeValidationStage =
     providers.gradleProperty("codexAgent.runtimeBindingValidationStage").map(::file)
+val importedNpmSdkPackageStage = providers.gradleProperty("codexAgent.sdkPackageStageRoot").map(::file)
 val npmCandidateTree = providers.gradleProperty("codexAgent.candidateTree")
-val npmRuntimeVersion = rootProject.extra["codexAgent.sdkDefaultRuntimeVersion"].toString()
+val npmRuntimeVersion = providers.gradleProperty("codexAgent.runtimePackageVersion")
+val npmRuntimeBindingVersion = providers.gradleProperty("codexAgent.runtimeBindingValidationVersion")
 val npmSdkCompatibility = tasks.named<GenerateNativeWrapperSdkCompatibilityTask>(
     "generateNativeWrapperSdkCompatibility",
 )
@@ -108,10 +110,10 @@ val verifyImportedNpmRuntimeValidationOutputManifest =
         "verifyImportedNpmRuntimeValidationOutputManifest",
     ) {
         product.set("runtime")
-        component.set("node-js-binding")
+        component.set("node-js")
         phase.set("validation")
-        target.set("node-js")
-        productVersion.set(npmRuntimeVersion)
+        target.set("node-js-binding")
+        productVersion.set(npmRuntimeBindingVersion)
         dependsOn(snapshotImportedNpmRuntimeValidationStage)
         stageRoot.set(importedNpmRuntimeValidationSnapshotRoot)
         producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
@@ -1644,9 +1646,61 @@ val verifyNpmPackDryRun = tasks.register<VerifyJavaScriptNpmPackInventoryTask>("
     cacheDirectory.set(npmConsumerCacheDirectory)
 }
 
+val javascriptSdkValidationPhaseRoot = layout.buildDirectory.dir("product-stage/sdk/javascript/validation")
+val importedNpmSdkSnapshotRoot = layout.buildDirectory.dir(
+    npmCandidateTree.map { "imported-sdk-product-stages/$it/javascript-package" },
+)
+val invalidateJavaScriptSdkValidationOutputs = tasks.register<Delete>("invalidateJavaScriptSdkValidationOutputs") {
+    delete(javascriptSdkValidationPhaseRoot, importedNpmSdkSnapshotRoot,
+        importedNpmContractSnapshotRoot, importedNpmRuntimeValidationSnapshotRoot,
+        npmPublicApiReport, npmPackedTestReport)
+}
+if (importedNpmSdkPackageStage.isPresent) {
+    snapshotImportedNpmContractBinaryStage.configure { dependsOn(invalidateJavaScriptSdkValidationOutputs) }
+    snapshotImportedNpmRuntimeValidationStage.configure { dependsOn(invalidateJavaScriptSdkValidationOutputs) }
+}
+val snapshotImportedJavaScriptSdkPackage = tasks.register<SnapshotImportedProductStageTask>(
+    "snapshotImportedJavaScriptSdkPackage",
+) {
+    dependsOn(invalidateJavaScriptSdkValidationOutputs)
+    sourceDirectory.set(layout.dir(importedNpmSdkPackageStage))
+    outputDirectory.set(importedNpmSdkSnapshotRoot)
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+}
+val verifyImportedJavaScriptSdkPackage = tasks.register<VerifyImportedProductOutputManifestTask>(
+    "verifyImportedJavaScriptSdkPackage",
+) {
+    dependsOn(snapshotImportedJavaScriptSdkPackage)
+    product.set("sdk")
+    component.set("javascript")
+    phase.set("package")
+    target.set("node")
+    productVersion.set(npmVersion)
+    stageRoot.set(importedNpmSdkSnapshotRoot)
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+}
+val importedNpmSdkArchive = importedNpmSdkSnapshotRoot.map {
+    it.file("outputs/package/codex-agent-$npmVersion.tgz")
+}
+val verifyImportedJavaScriptSdkCompatibility = tasks.register<VerifyNpmSdkCompatibilityArchiveTask>(
+    "verifyImportedJavaScriptSdkCompatibility",
+) {
+    dependsOn(verifyImportedJavaScriptSdkPackage)
+    archiveFile.set(importedNpmSdkArchive)
+    sdkVersion.set(npmVersion)
+    sdkCompatibility.set(importedNpmSdkSnapshotRoot.map { it.file("outputs/evidence/sdk-compatibility.json") })
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+    reportFile.set(layout.buildDirectory.file("reports/npm/imported-sdk-compatibility-archive.json"))
+}
+val npmConsumerArchive = if (importedNpmSdkPackageStage.isPresent) importedNpmSdkArchive else npmArchiveFile
+
 val preparePackedNpmConsumer = tasks.register<Sync>("preparePackedNpmConsumer") {
     group = "verification"
     description = "Prepares an isolated consumer for the packed Node SDK."
+    if (importedNpmSdkPackageStage.isPresent) dependsOn(invalidateJavaScriptSdkValidationOutputs)
     duplicatesStrategy = DuplicatesStrategy.FAIL
     from(npmConsumerSourceDirectory)
     into(npmConsumerDirectory)
@@ -1666,9 +1720,14 @@ val npmCiPackedConsumer = tasks.register<Exec>("npmCiPackedConsumer") {
 val installPackedNpmSdk = tasks.register<Exec>("installPackedNpmSdk") {
     group = "verification"
     description = "Installs the exact generated SDK tarball into the isolated npm consumer."
-    dependsOn(npmCiPackedConsumer, packageNpm, verifyNpmPackDryRun)
+    dependsOn(npmCiPackedConsumer)
+    if (importedNpmSdkPackageStage.isPresent) {
+        dependsOn(verifyImportedJavaScriptSdkCompatibility)
+    } else {
+        dependsOn(packageNpm, verifyNpmPackDryRun)
+    }
     workingDir(npmConsumerDirectory)
-    inputs.file(npmArchiveFile)
+    inputs.file(npmConsumerArchive)
     if (npmOffline) environment("npm_config_offline", "true")
     environment("npm_config_engine_strict", "true")
     environment("npm_config_cache", npmConsumerCacheDirectory.get().asFile.absolutePath)
@@ -1680,7 +1739,7 @@ val installPackedNpmSdk = tasks.register<Exec>("installPackedNpmSdk") {
         "--ignore-scripts",
         "--no-audit",
         "--no-fund",
-        npmArchiveFile.get().asFile.absolutePath,
+        npmConsumerArchive.get().asFile.absolutePath,
     )
 }
 
@@ -1689,10 +1748,10 @@ val verifyPackedNpmConsumers = tasks.register<Exec>("verifyPackedNpmConsumers") 
     description = "Type-checks and executes CJS/ESM consumers against the exact SDK tarball."
     dependsOn(installPackedNpmSdk)
     workingDir(npmConsumerDirectory)
-    inputs.file(npmArchiveFile)
+    inputs.file(npmConsumerArchive)
     inputs.files(npmConsumerSourceDirectory.asFileTree)
     outputs.files(npmPublicApiReport, npmPackedTestReport)
-    environment("CODEX_AGENT_NPM_TARBALL", npmArchiveFile.get().asFile.absolutePath)
+    environment("CODEX_AGENT_NPM_TARBALL", npmConsumerArchive.get().asFile.absolutePath)
     environment(
         "CODEX_AGENT_EXPECTED_DEFAULT_RUNTIME_VERSION",
         rootProject.extra["codexAgent.sdkDefaultRuntimeVersion"].toString(),
@@ -1736,7 +1795,8 @@ tasks.configureEach {
 rootProject.tasks.matching { it.name == "prepareContractInputs" }.configureEach {
     mustRunAfter(invalidateJavaScriptTypeScriptBindingParityOutput)
 }
-tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>("verifyJavaScriptTypeScriptBindingParity") {
+val verifyJavaScriptTypeScriptBindingParity =
+    tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>("verifyJavaScriptTypeScriptBindingParity") {
     group = "verification"
     description = "Verifies the exact packed JavaScript/TypeScript API and shared projection behavior parity."
     dependsOn(
@@ -1752,7 +1812,7 @@ tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>("verifyJavaScriptTyp
         it.file("outputs/evidence/canonical-coverage.json")
     })
     packedApiReport.set(npmPublicApiReport)
-    npmTarball.set(npmArchiveFile)
+    npmTarball.set(npmConsumerArchive)
     installedPackage.set(npmConsumerDirectory.map {
         it.dir("node_modules/$npmPackageName")
     })
@@ -1765,4 +1825,44 @@ tasks.register<VerifyJavaScriptTypeScriptBindingParityTask>("verifyJavaScriptTyp
         it.file("outputs/test-report/TEST-jsNodeTest.CodexNodeApiTest.xml")
     })
     receiptFile.set(javaScriptBindingParityReceipt)
+}
+
+val javascriptSdkValidationOutputs = javascriptSdkValidationPhaseRoot.map { it.dir("outputs") }
+val stageJavaScriptSdkValidationPhase = tasks.register<Sync>("stageJavaScriptSdkValidationPhase") {
+    group = "verification"
+    // Product validation requires the imported package even if a legacy direct
+    // parity invocation is allowed to produce its local package first.
+    dependsOn(verifyImportedJavaScriptSdkCompatibility, verifyJavaScriptTypeScriptBindingParity)
+    into(javascriptSdkValidationOutputs)
+    from(javaScriptBindingParityReceipt) { into("binding-evidence") }
+    from(npmPublicApiReport) { into("compiler-evidence") }
+    from(npmPackedTestReport) { into("test-report") }
+    from(npmConsumerSourceDirectory) { into("test-program") }
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
+tasks.register<WriteProductOutputManifestTask>("writeJavaScriptSdkValidationOutputManifest") {
+    group = "verification"
+    dependsOn(provider {
+        check(importedNpmSdkPackageStage.isPresent) {
+            "SDK JavaScript validation requires codexAgent.sdkPackageStageRoot"
+        }
+        stageJavaScriptSdkValidationPhase
+    })
+    product.set("sdk")
+    component.set("javascript")
+    phase.set("validation")
+    target.set("node")
+    productVersion.set(npmVersion)
+    outputRoots.set(mapOf(
+        "binding-evidence" to "outputs/binding-evidence",
+        "compiler-evidence" to "outputs/compiler-evidence",
+        "test-report" to "outputs/test-report",
+        "test-program" to "outputs/test-program",
+    ))
+    outputsDirectory.set(javascriptSdkValidationOutputs)
+    producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+    repositoryRoot.set(rootProject.layout.projectDirectory)
+    stageRoot.set(javascriptSdkValidationPhaseRoot)
+    manifestFile.set(javascriptSdkValidationPhaseRoot.map { it.file("output-manifest.json") })
 }
