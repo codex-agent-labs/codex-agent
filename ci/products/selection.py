@@ -364,10 +364,16 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(("node-js", "node-wasm"), "validation")
     if name == "NodeBindingValidationTask.kt":
         return _runtime(("node-js",))
+    if name == "NodeBindingValidationExecution.kt":
+        return _runtime(("node-js",), "validation", validation_targets=("node-js-binding",))
     if name == "LinuxArm64RuntimeEvidenceBundle.kt":
         return _runtime(("linux-arm64",), "validation")
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_VALIDATION:
         return _runtime(NATIVE_TARGETS, "validation")
+    if name == "DesktopRuntimeZipModes.kt":
+        return _runtime(NATIVE_TARGETS, "package") | _runtime(
+            ("node-js",), "validation", validation_targets=("node-js-binding",),
+        )
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_PACKAGE:
         return _runtime(NATIVE_TARGETS, "package")
     if name in {"GenerateDesktopDistributionSourceTask.kt", "DesktopRuntimeModel.kt"}:
@@ -851,6 +857,9 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         return selected
 
     direct: set[PhaseInstanceId] = set()
+    if path == "runtime/build-logic/src/main/kotlin/NodeBindingValidationTask.kt":
+        # Staging also owns the safe copy helper called by imported validation.
+        direct.add(PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding"))
     components = {(instance.product, instance.component) for instance in selected}
     for product, component in components:
         members = {

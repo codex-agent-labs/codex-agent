@@ -59,6 +59,32 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_node_binding_validator_key_owns_execution_and_shared_copy_without_recompiling(self) -> None:
+        from ci.tests.test_product_plan import plan
+
+        validation = PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding")
+        binary = PhaseInstanceId("runtime", "node-js", "binary", "node-js")
+        package = PhaseInstanceId("runtime", "node-js", "package", "node-js")
+        execution = "runtime/build-logic/src/main/kotlin/NodeBindingValidationExecution.kt"
+        shared = "runtime/build-logic/src/main/kotlin/NodeBindingValidationTask.kt"
+        self.assertEqual(
+            {validation, PhaseInstanceId("runtime", "node-js", "metadata", "node-js"),
+             PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")},
+            identities(classify_paths([execution])),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path in (execution, shared, "runtime/build-logic/src/main/kotlin/DesktopRuntimeZipModes.kt"):
+                source = root / path
+                source.parent.mkdir(parents=True, exist_ok=True)
+                for instance in (validation, binary, package):
+                    keys = []
+                    for content in (b"a", b"b"):
+                        source.write_bytes(content)
+                        keys.append(plan(instance, inventory=phase_file_inventory(root, [path], instance))["buildKey"])
+                    self.assertEqual(instance == validation or (path == shared and instance == binary),
+                                     keys[0] != keys[1], (path, instance))
+
     def test_runtime_compiled_runner_and_distribution_inputs_change_exact_binary_keys(self) -> None:
         from ci.tests.test_product_plan import plan
 
