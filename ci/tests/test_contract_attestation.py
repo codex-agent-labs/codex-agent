@@ -286,6 +286,17 @@ class ContractAttestationTest(unittest.TestCase):
             self.verify(attestation, signature)
 
     def test_release_and_development_use_the_same_verifier(self) -> None:
+        self._check_release_attestation()
+
+    def test_release_attestation_preserves_exact_local_payload_and_receipt(self) -> None:
+        local = {**_producer(7), "event": "local", "workflowPath": None,
+                 "runId": None, "runAttempt": None, "pullRequest": None}
+        _receipt(self.receipt, self.payload, local, "development")
+        original = (self.payload.read_bytes(), self.receipt.read_bytes())
+        self._check_release_attestation()
+        self.assertEqual(original, (self.payload.read_bytes(), self.receipt.read_bytes()))
+
+    def _check_release_attestation(self) -> None:
         release_signing = {**self.signing, "trustDomain": "release"}
         keys = self.root / "release-keys"
         keys.mkdir()

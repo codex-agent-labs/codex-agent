@@ -135,6 +135,27 @@ class ProductReceiptEmissionTest(unittest.TestCase):
     def test_rejects_mismatched_exact_identity_and_removes_stale_receipt(self) -> None:
         self.assert_failure_removes_stale(component="linux-arm64")
 
+    def test_local_provenance_is_development_only_and_does_not_change_content_keys(self) -> None:
+        local = {**self.producer(), "event": "local", "workflowPath": None,
+                 "runId": None, "runAttempt": None, "pullRequest": None}
+        first = self.emit(producer=local)
+        first_bytes = (self.receipts / "phase-receipt.json").read_bytes()
+        second = self.emit(producer={**local, "commit": "c" * 40, "tree": "d" * 40})
+        self.assertEqual(first["buildKey"], second["buildKey"])
+        self.assertEqual(first["outputs"], second["outputs"])
+        self.assertNotEqual(first_bytes, (self.receipts / "phase-receipt.json").read_bytes())
+        self.assertEqual(local, first["producer"])
+        self.assert_failure_removes_stale(producer=local, trust_domain="release")
+        for field in ("workflowPath", "runId", "runAttempt", "pullRequest"):
+            with self.subTest(field=field):
+                self.assert_failure_removes_stale(producer={**local, field: self.producer()[field]})
+        for field in ("repository", "commit", "tree"):
+            with self.subTest(field=field):
+                self.assert_failure_removes_stale(producer={**local, field: None})
+        for event in ("pull_request", "merge_group", "workflow_dispatch", "push"):
+            with self.subTest(event=event):
+                self.assert_failure_removes_stale(producer={**local, "event": event})
+
     def test_rejects_invalid_inputs_and_removes_stale_receipt(self) -> None:
         inputs = self.inputs()
         inputs["extra"] = True

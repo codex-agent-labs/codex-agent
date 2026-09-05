@@ -2927,18 +2927,18 @@ mod loader_security_tests {
         .expect("protected pathname load must reject ordinary ABA");
         assert_eq!(native.abi_version(), CODEX_AGENT_ABI_VERSION);
         let mut context = std::ptr::null_mut();
-        // SAFETY: the writable context slot follows the authenticated C API contract.
         assert_eq!(
+            // SAFETY: the writable context slot follows the authenticated C API contract.
             unsafe { (native.inner.api.context_create)(&mut context) },
             0
         );
-        // SAFETY: context was created by this authenticated library and remains live.
         assert_eq!(
+            // SAFETY: context was created by this authenticated library and remains live.
             unsafe { (native.inner.api.context_destroy)(&mut context) },
             ffi::STATUS_BUSY
         );
-        // SAFETY: the first bounded cleanup attempt retained the same live context.
         assert_eq!(
+            // SAFETY: the first bounded cleanup attempt retained the same live context.
             unsafe { (native.inner.api.context_destroy)(&mut context) },
             ffi::STATUS_OK
         );

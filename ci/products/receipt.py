@@ -38,7 +38,7 @@ from .inventory import (
 PRODUCTS = {"contract", "runtime", "sdk"}
 PHASES = {"binary", "package", "validation", "metadata"}
 TRUST_DOMAINS = {"development", "release"}
-EVENTS = {"pull_request", "merge_group", "workflow_dispatch", "push"}
+EVENTS = {"pull_request", "merge_group", "workflow_dispatch", "push", "local"}
 OUTPUT_MANIFEST_NAME = "output-manifest.json"
 PHASE_RECEIPT_NAME = "phase-receipt.json"
 OUTPUT_MANIFEST_KEYS = {
@@ -289,15 +289,21 @@ def validate_producer(value: Any, label: str = "producer") -> dict[str, Any]:
     repository = require_relative_path(producer["repository"], f"{label}.repository")
     if repository.count("/") != 1:
         raise ValueError(f"{label}.repository must be an owner/repository pair")
-    workflow = require_relative_path(producer["workflowPath"], f"{label}.workflowPath")
-    if not workflow.startswith(".github/workflows/"):
-        raise ValueError(f"{label}.workflowPath is not a workflow path")
     for field in ("commit", "tree"):
         value = require_string(producer[field], f"{label}.{field}")
         if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
             raise ValueError(f"{label}.{field} must be 40 lowercase hexadecimal characters")
     if producer["event"] not in EVENTS:
         raise ValueError(f"{label}.event is unsupported")
+    if producer["event"] == "local":
+        if any(producer[field] is not None for field in (
+            "workflowPath", "runId", "runAttempt", "pullRequest",
+        )):
+            raise ValueError(f"{label} local execution must not claim hosted workflow/run/PR identity")
+        return producer
+    workflow = require_relative_path(producer["workflowPath"], f"{label}.workflowPath")
+    if not workflow.startswith(".github/workflows/"):
+        raise ValueError(f"{label}.workflowPath is not a workflow path")
     require_integer(producer["runId"], f"{label}.runId", 1)
     require_integer(producer["runAttempt"], f"{label}.runAttempt", 1)
     if producer["event"] == "pull_request":
@@ -535,6 +541,8 @@ def validate_phase_receipt(value: Any) -> dict[str, Any]:
     validate_producer(receipt["producer"])
     if receipt["trustDomain"] not in TRUST_DOMAINS:
         raise ValueError("Phase receipt trustDomain is invalid")
+    if receipt["producer"]["event"] == "local" and receipt["trustDomain"] != "development":
+        raise ValueError("Local phase receipts require development trust")
     if receipt["result"] != "success":
         raise ValueError("Only successful product phases produce reusable receipts")
     return receipt

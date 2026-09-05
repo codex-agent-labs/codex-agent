@@ -210,6 +210,8 @@ def validate_transport(value: Any) -> dict[str, Any]:
     if consumer_kind == "ci":
         consumer = require_exact_keys(consumer, {"kind", "producer"}, "transport.consumer")
         validate_producer(consumer["producer"], "transport.consumer.producer")
+        if consumer["producer"]["event"] == "local":
+            raise ValueError("CI transport consumer requires a hosted producer")
     elif consumer_kind == "local":
         consumer = require_exact_keys(
             consumer,

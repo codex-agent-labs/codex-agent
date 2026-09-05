@@ -324,7 +324,7 @@ fn private_ffi_symbols_are_declared_by_the_c_sdk_header() {
         .filter_map(|suffix| suffix.split('"').next())
         .filter(|symbol| symbol.starts_with("codex_agent_"))
         .collect();
-    assert_eq!(symbols.len(), 48, "unexpected Rust FFI symbol inventory");
+    assert_eq!(symbols.len(), 49, "unexpected Rust FFI symbol inventory");
     for symbol in symbols {
         assert!(
             header.contains(symbol),

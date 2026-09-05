@@ -689,6 +689,26 @@ class ProductIndexTest(unittest.TestCase):
         )
         validate_product_index(index)
 
+        local = {**producer("development"), "event": "local", "workflowPath": None,
+                 "runId": None, "runAttempt": None, "pullRequest": None}
+        with self.assertRaisesRegex(ValueError, "context/producer"):
+            validate_product_index({**index, "producer": local})
+        original = values[0]
+        local_receipt = {**load_canonical_json_bytes(original.receipt_bytes), "producer": local}
+        local_source = IndexEntrySource(canonical_json_bytes(local_receipt), original.artifact_path)
+        with self.assertRaisesRegex(ValueError, "another context"):
+            build_product_index(
+                [local_source], repository=REPOSITORY, context=context("development"),
+                trust_domain="development", signing=self.development_signing,
+                producer=producer("development"), stable_history=None,
+            )
+        with self.assertRaises(ValueError):
+            build_product_index(
+                [local_source], repository=REPOSITORY, context=context("release"),
+                trust_domain="release", signing=self.release_signing,
+                producer=producer("release"), stable_history=None,
+            )
+
         invalid_context = {**context("development"), "extra": True}
         with self.assertRaises(ValueError):
             build_product_index(

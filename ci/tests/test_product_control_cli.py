@@ -277,20 +277,27 @@ class ProductControlCliTest(unittest.TestCase):
             "buildKey": receipt["buildKey"],
             "inputs": receipt["inputs"],
         })
-        producer = self.write_request("producer.json", self.producer())
-        shard = self.root / "phase-shard"
-        result = self.run_cli(
-            "restore", "store-phase",
-            "--stage-root", str(stage),
-            "--phase-plan", str(plan),
-            "--producer", str(producer),
-            "--product-version", "0.2.0",
-            "--trust-domain", "development",
-            "--destination", str(shard),
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(b"", result.stdout)
-        self.assertEqual(receipt, load_canonical_json_bytes((shard / "phase-receipt.json").read_bytes()))
+        local = {**self.producer(), "event": "local", "workflowPath": None,
+                 "runId": None, "runAttempt": None, "pullRequest": None}
+        for label, context in (("ci", self.producer()), ("local", local)):
+            with self.subTest(producer=label):
+                producer = self.write_request(f"{label}-producer.json", context)
+                shard = self.root / f"{label}-phase-shard"
+                result = self.run_cli(
+                    "restore", "store-phase",
+                    "--stage-root", str(stage),
+                    "--phase-plan", str(plan),
+                    "--producer", str(producer),
+                    "--product-version", "0.2.0",
+                    "--trust-domain", "development",
+                    "--destination", str(shard),
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(b"", result.stdout)
+                self.assertEqual(
+                    {**receipt, "producer": context},
+                    load_canonical_json_bytes((shard / "phase-receipt.json").read_bytes()),
+                )
 
     def test_corrupt_local_object_is_reported_without_mutation(self) -> None:
         stage, receipt_path, receipt = self.stage_and_receipt()

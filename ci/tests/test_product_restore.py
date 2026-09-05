@@ -226,6 +226,42 @@ class ProductRestoreTest(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 validate_transport(invalid)
 
+    def test_local_producer_shard_round_trip_never_claims_ci_or_release(self) -> None:
+        local = {**self.producer(), "event": "local", "workflowPath": None,
+                 "runId": None, "runAttempt": None, "pullRequest": None}
+        instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+        plan = {key: self.receipt[key] for key in (
+            "schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs",
+        )}
+        shard = self.root / "local-shard"
+        result = finalize_phase_object(
+            stage_root=self.stage, phase_plan=plan, producer=local,
+            product_version="0.2.0", trust_domain="development", destination=shard,
+        )
+        self.assertEqual(local, result["receipt"]["producer"])
+        self.assertEqual(self.receipt["outputs"], result["receipt"]["outputs"])
+        self.assertEqual(self.receipt["buildKey"], result["buildKey"])
+        self.assertEqual(result, verify_phase_shard(shard, instance))
+        restored = restore_object(
+            shard / result["objectPath"], self.root / "local-restored",
+            build_key=result["buildKey"], receipt_sha256=result["receiptSha256"],
+            object_sha256=result["objectSha256"],
+        )
+        self.assertEqual(result["receiptBytes"], restored["receiptBytes"])
+        self.assertEqual(result["receiptBytes"], (shard / "phase-receipt.json").read_bytes())
+        transport = self.remote_transport(consumer_kind="local")
+        transport["source"] = {"kind": "phase-shard", "descriptorSha256": DIGEST_B, "producer": local}
+        validate_transport(transport)
+        transport["consumer"] = {"kind": "ci", "producer": local}
+        with self.assertRaisesRegex(ValueError, "CI transport consumer"):
+            validate_transport(transport)
+        with self.assertRaisesRegex(ValueError, "development trust"):
+            finalize_phase_object(
+                stage_root=self.stage, phase_plan=plan, producer=local,
+                product_version="0.2.0", trust_domain="release", destination=self.root / "local-release",
+            )
+        self.assertFalse((self.root / "local-release").exists())
+
     def test_object_round_trip_is_deterministic_and_preserves_receipt_bytes(self) -> None:
         first = self.store()
         self.assertEqual("published", first["status"])
