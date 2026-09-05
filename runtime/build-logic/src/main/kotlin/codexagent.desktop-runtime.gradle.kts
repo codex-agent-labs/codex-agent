@@ -294,6 +294,7 @@ extensions.configure<KotlinMultiplatformExtension> {
     jvm()
     val desktopTargets = listOf(macosArm64(), macosX64(), linuxArm64(), linuxX64(), mingwX64())
     js {
+        outputModuleName.set("codex-agent-codex-agent-runtime-desktop")
         nodejs()
         binaries.executable()
         generateTypeScriptDefinitions()
@@ -302,6 +303,7 @@ extensions.configure<KotlinMultiplatformExtension> {
         }
     }
     wasmJs {
+        outputModuleName.set("codex-agent-codex-agent-runtime-desktop")
         nodejs()
         binaries.executable()
     }
