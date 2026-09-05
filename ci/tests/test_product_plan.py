@@ -585,11 +585,18 @@ class ProductPlanTest(unittest.TestCase):
             if (value["product"], value["component"], value["phase"], value["target"])
             == ("runtime", "linux-x64", "validation", "linux-x64")
         )
-        plan(validation, upstream_receipts=[package_receipt, runtime_receipt])
+        bootstrap_and_contract = [value for value in embedded if
+            value["product"] == "contract" or
+            (value["component"], value["phase"]) == ("macos-arm64", "validation")]
+        plan(validation, upstream_receipts=[package_receipt, runtime_receipt, *bootstrap_and_contract])
         substituted = copy.deepcopy(runtime_receipt)
         substituted["outputs"][0]["sha256"] = DIGEST_C
         with self.assertRaisesRegex(ValueError, "differs from its embedded package input"):
-            plan(validation, upstream_receipts=[package_receipt, substituted])
+            plan(validation, upstream_receipts=[package_receipt, substituted, *bootstrap_and_contract])
+        substituted_bootstrap = copy.deepcopy(bootstrap_and_contract)
+        next(value for value in substituted_bootstrap if value["product"] == "runtime")["outputs"][0]["sha256"] = DIGEST_C
+        with self.assertRaisesRegex(ValueError, "differs from its embedded package input"):
+            plan(validation, upstream_receipts=[package_receipt, runtime_receipt, *substituted_bootstrap])
 
         mixed = runtime_inputs("2.3.3")
         changed_runtime = next(

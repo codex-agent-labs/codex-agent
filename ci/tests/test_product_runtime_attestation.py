@@ -4,7 +4,10 @@ import copy
 import unittest
 
 from ci.products.inventory import canonical_json_bytes, sha256_bytes
-from ci.products.runtime_attestation import derive_runtime_component_attestation
+from ci.products.runtime_attestation import (
+    derive_runtime_component_attestation, verify_runtime_validation_inputs,
+)
+from ci.products.receipt import output_inventory_digest
 from ci.products.runtime_identity import derive_runtime_identity
 
 
@@ -100,6 +103,79 @@ def artifacts() -> list[dict]:
 
 
 class RuntimeComponentAttestationTest(unittest.TestCase):
+    def test_mac_bootstrap_contract_projection_preserves_content_only_phase_chain(self) -> None:
+        records = phases()
+        for index, record in enumerate(records):
+            record["component"] = record["target"] = "macos-arm64"
+            if index == 0:
+                record["upstreamArtifacts"][0]["componentDigests"][0]["component"] = "macos-arm64"
+            else:
+                predecessor = record["upstreamArtifacts"][0]
+                predecessor["component"] = predecessor["target"] = "macos-arm64"
+                predecessor["buildKey"] = records[index - 1]["buildKey"]
+            rekey(record)
+        source = identity()
+        del source["componentId"], source["runtimeIdentityJson"]
+        source["target"] = source["toolchainProfile"]["id"] = "macos-arm64"
+        source["binaryBuildKey"] = records[0]["buildKey"]
+        envelope = derive_runtime_identity(source)
+        # Old immutable lifecycle-only evidence remains verifiable, not upgraded.
+        derive_runtime_component_attestation(envelope, records, artifacts())
+        contract = copy.deepcopy(records[0]["upstreamArtifacts"][0])
+        contract["componentDigests"].insert(0, {"component": "common", "sha256": DIGEST_A})
+        records[2]["upstreamArtifacts"].insert(0, contract)
+        rekey(records[2])
+        first = derive_runtime_component_attestation(envelope, records, artifacts())
+        self.assertEqual(first, derive_runtime_component_attestation(envelope, records, artifacts()))
+        for field, value in (("schemaVersion", True), ("contractDigest", DIGEST_A),
+                             ("target", "linux-x64"), ("producer", {"runId": 1}),
+                             ("componentDigests", contract["componentDigests"][:1]),
+                             ("componentDigests", list(reversed(contract["componentDigests"]))),
+                             ("componentDigests", [{"component": "common", "sha256": DIGEST_A},
+                                                   {"component": "macos-arm64", "sha256": DIGEST_D}])):
+            changed = copy.deepcopy(records)
+            changed[2]["upstreamArtifacts"][0][field] = value
+            rekey(changed[2])
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                derive_runtime_component_attestation(envelope, changed, artifacts())
+
+    def test_raw_bootstrap_receipt_keeps_provenance_but_checks_exact_package(self) -> None:
+        package = {"product": "runtime", "component": "macos-arm64", "phase": "package",
+                   "target": "macos-arm64", "buildKey": DIGEST_A,
+                   "outputs": [{"kind": "c-abi", "relativePath": "outputs/sdk.zip",
+                                "bytes": 1, "sha256": DIGEST_B}]}
+        reference = {key: package[key] for key in ("product", "component", "phase", "target", "buildKey")}
+        reference["outputsDigest"] = output_inventory_digest(package["outputs"])
+        contract = {"product": "contract", "component": "contract", "phase": "metadata",
+                    "target": "common", "buildKey": DIGEST_A, "outputsDigest": DIGEST_B,
+                    "contractProjection": {
+                        "schemaVersion": 1, "receiptSha256": DIGEST_A,
+                        "bundlePath": "outputs/codex-agent-contract-0.2.0.zip",
+                        "bundleSha256": DIGEST_B, "manifestSha256": DIGEST_C,
+                        "contractVersion": "0.2.0", "contractDigest": DIGEST_B,
+                        "componentDigests": [{"component": "common", "sha256": DIGEST_A},
+                                             {"component": "macos-arm64", "sha256": DIGEST_C}]}}
+        validation = {"product": "runtime", "component": "macos-arm64", "phase": "validation",
+                      "target": "macos-arm64", "inputs": {
+                          "versionIdentity": "0.2.0", "phaseInputDigest": DIGEST_D,
+                          "upstreamArtifacts": [contract, reference], "toolchainProfileDigest": DIGEST_A,
+                          "flagsDigest": DIGEST_B, "outputSchemaVersion": 1}}
+        envelope = {"target": "macos-arm64", "contract": {"digest": DIGEST_B, "componentDigest": DIGEST_C}}
+        original = canonical_json_bytes(validation)
+        verify_runtime_validation_inputs(validation, package, envelope)
+        self.assertEqual(original, canonical_json_bytes(validation))
+        # Producer receipt changes cannot leak through the content projection.
+        contract["contractProjection"]["receiptSha256"] = DIGEST_D
+        verify_runtime_validation_inputs(validation, package, envelope)
+        for inputs in ([reference, contract], [contract, reference, reference], [contract]):
+            changed = copy.deepcopy(validation)
+            changed["inputs"]["upstreamArtifacts"] = inputs
+            with self.subTest(inputs=inputs), self.assertRaises(ValueError):
+                verify_runtime_validation_inputs(changed, package, envelope)
+        reference["outputsDigest"] = DIGEST_D
+        with self.assertRaises(ValueError):
+            verify_runtime_validation_inputs(validation, package, envelope)
+
     def test_exact_minimal_cyclonedx_and_component_provenance_are_canonical(self) -> None:
         envelope = identity()
         result = derive_runtime_component_attestation(envelope, phases(), artifacts())

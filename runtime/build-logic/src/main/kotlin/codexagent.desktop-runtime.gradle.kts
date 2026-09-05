@@ -13,6 +13,7 @@ import org.gradle.jvm.tasks.Jar
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
+import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeHostTest
 
 val repositoryRootFile = rootProject.extra["codexAgent.repositoryRoot"] as File
 val repositoryRootDirectory = layout.dir(providers.provider { repositoryRootFile })
@@ -483,6 +484,17 @@ val runtimeNativeBinaryManifestTasks = desktopManifest.distributions.associate {
         from(layout.buildDirectory.file(
             "bin/$target/debugTest/" + if (target == "mingwX64") "test.exe" else "test.kexe",
         )) { into("validation-runner") }
+        if (target == "macosArm64") {
+            from(layout.buildDirectory.file("bin/$target/releaseShared/libcodex_agent_api.h")) {
+                into("validation-runner/compiler-header")
+            }
+            from(layout.projectDirectory.dir("src/nativeMain/kotlin/io/github/codex_agent_labs/codexagent/capi")) {
+                into("validation-runner/source/nativeMain")
+            }
+            from(layout.projectDirectory.dir("src/nativeTest/kotlin/io/github/codex_agent_labs/codexagent/capi")) {
+                into("validation-runner/source/nativeTest")
+            }
+        }
         includeEmptyDirs = false
         duplicatesStrategy = DuplicatesStrategy.FAIL
     }
@@ -631,6 +643,10 @@ tasks.register("packageDesktopCAbiSdks") {
 val cAbiBootstrapEvidenceFile =
     layout.buildDirectory.file("reports/cross-language-api/c-abi/bootstrap-evidence.json")
 val cAbiBootstrapConsumerOutput = layout.buildDirectory.dir("c-abi-bootstrap/consumers")
+val importedCAbiBootstrap = importedRuntimePackageStage.isPresent &&
+    providers.gradleProperty("codexAgent.product").orNull == "runtime" &&
+    providers.gradleProperty("codexAgent.component").orNull == "macos-arm64" &&
+    providers.gradleProperty("codexAgent.phase").orNull == "validation"
 val invalidateCAbiBootstrapEvidence = tasks.register<Delete>(
     "invalidateCodexAgentCAbiBootstrapEvidence",
 ) {
@@ -647,11 +663,10 @@ val generateCAbiBootstrapEvidence =
     tasks.register<GenerateCAbiBootstrapEvidenceTask>("generateCodexAgentCAbiBootstrapEvidence") {
     group = "verification"
     description = "Emits observed macOS Arm64 evidence for the finite C ABI bootstrap slice."
-    dependsOn(
-        invalidateCAbiBootstrapEvidence,
-        "linkReleaseSharedMacosArm64",
-        "macosArm64Test",
-    )
+    dependsOn(invalidateCAbiBootstrapEvidence)
+    if (!importedCAbiBootstrap) {
+        dependsOn("linkReleaseSharedMacosArm64", "macosArm64Test")
+    }
     contractDirectory.set(verifiedContractDirectory)
     contractVersion.set(providers.gradleProperty("codexAgent.contractVersion"))
     contractComponent.set("macos-arm64")
@@ -1063,6 +1078,20 @@ desktopManifest.distributions.forEach { distribution ->
     }
     val validationPhaseRoot = layout.buildDirectory.dir("product-stage/runtime/$component/validation")
     val validationPhaseOutputs = validationPhaseRoot.map { it.dir("outputs") }
+    val originalNativePackageVersion = providers.gradleProperty("codexAgent.runtimePackageVersion")
+    if (providers.gradleProperty("codexAgent.product").orNull == "runtime" &&
+        providers.gradleProperty("codexAgent.component").orNull == component &&
+        providers.gradleProperty("codexAgent.phase").orNull == "validation") {
+        check(importedRuntimePackageStage.isPresent && originalNativePackageVersion.isPresent) {
+            "Native Runtime validation requires the original imported package stage and version"
+        }
+    }
+    val validationPackageVersion = if (importedRuntimePackageStage.isPresent) {
+        originalNativePackageVersion
+    } else runtimeProductVersion
+    val validationCompatibilityVersion = validationPackageVersion.map(::runtimeCompatibilityVersion)
+    val importedBootstrapWork = layout.buildDirectory.dir("imported-c-abi-bootstrap")
+    val importedBootstrapReports = layout.buildDirectory.dir("test-results/$IMPORTED_C_ABI_TEST_TASK")
     val importedNativeEvidenceFile = layout.buildDirectory.file(
         "reports/imported-desktop-runtime-evidence/${desktopRuntimeEvidenceFileName(distribution.target)}",
     )
@@ -1079,14 +1108,17 @@ desktopManifest.distributions.forEach { distribution ->
             importedNativeTestReport,
             cAbiPackageEvidence.flatMap { it.evidenceFile },
         )
+        if (importedRuntimePackageStage.isPresent) delete(importedPackageSnapshotRoot)
+        if (distribution.target == "macosArm64") delete(importedBootstrapWork, importedBootstrapReports)
     }
+    snapshotImportedPackage.configure { dependsOn(invalidateValidationOutputs) }
     val verifyImportedPackageManifest = registerRuntimeOutputVerification(
         "verifyImported${targetTitle}RuntimePackageOutputManifest",
         listOf(invalidateValidationOutputs, snapshotImportedPackage),
         providers.provider { component },
         "package",
         providers.provider { component },
-        runtimeProductVersion,
+        validationPackageVersion,
         importedPackageSnapshotRoot,
         runtimeProductTooling,
         repositoryRootFile,
@@ -1101,7 +1133,8 @@ desktopManifest.distributions.forEach { distribution ->
     }
     cAbiPackageEvidence.configure {
         dependsOn(invalidateValidationOutputs, packagePrerequisite)
-        packageFile.set(validationPackageRoot.zip(desktopRuntimeCompatibilityVersion) { root, version ->
+        libraryVersion.set(validationCompatibilityVersion)
+        packageFile.set(validationPackageRoot.zip(validationCompatibilityVersion) { root, version ->
             root.file("outputs/c-abi/${cAbiArchiveFileName(version, distribution.target)}")
         })
         if (importedRuntimePackageStage.isPresent) {
@@ -1124,9 +1157,9 @@ desktopManifest.distributions.forEach { distribution ->
         description = "Executes the $component native lifecycle from the exact staged Runtime package."
         dependsOn(invalidateValidationOutputs, packagePrerequisite)
         target.set(distribution.target)
-        expectedCompatibilityVersion.set(desktopRuntimeCompatibilityVersion)
+        expectedCompatibilityVersion.set(validationCompatibilityVersion)
         candidateCommit.set(providers.gradleProperty("codexAgent.candidateCommit"))
-        classifierArchive.set(validationPackageRoot.zip(desktopRuntimeCompatibilityVersion) { root, version ->
+        classifierArchive.set(validationPackageRoot.zip(validationCompatibilityVersion) { root, version ->
             root.file(
                 "outputs/app-server/codex-agent-runtime-desktop-$version-${distribution.classifier}.zip",
             )
@@ -1141,6 +1174,40 @@ desktopManifest.distributions.forEach { distribution ->
         evidenceFile.set(importedNativeEvidenceFile)
         testReport.set(importedNativeTestReport)
     }
+    val importedBootstrapTest = if (distribution.target == "macosArm64" && importedCAbiBootstrap) {
+        val prepare = tasks.register<PrepareImportedCAbiBootstrapTask>("prepareImportedCAbiBootstrap") {
+            dependsOn(invalidateValidationOutputs, packagePrerequisite)
+            packageStage.set(validationPackageRoot)
+            compatibilityVersion.set(validationCompatibilityVersion)
+            producerCommit.set(cAbiCandidateCommit)
+            producerTree.set(cAbiCandidateTree)
+            outputDirectory.set(importedBootstrapWork)
+        }
+        val nativeTest = tasks.register<KotlinNativeHostTest>(IMPORTED_C_ABI_TEST_TASK) {
+            dependsOn(prepare)
+            targetName = "macosArm64"
+            executable(prepare.flatMap { it.outputDirectory.file("test.kexe") }.map { it.asFile })
+            filter.includeTestsMatching("io.github.codex_agent_labs.codexagent.capi.*")
+            reports.junitXml.outputLocation.set(importedBootstrapReports)
+            reports.html.outputLocation.set(layout.buildDirectory.dir("reports/tests/$IMPORTED_C_ABI_TEST_TASK"))
+            reports.html.required.set(false)
+            binaryResultsDirectory.set(layout.buildDirectory.dir("test-results/$IMPORTED_C_ABI_TEST_TASK-binary"))
+            outputs.upToDateWhen { false }
+        }
+        generateCAbiBootstrapEvidence.configure {
+            dependsOn(nativeTest)
+            releaseLibrary.set(prepare.flatMap { it.outputDirectory.file("sdk/lib/libcodex_agent.dylib") })
+            generatedHeader.set(validationPackageRoot.map {
+                it.file("outputs/validation-runner/compiler-header/libcodex_agent_api.h")
+            })
+            nativeTestExecutable.set(prepare.flatMap { it.outputDirectory.file("test.kexe") })
+            nativeTestResults.set(importedBootstrapReports)
+            nativeTestTaskName.set(IMPORTED_C_ABI_TEST_TASK)
+            nativeMainSources.set(validationPackageRoot.map { it.dir("outputs/validation-runner/source/nativeMain") })
+            nativeTestSources.set(validationPackageRoot.map { it.dir("outputs/validation-runner/source/nativeTest") })
+        }
+        nativeTest
+    } else null
     val stageValidation = tasks.register<Sync>("stage${targetTitle}RuntimeValidation") {
         group = "verification"
         description = "Stages the exact $component Runtime validation evidence once."
@@ -1154,6 +1221,18 @@ desktopManifest.distributions.forEach { distribution ->
         from(cAbiConsumerSources) { into("c-abi-reference/consumer") }
         from(importedNativeEvidence.flatMap { it.evidenceFile }) { into("native") }
         from(importedNativeEvidence.flatMap { it.testReport }) { into("native") }
+        if (importedBootstrapTest != null) {
+            dependsOn(generateCAbiBootstrapEvidence)
+            from(generateCAbiBootstrapEvidence.flatMap { it.evidenceFile }) { into("c-abi-bootstrap") }
+            from(importedBootstrapReports) { into("c-abi-bootstrap/native-junit") }
+            from(cAbiBootstrapConsumerOutput) { into("c-abi-bootstrap/consumers") }
+            from(validationPackageRoot.map { it.dir("outputs/validation-runner") }) {
+                into("c-abi-bootstrap/original-runner")
+            }
+            from(layout.projectDirectory.file("src/nativeInterop/cinterop/codex_agent_c.def")) {
+                into("c-abi-bootstrap/reference")
+            }
+        }
         includeEmptyDirs = false
         duplicatesStrategy = DuplicatesStrategy.FAIL
     }
@@ -1168,7 +1247,7 @@ desktopManifest.distributions.forEach { distribution ->
             "c-abi" to "outputs/c-abi",
             "c-abi-reference" to "outputs/c-abi-reference",
             "native" to "outputs/native",
-        ),
+        ) + if (importedBootstrapTest != null) mapOf("c-abi-bootstrap" to "outputs/c-abi-bootstrap") else emptyMap(),
         validationPhaseOutputs,
         validationPhaseRoot,
         runtimeProductTooling,

@@ -368,6 +368,8 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(("node-js",), "validation", validation_targets=("node-js-binding",))
     if name == "LinuxArm64RuntimeEvidenceBundle.kt":
         return _runtime(("linux-arm64",), "validation")
+    if name == "ImportedCAbiBootstrapTasks.kt":
+        return _runtime(("macos-arm64",), "validation")
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_VALIDATION:
         return _runtime(NATIVE_TARGETS, "validation")
     if name == "DesktopRuntimeZipModes.kt":
@@ -888,6 +890,14 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
     if path == "runtime/build-logic/src/main/kotlin/NodeBindingValidationTask.kt":
         # Staging also owns the safe copy helper called by imported validation.
         direct.add(PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding"))
+    if path in {
+        "runtime/build-logic/src/main/kotlin/RuntimeCAbiClient.kt",
+        "runtime/build-logic/src/main/kotlin/CrossLanguageCAbiRuntimeProduction.kt",
+    }:
+        # Imported native validation executes these helpers even when package bytes are unchanged.
+        direct.update(PhaseInstanceId("runtime", target, "validation", target) for target in NATIVE_TARGETS)
+    if path == "runtime/build-logic/src/main/kotlin/RuntimeAdapterMetadataInputsTask.kt":
+        direct.add(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"))
     components = {(instance.product, instance.component) for instance in selected}
     for product, component in components:
         members = {

@@ -114,6 +114,30 @@ class ProductSelectionTest(unittest.TestCase):
                     self.assertEqual(instance == validation or (path == shared and instance == binary),
                                      keys[0] != keys[1], (path, instance))
 
+    def test_imported_c_abi_bootstrap_hashes_its_executed_validation_helpers(self) -> None:
+        from ci.tests.test_product_plan import plan
+
+        validation = PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")
+        helper = "runtime/build-logic/src/main/kotlin/ImportedCAbiBootstrapTasks.kt"
+        self.assertEqual({validation, PhaseInstanceId("runtime", "macos-arm64", "metadata", "macos-arm64"),
+                          PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")},
+                         identities(classify_paths([helper])))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("ImportedCAbiBootstrapTasks.kt", "RuntimeCAbiClient.kt",
+                         "RuntimeAdapterMetadataInputsTask.kt", "CrossLanguageCAbiRuntimeProduction.kt"):
+                path = f"runtime/build-logic/src/main/kotlin/{name}"
+                self.assertEqual((path,), phase_inventory_paths([path], validation))
+                source = root / path
+                source.parent.mkdir(parents=True, exist_ok=True)
+                keys = []
+                for content in (b"a", b"b"):
+                    source.write_bytes(content)
+                    keys.append(plan(validation, inventory=phase_file_inventory(root, [path], validation))["buildKey"])
+                self.assertNotEqual(*keys)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((helper,) if instance == validation else (), phase_inventory_paths([helper], instance))
+
     def test_runtime_compiled_runner_and_distribution_inputs_change_exact_binary_keys(self) -> None:
         from ci.tests.test_product_plan import plan
 

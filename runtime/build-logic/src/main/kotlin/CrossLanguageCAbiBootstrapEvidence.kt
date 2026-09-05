@@ -3560,6 +3560,8 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val nativeTestResults: DirectoryProperty
 
+    @get:Input abstract val nativeTestTaskName: org.gradle.api.provider.Property<String>
+
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val nativeMainSources: DirectoryProperty
 
@@ -3569,7 +3571,10 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
     @get:LocalState abstract val consumerOutputDirectory: DirectoryProperty
     @get:OutputFile abstract val evidenceFile: RegularFileProperty
 
-    init { outputs.upToDateWhen { false } }
+    init {
+        outputs.upToDateWhen { false }
+        nativeTestTaskName.convention("macosArm64Test")
+    }
 
     @TaskAction
     fun generate() {
@@ -3748,7 +3753,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
         val testReports = nativeTestResults.get().asFile.listFiles()
             .orEmpty().filter { it.isFile && it.extension == "xml" && ".capi." in it.name }.sorted()
         check(testReports.isNotEmpty()) { "C ABI Native JUnit reports are missing" }
-        val nativeTests = testReports.flatMap(::readCanonicalTestReport)
+        val nativeTests = canonicalCAbiNativeTests(
+            testReports.flatMap(::readCanonicalTestReport), nativeTestTaskName.get(),
+        )
         val duplicateTests = nativeTests.groupingBy(CanonicalTestResult::testId).eachCount()
             .filterValues { it != 1 }.keys.sorted()
         check(duplicateTests.isEmpty()) { "Duplicate C ABI Native test identities: $duplicateTests" }

@@ -275,6 +275,10 @@ def phase_instance_dependencies(instance: PhaseInstanceId) -> tuple[PhaseInstanc
             dependencies.append(PhaseInstanceId("runtime", "node-js", "package", "node-js"))
     elif phase.product == "sdk" and phase.component in NATIVE_BINDINGS and phase.phase == "validation":
         dependencies.append(PhaseInstanceId("runtime", instance.target, "validation", instance.target))
+        dependencies.append(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"))
+        dependencies.append(PhaseInstanceId("contract", "contract", "metadata", "common"))
+    elif phase == PhaseId("runtime", "macos-arm64", "validation"):
+        dependencies.append(PhaseInstanceId("contract", "contract", "metadata", "common"))
     elif phase == PhaseId("sdk", "javascript", "validation"):
         dependencies.append(PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding"))
 
@@ -313,6 +317,10 @@ def required_contract_components(instance: PhaseInstanceId) -> tuple[str, ...]:
         components = ("common",)
     elif phase == PhaseId("sdk", "javascript", "package"):
         components = ("node-js",)
+    elif phase == PhaseId("runtime", "macos-arm64", "validation"):
+        components = ("common", "macos-arm64")
+    elif phase.product == "sdk" and phase.component in NATIVE_BINDINGS and phase.phase == "validation":
+        components = ("common",)
     else:
         components = ()
     if any(component not in CONTRACT_COMPONENTS for component in components):

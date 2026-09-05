@@ -386,12 +386,12 @@ def plan_phase(
             raise ValueError("Embedded Runtime receipts span incompatible release lines")
     if instance.product == "sdk" and instance.component in NATIVE_BINDINGS and instance.phase == "validation":
         package_identity = PhaseInstanceId("sdk", instance.component, "package", "desktop")
-        runtime_identity = PhaseInstanceId("runtime", instance.target, "validation", instance.target)
         package_receipt = upstream_by_identity[package_identity]
-        runtime_receipt = upstream_by_identity[runtime_identity]
-        expected_runtime = _upstream_record(runtime_receipt)
-        if expected_runtime not in package_receipt["inputs"]["upstreamArtifacts"]:
-            raise ValueError("SDK validation Runtime receipt differs from its embedded package input")
+        for target in {instance.target, "macos-arm64"}:
+            runtime_identity = PhaseInstanceId("runtime", target, "validation", target)
+            expected_runtime = _upstream_record(upstream_by_identity[runtime_identity])
+            if expected_runtime not in package_receipt["inputs"]["upstreamArtifacts"]:
+                raise ValueError("SDK validation Runtime receipt differs from its embedded package input")
 
     contract_identity = PhaseInstanceId("contract", "contract", "metadata", "common")
     contract_value = _contract_projection_value(

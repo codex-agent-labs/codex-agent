@@ -148,6 +148,43 @@ def derive_desktop_validation_projection(
     }
 
 
+def _verify_bootstrap_contract_input(value: Any, identity: dict[str, Any]) -> None:
+    record = require_exact_keys(value, _CONTRACT_UPSTREAM_FIELDS, "Runtime bootstrap Contract input")
+    components = require_array(record["componentDigests"], "Runtime bootstrap Contract components")
+    for component in components:
+        require_exact_keys(component, {"component", "sha256"}, "Runtime bootstrap Contract component")
+        require_sha256(component["sha256"], "Runtime bootstrap Contract component digest")
+    if (
+        identity["target"] != "macos-arm64"
+        or require_integer(record["schemaVersion"], "Runtime bootstrap Contract schema", 1) != 1
+        or record["kind"] != "contract-components"
+        or (record["product"], record["component"], record["phase"], record["target"])
+        != ("contract", "contract", "metadata", "common")
+        or record["contractDigest"] != identity["contract"]["digest"]
+        or [component["component"] for component in components] != ["common", "macos-arm64"]
+        or components[-1]["sha256"] != identity["contract"]["componentDigest"]
+    ):
+        raise ValueError("Runtime bootstrap Contract input does not match the component identity")
+
+
+def verify_runtime_validation_inputs(
+    validation: dict[str, Any], package: dict[str, Any], identity: dict[str, Any],
+) -> None:
+    upstream = validation["inputs"]["upstreamArtifacts"]
+    # Original pre-bootstrap receipts remain immutable/verifiable. New canonical
+    # Mac validation plans require this second input in registry.py; a legacy
+    # lifecycle-only receipt cannot establish the separately required bootstrap proof.
+    if len(upstream) == 2:
+        projected = build_key_payload(
+            product=validation["product"], component=validation["component"], phase=validation["phase"],
+            target=validation["target"], inputs=validation["inputs"],
+        )["upstreamArtifacts"]
+        _verify_bootstrap_contract_input(projected[0], identity)
+        upstream = upstream[1:]
+    if upstream != [_receipt_reference(package)]:
+        raise ValueError("Runtime validation receipt does not link exactly to the package receipt")
+
+
 def _phase_evidence(values: Any, identity: dict[str, Any]) -> list[dict[str, Any]]:
     records = require_array(values, "Runtime component phase evidence")
     if len(records) != len(_PHASES):
@@ -178,6 +215,9 @@ def _phase_evidence(values: Any, identity: dict[str, Any]) -> list[dict[str, Any
         require_sha256(record[output_field], f"{label}.{output_field}")
 
         upstream = require_array(record["upstreamArtifacts"], f"{label}.upstreamArtifacts")
+        if phase == "validation" and len(upstream) == 2:
+            _verify_bootstrap_contract_input(upstream[0], identity)
+            upstream = upstream[1:]
         if len(upstream) != 1:
             raise ValueError(f"{label}.upstreamArtifacts must contain exactly one predecessor")
         if phase == "binary":
@@ -523,12 +563,9 @@ def _bound_inputs(
         or component_digests.get(target) != manifest["contract"]["componentDigest"]
     ):
         raise ValueError("Runtime binary receipt Contract projection does not match the payload")
-    for current, previous in ((package, binary), (validation, package)):
-        if current["inputs"]["upstreamArtifacts"] != [_receipt_reference(previous)]:
-            raise ValueError(
-                f"Runtime {current['phase']} receipt does not link exactly "
-                f"to the {previous['phase']} receipt"
-            )
+    if package["inputs"]["upstreamArtifacts"] != [_receipt_reference(binary)]:
+        raise ValueError("Runtime package receipt does not link exactly to the binary receipt")
+    verify_runtime_validation_inputs(validation, package, manifest)
     expected_output = {
         "kind": "runtime-variant",
         "relativePath": f"outputs/{payload_identity['fileName']}",

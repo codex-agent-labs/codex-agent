@@ -33,6 +33,7 @@ from .restore import _publish_no_replace
 from .runtime_attestation import (
     derive_desktop_validation_projection,
     derive_runtime_component_attestation,
+    verify_runtime_validation_inputs,
 )
 from .runtime_evidence import inspect_classifier, read_distribution_manifest
 from .runtime_identity import validate_runtime_identity
@@ -255,8 +256,7 @@ def produce_runtime_variant(
         raise ValueError("Runtime binary receipt toolchain does not match Runtime identity")
     if package["inputs"]["upstreamArtifacts"] != [_receipt_reference(binary)]:
         raise ValueError("Runtime package receipt does not link exactly to the binary receipt")
-    if validation["inputs"]["upstreamArtifacts"] != [_receipt_reference(package)]:
-        raise ValueError("Runtime validation receipt does not link exactly to the package receipt")
+    verify_runtime_validation_inputs(validation, package, identity)
 
     c_abi_bytes, c_abi_identity, c_abi_members = _verified_zip_input(
         Path(c_abi_archive), "Runtime C ABI archive",

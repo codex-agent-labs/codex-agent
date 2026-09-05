@@ -99,6 +99,20 @@ class ProductRegistryTest(unittest.TestCase):
                     ),
                 )
 
+    def test_native_validation_binds_original_bootstrap_and_contract_even_on_other_hosts(self) -> None:
+        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+        bootstrap = PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")
+        self.assertIn(contract, phase_instance_dependencies(bootstrap))
+        self.assertEqual(("common", "macos-arm64"), required_contract_components(bootstrap))
+        for language in ("cpp", "csharp", "dart", "python", "rust"):
+            for target in NATIVE_TARGETS:
+                instance = PhaseInstanceId("sdk", language, "validation", target)
+                self.assertEqual({
+                    PhaseInstanceId("sdk", language, "package", "desktop"), contract, bootstrap,
+                    PhaseInstanceId("runtime", target, "validation", target),
+                }, set(phase_instance_dependencies(instance)))
+                self.assertEqual(("common",), required_contract_components(instance))
+
     def test_every_sdk_distribution_package_requires_the_shared_compatibility_products(self) -> None:
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
         aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
