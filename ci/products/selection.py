@@ -168,6 +168,7 @@ _IOS_VALIDATION_BUILD_LOGIC = frozenset({
     "CandidateIosNativeEvidence.kt",
     "CrossLanguageAppleBindingEvidence.kt",
     "ImportedAppleFrameworkTasks.kt",
+    "IosImportedContractEvidenceTasks.kt",
     "IosAppleReleaseVerificationTasks.kt",
     "IosPrivacyAuditTasks.kt",
     "IosPrivacyAuditVerification.kt",

@@ -173,6 +173,8 @@ val appleDistributionTasks = registerIosAppleDistributionTasks(
     importedSimulatorFramework,
 )
 val appleCompilerMinimumIosVersion = minimumIosVersion
+val appleCompilerEvidenceFile =
+    layout.buildDirectory.file("reports/cross-language-api/apple/compiler-evidence.json")
 val appleBindingEvidenceFile =
     layout.buildDirectory.file("reports/cross-language-api/apple/binding-evidence.json")
 val swiftBindingReceiptFile =
@@ -219,7 +221,7 @@ val appleCompilerEvidence = tasks.register<AppleCompilerEvidenceTask>("generateC
     expectedXcodeVersion.set(pinnedXcodeVersion)
     expectedXcodeBuild.set(pinnedXcodeBuild)
     expectedSwiftVersion.set(pinnedSwiftVersion)
-    evidenceFile.set(layout.buildDirectory.file("reports/cross-language-api/apple/compiler-evidence.json"))
+    evidenceFile.set(appleCompilerEvidenceFile)
 }
 appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests.configure {
     dependsOn(invalidateAppleBindingEvidence)
@@ -275,6 +277,12 @@ private val verifiedDistributionTasks = registerIosVerifiedDistributionTasks(
     iosRuntimeMetrics,
 )
 verifiedDistributionTasks.importedXCFramework?.let { imported ->
+    val contractEvidence = registerIosImportedContractEvidenceTasks(
+        layout.dir(providers.gradleProperty("codexAgent.contractBinaryStage").map(::file)),
+        providers.gradleProperty("codexAgent.contractVersion"),
+        providers.gradleProperty("codexAgent.candidateTree"),
+        invalidateAppleBindingEvidence,
+    )
     tasks.named<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
         setDependsOn(listOf(imported))
         xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
@@ -284,12 +292,25 @@ verifiedDistributionTasks.importedXCFramework?.let { imported ->
             invalidateAppleBindingEvidence,
             verifyAppleToolchain,
             imported,
-            ":codex-agent-core:verifyCrossLanguageApiCoverage",
+            contractEvidence.verify,
         ))
         xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+        canonicalApiReport.set(contractEvidence.canonicalApi)
+        canonicalCoverageReceipt.set(contractEvidence.canonicalCoverage)
     }
     appleBindingEvidence.configure {
+        setDependsOn(listOf(
+            invalidateAppleBindingEvidence,
+            appleCompilerEvidence,
+            appleDistributionTasks.verifyCodexAgentSwiftAuthenticationTests,
+            contractEvidence.verify,
+        ))
         xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+        canonicalApiReport.set(contractEvidence.canonicalApi)
+        canonicalCoverageReceipt.set(contractEvidence.canonicalCoverage)
+    }
+    invalidateAppleBindingEvidence.configure {
+        delete(appleCompilerEvidenceFile)
     }
 }
 

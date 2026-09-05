@@ -250,6 +250,16 @@ class ProductSelectionTest(unittest.TestCase):
         )
         self.assertFalse(any(instance.product == "sdk" for instance in selected))
 
+    def test_imported_apple_contract_evidence_selects_only_ios_validation(self) -> None:
+        selected = identities(classify_paths([
+            "gradle/build-logic/src/main/kotlin/IosImportedContractEvidenceTasks.kt",
+        ]))
+        self.assertEqual(
+            {item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
+             item.component == "sdk-ios" and item.phase in {"validation", "metadata"}},
+            selected,
+        )
+
     def test_docs_and_ci_unit_tests_select_no_product_work(self) -> None:
         paths = ("README.md", "docs/repository-boundaries.md", "ci/tests/test_products.py")
         result = classify_paths(paths)
