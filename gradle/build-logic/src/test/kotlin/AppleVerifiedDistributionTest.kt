@@ -14,6 +14,15 @@ class AppleVerifiedDistributionTest {
         assertEquals(appleVerifiedArtifactNames("0.2.0"), inventory.artifacts.keys)
         assertEquals(appleVerifiedReportLayout.keys, inventory.reports.keys)
         assertEquals(appleVerifiedToolchainLayout.keys, inventory.toolchain.keys)
+        assertEquals(
+            setOf(
+                "reports/cross-language-api/apple/compiler-evidence.json",
+                "reports/cross-language-api/apple/binding-evidence.json",
+                "reports/cross-language-api/bindings/swift-parity.json",
+                "reports/cross-language-api/bindings/objective-c-parity.json",
+            ),
+            inventory.reports.keys.filter { it.startsWith("reports/cross-language-api/") }.toSet(),
+        )
     }
 
     @Test
@@ -66,6 +75,21 @@ class AppleVerifiedDistributionTest {
             it.writeCompatibility(contents.toByteArray())
             it.rebuildProof()
             assertFails { it.verify() }
+        }
+    }
+
+    @Test
+    fun `compiler and language parity receipts are mandatory exact reports`() {
+        listOf(
+            "reports/cross-language-api/apple/compiler-evidence.json",
+            "reports/cross-language-api/apple/binding-evidence.json",
+            "reports/cross-language-api/bindings/swift-parity.json",
+            "reports/cross-language-api/bindings/objective-c-parity.json",
+        ).forEach { path ->
+            fixture().use { changed ->
+                changed.distribution.resolve(path).appendText("tampered")
+                assertFailsWith<IllegalStateException>(path) { changed.verify() }
+            }
         }
     }
 }

@@ -9,6 +9,7 @@ import org.gradle.kotlin.dsl.register
 internal data class IosVerifiedDistributionTasks(
     val validateImported: TaskProvider<ImportAppleVerifiedDistributionTask>?,
     val importedXCFramework: TaskProvider<ImportVerifiedCodexAgentXCFrameworkTask>?,
+    val importedSdkPackageArtifacts: TaskProvider<StageImportedAppleSdkPackageArtifactsTask>?,
 )
 
 internal fun Project.registerIosVerifiedDistributionTasks(
@@ -34,6 +35,10 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         release.verifyIosPrivacyManifest.flatMap { it.policyFile },
         release.verifyIosPrivacyManifest.flatMap { it.reviewFile },
         distribution.verifyCodexAgentSwiftAuthenticationTests.flatMap { it.summaryFile },
+        layout.buildDirectory.file("reports/cross-language-api/apple/compiler-evidence.json"),
+        layout.buildDirectory.file("reports/cross-language-api/apple/binding-evidence.json"),
+        layout.buildDirectory.file("reports/cross-language-api/bindings/swift-parity.json"),
+        layout.buildDirectory.file("reports/cross-language-api/bindings/objective-c-parity.json"),
     )
     val importedPath = providers.gradleProperty(IOS_VERIFIED_DISTRIBUTION_PROPERTY)
     tasks.register<ExportAppleVerifiedDistributionTask>("exportCodexAgentIosVerifiedDistribution") {
@@ -54,7 +59,7 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         canonicalBuildDirectory.set(layout.buildDirectory)
         outputDirectory.set(layout.buildDirectory.dir("apple-verified-distribution"))
     }
-    if (!importedPath.isPresent) return IosVerifiedDistributionTasks(null, null)
+    if (!importedPath.isPresent) return IosVerifiedDistributionTasks(null, null, null)
     val validate = tasks.register<ImportAppleVerifiedDistributionTask>(
         "validateImportedCodexAgentIosVerifiedDistribution",
     ) {
@@ -104,6 +109,21 @@ internal fun Project.registerIosVerifiedDistributionTasks(
             "imported-verified-apple/consumer/CodexAgentPackage",
         ))
     }
+    val sdkPackageArtifactRoot = layout.buildDirectory.dir(
+        "imported-verified-apple/sdk-package-artifact-task",
+    )
+    val sdkPackageArtifacts = tasks.register<StageImportedAppleSdkPackageArtifactsTask>(
+        "stageImportedCodexAgentIosSdkPackageArtifacts",
+    ) {
+        dependsOn(validate)
+        evidenceDirectory.set(layout.dir(importedPath.map(rootProject::file)))
+        verificationReceipt.set(validate.flatMap { it.verificationReceipt })
+        distribution.sdkCompatibilityFile?.let { sdkCompatibility.set(it) }
+        version.set(project.version.toString())
+        ownedBuildDirectory.set(sdkPackageArtifactRoot)
+        workDirectory.set(sdkPackageArtifactRoot.map { it.dir("work") })
+        outputDirectory.set(sdkPackageArtifactRoot.map { it.dir("outputs") })
+    }
     tasks.named<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
         // The original package is imported; checkout Sources/Tests must never reconstruct it.
         onlyIf { false }
@@ -129,5 +149,5 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         dependsOn(stageConsumer)
         workingDir(consumerDirectory)
     }
-    return IosVerifiedDistributionTasks(validate, xcframework)
+    return IosVerifiedDistributionTasks(validate, xcframework, sdkPackageArtifacts)
 }

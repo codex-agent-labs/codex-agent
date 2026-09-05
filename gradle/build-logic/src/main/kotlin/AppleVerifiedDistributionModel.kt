@@ -12,6 +12,14 @@ internal const val IOS_VERIFIED_DISTRIBUTION_PROOF = "verified-distribution-proo
 internal const val IOS_VERIFIED_DISTRIBUTION_PROPERTY = "codexAgent.iosVerifiedDistributionDirectory"
 
 internal val appleVerifiedReportLayout = linkedMapOf(
+    "reports/cross-language-api/apple/compiler-evidence.json" to
+        "reports/cross-language-api/apple/compiler-evidence.json",
+    "reports/cross-language-api/apple/binding-evidence.json" to
+        "reports/cross-language-api/apple/binding-evidence.json",
+    "reports/cross-language-api/bindings/swift-parity.json" to
+        "reports/cross-language-api/bindings/swift-parity.json",
+    "reports/cross-language-api/bindings/objective-c-parity.json" to
+        "reports/cross-language-api/bindings/objective-c-parity.json",
     "reports/ios-release/artifact-metrics.json" to "reports/ios-release/artifact-metrics.json",
     "reports/ios-release/deployment-targets.txt" to "reports/ios-release/deployment-targets.txt",
     "reports/ios-release/license-packaging.txt" to "reports/ios-release/license-packaging.txt",

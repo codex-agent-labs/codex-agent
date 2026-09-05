@@ -1,7 +1,9 @@
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import javax.inject.Inject
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.gradle.api.DefaultTask
@@ -9,11 +11,13 @@ import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
+import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.LocalState
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
@@ -139,6 +143,163 @@ abstract class ImportAppleVerifiedDistributionTask @Inject constructor(
             put("sourceProofSha256", JsonPrimitive(inventory.proof.releaseDigest()))
             put("nativeEvidenceReceiptSha256", JsonPrimitive(identity.nativeEvidenceReceiptSha256))
         })
+    }
+}
+
+@CacheableTask
+abstract class StageImportedAppleSdkPackageArtifactsTask : DefaultTask() {
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.NONE)
+    abstract val evidenceDirectory: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val verificationReceipt: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sdkCompatibility: RegularFileProperty
+    @get:Input abstract val version: Property<String>
+    @get:Internal abstract val ownedBuildDirectory: DirectoryProperty
+    @get:LocalState abstract val workDirectory: DirectoryProperty
+    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+
+    @TaskAction
+    fun stage() = stageImportedAppleSdkPackageArtifacts(
+        evidenceDirectory.get().asFile,
+        verificationReceipt.get().asFile,
+        sdkCompatibility.get().asFile,
+        version.get(),
+        ownedBuildDirectory.get().asFile,
+        workDirectory.get().asFile,
+        outputDirectory.get().asFile,
+    )
+}
+
+internal fun stageImportedAppleSdkPackageArtifacts(
+    evidenceDirectory: File,
+    verificationReceipt: File,
+    sdkCompatibility: File,
+    version: String,
+    ownedBuildDirectory: File,
+    temporaryDirectory: File,
+    outputDirectory: File,
+) {
+    listOf(evidenceDirectory, verificationReceipt, sdkCompatibility).forEach {
+        requireApplePackagePathWithoutSymlinks(it, "input")
+    }
+    listOf(ownedBuildDirectory, temporaryDirectory, outputDirectory).forEach {
+        requireApplePackagePathWithoutSymlinks(it, "owned")
+    }
+    val evidence = evidenceDirectory.canonicalFile
+    val receipt = verificationReceipt.canonicalFile
+    val compatibility = sdkCompatibility.canonicalFile
+    val ownedRoot = ownedBuildDirectory.canonicalFile
+    val temporary = temporaryDirectory.canonicalFile
+    val output = outputDirectory.canonicalFile
+    check(evidence.isDirectory && !Files.isSymbolicLink(evidence.toPath())) {
+        "Imported Apple distribution evidence is missing or unsafe"
+    }
+    listOf(receipt, compatibility).forEach { input ->
+        check(input.isFile && !Files.isSymbolicLink(input.toPath())) {
+            "Imported Apple SDK input is missing or unsafe: ${input.name}"
+        }
+    }
+    check(!ownedRoot.exists() || ownedRoot.isDirectory) {
+        "Imported Apple SDK owned build path is not a directory: $ownedRoot"
+    }
+    listOf(temporary, output).forEach { owned ->
+        check(owned.toPath() != ownedRoot.toPath() &&
+            owned.toPath().startsWith(ownedRoot.toPath())) {
+            "Imported Apple SDK output is outside its owned build directory: $owned"
+        }
+        check(!Files.exists(owned.toPath(), LinkOption.NOFOLLOW_LINKS) ||
+            !Files.isSymbolicLink(owned.toPath())) {
+            "Imported Apple SDK output is a symbolic link: $owned"
+        }
+        listOf(evidence, receipt, compatibility).forEach { input ->
+            check(!owned.toPath().startsWith(input.toPath()) && !input.toPath().startsWith(owned.toPath())) {
+                "Imported Apple SDK output overlaps an input: $owned"
+            }
+        }
+    }
+    check(!temporary.toPath().startsWith(output.toPath()) && !output.toPath().startsWith(temporary.toPath())) {
+        "Imported Apple SDK temporary and output directories overlap"
+    }
+
+    // Resolve and validate every source before invalidating either owned destination.
+    val sourceFiles = verifiedRegularFiles(evidence)
+    val receiptBytes = receipt.readBytes()
+    val compatibilityBytes = compatibility.readBytes()
+    ownedRoot.mkdirs()
+    deleteReleaseTree(temporary)
+    val capturedEvidence = temporary.resolve("evidence").apply { mkdirs() }
+    val capturedReceipt = temporary.resolve("verification-receipt.json")
+    capturedReceipt.writeBytes(receiptBytes)
+    val capturedCompatibility = temporary.resolve("sdk-compatibility.json")
+    capturedCompatibility.writeBytes(compatibilityBytes)
+    val names = listOf(
+        "CodexAgentPackage-$version.zip",
+        "CodexAgent-$version.xcframework.zip",
+        "CodexAgent-$version.xcframework.zip.sha256",
+    )
+    val sourceProof = sourceFiles[IOS_VERIFIED_DISTRIBUTION_PROOF]
+        ?: error("Verified Apple distribution proof is missing")
+    val capturedProof = capturedEvidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF)
+    Files.copy(sourceProof.toPath(), capturedProof.toPath(), REPLACE_EXISTING)
+    val artifactValues = capturedProof.readReleaseObject().releaseArray("artifacts")
+    val artifactRecords = artifactValues.map { value ->
+        value as? JsonObject ?: error("Verified Apple artifact record is invalid")
+    }
+    check(artifactRecords.size == names.size) { "Verified Apple artifact inventory is incomplete" }
+    val captured = names.associateWith { name ->
+        val source = sourceFiles[name] ?: error("Verified Apple archive is missing: $name")
+        val record = artifactRecords.singleOrNull { it.releaseString("fileName") == name }
+            ?: error("Verified Apple artifact record is missing or duplicated: $name")
+        check(record.keys == setOf("fileName", "bytes", "sha256")) {
+            "Verified Apple artifact record is invalid: $name"
+        }
+        val destination = capturedEvidence.resolve(name)
+        Files.copy(source.toPath(), destination.toPath(), REPLACE_EXISTING)
+        verifyReleaseRecord(destination, record)
+        destination
+    }
+    val packageDirectory = temporary.resolve("verified-package")
+    extractVerifiedAppleSwiftPackage(
+        capturedEvidence,
+        capturedReceipt,
+        version,
+        temporary.resolve("package-verification"),
+        packageDirectory,
+    )
+    check(Files.mismatch(
+        packageDirectory.resolve("META-INF/codex-agent/sdk-compatibility.json").toPath(),
+        capturedCompatibility.toPath(),
+    ) == -1L) { "Imported Apple SDK compatibility differs from the authoritative declaration" }
+    val archive = captured.getValue("CodexAgent-$version.xcframework.zip")
+    val checksum = captured.getValue("CodexAgent-$version.xcframework.zip.sha256")
+    check(checksum.readBytes().contentEquals("${archive.releaseDigest()}\n".toByteArray())) {
+        "Imported Apple SDK checksum is not exact"
+    }
+    check(Files.mismatch(receipt.toPath(), capturedReceipt.toPath()) == -1L &&
+        Files.mismatch(compatibility.toPath(), capturedCompatibility.toPath()) == -1L &&
+        Files.mismatch(sourceProof.toPath(), capturedProof.toPath()) == -1L &&
+        captured.all { (name, file) ->
+            Files.mismatch(sourceFiles.getValue(name).toPath(), file.toPath()) == -1L
+        }) { "Imported Apple SDK input changed while it was being verified" }
+
+    val staged = temporary.resolve("staged").apply { mkdirs() }
+    captured.forEach { (name, source) -> Files.copy(source.toPath(), staged.resolve(name).toPath()) }
+    deleteReleaseTree(output)
+    copyReleaseTree(staged, output)
+    val published = verifiedRegularFiles(output)
+    check(published.keys == names.toSet() && published.all { (name, file) ->
+        Files.mismatch(file.toPath(), captured.getValue(name).toPath()) == -1L
+    }) { "Imported Apple SDK package artifact copy changed" }
+}
+
+private fun requireApplePackagePathWithoutSymlinks(file: File, role: String) {
+    var current: File? = file.absoluteFile
+    while (current != null) {
+        check(!Files.isSymbolicLink(current.toPath())) {
+            "Imported Apple SDK $role path has a symbolic parent: $current"
+        }
+        current = current.parentFile
     }
 }
 
