@@ -106,7 +106,9 @@ def _write_contract_zip(root: Path, output: Path, *, raw_execution: bool = False
             archive.writestr(info, (root / record["relativePath"]).read_bytes())
 
 
-def verify_contract_execution_archive(archive: Path) -> dict[str, Any]:
+def verify_contract_execution_archive(
+    archive: Path, *, semantic_root: Path | None = None,
+) -> dict[str, Any]:
     records, contents, _ = verified_zip_contents(
         archive, canonical_stored=True, allow_empty_members=True,
         max_archive_bytes=512 * 1024 * 1024, max_total_bytes=512 * 1024 * 1024,
@@ -123,7 +125,17 @@ def verify_contract_execution_archive(archive: Path) -> dict[str, Any]:
             output = root / relative
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(data)
-        return project_contract_execution_evidence(root, root / "compiled-tests", root / "test-results")
+        projection = project_contract_execution_evidence(root, root / "compiled-tests", root / "test-results")
+        if semantic_root is not None:
+            replacements = {
+                "evidence/canonical-coverage.json": canonical_json_bytes(projection["coverage"]),
+                "evidence/kotlin-parity.json": canonical_json_bytes(projection["kotlin"]),
+            }
+            for path in evidence_paths:
+                actual = read_regular_file_bytes(semantic_root / path, reject_symlink_parents=True)
+                if actual != replacements.get(path, contents[path]):
+                    raise ValueError("Contract semantic evidence differs from its raw execution proof")
+        return projection
 
 
 def capture_contract_execution_evidence(
@@ -490,7 +502,16 @@ def validate_contract_package_stage(
     binary_receipt, _ = _read_contract_receipt(
         binary_receipt_path, binary_receipt_sha256, "binary", contract_version,
     )
-    if package_receipt["inputs"]["upstreamArtifacts"] != [_receipt_reference(binary_receipt)]:
+    binary_reference = _receipt_reference(binary_receipt)
+    binary_reference["semanticProjection"] = {
+        "schemaVersion": 1,
+        "kind": "contract-execution-content",
+        "sha256": output_inventory_digest([
+            record for record in binary_receipt["outputs"] if record["kind"] != "contract-execution"
+        ]),
+        "receiptSha256": binary_receipt_sha256,
+    }
+    if package_receipt["inputs"]["upstreamArtifacts"] != [binary_reference]:
         raise ValueError("Contract package receipt does not bind the supplied binary receipt")
 
     output.parent.mkdir(parents=True, exist_ok=True)

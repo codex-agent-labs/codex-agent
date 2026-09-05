@@ -10,6 +10,8 @@ from typing import Any
 
 from .contract_projection import (
     VerifiedContractProjection,
+    VerifiedContractExecutionProjection,
+    verify_contract_execution_projection,
     verify_contract_component_projection,
 )
 from .inventory import (
@@ -347,6 +349,7 @@ def plan_phase(
     output_schema_version: int = 1,
     contract_projection: VerifiedContractProjection | None = None,
     runtime_validation_projection: VerifiedRuntimeValidationProjection | None = None,
+    contract_execution_projection: VerifiedContractExecutionProjection | None = None,
 ) -> dict[str, Any]:
     """Return the exact canonical inputs and build key for one registry phase."""
     if instance not in PHASE_INSTANCE_IDS:
@@ -411,11 +414,22 @@ def plan_phase(
         semantic_value = runtime_validation_projection.receipt_value()
     elif runtime_validation_projection is not None:
         raise ValueError("Unexpected authenticated Runtime validation projection")
+    execution_identity = PhaseInstanceId("contract", "contract", "binary", "common")
+    execution_value = None
+    if instance == PhaseInstanceId("contract", "contract", "package", "common"):
+        if type(contract_execution_projection) is not VerifiedContractExecutionProjection:
+            raise ValueError("Authenticated Contract execution projection is required")
+        execution_value = contract_execution_projection.receipt_value()
+        if execution_value["receiptSha256"] != sha256_bytes(canonical_json_bytes(upstream_by_identity[execution_identity])):
+            raise ValueError("Contract execution projection and binary receipt differ")
+    elif contract_execution_projection is not None:
+        raise ValueError("Unexpected authenticated Contract execution projection")
     upstream_artifacts = sorted(
         (
             _upstream_record(
                 receipt,
                 contract_value if identity == contract_identity else None,
+                execution_value if identity == execution_identity else
                 semantic_value if identity in semantic_dependencies else None,
             )
             for identity, receipt in upstream_by_identity.items()
@@ -596,6 +610,26 @@ def _runtime_validation_projection_from_request(
     return verify_runtime_validation_projection(instance, reports, semantic_receipts)
 
 
+def _contract_execution_projection_from_request(
+    instance: PhaseInstanceId, receipts: Any, value: Any,
+) -> VerifiedContractExecutionProjection | None:
+    if instance != PhaseInstanceId("contract", "contract", "package", "common"):
+        if value is not None:
+            raise ValueError("Unexpected Contract execution evidence")
+        return None
+    evidence = require_exact_keys(value, {"stageRoot", "receiptSha256"}, "Contract execution evidence")
+    candidates = [receipt for receipt in require_array(receipts, "upstream receipts")
+                  if _receipt_identity(validate_phase_receipt(receipt)) ==
+                  PhaseInstanceId("contract", "contract", "binary", "common")]
+    if len(candidates) != 1:
+        raise ValueError("Contract execution evidence requires exactly one binary receipt")
+    return verify_contract_execution_projection(
+        Path(require_string(evidence["stageRoot"], "Contract execution stage root")),
+        canonical_json_bytes(candidates[0]),
+        expected_receipt_sha256=evidence["receiptSha256"],
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m ci.products plan")
     parser.add_argument("--request", required=True)
@@ -632,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
                 "toolchainProfileDigest",
                 "flagsDigest",
                 "outputSchemaVersion",
-            },
+            } | ({"contractExecutionEvidence"} if type(request_value) is dict and "contractExecutionEvidence" in request_value else set()),
             "plan request",
         )
         if require_integer(request["schemaVersion"], "plan request.schemaVersion", 1) != 1:
@@ -682,6 +716,9 @@ def main(argv: list[str] | None = None) -> int:
             output_schema_version=request["outputSchemaVersion"],
             contract_projection=contract_projection,
             runtime_validation_projection=runtime_validation_projection,
+            contract_execution_projection=_contract_execution_projection_from_request(
+                instance, request["upstreamReceipts"], request.get("contractExecutionEvidence"),
+            ),
         )
         result = attach_runtime_binary_identity(
             repository_root,

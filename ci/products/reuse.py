@@ -8,7 +8,7 @@ import tempfile
 from typing import Any
 
 from .aggregate import verify_immutable_product_indexes
-from .contract_projection import VerifiedContractProjection, verify_contract_component_projection
+from .contract_projection import VerifiedContractProjection, VerifiedContractExecutionProjection, verify_contract_component_projection
 from .inventory import (
     load_canonical_json_bytes,
     require_array,
@@ -26,6 +26,7 @@ from .index import (
     verify_signed_product_index,
 )
 from .plan import (
+    verify_contract_execution_projection,
     VerifiedRuntimeValidationProjection,
     _validated_versions,
     attach_runtime_binary_identity,
@@ -406,9 +407,7 @@ class LookupSession:
                     ):
                         raise ValueError("Restored receipt trust does not match its product index source")
                     self._verify_release_attested_contract(path, envelope, candidate.catalog)
-                if identity == PhaseInstanceId(
-                    "contract", "contract", "metadata", "common"
-                ) and self._restore_root is not None:
+                if identity.product == "contract" and identity.phase in {"binary", "metadata"} and self._restore_root is not None:
                     self._restore_contract_stage(path, envelope)
             except (CacheObjectError, TypeError, ValueError) as error:
                 raise ReuseLookupError(f"{source} matching object or index entry is corrupt") from error
@@ -488,9 +487,8 @@ class LookupSession:
                 _validate_envelope(envelope, expected_plan=plan)
             except (TypeError, ValueError) as error:
                 raise ReuseLookupError("Local restored object is incompatible with the plan") from error
-            if _identity(envelope["receipt"]) == PhaseInstanceId(
-                "contract", "contract", "metadata", "common"
-            ):
+            identity = _identity(envelope["receipt"])
+            if identity.product == "contract" and identity.phase in {"binary", "metadata"}:
                 self._contract_stages[(plan["buildKey"], candidate.receipt_sha256)] = candidate.destination
             return _LookupResult(envelope, None, {
                 "kind": "local",
@@ -515,7 +513,7 @@ class LookupSession:
         existing = self._contract_stages.get(key)
         if existing is not None:
             return existing
-        destination = self._restore_root / "contract-metadata"
+        destination = self._restore_root / "contract-stages" / key[0].removeprefix("sha256:") / key[1].removeprefix("sha256:")
         restore_object(
             archive,
             destination,
@@ -909,7 +907,7 @@ def plan_reuse_wave(
                 "objectSha256": object_sha256,
             }
             available.append(envelope)
-            if instance == PhaseInstanceId("contract", "contract", "metadata", "common"):
+            if instance.product == "contract" and instance.phase in {"binary", "metadata"}:
                 session.register_contract_stage(object_path, envelope)
 
         master_projection: VerifiedContractProjection | None = None
@@ -988,6 +986,7 @@ def _plan(
         "output_schema_version",
         "contract_projection",
         "runtime_validation_projection",
+        "contract_execution_projection",
     }
     if not _PHASE_INPUT_KEYS.issubset(keys) or not keys.issubset(allowed):
         raise ValueError(f"Phase inputs fields are invalid: {instance}")
@@ -1041,6 +1040,9 @@ def advance_reuse(
         [PhaseInstanceId, tuple[dict[str, Any], ...]],
         VerifiedRuntimeValidationProjection | None,
     ] | None = None,
+    contract_execution_projection_provider: Callable[
+        [dict[str, Any]], VerifiedContractExecutionProjection
+    ] | None = None,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave."""
@@ -1057,6 +1059,8 @@ def advance_reuse(
         raise ValueError("Runtime validation projection provider must be callable")
     if build_plan_consumer is not None and not callable(build_plan_consumer):
         raise ValueError("Build plan consumer must be callable")
+    if contract_execution_projection_provider is not None and not callable(contract_execution_projection_provider):
+        raise ValueError("Contract execution projection provider must be callable")
     resolved_repository_root = None if repository_root is None else Path(repository_root)
     closure = _dependency_closure(requested_instances)
     if not isinstance(phase_inputs, Mapping) or set(phase_inputs) != set(closure):
@@ -1066,8 +1070,8 @@ def advance_reuse(
     for instance, values in phase_inputs.items():
         if not isinstance(values, Mapping):
             raise ValueError(f"Phase inputs must be a mapping: {instance}")
-        if "runtime_validation_projection" in values:
-            raise ValueError("Callers cannot supply a Runtime validation projection")
+        if {"runtime_validation_projection", "contract_execution_projection"} & set(values):
+            raise ValueError("Callers cannot supply an execution validation projection")
         effective_inputs[instance] = dict(values)
     envelopes: dict[PhaseInstanceId, dict[str, Any]] = {}
     for value in available_receipts:
@@ -1092,6 +1096,16 @@ def advance_reuse(
             and all(dependency in resolved for dependency in phase_instance_dependencies(instance))
         ]
         for instance in ready:
+            if instance == PhaseInstanceId("contract", "contract", "package", "common"):
+                binary = resolved[PhaseInstanceId("contract", "contract", "binary", "common")]
+                effective_inputs[instance]["contract_execution_projection"] = (
+                    contract_execution_projection_provider(binary)
+                    if contract_execution_projection_provider is not None else
+                    verify_contract_execution_projection(
+                        session.contract_stage(binary), binary["receiptBytes"],
+                        expected_receipt_sha256=binary["receiptSha256"],
+                    )
+                )
             if (
                 required_contract_components(instance)
                 and "contract_projection" not in effective_inputs[instance]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ci.tests import test_contract_bundle as contract_fixture
+
 import os
 from pathlib import Path
 import subprocess
@@ -129,6 +131,34 @@ class ProductControlCliTest(unittest.TestCase):
             "development",
         )
         return stage, receipt_root / "phase-receipt.json", receipt
+
+    def test_contract_package_plan_cli_requires_exact_execution_archive_and_receipt(self) -> None:
+        phases = contract_fixture.ContractBundleTest()._product_phase_stages(self.root / "contract-inputs")
+        binary = phases["binary_receipt"]
+        value = {
+            "schemaVersion": 1, "product": "contract", "component": "contract",
+            "phase": "package", "target": "common", "repositoryRoot": str(self.root),
+            "repositoryRevision": self.plan_revision,
+            "versions": {"contract": "0.2.0", "runtime-compatibility": "0.2.0", "runtime-release": "0.2.0", "sdk": "0.2.0"},
+            "upstreamReceipts": [binary], "contractEvidence": None, "runtimeValidationEvidence": None,
+            "contractExecutionEvidence": {
+                "stageRoot": str(phases["binary_stage"]),
+                "receiptSha256": sha256_bytes(canonical_json_bytes(binary)),
+            },
+            "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST, "outputSchemaVersion": 1,
+        }
+        request = self.write_request("contract-package-plan.json", value)
+        accepted = self.run_cli("plan", "--request", str(request), "--output", "-")
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        plan = load_canonical_json_bytes(accepted.stdout)
+        self.assertEqual(value["contractExecutionEvidence"]["receiptSha256"], plan["inputs"]["upstreamArtifacts"][0]["semanticProjection"]["receiptSha256"])
+        for evidence in (None, {**value["contractExecutionEvidence"], "receiptSha256": DIGEST_A}):
+            value["contractExecutionEvidence"] = evidence
+            write_canonical_json(request, value)
+            rejected = self.run_cli("plan", "--request", str(request), "--output", "-")
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertEqual(b"", rejected.stdout)
 
     def test_plan_stdout_and_file_outputs_are_identical_canonical_bytes(self) -> None:
         request = self.write_request("plan.json", {

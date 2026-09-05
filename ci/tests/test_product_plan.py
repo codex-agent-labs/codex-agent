@@ -188,6 +188,12 @@ def plan(
         projection = verified_projection(instance, contract_receipt=contract_receipt)
     if runtime_validation_projection is None and runtime_validation_dependencies(instance):
         runtime_validation_projection = verified_runtime_projection(instance)
+    execution_projection = None
+    if instance == PhaseInstanceId("contract", "contract", "package", "common"):
+        execution_projection = contract_projection.VerifiedContractExecutionProjection({
+            "schemaVersion": 1, "kind": "contract-execution-content", "sha256": DIGEST_B,
+            "receiptSha256": sha256_bytes(canonical_json_bytes(selected_upstreams[0])),
+        }, contract_projection._VERIFIED)
     return plan_phase(
         instance,
         inventory=[file_record()] if inventory is None else inventory,
@@ -197,6 +203,7 @@ def plan(
         flags_digest=flags_digest,
         contract_projection=projection,
         runtime_validation_projection=runtime_validation_projection,
+        contract_execution_projection=execution_projection,
     )
 
 
@@ -856,6 +863,36 @@ class ProductPlanTest(unittest.TestCase):
                 flags_digest=DIGEST_B,
                 output_schema_version=2,
             )
+
+    def test_contract_execution_projection_requires_exact_verified_receipt_and_consumer(self) -> None:
+        instance = PhaseInstanceId("contract", "contract", "package", "common")
+        binary = receipt(PhaseInstanceId("contract", "contract", "binary", "common"))
+        value = {
+            "schemaVersion": 1, "kind": "contract-execution-content", "sha256": DIGEST_A,
+            "receiptSha256": sha256_bytes(canonical_json_bytes(binary)),
+        }
+        arguments = dict(
+            inventory=[file_record()], versions=VERSIONS, upstream_receipts=[binary],
+            toolchain_profile_digest=DIGEST_A, flags_digest=DIGEST_B,
+        )
+        for invalid in (None, value):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "Authenticated Contract execution"):
+                plan_phase(instance, **arguments, contract_execution_projection=invalid)
+        with self.assertRaises(TypeError):
+            contract_projection.VerifiedContractExecutionProjection(value, object())
+        projection = contract_projection.VerifiedContractExecutionProjection(value, contract_projection._VERIFIED)
+        accepted = plan_phase(instance, **arguments, contract_execution_projection=projection)
+        changed = copy.deepcopy(binary)
+        changed["producer"]["runId"] += 1
+        with self.assertRaisesRegex(ValueError, "projection and binary receipt differ"):
+            plan_phase(instance, **{**arguments, "upstream_receipts": [changed]}, contract_execution_projection=projection)
+        with self.assertRaisesRegex(ValueError, "Unexpected authenticated Contract execution"):
+            plan_phase(
+                PhaseInstanceId("contract", "contract", "binary", "common"),
+                **{**arguments, "upstream_receipts": []}, contract_execution_projection=projection,
+            )
+        with self.assertRaisesRegex(ValueError, "unauthorized edge"):
+            compute_build_key(product="contract", component="contract", phase="validation", target="common", inputs=accepted["inputs"])
 
     def test_identical_build_key_cannot_claim_conflicting_outputs(self) -> None:
         instance = PhaseInstanceId("contract", "contract", "binary", "common")

@@ -12,17 +12,79 @@ from .inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
     read_regular_file_bytes,
+    regular_file_inventory,
     require_semver,
+    require_sha256,
     sha256_bytes,
     sha256_file,
     snapshot_regular_tree,
 )
-from .receipt import validate_output_manifest, validate_phase_receipt, verify_output_manifest
+from .receipt import output_inventory_digest, validate_output_manifest, validate_phase_receipt, verify_output_manifest, verify_output_manifest_identity
 
 
 PRODUCT_JSON_LIMIT = 16 * 1024 * 1024
 PUBLIC_KEY_LIMIT = 1024 * 1024
 _VERIFIED = object()
+
+
+class VerifiedContractExecutionProjection:
+    """Exact binary-receipt capability; execution provenance stays outside keys."""
+
+    __slots__ = ("_canonical", "_verified")
+
+    def __init__(self, value: dict[str, Any], verified: object) -> None:
+        if verified is not _VERIFIED:
+            raise TypeError("Contract execution projections must be produced by verification")
+        self._canonical = canonical_json_bytes(value)
+        self._verified = verified
+
+    def receipt_value(self) -> dict[str, Any]:
+        if self._verified is not _VERIFIED:
+            raise TypeError("Contract execution projection is not authenticated")
+        return load_canonical_json_bytes(self._canonical)
+
+
+def verify_contract_execution_projection(
+    stage_root: Path, phase_receipt: bytes | Path, *, expected_receipt_sha256: str,
+) -> VerifiedContractExecutionProjection:
+    from .contract import _contract_payload_identity, verify_contract_execution_archive
+
+    receipt_bytes = _receipt_bytes(phase_receipt)
+    if sha256_bytes(receipt_bytes) != require_sha256(expected_receipt_sha256, "Contract binary receipt digest"):
+        raise ValueError("Contract binary receipt differs from its authenticated digest")
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    if (receipt["product"], receipt["component"], receipt["phase"], receipt["target"]) != (
+        "contract", "contract", "binary", "common",
+    ):
+        raise ValueError("Contract execution projection requires a Contract binary receipt")
+    with tempfile.TemporaryDirectory(prefix="contract-execution-projection-") as temporary:
+        stage = Path(temporary).resolve() / "stage"
+        snapshot_regular_tree(stage_root, stage)
+        manifest = verify_output_manifest_identity(
+            stage, "contract", "contract", "binary", "common", receipt["productVersion"],
+        )
+        if manifest["outputs"] != receipt["outputs"]:
+            raise ValueError("Contract binary receipt and stage inventory differ")
+        execution = [record for record in receipt["outputs"] if record["kind"] == "contract-execution"]
+        if len(execution) != 1 or execution[0]["relativePath"] != "outputs/execution/contract-execution.zip":
+            raise ValueError("Contract binary stage must retain exactly one execution archive")
+        verify_contract_execution_archive(stage / execution[0]["relativePath"], semantic_root=stage / "outputs")
+        # Validate the exact reusable content separately from its external execution archive.
+        payload = Path(temporary).resolve() / "payload"
+        payload.mkdir()
+        for name in ("maven", "evidence", "inventories"):
+            snapshot_regular_tree(stage / "outputs" / name, payload / name)
+        _contract_payload_identity(payload, receipt["productVersion"])
+        semantic_outputs = [record for record in receipt["outputs"] if record["kind"] != "contract-execution"]
+        payload_paths = {"outputs/" + record["relativePath"] for record in regular_file_inventory(payload)}
+        if {record["relativePath"] for record in semantic_outputs} != payload_paths:
+            raise ValueError("Contract binary stage has undeclared reusable content")
+        return VerifiedContractExecutionProjection({
+            "schemaVersion": 1,
+            "kind": "contract-execution-content",
+            "sha256": output_inventory_digest(semantic_outputs),
+            "receiptSha256": expected_receipt_sha256,
+        }, _VERIFIED)
 
 
 class VerifiedContractProjection:

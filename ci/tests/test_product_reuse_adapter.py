@@ -23,6 +23,7 @@ import product_reuse  # noqa: E402
 import products.inventory as product_inventory  # noqa: E402
 from products.inventory import canonical_json_bytes, sha256_bytes  # noqa: E402
 from products.plan import plan_phase  # noqa: E402
+from products.contract_projection import verify_contract_execution_projection  # noqa: E402
 from products.receipt import (  # noqa: E402
     compute_build_key,
     output_inventory_digest,
@@ -41,6 +42,7 @@ from products.restore import (  # noqa: E402
 from products.selection import phase_git_inventory  # noqa: E402
 from products.signatures import generate_development_key, sign_manifest  # noqa: E402
 from ci.tests.test_runtime_evidence import RuntimeEvidenceFixture  # noqa: E402
+from ci.tests.test_product_reuse import binary_stage_files  # noqa: E402
 
 
 COMMIT = "a" * 40
@@ -51,6 +53,18 @@ VERSIONS = {
     "runtime-compatibility": "0.2.0",
     "sdk": "0.2.0",
 }
+
+
+def execution_projection(receipt):
+    with tempfile.TemporaryDirectory() as temporary:
+        stage = Path(temporary).resolve()
+        for relative, data in binary_stage_files(receipt["productVersion"]).items():
+            path = stage / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        return verify_contract_execution_projection(
+            stage, canonical_json_bytes(receipt), expected_receipt_sha256=sha256_bytes(canonical_json_bytes(receipt)),
+        )
 
 
 def impact_plan(*, changed: list[str], full_requested: bool = False, event: str = "pull_request") -> dict[str, object]:
@@ -177,8 +191,15 @@ class ProductReuseAdapterTest(unittest.TestCase):
     ) -> tuple[dict[str, object], Path]:
         stage = root / f"{name}-stage"
         payload = stage / f"outputs/{name}.bin"
-        payload.parent.mkdir(parents=True)
-        payload.write_bytes(str(phase_plan["buildKey"]).encode())
+        binary = (phase_plan["product"], phase_plan["phase"]) == ("contract", "binary")
+        if binary:
+            for relative, data in binary_stage_files("0.2.0").items():
+                path = stage / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+        else:
+            payload.parent.mkdir(parents=True)
+            payload.write_bytes(str(phase_plan["buildKey"]).encode())
         manifest = write_output_manifest(
             stage,
             phase_plan["product"],
@@ -186,7 +207,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
             phase_plan["phase"],
             phase_plan["target"],
             "0.2.0",
-            {"artifact": "outputs"},
+            {"maven": "outputs/maven", "evidence": "outputs/evidence", "inventory": "outputs/inventories",
+             "contract-execution": "outputs/execution"} if binary else {"artifact": "outputs"},
         )
         receipt = validate_phase_receipt({
             "schemaVersion": 1,
@@ -1126,6 +1148,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 inventory=phase_git_inventory(repository, commit, instance),
                 versions=VERSIONS,
                 upstream_receipts=upstream,
+                contract_execution_projection=execution_projection(upstream[0]) if instance == package else None,
                 toolchain_profile_digest=product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
                 flags_digest=product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
             )
@@ -2004,13 +2027,10 @@ class ProductReuseAdapterTest(unittest.TestCase):
             flags_digest=product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
         )
         stage = resolved_root / "stage"
-        output = stage / "outputs/value.bin"
-        output.parent.mkdir(parents=True)
-        output.write_bytes(b"value")
-        write_output_manifest(
-            stage, "contract", "contract", "binary", "common", "0.2.0",
-            {"artifact": "outputs"},
-        )
+        for relative, data in binary_stage_files("0.2.0").items():
+            path = stage / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
         shard = resolved_root / "binary-shard"
         finalize_phase_object(
             stage_root=stage,
@@ -2074,6 +2094,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             inventory=[{"relativePath": "package.py", "bytes": 1, "sha256": sha256_bytes(b"p")}],
             versions=VERSIONS,
             upstream_receipts=[descriptor["receipt"]],
+            contract_execution_projection=execution_projection(descriptor["receipt"]),
             toolchain_profile_digest=product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
             flags_digest=product_reuse.NOT_APPLICABLE_FLAGS_DIGEST,
         )
@@ -2188,9 +2209,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 repository_root=resolved_root,
                 environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
             )
-        self.assertEqual(
-            b"value", (restored_handoff / "stage/outputs/value.bin").read_bytes(),
-        )
+        for relative, data in binary_stage_files("0.2.0").items():
+            self.assertEqual(data, (restored_handoff / "stage" / relative).read_bytes())
         self.assertEqual(descriptor["receiptSha256"], sha256_bytes(restored["receiptBytes"]))
         self.assertEqual(
             restored["receiptBytes"],

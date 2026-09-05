@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import functools
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -13,7 +15,7 @@ import zipfile
 import ci.products.contract_projection as contract_projection
 import ci.products.index as product_index
 import ci.products.reuse as product_reuse
-from ci.products.contract import build_contract_bundle
+from ci.products.contract import build_contract_bundle, capture_contract_execution_evidence
 from ci.products.contract_attestation import build_contract_attestation
 from ci.products.inventory import canonical_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.plan import (
@@ -41,10 +43,11 @@ from ci.products.reuse import (
     LookupSession,
     RemoteCatalog,
     ReuseLookupError,
-    advance_reuse,
+    advance_reuse as _advance_reuse,
     plan_reuse_wave,
 )
 from ci.products.signatures import generate_development_key, sign_manifest
+from ci.tests import test_contract_bundle as contract_fixture
 from ci.tests.test_contract_bundle import PRODUCER as CONTRACT_PRODUCER, _write_staging
 
 
@@ -163,6 +166,43 @@ def product_version(product: str) -> str:
     return VERSIONS["runtime-release"] if product == "runtime" else VERSIONS[product]
 
 
+@functools.cache
+def binary_stage_files(version: str, target_hash_salt: bytes = b"") -> dict[str, bytes]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary).resolve()
+        raw, classes, results = contract_fixture.ContractBundleTest()._execution_projection_fixture(
+            root / "raw", contract_version=version, target_hash_salt=target_hash_salt,
+        )
+        stage = root / "stage"
+        shutil.copytree(raw, stage / "outputs")
+        capture_contract_execution_evidence(stage / "outputs", classes, results)
+        write_output_manifest(stage, "contract", "contract", "binary", "common", version, {
+            "maven": "outputs/maven", "evidence": "outputs/evidence",
+            "inventory": "outputs/inventories", "contract-execution": "outputs/execution",
+        })
+        return {path.relative_to(stage).as_posix(): path.read_bytes() for path in stage.rglob("*") if path.is_file()}
+
+
+@functools.cache
+def verified_execution_fixture(receipt_bytes: bytes):
+    receipt = json.loads(receipt_bytes)
+    with tempfile.TemporaryDirectory() as temporary:
+        stage = Path(temporary).resolve()
+        for name, data in binary_stage_files(receipt["productVersion"]).items():
+            path = stage / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        return contract_projection.verify_contract_execution_projection(
+            stage, receipt_bytes, expected_receipt_sha256=sha256_bytes(receipt_bytes),
+        )
+
+
+def advance_reuse(*args, **kwargs):
+    # Real verified fixture proof for tests supplying retained receipts without transported objects.
+    kwargs.setdefault("contract_execution_projection_provider", lambda envelope: verified_execution_fixture(envelope["receiptBytes"]))
+    return _advance_reuse(*args, **kwargs)
+
+
 def envelope_for_plan(
     plan: dict[str, object],
     *,
@@ -180,7 +220,8 @@ def envelope_for_plan(
         "productVersion": release_version or product_version(str(plan["product"])),
         "buildKey": plan["buildKey"],
         "inputs": plan["inputs"],
-        "outputs": [{
+        "outputs": json.loads(binary_stage_files(release_version or VERSIONS["contract"])["output-manifest.json"])["outputs"]
+        if (plan["product"], plan["phase"]) == ("contract", "binary") else [{
             "kind": "artifact",
             "relativePath": name,
             "bytes": len(payload),
@@ -228,6 +269,10 @@ def plan_for(
                 _VERIFIED_RUNTIME_VALIDATION_PROJECTION,
             )
             if semantic_dependencies else None
+        ),
+        contract_execution_projection=(
+            verified_execution_fixture(resolved[CONTRACT_BINARY]["receiptBytes"])
+            if instance == CONTRACT_PACKAGE else None
         ),
         **inputs[instance],
     )
@@ -370,15 +415,23 @@ class ProductReuseTest(unittest.TestCase):
         cache_root: Path | None = None,
         producer_commit: str = COMMIT,
         producer_tree: str = TREE,
+        binary_salt: bytes = b"",
     ) -> tuple[dict[str, object], Path]:
         self.counter += 1
         root = self.root / f"object-{self.counter}"
         stage = root / "stage"
         name = f"{plan['component']}-{plan['phase']}-{plan['target']}.bin"
         payload = stage / "outputs" / name
-        payload.parent.mkdir(parents=True)
-        payload.write_bytes(str(plan["buildKey"]).encode())
         version = release_version or product_version(str(plan["product"]))
+        binary = (plan["product"], plan["phase"]) == ("contract", "binary")
+        if binary:
+            for relative, data in binary_stage_files(version, binary_salt).items():
+                path = stage / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+        else:
+            payload.parent.mkdir(parents=True)
+            payload.write_bytes(str(plan["buildKey"]).encode())
         manifest = write_output_manifest(
             stage,
             plan["product"],
@@ -386,7 +439,8 @@ class ProductReuseTest(unittest.TestCase):
             plan["phase"],
             plan["target"],
             version,
-            {"artifact": "outputs"},
+            {"maven": "outputs/maven", "evidence": "outputs/evidence", "inventory": "outputs/inventories",
+             "contract-execution": "outputs/execution"} if binary else {"artifact": "outputs"},
         )
         envelope = envelope_for_plan(
             plan,
@@ -1917,7 +1971,7 @@ class ProductReuseTest(unittest.TestCase):
         second_inputs = copy.deepcopy(first_inputs)
         second_inputs[CONTRACT_BINARY]["inventory"][0]["sha256"] = DIGEST_B
         second_plan = plan_for(CONTRACT_BINARY, second_inputs, {})
-        second, second_path = self.object_for_plan(second_plan, trust_domain="release")
+        second, second_path = self.object_for_plan(second_plan, trust_domain="release", binary_salt=b"changed contract")
         self.assertNotEqual(first_plan["buildKey"], second_plan["buildKey"])
 
         with self.assertRaisesRegex(ValueError, "Stable product identity"):

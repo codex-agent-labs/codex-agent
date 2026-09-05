@@ -16,6 +16,7 @@ import warnings
 import zipfile
 
 import ci.products.contract as contract_product
+from ci.products.contract_projection import verify_contract_execution_projection
 from ci.impact import read_pathspecs
 from ci.products.contract_model import (
     CONTRACT_COMPONENTS,
@@ -691,9 +692,9 @@ def _insert_zip_central_directory_gap(archive: Path) -> None:
 
 
 class ContractBundleTest(unittest.TestCase):
-    def _execution_projection_fixture(self, root: Path):
+    def _execution_projection_fixture(self, root: Path, *, contract_version: str = VERSION, target_hash_salt: bytes = b""):
         stage, classes, results = root / "stage", root / "classes", root / "results"
-        _write_staging(stage, raw_execution=True)
+        _write_staging(stage, raw_execution=True, contract_version=contract_version, target_hash_salt=target_hash_salt)
         _write_file(classes / "Contract.class", b"fixture compiled test classes")
         test_ids = ["ContractCoverageTest#all", *[
             f"ContractScenarioTest#test{index:02d}" for index in range(14)
@@ -849,6 +850,7 @@ class ContractBundleTest(unittest.TestCase):
                         ]
                     archive = root / f"{mutation}.zip"
                     _write_zip(archive, sorted(changed))
+                    self.assertEqual(len(changed), len({name for name, _, _ in changed}))
                     with self.assertRaises(ValueError):
                         verify_contract_execution_archive(archive)
 
@@ -922,7 +924,7 @@ class ContractBundleTest(unittest.TestCase):
         )
         return archive
 
-    def _product_phase_stages(self, root: Path):
+    def _product_phase_stages(self, root: Path, *, execution_context: str = "first"):
         versions = {
             "contract": VERSION,
             "runtime-release": VERSION,
@@ -937,6 +939,9 @@ class ContractBundleTest(unittest.TestCase):
         binary_id = PhaseInstanceId("contract", "contract", "binary", "common")
         binary_stage = root / "binary-stage"
         raw, classes, results = self._execution_projection_fixture(root / "execution-input")
+        report = results / "TEST-Contract.xml"
+        report.write_bytes(report.read_bytes().replace(b"first", execution_context.encode()))
+        self._bind_execution_fixture(raw, classes, results)
         shutil.copytree(raw, binary_stage / "outputs")
         capture_contract_execution_evidence(binary_stage / "outputs", classes, results)
         write_output_manifest(
@@ -982,6 +987,10 @@ class ContractBundleTest(unittest.TestCase):
             }],
             versions=versions,
             upstream_receipts=[binary_receipt],
+            contract_execution_projection=verify_contract_execution_projection(
+                binary_stage, canonical_json_bytes(binary_receipt),
+                expected_receipt_sha256=sha256_bytes(canonical_json_bytes(binary_receipt)),
+            ),
             toolchain_profile_digest=sha256_bytes(b"not-applicable-toolchain"),
             flags_digest=sha256_bytes(b"not-applicable-flags"),
         )
@@ -1008,6 +1017,37 @@ class ContractBundleTest(unittest.TestCase):
             "package_receipt_path": package_receipt_root / "phase-receipt.json",
             "package_stage": package_stage,
         }
+
+    def test_execution_projection_keeps_package_keys_stable_and_original_receipts_distinct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            first = self._product_phase_stages(root / "first")
+            second = self._product_phase_stages(root / "second", execution_context="different-run")
+            self.assertEqual(first["binary_receipt"]["buildKey"], second["binary_receipt"]["buildKey"])
+            self.assertEqual(first["package_receipt"]["buildKey"], second["package_receipt"]["buildKey"])
+            self.assertEqual(first["package_receipt"]["outputs"], second["package_receipt"]["outputs"])
+            self.assertNotEqual(first["binary_receipt"], second["binary_receipt"])
+            values = []
+            for phase in (first, second):
+                projection = verify_contract_execution_projection(
+                    phase["binary_stage"], phase["binary_receipt_path"],
+                    expected_receipt_sha256=sha256_file(phase["binary_receipt_path"]),
+                )
+                value = projection.receipt_value()
+                self.assertEqual(sha256_file(phase["binary_receipt_path"]), value["receiptSha256"])
+                values.append(value)
+            self.assertEqual(values[0]["sha256"], values[1]["sha256"])
+            self.assertNotEqual(values[0]["receiptSha256"], values[1]["receiptSha256"])
+            with self.assertRaisesRegex(ValueError, "receipt and stage inventory differ"):
+                verify_contract_execution_projection(
+                    first["binary_stage"], second["binary_receipt_path"],
+                    expected_receipt_sha256=sha256_file(second["binary_receipt_path"]),
+                )
+            with self.assertRaisesRegex(ValueError, "authenticated digest"):
+                verify_contract_execution_projection(
+                    first["binary_stage"], first["binary_receipt_path"],
+                    expected_receipt_sha256=sha256_file(second["binary_receipt_path"]),
+                )
 
     def test_package_validation_is_deterministic_and_receipt_bound(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1080,6 +1120,10 @@ class ContractBundleTest(unittest.TestCase):
                     "sdk": VERSION,
                 },
                 upstream_receipts=[alternate_binary],
+                contract_execution_projection=verify_contract_execution_projection(
+                    phase["binary_stage"], canonical_json_bytes(alternate_binary),
+                    expected_receipt_sha256=sha256_bytes(canonical_json_bytes(alternate_binary)),
+                ),
                 toolchain_profile_digest=sha256_bytes(b"not-applicable-toolchain"),
                 flags_digest=sha256_bytes(b"not-applicable-flags"),
             )

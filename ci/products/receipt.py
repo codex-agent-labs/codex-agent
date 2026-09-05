@@ -374,13 +374,27 @@ def validate_upstream(value: Any, label: str) -> dict[str, Any]:
             raise ValueError(f"{label}.contractProjection is attached to a non-Contract upstream")
         validate_contract_projection(upstream["contractProjection"], f"{label}.contractProjection")
     if "semanticProjection" in upstream:
-        if upstream["product"] != "runtime" or upstream["phase"] != "validation":
-            raise ValueError(
-                f"{label}.semanticProjection is attached to a non-Runtime-validation upstream"
+        if (upstream["product"], upstream["component"], upstream["phase"], upstream["target"]) == (
+            "contract", "contract", "binary", "common",
+        ):
+            projection = require_exact_keys(
+                upstream["semanticProjection"],
+                {"schemaVersion", "kind", "sha256", "receiptSha256"},
+                f"{label}.semanticProjection",
             )
-        validate_runtime_validation_projection(
-            upstream["semanticProjection"], f"{label}.semanticProjection",
-        )
+            if require_integer(projection["schemaVersion"], "Contract execution projection schema", 1) != 1 or \
+                    projection["kind"] != "contract-execution-content":
+                raise ValueError("Invalid Contract execution projection identity")
+            for field in ("sha256", "receiptSha256"):
+                require_sha256(projection[field], f"Contract execution projection.{field}")
+        elif upstream["product"] != "runtime" or upstream["phase"] != "validation":
+            raise ValueError(
+                f"{label}.semanticProjection is attached to an unsupported upstream"
+            )
+        else:
+            validate_runtime_validation_projection(
+                upstream["semanticProjection"], f"{label}.semanticProjection",
+            )
     return upstream
 
 
@@ -444,7 +458,11 @@ def build_key_payload(
                 upstream["product"], upstream["component"], upstream["phase"],
                 upstream["target"],
             )
-            if (
+            contract_execution_edge = (
+                (product, component, phase, target) == ("contract", "contract", "package", "common")
+                and semantic_projection["kind"] == "contract-execution-content"
+            )
+            if not contract_execution_edge and (
                 product != "runtime"
                 or phase != "metadata"
                 or upstream["target"] == "node-js-binding"
