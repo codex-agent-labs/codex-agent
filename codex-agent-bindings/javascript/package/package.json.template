@@ -27,7 +27,8 @@
     "index.d.ts",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "META-INF/codex-agent/sdk-compatibility.json"
   ],
   "publishConfig": {
     "access": "public"

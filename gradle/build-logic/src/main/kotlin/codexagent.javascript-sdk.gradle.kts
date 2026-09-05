@@ -1635,13 +1635,12 @@ tasks.register<WriteProductOutputManifestTask>("writeJavaScriptSdkPackageOutputM
     manifestFile.set(javascriptSdkPackagePhaseRoot.map { it.file("output-manifest.json") })
 }
 
-val verifyNpmPackDryRun = tasks.register<Exec>("verifyNpmPackDryRun") {
+val verifyNpmPackDryRun = tasks.register<VerifyJavaScriptNpmPackInventoryTask>("verifyNpmPackDryRun") {
     group = "verification"
     description = "Validates npm's exact public file inventory without creating another archive."
     dependsOn(stageNpmPackage)
-    workingDir(npmStageDirectory)
-    environment("npm_config_cache", npmConsumerCacheDirectory.get().asFile.absolutePath)
-    commandLine("npm", "pack", "--dry-run", "--json", "--ignore-scripts")
+    packageDirectory.set(npmStageDirectory)
+    cacheDirectory.set(npmConsumerCacheDirectory)
 }
 
 val preparePackedNpmConsumer = tasks.register<Sync>("preparePackedNpmConsumer") {

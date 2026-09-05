@@ -15,8 +15,96 @@ import org.gradle.api.tasks.PathSensitivity
 import org.gradle.testfixtures.ProjectBuilder
 import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
+import org.junit.Assume.assumeTrue
 
 class CrossLanguageJavaScriptBindingTasksTest {
+    @Test
+    fun `native npm preserves the staged compatibility resource without producing an archive`() {
+        assumeTrue(
+            "Native npm inventory fixture requires CODEX_AGENT_TEST_NPM_INVENTORY=1; a skip is not package acceptance",
+            System.getenv("CODEX_AGENT_TEST_NPM_INVENTORY") == "1",
+        )
+        val root = createTempDirectory("javascript-native-npm-inventory").toFile()
+        try {
+            val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+                .first { it.resolve("codex-agent-bindings/javascript/package/package.json.template").isFile }
+            val sources = repository.resolve("codex-agent-bindings/javascript/package")
+            val staged = root.resolve("package").apply { mkdirs() }
+            listOf("index.cjs", "index.mjs", "index.d.ts", "README.md").forEach { name ->
+                sources.resolve(name).copyTo(staged.resolve(name))
+            }
+            listOf("LICENSE", "THIRD_PARTY_NOTICES.md").forEach { name ->
+                repository.resolve(name).copyTo(staged.resolve(name))
+            }
+            val manifest = staged.resolve("package.json")
+            val manifestContents = sources.resolve("package.json.template").readText().replace("@VERSION@", "0.2.0")
+            manifest.writeText(manifestContents)
+            // File-selection fixture only: no compiled Runtime or authenticated package evidence.
+            staged.resolve("dist").mkdirs()
+            staged.resolve("dist/runtime.js").writeText("module.exports = {};\n")
+            staged.resolve("dist/runtime.js.map").writeText("{}\n")
+            val compatibilityPath = "META-INF/codex-agent/sdk-compatibility.json"
+            staged.resolve(compatibilityPath).apply { parentFile.mkdirs(); writeText("{}\n") }
+            val before = verifiedRegularFiles(staged).mapValues { it.value.releaseDigest() }
+            val project = ProjectBuilder.builder().withProjectDir(root).build()
+            val task = project.tasks.create("verifyNpmInventory", VerifyJavaScriptNpmPackInventoryTask::class.java).apply {
+                packageDirectory.set(staged)
+                cacheDirectory.set(root.resolve("npm-cache"))
+            }
+            task.verify()
+            val omitted = manifestContents.replace(",\n    \"$compatibilityPath\"", "")
+            check(omitted != manifestContents) { "Tracked compatibility allow-list seam changed" }
+            manifest.writeText(omitted)
+            val failure = assertFails { task.verify() }
+            assertTrue("npm pack file inventory differs" in failure.message.orEmpty(), failure.toString())
+            manifest.writeText(manifestContents)
+            task.verify()
+            assertEquals(before, verifiedRegularFiles(staged).mapValues { it.value.releaseDigest() })
+            assertFalse(root.walkTopDown().any { it.isFile && it.extension == "tgz" })
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `npm inventory includes compatibility and exactly matches staged package`() {
+        val root = createTempDirectory("javascript-npm-inventory").toFile()
+        try {
+            root.resolve("package.json").writeText("""{"name":"@codex-agent-labs/codex-agent","version":"0.2.0"}""")
+            root.resolve("index.cjs").writeText("module.exports = {};\n")
+            val compatibilityPath = "META-INF/codex-agent/sdk-compatibility.json"
+            val compatibility = root.resolve(compatibilityPath).apply {
+                parentFile.mkdirs()
+                writeText("{}\n")
+            }
+            val files = verifiedRegularFiles(root).map { (path, file) ->
+                """{"path":"$path","size":${file.length()}}"""
+            }
+            fun report(records: List<String>) =
+                """[{"name":"@codex-agent-labs/codex-agent","version":"0.2.0","files":[${records.joinToString(",")}]}]"""
+            verifyJavaScriptNpmPackInventory(root, report(files))
+            listOf(
+                files.filterNot { compatibilityPath in it },
+                files + """{"path":"extra","size":1}""",
+                files + files.first(),
+                files.map { if (compatibilityPath in it) it.replace("\"size\":3", "\"size\":4") else it },
+            ).forEach { invalid -> assertFails { verifyJavaScriptNpmPackInventory(root, report(invalid)) } }
+            assertFails { verifyJavaScriptNpmPackInventory(root, report(files).replace("0.2.0", "0.2.1")) }
+            assertFails { verifyJavaScriptNpmPackInventory(root, "[]") }
+            compatibility.delete()
+            assertFails {
+                verifyJavaScriptNpmPackInventory(root, report(files.filterNot { compatibilityPath in it }))
+            }
+            val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+                .first { it.resolve("codex-agent-bindings/javascript/package/package.json.template").isFile }
+            val template = repository.resolve("codex-agent-bindings/javascript/package/package.json.template")
+                .readReleaseObject()
+            assertEquals(1, template.releaseArray("files").count { it.toString() == "\"$compatibilityPath\"" })
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     @Test
     fun `task declares the exact cacheable file evidence bundle`() = withTask { task, files ->
         val taskType = VerifyJavaScriptTypeScriptBindingParityTask::class.java
