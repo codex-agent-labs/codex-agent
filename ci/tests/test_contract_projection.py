@@ -7,14 +7,13 @@ import tempfile
 import unittest
 import zipfile
 
-from ci.products.contract import build_contract_bundle
-from ci.products.contract_attestation import build_contract_attestation
+from ci.products.contract_model import verify_contract_bundle
+from ci.products.contract_attestation import build_contract_attestation, capture_contract_execution_closure
 from ci.products.contract_projection import (
     VerifiedContractProjection,
     verify_contract_component_projection,
 )
 from ci.products.inventory import (
-    canonical_json_bytes,
     load_canonical_json,
     public_key_fingerprint,
     sha256_bytes,
@@ -22,7 +21,8 @@ from ci.products.inventory import (
 )
 from ci.products.receipt import compute_build_key, write_output_manifest
 from ci.products.signatures import generate_development_key, sign_manifest
-from ci.tests.test_contract_bundle import PRODUCER, VERSION, _write_staging
+from ci.tests.test_contract_bundle import PRODUCER, VERSION
+from ci.tests.test_contract_execution_closure import execution_closure_fixture
 
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
@@ -34,10 +34,8 @@ class ContractProjectionTest(unittest.TestCase):
         self.private_key, self.public_key, self.signing = generate_development_key(
             self.root / "keys",
         )
-        staging = self.root / "contract-staging"
-        _write_staging(staging)
-        self.bundle = self.root / "bundle" / f"codex-agent-contract-{VERSION}.zip"
-        self.manifest = build_contract_bundle(staging, self.bundle, VERSION)
+        self.bundle, self.phase_receipts, self.execution_archive = execution_closure_fixture(self.root / "contract-source")
+        self.manifest = verify_contract_bundle(self.bundle)
         self.stage = self.root / "stage"
         (self.stage / "outputs").mkdir(parents=True)
         shutil.copyfile(self.bundle, self.stage / "outputs" / self.bundle.name)
@@ -67,44 +65,15 @@ class ContractProjectionTest(unittest.TestCase):
         *,
         trust: str = "development",
     ) -> dict[str, object]:
-        inventory = [{
-            "relativePath": "source/Contract.kt",
-            "bytes": 1,
-            "sha256": sha256_bytes(b"a"),
-        }]
-        inputs = {
-            "inventory": inventory,
-            "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
-            "versionIdentity": VERSION,
-            "upstreamArtifacts": [],
-            "toolchainProfileDigest": sha256_bytes(b"toolchain"),
-            "flagsDigest": sha256_bytes(b"flags"),
-            "outputSchemaVersion": 1,
-        }
-        value = {
-            "schemaVersion": 1,
-            "product": "contract",
-            "component": "contract",
-            "phase": "metadata",
-            "target": "common",
-            "productVersion": VERSION,
-            "buildKey": "",
-            "inputs": inputs,
-            "outputs": copy.deepcopy(
-                load_canonical_json(self.stage / "output-manifest.json")["outputs"],
-            ),
-            "producer": copy.deepcopy(producer),
-            "trustDomain": trust,
-            "result": "success",
-        }
-        value["buildKey"] = compute_build_key(
-            product="contract",
-            component="contract",
-            phase="metadata",
-            target="common",
-            inputs=inputs,
+        return {**load_canonical_json(self.phase_receipts["metadata"]),
+                "producer": copy.deepcopy(producer), "trustDomain": trust}
+
+    def _closure(self, receipt: Path, name: str) -> Path:
+        output = self.root / name
+        capture_contract_execution_closure(
+            self.bundle, {**self.phase_receipts, "metadata": receipt}, self.execution_archive, output,
         )
-        return value
+        return output
 
     def _attest(
         self,
@@ -119,6 +88,7 @@ class ContractProjectionTest(unittest.TestCase):
             self.private_key,
             self.public_key,
             output,
+            execution_closure=self._closure(receipt, name + "-closure"),
         )
         stem = f"codex-agent-contract-{VERSION}.attestation"
         return output / f"{stem}.json", output / f"{stem}.sig", value
@@ -130,6 +100,7 @@ class ContractProjectionTest(unittest.TestCase):
     ) -> tuple[Path, Path]:
         output = self.root / name
         output.mkdir()
+        shutil.copytree(self.attestation_path.parent / "execution-closure", output / "execution-closure")
         path = output / f"codex-agent-contract-{VERSION}.attestation.json"
         write_canonical_json(path, value)
         return path, sign_manifest(path, self.private_key, value["signing"])
@@ -243,6 +214,7 @@ class ContractProjectionTest(unittest.TestCase):
             self.private_key,
             self.public_key,
             output,
+            execution_closure=self._closure(self.receipt_path, "release-closure"),
             keyring=keyring,
             keys_directory=keys,
         )

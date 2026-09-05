@@ -7,9 +7,9 @@ import tempfile
 import unittest
 import zipfile
 
-from ci.products.contract import build_contract_bundle
+from ci.products.contract import verify_contract_bundle
 from ci.products.c_abi import C_ABI_PACKAGE_MANIFEST
-from ci.products.contract_attestation import build_contract_attestation
+from ci.products.contract_attestation import build_contract_attestation, capture_contract_execution_closure
 from ci.products.inventory import load_canonical_json_bytes, sha256_file
 from ci.products.runtime_aggregate import produce_runtime_aggregate, build_runtime_aggregate_attestation
 from ci.products.sdk_compatibility import produce_sdk_compatibility
@@ -17,7 +17,7 @@ from ci.products.signatures import generate_development_key
 from ci.tests.product_chain_support import output, reference, write_receipt
 from ci.tests.product_chain_variants import build_variants
 from ci.tests.product_chain_adapters import build_adapters
-from ci.tests.test_contract_bundle import _write_staging
+from ci.tests.test_contract_execution_closure import execution_closure_fixture
 
 
 def build_chain(root: Path, run: int, *, variants: dict | None = None) -> dict:
@@ -32,22 +32,23 @@ def build_chain(root: Path, run: int, *, variants: dict | None = None) -> dict:
             "event": "pull_request", "runId": run, "runAttempt": 1, "pullRequest": 31,
         },
     }
-    staging = root / "contract-stage"
-    _write_staging(staging)
-    payload = root / "codex-agent-contract-0.2.0.zip"
-    manifest = build_contract_bundle(staging, payload, "0.2.0")
-    receipt = root / "contract-receipt.json"
-    write_receipt(
-        receipt, product="contract", component="contract", phase="metadata", target="common",
-        version="0.2.0", version_identity="0.2.0", context=context, upstream=[],
-        outputs=[output("contract-bundle", f"outputs/{payload.name}", payload.read_bytes())],
+    payload, receipts, execution_archive = execution_closure_fixture(
+        root / "contract-source", context=f"producer-run-{run}", producer=context["producer"],
     )
+    manifest = verify_contract_bundle(payload)
+    receipt = receipts["metadata"]
+    execution_closure = root / "contract-execution-closure"
+    capture_contract_execution_closure(payload, receipts, execution_archive, execution_closure)
     trust = root / "contract-trust"
-    build_contract_attestation(payload, receipt, signing, private_key, public_key, trust)
+    build_contract_attestation(
+        payload, receipt, signing, private_key, public_key, trust,
+        execution_closure=execution_closure,
+    )
     contract = {
         "payload": payload, "manifest": manifest, "receipt": receipt,
         "attestation": trust / "codex-agent-contract-0.2.0.attestation.json",
         "signature": trust / "codex-agent-contract-0.2.0.attestation.sig",
+        "execution_closure": trust / "execution-closure",
     }
     if variants is None:
         variants = build_variants(root / "variants", contract, context)
@@ -155,6 +156,12 @@ class ProductNativeChainTest(unittest.TestCase):
                 self.assertEqual(first.read_bytes(), second.read_bytes())
         for key in ("receipt", "attestation", "signature"):
             self.assertNotEqual(left["contract"][key].read_bytes(), right["contract"][key].read_bytes())
+        for path in ("contract-execution-closure.json", "execution/contract-execution.zip",
+                     *(f"receipts/{phase}.json" for phase in ("binary", "package", "validation", "metadata"))):
+            self.assertNotEqual(
+                (left["contract"]["execution_closure"] / path).read_bytes(),
+                (right["contract"]["execution_closure"] / path).read_bytes(),
+            )
         self.assertNotEqual(left["context"]["public_key"].read_bytes(), right["context"]["public_key"].read_bytes())
         for key in ("runtime_attestation", "runtime_attestation_signature"):
             self.assertNotEqual(left["compatibility_args"][key].read_bytes(), right["compatibility_args"][key].read_bytes())
@@ -228,6 +235,7 @@ class ProductNativeChainTest(unittest.TestCase):
     def test_content_mutation_rejected_and_original_evidence_preserved(self) -> None:
         args = self.left["compatibility_args"]
         paths = [args["contract_payload"], args["runtime_manifest"], *args["variant_bundles"].values()]
+        paths.extend(path for path in self.left["contract"]["execution_closure"].rglob("*") if path.is_file())
         paths.extend(raw["evidence"] for raw in self.left["variants"]["raw_sdks"].values())
         paths.append(next(self.left["variants"]["stages"].glob("*/validation/output-manifest.json")))
         originals = {path: path.read_bytes() for path in self.left["root"].rglob("*")

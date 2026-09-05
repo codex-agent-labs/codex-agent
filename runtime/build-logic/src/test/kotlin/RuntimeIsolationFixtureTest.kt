@@ -131,6 +131,18 @@ class RuntimeIsolationFixtureTest {
             ) { directory ->
                 mutatePayload(directory, "symlink")
             }
+            rejectedBeforeBuildLogic(
+                workspace, base, contract, publicKey, target,
+                "missing-execution-archive", "inventory",
+            ) { directory ->
+                check(directory.resolve("attestation/execution-closure/execution/contract-execution.zip").delete())
+            }
+            rejectedBeforeBuildLogic(
+                workspace, base, contract, publicKey, target,
+                "tampered-original-binary-receipt", "inventory",
+            ) { directory ->
+                directory.resolve("attestation/execution-closure/receipts/binary.json").appendText(" ")
+            }
 
             rejectedBeforeBuildLogic(
                 workspace, base, contract, publicKey, target,
@@ -578,21 +590,25 @@ class RuntimeIsolationFixtureTest {
     private fun createSignedContract(signing: File, contract: File) {
         runPython(
             """
-            import sys
+            import shutil, sys
             from pathlib import Path
-            from ci.products.contract_attestation import build_contract_attestation
+            from ci.products.contract_attestation import build_contract_attestation, capture_contract_execution_closure
             from ci.products.signatures import generate_development_key
-            from ci.tests.test_contract_attestation import VERSION, _payload, _producer, _receipt
+            from ci.tests.test_contract_execution_closure import execution_closure_fixture
             root, contract = map(lambda value: Path(value).resolve(), sys.argv[1:])
             contract.mkdir(parents=True)
             private_key, public_key, metadata = generate_development_key(root / "key")
             generate_development_key(root / "wrong-key")
-            payload = contract / f"codex-agent-contract-{VERSION}.zip"
+            original_payload, receipts, archive = execution_closure_fixture(root / "synthetic-source")
+            payload = contract / original_payload.name
             receipt = contract / "phase-receipt.json"
-            _payload(payload)
-            _receipt(receipt, payload, _producer(7), "development")
+            shutil.copyfile(original_payload, payload)
+            shutil.copyfile(receipts["metadata"], receipt)
+            closure = root / "execution-closure"
+            capture_contract_execution_closure(payload, receipts, archive, closure)
             build_contract_attestation(
                 payload, receipt, metadata, private_key, public_key, contract / "attestation",
+                execution_closure=closure,
             )
             """.trimIndent(),
             signing.absolutePath,
@@ -601,42 +617,35 @@ class RuntimeIsolationFixtureTest {
     }
 
     private fun createRealContract(signing: File, contract: File) {
-        val stage = repository.resolve("build/product-stage/contract/contract/package/outputs")
-        check(stage.isDirectory) {
-            "Runtime isolation requires explicitly staged Contract inputs; it never starts a product build"
+        val source = System.getenv("CODEX_AGENT_RUNTIME_TEST_CONTRACT_INPUT")
+            ?.takeIf(String::isNotBlank)?.let(::File)
+        check(source != null && source.isDirectory) {
+            "Runtime isolation requires CODEX_AGENT_RUNTIME_TEST_CONTRACT_INPUT containing an existing " +
+                "codex-agent-contract-0.2.0.zip and execution-closure/ with all four original receipts and " +
+                "raw execution evidence; it never builds or repairs Contract inputs"
         }
         runPython(
             """
-            import json, shutil, sys, tempfile
+            import sys
             from pathlib import Path
             from ci.products.contract_attestation import build_contract_attestation
-            from ci.products.contract import build_contract_bundle, capture_contract_execution_evidence
+            from ci.products.inventory import read_regular_file_bytes, snapshot_regular_tree
             from ci.products.signatures import generate_development_key
-            from ci.tests.test_contract_attestation import VERSION, _producer, _receipt
             source, root, contract = map(lambda value: Path(value).resolve(), sys.argv[1:])
             contract.mkdir(parents=True)
-            payload = contract / f"codex-agent-contract-{VERSION}.zip"
-            with tempfile.TemporaryDirectory(prefix="runtime-real-contract-") as temporary:
-                staging = Path(temporary).resolve() / "staging"
-                shutil.copytree(source, staging)
-                if json.loads((staging / "evidence/canonical-coverage.json").read_bytes())["schema"] == 2:
-                    core = Path.cwd() / "codex-agent-core/build"
-                    capture_contract_execution_evidence(staging, core / "classes/kotlin/jvm/test", core / "test-results/jvmTest")
-                for inventory in (staging / "inventories").iterdir():
-                    lines = inventory.read_bytes().splitlines(keepends=True)
-                    if lines and lines[0].startswith(b"tree\t"):
-                        inventory.write_bytes(b"".join(lines[1:]))
-                content = Path(temporary).resolve() / "content"
-                shutil.copytree(staging, content, ignore=shutil.ignore_patterns("execution"))
-                build_contract_bundle(content, payload, VERSION)
+            payload = contract / "codex-agent-contract-0.2.0.zip"
+            payload.write_bytes(read_regular_file_bytes(source / payload.name, reject_symlink_parents=True))
+            closure = root / "execution-closure"
+            snapshot_regular_tree(source / "execution-closure", closure)
             receipt = contract / "phase-receipt.json"
-            _receipt(receipt, payload, _producer(7), "development")
+            receipt.write_bytes(read_regular_file_bytes(closure / "receipts/metadata.json", reject_symlink_parents=True))
             private_key, public_key, metadata = generate_development_key(root / "key")
             build_contract_attestation(
                 payload, receipt, metadata, private_key, public_key, contract / "attestation",
+                execution_closure=closure,
             )
             """.trimIndent(),
-            stage.absolutePath,
+            source.absolutePath,
             signing.absolutePath,
             contract.absolutePath,
         )

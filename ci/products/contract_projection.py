@@ -6,7 +6,7 @@ import tempfile
 from typing import Any
 import zipfile
 
-from .contract_attestation import verify_contract_attestation
+from .contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY, verify_contract_attestation
 from .contract_model import CONTRACT_COMPONENTS
 from .inventory import (
     canonical_json_bytes,
@@ -225,6 +225,10 @@ def verify_contract_component_projection(
         receipt_path.write_bytes(receipt_bytes)
         attestation_path = temporary_root / Path(attestation).name
         attestation_path.write_bytes(attestation_bytes)
+        snapshot_regular_tree(
+            Path(attestation).parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
+            temporary_root / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
+        )
         signature_path = temporary_root / Path(attestation_signature).name
         signature_path.write_bytes(signature_bytes)
         trusted_key = temporary_root / "public-key.pub"

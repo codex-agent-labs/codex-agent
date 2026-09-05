@@ -924,7 +924,8 @@ class ContractBundleTest(unittest.TestCase):
         )
         return archive
 
-    def _product_phase_stages(self, root: Path, *, execution_context: str = "first"):
+    def _product_phase_stages(self, root: Path, *, execution_context: str = "first", producer=None,
+                              trust_domain="development", target_hash_salt=b""):
         versions = {
             "contract": VERSION,
             "runtime-release": VERSION,
@@ -938,7 +939,7 @@ class ContractBundleTest(unittest.TestCase):
         }
         binary_id = PhaseInstanceId("contract", "contract", "binary", "common")
         binary_stage = root / "binary-stage"
-        raw, classes, results = self._execution_projection_fixture(root / "execution-input")
+        raw, classes, results = self._execution_projection_fixture(root / "execution-input", target_hash_salt=target_hash_salt)
         report = results / "TEST-Contract.xml"
         report.write_bytes(report.read_bytes().replace(b"first", execution_context.encode()))
         self._bind_execution_fixture(raw, classes, results)
@@ -970,8 +971,8 @@ class ContractBundleTest(unittest.TestCase):
             VERSION,
             binary_plan["buildKey"],
             binary_plan["inputs"],
-            PRODUCER,
-            "development",
+            PRODUCER if producer is None else producer,
+            trust_domain,
         )
 
         package_id = PhaseInstanceId("contract", "contract", "package", "common")
@@ -1006,8 +1007,8 @@ class ContractBundleTest(unittest.TestCase):
             VERSION,
             package_plan["buildKey"],
             package_plan["inputs"],
-            PRODUCER,
-            "development",
+            PRODUCER if producer is None else producer,
+            trust_domain,
         )
         return {
             "binary_stage": binary_stage,

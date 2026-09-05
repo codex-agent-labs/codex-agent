@@ -39,6 +39,7 @@ from .signatures import (
 _JSON_LIMIT = 16 * 1024 * 1024
 _PAYLOAD_LIMIT = 512 * 1024 * 1024
 _CLOSURE_MANIFEST = "contract-execution-closure.json"
+CONTRACT_EXECUTION_CLOSURE_DIRECTORY = "execution-closure"
 _CLOSURE_ARCHIVE = "execution/contract-execution.zip"
 _CLOSURE_RECEIPTS = {phase: f"receipts/{phase}.json" for phase in ("binary", "package", "validation", "metadata")}
 
@@ -168,11 +169,12 @@ def validate_contract_attestation(value: Any) -> dict[str, Any]:
             "payload",
             "manifestSha256",
             "metadataReceiptSha256",
+            "executionClosureSha256",
             "signing",
         },
         "Contract attestation",
     )
-    if require_integer(attestation["schemaVersion"], "Contract attestation.schemaVersion", 1) != 1:
+    if require_integer(attestation["schemaVersion"], "Contract attestation.schemaVersion", 1) != 2:
         raise ValueError("Unsupported Contract attestation schemaVersion")
     if attestation["product"] != "contract":
         raise ValueError("Contract attestation product must be contract")
@@ -189,6 +191,7 @@ def validate_contract_attestation(value: Any) -> dict[str, Any]:
     require_sha256(
         attestation["metadataReceiptSha256"], "Contract attestation.metadataReceiptSha256",
     )
+    require_sha256(attestation["executionClosureSha256"], "Contract attestation.executionClosureSha256")
     validate_signing_metadata(attestation["signing"])
     return attestation
 
@@ -260,6 +263,25 @@ def _bound_inputs(payload_path: Path, receipt_path: Path) -> tuple[
     return receipt, receipt_bytes, manifest, payload, manifest_sha256
 
 
+def _bound_execution_inputs(payload: Path, metadata_receipt: Path, execution_closure: Path):
+    """Bind one private snapshot; never rebuild or rewrite producer evidence."""
+    with tempfile.TemporaryDirectory(prefix="contract-attestation-inputs-") as temporary:
+        root = Path(temporary).resolve()
+        snapshot_payload = root / Path(payload).name
+        snapshot_payload.write_bytes(read_regular_file_bytes(payload, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True))
+        receipt_bytes = read_regular_file_bytes(metadata_receipt, max_bytes=_JSON_LIMIT, reject_symlink_parents=True)
+        snapshot_receipt = root / "metadata-receipt.json"
+        snapshot_receipt.write_bytes(receipt_bytes)
+        closure = root / CONTRACT_EXECUTION_CLOSURE_DIRECTORY
+        snapshot_regular_tree(execution_closure, closure)
+        if read_regular_file_bytes(closure / _CLOSURE_RECEIPTS["metadata"], max_bytes=_JSON_LIMIT) != receipt_bytes:
+            raise ValueError("Contract execution closure metadata receipt differs from the supplied receipt")
+        bound = _bound_inputs(snapshot_payload, snapshot_receipt)
+        verify_contract_execution_closure(snapshot_payload, closure)
+        digest = sha256_bytes(read_regular_file_bytes(closure / _CLOSURE_MANIFEST, max_bytes=_JSON_LIMIT))
+    return (*bound, digest)
+
+
 def verify_contract_attestation(
     payload: Path,
     metadata_receipt: Path,
@@ -290,18 +312,19 @@ def verify_contract_attestation(
     if Path(attestation).name != expected_attestation or Path(signature).name != expected_signature:
         raise ValueError("Contract attestation or signature filename is invalid")
     signing = validate_signing_metadata(value["signing"], trust_domain=required_trust_domain)
-    receipt, receipt_bytes, manifest, payload_identity, manifest_sha256 = _bound_inputs(
-        Path(payload), Path(metadata_receipt),
+    receipt, receipt_bytes, manifest, payload_identity, manifest_sha256, closure_digest = _bound_execution_inputs(
+        Path(payload), Path(metadata_receipt), Path(attestation).parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
     )
     if receipt["productVersion"] != version:
         raise ValueError("Contract metadata receipt version does not match its attestation")
     expected = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "product": "contract",
         "contractVersion": version,
         "payload": payload_identity,
         "manifestSha256": manifest_sha256,
         "metadataReceiptSha256": sha256_bytes(receipt_bytes),
+        "executionClosureSha256": closure_digest,
         "signing": signing,
     }
     if value != expected:
@@ -339,6 +362,7 @@ def build_contract_attestation(
     public_key: Path,
     output_directory: Path,
     *,
+    execution_closure: Path,
     keyring: Path | None = None,
     keys_directory: Path | None = None,
 ) -> dict[str, Any]:
@@ -357,22 +381,25 @@ def build_contract_attestation(
             raise ValueError("Contract attestation public key is not the active release key")
     elif keyring is not None or keys_directory is not None:
         raise ValueError("Development Contract attestation creation rejects release keyring inputs")
-    receipt, receipt_bytes, _, payload_identity, manifest_sha256 = _bound_inputs(
-        Path(payload), Path(metadata_receipt),
-    )
-    value = validate_contract_attestation({
-        "schemaVersion": 1,
-        "product": "contract",
-        "contractVersion": receipt["productVersion"],
-        "payload": payload_identity,
-        "manifestSha256": manifest_sha256,
-        "metadataReceiptSha256": sha256_bytes(receipt_bytes),
-        "signing": signing,
-    })
     output = Path(output_directory)
     with tempfile.TemporaryDirectory(prefix="contract-attestation-") as temporary:
         prepared = Path(temporary).resolve() / "attestation"
         prepared.mkdir()
+        closure = prepared / CONTRACT_EXECUTION_CLOSURE_DIRECTORY
+        snapshot_regular_tree(execution_closure, closure)
+        receipt, receipt_bytes, _, payload_identity, manifest_sha256, closure_digest = _bound_execution_inputs(
+            Path(payload), Path(metadata_receipt), closure,
+        )
+        value = validate_contract_attestation({
+            "schemaVersion": 2,
+            "product": "contract",
+            "contractVersion": receipt["productVersion"],
+            "payload": payload_identity,
+            "manifestSha256": manifest_sha256,
+            "metadataReceiptSha256": sha256_bytes(receipt_bytes),
+            "executionClosureSha256": closure_digest,
+            "signing": signing,
+        })
         stem = f"codex-agent-contract-{receipt['productVersion']}.attestation"
         attestation = prepared / f"{stem}.json"
         write_canonical_json(attestation, value)
@@ -488,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--keyring", type=Path)
         command.add_argument("--keys-directory", type=Path)
     build.add_argument("--signing-metadata", type=Path, required=True)
+    build.add_argument("--execution-closure", type=Path, required=True)
     build.add_argument("--private-key", type=Path, required=True)
     build.add_argument("--output-directory", type=Path, required=True)
     verify.add_argument("--attestation", type=Path, required=True)
@@ -522,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
             arguments.private_key,
             arguments.public_key,
             arguments.output_directory,
+            execution_closure=arguments.execution_closure,
             keyring=arguments.keyring,
             keys_directory=arguments.keys_directory,
         )

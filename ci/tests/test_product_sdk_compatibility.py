@@ -18,8 +18,8 @@ from ci.products.aggregate import (
     validate_sdk_compatibility,
 )
 from ci.products.c_abi import TARGET_SPECS, _json_bytes as c_abi_evidence_bytes
-from ci.products.contract import build_contract_bundle
-from ci.products.contract_attestation import build_contract_attestation
+from ci.products.contract import verify_contract_bundle
+from ci.products.contract_attestation import build_contract_attestation, capture_contract_execution_closure
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import (
     canonical_json_bytes,
@@ -28,11 +28,11 @@ from ci.products.inventory import (
     sha256_bytes,
     write_canonical_json,
 )
-from ci.products.receipt import compute_build_key, write_output_manifest
+from ci.products.receipt import write_output_manifest
 from ci.products import sdk_compatibility as sdk_compatibility_module
 from ci.products.sdk_compatibility import main, produce_sdk_compatibility
 from ci.products.signatures import generate_development_key
-from ci.tests.test_contract_bundle import _write_staging
+from ci.tests.test_contract_execution_closure import execution_closure_fixture
 
 
 DIGEST_A = sha256_bytes(b"a")
@@ -80,46 +80,6 @@ def _artifact(
     return value
 
 
-def _contract_receipt(path: Path, payload: Path, trust_domain: str) -> None:
-    inventory = [{
-        "relativePath": "contract-input",
-        "bytes": 1,
-        "sha256": sha256_bytes(b"i"),
-    }]
-    inputs = {
-        "inventory": inventory,
-        "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
-        "versionIdentity": "0.2.0",
-        "upstreamArtifacts": [],
-        "toolchainProfileDigest": sha256_bytes(b"toolchain"),
-        "flagsDigest": sha256_bytes(b"flags"),
-        "outputSchemaVersion": 1,
-    }
-    payload_bytes = payload.read_bytes()
-    write_canonical_json(path, {
-        "schemaVersion": 1,
-        "product": "contract",
-        "component": "contract",
-        "phase": "metadata",
-        "target": "common",
-        "productVersion": "0.2.0",
-        "buildKey": compute_build_key(
-            product="contract", component="contract", phase="metadata",
-            target="common", inputs=inputs,
-        ),
-        "inputs": inputs,
-        "outputs": [{
-            "kind": "contract-bundle",
-            "relativePath": f"outputs/{payload.name}",
-            "bytes": len(payload_bytes),
-            "sha256": sha256_bytes(payload_bytes),
-        }],
-        "producer": _producer(),
-        "trustDomain": trust_domain,
-        "result": "success",
-    })
-
-
 def _zip(path: Path, members: dict[str, bytes]) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as archive:
         for name, contents in sorted(members.items()):
@@ -145,12 +105,16 @@ class Fixture:
             root / "keys",
         )
         self.signing = {**development_signing, "trustDomain": trust_domain}
-        contract_staging = root / "contract-staging"
-        _write_staging(contract_staging)
-        self.contract_payload = root / "codex-agent-contract-0.2.0.zip"
-        self.contract = build_contract_bundle(contract_staging, self.contract_payload, "0.2.0")
-        self.contract_metadata_receipt = root / "contract-metadata-receipt.json"
-        _contract_receipt(self.contract_metadata_receipt, self.contract_payload, trust_domain)
+        self.contract_payload, contract_receipts, contract_execution = execution_closure_fixture(
+            root / "contract-source", context=f"producer-run-{producer_run_id}",
+            producer={**_producer(), "runId": producer_run_id}, trust_domain=trust_domain,
+        )
+        self.contract = verify_contract_bundle(self.contract_payload)
+        self.contract_metadata_receipt = contract_receipts["metadata"]
+        contract_closure = root / "contract-execution-closure"
+        capture_contract_execution_closure(
+            self.contract_payload, contract_receipts, contract_execution, contract_closure,
+        )
 
         self.contract_keyring = None
         self.contract_keys_directory = None
@@ -167,6 +131,7 @@ class Fixture:
             self.private_key,
             self.public_key,
             contract_attestation_directory,
+            execution_closure=contract_closure,
             keyring=self.contract_keyring,
             keys_directory=self.contract_keys_directory,
         )
@@ -610,6 +575,17 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
             self.produce(first_fixture, first)
             self.produce(second_fixture, second)
             self.assertNotEqual(first_fixture.public_key.read_bytes(), second_fixture.public_key.read_bytes())
+            self.assertEqual(
+                first_fixture.contract_payload.read_bytes(), second_fixture.contract_payload.read_bytes(),
+            )
+            self.assertNotEqual(
+                first_fixture.contract_metadata_receipt.read_bytes(),
+                second_fixture.contract_metadata_receipt.read_bytes(),
+            )
+            self.assertNotEqual(
+                (first_fixture.contract_attestation.parent / "execution-closure/contract-execution-closure.json").read_bytes(),
+                (second_fixture.contract_attestation.parent / "execution-closure/contract-execution-closure.json").read_bytes(),
+            )
             self.assertNotEqual(
                 first_fixture.runtime_metadata_receipt.read_bytes(),
                 second_fixture.runtime_metadata_receipt.read_bytes(),

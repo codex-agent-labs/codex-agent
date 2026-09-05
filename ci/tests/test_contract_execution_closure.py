@@ -20,8 +20,12 @@ from ci.products.registry import PhaseInstanceId
 from ci.tests import test_contract_bundle as fixture
 
 
-def execution_closure_fixture(root: Path, context: str = "first"):
-    phases = fixture.ContractBundleTest()._product_phase_stages(root, execution_context=context)
+def execution_closure_fixture(root: Path, context: str = "first", *, producer=None,
+                              trust_domain="development", target_hash_salt=b""):
+    phases = fixture.ContractBundleTest()._product_phase_stages(
+        root, execution_context=context, producer=producer, trust_domain=trust_domain,
+        target_hash_salt=target_hash_salt,
+    )
     version = fixture.VERSION
     validation = root / "validation-stage"
     shutil.copytree(phases["package_stage"] / "outputs", validation / "outputs")
@@ -49,12 +53,14 @@ def execution_closure_fixture(root: Path, context: str = "first"):
             toolchain_profile_digest=sha256_bytes(b"not-applicable-toolchain"),
             flags_digest=sha256_bytes(b"not-applicable-flags"),
         )
-        producer = {**fixture.PRODUCER, "runId": index + 20, "commit": str(index) * 40, "tree": str(index + 1) * 40}
+        phase_producer = producer if producer is not None else {
+            **fixture.PRODUCER, "runId": index + 20, "commit": str(index) * 40, "tree": str(index + 1) * 40,
+        }
         receipt_root = root / f"{phase}-receipt"
         receipt_root.mkdir()
         upstream = write_phase_receipt(
             stage, receipt_root, "contract", "contract", phase, "common", version,
-            plan["buildKey"], plan["inputs"], producer, "development",
+            plan["buildKey"], plan["inputs"], phase_producer, trust_domain,
         )
         receipts[phase] = receipt_root / "phase-receipt.json"
     return payload, receipts, phases["binary_stage"] / "outputs/execution/contract-execution.zip"

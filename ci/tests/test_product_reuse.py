@@ -15,8 +15,8 @@ import zipfile
 import ci.products.contract_projection as contract_projection
 import ci.products.index as product_index
 import ci.products.reuse as product_reuse
-from ci.products.contract import build_contract_bundle, capture_contract_execution_evidence
-from ci.products.contract_attestation import build_contract_attestation
+from ci.products.contract import build_contract_bundle, capture_contract_execution_evidence, validate_contract_package_stage
+from ci.products.contract_attestation import build_contract_attestation, capture_contract_execution_closure
 from ci.products.inventory import canonical_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.plan import (
     NOT_APPLICABLE_FLAGS_DIGEST,
@@ -48,7 +48,6 @@ from ci.products.reuse import (
 )
 from ci.products.signatures import generate_development_key, sign_manifest
 from ci.tests import test_contract_bundle as contract_fixture
-from ci.tests.test_contract_bundle import PRODUCER as CONTRACT_PRODUCER, _write_staging
 
 
 DIGEST_A = sha256_bytes(b"a")
@@ -279,6 +278,51 @@ def plan_for(
         ),
         **inputs[instance],
     )
+
+
+def contract_execution_chain(root: Path, inputs):
+    """Real four-phase fixture artifacts for admission tests, not hosted evidence."""
+    resolved, objects, receipts = {}, {}, {}
+    roots = {"maven": "outputs/maven", "evidence": "outputs/evidence", "inventory": "outputs/inventories"}
+    for instance in (CONTRACT_BINARY, CONTRACT_PACKAGE, CONTRACT_VALIDATION, CONTRACT_METADATA):
+        stage = root / instance.phase
+        if instance == CONTRACT_BINARY:
+            for name, contents in binary_stage_files(VERSIONS["contract"]).items():
+                target = stage / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(contents)
+            output_roots = {**roots, "contract-execution": "outputs/execution"}
+        elif instance == CONTRACT_PACKAGE:
+            shutil.copytree(root / "binary/outputs", stage / "outputs", ignore=shutil.ignore_patterns("execution"))
+            output_roots = roots
+        elif instance == CONTRACT_VALIDATION:
+            shutil.copytree(root / "package/outputs", stage / "outputs")
+            validate_contract_package_stage(
+                root / "package", receipts["package"], resolved[CONTRACT_PACKAGE]["receiptSha256"],
+                receipts["binary"], resolved[CONTRACT_BINARY]["receiptSha256"],
+                stage / "outputs/validation", VERSIONS["contract"],
+            )
+            output_roots = {**roots, "validation": "outputs/validation"}
+        else:
+            payload = stage / "outputs" / f"codex-agent-contract-{VERSIONS['contract']}.zip"
+            build_contract_bundle(root / "package/outputs", payload, VERSIONS["contract"])
+            output_roots = {"contract-bundle": "outputs"}
+        manifest = write_output_manifest(stage, "contract", "contract", instance.phase, "common", VERSIONS["contract"], output_roots)
+        planned = plan_for(instance, inputs, resolved)
+        envelope = envelope_for_plan(planned)
+        envelope["receipt"]["outputs"] = manifest["outputs"]
+        envelope["receiptBytes"] = canonical_json_bytes(validate_phase_receipt(envelope["receipt"]))
+        envelope["receiptSha256"] = sha256_bytes(envelope["receiptBytes"])
+        receipts[instance.phase] = root / f"{instance.phase}-receipt.json"
+        receipts[instance.phase].write_bytes(envelope["receiptBytes"])
+        stored = store_local_object(stage, receipts[instance.phase], root / "cache")
+        envelope["objectSha256"] = stored["objectSha256"]
+        resolved[instance] = envelope
+        objects[instance] = (envelope, stored["path"])
+    capture_contract_execution_closure(
+        payload, receipts, root / "binary/outputs/execution/contract-execution.zip", root / "closure",
+    )
+    return resolved, objects, payload, receipts["metadata"], root / "closure"
 
 
 def retained_chain(
@@ -1066,73 +1110,15 @@ class ProductReuseTest(unittest.TestCase):
             }
             for instance in closure
         }
-        resolved: dict[PhaseInstanceId, dict[str, object]] = {}
-        objects: dict[PhaseInstanceId, tuple[dict[str, object], Path]] = {}
-        pending = set(dependency_closure(CONTRACT_METADATA))
-        metadata_stage = self.root / "contract-metadata-stage"
-        while pending:
-            ready = sorted(
-                instance for instance in pending
-                if all(dependency in resolved for dependency in phase_instance_dependencies(instance))
-            )
-            self.assertTrue(ready)
-            for instance in ready:
-                planned = plan_for(instance, inputs, resolved)
-                if instance == CONTRACT_METADATA:
-                    contract_staging = self.root / "contract-input"
-                    _write_staging(contract_staging, contract_version=VERSIONS["contract"])
-                    bundle = metadata_stage / "outputs" / (
-                        f"codex-agent-contract-{VERSIONS['contract']}.zip"
-                    )
-                    build_contract_bundle(
-                        contract_staging,
-                        bundle,
-                        VERSIONS["contract"],
-                    )
-                    manifest = write_output_manifest(
-                        metadata_stage,
-                        "contract",
-                        "contract",
-                        "metadata",
-                        "common",
-                        VERSIONS["contract"],
-                        {"contract-bundle": "outputs"},
-                    )
-                    envelope = envelope_for_plan(planned, trust_domain="development")
-                    envelope["receipt"]["outputs"] = manifest["outputs"]
-                    envelope["receipt"]["producer"] = copy.deepcopy(CONTRACT_PRODUCER)
-                    envelope["receiptBytes"] = canonical_json_bytes(envelope["receipt"])
-                    envelope["receiptSha256"] = sha256_bytes(envelope["receiptBytes"])
-                    receipt_path = self.root / "contract-metadata-receipt.json"
-                    write_canonical_json(receipt_path, envelope["receipt"])
-                    attestation_directory = self.root / "contract-attestation"
-                    build_contract_attestation(
-                        bundle,
-                        receipt_path,
-                        self.development_signing,
-                        self.private_key,
-                        self.public_key,
-                        attestation_directory,
-                    )
-                    attestation = attestation_directory / (
-                        f"codex-agent-contract-{VERSIONS['contract']}.attestation.json"
-                    )
-                    attestation_signature = attestation.with_suffix(".sig")
-                    stored = store_local_object(
-                        metadata_stage,
-                        receipt_path,
-                        self.root / "contract-metadata-cache",
-                    )
-                    envelope["objectSha256"] = stored["objectSha256"]
-                    object_path = stored["path"]
-                else:
-                    envelope, object_path = self.object_for_plan(
-                        planned,
-                        trust_domain="development",
-                    )
-                resolved[instance] = envelope
-                objects[instance] = (envelope, object_path)
-                pending.remove(instance)
+        resolved, objects, bundle, receipt_path, execution_closure = contract_execution_chain(self.root / "contract-chain", inputs)
+        metadata_stage = bundle.parent.parent
+        attestation_directory = self.root / "contract-attestation"
+        build_contract_attestation(
+            bundle, receipt_path, self.development_signing, self.private_key,
+            self.public_key, attestation_directory, execution_closure=execution_closure,
+        )
+        attestation = attestation_directory / f"codex-agent-contract-{VERSIONS['contract']}.attestation.json"
+        attestation_signature = attestation.with_suffix(".sig")
 
         projection = contract_projection.verify_contract_component_projection(
             metadata_stage,
@@ -1282,25 +1268,9 @@ class ProductReuseTest(unittest.TestCase):
 
     def test_release_attestation_authenticates_unchanged_development_contract_receipt(self) -> None:
         inputs = all_inputs(CONTRACT_METADATA)
-        resolved = retained_chain(CONTRACT_VALIDATION, inputs)
+        resolved, objects, payload, receipt, execution_closure = contract_execution_chain(self.root / "release-contract-chain", inputs)
         plan = plan_for(CONTRACT_METADATA, inputs, resolved)
-        stage = self.root / "release-attested-stage"
-        payload = stage / "outputs" / f"codex-agent-contract-{VERSIONS['contract']}.zip"
-        contract_input = self.root / "release-attested-input"
-        _write_staging(contract_input, contract_version=VERSIONS["contract"])
-        build_contract_bundle(contract_input, payload, VERSIONS["contract"])
-        output_manifest = write_output_manifest(
-            stage, "contract", "contract", "metadata", "common", VERSIONS["contract"],
-            {"contract-bundle": "outputs"},
-        )
-        envelope = envelope_for_plan(plan, trust_domain="development")
-        envelope["receipt"]["outputs"] = output_manifest["outputs"]
-        envelope["receiptBytes"] = canonical_json_bytes(envelope["receipt"])
-        envelope["receiptSha256"] = sha256_bytes(envelope["receiptBytes"])
-        receipt = self.root / "release-attested-receipt.json"
-        receipt.write_bytes(envelope["receiptBytes"])
-        stored = store_local_object(stage, receipt, self.root / "release-attested-cache")
-        envelope["objectSha256"] = stored["objectSha256"]
+        envelope, object_path = objects[CONTRACT_METADATA]
 
         attestation_root = self.root / "release-attestation"
         build_contract_attestation(
@@ -1310,13 +1280,14 @@ class ProductReuseTest(unittest.TestCase):
             self.private_key,
             self.public_key,
             attestation_root,
+            execution_closure=execution_closure,
             keyring=self.release_keyring,
             keys_directory=self.release_keys,
         )
         stem = f"codex-agent-contract-{VERSIONS['contract']}.attestation"
         attestation = attestation_root / f"{stem}.json"
         attestation_signature = attestation_root / f"{stem}.sig"
-        indexed = self.catalog("promoted-main", [(envelope, stored["path"])])
+        indexed = self.catalog("promoted-main", [(envelope, object_path)])
         catalog = RemoteCatalog(
             indexed.manifest,
             indexed.signature,

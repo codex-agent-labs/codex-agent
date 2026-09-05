@@ -1,30 +1,33 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
+import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
 from ci.products.contract_attestation import (
     build_contract_attestation,
+    capture_contract_execution_closure,
     main,
     materialize_contract_payload,
     validate_contract_attestation,
     verify_contract_attestation,
 )
-from ci.products.contract import build_contract_bundle
 from ci.products.contract_model import verify_extracted_contract_directory
 from ci.products.inventory import (
-    canonical_json_bytes,
+    load_canonical_json,
     public_key_fingerprint,
     sha256_bytes,
     write_canonical_json,
 )
-from ci.products.receipt import compute_build_key
 from ci.products.signatures import generate_development_key, sign_manifest
-from ci.tests.test_contract_bundle import _write_staging
+from ci.tests.test_contract_execution_closure import execution_closure_fixture
 
 
 VERSION = "0.2.0"
@@ -45,52 +48,26 @@ def _producer(run_id: int) -> dict[str, object]:
 
 def _payload(path: Path, marker: str = "payload") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="contract-attestation-payload-", dir=path.parent) as temporary:
-        root = Path(temporary)
-        staging = root / "staging"
-        _write_staging(staging, target_hash_salt=marker.encode())
-        built = root / path.name
-        build_contract_bundle(staging, built, VERSION)
-        shutil.copyfile(built, path)
+    source = path.with_name(path.name + ".execution-source")
+    if not source.exists():
+        execution_closure_fixture(source, target_hash_salt=marker.encode())
+    shutil.copyfile(source / "metadata-stage/outputs" / path.name, path)
 
 
 def _receipt(path: Path, payload: Path, producer: dict[str, object], trust: str) -> None:
-    inventory = [{
-        "relativePath": "contract-input",
-        "bytes": 1,
-        "sha256": sha256_bytes(b"i"),
-    }]
-    inputs = {
-        "inventory": inventory,
-        "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
-        "versionIdentity": VERSION,
-        "upstreamArtifacts": [],
-        "toolchainProfileDigest": sha256_bytes(b"toolchain"),
-        "flagsDigest": sha256_bytes(b"flags"),
-        "outputSchemaVersion": 1,
-    }
-    contents = payload.read_bytes()
-    write_canonical_json(path, {
-        "schemaVersion": 1,
-        "product": "contract",
-        "component": "contract",
-        "phase": "metadata",
-        "target": "common",
-        "productVersion": VERSION,
-        "buildKey": compute_build_key(
-            product="contract", component="contract", phase="metadata", target="common", inputs=inputs,
-        ),
-        "inputs": inputs,
-        "outputs": [{
-            "kind": "contract-bundle",
-            "relativePath": f"outputs/{payload.name}",
-            "bytes": len(contents),
-            "sha256": sha256_bytes(contents),
-        }],
-        "producer": producer,
-        "trustDomain": trust,
-        "result": "success",
-    })
+    source = payload.with_name(payload.name + ".execution-source")
+    value = load_canonical_json(source / "metadata-receipt/phase-receipt.json")
+    write_canonical_json(path, {**value, "producer": producer, "trustDomain": trust})
+
+
+def _closure(payload: Path, receipt: Path, output: Path) -> Path:
+    source = payload.with_name(payload.name + ".execution-source")
+    receipts = {phase: source / f"{phase}-receipt/phase-receipt.json" for phase in ("binary", "package", "validation")}
+    capture_contract_execution_closure(
+        payload, {**receipts, "metadata": receipt},
+        source / "binary-stage/outputs/execution/contract-execution.zip", output,
+    )
+    return output
 
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
@@ -116,6 +93,7 @@ class ContractAttestationTest(unittest.TestCase):
             self.private_key,
             self.public_key,
             output,
+            execution_closure=_closure(self.payload, self.receipt, self.root / (name + "-closure")),
         )
         stem = f"codex-agent-contract-{VERSION}.attestation"
         return output / f"{stem}.json", output / f"{stem}.sig", value
@@ -135,6 +113,7 @@ class ContractAttestationTest(unittest.TestCase):
     def resign(self, value: dict[str, object], name: str) -> tuple[Path, Path]:
         directory = self.root / name
         directory.mkdir()
+        _closure(self.payload, self.receipt, directory / "execution-closure")
         attestation = directory / f"codex-agent-contract-{VERSION}.attestation.json"
         write_canonical_json(attestation, value)
         return attestation, sign_manifest(attestation, self.private_key, value["signing"])
@@ -145,13 +124,13 @@ class ContractAttestationTest(unittest.TestCase):
         self.assertEqual(
             {
                 "schemaVersion", "product", "contractVersion", "payload", "manifestSha256",
-                "metadataReceiptSha256", "signing",
+                "metadataReceiptSha256", "executionClosureSha256", "signing",
             },
             set(value),
         )
         self.assertNotIn("producer", value)
         self.assertEqual(
-            [attestation.name, signature.name], sorted(path.name for path in attestation.parent.iterdir()),
+            sorted([attestation.name, signature.name, "execution-closure"]), sorted(path.name for path in attestation.parent.iterdir()),
         )
 
     def test_materializes_only_the_exact_attested_payload(self) -> None:
@@ -255,6 +234,7 @@ class ContractAttestationTest(unittest.TestCase):
         changed_signer["signing"]["keyId"] = "development-tampered"
         signing_directory = self.root / "signing"
         signing_directory.mkdir()
+        shutil.copytree(attestation.parent / "execution-closure", signing_directory / "execution-closure")
         signing_attestation = signing_directory / attestation.name
         write_canonical_json(signing_attestation, changed_signer)
         with self.assertRaises(ValueError):
@@ -282,7 +262,7 @@ class ContractAttestationTest(unittest.TestCase):
             self.verify(attestation, damaged)
 
         _receipt(self.receipt, self.payload, _producer(8), "development")
-        with self.assertRaisesRegex(ValueError, "does not bind"):
+        with self.assertRaisesRegex(ValueError, "differs from the supplied receipt"):
             self.verify(attestation, signature)
 
     def test_release_and_development_use_the_same_verifier(self) -> None:
@@ -321,6 +301,7 @@ class ContractAttestationTest(unittest.TestCase):
             self.private_key,
             self.public_key,
             output,
+            execution_closure=_closure(self.payload, self.receipt, self.root / "release-closure"),
             keyring=keyring,
             keys_directory=keys,
         )
@@ -376,6 +357,7 @@ class ContractAttestationTest(unittest.TestCase):
                 self.private_key,
                 self.public_key,
                 self.root / "retired-output",
+                execution_closure=self.root / "not-read-retired-closure",
                 keyring=keyring,
                 keys_directory=keys,
             )
@@ -405,6 +387,7 @@ class ContractAttestationTest(unittest.TestCase):
             self.private_key,
             self.public_key,
             output,
+            execution_closure=_closure(self.payload, self.receipt, self.root / "rotated-closure"),
             keyring=keyring,
             keys_directory=keys,
         )
@@ -517,3 +500,74 @@ class ContractAttestationTest(unittest.TestCase):
         changed = {**value, "producer": _producer(7)}
         with self.assertRaisesRegex(ValueError, "fields are invalid"):
             validate_contract_attestation(changed)
+        with self.assertRaisesRegex(ValueError, "schemaVersion"):
+            validate_contract_attestation({**value, "schemaVersion": 1})
+
+    def test_signed_closure_is_mandatory_and_rebound_raw_evidence_is_rejected(self) -> None:
+        attestation, signature, value = self.build()
+        source = attestation.parent / "execution-closure"
+        retained_receipts = {phase: (source / f"receipts/{phase}.json").read_bytes()
+                             for phase in ("binary", "package", "validation", "metadata")}
+        for mutation in ("missing", "digest", "rebound-receipt"):
+            with self.subTest(mutation=mutation):
+                output = self.root / mutation
+                shutil.copytree(attestation.parent, output)
+                closure = output / "execution-closure"
+                changed = copy.deepcopy(value)
+                if mutation == "missing":
+                    (closure / "execution/contract-execution.zip").unlink()
+                elif mutation == "digest":
+                    changed["executionClosureSha256"] = sha256_bytes(b"wrong")
+                else:
+                    binary = closure / "receipts/binary.json"
+                    receipt = load_canonical_json(binary)
+                    receipt["outputs"][-1]["sha256"] = sha256_bytes(b"wrong")
+                    write_canonical_json(binary, receipt)
+                    manifest_path = closure / "contract-execution-closure.json"
+                    manifest = load_canonical_json(manifest_path)
+                    record = next(item for item in manifest["files"] if item["relativePath"] == "receipts/binary.json")
+                    record.update(bytes=len(binary.read_bytes()), sha256=sha256_bytes(binary.read_bytes()))
+                    write_canonical_json(manifest_path, manifest)
+                    changed["executionClosureSha256"] = sha256_bytes(manifest_path.read_bytes())
+                changed_attestation = output / attestation.name
+                write_canonical_json(changed_attestation, changed)
+                (output / signature.name).unlink()
+                changed_signature = sign_manifest(changed_attestation, self.private_key, changed["signing"])
+                with self.assertRaises(ValueError):
+                    self.verify(changed_attestation, changed_signature)
+                if mutation != "digest":
+                    with mock.patch("ci.products.contract_attestation.sign_manifest") as signer:
+                        with self.assertRaises(ValueError):
+                            build_contract_attestation(
+                                self.payload, self.receipt, self.signing, self.private_key, self.public_key,
+                                self.root / (mutation + "-rejected"), execution_closure=closure,
+                            )
+                        signer.assert_not_called()
+        self.assertEqual(retained_receipts, {phase: (source / f"receipts/{phase}.json").read_bytes()
+                                            for phase in retained_receipts})
+
+    def test_runtime_neutral_python_closure_materializes_and_rejects_missing_raw_proof(self) -> None:
+        attestation, signature, _ = self.build()
+        repository = Path(__file__).resolve().parents[2]
+        runtime_fixture = repository / "runtime/build-logic/src/test/kotlin/RuntimeIsolationFixtureTest.kt"
+        declaration = runtime_fixture.read_text().split("private val runtimePythonClosure = setOf(", 1)[1].split("\n    )", 1)[0]
+        isolated = self.root / "isolated-runtime-python"
+        for relative in re.findall(r'"([^"\n]+)"', declaration):
+            target = isolated / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(repository / relative, target)
+        command = [sys.executable, "-m", "ci.products.contract_attestation", "materialize",
+                   "--payload", str(self.payload), "--metadata-receipt", str(self.receipt),
+                   "--attestation", str(attestation), "--signature", str(signature),
+                   "--public-key", str(self.public_key), "--required-trust-domain", "development",
+                   "--expected-contract-version", VERSION, "--required-component", "common",
+                   "--output-directory", str(self.root / "isolated-materialized")]
+        environment = {**os.environ, "PYTHONPATH": str(isolated), "PYTHONDONTWRITEBYTECODE": "1"}
+        accepted = subprocess.run(command, cwd=isolated, env=environment, capture_output=True, text=True, timeout=60)
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        (attestation.parent / "execution-closure/execution/contract-execution.zip").unlink()
+        command[-1] = str(self.root / "rejected-materialized")
+        rejected = subprocess.run(command, cwd=isolated, env=environment, capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("inventory", rejected.stderr)
+        self.assertFalse((self.root / "rejected-materialized").exists())
