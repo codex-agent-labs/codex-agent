@@ -49,6 +49,7 @@ from native_wrappers import (  # noqa: E402
     set_dart_consumer_path,
     set_source_sdk_version,
     stage_dart_release,
+    write_package_toolchains,
 )
 from products.inventory import canonical_json_bytes  # noqa: E402
 
@@ -69,6 +70,18 @@ def write_zip_file(path: Path, name: str, contents: str) -> None:
 
 
 class NativeWrapperReleaseTest(unittest.TestCase):
+    def test_cpp_source_package_records_packager_not_host_compiler(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "cpp").mkdir()
+            with patch("native_wrappers.version", return_value="cmake version fixture") as probe:
+                write_package_toolchains(root, ("cpp",))
+            probe.assert_called_once_with("cmake", "--version")
+            self.assertEqual(
+                (root / "cpp/codex-agent-cpp-package-toolchain.tsv").read_text(),
+                "tool\tversion\ncmake\tcmake version fixture\n",
+            )
+
     @unittest.skipIf(sys.platform == "win32", "stdlib venv symlink fixture is POSIX-specific")
     def test_installed_python_proof_scan_is_scoped_below_venv_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -463,6 +476,13 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 forbidden.unlink()
                 mutation = build_language(root, language, sdks)
                 if language == "cpp":
+                    host_loader = root / "cpp-macos-arm64/lib/libCodexAgentLoader.a"
+                    host_loader.write_bytes(b"unverified host-built loader")
+                    build_language(root, language, sdks)
+                    with self.assertRaisesRegex(ValueError, "native target inventory mismatch"):
+                        require_embedded_native_assets(root / "packages", sdks, "0.2.0", (language,))
+                    host_loader.unlink()
+                    build_language(root, language, sdks)
                     for classifier, relative, pattern in (
                         ("macos-arm64", "include/codex_agent.h", "native artifact differs"),
                         ("windows-x64", "lib/codex_agent.lib", "native artifact differs"),
@@ -548,6 +568,11 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             set_source_sdk_version(root, "3.4.5")
             require_source_sdk_version(root, "3.4.5")
             self.assertIn('version = "3.4.5"', (root / "rust/Cargo.lock").read_text(encoding="utf-8"))
+
+            cpp_manifest = root / "cpp/CMakeLists.txt"
+            cpp_manifest.write_text("project(CodexAgent VERSION 3.4.5 LANGUAGES NONE)\n", encoding="utf-8")
+            set_source_sdk_version(root, "3.4.6", ("cpp",))
+            self.assertEqual(cpp_manifest.read_text(encoding="utf-8"), "project(CodexAgent VERSION 3.4.6 LANGUAGES NONE)\n")
 
             shutil.rmtree(root / "python")
             shutil.rmtree(root / "csharp")
@@ -917,6 +942,8 @@ class NativeWrapperReleaseTest(unittest.TestCase):
         self.assertIn("normalize_python_sdist", calls["package_python"])
         self.assertIn("normalize_nupkg", calls["package_once"])
         self.assertIn("-p:PathMap=", ast.unparse(functions["package_once"]))
+        self.assertIn("work = Path(temporary).resolve()", ast.unparse(functions["package_once"]))
+        self.assertIn("-DCODEX_AGENT_CPP_PACKAGE_ONLY=ON", ast.unparse(functions["package_once"]))
         self.assertFalse(any(
             isinstance(node, ast.Subscript)
             and isinstance(node.ctx, ast.Store)

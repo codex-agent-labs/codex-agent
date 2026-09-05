@@ -5,8 +5,8 @@ set(CodexAgent_C_SDK_INCLUDE_DIR "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDI
 set(CodexAgent_C_SDK_LIBRARY "${PACKAGE_PREFIX_DIR}/@CODEX_AGENT_C_SDK_LIBRARY_RELATIVE@")
 set(CodexAgent_SDK_COMPATIBILITY
     "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/native/sdk-compatibility.json")
-set(CodexAgent_CPP_LOADER
-    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/@CMAKE_STATIC_LIBRARY_PREFIX@CodexAgentLoader@CMAKE_STATIC_LIBRARY_SUFFIX@")
+set(CodexAgent_CPP_LOADER_SOURCE
+    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_DATADIR@/CodexAgent/loader/native_loader.cpp")
 
 if(NOT CodexAgent_C_SDK_INCLUDE_DIR OR NOT EXISTS "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h")
     set(CodexAgent_FOUND FALSE)
@@ -18,16 +18,11 @@ if(NOT CodexAgent_C_SDK_LIBRARY OR NOT EXISTS "${CodexAgent_C_SDK_LIBRARY}")
     set(CodexAgent_NOT_FOUND_MESSAGE "CodexAgent package is missing its verified native C SDK library")
     return()
 endif()
-if(NOT EXISTS "${CodexAgent_CPP_LOADER}")
-    set(CodexAgent_FOUND FALSE)
-    set(CodexAgent_NOT_FOUND_MESSAGE "CodexAgent package is missing its native loader")
-    return()
-endif()
-
 set(_codex_agent_verified_files
     "${CodexAgent_C_SDK_INCLUDE_DIR}/codex_agent.h|@CODEX_AGENT_C_SDK_HEADER_SHA256@"
     "${CodexAgent_C_SDK_LIBRARY}|@CODEX_AGENT_C_SDK_LIBRARY_SHA256@"
     "${CodexAgent_SDK_COMPATIBILITY}|@CODEX_AGENT_SDK_COMPATIBILITY_SHA256@"
+    "${CodexAgent_CPP_LOADER_SOURCE}|@CODEX_AGENT_CPP_LOADER_SOURCE_SHA256@"
 )
 if(CodexAgent_NATIVE_CLASSIFIER MATCHES "^linux-")
     list(APPEND _codex_agent_verified_files
@@ -75,15 +70,24 @@ if(NOT _codex_agent_host STREQUAL CodexAgent_NATIVE_CLASSIFIER)
 endif()
 
 if(NOT TARGET CodexAgent::Loader)
-    add_library(CodexAgent::Loader STATIC IMPORTED)
-    set_target_properties(
-        CodexAgent::Loader
-        PROPERTIES
-            IMPORTED_LOCATION "${CodexAgent_CPP_LOADER}"
-            INTERFACE_INCLUDE_DIRECTORIES "${CodexAgent_C_SDK_INCLUDE_DIR}"
+    if(TARGET CodexAgentLoader)
+        set(CodexAgent_FOUND FALSE)
+        set(CodexAgent_NOT_FOUND_MESSAGE "CodexAgentLoader target already exists without CodexAgent::Loader")
+        return()
+    endif()
+    add_library(CodexAgentLoader STATIC "${CodexAgent_CPP_LOADER_SOURCE}")
+    add_library(CodexAgent::Loader ALIAS CodexAgentLoader)
+    target_compile_features(CodexAgentLoader PUBLIC cxx_std_20)
+    target_include_directories(
+        CodexAgentLoader PUBLIC "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@"
     )
     if(CMAKE_DL_LIBS)
-        set_property(TARGET CodexAgent::Loader PROPERTY INTERFACE_LINK_LIBRARIES "${CMAKE_DL_LIBS}")
+        target_link_libraries(CodexAgentLoader PUBLIC "${CMAKE_DL_LIBS}")
+    endif()
+    if(MSVC)
+        target_compile_options(CodexAgentLoader PRIVATE /W4 /WX)
+    else()
+        target_compile_options(CodexAgentLoader PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
 endif()
 

@@ -306,11 +306,8 @@ def write_package_toolchains(output: Path, languages: tuple[str, ...] = LANGUAGE
     if "dart" in languages:
         identities["dart"] = {"dart": version("dart", "--version")}
     if "cpp" in languages:
-        compiler = "cl" if os.name == "nt" else os.environ.get("CXX", "c++")
         identities["cpp"] = {
             "cmake": version("cmake", "--version").split(";", 1)[0],
-            "cppCompiler": version(compiler, allowed_return_codes=(0, 2))
-            if os.name == "nt" else version(compiler, "--version"),
         }
     for language in languages:
         tools = identities[language]
@@ -356,7 +353,7 @@ def require_source_sdk_version(
     if "cpp" in languages:
         versions["cpp"] = require_match(
             re.search(
-                r"(?m)^project\(CodexAgent VERSION ([^ ]+) LANGUAGES CXX\)$",
+                r"(?m)^project\(CodexAgent VERSION ([^ ]+) LANGUAGES (?:CXX|NONE)\)$",
                 regular("cpp/CMakeLists.txt").read_text(encoding="utf-8"),
             ),
             "C++ package manifest does not declare the CodexAgent project version",
@@ -390,7 +387,7 @@ def set_source_sdk_version(
     replacements = {
         "python": ("python/pyproject.toml", r'^(version = ")[^"]+("\s*)$', rf"\g<1>{version}\g<2>", "Python manifest"),
         "csharp": ("csharp/src/CodexAgent/CodexAgent.csproj", r"(<VersionPrefix>)[^<]+(</VersionPrefix>)", rf"\g<1>{version}\g<2>", "C# manifest"),
-        "cpp": ("cpp/CMakeLists.txt", r"^project\(CodexAgent VERSION \S+ LANGUAGES CXX\)$", f"project(CodexAgent VERSION {version} LANGUAGES CXX)", "C++ manifest"),
+        "cpp": ("cpp/CMakeLists.txt", r"^(project\(CodexAgent VERSION )\S+( LANGUAGES (?:CXX|NONE)\))$", rf"\g<1>{version}\g<2>", "C++ manifest"),
         "dart": ("dart/pubspec.yaml", r"^version: \S+$", f"version: {version}", "Dart manifest"),
     }
     for language in languages:
@@ -540,7 +537,7 @@ def package_once(
     clean_output(output)
     require_prepared_native_assets(sources, sdks, sdk_version, languages)
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-package-") as temporary:
-        work = Path(temporary)
+        work = Path(temporary).resolve()
         for language in languages:
             if not (sources / language).is_dir():
                 raise ValueError(f"missing prepared wrapper source: {language}")
@@ -603,6 +600,7 @@ def package_once(
                     f"-DCodexAgent_C_SDK_ROOT={cpp_source / 'native' / classifier}",
                     f"-DCodexAgent_NATIVE_CLASSIFIER={classifier}",
                     "-DCMAKE_BUILD_TYPE=Release", "-DCODEX_AGENT_CPP_BUILD_TESTS=OFF",
+                    "-DCODEX_AGENT_CPP_PACKAGE_ONLY=ON",
                     "-DCODEX_AGENT_CPP_INSTALL_PACKAGE=ON", cwd=work,
                 )
                 run("cmake", "--install", build, "--prefix", install, "--config", "Release", cwd=work)
@@ -984,6 +982,7 @@ def require_embedded_native_assets(
                     if path.relative_to(package).as_posix() == "include/codex_agent.h"
                     or path.name.startswith("libcodex_agent.")
                     or path.name in {"codex_agent.dll", "codex_agent.lib"}
+                    or path.suffix in {".a", ".lib", ".o", ".obj", ".dll", ".dylib", ".so"}
                 }
                 if actual_native != expected_native:
                     raise ValueError("C++ package native target inventory mismatch")

@@ -1,8 +1,19 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(CodexAgent VERSION 0.2.0 LANGUAGES CXX)
+option(
+    CODEX_AGENT_CPP_PACKAGE_ONLY
+    "Configure the target-specific source package without enabling a host C++ toolchain"
+    OFF
+)
+project(CodexAgent VERSION 0.2.0 LANGUAGES NONE)
+if(NOT CODEX_AGENT_CPP_PACKAGE_ONLY)
+    enable_language(CXX)
+endif()
 
 include(CMakePackageConfigHelpers)
+if(CODEX_AGENT_CPP_PACKAGE_ONLY AND NOT DEFINED CMAKE_INSTALL_LIBDIR)
+    set(CMAKE_INSTALL_LIBDIR "lib" CACHE PATH "Object code libraries")
+endif()
 include(GNUInstallDirs)
 
 set(
@@ -86,57 +97,62 @@ set(
     "Passed canonical C ABI fixture evidence used by native-wrapper parity tests"
 )
 
-add_library(CodexAgent INTERFACE)
-add_library(CodexAgent::CodexAgent ALIAS CodexAgent)
-add_library(CodexAgentLoader STATIC src/native_loader.cpp)
-add_library(CodexAgent::Loader ALIAS CodexAgentLoader)
-target_compile_features(CodexAgentLoader PUBLIC cxx_std_20)
-target_include_directories(
-    CodexAgentLoader
-    PUBLIC
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-        "$<BUILD_INTERFACE:${CodexAgent_C_SDK_INCLUDE_DIR}>"
-        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
-)
-if(CMAKE_DL_LIBS)
-    target_link_libraries(CodexAgentLoader PUBLIC ${CMAKE_DL_LIBS})
-endif()
-if(MSVC)
-    target_compile_options(CodexAgentLoader PRIVATE /W4 /WX)
-else()
-    target_compile_options(CodexAgentLoader PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
-target_compile_features(CodexAgent INTERFACE cxx_std_20)
-target_include_directories(
-    CodexAgent
-    INTERFACE
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-        "$<BUILD_INTERFACE:${CodexAgent_C_SDK_INCLUDE_DIR}>"
-        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
-)
-target_compile_definitions(
-    CodexAgent
-    INTERFACE
-        CODEX_AGENT_CPP_DEFAULT_LIBRARY_PATH="$<BUILD_INTERFACE:${CodexAgent_C_SDK_LIBRARY}>"
-        CODEX_AGENT_CPP_COMPATIBILITY_PATH="$<BUILD_INTERFACE:${CodexAgent_SDK_COMPATIBILITY}>"
-)
-target_link_libraries(CodexAgent INTERFACE CodexAgentLoader)
-
-if(CodexAgent_C_SDK_LIBRARY)
-    if(NOT EXISTS "${CodexAgent_C_SDK_LIBRARY}")
-        message(FATAL_ERROR "CodexAgent_C_SDK_LIBRARY does not exist: ${CodexAgent_C_SDK_LIBRARY}")
-    endif()
-    add_library(CodexAgentC UNKNOWN IMPORTED)
-    add_library(CodexAgent::C ALIAS CodexAgentC)
-    set_target_properties(
-        CodexAgentC
-        PROPERTIES
-            IMPORTED_LOCATION "${CodexAgent_C_SDK_LIBRARY}"
-            INTERFACE_INCLUDE_DIRECTORIES "${CodexAgent_C_SDK_INCLUDE_DIR}"
+if(NOT CODEX_AGENT_CPP_PACKAGE_ONLY)
+    add_library(CodexAgent INTERFACE)
+    add_library(CodexAgent::CodexAgent ALIAS CodexAgent)
+    add_library(CodexAgentLoader STATIC src/native_loader.cpp)
+    add_library(CodexAgent::Loader ALIAS CodexAgentLoader)
+    target_compile_features(CodexAgentLoader PUBLIC cxx_std_20)
+    target_include_directories(
+        CodexAgentLoader
+        PUBLIC
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+            "$<BUILD_INTERFACE:${CodexAgent_C_SDK_INCLUDE_DIR}>"
+            "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
     )
+    if(CMAKE_DL_LIBS)
+        target_link_libraries(CodexAgentLoader PUBLIC ${CMAKE_DL_LIBS})
+    endif()
+    if(MSVC)
+        target_compile_options(CodexAgentLoader PRIVATE /W4 /WX)
+    else()
+        target_compile_options(CodexAgentLoader PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    target_compile_features(CodexAgent INTERFACE cxx_std_20)
+    target_include_directories(
+        CodexAgent
+        INTERFACE
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+            "$<BUILD_INTERFACE:${CodexAgent_C_SDK_INCLUDE_DIR}>"
+            "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+    )
+    target_compile_definitions(
+        CodexAgent
+        INTERFACE
+            CODEX_AGENT_CPP_DEFAULT_LIBRARY_PATH="$<BUILD_INTERFACE:${CodexAgent_C_SDK_LIBRARY}>"
+            CODEX_AGENT_CPP_COMPATIBILITY_PATH="$<BUILD_INTERFACE:${CodexAgent_SDK_COMPATIBILITY}>"
+    )
+    target_link_libraries(CodexAgent INTERFACE CodexAgentLoader)
+
+    if(CodexAgent_C_SDK_LIBRARY)
+        if(NOT EXISTS "${CodexAgent_C_SDK_LIBRARY}")
+            message(FATAL_ERROR "CodexAgent_C_SDK_LIBRARY does not exist: ${CodexAgent_C_SDK_LIBRARY}")
+        endif()
+        add_library(CodexAgentC UNKNOWN IMPORTED)
+        add_library(CodexAgent::C ALIAS CodexAgentC)
+        set_target_properties(
+            CodexAgentC
+            PROPERTIES
+                IMPORTED_LOCATION "${CodexAgent_C_SDK_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${CodexAgent_C_SDK_INCLUDE_DIR}"
+        )
+    endif()
 endif()
 
 option(CODEX_AGENT_CPP_BUILD_TESTS "Build the typed C++ wrapper tests" OFF)
+if(CODEX_AGENT_CPP_PACKAGE_ONLY AND CODEX_AGENT_CPP_BUILD_TESTS)
+    message(FATAL_ERROR "CODEX_AGENT_CPP_BUILD_TESTS requires a normal C++ configuration")
+endif()
 if(NOT CodexAgent_C_SDK_LIBRARY AND NOT CODEX_AGENT_CPP_BUILD_TESTS)
     message(FATAL_ERROR "Set CodexAgent_C_SDK_LIBRARY to the verified native C SDK library")
 endif()
@@ -176,7 +192,6 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
         FILES "${CodexAgent_SDK_COMPATIBILITY}"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/native"
     )
-    install(TARGETS CodexAgentLoader ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
     install(
         FILES src/native_loader.cpp tools/generate_native_dispatch.py
         DESTINATION "${CMAKE_INSTALL_DATADIR}/CodexAgent/loader"
@@ -186,6 +201,7 @@ if(CODEX_AGENT_CPP_INSTALL_PACKAGE)
         DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/CodexAgent"
     )
 
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/native_loader.cpp" CODEX_AGENT_CPP_LOADER_SOURCE_SHA256)
     configure_package_config_file(
         cmake/CodexAgentConfig.cmake.in
         "${CMAKE_CURRENT_BINARY_DIR}/CodexAgentConfig.cmake"
