@@ -830,7 +830,12 @@ val stageJvmRuntimeBinaryOutputs = tasks.register<Sync>("stageJvmRuntimeBinaryOu
     description = "Stages the exact raw JVM Runtime binary outputs once."
     dependsOn(jvmRuntimeJar, packageJvmRuntimeEvidenceRunner)
     into(jvmRuntimeBinaryOutputs)
-    from(jvmRuntimeJar.flatMap { it.archiveFile }) { into("adapter") }
+    // Reusable raw identity follows the compatibility line; Maven keeps its exact release version.
+    val rawJarName = "codex-agent-runtime-desktop-jvm-${desktopRuntimeCompatibilityVersion.get()}.jar"
+    from(jvmRuntimeJar.flatMap { it.archiveFile }) {
+        into("adapter")
+        rename { rawJarName }
+    }
     from(packageJvmRuntimeEvidenceRunner.flatMap { it.archiveFile }) { into("validation-runner") }
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL

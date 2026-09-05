@@ -133,14 +133,12 @@ _RUNTIME_BUILD_LOGIC_NATIVE_VALIDATION = frozenset({
 })
 _RUNTIME_BUILD_LOGIC_NATIVE_PACKAGE = frozenset({
     "CrossLanguageCAbiRuntimeProduction.kt",
-    "DesktopRuntimeModel.kt",
     "DesktopRuntimePackageTask.kt",
     "DesktopRuntimeZipModes.kt",
     "RuntimeCAbiClient.kt",
 })
 _RUNTIME_BUILD_LOGIC_NATIVE_BINARY = frozenset({
     "CompileDesktopProcessSupervisorTask.kt",
-    "GenerateDesktopDistributionSourceTask.kt",
     "GenerateRuntimeAbiSourceTask.kt",
     "PrepareRuntimePinnedArchiveTask.kt",
     "RuntimeBinaryFlags.kt",
@@ -366,6 +364,8 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(NATIVE_TARGETS, "validation")
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_PACKAGE:
         return _runtime(NATIVE_TARGETS, "package")
+    if name in {"GenerateDesktopDistributionSourceTask.kt", "DesktopRuntimeModel.kt"}:
+        return _runtime(RUNTIME_COMPONENTS)
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_BINARY:
         return _runtime(NATIVE_TARGETS)
     if name in _RUNTIME_BUILD_LOGIC_SHARED_VALIDATION:
@@ -491,7 +491,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(NATIVE_TARGETS, "validation")
 
     if path == "codex-agent-runtime-desktop/codex-app-server-distributions.json":
-        return _runtime(NATIVE_TARGETS)
+        return _runtime(RUNTIME_COMPONENTS)
 
     if path in _METADATA_AUTHORITIES:
         if path in {
@@ -570,13 +570,16 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         "webTest": ("node-js", "node-wasm"),
         "nativeTest": NATIVE_TARGETS,
         "commonTest": RUNTIME_COMPONENTS,
-        "desktopTest": RUNTIME_COMPONENTS,
+        "desktopTest": (*NATIVE_TARGETS, "jvm"),
     }
     for source_set, components in runtime_tests.items():
         if _is_prefix(path, f"codex-agent-runtime-desktop/src/{source_set}/"):
-            # nativeTest/commonTest are physically shared, so finer target
-            # selection would be invented rather than proven ownership.
-            return _runtime(components, "validation")
+            # JVM/native binary stages contain compiled test runners; Node
+            # binary runners contain main programs, not js/wasm test sources.
+            selected = _runtime(components, "validation")
+            compiled_runners = tuple(component for component in components
+                                     if component in (*NATIVE_TARGETS, "jvm"))
+            return selected | (_runtime(compiled_runners) if compiled_runners else set())
 
     runtime_sources = {
         "mingwMain": ("windows-x64",),

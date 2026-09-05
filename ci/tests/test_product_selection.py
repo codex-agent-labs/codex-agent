@@ -8,7 +8,7 @@ import unittest
 
 from ci.products.inventory import sha256_bytes
 from ci.products.plan import plan_phase, NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST
-from ci.products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId
+from ci.products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, RUNTIME_COMPONENTS, PhaseInstanceId
 from ci.products.selection import (
     ALL_METADATA,
     PathSelection,
@@ -59,6 +59,43 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_runtime_compiled_runner_and_distribution_inputs_change_exact_binary_keys(self) -> None:
+        from ci.tests.test_product_plan import plan
+
+        runners = {*NATIVE_TARGETS, "jvm"}
+        cases = {
+            "codex-agent-runtime-desktop/src/jvmTest/kotlin/Runner.kt": {"jvm"},
+            "codex-agent-runtime-desktop/src/nativeTest/kotlin/Runner.kt": set(NATIVE_TARGETS),
+            "codex-agent-runtime-desktop/src/commonTest/kotlin/Runner.kt": runners,
+            "codex-agent-runtime-desktop/src/desktopTest/kotlin/Runner.kt": runners,
+            "codex-agent-runtime-desktop/src/jsTest/kotlin/Runner.kt": set(),
+            "codex-agent-runtime-desktop/src/webTest/kotlin/Runner.kt": set(),
+            "codex-agent-runtime-desktop/src/wasmJsTest/kotlin/Runner.kt": set(),
+            "runtime/build-logic/src/main/kotlin/JvmRuntimeEvidenceExecution.kt": set(),
+            "runtime/build-logic/src/main/kotlin/NodeRuntimeEvidenceExecution.kt": set(),
+            "runtime/build-logic/src/main/kotlin/DesktopRuntimeEvidenceTasks.kt": set(),
+            "runtime/build-logic/src/main/kotlin/GenerateDesktopDistributionSourceTask.kt": set(RUNTIME_COMPONENTS),
+            "runtime/build-logic/src/main/kotlin/DesktopRuntimeModel.kt": set(RUNTIME_COMPONENTS),
+            "codex-agent-runtime-desktop/codex-app-server-distributions.json": set(RUNTIME_COMPONENTS),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for path, owners in cases.items():
+                with self.subTest(path=path):
+                    selected = classify_paths([path])
+                    self.assertEqual(owners, {item.component for item in selected.instances
+                                              if item.product == "runtime" and item.phase == "binary"})
+                    self.assertFalse(any(item.product == "sdk" for item in selected.instances))
+                    source = root / path
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    for runtime in RUNTIME_COMPONENTS:
+                        instance = PhaseInstanceId("runtime", runtime, "binary", runtime)
+                        keys = []
+                        for content in (b"a", b"b"):
+                            source.write_bytes(content)
+                            keys.append(plan(instance, inventory=phase_file_inventory(root, [path], instance))["buildKey"])
+                        self.assertEqual(runtime in owners, keys[0] != keys[1], (path, runtime))
+
     def test_contract_binary_owns_its_actual_evidence_producers_and_tests(self) -> None:
         paths = [
             *(f"ci/products/{name}.py" for name in (
@@ -234,17 +271,17 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertEqual(tuple(sorted(paths)), result.inventory_paths)
         self.assertTrue(result.reuse_allowed)
 
-    def test_shared_native_validation_change_selects_validation_and_metadata_only(self) -> None:
+    def test_shared_native_compiled_runner_change_selects_binary_and_successors(self) -> None:
         result = classify_paths([
             "codex-agent-runtime-desktop/src/nativeTest/kotlin/example/RuntimeValidationTest.kt"
         ])
         selected = identities(result)
         for target in NATIVE_TARGETS:
-            self.assertEqual({"validation", "metadata"}, {
+            self.assertEqual({"binary", "package", "validation", "metadata"}, {
                 instance.phase for instance in component(result, "runtime", target)
             })
         self.assertIn(PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"), selected)
-        self.assertFalse(any(instance.phase in {"binary", "package"} for instance in selected))
+        self.assertFalse(any(instance.component in {"jvm", "node-js", "node-wasm"} for instance in selected))
         self.assertFalse(any(instance.product == "sdk" for instance in selected))
 
     def test_shared_package_layout_selects_package_and_successors_without_binary(self) -> None:
@@ -362,12 +399,10 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertEqual((), result.unknown_paths)
         self.assertTrue(result.reuse_allowed)
 
-    def test_app_server_identity_selects_five_runtime_variants_only(self) -> None:
+    def test_app_server_identity_selects_all_runtimes_embedding_distribution_table(self) -> None:
         result = classify_paths(["codex-agent-runtime-desktop/codex-app-server-distributions.json"])
-        for target in NATIVE_TARGETS:
+        for target in RUNTIME_COMPONENTS:
             self.assertTrue(component(result, "runtime", target))
-        self.assertFalse(component(result, "runtime", "jvm"))
-        self.assertFalse(component(result, "runtime", "node-js"))
         self.assertFalse(any(instance.product == "sdk" for instance in result.instances))
 
     def test_metadata_policy_selects_metadata_only(self) -> None:
@@ -522,11 +557,11 @@ class ProductSelectionTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            (paths[2],),
+            (paths[2], paths[3]),
             phase_inventory_paths(paths, PhaseInstanceId("runtime", "jvm", "binary", "jvm")),
         )
         self.assertEqual(
-            (paths[3],),
+            (),  # Compiled test inputs are represented by the upstream binary digest.
             phase_inventory_paths(
                 paths, PhaseInstanceId("runtime", "jvm", "validation", "linux-x64"),
             ),
@@ -767,10 +802,9 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertFalse(any(instance.product == "runtime" for instance in ios.instances))
 
         result = classify_paths(["codex-agent-runtime-desktop/codex-app-server-distributions.json"])
-        self.assertEqual(set(NATIVE_TARGETS) | {"runtime-aggregate"}, {
+        self.assertEqual(set(RUNTIME_COMPONENTS) | {"runtime-aggregate"}, {
             instance.component for instance in result.instances
         })
-        self.assertFalse(component(result, "runtime", "jvm"))
         self.assertFalse(any(instance.product == "sdk" for instance in result.instances))
 
     def test_all_physical_build_logic_tests_are_static_only(self) -> None:
