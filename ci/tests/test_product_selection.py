@@ -839,6 +839,17 @@ class ProductSelectionTest(unittest.TestCase):
                 if instance.product == "sdk" and instance.component == language and instance.phase in {"package", "validation"}:
                     self.assertEqual((path,), phase_inventory_paths([path], instance))
 
+    def test_cpp_imported_package_verifier_is_a_direct_validation_only_input(self) -> None:
+        path = "codex-agent-bindings/cpp/tools/verify_imported_package.py"
+        expected = {item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
+                    item.component == "cpp" and item.phase in {"validation", "metadata"}}
+        self.assertEqual(expected, identities(classify_paths([path])))
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual(
+                (path,) if instance in expected and instance.phase == "validation" else (),
+                phase_inventory_paths([path], instance),
+            )
+
     def test_raw_verifier_cli_and_digest_helper_directly_own_native_validation(self) -> None:
         for name in ("ReleaseToolingCli.kt", "ReleaseIo.kt"):
             path = f"gradle/build-logic/src/main/kotlin/{name}"
