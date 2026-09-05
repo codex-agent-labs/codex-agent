@@ -13,16 +13,20 @@ from .inventory import (
     load_canonical_json,
     publish_regular_tree,
     read_regular_file_bytes,
+    regular_file_inventory,
+    require_array,
     require_exact_keys,
     require_integer,
     require_semver,
     require_sha256,
     require_string,
     sha256_bytes,
+    snapshot_regular_tree,
+    verify_regular_file_inventory,
     verified_zip_contents,
     write_canonical_json,
 )
-from .receipt import validate_phase_receipt
+from .receipt import validate_phase_receipt, write_output_manifest
 from .signatures import (
     load_keyring,
     public_key_for_metadata,
@@ -34,6 +38,124 @@ from .signatures import (
 
 _JSON_LIMIT = 16 * 1024 * 1024
 _PAYLOAD_LIMIT = 512 * 1024 * 1024
+_CLOSURE_MANIFEST = "contract-execution-closure.json"
+_CLOSURE_ARCHIVE = "execution/contract-execution.zip"
+_CLOSURE_RECEIPTS = {phase: f"receipts/{phase}.json" for phase in ("binary", "package", "validation", "metadata")}
+
+
+def _verify_execution_closure_inputs(payload: Path, evidence: Path) -> dict[str, Any]:
+    from .contract import _read_contract_receipt, _receipt_reference, validate_contract_package_stage
+    from .contract_projection import verify_contract_execution_projection
+
+    _, _, manifest, payload_identity, _ = _bound_inputs(payload, evidence / _CLOSURE_RECEIPTS["metadata"])
+    version = manifest["contractVersion"]
+    receipts = {}
+    digests = {}
+    for phase, relative in _CLOSURE_RECEIPTS.items():
+        contents = read_regular_file_bytes(evidence / relative, max_bytes=_JSON_LIMIT, reject_symlink_parents=True)
+        digests[phase] = sha256_bytes(contents)
+        receipts[phase], _ = _read_contract_receipt(evidence / relative, digests[phase], phase, version)
+    if receipts["binary"]["inputs"]["upstreamArtifacts"]:
+        raise ValueError("Contract binary receipt must have no upstream product")
+    repository = receipts["metadata"]["producer"]["repository"]
+    if any(receipt["producer"]["repository"] != repository for receipt in receipts.values()):
+        raise ValueError("Contract closure original producer repositories differ")
+    for phase, predecessor in (("validation", "package"), ("metadata", "validation")):
+        if receipts[phase]["inputs"]["upstreamArtifacts"] != [_receipt_reference(receipts[predecessor])]:
+            raise ValueError(f"Contract {phase} receipt does not bind its original {predecessor} receipt")
+
+    with tempfile.TemporaryDirectory(prefix="contract-closure-validation-") as temporary:
+        root = Path(temporary).resolve()
+        binary = root / "binary"
+        _, contents, payload_digest = verified_zip_contents(
+            payload, canonical_stored=True, max_archive_bytes=_PAYLOAD_LIMIT,
+            max_total_bytes=1024 * 1024 * 1024, max_members=4096,
+        )
+        if payload_digest != {field: payload_identity[field] for field in ("bytes", "sha256")}:
+            raise ValueError("Contract closure payload changed during verification")
+        for relative, contents_bytes in contents.items():
+            if relative == "contract-manifest.json":
+                continue
+            target = binary / "outputs" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(contents_bytes)
+        raw = read_regular_file_bytes(evidence / _CLOSURE_ARCHIVE, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True)
+        archive = binary / "outputs" / _CLOSURE_ARCHIVE
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(raw)
+        output_roots = {"maven": "outputs/maven", "evidence": "outputs/evidence", "inventory": "outputs/inventories"}
+        write_output_manifest(binary, "contract", "contract", "binary", "common", version, {
+            **output_roots, "contract-execution": "outputs/execution",
+        })
+        verify_contract_execution_projection(
+            binary, evidence / _CLOSURE_RECEIPTS["binary"], expected_receipt_sha256=digests["binary"],
+        )
+        package = root / "package"
+        for name in ("maven", "evidence", "inventories"):
+            snapshot_regular_tree(binary / "outputs" / name, package / "outputs" / name)
+        write_output_manifest(package, "contract", "contract", "package", "common", version, output_roots)
+        validation = root / "validation"
+        validate_contract_package_stage(
+            package, evidence / _CLOSURE_RECEIPTS["package"], digests["package"],
+            evidence / _CLOSURE_RECEIPTS["binary"], digests["binary"], validation, version,
+        )
+        expected = receipts["package"]["outputs"] + [
+            {**record, "kind": "validation", "relativePath": "outputs/validation/" + record["relativePath"]}
+            for record in regular_file_inventory(validation)
+        ]
+        if receipts["validation"]["outputs"] != sorted(expected, key=lambda record: record["relativePath"]):
+            raise ValueError("Contract validation receipt differs from the verified payload and report")
+    files = regular_file_inventory(evidence)
+    if {record["relativePath"] for record in files} != {_CLOSURE_ARCHIVE, *_CLOSURE_RECEIPTS.values()}:
+        raise ValueError("Contract execution closure file inventory is not exact")
+    return {
+        "schemaVersion": 1, "product": "contract", "contractVersion": version,
+        "payload": payload_identity, "files": files,
+    }
+
+
+def capture_contract_execution_closure(
+    payload: Path, phase_receipts: dict[str, Path], execution_archive: Path, output_directory: Path,
+) -> dict[str, Any]:
+    require_exact_keys(phase_receipts, set(_CLOSURE_RECEIPTS), "Contract closure receipt paths")
+    with tempfile.TemporaryDirectory(prefix="contract-closure-capture-") as temporary:
+        root = Path(temporary).resolve()
+        snapshot_payload = root / Path(payload).name
+        snapshot_payload.write_bytes(read_regular_file_bytes(payload, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True))
+        prepared = root / "evidence"
+        for phase, relative in _CLOSURE_RECEIPTS.items():
+            path = prepared / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(read_regular_file_bytes(phase_receipts[phase], max_bytes=_JSON_LIMIT, reject_symlink_parents=True))
+        archive = prepared / _CLOSURE_ARCHIVE
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(read_regular_file_bytes(execution_archive, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True))
+        value = _verify_execution_closure_inputs(snapshot_payload, prepared)
+        write_canonical_json(prepared / _CLOSURE_MANIFEST, value)
+        publish_regular_tree(prepared, output_directory)
+    return value
+
+
+def verify_contract_execution_closure(payload: Path, evidence_directory: Path) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="contract-closure-verify-") as temporary:
+        root = Path(temporary).resolve()
+        evidence = root / "evidence"
+        snapshot_regular_tree(evidence_directory, evidence)
+        manifest_path = evidence / _CLOSURE_MANIFEST
+        contents = read_regular_file_bytes(manifest_path, max_bytes=_JSON_LIMIT, reject_symlink_parents=True)
+        value = require_exact_keys(load_canonical_json_bytes(contents), {
+            "schemaVersion", "product", "contractVersion", "payload", "files",
+        }, "Contract execution closure")
+        if require_integer(value["schemaVersion"], "Contract execution closure schema", 1) != 1:
+            raise ValueError("Unsupported Contract execution closure schema")
+        inventory = [*require_array(value["files"], "Contract execution closure files"), {"relativePath": _CLOSURE_MANIFEST, "bytes": len(contents), "sha256": sha256_bytes(contents)}]
+        verify_regular_file_inventory(evidence, sorted(inventory, key=lambda record: record["relativePath"]), with_kind=False)
+        manifest_path.unlink()  # Private snapshot only; retained evidence is immutable.
+        snapshot_payload = root / Path(payload).name
+        snapshot_payload.write_bytes(read_regular_file_bytes(payload, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True))
+        if value != _verify_execution_closure_inputs(snapshot_payload, evidence):
+            raise ValueError("Contract execution closure does not bind its exact evidence and payload")
+    return value
 
 
 def validate_contract_attestation(value: Any) -> dict[str, Any]:
@@ -347,6 +469,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Build or verify a detached Contract payload attestation",
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    capture_closure = commands.add_parser("capture-closure")
+    capture_closure.add_argument("--payload", type=Path, required=True)
+    capture_closure.add_argument("--execution-archive", type=Path, required=True)
+    capture_closure.add_argument("--output-directory", type=Path, required=True)
+    for phase in _CLOSURE_RECEIPTS:
+        capture_closure.add_argument(f"--{phase}-receipt", type=Path, required=True)
+    verify_closure = commands.add_parser("verify-closure")
+    verify_closure.add_argument("--payload", type=Path, required=True)
+    verify_closure.add_argument("--evidence-directory", type=Path, required=True)
     build = commands.add_parser("build")
     verify = commands.add_parser("verify")
     materialize = commands.add_parser("materialize")
@@ -374,6 +505,15 @@ def main(argv: list[str] | None = None) -> int:
     materialize.add_argument("--output-directory", type=Path, required=True)
     materialize.add_argument("--reuse-output-directory", action="store_true")
     arguments = parser.parse_args(argv)
+    if arguments.command == "capture-closure":
+        capture_contract_execution_closure(
+            arguments.payload, {phase: getattr(arguments, f"{phase}_receipt") for phase in _CLOSURE_RECEIPTS},
+            arguments.execution_archive, arguments.output_directory,
+        )
+        return 0
+    if arguments.command == "verify-closure":
+        verify_contract_execution_closure(arguments.payload, arguments.evidence_directory)
+        return 0
     if arguments.command == "build":
         build_contract_attestation(
             arguments.payload,
