@@ -10,6 +10,8 @@ dependencies {
     compileOnly("org.jetbrains.kotlin:kotlin-klib-abi-reader:${libs.versions.kotlin.get()}")
     implementation("org.jetbrains.kotlin:kotlin-metadata-jvm:${libs.versions.kotlin.get()}")
     implementation("com.android.tools.build:gradle:${libs.versions.agp.get()}")
+    // Already used by AGP at runtime; expose its mode-aware ZIP reader to our compiler.
+    implementation("org.apache.commons:commons-compress:1.27.1")
     testImplementation(gradleTestKit())
     testImplementation(kotlin("test-junit"))
     testImplementation("org.jetbrains.kotlin:kotlin-klib-abi-reader:${libs.versions.kotlin.get()}")

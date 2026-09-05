@@ -6,6 +6,7 @@ import org.gradle.kotlin.dsl.register
 
 internal data class IosVerifiedDistributionTasks(
     val validateImported: TaskProvider<ImportAppleVerifiedDistributionTask>?,
+    val importedXCFramework: TaskProvider<ImportVerifiedCodexAgentXCFrameworkTask>?,
 )
 
 internal fun Project.registerIosVerifiedDistributionTasks(
@@ -51,11 +52,14 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         canonicalBuildDirectory.set(layout.buildDirectory)
         outputDirectory.set(layout.buildDirectory.dir("apple-verified-distribution"))
     }
-    if (!importedPath.isPresent) return IosVerifiedDistributionTasks(null)
+    if (!importedPath.isPresent) return IosVerifiedDistributionTasks(null, null)
     val validate = tasks.register<ImportAppleVerifiedDistributionTask>(
         "validateImportedCodexAgentIosVerifiedDistribution",
     ) {
         dependsOn("verifyAppleToolchain", "validateImportedCodexAgentIosNativeEvidence")
+        if (distribution.sdkCompatibilityFile != null) {
+            dependsOn(":codex-agent-sdk:generateNativeWrapperSdkCompatibility")
+        }
         this.candidateCommit.set(candidateCommit)
         version.set(project.version.toString())
         evidenceDirectory.set(layout.dir(importedPath.map(rootProject::file)))
@@ -76,5 +80,16 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         setDependsOn(listOf(validate)); onlyIf { false }
     }
     release.generateCodexAgentSwiftPackageChecksum.configure { setDependsOn(listOf(validate)) }
-    return IosVerifiedDistributionTasks(validate)
+    val xcframework = tasks.register<ImportVerifiedCodexAgentXCFrameworkTask>(
+        "importCodexAgentVerifiedXCFramework",
+    ) {
+        dependsOn(validate)
+        evidenceDirectory.set(layout.dir(importedPath.map(rootProject::file)))
+        verificationReceipt.set(validate.flatMap { it.verificationReceipt })
+        version.set(project.version.toString())
+        xcframeworkDirectory.set(layout.buildDirectory.dir(
+            "imported-verified-apple/CodexAgent.xcframework",
+        ))
+    }
+    return IosVerifiedDistributionTasks(validate, xcframework)
 }

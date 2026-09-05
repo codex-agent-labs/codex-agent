@@ -274,6 +274,24 @@ private val verifiedDistributionTasks = registerIosVerifiedDistributionTasks(
     appleReleaseTasks,
     iosRuntimeMetrics,
 )
+verifiedDistributionTasks.importedXCFramework?.let { imported ->
+    tasks.named<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
+        setDependsOn(listOf(imported))
+        xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+    }
+    appleCompilerEvidence.configure {
+        setDependsOn(listOf(
+            invalidateAppleBindingEvidence,
+            verifyAppleToolchain,
+            imported,
+            ":codex-agent-core:verifyCrossLanguageApiCoverage",
+        ))
+        xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+    }
+    appleBindingEvidence.configure {
+        xcframeworkDirectory.set(imported.flatMap { it.xcframeworkDirectory })
+    }
+}
 
 tasks.register("verifyIosRuntime") {
     group = "verification"
