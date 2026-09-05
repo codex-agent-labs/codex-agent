@@ -30,7 +30,7 @@ from ci.products.inventory import (
 )
 from ci.products.receipt import write_output_manifest
 from ci.products import sdk_compatibility as sdk_compatibility_module
-from ci.products.sdk_compatibility import main, produce_sdk_compatibility
+from ci.products.sdk_compatibility import load_sdk_compatibility_request, main, produce_sdk_compatibility
 from ci.products.signatures import generate_development_key
 from ci.tests.test_contract_execution_closure import execution_closure_fixture
 
@@ -789,6 +789,9 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
             output = root / "output/sdk-compatibility.json"
             output.parent.mkdir()
             write_canonical_json(request, fixture.request())
+            expected_arguments = fixture.arguments(output)
+            del expected_arguments["output"]
+            self.assertEqual(expected_arguments, load_sdk_compatibility_request(request))
             with fixture.verifiers():
                 self.assertEqual(0, main(["--request", str(request), "--output", str(output)]))
             self.assertEqual(
@@ -799,10 +802,29 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
             )
 
             valid = fixture.request()
+            relative = copy.deepcopy(valid)
+            relative["contractPayload"] = "contract/payload.zip"
+            relative["variantBundles"]["linux-x64"] = "variants/linux-x64.zip"
+            relative["variantPhaseReceipts"]["linux-x64"]["binary"] = "receipts/binary.json"
+            relative["contractKeyring"] = "trust/keyring.json"
+            relative["contractKeysDirectory"] = "trust/keys"
+            relative_request = root / "relative-request.json"
+            write_canonical_json(relative_request, relative)
+            decoded = load_sdk_compatibility_request(relative_request)
+            self.assertEqual(root / "contract/payload.zip", decoded["contract_payload"])
+            self.assertEqual(root / "variants/linux-x64.zip", decoded["variant_bundles"]["linux-x64"])
+            self.assertEqual(root / "receipts/binary.json", decoded["variant_phase_receipts"]["linux-x64"]["binary"])
+            self.assertEqual(root / "trust/keyring.json", decoded["contract_keyring"])
+            self.assertEqual(root / "trust/keys", decoded["contract_keys_directory"])
+            self.assertEqual(fixture.runtime_manifest, decoded["runtime_manifest"])
+            self.assertNotIn("output", decoded)
+            self.assertNotIn("runtime_stage_root", decoded)
+            self.assertFalse((root / "contract").exists())  # Parsing neither materializes nor authenticates products.
             cases = {
                 "unknown": {**valid, "unknown": "value"},
                 "missing": {key: value for key, value in valid.items() if key != "runtimeAttestation"},
                 "unsupported-schema": {**valid, "schemaVersion": 2},
+                "boolean-schema": {**valid, "schemaVersion": True},
                 "non-string": {**valid, "sdkVersion": 2},
                 "legacy-runtime-signature": {**valid, "runtimeSignature": "legacy.sig"},
                 "legacy-contract-fields": {
@@ -817,6 +839,7 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
                     "contractSignature": "contract-manifest.sig",
                 },
                 "traversal": {**valid, "runtimeManifest": "../runtime.json"},
+                "control-path": {**valid, "runtimeManifest": "runtime\n.json"},
                 "keyring-without-directory": {
                     **valid, "runtimeKeyring": str(fixture.runtime_metadata_receipt),
                 },
@@ -842,6 +865,8 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
             for name, value in cases.items():
                 invalid = root / f"{name}.json"
                 write_canonical_json(invalid, value)
+                with self.subTest(decoder=name), self.assertRaises(ValueError):
+                    load_sdk_compatibility_request(invalid)
                 sentinel = root / f"{name}-output/sdk-compatibility.json"
                 sentinel.parent.mkdir()
                 sentinel.write_bytes(b"keep\n")
@@ -864,6 +889,8 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
 
             noncanonical_request = root / "noncanonical-request.json"
             noncanonical_request.write_text("{\n  \"schemaVersion\": 1\n}\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_sdk_compatibility_request(noncanonical_request)
             with contextlib.redirect_stderr(io.StringIO()), \
                     self.assertRaises(SystemExit) as error:
                 main(["--request", str(noncanonical_request), "--output", str(existing)])
@@ -872,6 +899,8 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
 
             request_link = root / "request-link.json"
             request_link.symlink_to(canonical_request)
+            with self.assertRaises(ValueError):
+                load_sdk_compatibility_request(request_link)
             with contextlib.redirect_stderr(io.StringIO()), \
                     self.assertRaises(SystemExit) as error:
                 main(["--request", str(request_link), "--output", str(existing)])

@@ -439,6 +439,185 @@ def _phase_path_mapping(
     }
 
 
+def load_sdk_compatibility_request(request_path: Path) -> dict[str, Any]:
+    """Decode exact request/path syntax; product and trust authentication remains in the producer."""
+    request_path = Path(request_path)
+    raw_request = load_canonical_json_bytes(read_regular_file_bytes(
+            request_path, max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
+        ))
+    optional_fields = {
+        "contractKeyring", "contractKeysDirectory",
+        "runtimeKeyring", "runtimeKeysDirectory",
+    }
+    present_optional_fields = (
+        set(raw_request) & optional_fields if type(raw_request) is dict else set()
+    )
+    request = require_exact_keys(
+        raw_request,
+        {
+            "schemaVersion",
+            "sdkVersion",
+            "compatibleReleaseRange",
+            "compatibleRuntimeCompatibilityRange",
+            "contractPayload",
+            "contractMetadataReceipt",
+            "contractAttestation",
+            "contractAttestationSignature",
+            "contractPublicKey",
+            "runtimeManifest",
+            "runtimeMetadataReceipt",
+            "runtimeAttestation",
+            "runtimeAttestationSignature",
+            "runtimePublicKey",
+            "variantBundles",
+            "variantPhaseReceipts",
+            "variantAttestations",
+            "variantAttestationSignatures",
+            "variantPublicKeys",
+            "requiredTrustDomain",
+        } | present_optional_fields,
+        "SDK compatibility request",
+    )
+    for pair, label in (
+        ({"contractKeyring", "contractKeysDirectory"}, "Contract"),
+        ({"runtimeKeyring", "runtimeKeysDirectory"}, "Runtime"),
+    ):
+        if present_optional_fields & pair not in (set(), pair):
+            raise ValueError(
+                f"SDK compatibility request {label} keyring and keys directory "
+                "must be supplied together"
+            )
+    if require_integer(
+        request["schemaVersion"], "SDK compatibility request.schemaVersion", 1,
+    ) != 1:
+        raise ValueError("Unsupported SDK compatibility request schemaVersion")
+    request_directory = request_path.parent
+    return dict(
+        sdk_version=require_string(
+            request["sdkVersion"], "SDK compatibility request.sdkVersion",
+        ),
+        compatible_release_range=require_string(
+            request["compatibleReleaseRange"],
+            "SDK compatibility request.compatibleReleaseRange",
+        ),
+        compatible_runtime_compatibility_range=require_string(
+            request["compatibleRuntimeCompatibilityRange"],
+            "SDK compatibility request.compatibleRuntimeCompatibilityRange",
+        ),
+        contract_payload=_request_path(
+            request["contractPayload"],
+            "SDK compatibility request.contractPayload",
+            request_directory,
+        ),
+        contract_metadata_receipt=_request_path(
+            request["contractMetadataReceipt"],
+            "SDK compatibility request.contractMetadataReceipt",
+            request_directory,
+        ),
+        contract_attestation=_request_path(
+            request["contractAttestation"],
+            "SDK compatibility request.contractAttestation",
+            request_directory,
+        ),
+        contract_attestation_signature=_request_path(
+            request["contractAttestationSignature"],
+            "SDK compatibility request.contractAttestationSignature",
+            request_directory,
+        ),
+        contract_public_key=_request_path(
+            request["contractPublicKey"],
+            "SDK compatibility request.contractPublicKey",
+            request_directory,
+        ),
+        runtime_manifest=_request_path(
+            request["runtimeManifest"],
+            "SDK compatibility request.runtimeManifest",
+            request_directory,
+        ),
+        runtime_metadata_receipt=_request_path(
+            request["runtimeMetadataReceipt"],
+            "SDK compatibility request.runtimeMetadataReceipt",
+            request_directory,
+        ),
+        runtime_attestation=_request_path(
+            request["runtimeAttestation"],
+            "SDK compatibility request.runtimeAttestation",
+            request_directory,
+        ),
+        runtime_attestation_signature=_request_path(
+            request["runtimeAttestationSignature"],
+            "SDK compatibility request.runtimeAttestationSignature",
+            request_directory,
+        ),
+        runtime_public_key=_request_path(
+            request["runtimePublicKey"],
+            "SDK compatibility request.runtimePublicKey",
+            request_directory,
+        ),
+        variant_bundles=_path_mapping(
+            request["variantBundles"],
+            "SDK compatibility request.variantBundles",
+            request_directory,
+        ),
+        variant_phase_receipts=_phase_path_mapping(
+            request["variantPhaseReceipts"],
+            "SDK compatibility request.variantPhaseReceipts",
+            request_directory,
+        ),
+        variant_attestations=_path_mapping(
+            request["variantAttestations"],
+            "SDK compatibility request.variantAttestations",
+            request_directory,
+        ),
+        variant_attestation_signatures=_path_mapping(
+            request["variantAttestationSignatures"],
+            "SDK compatibility request.variantAttestationSignatures",
+            request_directory,
+        ),
+        variant_public_keys=_path_mapping(
+            request["variantPublicKeys"],
+            "SDK compatibility request.variantPublicKeys",
+            request_directory,
+        ),
+        required_trust_domain=require_string(
+            request["requiredTrustDomain"],
+            "SDK compatibility request.requiredTrustDomain",
+        ),
+        contract_keyring=(
+            _request_path(
+                request["contractKeyring"],
+                "SDK compatibility request.contractKeyring",
+                request_directory,
+            )
+            if "contractKeyring" in request else None
+        ),
+        contract_keys_directory=(
+            _request_path(
+                request["contractKeysDirectory"],
+                "SDK compatibility request.contractKeysDirectory",
+                request_directory,
+            )
+            if "contractKeysDirectory" in request else None
+        ),
+        runtime_keyring=(
+            _request_path(
+                request["runtimeKeyring"],
+                "SDK compatibility request.runtimeKeyring",
+                request_directory,
+            )
+            if "runtimeKeyring" in request else None
+        ),
+        runtime_keys_directory=(
+            _request_path(
+                request["runtimeKeysDirectory"],
+                "SDK compatibility request.runtimeKeysDirectory",
+                request_directory,
+            )
+            if "runtimeKeysDirectory" in request else None
+        ),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m ci.products.sdk_compatibility")
     parser.add_argument("--request", required=True)
@@ -446,183 +625,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runtime-stage-root")
     arguments = parser.parse_args(argv)
     try:
-        request_path = Path(arguments.request)
-        raw_request = load_canonical_json_bytes(read_regular_file_bytes(
-                request_path, max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
-            ))
-        optional_fields = {
-            "contractKeyring", "contractKeysDirectory",
-            "runtimeKeyring", "runtimeKeysDirectory",
-        }
-        present_optional_fields = (
-            set(raw_request) & optional_fields if type(raw_request) is dict else set()
-        )
-        request = require_exact_keys(
-            raw_request,
-            {
-                "schemaVersion",
-                "sdkVersion",
-                "compatibleReleaseRange",
-                "compatibleRuntimeCompatibilityRange",
-                "contractPayload",
-                "contractMetadataReceipt",
-                "contractAttestation",
-                "contractAttestationSignature",
-                "contractPublicKey",
-                "runtimeManifest",
-                "runtimeMetadataReceipt",
-                "runtimeAttestation",
-                "runtimeAttestationSignature",
-                "runtimePublicKey",
-                "variantBundles",
-                "variantPhaseReceipts",
-                "variantAttestations",
-                "variantAttestationSignatures",
-                "variantPublicKeys",
-                "requiredTrustDomain",
-            } | present_optional_fields,
-            "SDK compatibility request",
-        )
-        for pair, label in (
-            ({"contractKeyring", "contractKeysDirectory"}, "Contract"),
-            ({"runtimeKeyring", "runtimeKeysDirectory"}, "Runtime"),
-        ):
-            if present_optional_fields & pair not in (set(), pair):
-                raise ValueError(
-                    f"SDK compatibility request {label} keyring and keys directory "
-                    "must be supplied together"
-                )
-        if require_integer(
-            request["schemaVersion"], "SDK compatibility request.schemaVersion", 1,
-        ) != 1:
-            raise ValueError("Unsupported SDK compatibility request schemaVersion")
-        request_directory = request_path.parent
         produce_sdk_compatibility(
-            sdk_version=require_string(
-                request["sdkVersion"], "SDK compatibility request.sdkVersion",
-            ),
-            compatible_release_range=require_string(
-                request["compatibleReleaseRange"],
-                "SDK compatibility request.compatibleReleaseRange",
-            ),
-            compatible_runtime_compatibility_range=require_string(
-                request["compatibleRuntimeCompatibilityRange"],
-                "SDK compatibility request.compatibleRuntimeCompatibilityRange",
-            ),
-            contract_payload=_request_path(
-                request["contractPayload"],
-                "SDK compatibility request.contractPayload",
-                request_directory,
-            ),
-            contract_metadata_receipt=_request_path(
-                request["contractMetadataReceipt"],
-                "SDK compatibility request.contractMetadataReceipt",
-                request_directory,
-            ),
-            contract_attestation=_request_path(
-                request["contractAttestation"],
-                "SDK compatibility request.contractAttestation",
-                request_directory,
-            ),
-            contract_attestation_signature=_request_path(
-                request["contractAttestationSignature"],
-                "SDK compatibility request.contractAttestationSignature",
-                request_directory,
-            ),
-            contract_public_key=_request_path(
-                request["contractPublicKey"],
-                "SDK compatibility request.contractPublicKey",
-                request_directory,
-            ),
-            runtime_manifest=_request_path(
-                request["runtimeManifest"],
-                "SDK compatibility request.runtimeManifest",
-                request_directory,
-            ),
-            runtime_metadata_receipt=_request_path(
-                request["runtimeMetadataReceipt"],
-                "SDK compatibility request.runtimeMetadataReceipt",
-                request_directory,
-            ),
-            runtime_attestation=_request_path(
-                request["runtimeAttestation"],
-                "SDK compatibility request.runtimeAttestation",
-                request_directory,
-            ),
-            runtime_attestation_signature=_request_path(
-                request["runtimeAttestationSignature"],
-                "SDK compatibility request.runtimeAttestationSignature",
-                request_directory,
-            ),
-            runtime_public_key=_request_path(
-                request["runtimePublicKey"],
-                "SDK compatibility request.runtimePublicKey",
-                request_directory,
-            ),
-            variant_bundles=_path_mapping(
-                request["variantBundles"],
-                "SDK compatibility request.variantBundles",
-                request_directory,
-            ),
-            variant_phase_receipts=_phase_path_mapping(
-                request["variantPhaseReceipts"],
-                "SDK compatibility request.variantPhaseReceipts",
-                request_directory,
-            ),
-            variant_attestations=_path_mapping(
-                request["variantAttestations"],
-                "SDK compatibility request.variantAttestations",
-                request_directory,
-            ),
-            variant_attestation_signatures=_path_mapping(
-                request["variantAttestationSignatures"],
-                "SDK compatibility request.variantAttestationSignatures",
-                request_directory,
-            ),
-            variant_public_keys=_path_mapping(
-                request["variantPublicKeys"],
-                "SDK compatibility request.variantPublicKeys",
-                request_directory,
-            ),
-            required_trust_domain=require_string(
-                request["requiredTrustDomain"],
-                "SDK compatibility request.requiredTrustDomain",
-            ),
+            **load_sdk_compatibility_request(Path(arguments.request)),
             output=Path(arguments.output),
             runtime_stage_root=(Path(arguments.runtime_stage_root)
                                 if arguments.runtime_stage_root else None),
-            contract_keyring=(
-                _request_path(
-                    request["contractKeyring"],
-                    "SDK compatibility request.contractKeyring",
-                    request_directory,
-                )
-                if "contractKeyring" in request else None
-            ),
-            contract_keys_directory=(
-                _request_path(
-                    request["contractKeysDirectory"],
-                    "SDK compatibility request.contractKeysDirectory",
-                    request_directory,
-                )
-                if "contractKeysDirectory" in request else None
-            ),
-            runtime_keyring=(
-                _request_path(
-                    request["runtimeKeyring"],
-                    "SDK compatibility request.runtimeKeyring",
-                    request_directory,
-                )
-                if "runtimeKeyring" in request else None
-            ),
-            runtime_keys_directory=(
-                _request_path(
-                    request["runtimeKeysDirectory"],
-                    "SDK compatibility request.runtimeKeysDirectory",
-                    request_directory,
-                )
-                if "runtimeKeysDirectory" in request else None
-            ),
         )
     except (OSError, ValueError) as error:
         parser.error(str(error))
