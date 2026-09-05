@@ -229,13 +229,14 @@ class ProductSelectionTest(unittest.TestCase):
             "CrossLanguageNativeWrapperGradleTasks.kt",
             "CrossLanguageCAbiClient.kt",
             "CrossLanguageNativeWrapperBindingEvidence.kt",
+            "NativeWrapperInstalledConsumerTask.kt",
         ):
             with self.subTest(name=name):
                 selected = identities(classify_paths([f"gradle/build-logic/src/main/kotlin/{name}"]))
                 self.assertEqual({"sdk"}, {instance.product for instance in selected})
                 self.assertEqual(set(NATIVE_BINDINGS), {instance.component for instance in selected})
                 phases = {"validation", "metadata"}
-                if name != "CrossLanguageNativeWrapperBindingEvidence.kt":
+                if name not in {"CrossLanguageNativeWrapperBindingEvidence.kt", "NativeWrapperInstalledConsumerTask.kt"}:
                     phases.add("package")
                 for binding in NATIVE_BINDINGS:
                     self.assertEqual(phases, {instance.phase for instance in selected

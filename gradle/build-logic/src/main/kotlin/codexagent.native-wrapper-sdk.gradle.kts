@@ -18,6 +18,9 @@ val nativeWrapperCandidateTree = providers.gradleProperty("codexAgent.candidateT
 val nativeWrapperSdkCompatibilityRequest = providers.gradleProperty(
     "codexAgent.sdkCompatibilityRequest",
 ).map(::file)
+val importedNativeWrapperSdkPackageStage = providers.gradleProperty(
+    "codexAgent.sdkPackageStageRoot",
+).map(::file)
 val nativeWrapperRuntimeSnapshotRoot = layout.buildDirectory.dir(
     nativeWrapperCandidateTree.map { "imported-native-wrapper-runtime-stages/$it" },
 )
@@ -264,6 +267,60 @@ val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapV
         repositoryRoot.set(rootProject.layout.projectDirectory)
         stageRoot.set(phaseRoot)
         manifestFile.set(phaseRoot.map { it.file("output-manifest.json") })
+    }
+}
+
+// This verifies imported-stage integrity only. The SDK product planner remains
+// responsible for authenticating the original package receipt before selecting
+// one of these local installed-consumer tasks.
+val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues { (language, identity) ->
+    val (title, excluded) = identity
+    val importedSnapshot = layout.buildDirectory.dir(
+        nativeWrapperCandidateTree.map { "imported-sdk-product-stages/$it/$language-package" },
+    )
+    val evidence = layout.buildDirectory.dir(
+        nativeWrapperCandidateTree.map { "reports/native-wrapper-installed-consumer/$it/$language" },
+    )
+    val invalidate = tasks.register<Delete>("invalidate${title}NativeWrapperInstalledConsumer") {
+        delete(importedSnapshot, evidence)
+    }
+    snapshotImportedNativeWrapperRuntimeStages.configure { mustRunAfter(invalidate) }
+    generateNativeWrapperSdkCompatibility.configure { mustRunAfter(invalidate) }
+    val snapshot = tasks.register<SnapshotImportedProductStageTask>(
+        "snapshotImported${title}NativeWrapperSdkPackage",
+    ) {
+        dependsOn(invalidate)
+        sourceDirectory.set(layout.dir(importedNativeWrapperSdkPackageStage))
+        outputDirectory.set(importedSnapshot)
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
+    val verify = tasks.register<VerifyImportedProductOutputManifestTask>(
+        "verifyImported${title}NativeWrapperSdkPackage",
+    ) {
+        dependsOn(snapshot)
+        product.set("sdk")
+        component.set(language)
+        phase.set("package")
+        target.set("desktop")
+        productVersion.set(nativeWrapperSdkVersion)
+        stageRoot.set(importedSnapshot)
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
+    tasks.register<NativeWrapperInstalledConsumerTask>("verify${title}NativeWrapperInstalledConsumer") {
+        group = "verification"
+        description = "Executes the matching-host $language consumer against integrity-checked imported package bytes."
+        dependsOn(verify, stageNativeWrapperCAbiSdks)
+        this.language.set(language)
+        offlineMode.set(gradle.startParameter.isOffline)
+        packagesDirectory.set(importedSnapshot.map { it.dir("outputs") })
+        stagedSdkDirectory.set(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })
+        sdkVersionFile.set(rootProject.layout.projectDirectory.file("gradle/release/versions/sdk.txt"))
+        consumerScript.set(rootProject.layout.projectDirectory.file("ci/native_wrappers.py"))
+        consumerSources.from(nativeWrapperBindingRoot.dir(language).asFileTree.matching { exclude(excluded) })
+        outputDirectory.set(evidence)
+        repositoryRoot.set(rootProject.layout.projectDirectory)
     }
 }
 
