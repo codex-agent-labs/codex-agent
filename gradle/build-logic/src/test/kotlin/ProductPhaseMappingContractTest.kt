@@ -501,8 +501,8 @@ class ProductPhaseMappingContractTest {
         listOf("\"node-js\"", "\"node-wasm\"").forEach { component ->
             assertTrue(component in validation, component)
         }
-        assertTrue("val nodeValidationSnapshotOwner = providers.gradleProperty(\"codexAgent.component\")" in validation)
-        assertTrue("imported-runtime-native-package-stages/\$tree/\$owner/\$nodeValidationComponent" in validation)
+        assertTrue("imported-runtime-native-package-stages/\$it/\$component/\$nodeValidationComponent" in validation)
+        assertTrue("product-stage/runtime/\$component/validation/\$nodeValidationComponent" in validation)
     }
 
     @Test

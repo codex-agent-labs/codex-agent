@@ -76,7 +76,14 @@ tasks.register("ciProductPhase") {
         if (component == "node-js" && phase == "validation" && target == "node-js-binding") {
             return@provider desktopRuntime.tasks.named("writeNodeJsBindingValidationOutputManifest")
         }
-        check(target == component) { "Runtime target must match component: $component" }
+        val adapterHostValidation = phase == "validation" && component in setOf("jvm", "node-js", "node-wasm")
+        if (adapterHostValidation) {
+            check(target in setOf("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64")) {
+                "Runtime adapter validation requires a native host target: $component/$target"
+            }
+        } else {
+            check(target == component) { "Runtime target must match component: $component" }
+        }
         val taskName = runtimePhaseTasks[component to phase]
             ?: error("Unsupported Runtime phase: $component/$phase for target $target")
         desktopRuntime.tasks.named(taskName)

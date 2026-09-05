@@ -1185,11 +1185,29 @@ val jvmValidationTarget = providers.provider {
 val jvmValidationComponent = jvmValidationTarget.map { target ->
     cAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
 }
+val importedJvmPackageVersion = providers.gradleProperty("codexAgent.runtimePackageVersion")
+val importedJvmNativePackageVersion = providers.gradleProperty("codexAgent.runtimeNativePackageVersion")
+val canonicalJvmValidation = providers.gradleProperty("codexAgent.product").orNull == "runtime" &&
+    providers.gradleProperty("codexAgent.component").orNull == "jvm" &&
+    providers.gradleProperty("codexAgent.phase").orNull == "validation"
+if (canonicalJvmValidation) {
+    check(providers.gradleProperty("codexAgent.target").get() == jvmValidationComponent.get()) {
+        "JVM Runtime validation target must match the observed desktop host"
+    }
+    check(importedRuntimePackageStage.isPresent && importedRuntimeNativePackageStage.isPresent) {
+        "JVM Runtime validation requires imported JVM and native Runtime packages"
+    }
+    check(importedJvmPackageVersion.isPresent && importedJvmNativePackageVersion.isPresent) {
+        "JVM Runtime validation requires original runtimePackageVersion and runtimeNativePackageVersion"
+    }
+}
 val jvmValidationDistribution = jvmValidationTarget.map { target ->
     desktopManifest.distributions.single { it.target == target }
 }
 val importedJvmPackageSnapshotRoot = layout.buildDirectory.dir(
-    cAbiCandidateTree.map { "imported-runtime-package-stages/$it/jvm" },
+    cAbiCandidateTree.zip(jvmValidationComponent) { tree, component ->
+        "imported-runtime-package-stages/$tree/jvm/$component"
+    },
 )
 val snapshotImportedJvmRuntimePackage = registerRuntimeStageSnapshot(
     "snapshotImportedJvmRuntimePackageStage",
@@ -1220,20 +1238,30 @@ val jvmValidationNativePackageRoot = if (importedRuntimeNativePackageStage.isPre
 } else {
     layout.buildDirectory.dir(jvmValidationComponent.map { "product-stage/runtime/$it/package" })
 }
+val jvmRuntimeValidationPhaseRoot = layout.buildDirectory.dir(
+    jvmValidationComponent.map { "product-stage/runtime/jvm/validation/$it" },
+)
+val jvmRuntimeValidationReportRoot = layout.buildDirectory.dir(
+    jvmValidationComponent.map { "reports/imported-jvm-runtime-evidence/$it" },
+)
 val invalidateJvmRuntimeValidationOutputs = tasks.register<Delete>("invalidateJvmRuntimeValidationOutputs") {
     group = "verification"
     delete(
-        layout.buildDirectory.dir("product-stage/runtime/jvm/validation"),
-        layout.buildDirectory.dir("reports/imported-jvm-runtime-evidence"),
+        jvmRuntimeValidationPhaseRoot,
+        jvmRuntimeValidationReportRoot,
+        importedJvmPackageSnapshotRoot,
+        importedJvmNativePackageSnapshotRoot,
     )
 }
+snapshotImportedJvmRuntimePackage.configure { dependsOn(invalidateJvmRuntimeValidationOutputs) }
+snapshotImportedJvmNativeRuntimePackage.configure { dependsOn(invalidateJvmRuntimeValidationOutputs) }
 val verifyImportedJvmRuntimePackageOutputManifest = registerRuntimeOutputVerification(
     "verifyImportedJvmRuntimePackageOutputManifest",
     listOf(invalidateJvmRuntimeValidationOutputs, snapshotImportedJvmRuntimePackage),
     providers.provider { "jvm" },
     "package",
     providers.provider { "jvm" },
-    runtimeProductVersion,
+    importedJvmPackageVersion,
     importedJvmPackageSnapshotRoot,
     runtimeProductTooling,
     repositoryRootFile,
@@ -1245,7 +1273,7 @@ val verifyImportedJvmValidationNativePackageOutputManifest =
         jvmValidationComponent,
         "package",
         jvmValidationComponent,
-        runtimeProductVersion,
+        importedJvmNativePackageVersion,
         importedJvmNativePackageSnapshotRoot,
         runtimeProductTooling,
         repositoryRootFile,
@@ -1261,6 +1289,11 @@ val jvmNativePackagePrerequisite: Any = if (importedRuntimeNativePackageStage.is
     providers.provider {
         "write${jvmValidationTarget.get().replaceFirstChar(Char::uppercase)}RuntimePackageOutputManifest"
     }
+}
+val jvmNativePackageCompatibilityVersion = if (importedRuntimeNativePackageStage.isPresent) {
+    importedJvmNativePackageVersion.map(::runtimeCompatibilityVersion)
+} else {
+    desktopRuntimeCompatibilityVersion
 }
 val importedJvmRuntimeEvidence = tasks.register<RecordJvmRuntimeEvidenceTask>(
     "executeImportedJvmRuntimeEvidence",
@@ -1280,7 +1313,7 @@ val importedJvmRuntimeEvidence = tasks.register<RecordJvmRuntimeEvidenceTask>(
     testTask.set(IMPORTED_JVM_RUNTIME_EVIDENCE_TASK)
     distributionManifest.set(desktopManifestFile)
     classifierArchive.set(
-        jvmValidationNativePackageRoot.zip(desktopRuntimeCompatibilityVersion) { root, version ->
+        jvmValidationNativePackageRoot.zip(jvmNativePackageCompatibilityVersion) { root, version ->
             val distribution = jvmValidationDistribution.get()
             root.file(
                 "outputs/app-server/codex-agent-runtime-desktop-$version-${distribution.classifier}.zip",
@@ -1290,11 +1323,10 @@ val importedJvmRuntimeEvidence = tasks.register<RecordJvmRuntimeEvidenceTask>(
     compiledJvmTestRuntime.set(jvmValidationPackageRoot.map { root ->
         root.file("outputs/validation-runner/$JVM_RUNTIME_RUNNER_ARCHIVE")
     })
-    evidenceFile.set(layout.buildDirectory.file(jvmValidationTarget.map { target ->
-        "reports/imported-jvm-runtime-evidence/${jvmRuntimeEvidenceFileName(target)}"
-    }))
+    evidenceFile.set(jvmRuntimeValidationReportRoot.zip(jvmValidationTarget) { root, target ->
+        root.file(jvmRuntimeEvidenceFileName(target))
+    })
 }
-val jvmRuntimeValidationPhaseRoot = layout.buildDirectory.dir("product-stage/runtime/jvm/validation")
 val jvmRuntimeValidationOutputs = jvmRuntimeValidationPhaseRoot.map { it.dir("outputs") }
 val stageJvmRuntimeValidation = tasks.register<Sync>("stageJvmRuntimeValidation") {
     group = "verification"

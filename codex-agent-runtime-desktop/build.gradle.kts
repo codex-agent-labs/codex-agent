@@ -364,38 +364,20 @@ val nodeValidationTarget = checkNotNull(nodeCAbiCatalog.hostTarget(
 val nodeValidationTargetTitle = nodeValidationTarget.replaceFirstChar(Char::uppercase)
 val nodeValidationComponent =
     nodeCAbiCatalog.targets.getValue(nodeValidationTarget).classifier.removePrefix("c-abi-")
+if (providers.gradleProperty("codexAgent.product").orNull == "runtime" &&
+    providers.gradleProperty("codexAgent.component").orNull in setOf("node-js", "node-wasm") &&
+    providers.gradleProperty("codexAgent.phase").orNull == "validation" &&
+    providers.gradleProperty("codexAgent.target").orNull != "node-js-binding") {
+    check(providers.gradleProperty("codexAgent.target").get() == nodeValidationComponent) {
+        "Node Runtime validation target must match the actual host: $nodeValidationComponent"
+    }
+}
 val nodeValidationManifestFile = layout.projectDirectory.file("codex-app-server-distributions.json")
 val nodeValidationDistribution = readDesktopCodexManifest(nodeValidationManifestFile.asFile)
     .distributions.single { it.target == nodeValidationTarget }
 @Suppress("UNCHECKED_CAST")
 val nodeValidationCompatibilityVersion =
     project.extra["codexAgent.runtimeCompatibilityVersion"] as Provider<String>
-val nodeValidationSnapshotOwner = providers.gradleProperty("codexAgent.component")
-    .map { component ->
-        check(component == "node-js" || component == "node-wasm") {
-            "Node Runtime validation component must be node-js or node-wasm"
-        }
-        component
-    }
-    .orElse("node")
-val importedNodeNativePackageSnapshotRoot = layout.buildDirectory.dir(
-    nodeCandidateTree.zip(nodeValidationSnapshotOwner) { tree, owner ->
-        "imported-runtime-native-package-stages/$tree/$owner/$nodeValidationComponent"
-    },
-)
-val snapshotImportedNodeNativeRuntimePackage = registerRuntimeStageSnapshot(
-    "snapshotImportedNodeNativeRuntimePackageStage",
-    layout.dir(importedNodeRuntimeNativePackageStage),
-    importedNodeNativePackageSnapshotRoot,
-    runtimeProductTooling,
-    repositoryRootFile,
-)
-val nodeValidationNativePackageRoot = if (importedNodeRuntimeNativePackageStage.isPresent) {
-    importedNodeNativePackageSnapshotRoot
-} else {
-    layout.buildDirectory.dir("product-stage/runtime/$nodeValidationComponent/package")
-}
-
 fun registerNodeRuntimeValidation(
     component: String,
     runnerArchiveName: String,
@@ -405,8 +387,25 @@ fun registerNodeRuntimeValidation(
 ) {
     val title = component.split('-').joinToString("") { it.replaceFirstChar(Char::uppercase) }
     val importedPackageSnapshotRoot = layout.buildDirectory.dir(
-        nodeCandidateTree.map { "imported-runtime-package-stages/$it/$component" },
+        nodeCandidateTree.map { "imported-runtime-package-stages/$it/$component/$nodeValidationComponent" },
     )
+    val importedNodeNativePackageSnapshotRoot = layout.buildDirectory.dir(
+        nodeCandidateTree.map {
+            "imported-runtime-native-package-stages/$it/$component/$nodeValidationComponent"
+        },
+    )
+    val snapshotImportedNodeNativeRuntimePackage = registerRuntimeStageSnapshot(
+        "snapshotImported${title}NativeRuntimePackageStage",
+        layout.dir(importedNodeRuntimeNativePackageStage),
+        importedNodeNativePackageSnapshotRoot,
+        runtimeProductTooling,
+        repositoryRootFile,
+    )
+    val nodeValidationNativePackageRoot = if (importedNodeRuntimeNativePackageStage.isPresent) {
+        importedNodeNativePackageSnapshotRoot
+    } else {
+        layout.buildDirectory.dir("product-stage/runtime/$nodeValidationComponent/package")
+    }
     val snapshotImportedPackage = registerRuntimeStageSnapshot(
         "snapshotImported${title}RuntimePackageStage",
         layout.dir(importedNodeRuntimePackageStage),
@@ -419,7 +418,9 @@ fun registerNodeRuntimeValidation(
     } else {
         localPackageRoot
     }
-    val phaseRoot = layout.buildDirectory.dir("product-stage/runtime/$component/validation")
+    val phaseRoot = layout.buildDirectory.dir(
+        "product-stage/runtime/$component/validation/$nodeValidationComponent",
+    )
     val phaseOutputs = phaseRoot.map { it.dir("outputs") }
     val evidenceTask = tasks.named<RecordNodeRuntimeEvidenceTask>(
         "$evidenceTaskPrefix${nodeValidationTargetTitle}Test",
@@ -428,17 +429,21 @@ fun registerNodeRuntimeValidation(
         group = "verification"
         delete(
             phaseRoot,
+            importedPackageSnapshotRoot,
+            importedNodeNativePackageSnapshotRoot,
             evidenceTask.flatMap { it.evidenceFile },
             evidenceTask.flatMap { it.testReport },
         )
     }
+    snapshotImportedPackage.configure { dependsOn(invalidate) }
+    snapshotImportedNodeNativeRuntimePackage.configure { dependsOn(invalidate) }
     val verifyPackage = registerRuntimeOutputVerification(
         "verifyImported${title}RuntimePackageOutputManifest",
         listOf(invalidate, snapshotImportedPackage),
         providers.provider { component },
         "package",
         providers.provider { component },
-        runtimeProductVersion,
+        providers.gradleProperty("codexAgent.runtimePackageVersion"),
         importedPackageSnapshotRoot,
         runtimeProductTooling,
         repositoryRootFile,
@@ -449,7 +454,7 @@ fun registerNodeRuntimeValidation(
         providers.provider { nodeValidationComponent },
         "package",
         providers.provider { nodeValidationComponent },
-        runtimeProductVersion,
+        providers.gradleProperty("codexAgent.runtimeNativePackageVersion"),
         importedNodeNativePackageSnapshotRoot,
         runtimeProductTooling,
         repositoryRootFile,
@@ -464,13 +469,19 @@ fun registerNodeRuntimeValidation(
     } else {
         "write${nodeValidationTargetTitle}RuntimePackageOutputManifest"
     }
+    val nativePackageCompatibilityVersion = if (importedNodeRuntimeNativePackageStage.isPresent) {
+        providers.gradleProperty("codexAgent.runtimeNativePackageVersion").map(::runtimeCompatibilityVersion)
+    } else {
+        nodeValidationCompatibilityVersion
+    }
+    val nativePackageClassifier = nodeValidationDistribution.classifier
     evidenceTask.configure {
         dependsOn(invalidate, packagePrerequisite, nativePackagePrerequisite)
         classifierArchive.set(
-            nodeValidationNativePackageRoot.zip(nodeValidationCompatibilityVersion) { root, version ->
+            nodeValidationNativePackageRoot.zip(nativePackageCompatibilityVersion) { root, version ->
                 root.file(
                     "outputs/app-server/codex-agent-runtime-desktop-$version-" +
-                        "${nodeValidationDistribution.classifier}.zip",
+                        "$nativePackageClassifier.zip",
                 )
             },
         )

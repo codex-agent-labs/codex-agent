@@ -187,6 +187,8 @@ class RuntimeToolchainSettingsContractTest {
                     val commandLineProperties = gradle.startParameter.projectProperties
                     val requestedPhase = commandLineProperties["codexAgent.phase"]
                     val bindingValidation = false
+                    val adapterHostValidation = false
+                    val semver = Regex("[0-9]+\\.[0-9]+\\.[0-9]+")
                     fun absoluteNormalizedPath(name: String) = file(commandLineProperties.getValue(name)).toPath()
                     $boundary
                     java.io.File(${quote(configured.absolutePath)}).writeText("configured")

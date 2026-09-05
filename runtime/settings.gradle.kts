@@ -57,15 +57,34 @@ pluginManagement {
     val runtimeTargets = setOf(
         "macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64", "jvm", "node-js", "node-wasm",
     )
+    val adapterTargets = setOf("jvm", "node-js", "node-wasm")
+    val nativeRuntimeTargets = runtimeTargets - adapterTargets
+    val requestedProduct = commandLineProperties["codexAgent.product"]
+    val requestedComponent = commandLineProperties["codexAgent.component"]
     val requestedPhase = commandLineProperties["codexAgent.phase"]
+    val requestedTarget = values.getValue("codexAgent.target")
     val bindingValidation = values.getValue("codexAgent.target") == "node-js-binding" &&
         commandLineProperties["codexAgent.product"] == "runtime" &&
         commandLineProperties["codexAgent.component"] == "node-js" && requestedPhase == "validation"
-    val contractComponent = if (bindingValidation) "node-js" else values.getValue("codexAgent.target")
+    val adapterHostValidation = requestedProduct == "runtime" && requestedPhase == "validation" &&
+        requestedComponent in adapterTargets && requestedTarget in nativeRuntimeTargets
+    if (requestedProduct != null) {
+        require(requestedProduct == "runtime" && requestedComponent in runtimeTargets &&
+            requestedPhase in setOf("binary", "package", "validation", "metadata") &&
+            if (requestedPhase == "validation" && requestedComponent in adapterTargets) {
+                adapterHostValidation || bindingValidation
+            } else {
+                requestedTarget == requestedComponent
+            }) { "Unsupported Runtime phase identity: $requestedProduct/$requestedComponent/$requestedPhase/$requestedTarget" }
+    }
+    val contractComponent = when {
+        bindingValidation -> "node-js"
+        adapterHostValidation -> checkNotNull(requestedComponent)
+        else -> requestedTarget
+    }
     require(contractComponent in runtimeTargets) {
         "Unsupported standalone Desktop Runtime target: ${values.getValue("codexAgent.target")}"
     }
-    val nativeRuntimeTargets = runtimeTargets - setOf("jvm", "node-js", "node-wasm")
     val nativePredecessorProperty = if (bindingValidation) {
         "codexAgent.runtimePackageStage"
     } else if (values.getValue("codexAgent.target") in nativeRuntimeTargets) {
@@ -77,7 +96,12 @@ pluginManagement {
     } else {
         null
     }
-    nativePredecessorProperty?.let { name ->
+    val requiredPredecessors = if (adapterHostValidation) {
+        listOf("codexAgent.runtimePackageStage", "codexAgent.runtimeNativePackageStage")
+    } else {
+        listOfNotNull(nativePredecessorProperty)
+    }
+    requiredPredecessors.forEach { name ->
         require(System.getProperty("org.gradle.project.$name") == null &&
             System.getenv("ORG_GRADLE_PROJECT_$name") == null) {
             "$name must be supplied only as an explicit -P project property"
@@ -87,8 +111,21 @@ pluginManagement {
         }
         val predecessor = absoluteNormalizedPath(name)
         require(java.nio.file.Files.isDirectory(predecessor, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
-            !java.nio.file.Files.isSymbolicLink(predecessor)) {
+            !java.nio.file.Files.isSymbolicLink(predecessor) && predecessor.toRealPath() == predecessor) {
             "$name must be an existing non-symbolic directory"
+        }
+    }
+    if (adapterHostValidation || bindingValidation) {
+        val versionProperties = listOf("codexAgent.runtimePackageVersion") +
+            if (adapterHostValidation) listOf("codexAgent.runtimeNativePackageVersion") else emptyList()
+        versionProperties.forEach { name ->
+            require(System.getProperty("org.gradle.project.$name") == null &&
+                System.getenv("ORG_GRADLE_PROJECT_$name") == null) {
+                "$name must be supplied only as an explicit -P project property"
+            }
+            require(commandLineProperties[name]?.let(semver::matches) == true) {
+                "Missing or invalid mandatory explicit -P project property: $name"
+            }
         }
     }
     if (values.getValue("codexAgent.target") in nativeRuntimeTargets &&
@@ -188,6 +225,9 @@ pluginManagement {
         "--output-directory", verifiedContract.toString(),
         "--reuse-output-directory",
     )
+    if (adapterHostValidation) {
+        verifyCommand += listOf("--required-component", requestedTarget)
+    }
     if (expectedTrustDomain == "release") {
         verifyCommand += listOf(
             "--keyring", repositoryRoot.resolve("gradle/release/product-signing-keys.json").toString(),

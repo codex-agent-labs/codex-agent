@@ -8,7 +8,7 @@ internal val PRODUCT_SEMVER = Regex(
         "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?",
 )
 
-internal fun runtimeCompatibilityVersion(releaseVersion: String): String {
+fun runtimeCompatibilityVersion(releaseVersion: String): String {
     check(PRODUCT_SEMVER.matches(releaseVersion) && '+' !in releaseVersion) {
         "Runtime compatibility requires canonical SemVer without build metadata: $releaseVersion"
     }
