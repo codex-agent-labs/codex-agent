@@ -6,6 +6,10 @@ import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 
 class AppleVerifiedDistributionTest {
     @Test
@@ -14,6 +18,7 @@ class AppleVerifiedDistributionTest {
         assertEquals(appleVerifiedArtifactNames("0.2.0"), inventory.artifacts.keys)
         assertEquals(appleVerifiedReportLayout.keys, inventory.reports.keys)
         assertEquals(appleVerifiedToolchainLayout.keys, inventory.toolchain.keys)
+        assertEquals(setOf(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT), inventory.receipts.keys)
         assertEquals(
             setOf(
                 "reports/cross-language-api/apple/compiler-evidence.json",
@@ -23,6 +28,41 @@ class AppleVerifiedDistributionTest {
             ),
             inventory.reports.keys.filter { it.startsWith("reports/cross-language-api/") }.toSet(),
         )
+    }
+
+    @Test
+    fun `legacy proof remains valid only without a retained receipt record`() = fixture().use {
+        it.rebuildProof(schema = 1)
+        assertEquals(emptyMap(), it.verify().receipts)
+    }
+
+    @Test
+    fun `schema two requires the exact original native receipt`() = fixture().use {
+        val original = it.distribution.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT)
+        original.appendText("tampered")
+        assertFailsWith<IllegalStateException> { it.verify() }
+        original.delete()
+        assertFailsWith<IllegalStateException> { it.verify() }
+        Unit
+    }
+
+    @Test
+    fun `native receipt reuse permits only producer and consumer Git identity changes`() {
+        val original = nativeReceipt("1".repeat(40), "2".repeat(40))
+        val current = nativeReceipt("3".repeat(40), "4".repeat(40))
+        verifyAppleNativeEvidenceReceiptReuse(
+            original, current,
+            "1".repeat(40), "2".repeat(40), "3".repeat(40), "4".repeat(40),
+        )
+        current.writeText(nativeReceiptJson("3".repeat(40), "4".repeat(40), nativeInputs = "9".repeat(64)))
+        assertFailsWith<IllegalStateException> {
+            verifyAppleNativeEvidenceReceiptReuse(
+                original, current,
+                "1".repeat(40), "2".repeat(40), "3".repeat(40), "4".repeat(40),
+            )
+        }
+        original.parentFile.deleteRecursively()
+        current.parentFile.deleteRecursively()
     }
 
     @Test
@@ -132,16 +172,28 @@ private class VerifiedDistributionFixture : AutoCloseable {
         rebuildProof()
     }
 
-    fun rebuildProof() {
+    fun rebuildProof(schema: Int = 2) {
         val all = verifiedRegularFiles(distribution)
         val artifacts = all.filterKeys { it in appleVerifiedArtifactNames("0.2.0") }
         val reports = all.filterKeys { it in appleVerifiedReportLayout }
         val toolchain = all.filterKeys { it in appleVerifiedToolchainLayout }
-        distribution.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).atomicWriteJson(
-            buildAppleVerifiedDistributionProof(
-                identity, artifacts, reports, toolchain, verifiedRegularFiles(nativeEvidence),
-            ),
+        val retainedReceipt = distribution.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT)
+        if (schema == 2) {
+            retainedReceipt.parentFile.mkdirs()
+            retainedReceipt.writeBytes(nativeReceipt.readBytes())
+        } else retainedReceipt.delete()
+        val proof = buildAppleVerifiedDistributionProof(
+            identity, artifacts, reports, toolchain, verifiedRegularFiles(nativeEvidence),
+            if (schema == 2) mapOf(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT to retainedReceipt) else emptyMap(),
         )
+        val encoded = if (schema == 2) proof else JsonObject(proof.filterKeys { it != "receipts" }.mapValues {
+            when (it.key) {
+                "schemaVersion" -> JsonPrimitive(1)
+                "protocol" -> JsonPrimitive("codex-agent-ios-verified-distribution-v1")
+                else -> it.value
+            }
+        })
+        distribution.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).atomicWriteJson(encoded)
     }
 
     fun verify() = verifyAppleVerifiedDistribution(distribution, nativeEvidence, identity)
@@ -180,3 +232,28 @@ private class VerifiedDistributionFixture : AutoCloseable {
 }
 
 private fun fixture() = VerifiedDistributionFixture()
+
+private fun nativeReceipt(commit: String, tree: String): File {
+    val root = createTempDirectory("apple-native-receipt-reuse").toFile()
+    return root.resolve("receipt.json").apply { writeText(nativeReceiptJson(commit, tree)) }
+}
+
+private fun nativeReceiptJson(commit: String, tree: String, nativeInputs: String = "5".repeat(64)): String =
+    buildJsonObject {
+        put("schemaVersion", JsonPrimitive(2))
+        put("protocol", JsonPrimitive("codex-agent-ios-native-evidence-v2"))
+        put("result", JsonPrimitive("passed"))
+        put("candidateCommit", JsonPrimitive(commit))
+        put("candidateTree", JsonPrimitive(tree))
+        put("cleanCheckout", JsonPrimitive(true))
+        put("nativeInputsSha256", JsonPrimitive(nativeInputs))
+        put("nativeProvenanceSha256", JsonPrimitive("6".repeat(64)))
+        put("compilerSettingsSha256", JsonPrimitive("7".repeat(64)))
+        put("rustToolchain", JsonPrimitive("1.95.0"))
+        put("rustSrcComponent", JsonPrimitive("required"))
+        put("rustCompilerIdentitySha256", JsonPrimitive("8".repeat(64)))
+        put("xcodeVersionSha256", JsonPrimitive("a".repeat(64)))
+        put("swiftVersionSha256", JsonPrimitive("b".repeat(64)))
+        put("nativeTestsProofSha256", JsonPrimitive("c".repeat(64)))
+        put("slices", buildJsonArray { })
+    }.toString()

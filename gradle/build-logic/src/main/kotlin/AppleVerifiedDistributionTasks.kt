@@ -1,4 +1,6 @@
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
@@ -78,13 +80,20 @@ abstract class ExportAppleVerifiedDistributionTask @Inject constructor(
             "toolchain/swift.txt" to copyVerified(swiftVersionFile.get().asFile, output.resolve("toolchain/swift.txt")),
         )
         val nativeEvidence = verifiedRegularFiles(nativeEvidenceDirectory.get().asFile)
+        val receipts = mapOf(
+            IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT to copyVerified(
+                nativeEvidenceReceipt.get().asFile,
+                output.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT),
+            ),
+        )
         val identity = AppleVerifiedDistributionIdentity(
             commit, tree, version.get(), nativeProvenance.get().asFile.releaseDigest(),
-            packageSwift.get().asFile.releaseDigest(), nativeEvidenceReceipt.get().asFile.releaseDigest(),
+            packageSwift.get().asFile.releaseDigest(),
+            receipts.getValue(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).releaseDigest(),
             sdkCompatibility.get().asFile.releaseDigest(),
         )
         output.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).atomicWriteJson(
-            buildAppleVerifiedDistributionProof(identity, artifacts, reports, toolchain, nativeEvidence),
+            buildAppleVerifiedDistributionProof(identity, artifacts, reports, toolchain, nativeEvidence, receipts),
         )
     }
 }
@@ -111,10 +120,36 @@ abstract class ImportAppleVerifiedDistributionTask @Inject constructor(
 
     @TaskAction fun importEvidence() {
         val repository = repositoryDirectory.get().asFile.canonicalFile
-        val (commit, tree) = verifyAppleEvidenceCheckout(exec, repository, candidateCommit.get())
+        val (consumerCommit, consumerTree) = verifyAppleEvidenceCheckout(exec, repository, candidateCommit.get())
+        val sourceFiles = verifiedRegularFiles(evidenceDirectory.get().asFile)
+        val sourceProof = sourceFiles[IOS_VERIFIED_DISTRIBUTION_PROOF]
+            ?: error("Verified Apple distribution proof is missing")
+        val proof = sourceProof.readReleaseObject()
+        val schema = proof.releaseInt("schemaVersion")
+        val (producerCommit, producerTree) = appleProofProducerIdentity(proof)
+        val currentNativeReceipt = nativeEvidenceReceipt.get().asFile
+        val originalNativeReceipt = if (schema == 1) {
+            check(producerCommit == consumerCommit && producerTree == consumerTree) {
+                "Legacy Apple distribution proof cannot cross producer and consumer identities"
+            }
+            currentNativeReceipt
+        } else {
+            check(schema == 2) { "Unsupported verified Apple distribution proof schema" }
+            verifyHistoricalAppleProducer(exec, repository, producerCommit, producerTree)
+            sourceFiles[IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT]
+                ?: error("Verified Apple distribution original native receipt is missing")
+        }
+        verifyAppleNativeEvidenceReceiptReuse(
+            originalNativeReceipt,
+            currentNativeReceipt,
+            producerCommit,
+            producerTree,
+            consumerCommit,
+            consumerTree,
+        )
         val identity = AppleVerifiedDistributionIdentity(
-            commit, tree, version.get(), nativeProvenance.get().asFile.releaseDigest(),
-            packageSwift.get().asFile.releaseDigest(), nativeEvidenceReceipt.get().asFile.releaseDigest(),
+            producerCommit, producerTree, version.get(), nativeProvenance.get().asFile.releaseDigest(),
+            packageSwift.get().asFile.releaseDigest(), originalNativeReceipt.releaseDigest(),
             sdkCompatibility.get().asFile.releaseDigest(),
         )
         val inventory = verifyAppleVerifiedDistribution(
@@ -134,15 +169,75 @@ abstract class ImportAppleVerifiedDistributionTask @Inject constructor(
         inventory.toolchain.forEach { (path, file) ->
             copyVerified(file, build.resolve(appleVerifiedToolchainLayout.getValue(path)))
         }
+        inventory.receipts.forEach { (path, file) ->
+            copyVerified(file, build.resolve("imported-verified-apple/$path"))
+        }
         verificationReceipt.get().asFile.atomicWriteJson(buildJsonObject {
-            put("schemaVersion", JsonPrimitive(1))
-            put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v1"))
+            put("schemaVersion", JsonPrimitive(2))
+            put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v2"))
             put("result", JsonPrimitive("passed"))
-            put("candidateCommit", JsonPrimitive(commit))
-            put("candidateTree", JsonPrimitive(tree))
+            put("producerCommit", JsonPrimitive(producerCommit))
+            put("producerTree", JsonPrimitive(producerTree))
+            put("consumerCommit", JsonPrimitive(consumerCommit))
+            put("consumerTree", JsonPrimitive(consumerTree))
             put("sourceProofSha256", JsonPrimitive(inventory.proof.releaseDigest()))
-            put("nativeEvidenceReceiptSha256", JsonPrimitive(identity.nativeEvidenceReceiptSha256))
+            put("originalNativeEvidenceReceiptSha256", JsonPrimitive(originalNativeReceipt.releaseDigest()))
+            put("currentNativeEvidenceReceiptSha256", JsonPrimitive(currentNativeReceipt.releaseDigest()))
         })
+    }
+}
+
+private val appleNativeEvidenceReceiptKeys = setOf(
+    "schemaVersion", "protocol", "result", "candidateCommit", "candidateTree", "cleanCheckout",
+    "nativeInputsSha256", "nativeProvenanceSha256", "compilerSettingsSha256", "rustToolchain",
+    "rustSrcComponent", "rustCompilerIdentitySha256", "xcodeVersionSha256", "swiftVersionSha256",
+    "nativeTestsProofSha256", "slices",
+)
+
+internal fun verifyAppleNativeEvidenceReceiptReuse(
+    originalFile: File,
+    currentFile: File,
+    producerCommit: String,
+    producerTree: String,
+    consumerCommit: String,
+    consumerTree: String,
+) {
+    val original = originalFile.readReleaseObject()
+    val current = currentFile.readReleaseObject()
+    listOf(original, current).forEach { receipt ->
+        check(receipt.keys == appleNativeEvidenceReceiptKeys &&
+            receipt.releaseInt("schemaVersion") == 2 &&
+            receipt.releaseString("protocol") == "codex-agent-ios-native-evidence-v2" &&
+            receipt.releaseString("result") == "passed" && receipt.releaseBoolean("cleanCheckout")) {
+            "Apple native evidence receipt is invalid"
+        }
+    }
+    check(original.releaseString("candidateCommit") == producerCommit &&
+        original.releaseString("candidateTree") == producerTree &&
+        current.releaseString("candidateCommit") == consumerCommit &&
+        current.releaseString("candidateTree") == consumerTree) {
+        "Apple native evidence receipt producer or consumer identity mismatch"
+    }
+    val identityFields = setOf("candidateCommit", "candidateTree")
+    check(original.filterKeys { it !in identityFields } == current.filterKeys { it !in identityFields }) {
+        "Apple native evidence changed between producer and consumer"
+    }
+}
+
+private fun verifyHistoricalAppleProducer(
+    exec: ExecOperations,
+    repository: File,
+    commit: String,
+    tree: String,
+) {
+    val output = ByteArrayOutputStream()
+    exec.exec {
+        workingDir(repository)
+        commandLine("git", "rev-parse", "$commit^{commit}", "$commit^{tree}")
+        standardOutput = output
+    }.assertNormalExitValue()
+    check(output.toString(UTF_8).lineSequence().filter(String::isNotBlank).toList() == listOf(commit, tree)) {
+        "Verified Apple distribution producer commit/tree mismatch"
     }
 }
 

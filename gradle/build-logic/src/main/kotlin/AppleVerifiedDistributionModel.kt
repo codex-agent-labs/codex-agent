@@ -10,6 +10,7 @@ import java.util.zip.ZipFile
 
 internal const val IOS_VERIFIED_DISTRIBUTION_PROOF = "verified-distribution-proof.json"
 internal const val IOS_VERIFIED_DISTRIBUTION_PROPERTY = "codexAgent.iosVerifiedDistributionDirectory"
+internal const val IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT = "receipts/ios-native-evidence.json"
 
 internal val appleVerifiedReportLayout = linkedMapOf(
     "reports/cross-language-api/apple/compiler-evidence.json" to
@@ -67,6 +68,7 @@ internal data class AppleVerifiedDistributionInventory(
     val artifacts: Map<String, File>,
     val reports: Map<String, File>,
     val toolchain: Map<String, File>,
+    val receipts: Map<String, File>,
     val proof: File,
 )
 
@@ -82,9 +84,10 @@ internal fun buildAppleVerifiedDistributionProof(
     reports: Map<String, File>,
     toolchain: Map<String, File>,
     nativeEvidence: Map<String, File>,
+    receipts: Map<String, File>,
 ): JsonObject = buildJsonObject {
-    put("schemaVersion", JsonPrimitive(1))
-    put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-v1"))
+    put("schemaVersion", JsonPrimitive(2))
+    put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-v2"))
     put("result", JsonPrimitive("passed"))
     put("candidateCommit", JsonPrimitive(identity.commit))
     put("candidateTree", JsonPrimitive(identity.tree))
@@ -99,6 +102,7 @@ internal fun buildAppleVerifiedDistributionProof(
     put("reports", releaseRecords(reports))
     put("toolchain", releaseRecords(toolchain))
     put("nativeEvidence", releaseRecords(nativeEvidence))
+    put("receipts", releaseRecords(receipts))
 }
 
 internal fun verifyAppleVerifiedDistribution(
@@ -110,13 +114,15 @@ internal fun verifyAppleVerifiedDistribution(
     val proofFile = files[IOS_VERIFIED_DISTRIBUTION_PROOF]
         ?: error("Verified Apple distribution proof is missing")
     val proof = proofFile.readReleaseObject()
-    val expectedKeys = setOf(
+    val schema = proof.releaseInt("schemaVersion")
+    val commonKeys = setOf(
         "schemaVersion", "protocol", "result", "candidateCommit", "candidateTree", "cleanCheckout", "version",
         "nativeProvenanceSha256", "packageSwiftSha256", "nativeEvidenceReceiptSha256", "completedTasks",
         "sdkCompatibilitySha256", "artifacts", "reports", "toolchain", "nativeEvidence",
     )
-    check(proof.keys == expectedKeys && proof.releaseInt("schemaVersion") == 1 &&
-        proof.releaseString("protocol") == "codex-agent-ios-verified-distribution-v1" &&
+    val expectedKeys = if (schema == 1) commonKeys else commonKeys + "receipts"
+    check(schema in setOf(1, 2) && proof.keys == expectedKeys &&
+        proof.releaseString("protocol") == "codex-agent-ios-verified-distribution-v$schema" &&
         proof.releaseString("result") == "passed") { "Invalid verified Apple distribution proof schema" }
     check(identity.commit.matches(Regex("[0-9a-f]{40}")) &&
         proof.releaseString("candidateCommit") == identity.commit &&
@@ -138,16 +144,24 @@ internal fun verifyAppleVerifiedDistribution(
     val artifacts = verifyRecordGroup(proof, "artifacts", files, appleVerifiedArtifactNames(identity.version))
     val reports = verifyRecordGroup(proof, "reports", files, appleVerifiedReportLayout.keys)
     val toolchain = verifyRecordGroup(proof, "toolchain", files, appleVerifiedToolchainLayout.keys)
+    val receipts = if (schema == 2) {
+        verifyRecordGroup(proof, "receipts", files, setOf(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT)).also {
+            check(it.getValue(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).releaseDigest() ==
+                identity.nativeEvidenceReceiptSha256) {
+                "Verified Apple distribution original native receipt mismatch"
+            }
+        }
+    } else emptyMap()
     val nativeFiles = verifiedRegularFiles(currentNativeEvidence)
     val nativeNames = appleRustSliceSpecs.flatMap { listOf(it.archiveName, it.proofName) }.toSet() + IOS_NATIVE_TESTS_PROOF
     verifyRecordGroup(proof, "nativeEvidence", nativeFiles, nativeNames)
-    val expectedFiles = artifacts.keys + reports.keys + toolchain.keys + IOS_VERIFIED_DISTRIBUTION_PROOF
+    val expectedFiles = artifacts.keys + reports.keys + toolchain.keys + receipts.keys + IOS_VERIFIED_DISTRIBUTION_PROOF
     check(files.keys == expectedFiles) { "Verified Apple distribution contains missing or extra files" }
     val swiftArchive = artifacts.getValue("CodexAgent-${identity.version}.xcframework.zip")
     verifyAppleSdkCompatibility(artifacts, identity)
     val checksum = artifacts.getValue("CodexAgent-${identity.version}.xcframework.zip.sha256").readText().trim()
     check(checksum == swiftArchive.releaseDigest()) { "Verified Apple distribution Swift checksum mismatch" }
-    return AppleVerifiedDistributionInventory(artifacts, reports, toolchain, proofFile)
+    return AppleVerifiedDistributionInventory(artifacts, reports, toolchain, receipts, proofFile)
 }
 
 private fun verifyAppleSdkCompatibility(

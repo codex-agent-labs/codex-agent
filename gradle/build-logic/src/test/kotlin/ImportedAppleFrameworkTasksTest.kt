@@ -48,6 +48,22 @@ class ImportedAppleFrameworkTasksTest {
     }
 
     @Test
+    fun `schema two import receipt preserves distinct producer and consumer roles`() = fixture().use { fixture ->
+        fixture.writeProofAndReceipt(schema = 2)
+        extractVerifiedAppleXCFramework(
+            fixture.evidence, fixture.receipt, "0.2.0", fixture.work, fixture.output,
+        )
+        listOf("producer", "original-receipt", "proof").forEach { mutation ->
+            fixture.writeProofAndReceipt(schema = 2, mutation = mutation)
+            assertFailsWith<IllegalStateException>(mutation) {
+                extractVerifiedAppleXCFramework(
+                    fixture.evidence, fixture.receipt, "0.2.0", fixture.work, fixture.output,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `unsafe incomplete or cross-paired verified XCFramework archives are rejected`() {
         listOf("proof", "archive", "traversal", "duplicate", "symlink", "missing-slice").forEach { case ->
             fixture().use { fixture ->
@@ -134,18 +150,38 @@ private class VerifiedXCFrameworkFixture : AutoCloseable {
         }
     }
 
-    fun writeProofAndReceipt() {
+    fun writeProofAndReceipt(schema: Int = 1, mutation: String? = null) {
         proof.atomicWriteJson(buildJsonObject {
+            if (schema == 2) {
+                put("candidateCommit", JsonPrimitive("1".repeat(40)))
+                put("candidateTree", JsonPrimitive("2".repeat(40)))
+                put("nativeEvidenceReceiptSha256", JsonPrimitive("3".repeat(64)))
+            }
             put("artifacts", buildJsonArray { add(archive.releaseRecord(archive.name)) })
         })
         receipt.atomicWriteJson(buildJsonObject {
-            put("schemaVersion", JsonPrimitive(1))
-            put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v1"))
+            put("schemaVersion", JsonPrimitive(schema))
+            put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v$schema"))
             put("result", JsonPrimitive("passed"))
-            put("candidateCommit", JsonPrimitive("1".repeat(40)))
-            put("candidateTree", JsonPrimitive("2".repeat(40)))
-            put("sourceProofSha256", JsonPrimitive(proof.releaseDigest()))
-            put("nativeEvidenceReceiptSha256", JsonPrimitive("3".repeat(64)))
+            if (schema == 1) {
+                put("candidateCommit", JsonPrimitive("1".repeat(40)))
+                put("candidateTree", JsonPrimitive("2".repeat(40)))
+                put("nativeEvidenceReceiptSha256", JsonPrimitive("3".repeat(64)))
+            } else {
+                put("producerCommit", JsonPrimitive(
+                    if (mutation == "producer") "4".repeat(40) else "1".repeat(40),
+                ))
+                put("producerTree", JsonPrimitive("2".repeat(40)))
+                put("consumerCommit", JsonPrimitive("4".repeat(40)))
+                put("consumerTree", JsonPrimitive("5".repeat(40)))
+                put("originalNativeEvidenceReceiptSha256", JsonPrimitive(
+                    if (mutation == "original-receipt") "6".repeat(64) else "3".repeat(64),
+                ))
+                put("currentNativeEvidenceReceiptSha256", JsonPrimitive("7".repeat(64)))
+            }
+            put("sourceProofSha256", JsonPrimitive(
+                if (mutation == "proof") "8".repeat(64) else proof.releaseDigest(),
+            ))
         })
     }
 

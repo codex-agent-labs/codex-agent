@@ -26,6 +26,13 @@ class ImportedAppleSwiftPackageTasksTest {
     }
 
     @Test
+    fun `schema two receipt keeps original producer distinct from current consumer`() = fixture().use { fixture ->
+        fixture.writeProof(schema = 2)
+        fixture.importPackage()
+        assertEquals(fixture.packageMembers, verifiedRegularFiles(fixture.output).mapValues { it.value.readText() })
+    }
+
+    @Test
     fun `crosspaired and unsafe original package members fail before output publication`() {
         listOf(
             "framework", "compatibility", "missing-tests", "extra-framework", "symlink",
@@ -163,8 +170,13 @@ private class ImportedSwiftPackageFixture : AutoCloseable {
         }
     }
 
-    fun writeProof() {
+    fun writeProof(schema: Int = 1) {
         proof.atomicWriteJson(buildJsonObject {
+            if (schema == 2) {
+                put("candidateCommit", JsonPrimitive("a".repeat(40)))
+                put("candidateTree", JsonPrimitive("b".repeat(40)))
+                put("nativeEvidenceReceiptSha256", JsonPrimitive("c".repeat(64)))
+            }
             put("artifacts", buildJsonArray {
                 listOf(packageArchive, frameworkArchive).forEach { file -> add(buildJsonObject {
                     put("fileName", JsonPrimitive(file.name))
@@ -174,13 +186,22 @@ private class ImportedSwiftPackageFixture : AutoCloseable {
             })
         })
         receipt.atomicWriteJson(buildJsonObject {
-            put("schemaVersion", JsonPrimitive(1))
-            put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v1"))
+            put("schemaVersion", JsonPrimitive(schema))
+            put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v$schema"))
             put("result", JsonPrimitive("passed"))
-            put("candidateCommit", JsonPrimitive("a".repeat(40)))
-            put("candidateTree", JsonPrimitive("b".repeat(40)))
+            if (schema == 1) {
+                put("candidateCommit", JsonPrimitive("a".repeat(40)))
+                put("candidateTree", JsonPrimitive("b".repeat(40)))
+                put("nativeEvidenceReceiptSha256", JsonPrimitive("c".repeat(64)))
+            } else {
+                put("producerCommit", JsonPrimitive("a".repeat(40)))
+                put("producerTree", JsonPrimitive("b".repeat(40)))
+                put("consumerCommit", JsonPrimitive("d".repeat(40)))
+                put("consumerTree", JsonPrimitive("e".repeat(40)))
+                put("originalNativeEvidenceReceiptSha256", JsonPrimitive("c".repeat(64)))
+                put("currentNativeEvidenceReceiptSha256", JsonPrimitive("f".repeat(64)))
+            }
             put("sourceProofSha256", JsonPrimitive(proof.releaseDigest()))
-            put("nativeEvidenceReceiptSha256", JsonPrimitive("c".repeat(64)))
         })
     }
 

@@ -182,6 +182,9 @@ private class AppleSdkPackageFixture : AutoCloseable {
     fun rebindProof() {
         val proof = evidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF)
         proof.atomicWriteJson(buildJsonObject {
+            put("candidateCommit", JsonPrimitive("1".repeat(40)))
+            put("candidateTree", JsonPrimitive("2".repeat(40)))
+            put("nativeEvidenceReceiptSha256", JsonPrimitive("5".repeat(64)))
             put("artifacts", buildJsonArray {
                 listOf(packageArchive, frameworkArchive, checksum).forEach { file -> add(buildJsonObject {
                     put("fileName", JsonPrimitive(file.name))
@@ -191,13 +194,16 @@ private class AppleSdkPackageFixture : AutoCloseable {
             })
         })
         receipt.atomicWriteJson(buildJsonObject {
-            put("schemaVersion", JsonPrimitive(1))
-            put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v1"))
+            put("schemaVersion", JsonPrimitive(2))
+            put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v2"))
             put("result", JsonPrimitive("passed"))
-            put("candidateCommit", JsonPrimitive("1".repeat(40)))
-            put("candidateTree", JsonPrimitive("2".repeat(40)))
+            put("producerCommit", JsonPrimitive("1".repeat(40)))
+            put("producerTree", JsonPrimitive("2".repeat(40)))
+            put("consumerCommit", JsonPrimitive("3".repeat(40)))
+            put("consumerTree", JsonPrimitive("4".repeat(40)))
             put("sourceProofSha256", JsonPrimitive(proof.releaseDigest()))
-            put("nativeEvidenceReceiptSha256", JsonPrimitive("3".repeat(64)))
+            put("originalNativeEvidenceReceiptSha256", JsonPrimitive("5".repeat(64)))
+            put("currentNativeEvidenceReceiptSha256", JsonPrimitive("6".repeat(64)))
         })
     }
 

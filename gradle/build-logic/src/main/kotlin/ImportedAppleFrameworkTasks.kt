@@ -65,16 +65,24 @@ private fun captureVerifiedAppleArchive(
 ): File {
     check(PRODUCT_SEMVER.matches(version)) { "Imported Apple SDK version is invalid" }
     val receipt = verificationReceipt.readReleaseObject()
-    check(receipt.keys == setOf(
-        "schemaVersion", "protocol", "result", "candidateCommit", "candidateTree",
-        "sourceProofSha256", "nativeEvidenceReceiptSha256",
-    ) && receipt.releaseInt("schemaVersion") == 1 &&
-        receipt.releaseString("protocol") == "codex-agent-ios-verified-distribution-import-v1" &&
+    val schema = receipt.releaseInt("schemaVersion")
+    val identityKeys = if (schema == 1) {
+        setOf("candidateCommit", "candidateTree", "nativeEvidenceReceiptSha256")
+    } else {
+        setOf(
+            "producerCommit", "producerTree", "consumerCommit", "consumerTree",
+            "originalNativeEvidenceReceiptSha256", "currentNativeEvidenceReceiptSha256",
+        )
+    }
+    check(schema in setOf(1, 2) && receipt.keys == setOf(
+        "schemaVersion", "protocol", "result", "sourceProofSha256",
+    ) + identityKeys &&
+        receipt.releaseString("protocol") == "codex-agent-ios-verified-distribution-import-v$schema" &&
         receipt.releaseString("result") == "passed" &&
-        receipt.releaseString("candidateCommit").matches(Regex("[0-9a-f]{40}")) &&
-        receipt.releaseString("candidateTree").matches(Regex("[0-9a-f]{40}")) &&
         receipt.releaseString("sourceProofSha256").matches(Regex("[0-9a-f]{64}")) &&
-        receipt.releaseString("nativeEvidenceReceiptSha256").matches(Regex("[0-9a-f]{64}"))) {
+        identityKeys.all { key -> receipt.releaseString(key).matches(Regex(
+            if (key.endsWith("Sha256")) "[0-9a-f]{64}" else "[0-9a-f]{40}",
+        )) }) {
         "Imported Apple distribution verification receipt is invalid"
     }
     val files = verifiedRegularFiles(evidenceDirectory)
@@ -86,8 +94,17 @@ private fun captureVerifiedAppleArchive(
     check(heldProof.releaseDigest() == receipt.releaseString("sourceProofSha256")) {
         "Imported Apple distribution proof differs from its verification receipt"
     }
+    val heldProofObject = heldProof.readReleaseObject()
+    if (schema == 2) {
+        check(heldProofObject.releaseString("candidateCommit") == receipt.releaseString("producerCommit") &&
+            heldProofObject.releaseString("candidateTree") == receipt.releaseString("producerTree") &&
+            heldProofObject.releaseString("nativeEvidenceReceiptSha256") ==
+            receipt.releaseString("originalNativeEvidenceReceiptSha256")) {
+            "Imported Apple distribution receipt roles differ from its proof"
+        }
+    }
     val archive = files[archiveName] ?: error("Verified Apple archive is missing: $archiveName")
-    val artifact = heldProof.readReleaseObject().releaseArray("artifacts").map { value ->
+    val artifact = heldProofObject.releaseArray("artifacts").map { value ->
         value as? JsonObject ?: error("Verified Apple artifact record is invalid")
     }.singleOrNull { it.releaseString("fileName") == archiveName }
         ?: error("Verified Apple XCFramework artifact record is missing or duplicated")
