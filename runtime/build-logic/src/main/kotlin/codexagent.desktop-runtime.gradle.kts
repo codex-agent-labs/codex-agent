@@ -95,6 +95,9 @@ if (requestedRuntimeTarget in runtimeBinaryFlags) {
     }
 }
 if (requestedRuntimeTarget in runtimeBinaryFlags && (requestedRuntimePhase == null || requestedRuntimePhase == "binary")) {
+    require(gradle.startParameter.excludedTaskNames.isEmpty()) {
+        "Native Runtime binary producer verification rejects excluded tasks"
+    }
     verifyRuntimeBinaryFlagsAgainstPlan(
         runtimeBinaryFlags,
         requestedRuntimeTarget,
@@ -283,6 +286,7 @@ tasks.matching {
     )
 }.configureEach {
     notCompatibleWithConfigurationCache("Kotlin/Native commonization accesses project state at execution time")
+    verifyRuntimeProducerToolchain?.let { dependsOn(it) }
 }
 @OptIn(ExperimentalWasmDsl::class)
 extensions.configure<KotlinMultiplatformExtension> {

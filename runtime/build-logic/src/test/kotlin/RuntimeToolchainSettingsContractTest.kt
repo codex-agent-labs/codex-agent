@@ -37,6 +37,12 @@ class RuntimeToolchainSettingsContractTest {
         ).forEach { contract -> assertTrue(contract in observer, contract) }
         assertFalse("System.getenv(\"RUNNER_OS\")" in observer)
         assertFalse("System.getenv(\"RUNNER_ARCH\")" in observer)
+        val binaryAdmission = plugin.substringAfter("private val requestedRuntimePhase =")
+            .substringBefore("val verifyRuntimeProducerToolchain =")
+        listOf(
+            "gradle.startParameter.excludedTaskNames.isEmpty()",
+            "Native Runtime binary producer verification rejects excluded tasks",
+        ).forEach { contract -> assertTrue(contract in binaryAdmission, contract) }
 
         val abiGenerator = plugin.substringAfter("generateRuntimeAbiSource.configure {")
             .substringBefore("private val cAbiTargetSpecs =")
@@ -57,6 +63,20 @@ class RuntimeToolchainSettingsContractTest {
             "Native link and both C interop compiler paths must depend on producer verification",
         )
         assertTrue("sourceSets.getByName(\"nativeMain\").kotlin.srcDir(generateRuntimeAbiSource)" in plugin)
+
+        val nativeCommonization = plugin.substringAfter("tasks.matching {\n    it.name in setOf(")
+            .substringBefore("@OptIn(ExperimentalWasmDsl::class)")
+        listOf(
+            "commonizeCInterop",
+            "compileNativeMainKotlinMetadata",
+            "compileAppleMainKotlinMetadata",
+            "compileMacosMainKotlinMetadata",
+            "compileLinuxMainKotlinMetadata",
+        ).forEach { taskName -> assertTrue("\"$taskName\"" in nativeCommonization, taskName) }
+        assertTrue(
+            "verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in nativeCommonization,
+            "Native commonization and metadata compiler paths must depend on producer verification",
+        )
     }
 
     @Test
@@ -72,6 +92,41 @@ class RuntimeToolchainSettingsContractTest {
             "requestedRuntimeTarget == \"linux-arm64\" -> \"cross-builder\"",
             "else -> \"builder\"",
         ).forEach { contract -> assertTrue(contract in observer, contract) }
+    }
+
+    @Test
+    fun `native binary rejects task exclusions before an observer can be removed`() {
+        val guard = plugin.substringAfter(
+            "if (requestedRuntimeTarget in runtimeBinaryFlags && " +
+                "(requestedRuntimePhase == null || requestedRuntimePhase == \"binary\")) {",
+        ).substringBefore("    verifyRuntimeBinaryFlagsAgainstPlan(")
+        assertTrue("gradle.startParameter.excludedTaskNames.isEmpty()" in guard)
+
+        val root = createTempDirectory("runtime-excluded-observer").toFile().canonicalFile
+        try {
+            root.resolve("settings.gradle.kts").writeText(
+                """
+                val requestedRuntimeTarget = "macos-arm64"
+                val requestedRuntimePhase: String? = "binary"
+                val runtimeBinaryFlags = setOf("macos-arm64")
+                if (requestedRuntimeTarget in runtimeBinaryFlags &&
+                    (requestedRuntimePhase == null || requestedRuntimePhase == "binary")) {
+                $guard
+                }
+                rootProject.name = "excluded-runtime-observer"
+                """.trimIndent() + "\n",
+            )
+            val result = GradleRunner.create()
+                .withProjectDir(root)
+                .withArguments("help", "-x", "verifyRuntimeProducerToolchain", "--offline", "--stacktrace")
+                .buildAndFail()
+            assertTrue(
+                "Native Runtime binary producer verification rejects excluded tasks" in result.output,
+                result.output,
+            )
+        } finally {
+            root.deleteRecursively()
+        }
     }
 
     @Test
