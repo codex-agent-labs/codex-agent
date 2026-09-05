@@ -4,6 +4,7 @@ from ci.tests import test_contract_bundle as contract_fixture
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -252,6 +253,41 @@ class ProductControlCliTest(unittest.TestCase):
         self.assertEqual(b"", result.stdout)
         receipt = receipt_root / "phase-receipt.json"
         self.assertEqual(receipt.read_bytes(), canonical_json_bytes(load_canonical_json_bytes(receipt.read_bytes())))
+
+    def test_receipt_commands_need_no_planner_or_other_product_modules(self) -> None:
+        isolated = self.root / "isolated"
+        modules = isolated / "ci/products"
+        modules.mkdir(parents=True)
+        for name in ("__init__.py", "__main__.py", "inventory.py", "receipt.py"):
+            shutil.copyfile(REPOSITORY / "ci/products" / name, modules / name)
+        stage, _, _ = self.stage_and_receipt()
+        destination = self.root / "snapshot"
+        environment = os.environ.copy()
+        for name in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT"):
+            environment.pop(name, None)
+        environment.update(PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
+        verify_arguments = (
+            "receipt", "verify-output-manifest", "--root", str(destination),
+            "--product", "sdk", "--component", "sdk-core", "--phase", "package",
+            "--target", "common", "--product-version", "0.2.0",
+        )
+        for arguments in (
+            ("--help",),
+            ("receipt", "snapshot-tree", "--source", str(stage), "--destination", str(destination)),
+            verify_arguments,
+        ):
+            result = subprocess.run(
+                [sys.executable, "-m", "ci.products", *arguments], cwd=isolated,
+                env=environment, capture_output=True, check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual((stage / "outputs/value.bin").read_bytes(), (destination / "outputs/value.bin").read_bytes())
+        (destination / "outputs/value.bin").write_bytes(b"tampered")
+        result = subprocess.run(
+            [sys.executable, "-m", "ci.products", *verify_arguments],
+            cwd=isolated, env=environment, capture_output=True, check=False,
+        )
+        self.assertEqual(2, result.returncode)
 
     def test_local_store_restore_and_miss_reports_are_exact(self) -> None:
         stage, receipt_path, receipt = self.stage_and_receipt()

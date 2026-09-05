@@ -1,17 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from importlib import import_module
 import sys
 
-from . import aggregate, plan, receipt, restore
-
-
-COMMANDS = {
-    "aggregate": aggregate.main,
-    "plan": plan.main,
-    "receipt": receipt.main,
-    "restore": restore.main,
-}
+COMMANDS = ("aggregate", "plan", "receipt", "restore")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,7 +16,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     command = parser.parse_args(arguments[:1]).command
     try:
-        return COMMANDS[command](arguments[1:])
+        return import_module(f".{command}", __package__).main(arguments[1:])
     except ValueError as error:
         parser.error(str(error))
 
