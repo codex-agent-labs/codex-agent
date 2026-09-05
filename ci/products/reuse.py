@@ -20,6 +20,8 @@ from .inventory import (
     sha256_bytes,
 )
 from .index import (
+    _verify_index_receipt,
+    verify_contract_index_object,
     SignedProductIndex,
     stable_index_identity,
     verify_release_product_index,
@@ -213,40 +215,6 @@ def _validate_envelope(
     return instance, envelope
 
 
-def _verify_index_receipt(entry: dict[str, Any], envelope: dict[str, Any]) -> None:
-    receipt = envelope["receipt"]
-    expected_identity = (
-        entry["product"],
-        entry["component"],
-        entry["phase"],
-        entry["target"],
-        entry["productVersion"],
-        entry["buildKey"],
-    )
-    actual_identity = (
-        receipt["product"],
-        receipt["component"],
-        receipt["phase"],
-        receipt["target"],
-        receipt["productVersion"],
-        receipt["buildKey"],
-    )
-    if actual_identity != expected_identity:
-        raise ValueError("Product index entry and restored receipt identity disagree")
-    if envelope["receiptSha256"] != entry["receiptSha256"]:
-        raise ValueError("Product index entry and restored receipt digest disagree")
-    if receipt["outputs"] != entry["outputs"] or \
-            output_inventory_digest(receipt["outputs"]) != entry["outputInventoryDigest"]:
-        raise ValueError("Product index entry and restored receipt outputs disagree")
-    artifacts = [
-        output for output in receipt["outputs"]
-        if output["relativePath"] == entry["artifactName"]
-        and output["sha256"] == entry["artifactSha256"]
-    ]
-    if len(artifacts) != 1:
-        raise ValueError("Product index entry artifact disagrees with the restored receipt")
-
-
 class LookupSession:
     """A run-scoped, preverified catalog and cache lookup session."""
 
@@ -352,26 +320,9 @@ class LookupSession:
                 if candidate.entry != entry or candidate.object_path is None:
                     continue
                 try:
-                    verified = verify_object(
-                        candidate.object_path, build_key=key[0], receipt_sha256=key[1],
-                    )
+                    proof = verify_contract_index_object(entry, candidate.object_path)
                 except FileNotFoundError:
                     continue
-                envelope = {
-                    "receipt": verified["receipt"], "receiptBytes": verified["receiptBytes"],
-                    "receiptSha256": key[1], "objectSha256": verified["objectSha256"],
-                }
-                _validate_envelope(envelope)
-                _verify_index_receipt(entry, envelope)
-                with tempfile.TemporaryDirectory(prefix="contract-index-execution-") as temporary:
-                    stage = Path(temporary).resolve() / "stage"
-                    restore_object(
-                        candidate.object_path, stage, build_key=key[0], receipt_sha256=key[1],
-                        object_sha256=verified["objectSha256"],
-                    )
-                    proof = verify_contract_execution_projection(
-                        stage, verified["receiptBytes"], expected_receipt_sha256=key[1],
-                    )
                 self._execution_projections[key] = proof
                 return proof
         raise ValueError("Conflicting Contract execution inventories require both authenticated objects")

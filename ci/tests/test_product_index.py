@@ -27,6 +27,8 @@ from ci.products.inventory import (
     write_canonical_json,
 )
 from ci.products.receipt import compute_build_key, validate_phase_receipt
+from ci.products.restore import store_local_object
+from ci.tests import test_contract_bundle as contract_fixture
 from ci.products.signatures import (
     generate_development_key,
     sign_manifest,
@@ -229,6 +231,8 @@ class ProductIndexTest(unittest.TestCase):
         producer_value: dict[str, object] | None = None,
         private_key: Path | None = None,
         public_key: Path | None = None,
+        contract_objects=None,
+        prior_contract_objects=None,
     ) -> dict[str, object]:
         signing = self.development_signing if trust_domain == "development" else self.release_signing
         history = None
@@ -248,6 +252,7 @@ class ProductIndexTest(unittest.TestCase):
                     repository=REPOSITORY,
                     keyring_path=self.keyring,
                     keys_directory=self.release_keys,
+                    contract_objects=prior_contract_objects,
                 )
         return write_signed_product_index(
             [source(trust_domain=trust_domain)] if sources is None else sources,
@@ -260,7 +265,84 @@ class ProductIndexTest(unittest.TestCase):
             private_key=self.private_key if private_key is None else private_key,
             public_key=self.public_key if public_key is None else public_key,
             manifest_path=manifest,
+            contract_objects=contract_objects,
         )
+
+    def execution_source(self, name: str, *, execution_context="first", target_hash_salt=b""):
+        root = self.root / name
+        run = 7 if execution_context == "first" else 8
+        phases = contract_fixture.ContractBundleTest()._product_phase_stages(
+            root, execution_context=execution_context, target_hash_salt=target_hash_salt,
+            producer={**producer("release"), "runId": run, "commit": str(run) * 40, "tree": str(run + 1) * 40},
+            trust_domain="release",
+        )
+        contents = phases["binary_receipt_path"].read_bytes()
+        stored = store_local_object(phases["binary_stage"], phases["binary_receipt_path"], root / "cache")
+        transport = root / "transport.zip"
+        shutil.copyfile(stored["path"], transport)
+        return IndexEntrySource(contents, "outputs/execution/contract-execution.zip"), transport
+
+    def test_stable_publication_authenticates_original_execution_objects_without_rewriting(self):
+        first, first_object = self.execution_source("first-execution")
+        second, second_object = self.execution_source("second-execution", execution_context="second")
+        first_sha, second_sha = map(sha256_bytes, (first.receipt_bytes, second.receipt_bytes))
+        tag = {"kind": "stable", "tag": f"contract/v{contract_fixture.VERSION}"}
+        first_index = self.root / "first-index/product-index.json"
+        first_index.parent.mkdir()
+        self.publish("release", first_index, sources=[first], context_value=tag)
+        signed = SignedProductIndex(first_index, first_index.with_suffix(".sig"))
+        retained = [first_index, signed.signature, first_object, second_object]
+        original = {path: path.read_bytes() for path in retained}
+        second_index = self.root / "second-index/product-index.json"
+        second_index.parent.mkdir()
+        arguments = dict(sources=[second], prior=[signed], context_value=tag,
+                         prior_contract_objects={first_sha: first_object},
+                         contract_objects={second_sha: second_object})
+        result = self.publish("release", second_index, **arguments)
+        self.assertEqual(second_sha, result["index"]["entries"][0]["receiptSha256"])
+        self.assertEqual(load_canonical_json_bytes(second.receipt_bytes)["outputs"], result["index"]["entries"][0]["outputs"])
+        self.assertNotEqual(first_index.read_bytes(), second_index.read_bytes())
+        self.assertEqual(original, {path: path.read_bytes() for path in retained})
+        with self.assertRaises(ValueError):
+            self.publish("release", first_index, **arguments)
+        self.assertEqual(original, {path: path.read_bytes() for path in retained})
+
+    def test_stable_execution_comparison_rejects_missing_wrong_changed_and_replaced_objects(self):
+        first, first_object = self.execution_source("original-execution")
+        second, second_object = self.execution_source("new-execution", execution_context="second")
+        changed, changed_object = self.execution_source("changed-execution", target_hash_salt=b"changed-content")
+        first_sha, second_sha, changed_sha = map(sha256_bytes, (first.receipt_bytes, second.receipt_bytes, changed.receipt_bytes))
+        tag = {"kind": "stable", "tag": f"contract/v{contract_fixture.VERSION}"}
+        first_index = self.root / "original-index/product-index.json"
+        first_index.parent.mkdir()
+        self.publish("release", first_index, sources=[first], context_value=tag)
+        signed = SignedProductIndex(first_index, first_index.with_suffix(".sig"))
+        references = {first_sha: first_object}
+        with mock.patch.object(product_index, "_authoritative_stable_refs", return_value={tag["tag"]: "c" * 40}):
+            history = verify_stable_index_history([signed], repository=REPOSITORY,
+                keyring_path=self.keyring, keys_directory=self.release_keys, contract_objects=references)
+        references[first_sha] = self.root / "not-the-original-object"
+        arguments = dict(repository=REPOSITORY, context=tag, trust_domain="release",
+                         signing=self.release_signing, producer=producer("release"), stable_history=history)
+        # The retained reference map is immutable; paths are nevertheless verified afresh.
+        build_product_index([second], **arguments, contract_objects={second_sha: second_object})
+        cases = [([second], None), ([second], {second_sha: first_object}),
+                 ([second], {second_sha: self.root / "expired-object"}),
+                 ([changed], {changed_sha: changed_object})]
+        for selected, objects in cases:
+            with self.subTest(objects=objects), self.assertRaises((ValueError, OSError)):
+                build_product_index(selected, **arguments, contract_objects=objects)
+        before = first_object.read_bytes()
+        first_object.write_bytes(b"corrupt after history verification")
+        try:
+            with self.assertRaises((ValueError, OSError)):
+                build_product_index([second], **arguments, contract_objects={second_sha: second_object})
+        finally:
+            first_object.write_bytes(before)
+        with mock.patch.object(product_index, "_authoritative_stable_refs", return_value={tag["tag"]: "c" * 40}), \
+                self.assertRaisesRegex(ValueError, "current protected stable-tag inventory"):
+            verify_stable_index_history([signed, signed], repository=REPOSITORY,
+                keyring_path=self.keyring, keys_directory=self.release_keys, contract_objects={first_sha: first_object})
 
     def test_development_and_release_indexes_round_trip_and_identical_retry(self) -> None:
         for trust_domain in ("development", "release"):

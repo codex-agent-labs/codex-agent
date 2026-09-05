@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any, Iterable, Iterator
 from weakref import WeakKeyDictionary
 
 from .aggregate import validate_product_index, verify_immutable_product_indexes
+from .contract_projection import verify_contract_execution_projection
+from .restore import restore_object, verify_object
 from .inventory import (
     _is_windows,
     _open_directory,
@@ -88,6 +91,7 @@ class VerifiedStableIndexHistory:
     _repository: str
     _index_bytes: tuple[bytes, ...]
     _token: object
+    _contract_objects: tuple[tuple[str, Path], ...] = ()
 
 
 def _verify_signed_bytes(
@@ -203,13 +207,96 @@ def _authoritative_stable_refs(repository: str) -> dict[str, str]:
     return refs
 
 
+def _verify_index_receipt(entry: dict[str, Any], envelope: dict[str, Any]) -> None:
+    receipt = envelope["receipt"]
+    expected_identity = (
+        entry["product"],
+        entry["component"],
+        entry["phase"],
+        entry["target"],
+        entry["productVersion"],
+        entry["buildKey"],
+    )
+    actual_identity = (
+        receipt["product"],
+        receipt["component"],
+        receipt["phase"],
+        receipt["target"],
+        receipt["productVersion"],
+        receipt["buildKey"],
+    )
+    if actual_identity != expected_identity:
+        raise ValueError("Product index entry and restored receipt identity disagree")
+    if envelope["receiptSha256"] != entry["receiptSha256"]:
+        raise ValueError("Product index entry and restored receipt digest disagree")
+    if receipt["outputs"] != entry["outputs"] or \
+            output_inventory_digest(receipt["outputs"]) != entry["outputInventoryDigest"]:
+        raise ValueError("Product index entry and restored receipt outputs disagree")
+    artifacts = [
+        output for output in receipt["outputs"]
+        if output["relativePath"] == entry["artifactName"]
+        and output["sha256"] == entry["artifactSha256"]
+    ]
+    if len(artifacts) != 1:
+        raise ValueError("Product index entry artifact disagrees with the restored receipt")
+
+
+def verify_contract_index_object(entry: dict[str, Any], archive: Path):
+    """Authenticate retained execution bytes against one already-validated index entry."""
+    verified = verify_object(archive, build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+    _verify_index_receipt(entry, {
+        **verified, "receiptSha256": sha256_bytes(verified["receiptBytes"]),
+    })
+    with tempfile.TemporaryDirectory(prefix="contract-index-execution-") as temporary:
+        stage = Path(temporary).resolve() / "stage"
+        restore_object(
+            archive, stage, build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"],
+            object_sha256=verified["objectSha256"],
+        )
+        return verify_contract_execution_projection(
+            stage, verified["receiptBytes"], expected_receipt_sha256=entry["receiptSha256"],
+        )
+
+
+def _contract_object_references(objects):
+    if objects is None:
+        return {}
+    if not isinstance(objects, Mapping):
+        raise ValueError("Contract index objects must be a receipt-qualified mapping")
+    result = {}
+    for key, value in objects.items():
+        digest = require_sha256(key, "Contract index object receipt digest")
+        if not isinstance(value, (str, Path)):
+            raise ValueError("Contract index object path must be a filesystem path")
+        result[digest] = Path(os.path.abspath(value))
+    return result
+
+
+def _contract_object_projection(objects):
+    proofs = {}
+
+    def verify(entry):
+        key = canonical_json_bytes(entry)
+        if key not in proofs:
+            archive = objects.get(entry["receiptSha256"])
+            if archive is None:
+                raise ValueError("Conflicting Contract execution inventories require both authenticated objects")
+            proofs[key] = verify_contract_index_object(entry, archive)
+        return proofs[key]
+
+    return verify
+
+
 def verify_stable_index_history(
     sources: Iterable[SignedProductIndex],
     *,
     repository: str,
     keyring_path: Path,
     keys_directory: Path,
+    contract_objects: Mapping[str, Path] | None = None,
 ) -> VerifiedStableIndexHistory:
+    objects = _contract_object_references(contract_objects)
+    execution_projection = _contract_object_projection(objects)
     keyring = load_keyring(Path(keyring_path), Path(keys_directory))
     authoritative_refs = _authoritative_stable_refs(repository)
     verified: list[bytes] = []
@@ -226,14 +313,14 @@ def verify_stable_index_history(
         stable_index_identity(index)
         tags.append(index["context"]["tag"])
         for prior in indexes:
-            verify_immutable_product_indexes(prior, index)
+            verify_immutable_product_indexes(prior, index, contract_execution_projection=execution_projection)
         indexes.append(index)
         verified.append(contents)
     if len(tags) != len(set(tags)) or set(tags) != set(authoritative_refs):
         raise ValueError(
             "Stable product-index sources do not match the current protected stable-tag inventory"
         )
-    return VerifiedStableIndexHistory(repository, tuple(verified), _HISTORY_TOKEN)
+    return VerifiedStableIndexHistory(repository, tuple(verified), _HISTORY_TOKEN, tuple(objects.items()))
 
 
 def _validated_entry_source(
@@ -456,7 +543,9 @@ def build_product_index(
     signing: dict[str, Any],
     producer: dict[str, Any],
     stable_history: VerifiedStableIndexHistory | None,
+    contract_objects: Mapping[str, Path] | None = None,
 ) -> dict[str, Any]:
+    objects = _contract_object_references(contract_objects)
     pairs = sorted(
         (_entry(source, repository=repository, trust_domain=trust_domain) for source in sources),
         key=lambda pair: pair[0]["buildKey"],
@@ -495,9 +584,11 @@ def build_product_index(
                 stable_history._token is not _HISTORY_TOKEN or \
                 stable_history._repository != repository:
             raise ValueError("Stable product index requires explicit authenticated history")
+        execution_projection = _contract_object_projection({**dict(stable_history._contract_objects), **objects})
         for contents in stable_history._index_bytes:
             verify_immutable_product_indexes(
                 validate_product_index(load_canonical_json_bytes(contents)), index,
+                contract_execution_projection=execution_projection,
             )
     elif stable_history is not None:
         raise ValueError("Only a stable product index accepts stable history")
@@ -771,6 +862,7 @@ def write_signed_product_index(
     private_key: Path,
     public_key: Path,
     manifest_path: Path,
+    contract_objects: Mapping[str, Path] | None = None,
 ) -> dict[str, Any]:
     index = build_product_index(
         sources,
@@ -780,6 +872,7 @@ def write_signed_product_index(
         signing=signing,
         producer=producer,
         stable_history=stable_history,
+        contract_objects=contract_objects,
     )
     manifest = Path(os.path.abspath(manifest_path))
     signature = manifest.with_suffix(".sig")
