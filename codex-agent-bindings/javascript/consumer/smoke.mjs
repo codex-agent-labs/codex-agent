@@ -690,10 +690,11 @@ test('typescript compiler discovers the exact installed public API', () => {
     { code: 'ENOENT' },
     'A missing compatibility resource must fail closed',
   );
+  const wrongDefaultVersion = expectedDefaultRuntimeVersion === '0.2.1' ? '0.2.2' : '0.2.1';
   const wrongDefault = Buffer.from(
     compatibilityBytes.toString('utf8').replace(
       `"defaultRuntimeVersion":"${expectedDefaultRuntimeVersion}"`,
-      '"defaultRuntimeVersion":"0.2.1"',
+      `"defaultRuntimeVersion":"${wrongDefaultVersion}"`,
     ),
   );
   assert.notDeepEqual(wrongDefault, compatibilityBytes, 'The default Runtime mutation source is stale');
