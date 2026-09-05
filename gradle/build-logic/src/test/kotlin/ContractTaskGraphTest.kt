@@ -1,6 +1,7 @@
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
@@ -8,6 +9,69 @@ import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 
 class ContractTaskGraphTest {
+    @Test
+    fun `Contract validation passes provider values to Python on fresh and cached execution`() {
+        val root = createTempDirectory("contract-validation-arguments").toFile().canonicalFile
+        try {
+            val source = File("src/main/kotlin/codexagent.contract-product.gradle.kts").readText()
+                .substringAfter("val validateImportedContractPackage =")
+                .substringBefore("val writeContractValidationOutputManifest =")
+            val validationBody = source.substringAfter("{").substringBeforeLast("}")
+            root.resolve("settings.gradle.kts").writeText("rootProject.name = \"validation-arguments\"\n")
+            root.resolve("ci/products").mkdirs()
+            listOf("package receipt.json", "binary receipt.json").forEach {
+                root.resolve(it).writeText("{}\n")
+            }
+            root.resolve("ci/products/contract.py").writeText(
+                "import sys\nfrom pathlib import Path\n" +
+                    "output = Path(sys.argv[sys.argv.index('--output-directory') + 1])\n" +
+                    "assert not output.exists(), 'Gradle pre-created atomic validation output'\n" +
+                    "output.mkdir(parents=True)\n" +
+                    "Path('arguments.txt').write_text('\\n'.join(sys.argv[1:]) + '\\n')\n",
+            )
+            root.resolve("build.gradle.kts").writeText(
+                """
+                val importedContractPackageSnapshot = layout.buildDirectory.dir("package with spaces")
+                val importedContractPackageReceipt = layout.projectDirectory.file("package receipt.json")
+                    .let { providers.provider { it } }
+                val importedContractBinaryReceipt = layout.projectDirectory.file("binary receipt.json")
+                    .let { providers.provider { it } }
+                val importedContractPackageReceiptSha256 = providers.provider { "sha256:${"a".repeat(64)}" }
+                val importedContractBinaryReceiptSha256 = providers.provider { "sha256:${"b".repeat(64)}" }
+                val contractValidationEvidence = layout.buildDirectory.dir("validation evidence")
+                val contractVersion = "0.2.0"
+                val stageContractValidationFromImportedPackage = tasks.register<Delete>("resetValidation") {
+                    delete(contractValidationEvidence)
+                }
+                tasks.register<Exec>("validateImportedContractPackage") {
+                    $validationBody
+                }
+                """.trimIndent() + "\n",
+            )
+            val expected = listOf(
+                "validate-package", "--package-stage", root.resolve("build/package with spaces").path,
+                "--package-receipt", root.resolve("package receipt.json").path,
+                "--package-receipt-sha256", "sha256:${"a".repeat(64)}",
+                "--binary-receipt", root.resolve("binary receipt.json").path,
+                "--binary-receipt-sha256", "sha256:${"b".repeat(64)}",
+                "--output-directory", root.resolve("build/validation evidence").path,
+                "--contract-version", "0.2.0",
+            )
+            val runner = GradleRunner.create().withProjectDir(root).withArguments(
+                "validateImportedContractPackage", "--offline", "--configuration-cache",
+                "--configuration-cache-problems=fail", "--stacktrace",
+            )
+            repeat(2) { attempt ->
+                val result = runner.build()
+                assertEquals(TaskOutcome.SUCCESS, result.task(":validateImportedContractPackage")?.outcome)
+                assertEquals(expected, root.resolve("arguments.txt").readLines())
+                if (attempt == 1) assertTrue("Reusing configuration cache." in result.output)
+            }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     @Test
     fun `Contract Maven reset preserves stale files on rejected inputs and runs once before publications`() {
         val root = createTempDirectory("contract-maven-reset").toFile()

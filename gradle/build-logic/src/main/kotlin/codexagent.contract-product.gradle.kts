@@ -245,19 +245,20 @@ val validateImportedContractPackage = tasks.register<Exec>("validateImportedCont
     inputs.file(importedContractBinaryReceipt)
     inputs.property("packageReceiptSha256", importedContractPackageReceiptSha256)
     inputs.property("binaryReceiptSha256", importedContractBinaryReceiptSha256)
-    outputs.dir(contractValidationEvidence)
+    // Python publishes this directory atomically; Gradle must not pre-create it.
+    // The phase output manifest inventories it after successful validation.
     environment("PYTHONDONTWRITEBYTECODE", "1")
     executable("python3")
     args("-m", "ci.products.contract", "validate-package", "--package-stage")
-    args(importedContractPackageSnapshot.map { it.asFile.absolutePath })
+    args(importedContractPackageSnapshot.get().asFile.absolutePath)
     args("--package-receipt")
-    args(importedContractPackageReceipt.map { it.asFile.absolutePath })
-    args("--package-receipt-sha256", importedContractPackageReceiptSha256)
+    args(importedContractPackageReceipt.get().asFile.absolutePath)
+    args("--package-receipt-sha256", importedContractPackageReceiptSha256.get())
     args("--binary-receipt")
-    args(importedContractBinaryReceipt.map { it.asFile.absolutePath })
-    args("--binary-receipt-sha256", importedContractBinaryReceiptSha256)
+    args(importedContractBinaryReceipt.get().asFile.absolutePath)
+    args("--binary-receipt-sha256", importedContractBinaryReceiptSha256.get())
     args("--output-directory")
-    args(contractValidationEvidence.map { it.asFile.absolutePath })
+    args(contractValidationEvidence.get().asFile.absolutePath)
     args("--contract-version", contractVersion)
 }
 val writeContractValidationOutputManifest = tasks.register<WriteProductOutputManifestTask>(
