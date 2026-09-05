@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import ExitStack
 import hashlib
 import io
 import re
@@ -28,6 +29,9 @@ from native_wrappers import (  # noqa: E402
     LANGUAGES,
     PACKAGE_CLASSIFIERS,
     PYTHON_TAGS,
+    _consume,
+    consume,
+    consume_language,
     deterministic_tar,
     deterministic_zip,
     files,
@@ -38,6 +42,7 @@ from native_wrappers import (  # noqa: E402
     reject_raw_c_abi_proofs,
     main,
     package_all,
+    parse_args,
     require_embedded_native_assets,
     require_embedded_package_versions,
     require_embedded_sdk_compatibility,
@@ -1209,6 +1214,166 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                     output.addfile(member, io.BytesIO(payload))
             with self.assertRaisesRegex(ValueError, "duplicate"):
                 safe_extract_tar(duplicate_tar, root / "duplicate-tar-output")
+
+
+class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
+    """Dispatch/evidence fixtures only: external tools and runtime execution are mocked."""
+
+    def fixture(self, root: Path, languages: tuple[str, ...]):
+        from ci.tests.test_products import sdk_compatibility
+
+        repository, packages, sdks = root / "repository", root / "packages", root / "sdks"
+        repository.mkdir()
+        library = sdks / "linux-x64/lib/libcodex_agent.so"
+        library.parent.mkdir(parents=True)
+        library.write_bytes(b"synthetic unexecuted native input")
+        (sdks / "sdk-compatibility.json").write_bytes(canonical_json_bytes(sdk_compatibility()))
+        selected = {}
+        for language in languages:
+            source = repository / "codex-agent-bindings" / language
+            source.mkdir(parents=True)
+            package = packages / language / "package.fixture"
+            package.parent.mkdir(parents=True)
+            selected[language] = package
+            if language == "csharp":
+                consumer = source / "samples/CodexAgent.Consumer"
+                consumer.mkdir(parents=True)
+                (consumer / "CodexAgent.Consumer.csproj").write_text(
+                    '<PackageReference Include="CodexAgent" Version="0.2.0" />\n',
+                )
+                package.write_bytes(b"synthetic uninstalled NuGet input")
+            elif language == "rust":
+                consumer = source / "consumer"
+                consumer.mkdir()
+                (consumer / "Cargo.toml").write_text('path = ".."\n')
+                (consumer / "Cargo.lock").write_text('name = "codex-agent"\nversion = "0.2.0"\n')
+                write_tar_file(package, "codex-agent-0.2.0/Cargo.toml", "fixture\n")
+            elif language == "dart":
+                consumer = source / "consumer"
+                consumer.mkdir()
+                (consumer / "pubspec.yaml").write_text("dependencies:\n  codex_agent:\n    path: ..\n")
+                (consumer / "pubspec.lock").write_text(
+                    '  codex_agent:\n    dependency: "direct main"\n    description:\n'
+                    '      path: ".."\n      relative: true\n    source: path\n    version: "0.2.0"\n',
+                )
+                write_tar_file(package, "codex_agent-0.2.0/pubspec.yaml", "fixture\n")
+            elif language == "cpp":
+                write_zip_file(package, "codex-agent-cpp-0.2.0/fixture.txt", "fixture\n")
+            else:
+                package.write_bytes(b"synthetic uninstalled wheel input")
+        return repository, packages, sdks, library, selected
+
+    def controls(self, stack: ExitStack, selected: dict, library: Path):
+        values = {}
+        for name, options in {
+            "host_classifier": {"return_value": "linux-x64"},
+            "platform.system": {"return_value": "Linux"},
+            "require_embedded_package_versions": {},
+            "select_packages": {"return_value": selected},
+            "require_matching_native": {"return_value": library},
+            "require_matching_compatibility": {},
+            "reject_raw_c_abi_proofs": {},
+            "executable": {"side_effect": lambda build, name: build / name},
+            "run": {}, "run_expect_failure": {},
+            "version": {"return_value": "fixture tool identity"},
+        }.items():
+            values[name] = stack.enter_context(patch("native_wrappers." + name, **options))
+        stack.enter_context(patch("native_wrappers.subprocess.run", side_effect=AssertionError("No external tools")))
+        stack.enter_context(patch("native_wrappers.package_all", side_effect=AssertionError("No package rebuild")))
+        return values
+
+    def test_one_language_needs_no_sibling_sources_packages_or_tools(self) -> None:
+        expected_tools = {
+            "python": {Path(sys.executable).name}, "csharp": {"dotnet"},
+            "rust": {"cargo", "rustc", "cc"}, "cpp": {"cmake", "c++"}, "dart": {"dart"},
+        }
+        for language in LANGUAGES:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+                root = Path(temporary).resolve()
+                repository, packages, sdks, library, selected = self.fixture(root, (language,))
+                probes = self.controls(stack, selected, library)
+                stack.enter_context(patch.dict("os.environ", {"CC": "cc", "CXX": "c++"}))
+                output = root / "output"
+                self.assertIsNone(consume_language(
+                    repository, packages, sdks, output, "0.2.0", language, offline=True,
+                ))
+                self.assertEqual({language}, {path.name for path in (repository / "codex-agent-bindings").iterdir()})
+                probes["require_embedded_package_versions"].assert_called_once_with(packages, "0.2.0", (language,))
+                probes["select_packages"].assert_called_once_with(packages, "linux-x64", "0.2.0", (language,))
+                self.assertEqual(1, probes["require_matching_native"].call_count)
+                self.assertEqual(1, probes["require_matching_compatibility"].call_count)
+                self.assertEqual(1, probes["reject_raw_c_abi_proofs"].call_count)
+                self.assertEqual(3, probes["run_expect_failure"].call_count)
+                observed_tools = {Path(call.args[0]).name for call in probes["version"].call_args_list}
+                self.assertEqual(expected_tools[language], observed_tools)
+                commands = [list(map(str, call.args)) for call in probes["run"].call_args_list]
+                self.assertFalse(any("ci/receipt.py" in argument for command in commands for argument in command))
+                for call in probes["run"].call_args_list + probes["run_expect_failure"].call_args_list:
+                    if "env" in call.kwargs:
+                        self.assertNotIn("CODEX_AGENT_LIBRARY", call.kwargs["env"])
+                if language in {"rust", "dart"}:
+                    command = next(command for command in commands if command[1:2] == ["fetch"] or
+                                   command[1:3] == ["pub", "get"])
+                    self.assertIn("--offline", command)
+                    self.assertIn("--locked" if language == "rust" else "--enforce-lockfile", command)
+                relative = [path.relative_to(output).as_posix() for path in files(output)]
+                self.assertEqual([f"evidence/{language}/linux-x64.tsv", f"evidence/{language}/toolchain.tsv"], relative)
+                report = (output / f"evidence/{language}/linux-x64.tsv").read_text()
+                self.assertIn(f"{language}-package/{selected[language].name}", report)
+                self.assertIn(hashlib.sha256(selected[language].read_bytes()).hexdigest(), report)
+                self.assertIn(hashlib.sha256(library.read_bytes()).hexdigest(), report)
+                self.assertIn(f"{language}-installed-host-lifecycle\tpassed\n", report)
+                self.assertTrue((output / f"evidence/{language}/toolchain.tsv").read_text().startswith("tool\tversion\n"))
+
+    def test_default_legacy_path_still_executes_all_languages_and_writes_its_lane_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root = Path(temporary).resolve()
+            repository, packages, sdks, library, selected = self.fixture(root, LANGUAGES)
+            probes = self.controls(stack, selected, library)
+            consume(repository, packages, sdks, root / "plan.json", root / "output", "0.2.0")
+            self.assertEqual(5, probes["require_matching_compatibility"].call_count)
+            self.assertEqual(5, probes["reject_raw_c_abi_proofs"].call_count)
+            self.assertEqual(15, probes["run_expect_failure"].call_count)
+            command = list(map(str, probes["run"].call_args.args))
+            self.assertIn(str(repository / "ci/receipt.py"), command)
+            self.assertEqual(5, command.count("--artifact"))
+            self.assertEqual(5, command.count("--evidence"))
+            self.assertFalse(any(path.name == "toolchain.tsv" for path in files(root / "output")))
+
+    def test_partial_language_cannot_emit_legacy_receipt_or_keep_failed_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root = Path(temporary).resolve()
+            repository, packages, sdks, library, selected = self.fixture(root, ("python",))
+            probes = self.controls(stack, selected, library)
+            with self.assertRaisesRegex(ValueError, "all-language lane receipt"):
+                _consume(repository, packages, sdks, root / "plan", root / "output", "0.2.0", languages=("python",))
+            probes["run"].assert_not_called()
+            probes["run"].side_effect = ValueError("simulated consumer failure")
+            output = root / "output"
+            output.mkdir()
+            (output / "stale-success.tsv").write_text("stale\n")
+            with self.assertRaisesRegex(ValueError, "simulated consumer failure"):
+                consume_language(repository, packages, sdks, output, "0.2.0", "python")
+            self.assertFalse(output.exists())
+
+    def test_single_language_cli_has_no_legacy_plan_and_forwards_offline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            version_file = root / "sdk.txt"
+            version_file.write_text("0.2.0\n")
+            command = ["native_wrappers.py", "consume-language", "--repository", str(root / "repository"),
+                       "--packages", str(root / "packages"), "--sdks", str(root / "sdks"),
+                       "--output", str(root / "output"), "--sdk-version-file", str(version_file),
+                       "--language", "python", "--offline"]
+            with patch.object(sys, "argv", command), patch("native_wrappers.consume_language") as consume_mock:
+                main()
+                consume_mock.assert_called_once_with(
+                    root / "repository", root / "packages", root / "sdks", root / "output",
+                    "0.2.0", "python", offline=True,
+                )
+            with patch.object(sys, "argv", command + ["--plan", str(root / "plan")]), \
+                    patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+                parse_args()
 
 
 if __name__ == "__main__":
