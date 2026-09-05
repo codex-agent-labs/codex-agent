@@ -45,6 +45,7 @@ abstract class PackageDesktopCodexRuntimeTask @Inject constructor(
     @get:Input abstract val binarySha256: Property<String>
     @get:Input abstract val executableName: Property<String>
     @get:Input abstract val supervisorExecutableName: Property<String>
+    @get:Input abstract val offlineMode: Property<Boolean>
 
     @get:InputFile
     @get:Optional
@@ -71,6 +72,10 @@ abstract class PackageDesktopCodexRuntimeTask @Inject constructor(
 
     @get:OutputFile abstract val outputFile: RegularFileProperty
 
+    init {
+        offlineMode.convention(project.gradle.startParameter.isOffline)
+    }
+
     @TaskAction
     fun packageRuntime() {
         if (prebuiltPackage.isPresent) {
@@ -80,13 +85,17 @@ abstract class PackageDesktopCodexRuntimeTask @Inject constructor(
             return
         }
         val releaseAsset = asset.get()
-        val url = URI("https://github.com/openai/codex/releases/download/${releaseTag.get()}/$releaseAsset")
         val temporary = Files.createTempDirectory(temporaryDir.toPath(), "package-")
         try {
             val archive = temporary.resolve(releaseAsset).toFile()
             if (localArchive.isPresent) {
                 Files.copy(localArchive.get().asFile.toPath(), archive.toPath(), StandardCopyOption.REPLACE_EXISTING)
             } else {
+                check(!offlineMode.get()) {
+                    "Offline Runtime packaging requires a verified prebuilt package or " +
+                        "codexAgent.desktopArchiveDirectory containing the pinned archive"
+                }
+                val url = URI("https://github.com/openai/codex/releases/download/${releaseTag.get()}/$releaseAsset")
                 downloadRuntimeHttps(url, archive.toPath())
             }
             check(archive.releaseDigest() == archiveSha256.get()) {

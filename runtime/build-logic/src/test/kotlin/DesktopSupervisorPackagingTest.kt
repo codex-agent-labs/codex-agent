@@ -9,11 +9,33 @@ import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.gradle.testfixtures.ProjectBuilder
 
 class DesktopSupervisorPackagingTest {
+    @Test
+    fun `offline package miss fails before resolving the download URI`() {
+        val root = createTempDirectory("desktop-offline-package").toFile()
+        try {
+            val project = ProjectBuilder.builder().withProjectDir(root).build()
+            project.gradle.startParameter.isOffline = true
+            val task = project.tasks.create("package", PackageDesktopCodexRuntimeTask::class.java)
+            // A missing guard fails locally at URI parsing, never with a network request.
+            task.releaseTag.set("invalid release tag")
+            task.asset.set("upstream.zip")
+            task.outputFile.set(root.resolve("output.zip"))
+            assertTrue(task.offlineMode.get())
+            val error = assertFailsWith<IllegalStateException> { task.packageRuntime() }
+            assertTrue("Offline Runtime packaging requires" in error.message.orEmpty())
+            assertFalse(task.outputFile.get().asFile.exists())
+            assertTrue(task.temporaryDir.listFiles().orEmpty().isEmpty())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     @Test
     fun `generated distribution metadata is common and includes supervisors`() {
         val root = createTempDirectory("desktop-distribution-source").toFile()
@@ -62,6 +84,7 @@ class DesktopSupervisorPackagingTest {
             val packaged = root.resolve("runtime.zip")
             ProjectBuilder.builder().withProjectDir(root).build().tasks
                 .register("package", PackageDesktopCodexRuntimeTask::class.java).get().apply {
+                    offlineMode.set(true)
                     releaseTag.set("rust-v0.145.0")
                     libraryVersion.set("0.2.0")
                     appServerVersion.set("0.145.0")
@@ -99,6 +122,7 @@ class DesktopSupervisorPackagingTest {
             val aggregatePatch = root.resolve("runtime-aggregate-patch.zip")
             ProjectBuilder.builder().withProjectDir(root).build().tasks
                 .register("packageAggregatePatch", PackageDesktopCodexRuntimeTask::class.java).get().apply {
+                    offlineMode.set(true)
                     releaseTag.set("rust-v0.145.0"); asset.set(upstream.name)
                     libraryVersion.set(runtimeCompatibilityVersion("0.2.1")); appServerVersion.set("0.145.0")
                     target.set("macosArm64"); classifier.set("app-server-macos-arm64")
@@ -113,6 +137,7 @@ class DesktopSupervisorPackagingTest {
             val imported = root.resolve("imported.zip")
             ProjectBuilder.builder().withProjectDir(root).build().tasks
                 .register("importPackage", PackageDesktopCodexRuntimeTask::class.java).get().apply {
+                    offlineMode.set(true)
                     releaseTag.set("rust-v0.145.0"); asset.set(upstream.name)
                     libraryVersion.set("0.2.0"); appServerVersion.set("0.145.0")
                     target.set("macosArm64"); classifier.set("app-server-macos-arm64")
@@ -123,6 +148,21 @@ class DesktopSupervisorPackagingTest {
                     packageRuntime()
                 }
             assertTrue(packaged.readBytes().contentEquals(imported.readBytes()))
+
+            val original = packaged.readBytes()
+            val expectedArchiveSha256 = upstream.sha256()
+            upstream.writeText("tampered archive")
+            val tamperedTask = ProjectBuilder.builder().withProjectDir(root).build().tasks
+                .register("packageTampered", PackageDesktopCodexRuntimeTask::class.java).get().apply {
+                    offlineMode.set(true)
+                    asset.set(upstream.name)
+                    localArchive.set(upstream)
+                    archiveSha256.set(expectedArchiveSha256)
+                    outputFile.set(packaged)
+                }
+            val error = assertFailsWith<IllegalStateException> { tamperedTask.packageRuntime() }
+            assertTrue("SHA-256 mismatch" in error.message.orEmpty())
+            assertContentEquals(original, packaged.readBytes())
         } finally {
             root.deleteRecursively()
         }

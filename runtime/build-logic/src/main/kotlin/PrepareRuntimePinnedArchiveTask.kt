@@ -29,9 +29,14 @@ private fun java.io.File.runtimeSha256(): String = inputStream().use { input ->
 abstract class PrepareRuntimePinnedArchiveTask : DefaultTask() {
     @get:Input abstract val sourceUrl: Property<String>
     @get:Input abstract val expectedSha256: Property<String>
+    @get:Input abstract val offlineMode: Property<Boolean>
     @get:InputFile @get:Optional @get:PathSensitive(PathSensitivity.NONE)
     abstract val localArchive: RegularFileProperty
     @get:OutputFile abstract val outputFile: RegularFileProperty
+
+    init {
+        offlineMode.convention(project.gradle.startParameter.isOffline)
+    }
 
     @TaskAction
     fun prepare() {
@@ -44,6 +49,10 @@ abstract class PrepareRuntimePinnedArchiveTask : DefaultTask() {
         if (localArchive.isPresent) {
             Files.copy(localArchive.get().asFile.toPath(), temporary.toPath(), StandardCopyOption.REPLACE_EXISTING)
         } else {
+            check(!offlineMode.get()) {
+                "Offline Runtime archive preparation requires a verified existing output or " +
+                    "codexAgent.desktopArchiveDirectory containing the pinned archive"
+            }
             downloadRuntimeHttps(URI(sourceUrl.get()), temporary.toPath())
         }
         check(temporary.runtimeSha256() == expected) { "Pinned archive SHA-256 mismatch" }

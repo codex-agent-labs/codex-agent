@@ -120,7 +120,11 @@ val packageNodeWasmRuntimeEvidenceRunner = tasks.register<Zip>(
 val stageNodeBindingValidationRunner = tasks.register<StageNodeBindingValidationRunnerTask>(
     "stageNodeBindingValidationRunner",
 ) {
-    dependsOn("jsTestTestDevelopmentExecutableCompileSync", rootProject.tasks.named("kotlinNpmInstall"))
+    dependsOn(
+        "jsTestTestDevelopmentExecutableCompileSync",
+        rootProject.tasks.named("kotlinNpmInstall"),
+        rootProject.tasks.named("kotlinStorePackageLock"),
+    )
     compiledProgram.set(layout.buildDirectory.dir("compileSync/js/test/testDevelopmentExecutable/kotlin"))
     nodeModules.set(rootProject.layout.buildDirectory.dir("js/node_modules"))
     npmLock.set(rootProject.layout.projectDirectory.file("gradle/kotlin-js-store/package-lock.json"))

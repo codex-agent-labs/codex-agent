@@ -109,6 +109,15 @@ class NodeBindingValidationTaskTest {
     }
 
     @Test
+    fun `binding runner staging declares the producer of its stored npm lock`() {
+        val source = File("../../codex-agent-runtime-desktop/build.gradle.kts").readText()
+        val registration = source.substringAfter("val stageNodeBindingValidationRunner =")
+            .substringBefore("val packageNodeBindingValidationRunner =")
+        assertTrue("rootProject.tasks.named(\"kotlinStorePackageLock\")" in registration)
+        assertTrue("gradle/kotlin-js-store/package-lock.json" in registration)
+    }
+
+    @Test
     fun `production imported binding validation has canonical identity and no jsNodeTest edge`() {
         val source = File("../../codex-agent-runtime-desktop/build.gradle.kts").readText()
         val registration = source.substringAfter("val nodeJsBindingValidationRoot =")
