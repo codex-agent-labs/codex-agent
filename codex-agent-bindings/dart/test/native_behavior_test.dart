@@ -349,7 +349,7 @@ void main() {
       <String>[
         '--enable-vm-service=0',
         '--disable-service-auth-codes',
-        'run',
+        '--packages=${File('.dart_tool/package_config.json').absolute.path}',
         'tool/finalizer_probe.dart',
         libraryPath,
       ],
@@ -367,7 +367,7 @@ void main() {
       <String>[
         '--enable-vm-service=0',
         '--disable-service-auth-codes',
-        'run',
+        '--packages=${File('.dart_tool/package_config.json').absolute.path}',
         'tool/finalizer_probe.dart',
         libraryPath,
         'child',

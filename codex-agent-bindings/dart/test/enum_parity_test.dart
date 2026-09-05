@@ -1757,7 +1757,10 @@ void main() {
     expect(passedCompilerEvidence.keys.toSet(), expectedCompilerEvidence);
     expect(passedTestIds, expectedTests);
 
-    final output = Directory('build/parity')..createSync(recursive: true);
+    final output = Directory(
+      Platform.environment['CODEX_AGENT_DART_EVIDENCE_DIRECTORY'] ??
+          'build/parity',
+    )..createSync(recursive: true);
     final compilerIds = passedCompilerEvidence.keys.toList()..sort();
     File('${output.path}/compiler-evidence.tsv').writeAsStringSync(
       'compilerEvidenceId\tpublicSymbols\n'
