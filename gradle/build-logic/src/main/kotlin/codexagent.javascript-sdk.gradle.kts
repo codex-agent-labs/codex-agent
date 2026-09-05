@@ -10,6 +10,7 @@ val npmEntryModule = "codex-agent-codex-agent-runtime-desktop"
 val npmPackageName = "@codex-agent-labs" + "/codex-agent"
 val npmVersion = rootProject.extra["codexAgent.sdkVersion"].toString()
 val npmContractVersion = rootProject.extra["codexAgent.contractVersion"].toString()
+val npmOffline = gradle.startParameter.isOffline
 val npmSourceDirectory = rootProject.layout.projectDirectory.dir("codex-agent-bindings/javascript/package")
 val npmConsumerSourceDirectory = rootProject.layout.projectDirectory.dir("codex-agent-bindings/javascript/consumer")
 val importedNpmContractBinaryStage = providers.gradleProperty("codexAgent.contractBinaryStage").map(::file)
@@ -1656,6 +1657,7 @@ val npmCiPackedConsumer = tasks.register<Exec>("npmCiPackedConsumer") {
     description = "Installs the pinned TypeScript toolchain for the isolated npm consumer."
     dependsOn(preparePackedNpmConsumer)
     workingDir(npmConsumerDirectory)
+    if (npmOffline) environment("npm_config_offline", "true")
     environment("npm_config_engine_strict", "true")
     environment("npm_config_cache", npmConsumerCacheDirectory.get().asFile.absolutePath)
     commandLine("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund")
@@ -1667,6 +1669,7 @@ val installPackedNpmSdk = tasks.register<Exec>("installPackedNpmSdk") {
     dependsOn(npmCiPackedConsumer, packageNpm, verifyNpmPackDryRun)
     workingDir(npmConsumerDirectory)
     inputs.file(npmArchiveFile)
+    if (npmOffline) environment("npm_config_offline", "true")
     environment("npm_config_engine_strict", "true")
     environment("npm_config_cache", npmConsumerCacheDirectory.get().asFile.absolutePath)
     commandLine(

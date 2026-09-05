@@ -19,6 +19,86 @@ import org.junit.Assume.assumeTrue
 
 class CrossLanguageJavaScriptBindingTasksTest {
     @Test
+    fun `both npm install boundaries preserve Gradle offline intent and existing safety arguments`() {
+        val wiring = File("src/main/kotlin/codexagent.javascript-sdk.gradle.kts").readText()
+        assertTrue("val npmOffline = gradle.startParameter.isOffline" in wiring)
+        listOf("npmCiPackedConsumer" to "installPackedNpmSdk", "installPackedNpmSdk" to "verifyPackedNpmConsumers")
+            .forEach { (task, next) ->
+                val start = "val $task = tasks.register<Exec>(\"$task\")"
+                assertTrue(start in wiring, "Missing npm task: $task")
+                val body = wiring.substringAfter(start).substringBefore("val $next =")
+                listOf(
+                    "if (npmOffline) environment(\"npm_config_offline\", \"true\")",
+                    "environment(\"npm_config_engine_strict\", \"true\")",
+                    "environment(\"npm_config_cache\", npmConsumerCacheDirectory.get().asFile.absolutePath)",
+                    "\"--ignore-scripts\"", "\"--no-audit\"", "\"--no-fund\"",
+                ).forEach { required -> assertTrue(required in body, "$task lost $required") }
+            }
+        // Online Gradle must not override a stricter inherited npm offline configuration.
+        assertFalse("environment(\"npm_config_offline\", \"false\")" in wiring)
+        assertTrue("\"--package-lock=false\"" in wiring && "\"--no-save\"" in wiring)
+        assumeTrue("Offline subprocess probe requires a POSIX shell", File("/bin/sh").canExecute())
+        val root = createTempDirectory("javascript-offline-subprocess").toFile().canonicalFile
+        try {
+            root.resolve("settings.gradle.kts").writeText("rootProject.name = \"javascript-offline-subprocess\"\n")
+            val consumer = root.resolve("consumer").apply { mkdirs() }
+            val archive = root.resolve("fixture.tgz").apply { writeText("not a real package\n") }
+            root.resolve("npm-probe").apply {
+                writeText(
+                    "#!/bin/sh\n" +
+                        "printf '%s\\n' \"${'$'}npm_config_offline\" \"${'$'}npm_config_cache\" " +
+                        "\"${'$'}npm_config_engine_strict\" \"${'$'}@\" > \"${'$'}1-invocation.txt\"\n",
+                )
+                check(setExecutable(true)) { "Could not make the isolated npm probe executable" }
+            }
+            val registration = wiring.substringAfter("val npmCiPackedConsumer =")
+                .substringBefore("val verifyPackedNpmConsumers =")
+            root.resolve("build.gradle.kts").writeText(
+                """
+                import org.gradle.api.tasks.Exec
+                plugins { base }
+                ${wiring.lineSequence().single { it.startsWith("val npmOffline =") }}
+                val npmConsumerDirectory = layout.projectDirectory.dir("consumer")
+                val npmConsumerCacheDirectory = providers.provider { layout.projectDirectory.dir("npm-cache") }
+                val npmArchiveFile = providers.provider { layout.projectDirectory.file("fixture.tgz") }
+                val preparePackedNpmConsumer = tasks.register("preparePackedNpmConsumer")
+                val packageNpm = tasks.register("packageNpm")
+                val verifyNpmPackDryRun = tasks.register("verifyNpmPackDryRun")
+                val npmCiPackedConsumer = $registration
+                tasks.withType<Exec>().configureEach {
+                    executable = layout.projectDirectory.file("npm-probe").asFile.absolutePath
+                }
+                """.trimIndent(),
+            )
+            val result = GradleRunner.create()
+                .withProjectDir(root)
+                .withEnvironment(System.getenv() + ("npm_config_offline" to "false"))
+                .withArguments(
+                    "installPackedNpmSdk", "--offline",
+                    "--configuration-cache", "--configuration-cache-problems=fail", "--stacktrace",
+                )
+                .build()
+            listOf(":npmCiPackedConsumer", ":installPackedNpmSdk").forEach { task ->
+                assertEquals(TaskOutcome.SUCCESS, result.task(task)?.outcome, result.output)
+            }
+            val environment = listOf("true", root.resolve("npm-cache").absolutePath, "true")
+            assertEquals(
+                environment + listOf("ci", "--ignore-scripts", "--no-audit", "--no-fund"),
+                consumer.resolve("ci-invocation.txt").readLines(),
+            )
+            assertEquals(
+                environment + listOf(
+                    "install", "--no-save", "--package-lock=false", "--ignore-scripts",
+                    "--no-audit", "--no-fund", archive.absolutePath,
+                ),
+                consumer.resolve("install-invocation.txt").readLines(),
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `native npm preserves the staged compatibility resource without producing an archive`() {
         assumeTrue(
             "Native npm inventory fixture requires CODEX_AGENT_TEST_NPM_INVENTORY=1; a skip is not package acceptance",
