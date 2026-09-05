@@ -2050,7 +2050,7 @@ class ContractBundleTest(unittest.TestCase):
             "ci/products/aggregate.py",
         ):
             self.assertFalse(matched(path, production), path)
-        self.assertTrue(matched("ci/tests/test_contract_bundle.py", validation))
+        self.assertFalse(matched("ci/tests/test_contract_bundle.py", validation))
         self.assertFalse(matched("ci/tests/test_products.py", validation))
         self.assertFalse(matched("codex-agent-runtime-desktop/src/commonTest/kotlin/RuntimeTest.kt", validation))
 

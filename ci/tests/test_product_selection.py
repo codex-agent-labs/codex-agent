@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import fnmatch
 import subprocess
 from pathlib import Path
 import tempfile
 import unittest
 
 from ci.products.inventory import sha256_bytes
+from ci.products.plan import plan_phase, NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST
 from ci.products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId
 from ci.products.selection import (
     ALL_METADATA,
@@ -57,6 +59,81 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_contract_binary_owns_its_actual_evidence_producers_and_tests(self) -> None:
+        paths = [
+            *(f"ci/products/{name}.py" for name in (
+                "__init__", "__main__", "contract", "contract_model", "inventory", "receipt", "test_results",
+            )),
+            *(f"ci/lanes/contract-product.{kind}.pathspec" for kind in ("production", "test")),
+            *(f"gradle/build-logic/src/main/kotlin/{name}" for name in (
+                "CanonicalTestResultsClient.kt", "CrossLanguageApiCoverage.kt",
+                "CrossLanguageApiDiscovery.kt", "CrossLanguageApiDiscoveryCli.kt",
+                "CrossLanguageApiEvidence.kt", "CrossLanguageApiReportCodec.kt", "CrossLanguageApiTasks.kt",
+                "CrossLanguageBindingParity.kt", "CrossLanguageBindingReceipt.kt", "CrossLanguageBindingTasks.kt",
+                "CrossLanguageKotlinBindingEvidence.kt", "ReleaseIo.kt", "VerifyProtocolSourceTask.kt",
+                "codexagent.contract-product.gradle.kts", "codexagent.core-verification.gradle.kts",
+                "codexagent.root-release.gradle.kts",
+            )),
+            "codex-agent-core/src/commonTest/kotlin/example/ContractTest.kt",
+            "codex-agent-core/src/jvmTest/java/example/ContractTest.java",
+        ]
+        instance = PhaseInstanceId("contract", "contract", "binary", "common")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for path in paths:
+                with self.subTest(path=path):
+                    selected = classify_paths([path])
+                    self.assertIn(instance, selected.instances)
+                    self.assertEqual((path,), phase_inventory_paths([path], instance))
+                    self.assertFalse(any(item.product == "runtime" and item.phase == "binary"
+                                         for item in selected.instances))
+                    source = root / path
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    keys = []
+                    for content in (b"a", b"b"):
+                        source.write_bytes(content)
+                        keys.append(plan_phase(
+                            instance, inventory=phase_file_inventory(root, [path], instance),
+                            versions={name: "0.2.0" for name in
+                                      ("contract", "runtime-release", "runtime-compatibility", "sdk")},
+                            upstream_receipts=[], toolchain_profile_digest=NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                            flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, output_schema_version=1,
+                        )["buildKey"])
+                    self.assertNotEqual(*keys)
+        for path in (
+            "ci/products/signatures.py",
+            "ci/tests/test_contract_bundle.py", "README.md",
+            "gradle/build-logic/src/test/kotlin/ContractIsolationFixtureTest.kt",
+            "gradle/build-logic/src/main/kotlin/CrossLanguageNativeWrapperBindingEvidence.kt",
+            "codex-agent-bindings/python/src/codex_agent/_ffi.py",
+        ):
+            with self.subTest(unrelated=path):
+                self.assertNotIn(instance, classify_paths([path]).instances)
+                self.assertEqual((), phase_inventory_paths([path], instance))
+        # Control changes can request broad reuse planning, but cannot change payload keys.
+        for path in ("ci/products/contract_attestation.py", "ci/products/contract_projection.py",
+                     "ci/products/reuse.py", "ci/products/selection.py"):
+            self.assertEqual((), phase_inventory_paths([path], instance))
+
+    def test_embedded_contract_git_inventories_are_a_subset_of_binary_key_inputs(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        tracked = tracked_product_paths()
+        embedded = set()
+        for kind in ("production", "test"):
+            policy = f"ci/lanes/contract-product.{kind}.pathspec"
+            patterns = (root / policy).read_text().splitlines()
+            self.assertEqual(sorted(set(patterns)), patterns)
+            self.assertIn(policy, patterns)
+            embedded.update(path for path in tracked if any(fnmatch.fnmatchcase(path, pattern)
+                                                           for pattern in patterns))
+        self.assertGreater(len(embedded), 100)
+        binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        self.assertEqual(set(), embedded - set(phase_inventory_paths(tracked, binary)))
+        self.assertFalse(any(path.startswith(("ci/tests/", "gradle/build-logic/src/test/"))
+                             for path in embedded))
+        self.assertNotIn("ci/products/signatures.py", embedded)
+        self.assertNotIn("ci/products/c_abi.py", embedded)
+
     def assert_binding_only(self, path: str, language: str) -> None:
         result = classify_paths([path])
         selected = identities(result)
@@ -383,9 +460,6 @@ class ProductSelectionTest(unittest.TestCase):
 
     def test_product_tests_select_validation_successors_without_binary_or_package(self) -> None:
         cases = {
-            "codex-agent-core/src/commonTest/kotlin/example/ContractTest.kt": (
-                "contract", "contract", {"validation", "metadata"},
-            ),
             "codex-agent-runtime-android/src/test/kotlin/example/AndroidTest.kt": (
                 "sdk", "sdk-android", {"validation", "metadata"},
             ),

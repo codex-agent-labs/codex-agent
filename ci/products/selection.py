@@ -48,6 +48,23 @@ _CONTRACT_BUILD_INPUTS = frozenset({
     "codex-agent-core/build.gradle.kts",
     "codex-agent-core/gradle.lockfile",
 })
+_CONTRACT_INVENTORY_POLICIES = frozenset({
+    "ci/lanes/contract-product.production.pathspec",
+    "ci/lanes/contract-product.test.pathspec",
+})
+_CONTRACT_EVIDENCE_BUILD_LOGIC = frozenset({
+    "CanonicalTestResultsClient.kt",
+    "CrossLanguageApiCoverage.kt",
+    "CrossLanguageApiDiscovery.kt",
+    "CrossLanguageApiDiscoveryCli.kt",
+    "CrossLanguageApiEvidence.kt",
+    "CrossLanguageApiReportCodec.kt",
+    "CrossLanguageApiTasks.kt",
+    "CrossLanguageBindingParity.kt",
+    "CrossLanguageBindingReceipt.kt",
+    "CrossLanguageBindingTasks.kt",
+    "CrossLanguageKotlinBindingEvidence.kt",
+})
 _RUNTIME_BUILD_INPUTS = frozenset({
     "codex-agent-runtime-desktop/build.gradle.kts",
     "codex-agent-runtime-desktop/gradle.lockfile",
@@ -428,12 +445,16 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path in _CONTRACT_INVENTORY_POLICIES:
+        return False  # These exact policies are embedded in the Contract binary payload.
     return path in _CONTROL_ONLY_FILES or any(
         _is_prefix(path, prefix) for prefix in _CONTROL_ONLY_PREFIXES
     )
 
 
 def _classify(path: str) -> set[PhaseInstanceId] | None:
+    if path in _CONTRACT_INVENTORY_POLICIES:
+        return _contract()
     if path in _MIGRATED_BUILD_LOGIC_FILES or any(
         _is_prefix(path, prefix) for prefix in _MIGRATED_PRODUCT_PREFIXES
     ):
@@ -473,6 +494,12 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(NATIVE_TARGETS)
 
     if path in _METADATA_AUTHORITIES:
+        if path in {
+            "ci/products/__main__.py", "ci/products/inventory.py", "ci/products/receipt.py",
+            "gradle/build-logic/src/main/kotlin/ReleaseIo.kt",
+            "gradle/build-logic/src/main/kotlin/codexagent.root-release.gradle.kts",
+        }:
+            return set(ALL_METADATA) | _contract()
         if path == "gradle/build-logic/src/main/kotlin/MavenRepositoryTasks.kt":
             return set(ALL_METADATA).union(*(
                 _from_phase("sdk", component, "binary")
@@ -481,7 +508,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return set(ALL_METADATA)
 
     if path in {"ci/products/contract.py", "ci/products/contract_model.py"}:
-        return _from_phase("contract", "contract", "package")
+        return _contract()
     if path == "ci/products/c_abi.py":
         return _runtime(NATIVE_TARGETS) | _bindings(NATIVE_BINDINGS)
     if path in {
@@ -517,7 +544,10 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         "ci/products/runtime_evidence.py",
         "ci/products/test_results.py",
     }:
-        return _runtime(RUNTIME_COMPONENTS, "validation")
+        selected = _runtime(RUNTIME_COMPONENTS, "validation")
+        if path != "ci/products/runtime_evidence.py":
+            selected |= _contract()
+        return selected
     if path == "ci/native_wrappers.py":
         return _bindings(NATIVE_BINDINGS)
 
@@ -587,7 +617,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         path,
         "codex-agent-core/src/jvmTest/",
     ):
-        return _from_phase("contract", "contract", "validation")
+        # Compiled tests and their raw/semantic evidence are produced in binary.
+        return _contract()
     if _is_prefix(path, "codex-agent-core/src/jvmMain/"):
         return _contract() | _runtime(("jvm",)) | _facade_validation("jvm")
     if _is_prefix(path, "codex-agent-core/src/jsMain/"):
@@ -720,6 +751,10 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     }
     if _is_prefix(path, "gradle/build-logic/src/main/kotlin/"):
         name = path.rsplit("/", 1)[-1]
+        if name in _CONTRACT_EVIDENCE_BUILD_LOGIC:
+            return _contract() | _sdk_validation()
+        if name in {"VerifyProtocolSourceTask.kt", "codexagent.core-verification.gradle.kts"}:
+            return _contract()
         if name in _ANDROID_VALIDATION_BUILD_LOGIC:
             return _from_phase("sdk", "sdk-android", "validation")
         if name in _IOS_VALIDATION_BUILD_LOGIC:
@@ -759,13 +794,11 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             return _from_phase("sdk", "sdk-core", "validation")
         if name in {
             "GenerateProtocolTask.kt",
-            "VerifyProtocolSourceTask.kt",
-            "codexagent.core-verification.gradle.kts",
             "codexagent.protocol-generator.gradle.kts",
         }:
             return _from_phase("contract", "contract", "validation")
         if name == "codexagent.contract-product.gradle.kts":
-            return _from_phase("contract", "contract", "validation").union(*(
+            return _contract().union(*(
                 _from_phase("sdk", component, "binary")
                 for component in ("sdk-core", "sdk-android", "sdk-ios")
             ))
