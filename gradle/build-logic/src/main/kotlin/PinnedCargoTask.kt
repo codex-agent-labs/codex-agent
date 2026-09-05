@@ -33,6 +33,9 @@ abstract class PinnedCargoTask @Inject constructor(
     abstract val cargoArguments: ListProperty<String>
 
     @get:Input
+    abstract val offlineMode: Property<Boolean>
+
+    @get:Input
     abstract val rustcArguments: ListProperty<String>
 
     @get:Input
@@ -89,6 +92,7 @@ abstract class PinnedCargoTask @Inject constructor(
     abstract val cargoTargetDirectory: DirectoryProperty
 
     init {
+        offlineMode.convention(project.gradle.startParameter.isOffline)
         extraEnvironment.convention(emptyMap())
         retainedEnvironment.convention(emptyMap())
         externalCargoConfigurationState.convention(emptyMap())
@@ -140,9 +144,18 @@ abstract class PinnedCargoTask @Inject constructor(
             put("RUSTC", rustc)
             put("RUSTDOC", rustdoc)
         }
+        val configuredArguments = cargoArguments.get()
+        check(configuredArguments.count { it == "--offline" } <= 1) {
+            "Cargo arguments contain duplicate --offline options"
+        }
+        val effectiveArguments = if (offlineMode.get() && "--offline" !in configuredArguments) {
+            configuredArguments + "--offline"
+        } else {
+            configuredArguments
+        }
         exec.exec {
             workingDir(workingDirectory)
-            commandLine(cargo, *cargoArguments.get().toTypedArray())
+            commandLine(cargo, *effectiveArguments.toTypedArray())
             setEnvironment(environment)
         }.assertNormalExitValue()
     }
