@@ -573,6 +573,11 @@ class ProductInventoryTest(unittest.TestCase):
             (root / "empty").touch()
             with self.assertRaises(ValueError):
                 regular_file_inventory(root)
+            raw = regular_file_inventory(root, allow_empty=True)
+            empty = next(record for record in raw if record["relativePath"] == "empty")
+            self.assertEqual({"relativePath": "empty", "bytes": 0, "sha256": sha256_bytes(b"")}, empty)
+            with self.assertRaises(ValueError):
+                verify_regular_file_inventory(root, raw, with_kind=False)
             (root / "empty").unlink()
             try:
                 (root / "link").symlink_to(root / "z")
@@ -580,6 +585,8 @@ class ProductInventoryTest(unittest.TestCase):
                 return
             with self.assertRaises(ValueError):
                 regular_file_inventory(root)
+            with self.assertRaises(ValueError):
+                regular_file_inventory(root, allow_empty=True)
 
     def test_zip_inventory_rejects_unsafe_duplicate_special_and_noncanonical_members(self):
         with tempfile.TemporaryDirectory() as temporary:

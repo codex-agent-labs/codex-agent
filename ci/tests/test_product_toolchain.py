@@ -26,6 +26,7 @@ from ci.products.toolchain import (
     validate_producer_observation,
     validate_verification_record,
     verify_capture,
+    _supervisor_observation,
     _verification_record,
     verify_toolchain_profile,
 )
@@ -416,7 +417,38 @@ class ProductToolchainTest(unittest.TestCase):
         }, {
             argument for command in commands for argument in command[1:] if argument.startswith("-")
         })
+        self.assertIn((str(ld), "--version"), commands)
         self.assertFalse(any("compile" in " ".join(command).lower() for command in commands))
+
+    def test_macos_supervisor_observer_uses_apple_linker_version_option(self) -> None:
+        cc, ld = self.root / "tools/cc", self.root / "tools/ld"
+        for path in (cc, ld):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(path.name.encode())
+        commands = []
+
+        def execute(command: tuple[str, ...], root: Path) -> str:
+            commands.append(command)
+            if command[0] == str(cc):
+                return {
+                    "--version": "Apple clang 21.0.0", "-dumpmachine": "arm64-apple-darwin25.6.0",
+                    "-print-prog-name=ld": str(ld),
+                }[command[1]]
+            if command == (str(ld), "-v"):
+                return "@(#)PROGRAM:ld PROJECT:ld-1267"
+            if command == ("xcodebuild", "-version"):
+                return "Xcode 26.6\nBuild version 17F113"
+            if command[:3] == ("xcrun", "--sdk", "macosx"):
+                return {"--show-sdk-version": "26.5", "--show-sdk-build-version": "25F70"}[command[3]]
+            raise AssertionError(command)
+
+        result = _supervisor_observation(
+            self.root, "macOS", "cc", {}, execute,
+            lambda name: {"cc": str(cc), "ld": str(ld)}.get(name),
+        )
+        self.assertEqual("@(#)PROGRAM:ld PROJECT:ld-1267", result["linkerVersion"])
+        self.assertIn((str(ld), "-v"), commands)
+        self.assertNotIn((str(ld), "--version"), commands)
 
     def test_observer_rejects_unpinned_native_archive_before_invoking_konanc(self) -> None:
         with self.assertRaisesRegex(ValueError, "metadata lacks one exact checksum"):

@@ -19,6 +19,9 @@ import ci.products.contract as contract_product
 from ci.impact import read_pathspecs
 from ci.products.contract_model import (
     CONTRACT_COMPONENTS,
+    _execution_tree_digest,
+    contract_evidence_identity,
+    project_contract_execution_evidence,
     verify_contract_bundle,
     verify_contract_git_inventories,
 )
@@ -515,6 +518,7 @@ def _write_staging(
     api_file = root / "evidence/canonical-api.json"
     write_canonical_json(api_file, api)
 
+    test_ids = [f"ContractScenarioTest#test{index:02d}" for index in range(14)]
     coverage = {
         "schema": 2,
         "result": "passed",
@@ -524,12 +528,14 @@ def _write_staging(
         "compiledTestsSha256": _raw_digest(b"compiled tests"),
         "testResultsSha256": _raw_digest(b"test results"),
         "capabilities": capabilities,
-        "claims": [{"testId": "ContractCoverageTest#all", "capabilities": capabilities}],
+        "claims": [
+            {"testId": "ContractCoverageTest#all", "capabilities": capabilities},
+            *[{"testId": test_id, "capabilities": [capabilities[0]]} for test_id in test_ids],
+        ],
     }
     coverage_file = root / "evidence/canonical-coverage.json"
     write_canonical_json(coverage_file, coverage)
 
-    test_ids = [f"ContractScenarioTest#test{index:02d}" for index in range(14)]
     kotlin = {
         "schema": 4,
         "result": "passed",
@@ -541,8 +547,8 @@ def _write_staging(
         },
         "artifacts": [{"id": "kotlin-public-api", "sha256": target_hashes["jvm-classes"]}],
         "hostConsumerProofs": [],
-        "testProgramSha256": _raw_digest(b"test program"),
-        "testResultsSha256": _raw_digest(b"kotlin test results"),
+        "testProgramSha256": coverage["compiledTestsSha256"],
+        "testResultsSha256": coverage["testResultsSha256"],
         "publicSymbols": capabilities,
         "tests": [{"id": test_id, "status": "passed"} for test_id in test_ids],
         "scenarios": [
@@ -672,6 +678,119 @@ def _insert_zip_central_directory_gap(archive: Path) -> None:
 
 
 class ContractBundleTest(unittest.TestCase):
+    def _execution_projection_fixture(self, root: Path):
+        stage, classes, results = root / "stage", root / "classes", root / "results"
+        _write_staging(stage)
+        _write_file(classes / "Contract.class", b"fixture compiled test classes")
+        test_ids = ["ContractCoverageTest#all", *[
+            f"ContractScenarioTest#test{index:02d}" for index in range(14)
+        ]]
+        cases = "".join(
+            f'<testcase classname="{test_id.split("#")[0]}" name="{test_id.split("#")[1]}()" time="0.01"/>'
+            for test_id in test_ids
+        )
+        _write_file(results / "TEST-Contract.xml", (
+            '<testsuite timestamp="first-run" hostname="first-host" time="1">'
+            + cases + '<system-out>first log</system-out></testsuite>'
+        ).encode())
+        _write_file(results / "binary/output.bin", b"first raw binary log")
+        _write_file(results / "binary/output-events.bin", b"")
+        self._bind_execution_fixture(stage, classes, results)
+        return stage, classes, results
+
+    def _bind_execution_fixture(self, stage: Path, classes: Path, results: Path):
+        coverage_path = stage / "evidence/canonical-coverage.json"
+        coverage = json.loads(coverage_path.read_bytes())
+        coverage["compiledTestsSha256"] = _execution_tree_digest(classes)
+        coverage["testResultsSha256"] = _execution_tree_digest(results)
+        write_canonical_json(coverage_path, coverage)
+        kotlin_path = stage / "evidence/kotlin-parity.json"
+        kotlin = json.loads(kotlin_path.read_bytes())
+        kotlin["testProgramSha256"] = coverage["compiledTestsSha256"]
+        kotlin["testResultsSha256"] = coverage["testResultsSha256"]
+        kotlin["canonical"]["coverageReceiptSha256"] = _raw_digest(coverage_path.read_bytes())
+        write_canonical_json(kotlin_path, kotlin)
+
+    def test_execution_projection_preserves_raw_proof_and_ignores_run_only_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            stage, classes, results = self._execution_projection_fixture(root)
+            with self.assertRaisesRegex(ValueError, "empty file"):
+                regular_file_inventory(results)
+            before = regular_file_inventory(root, allow_empty=True)
+            first = project_contract_execution_evidence(stage, classes, results)
+            self.assertEqual(before, regular_file_inventory(root, allow_empty=True))
+            self.assertEqual(3, first["coverage"]["schema"])
+            self.assertEqual(5, first["kotlin"]["schema"])
+            self.assertEqual(15, len(first["coverage"]["tests"]))
+            self.assertEqual(14, len(first["kotlin"]["scenarios"]))
+            self.assertNotIn("testResultsSha256", first["coverage"])
+            self.assertNotIn("testResultsSha256", first["kotlin"])
+            self.assertNotIn("canonicalTestTask", first["coverage"])
+            self.assertEqual(
+                _raw_digest(canonical_json_bytes(first["coverage"])),
+                first["kotlin"]["canonical"]["coverageReceiptSha256"],
+            )
+            report = results / "TEST-Contract.xml"
+            report.write_bytes(report.read_bytes().replace(b"first", b"second").replace(b"0.01", b"9.87"))
+            (results / "binary/output.bin").write_bytes(b"different raw binary log")
+            self._bind_execution_fixture(stage, classes, results)
+            changed = regular_file_inventory(root, allow_empty=True)
+            self.assertNotEqual(before, changed)
+            self.assertEqual(first, project_contract_execution_evidence(stage, classes, results))
+            self.assertEqual(changed, regular_file_inventory(root, allow_empty=True))
+            (classes / "Contract.class").write_bytes(b"changed compiled tests")
+            self._bind_execution_fixture(stage, classes, results)
+            self.assertNotEqual(first, project_contract_execution_evidence(stage, classes, results))
+
+    def test_execution_projection_rejects_stale_failed_missing_duplicate_and_linked_proof(self):
+        mutations = ("stale-results", "stale-classes", "failed", "skipped", "missing", "duplicate", "symlink")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                stage, classes, results = self._execution_projection_fixture(root)
+                report = results / "TEST-Contract.xml"
+                if mutation == "stale-classes":
+                    (classes / "Contract.class").write_bytes(b"unbound compiled tests")
+                elif mutation == "symlink":
+                    (results / "linked.xml").symlink_to(report)
+                elif mutation == "stale-results":
+                    report.write_bytes(report.read_bytes().replace(b"first", b"unbound"))
+                else:
+                    data = report.read_text()
+                    first_case = data[data.index("<testcase"):data.index("/>") + 2]
+                    replacement = {
+                        "failed": first_case.replace("/>", " ><failure/></testcase>"),
+                        "skipped": first_case.replace("/>", " ><skipped/></testcase>"),
+                        "missing": "",
+                        "duplicate": first_case * 2,
+                    }[mutation]
+                    report.write_text(data.replace(first_case, replacement, 1))
+                    self._bind_execution_fixture(stage, classes, results)
+                with self.assertRaises(ValueError):
+                    project_contract_execution_evidence(stage, classes, results)
+
+    def test_kotlin_evidence_must_match_coverage_execution_and_scenario_tests(self):
+        for field in ("testProgramSha256", "testResultsSha256", "tests"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                _write_staging(root)
+                path = root / "evidence/kotlin-parity.json"
+                kotlin = json.loads(path.read_bytes())
+                if field == "tests":
+                    old = kotlin["tests"][0]["id"]
+                    kotlin["tests"][0]["id"] = "ContractScenarioTest#test00-unclaimed"
+                    for scenario in kotlin["scenarios"]:
+                        scenario["testIds"] = [
+                            "ContractScenarioTest#test00-unclaimed" if test_id == old else test_id
+                            for test_id in scenario["testIds"]
+                        ]
+                else:
+                    kotlin[field] = "0" * 64
+                write_canonical_json(path, kotlin)
+                with self.assertRaisesRegex(ValueError, "complete canonical projection"):
+                    contract_evidence_identity(root)
+
     def _build(
         self,
         root: Path,
@@ -1823,6 +1942,7 @@ class ContractBundleTest(unittest.TestCase):
                 "ci/products/contract_model.py",
                 "ci/products/inventory.py",
                 "ci/products/receipt.py",
+                "ci/products/test_results.py",
             },
             imported,
         )

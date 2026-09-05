@@ -1013,6 +1013,7 @@ def regular_file_inventory(
     *,
     kind: str | None = None,
     excluded_paths: Iterable[str] = (),
+    allow_empty: bool = False,
 ) -> list[dict[str, Any]]:
     root = require_regular_directory(Path(root), "Inventory root")
     excluded = {require_relative_path(path, "excluded inventory path") for path in excluded_paths}
@@ -1035,7 +1036,7 @@ def regular_file_inventory(
     for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
         relative = require_relative_path(path.relative_to(root).as_posix(), "inventory path")
         size, digest = _regular_file_digest(path)
-        if size <= 0:
+        if size <= 0 and not allow_empty:
             raise ValueError(f"Inventory contains an empty file: {relative}")
         record: dict[str, Any] = {
             "relativePath": relative,

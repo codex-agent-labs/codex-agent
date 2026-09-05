@@ -572,7 +572,10 @@ def _supervisor_observation(
         if linker_path_value is None:
             raise ValueError("Supervisor linker is missing")
         linker_path = Path(linker_path_value).resolve()
-        linker_version = _one_line(execute((str(linker_path), "--version"), root), "linker version")
+        linker_version = _one_line(
+            execute((str(linker_path), "-v" if runner_os == "macOS" else "--version"), root),
+            "linker version",
+        )
         if runner_os == "macOS":
             family = "apple-clang"
             xcode = _one_line(execute(("xcodebuild", "-version"), root), "Xcode version")

@@ -31,6 +31,7 @@ from .inventory import (
     snapshot_regular_tree,
     verified_zip_contents,
 )
+from .test_results import CanonicalTestStatus, read_canonical_test_results
 
 CONTRACT_COMPONENTS = (
     "common",
@@ -1043,6 +1044,9 @@ def contract_evidence_identity(root: Path) -> dict[str, Any]:
             kotlin["result"] != "passed" or kotlin["phase"] != "M8" or kotlin["language"] != "kotlin" or \
             canonical["apiReportSha256"] != raw_api_digest or \
             canonical["coverageReceiptSha256"] != coverage_digest.removeprefix("sha256:") or \
+            kotlin["testProgramSha256"] != coverage["compiledTestsSha256"] or \
+            kotlin["testResultsSha256"] != coverage["testResultsSha256"] or \
+            not set(test_ids).issubset(claim_test_ids) or \
             symbols != covered or len(test_ids) != 14 or set(scenario_ids) != expected_scenarios or \
             artifact != {"id": "kotlin-public-api", "sha256": jvm_target["sha256"]} or \
             require_array(kotlin["hostConsumerProofs"], "Kotlin host proofs") or \
@@ -1094,6 +1098,91 @@ def contract_evidence_identity(root: Path) -> dict[str, Any]:
         "protocolDigest": sha256_bytes(canonical_json_bytes(protocol_records)),
         "capabilityCount": len(capabilities),
     }
+
+
+def _execution_tree_digest(root: Path) -> str:
+    """Match the existing compiler-evidence producer's path-NUL-byte digest."""
+    records = regular_file_inventory(root, allow_empty=True)
+    if not records:
+        raise ValueError("Contract execution evidence tree is empty")
+    digest = hashlib.sha256()
+    for record in records:
+        contents = read_regular_file_bytes(root / record["relativePath"], reject_symlink_parents=True)
+        if len(contents) != record["bytes"] or sha256_bytes(contents) != record["sha256"]:
+            raise ValueError("Contract execution evidence changed during verification")
+        digest.update(record["relativePath"].encode("utf-8") + b"\0")
+        digest.update(contents)
+    return digest.hexdigest()
+
+
+def _snapshot_execution_tree(source: Path, destination: Path) -> None:
+    # Raw Gradle logs may be empty; reusable product inventories still forbid it.
+    records = regular_file_inventory(source, allow_empty=True)
+    destination.mkdir()
+    for record in records:
+        relative = record["relativePath"]
+        contents = read_regular_file_bytes(source / relative, reject_symlink_parents=True)
+        if len(contents) != record["bytes"] or sha256_bytes(contents) != record["sha256"]:
+            raise ValueError("Contract execution evidence changed during snapshot")
+        output = destination / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(contents)
+    if records != regular_file_inventory(source, allow_empty=True):
+        raise ValueError("Contract execution inventory changed during snapshot")
+
+
+def project_contract_execution_evidence(
+    root: Path,
+    compiled_tests: Path,
+    test_results: Path,
+) -> dict[str, Any]:
+    """Verify raw evidence before projecting content; this is not trust admission.
+
+    Callers must authenticate and retain the original reports, trees and producer
+    receipts externally. The returned schemas are not legacy raw report schemas.
+    Snapshotting here prevents parsing different bytes from those whose raw tree
+    hashes are bound by coverage. No source report or test output is rewritten.
+    """
+    with tempfile.TemporaryDirectory(prefix="contract-execution-projection-") as temporary:
+        snapshot = Path(temporary).resolve()
+        snapshot_regular_tree(root / "evidence", snapshot / "evidence")
+        _snapshot_execution_tree(compiled_tests, snapshot / "compiled-tests")
+        _snapshot_execution_tree(test_results, snapshot / "test-results")
+        contract_evidence_identity(snapshot)
+        coverage = load_json(snapshot / "evidence/canonical-coverage.json")
+        kotlin = load_json(snapshot / "evidence/kotlin-parity.json")
+        for field, directory in (
+            ("compiledTestsSha256", "compiled-tests"),
+            ("testResultsSha256", "test-results"),
+        ):
+            if coverage[field] != _execution_tree_digest(snapshot / directory):
+                raise ValueError(f"Contract raw {field} does not bind its execution tree")
+        results = read_canonical_test_results(snapshot / "test-results")
+        if not results or any(result.status == CanonicalTestStatus.FAILED for result in results):
+            raise ValueError("Contract execution tests are empty or failed")
+        passed = {result.test_id for result in results if result.status == CanonicalTestStatus.PASSED}
+        if not {claim["testId"] for claim in coverage["claims"]}.issubset(passed):
+            raise ValueError("Contract coverage claims include missing or non-passed execution tests")
+        semantic_coverage = {
+            key: value for key, value in coverage.items()
+            if key not in {"schema", "canonicalTestTask", "testResultsSha256"}
+        }
+        semantic_coverage.update({
+            "schema": 3,
+            "tests": [{"testId": result.test_id, "status": result.status.value} for result in results],
+        })
+        semantic_kotlin = {
+            key: value for key, value in kotlin.items()
+            if key not in {"schema", "testResultsSha256", "canonical"}
+        }
+        semantic_kotlin.update({
+            "schema": 5,
+            "canonical": {
+                "apiReportSha256": coverage["apiReportSha256"],
+                "coverageReceiptSha256": sha256_bytes(canonical_json_bytes(semantic_coverage)).removeprefix("sha256:"),
+            },
+        })
+        return {"schemaVersion": 1, "coverage": semantic_coverage, "kotlin": semantic_kotlin}
 
 
 def _canonical_api_projection(contents: dict[str, bytes]) -> dict[str, Any]:
