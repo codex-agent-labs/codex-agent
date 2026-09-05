@@ -109,6 +109,22 @@ class NodeBindingValidationTaskTest {
     }
 
     @Test
+    fun `Gradle directory records are accepted only with canonical safe paths modes and empty bytes`() {
+        for (name in listOf("program/", "node_modules/", "node_modules/@isaacs/cliui/")) {
+            requireNodeBindingArchiveMember(name, true, 0, 0x41ed)
+            assertFailsWith<IllegalStateException> { requireNodeBindingArchiveMember(name, true, 1, 0x41ed) }
+            assertFailsWith<IllegalStateException> { requireNodeBindingArchiveMember(name, true, 0, 0xa1ff) }
+            assertFailsWith<IllegalStateException> { requireNodeBindingArchiveMember(name, true, 0, 0x81a4) }
+        }
+        for (name in listOf("/program/", "program/../escape/", "node_modules//x/", "node_modules/./x/",
+            "node_modules/\\x/", "node_modules/C:/", "program/\u0001/", "package-lock.json/", "other/")) {
+            assertFailsWith<IllegalStateException>(name) { requireNodeBindingArchiveMember(name, true, 0, 0x41ed) }
+        }
+        requireNodeBindingArchiveMember("program/main.js", false, 1, 0x81a4)
+        assertFailsWith<IllegalStateException> { requireNodeBindingArchiveMember("program/main.js", false, 1, 0x41ed) }
+    }
+
+    @Test
     fun `binding runner staging declares the producer of its stored npm lock`() {
         val source = File("../../codex-agent-runtime-desktop/build.gradle.kts").readText()
         val registration = source.substringAfter("val stageNodeBindingValidationRunner =")

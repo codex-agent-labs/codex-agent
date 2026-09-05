@@ -131,16 +131,12 @@ internal fun executeNodeBindingValidation(archive: File, node: String, output: F
         val modes = readDesktopRuntimeUnixModes(archive)
         ZipFile(archive).use { zip ->
             val entries = zip.entries().asSequence().toList()
-            check(entries.size in 1..16384 && entries.map { it.name }.toSet().size == entries.size &&
+            check(entries.size in 1..16384 && entries.map { it.name.removeSuffix("/") }.toSet().size == entries.size &&
                 entries.sumOf { it.size } <= 1024L * 1024 * 1024) { "Node binding archive inventory exceeds bound" }
             entries.forEach { entry ->
                 val name = entry.name
-                check(!entry.isDirectory && name.split('/').none { it.isEmpty() || it == "." || it == ".." } &&
-                    '\\' !in name && ':' !in name && name.none { it.code < 32 || it.code == 127 } &&
-                    modes[name] == 0x81a4 && entry.size in 0..(128L * 1024 * 1024) &&
-                    (name.startsWith("program/") || name.startsWith("node_modules/") || name == "package-lock.json")) {
-                    "Unsafe Node binding archive member: $name"
-                }
+                requireNodeBindingArchiveMember(name, entry.isDirectory, entry.size, modes[name])
+                if (entry.isDirectory) return@forEach
                 val target = workspace.resolve(name)
                 target.parentFile.mkdirs()
                 zip.getInputStream(entry).use { input -> target.outputStream().use { stream ->
@@ -213,4 +209,18 @@ internal fun executeNodeBindingValidation(archive: File, node: String, output: F
     } finally {
         workspace.deleteRecursively()
     }
+}
+
+internal fun requireNodeBindingArchiveMember(name: String, directory: Boolean, size: Long, mode: Int?) {
+    val path = if (directory) name.removeSuffix("/") else name
+    check(path.split('/').none { it.isEmpty() || it == "." || it == ".." } &&
+        '\\' !in path && ':' !in path && path.none { it.code < 32 || it.code == 127 } &&
+        if (directory) {
+            name.endsWith('/') && mode == 0x41ed && size == 0L &&
+                (path == "program" || path == "node_modules" ||
+                    path.startsWith("program/") || path.startsWith("node_modules/"))
+        } else {
+            mode == 0x81a4 && size in 0..(128L * 1024 * 1024) &&
+                (path.startsWith("program/") || path.startsWith("node_modules/") || path == "package-lock.json")
+        }) { "Unsafe Node binding archive member: $name" }
 }
