@@ -59,6 +59,35 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_native_installed_consumer_and_policy_helpers_are_direct_validation_inputs(self) -> None:
+        from ci.tests.test_product_plan import plan, receipt, upstreams
+
+        instances = [item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
+                     item.component in NATIVE_BINDINGS and item.phase == "validation"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path in ("ci/native_wrappers.py", "ci/products/aggregate.py", "ci/products/inventory.py"):
+                source = root / path
+                source.parent.mkdir(parents=True, exist_ok=True)
+                for instance in instances:
+                    self.assertEqual((path,), phase_inventory_paths([path], instance))
+                    package = PhaseInstanceId("sdk", instance.component, "package", "desktop")
+                    package_plan = plan(package)
+                    package_receipt = receipt(package)
+                    package_receipt.update(inputs=package_plan["inputs"], buildKey=package_plan["buildKey"])
+                    predecessors = [package_receipt if value["product"] == "sdk" else value
+                                    for value in upstreams(instance)]
+                    keys = []
+                    for content in (b"a", b"b"):
+                        source.write_bytes(content)
+                        keys.append(plan(instance, upstream_receipts=predecessors,
+                                         inventory=phase_file_inventory(root, [path], instance))["buildKey"])
+                    self.assertNotEqual(*keys)
+                for language in NATIVE_BINDINGS:
+                    package = PhaseInstanceId("sdk", language, "package", "desktop")
+                    self.assertEqual((path,) if path == "ci/native_wrappers.py" else (),
+                                     phase_inventory_paths([path], package))
+
     def test_node_binding_validator_key_owns_execution_and_shared_copy_without_recompiling(self) -> None:
         from ci.tests.test_product_plan import plan
 
@@ -442,7 +471,7 @@ class ProductSelectionTest(unittest.TestCase):
             self.assertTrue(component(result, "runtime", target))
         self.assertFalse(any(instance.product == "sdk" for instance in result.instances))
 
-    def test_metadata_policy_selects_metadata_only(self) -> None:
+    def test_metadata_policy_retains_metadata_and_executed_native_policy_owners(self) -> None:
         for path in (
             "ci/products/aggregate.py",
             "ci/products/index.py",
@@ -452,8 +481,12 @@ class ProductSelectionTest(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 result = classify_paths([path])
-                self.assertEqual(set(ALL_METADATA), identities(result))
-                self.assertFalse(any(instance.phase != "metadata" for instance in result.instances))
+                expected = set(ALL_METADATA)
+                if path == "ci/products/aggregate.py":
+                    expected.update(item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
+                                    item.component in NATIVE_BINDINGS and item.phase == "validation")
+                self.assertEqual(expected, identities(result))
+                self.assertFalse(any(instance.phase in {"binary", "package"} for instance in result.instances))
                 self.assertFalse(result.unknown_paths)
                 self.assertTrue(result.reuse_allowed)
 
@@ -787,6 +820,20 @@ class ProductSelectionTest(unittest.TestCase):
                     any(instance.phase == "package" for instance in result.instances),
                 )
                 self.assertFalse(any(instance.product == "runtime" for instance in result.instances))
+
+    def test_python_raw_producer_is_validation_only_and_native_test_sources_have_both_owners(self) -> None:
+        producer = "codex-agent-bindings/python/tools/produce_sdk_validation_evidence.py"
+        expected = {item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
+                    item.component == "python" and item.phase in {"validation", "metadata"}}
+        self.assertEqual(expected, identities(classify_paths([producer])))
+        for language in NATIVE_BINDINGS:
+            path = f"codex-agent-bindings/{language}/tests/fixture.py"
+            for instance in PHASE_INSTANCE_IDS:
+                if instance.product == "sdk" and instance.component == language and instance.phase in {"package", "validation"}:
+                    self.assertEqual((path,), phase_inventory_paths([path], instance))
+        for instance in expected:
+            if instance.phase == "validation":
+                self.assertEqual((producer,), phase_inventory_paths([producer], instance))
 
     def test_mobile_external_evidence_paths_are_validation_only(self) -> None:
         cases = {

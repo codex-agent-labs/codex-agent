@@ -16,7 +16,7 @@ from ci.products.receipt import compute_build_key, validate_phase_receipt, write
 from ci.products.registry import PhaseInstanceId, phase_instance_dependencies
 from ci.products.sdk_maven import MAVEN_GROUPS, package_sdk_maven, verify_sdk_maven_binary_predecessor
 from ci.products.sdk_archive import NPM_COMPATIBILITY_PATH, verify_npm_sdk_compatibility
-from ci.products.sdk_package import _verify_plan, verify_sdk_package_inputs
+from ci.products.sdk_package import _verify_plan, verify_sdk_package_inputs, main as package_main
 from ci.products.selection import phase_git_inventory
 from ci.tests import test_product_sdk_maven as maven_fixture
 from ci.tests import test_product_sdk_native as native_fixture
@@ -165,6 +165,32 @@ class SdkPackagePlanTest(unittest.TestCase):
         return verify_sdk_package_inputs(self.repository, self.native_stage, receipt or self.native_receipt,
                                          self.request, runtime_stage_root=self.chain["variants"]["stages"],
                                          staged_sdks=self.sdks)
+
+    def native_cli_arguments(self):
+        return ["verify-native", "--repository", str(self.repository), "--stage", str(self.native_stage),
+                "--receipt", str(self.native_receipt), "--compatibility-request", str(self.request),
+                "--runtime-stages", str(self.chain["variants"]["stages"]), "--staged-sdks", str(self.sdks),
+                "--component", "csharp"]
+
+    def test_native_cli_uses_complete_original_plan_without_rewriting_receipt(self):
+        original = self.native_receipt.read_bytes()
+        self.assertEqual(0, package_main(self.native_cli_arguments()))
+        self.assertEqual(original, self.native_receipt.read_bytes())
+
+    def test_native_cli_rejects_wrong_family_missing_inputs_and_changed_receipt(self):
+        arguments = self.native_cli_arguments()
+        with self.assertRaisesRegex(ValueError, "requested component"):
+            package_main(arguments[:-1] + ["python"])
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            package_main(arguments[:-2])
+        forged = load_canonical_json_bytes(self.native_receipt.read_bytes())
+        forged["producer"]["tree"] = "0" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "changed-receipt.json"
+            path.write_bytes(canonical_json_bytes(forged))
+            arguments[arguments.index("--receipt") + 1] = str(path)
+            with self.assertRaisesRegex(ValueError, "commit/tree"):
+                package_main(arguments)
 
     def test_native_complete_original_plan_and_dirty_working_copy(self):
         original = self.native_receipt.read_bytes()

@@ -270,9 +270,8 @@ val nativeWrapperSdkPackageManifestTasks = nativeWrapperSdkPackageTaskNames.mapV
     }
 }
 
-// This verifies imported-stage integrity only. The SDK product planner remains
-// responsible for authenticating the original package receipt before selecting
-// one of these local installed-consumer tasks.
+// The snapshot verifier checks integrity; the typed consumer authenticates its
+// original package receipt and complete input plan before running any SDK tool.
 val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues { (language, identity) ->
     val (title, excluded) = identity
     val importedSnapshot = layout.buildDirectory.dir(
@@ -310,12 +309,16 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
     }
     tasks.register<NativeWrapperInstalledConsumerTask>("verify${title}NativeWrapperInstalledConsumer") {
         group = "verification"
-        description = "Executes the matching-host $language consumer against integrity-checked imported package bytes."
+        description = "Authenticates original package inputs and executes the matching-host $language consumer."
         dependsOn(verify, stageNativeWrapperCAbiSdks)
         this.language.set(language)
         expectedClassifier.set(providers.gradleProperty("codexAgent.target"))
         offlineMode.set(gradle.startParameter.isOffline)
-        packagesDirectory.set(importedSnapshot.map { it.dir("outputs") })
+        packageStageDirectory.set(importedSnapshot)
+        packageReceipt.set(rootProject.layout.file(providers.gradleProperty("codexAgent.sdkPackageReceipt").map(::file)))
+        compatibilityRequest.set(layout.file(nativeWrapperSdkCompatibilityRequest))
+        runtimeStageDirectory.set(nativeWrapperRuntimeSnapshotRoot)
+        verifierSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
         stagedSdkDirectory.set(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })
         sdkVersionFile.set(rootProject.layout.projectDirectory.file("gradle/release/versions/sdk.txt"))
         consumerScript.set(rootProject.layout.projectDirectory.file("ci/native_wrappers.py"))

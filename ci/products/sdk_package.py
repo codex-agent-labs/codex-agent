@@ -1,5 +1,6 @@
 """Verify original SDK package inputs using the existing product planner."""
 
+import argparse
 from pathlib import Path
 import subprocess
 import tempfile
@@ -190,3 +191,28 @@ def verify_sdk_package_inputs(
     if _receipt(receipt_path)[1] != original or regular_file_inventory(stage_root) != original_inventory:
         raise ValueError("SDK package stage or receipt changed during input verification")
     return receipt, original
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    commands = parser.add_subparsers(dest="command", required=True)
+    native = commands.add_parser("verify-native", allow_abbrev=False)
+    for name in ("repository", "stage", "receipt", "compatibility-request", "runtime-stages", "staged-sdks"):
+        native.add_argument(f"--{name}", type=Path, required=True)
+    native.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
+    args = parser.parse_args(argv)
+    expected = PhaseInstanceId("sdk", args.component, "package", "desktop")
+    original, _ = _receipt(args.receipt)
+    if _instance(original) != expected:
+        raise ValueError("Native SDK package receipt differs from the requested component")
+    verified, _ = verify_sdk_package_inputs(
+        args.repository, args.stage, args.receipt, args.compatibility_request,
+        runtime_stage_root=args.runtime_stages, staged_sdks=args.staged_sdks,
+    )
+    if verified != original:
+        raise ValueError("Native SDK package receipt changed during CLI verification")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

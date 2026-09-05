@@ -7,6 +7,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.gradle.api.Project
+import org.gradle.api.GradleException
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.testfixtures.ProjectBuilder
@@ -26,6 +27,19 @@ class NativeWrapperInstalledConsumerTaskTest {
             )
             assertTrue("--offline" in files.getValue("evidence/python/toolchain.tsv").readText())
             assertFalse(fixture.output.resolve("receipt.json").exists())
+        }
+    }
+
+    @Test
+    fun `authentication failure stops before consumer execution and clears stale evidence`() {
+        fixture().use { fixture ->
+            fixture.output.mkdirs()
+            fixture.output.resolve("stale.tsv").writeText("stale\n")
+            fixture.verifier.writeText("raise SystemExit('synthetic authentication rejection')\n")
+            fixture.script.writeText("raise AssertionError('consumer must not execute')\n")
+            assertFailsWith<GradleException> { fixture.task("python", offline = true).consume() }
+            assertFalse(fixture.project.projectDir.resolve("authenticated").exists())
+            assertFalse(fixture.output.exists())
         }
     }
 
@@ -97,10 +111,14 @@ class NativeWrapperInstalledConsumerTaskTest {
         assertFalse("WriteProductOutputManifestTask" in seam)
         assertFalse("GenerateCrossLanguageNativeWrapperBindingReceiptTask" in seam)
         assertFalse("consume" in seam && "--plan" in seam)
+        assertTrue("packageReceipt.set(" in seam)
+        assertTrue("codexAgent.sdkPackageReceipt" in seam)
+        assertTrue("compatibilityRequest.set(" in seam)
+        assertTrue("runtimeStageDirectory.set(nativeWrapperRuntimeSnapshotRoot)" in seam)
 
         val type = NativeWrapperInstalledConsumerTask::class.java
         assertTrue(type.isAnnotationPresent(DisableCachingByDefault::class.java))
-        assertTrue(type.getMethod("getPackagesDirectory").isAnnotationPresent(InputDirectory::class.java))
+        assertTrue(type.getMethod("getPackageStageDirectory").isAnnotationPresent(InputDirectory::class.java))
         assertTrue(type.getMethod("getStagedSdkDirectory").isAnnotationPresent(InputDirectory::class.java))
         assertTrue(type.getMethod("getOutputDirectory").isAnnotationPresent(OutputDirectory::class.java))
     }
@@ -112,7 +130,20 @@ class NativeWrapperInstalledConsumerTaskTest {
         val sdks = root.resolve("sdks").also(File::mkdirs)
         val version = root.resolve("sdk.txt").apply { writeText("0.2.0\n") }
         val script = root.resolve("consumer.py").apply { writeText(fakeConsumerScript(malformed = false)) }
-        return Fixture(root, project, packages, sdks, version, script, root.resolve("output"))
+        val verifier = project.projectDir.resolve("ci/products/sdk_package.py")
+        verifier.parentFile.mkdirs()
+        project.projectDir.resolve("ci/__init__.py").writeText("")
+        verifier.parentFile.resolve("__init__.py").writeText("")
+        verifier.writeText("""
+            import pathlib, sys
+            args = sys.argv[1:]
+            assert args[0] == 'verify-native'
+            for option in ('--repository', '--stage', '--receipt', '--compatibility-request',
+                           '--runtime-stages', '--staged-sdks', '--component'):
+                assert option in args
+            pathlib.Path('authenticated').write_text(args[args.index('--component') + 1])
+        """.trimIndent() + "\n")
+        return Fixture(root, project, packages, sdks, version, script, verifier, root.resolve("output"))
     }
 
     // These fake-script/TSV fixtures exercise command wiring and fail-closed parsing only;
@@ -121,6 +152,7 @@ class NativeWrapperInstalledConsumerTaskTest {
         val malformedLiteral = if (malformed) "True" else "False"
         return """
         import pathlib, sys
+        assert pathlib.Path('authenticated').is_file()
         args = sys.argv[1:]
         assert args[0] == "consume-language"
         assert "--plan" not in args
@@ -159,6 +191,7 @@ class NativeWrapperInstalledConsumerTaskTest {
         val sdks: File,
         val version: File,
         val script: File,
+        val verifier: File,
         val output: File,
     ) : Closeable {
         fun task(language: String, offline: Boolean): NativeWrapperInstalledConsumerTask =
@@ -169,7 +202,11 @@ class NativeWrapperInstalledConsumerTaskTest {
                 this.language.set(language)
                 expectedClassifier.set("linux-x64")
                 offlineMode.set(offline)
-                packagesDirectory.set(packages)
+                packageStageDirectory.set(packages)
+                runtimeStageDirectory.set(sdks)
+                packageReceipt.set(version) // Command-wiring fixture only, not a real receipt.
+                compatibilityRequest.set(version)
+                verifierSources.from(verifier)
                 stagedSdkDirectory.set(sdks)
                 sdkVersionFile.set(version)
                 consumerScript.set(script)

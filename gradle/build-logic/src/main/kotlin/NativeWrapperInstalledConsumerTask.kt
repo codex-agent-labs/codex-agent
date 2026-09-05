@@ -24,7 +24,7 @@ private val nativeWrapperInstalledConsumerClassifiers =
 
 /**
  * Runs one matching-host installed consumer and retains its raw local evidence.
- * The caller must authenticate the imported package receipt/source before scheduling this task;
+ * Authenticates the exact imported package receipt/source before starting the consumer;
  * this task does not mint a product-phase manifest, receipt, or parity claim.
  */
 @DisableCachingByDefault(because = "Installed consumers must execute on the current host and toolchain")
@@ -35,7 +35,15 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
     @get:Input abstract val expectedClassifier: Property<String>
     @get:Input abstract val offlineMode: Property<Boolean>
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
-    abstract val packagesDirectory: DirectoryProperty
+    abstract val packageStageDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val runtimeStageDirectory: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val packageReceipt: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val compatibilityRequest: RegularFileProperty
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val verifierSources: ConfigurableFileCollection
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val stagedSdkDirectory: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
@@ -67,10 +75,24 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
             check(classifier in nativeWrapperInstalledConsumerClassifiers) {
                 "Unsupported native wrapper target: $classifier"
             }
+            processes.exec {
+                workingDir(repositoryRoot.get().asFile)
+                environment("PYTHONDONTWRITEBYTECODE", "1")
+                commandLine(
+                    pythonExecutable.get(), "-m", "ci.products.sdk_package", "verify-native",
+                    "--repository", repositoryRoot.get().asFile.absolutePath,
+                    "--stage", packageStageDirectory.get().asFile.absolutePath,
+                    "--receipt", packageReceipt.get().asFile.absolutePath,
+                    "--compatibility-request", compatibilityRequest.get().asFile.absolutePath,
+                    "--runtime-stages", runtimeStageDirectory.get().asFile.absolutePath,
+                    "--staged-sdks", stagedSdkDirectory.get().asFile.absolutePath,
+                    "--component", languageValue,
+                )
+            }
             val command = mutableListOf(
                 pythonExecutable.get(), consumerScript.get().asFile.absolutePath, "consume-language",
                 "--repository", repositoryRoot.get().asFile.absolutePath,
-                "--packages", packagesDirectory.get().asFile.absolutePath,
+                "--packages", packageStageDirectory.get().asFile.resolve("outputs").absolutePath,
                 "--sdks", stagedSdkDirectory.get().asFile.absolutePath,
                 "--output", output.absolutePath,
                 "--sdk-version-file", sdkVersionFile.get().asFile.absolutePath,
