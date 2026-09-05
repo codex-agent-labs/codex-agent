@@ -24,6 +24,7 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
             fixture.output.mkdir()
             (fixture.output / "stale").write_text("stale")
             original_config = fixture.config.read_bytes()
+            original_compatibility = fixture.compatibility.read_bytes()
             source_program = fixture.program.read_bytes()
             observed = {}
 
@@ -39,6 +40,9 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                 config = json.loads(private_config.read_text())
                 roots = {entry["name"]: entry["rootUri"] for entry in config["packages"]}
                 self.assertEqual(cwd.as_uri() + "/", roots["codex_agent"])
+                native = cwd / "lib/src/native"
+                self.assertEqual({"sdk-compatibility.json"}, {path.name for path in native.iterdir()})
+                self.assertEqual(original_compatibility, (native / "sdk-compatibility.json").read_bytes())
                 self.assertEqual(fixture.test_package.as_uri() + "/", roots["test"])
                 self.assertEqual(str(fixture.api), env["CODEX_AGENT_CANONICAL_API_REPORT"])
                 self.assertEqual(str(fixture.bootstrap), env["CODEX_AGENT_C_ABI_BOOTSTRAP_EVIDENCE"])
@@ -54,6 +58,8 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
             self.assertFalse(observed["cwd"].exists())
             self.assertFalse((fixture.source / "build/parity").exists())
             self.assertEqual(original_config, fixture.config.read_bytes())
+            self.assertEqual(original_compatibility, fixture.compatibility.read_bytes())
+            self.assertEqual("stale source declaration", fixture.source_compatibility.read_text())
             self.assertEqual(source_program, fixture.program.read_bytes())
             self.assertEqual({"compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence"},
                              {path.name for path in fixture.output.iterdir()})
@@ -103,7 +109,7 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
             self.assertTrue(fixture.program.is_file())
 
     def test_missing_artifact_config_runner_or_test_program_fails_before_deletion(self):
-        for name in ("api", "bootstrap", "library", "config", "runner", "program", "marker"):
+        for name in ("api", "bootstrap", "library", "compatibility", "config", "runner", "program", "marker"):
             with self.subTest(name=name), Fixture() as fixture:
                 fixture.output.mkdir()
                 retained = fixture.output / "retained"
@@ -115,7 +121,7 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                 self.assertEqual("original", retained.read_text())
 
     def test_package_resolution_has_no_remote_duplicate_or_wrong_source_fallback(self):
-        for mutation in ("remote", "duplicate", "missing-test", "wrong-source"):
+        for mutation in ("remote", "duplicate", "missing-test", "wrong-source", "wrong-package-uri"):
             with self.subTest(mutation=mutation), Fixture() as fixture:
                 config = json.loads(fixture.config.read_text())
                 if mutation == "remote":
@@ -124,6 +130,8 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                     config["packages"].append(config["packages"][1])
                 elif mutation == "missing-test":
                     config["packages"].pop()
+                elif mutation == "wrong-package-uri":
+                    config["packages"][0]["packageUri"] = (fixture.source / "lib").as_uri()
                 else:
                     config["packages"][0]["rootUri"] = fixture.test_package.as_uri()
                 fixture.config.write_text(json.dumps(config))
@@ -141,6 +149,67 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                 invalidator.assert_not_called()
                 runner.assert_not_called()
             self.assertTrue(fixture.program.is_file())
+
+    def test_source_native_resources_are_not_inputs_or_copied_fallbacks(self):
+        for mutation in ("missing", "stale-payload", "symlink-tree", "symlink-library"):
+            with self.subTest(mutation=mutation), Fixture() as fixture:
+                native = fixture.source / producer.NATIVE_RESOURCE
+                fixture.source_compatibility.unlink()
+                if mutation == "symlink-tree":
+                    native.rmdir()
+                    native.symlink_to(fixture.sdk, target_is_directory=True)
+                elif mutation == "symlink-library":
+                    (native / "ignored-library.dylib").symlink_to(fixture.library)
+                elif mutation == "stale-payload":
+                    (native / "ignored-library.dylib").write_bytes(b"untrusted source runtime")
+
+                def run(command, *, cwd, env, check):
+                    private = cwd / producer.NATIVE_RESOURCE
+                    self.assertFalse(private.is_symlink())
+                    self.assertEqual({"sdk-compatibility.json"}, {path.name for path in private.iterdir()})
+                    self.assertEqual(fixture.compatibility.read_bytes(),
+                                     (private / "sdk-compatibility.json").read_bytes())
+                    return fixture.run(command, cwd=cwd, env=env, check=check)
+
+                with patch.object(producer.subprocess, "run", side_effect=run):
+                    fixture.produce()
+
+    def test_invalid_imported_compatibility_and_overlap_fail_before_deletion(self):
+        for mutation in ("empty", "symlink", "overlap"):
+            with self.subTest(mutation=mutation), Fixture() as fixture:
+                fixture.output.mkdir()
+                sentinel = fixture.output / "preserved"
+                sentinel.write_text("original")
+                if mutation == "empty":
+                    fixture.compatibility.write_bytes(b"")
+                elif mutation == "symlink":
+                    fixture.compatibility.unlink()
+                    fixture.compatibility.symlink_to(fixture.api)
+                else:
+                    fixture.compatibility = sentinel
+                with patch.object(producer.subprocess, "run") as runner, self.assertRaises(ValueError):
+                    fixture.produce()
+                runner.assert_not_called()
+                self.assertEqual("original", sentinel.read_text())
+
+    def test_imported_compatibility_uses_captured_bytes_not_a_later_source_read(self):
+        with Fixture() as fixture:
+            captured = fixture.compatibility.read_bytes()
+            original_source_files = producer._source_files
+
+            def source_files():
+                fixture.compatibility.write_bytes(b"later mutation\n")
+                return original_source_files()
+
+            def run(command, *, cwd, env, check):
+                self.assertEqual(captured, (cwd / producer.NATIVE_RESOURCE / "sdk-compatibility.json").read_bytes())
+                fixture.compatibility.write_bytes(captured)
+                return fixture.run(command, cwd=cwd, env=env, check=check)
+
+            with patch.object(producer, "_source_files", side_effect=source_files), \
+                    patch.object(producer.subprocess, "run", side_effect=run):
+                fixture.produce()
+            self.assertEqual(captured, fixture.compatibility.read_bytes())
 
     def test_symbolic_sources_inputs_and_output_parents_are_rejected(self):
         for mutation in ("source", "input", "output-parent"):
@@ -181,6 +250,22 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
         self.assertNotIn("'run'", finalizers)
         self.assertNotIn("'pub'", finalizers)
 
+    def test_positive_security_identities_follow_imported_resource_and_negatives_stay_distinct(self):
+        root = Path(__file__).resolve().parents[2]
+        security = (root / "test/runtime_compatibility_test.dart").read_text()
+        self.assertIn("'contractDigest': RuntimeCompatibility.load().contractDigest,", security)
+        self.assertIn("RuntimeCompatibility.load().contractDigest == _digestA ? _digestB : _digestA;", security)
+        self.assertIn("{...valid, 'contractDigest': _wrongContractDigest}", security)
+        self.assertIn("_runtime(value)['requiredContractDigest'] = _wrongContractDigest", security)
+        self.assertIn("identity['contractDigest'] = _wrongContractDigest;", security)
+        self.assertIn("File('lib/src/native/sdk-compatibility.json').readAsStringSync()", security)
+        self.assertNotIn("sha256:" + "1" * 64, security)
+        fixture = (root / "test/native_fixture.dart").read_text()
+        self.assertIn("final compatibility = RuntimeCompatibility.load();", fixture)
+        self.assertIn("${compatibility.contractDigest}", fixture)
+        loader = (root / "lib/src/runtime_compatibility.dart").read_text()
+        self.assertIn("package:codex_agent/src/native/sdk-compatibility.json", loader)
+
 
 class Fixture:
     def __init__(self):
@@ -190,6 +275,8 @@ class Fixture:
         self.source = self.repository / "codex-agent-bindings/dart"
         self.program = self.file("repository/codex-agent-bindings/dart/test/enum_parity_test.dart", "original fixture program")
         self.file("repository/codex-agent-bindings/dart/lib/codex_agent.dart", "fixture source")
+        self.source_compatibility = self.file(
+            "repository/codex-agent-bindings/dart/lib/src/native/sdk-compatibility.json", "stale source declaration")
         self.file("repository/codex-agent-bindings/dart/pubspec.yaml", "name: codex_agent\n")
         self.marker = self.file("repository/settings.gradle.kts", "fixture repository marker")
         self.test_package = self.root / "test-package"
@@ -203,6 +290,7 @@ class Fixture:
         }))
         self.api = self.file("inputs/api.json", "{}")
         self.bootstrap = self.file("inputs/bootstrap.json", "{}")
+        self.compatibility = self.file("inputs/sdk-compatibility.json", '{"fixture":"imported exact bytes"}\n')
         self.sdk = self.root / "inputs/c-sdk"
         self.file("inputs/c-sdk/include/codex_agent.h", "fixture header")
         self.library = self.file("inputs/library.dylib", "fixture runtime")
@@ -217,6 +305,7 @@ class Fixture:
 
     def produce(self, *, output=None):
         producer.produce(self.api, self.bootstrap, self.sdk, self.library, output or self.output,
+                         sdk_compatibility=self.compatibility,
                          dart_executable="selected-dart", package_config=self.config)
 
     def run(self, command, *, cwd, env, check):

@@ -99,7 +99,7 @@ void main() {
         ...valid,
         'target': target == 'macos-arm64' ? 'linux-x64' : 'macos-arm64'
       },
-      {...valid, 'contractDigest': _digestA},
+      {...valid, 'contractDigest': _wrongContractDigest},
       {...valid, 'cAbiVersion': '1.12.0'},
       {...valid, 'cAbiVersion': '2.0.0'},
       {...valid, 'runtimeCompatibilityVersion': '0.3.0'},
@@ -186,7 +186,7 @@ void main() {
       (value) => _runtime(value)['defaultRuntimeVersion'] = '0.3.0',
     );
     expectRejected(
-      (value) => _runtime(value)['requiredContractDigest'] = _digestA,
+      (value) => _runtime(value)['requiredContractDigest'] = _wrongContractDigest,
     );
     expectRejected((value) {
       final variants = _runtime(value)['embeddedVariants']! as List<Object?>;
@@ -314,7 +314,7 @@ void main() {
     final identity = jsonDecode(
       _identity(target, componentId: _digestA),
     ) as Map<String, Object?>;
-    identity['contractDigest'] = _digestA;
+    identity['contractDigest'] = _wrongContractDigest;
     final incompatible = await _compileLibrary(
       temporary,
       'incompatible-override',
@@ -465,14 +465,16 @@ RuntimeCompatibility _writeCompatibility(
 Map<String, Object?> _runtime(Map<String, Object?> value) =>
     value['runtime']! as Map<String, Object?>;
 
+String get _wrongContractDigest =>
+    RuntimeCompatibility.load().contractDigest == _digestA ? _digestB : _digestA;
+
 String _identity(String target, {required String componentId}) => jsonEncode({
       'appServerVersion': '0.149.0',
       'buildInputDigest': _digestB,
       'cAbiVersion': '1.13.0',
       'componentId': componentId,
       'contractComponentDigest': _digestA,
-      'contractDigest':
-          'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+      'contractDigest': RuntimeCompatibility.load().contractDigest,
       'runtimeCompatibilityVersion': '0.2.0',
       'schemaVersion': 1,
       'target': target,

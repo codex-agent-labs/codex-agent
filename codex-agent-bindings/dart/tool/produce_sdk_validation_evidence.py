@@ -4,6 +4,8 @@
 Uses an already resolved local test runner, never pub/dependency resolution. Existing
 native-boundary suites must emit their complete raw receipts; unsupported hosts fail
 closed instead of treating skipped native execution as product acceptance.
+The caller supplies authenticated SDK compatibility bytes; source native resources
+are excluded and only that exact declaration is materialized in the private package.
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ NATIVE_RECEIPTS = {
     "leaf-real-sdk-receipt.tsv", "conversation-real-sdk-receipt.tsv",
 }
 IGNORED = {"build", ".dart_tool", ".pub", ".git", "doc", "__pycache__"}
+NATIVE_RESOURCE = Path("lib/src/native")
 
 
 def _no_links(path: Path) -> None:
@@ -59,6 +62,8 @@ def _resolved_runner(config: Path) -> tuple[dict, Path]:
     roots = {}
     for package in packages:
         root = _package_root(config, package["rootUri"])
+        if package["name"] == "codex_agent" and package.get("packageUri") != "lib/":
+            raise ValueError("Dart codex_agent packageUri must select the private lib/ resources")
         roots[package["name"]] = root
         package["rootUri"] = root.as_uri() + "/"
     if roots["codex_agent"] != ROOT:
@@ -70,6 +75,9 @@ def _source_files() -> list[Path]:
     files = []
     for directory, names, filenames in os.walk(ROOT, followlinks=False):
         names[:] = [name for name in names if name not in IGNORED]
+        if Path(directory) == ROOT / NATIVE_RESOURCE.parent:
+            names[:] = [name for name in names if name != NATIVE_RESOURCE.name]
+            filenames[:] = [name for name in filenames if name != NATIVE_RESOURCE.name]
         for name in names:
             _required(Path(directory) / name, directory=True)
         for name in filenames:
@@ -132,9 +140,14 @@ def _verify_raw(evidence: Path) -> None:
 
 
 def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
-            native_library: Path, output: Path, *, dart_executable: str = "dart",
+            native_library: Path, output: Path, *, sdk_compatibility: Path,
+            dart_executable: str = "dart",
             package_config: Path | None = None) -> None:
     api, bootstrap, library = map(_required, (canonical_api, c_abi_bootstrap, native_library))
+    compatibility = _required(sdk_compatibility)
+    compatibility_bytes = compatibility.read_bytes()
+    if not compatibility_bytes:
+        raise ValueError("Imported Dart SDK compatibility declaration is empty")
     sdk = _required(c_sdk_root, directory=True)
     _required(sdk / "include" / "codex_agent.h")
     config = _required(package_config or ROOT / ".dart_tool" / "package_config.json")
@@ -142,7 +155,7 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
     test_program = _required(ROOT / "test" / "enum_parity_test.dart")
     marker = _required(CHECKOUT / "settings.gradle.kts")
     files = _source_files()
-    output = _output_scope(output, (api, bootstrap, sdk, library, config, runner, marker, *files))
+    output = _output_scope(output, (api, bootstrap, sdk, library, compatibility, config, runner, marker, *files))
     _invalidate(output)
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -156,6 +169,11 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                 target = source / original.relative_to(ROOT)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(original, target)
+            # Both the public loader's package URI and the existing security
+            # suite's relative path now resolve the exact imported declaration.
+            native_resource = source / NATIVE_RESOURCE
+            native_resource.mkdir(parents=True)
+            (native_resource / "sdk-compatibility.json").write_bytes(compatibility_bytes)
             for package in configuration["packages"]:
                 if package["name"] == "codex_agent":
                     package["rootUri"] = source.as_uri() + "/"
@@ -195,13 +213,14 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library", "output"):
+    for name in ("canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library", "sdk-compatibility", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--dart-executable", default="dart")
     parser.add_argument("--package-config", type=Path)
     args = parser.parse_args()
     produce(args.canonical_api, args.c_abi_bootstrap, args.c_sdk_root, args.native_library,
-            args.output, dart_executable=args.dart_executable, package_config=args.package_config)
+            args.output, sdk_compatibility=args.sdk_compatibility,
+            dart_executable=args.dart_executable, package_config=args.package_config)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CHECKOUT = ROOT.parents[1]
 TEST_PROGRAM = ROOT / "tests" / "test_enum_parity.py"
+SOURCE_MEMBERS = ("pyproject.toml", "src", "tests", "parity", "consumer", "tools")
+SOURCE_DIRECTORIES = frozenset(("src", "tests", "parity", "consumer", "tools"))
 EVIDENCE_ENV = "CODEX_AGENT_PYTHON_EVIDENCE_DIRECTORY"
 COMPILER_HEADER = ("compilerEvidenceId", "publicSymbols")
 TEST_HEADER = ("executedTestId", "status")
@@ -42,6 +44,52 @@ def _required_sdk(path: Path) -> Path:
     path = _required_directory(path, "C SDK root")
     _required_file(path / "include" / "codex_agent.h", "C SDK header")
     return path
+
+
+def _source_files(source_root: Path) -> list[Path]:
+    files: list[Path] = []
+    excluded_native = source_root / "src" / "codex_agent" / "native"
+    for name in SOURCE_MEMBERS:
+        member = source_root / name
+        if name not in SOURCE_DIRECTORIES:
+            files.append(_required_file(member, "Python evidence source file"))
+            continue
+        _required_directory(member, "Python evidence source directory")
+        for directory, names, filenames in os.walk(member, followlinks=False):
+            current = Path(directory)
+            names[:] = [child for child in names if child != "__pycache__"]
+            if current == excluded_native.parent:
+                names[:] = [child for child in names if child != "native"]
+            for child in names:
+                _required_directory(current / child, "Python evidence source directory")
+            for filename in filenames:
+                files.append(_required_file(current / filename, "Python evidence source file"))
+    return files
+
+
+def _copy_sources(files: list[Path], source_root: Path, destination: Path) -> None:
+    destination.mkdir()
+    for source in files:
+        target = destination / source.relative_to(source_root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+
+
+def _retain_native_evidence(source: Path, destination: Path) -> None:
+    source = _required_directory(source, "Python native evidence")
+    if {path.name for path in source.iterdir()} != {"enum-evidence", "mcp-value-evidence"}:
+        raise ValueError("Python native evidence inventory is not exact")
+    files: list[Path] = []
+    for path in source.rglob("*"):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise ValueError("Python native evidence contains a symbolic or special file")
+        if path.is_file():
+            files.append(path)
+    if any(not any(child.is_file() for child in (source / name).iterdir()) for name in (
+        "enum-evidence", "mcp-value-evidence",
+    )) or any(not path.stat().st_size for path in files):
+        raise ValueError("Python native evidence contains an empty file or program directory")
+    shutil.copytree(source, destination)
 
 
 def _values(value: str, label: str) -> tuple[str, ...]:
@@ -99,7 +147,9 @@ def _validate_output_scope(output: Path, inputs: tuple[Path, ...]) -> None:
     protected = {Path.home().resolve(), CHECKOUT, ROOT, ROOT.parent}
     if output == filesystem_root or any(root == output or root.is_relative_to(output) for root in protected):
         raise ValueError(f"Python evidence output is too broad: {output}")
-    source_roots = (ROOT / "src", ROOT / "tests", ROOT / "parity", ROOT / "tools")
+    source_roots = (
+        ROOT / "src", ROOT / "tests", ROOT / "parity", ROOT / "consumer", ROOT / "tools",
+    )
     if any(output == source or output.is_relative_to(source) for source in source_roots):
         raise ValueError(f"Python evidence output overlaps binding sources: {output}")
     if output.is_relative_to(CHECKOUT):
@@ -123,6 +173,7 @@ def _invalidate_output(output: Path) -> None:
 def produce(
     canonical_api: Path,
     c_abi_bootstrap: Path,
+    sdk_compatibility: Path,
     c_sdk_root: Path,
     native_library: Path,
     output: Path,
@@ -130,19 +181,31 @@ def produce(
     output = Path(os.path.abspath(output.expanduser()))
     canonical_api = _required_file(canonical_api, "canonical API report")
     c_abi_bootstrap = _required_file(c_abi_bootstrap, "C ABI bootstrap evidence")
+    sdk_compatibility = _required_file(sdk_compatibility, "SDK compatibility")
+    compatibility_bytes = sdk_compatibility.read_bytes()
     c_sdk_root = _required_sdk(c_sdk_root)
     native_library = _required_file(native_library, "native library")
     suite_root = _required_directory(ROOT / "tests", "Python test suite")
     test_program = _required_file(TEST_PROGRAM, "Python test program")
+    source_files = _source_files(ROOT)
     _validate_output_scope(
         output,
-        (canonical_api, c_abi_bootstrap, c_sdk_root, native_library, suite_root, test_program),
+        (canonical_api, c_abi_bootstrap, sdk_compatibility, c_sdk_root, native_library,
+         suite_root, test_program, *source_files),
     )
     _invalidate_output(output)
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".python-binding-evidence-", dir=output.parent) as temporary:
-            evidence = Path(temporary) / "evidence"
+            work = Path(temporary)
+            source = work / "source"
+            scratch = work / "scratch"
+            evidence = work / "evidence"
+            _copy_sources(source_files, ROOT, source)
+            private_native = source / "src" / "codex_agent" / "native"
+            private_native.mkdir()
+            (private_native / "sdk-compatibility.json").write_bytes(compatibility_bytes)
+            scratch.mkdir()
             evidence.mkdir()
             environment = os.environ.copy()
             environment.update({
@@ -151,18 +214,30 @@ def produce(
                 "CODEX_AGENT_C_ABI_BOOTSTRAP_EVIDENCE": str(c_abi_bootstrap),
                 "CODEX_AGENT_C_SDK_ROOT": str(c_sdk_root),
                 "CODEX_AGENT_LIBRARY": str(native_library),
+                "TMPDIR": str(scratch),
+                "TMP": str(scratch),
+                "TEMP": str(scratch),
                 EVIDENCE_ENV: str(evidence),
             })
-            subprocess.run(
-                [sys.executable, "-m", "unittest", "discover", "-s", str(suite_root), "-v"],
-                cwd=ROOT,
-                env=environment,
-                check=True,
-            )
+            log = work / "python-test.log"
+            with log.open("wb") as test_log:
+                subprocess.run(
+                    [sys.executable, "-m", "unittest", "discover", "-s", str(source / "tests"), "-v"],
+                    cwd=source,
+                    env=environment,
+                    stdout=test_log,
+                    stderr=subprocess.STDOUT,
+                    check=True,
+                )
             _verify_outputs(evidence)
-            shutil.copyfile(test_program, evidence / "test-program")
+            shutil.copyfile(source / test_program.relative_to(ROOT), evidence / "test-program")
+            if not _required_file(log, "Python test log").stat().st_size:
+                raise ValueError("Python test log is empty")
+            shutil.copyfile(log, evidence / "python-test.log")
+            _retain_native_evidence(source / "build", evidence / "native-evidence")
             if {path.name for path in evidence.iterdir()} != {
                 "compiler-evidence.tsv", "executed-tests.tsv", "test-program",
+                "python-test.log", "native-evidence",
             }:
                 raise ValueError("Published Python evidence inventory is not exact")
             evidence.rename(output)
@@ -175,6 +250,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--canonical-api", type=Path, required=True)
     parser.add_argument("--c-abi-bootstrap", type=Path, required=True)
+    parser.add_argument("--sdk-compatibility", type=Path, required=True)
     parser.add_argument("--c-sdk-root", type=Path, required=True)
     parser.add_argument("--native-library", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -186,6 +262,7 @@ def main() -> None:
     produce(
         arguments.canonical_api,
         arguments.c_abi_bootstrap,
+        arguments.sdk_compatibility,
         arguments.c_sdk_root,
         arguments.native_library,
         arguments.output,
