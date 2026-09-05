@@ -32,6 +32,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
     private val processes: ExecOperations,
 ) : DefaultTask() {
     @get:Input abstract val language: Property<String>
+    @get:Input abstract val expectedClassifier: Property<String>
     @get:Input abstract val offlineMode: Property<Boolean>
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val packagesDirectory: DirectoryProperty
@@ -62,6 +63,10 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
             check(languageValue in nativeWrapperInstalledConsumerLanguages) {
                 "Unsupported native wrapper language: $languageValue"
             }
+            val classifier = expectedClassifier.get()
+            check(classifier in nativeWrapperInstalledConsumerClassifiers) {
+                "Unsupported native wrapper target: $classifier"
+            }
             val command = mutableListOf(
                 pythonExecutable.get(), consumerScript.get().asFile.absolutePath, "consume-language",
                 "--repository", repositoryRoot.get().asFile.absolutePath,
@@ -70,6 +75,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
                 "--output", output.absolutePath,
                 "--sdk-version-file", sdkVersionFile.get().asFile.absolutePath,
                 "--language", languageValue,
+                "--expected-classifier", classifier,
             )
             if (offlineMode.get()) command += "--offline"
             processes.exec {
@@ -77,7 +83,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
                 environment("PYTHONDONTWRITEBYTECODE", "1")
                 commandLine(command)
             }
-            requireExactNativeWrapperInstalledConsumerEvidence(output, languageValue)
+            requireExactNativeWrapperInstalledConsumerEvidence(output, languageValue, classifier)
         } catch (error: Exception) {
             output.deleteRecursively()
             throw error
@@ -85,7 +91,9 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
     }
 }
 
-internal fun requireExactNativeWrapperInstalledConsumerEvidence(output: File, language: String) {
+internal fun requireExactNativeWrapperInstalledConsumerEvidence(
+    output: File, language: String, expectedClassifier: String? = null,
+) {
     check(language in nativeWrapperInstalledConsumerLanguages) {
         "Unsupported native wrapper language: $language"
     }
@@ -101,6 +109,9 @@ internal fun requireExactNativeWrapperInstalledConsumerEvidence(output: File, la
     val classifier = hostPaths.single().removePrefix(prefix).removeSuffix(".tsv")
     check(classifier in nativeWrapperInstalledConsumerClassifiers) {
         "Installed native wrapper evidence classifier is invalid: $classifier"
+    }
+    check(expectedClassifier == null || classifier == expectedClassifier) {
+        "Installed native wrapper evidence does not match requested target: $expectedClassifier"
     }
     val hostLines = exactNativeWrapperEvidenceLines(files.getValue(hostPaths.single()))
     check(hostLines.size == 2 && hostLines.first() ==

@@ -313,6 +313,7 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
         description = "Executes the matching-host $language consumer against integrity-checked imported package bytes."
         dependsOn(verify, stageNativeWrapperCAbiSdks)
         this.language.set(language)
+        expectedClassifier.set(providers.gradleProperty("codexAgent.target"))
         offlineMode.set(gradle.startParameter.isOffline)
         packagesDirectory.set(importedSnapshot.map { it.dir("outputs") })
         stagedSdkDirectory.set(stageNativeWrapperCAbiSdks.flatMap { it.outputDirectory })

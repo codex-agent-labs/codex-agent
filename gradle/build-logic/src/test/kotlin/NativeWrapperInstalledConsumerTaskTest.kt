@@ -41,6 +41,13 @@ class NativeWrapperInstalledConsumerTaskTest {
             fixture.script.writeText(fakeConsumerScript(malformed = false))
             assertFailsWith<IllegalStateException> { fixture.task("javascript", offline = true).consume() }
             assertFalse(fixture.output.exists())
+
+            assertFailsWith<IllegalStateException> {
+                fixture.task("python", offline = true).apply {
+                    expectedClassifier.set("macos-arm64")
+                }.consume()
+            }
+            assertFalse(fixture.output.exists())
         }
     }
 
@@ -83,6 +90,7 @@ class NativeWrapperInstalledConsumerTaskTest {
             "dependsOn(verify, stageNativeWrapperCAbiSdks)",
             "tasks.register<NativeWrapperInstalledConsumerTask>",
             "offlineMode.set(gradle.startParameter.isOffline)",
+            "expectedClassifier.set(providers.gradleProperty(\"codexAgent.target\"))",
             "snapshotImportedNativeWrapperRuntimeStages.configure { mustRunAfter(invalidate) }",
             "generateNativeWrapperSdkCompatibility.configure { mustRunAfter(invalidate) }",
         ).forEach { assertTrue(it in source, it) }
@@ -116,6 +124,7 @@ class NativeWrapperInstalledConsumerTaskTest {
         args = sys.argv[1:]
         assert args[0] == "consume-language"
         assert "--plan" not in args
+        assert args[args.index("--expected-classifier") + 1] in {"linux-x64", "macos-arm64"}
         language = args[args.index("--language") + 1]
         output = pathlib.Path(args[args.index("--output") + 1]) / "evidence" / language
         output.mkdir(parents=True)
@@ -158,6 +167,7 @@ class NativeWrapperInstalledConsumerTaskTest {
                 NativeWrapperInstalledConsumerTask::class.java,
             ).apply {
                 this.language.set(language)
+                expectedClassifier.set("linux-x64")
                 offlineMode.set(offline)
                 packagesDirectory.set(packages)
                 stagedSdkDirectory.set(sdks)

@@ -1296,6 +1296,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                 output = root / "output"
                 self.assertIsNone(consume_language(
                     repository, packages, sdks, output, "0.2.0", language, offline=True,
+                    expected_classifier="linux-x64",
                 ))
                 self.assertEqual({language}, {path.name for path in (repository / "codex-agent-bindings").iterdir()})
                 probes["require_embedded_package_versions"].assert_called_once_with(packages, "0.2.0", (language,))
@@ -1364,16 +1365,53 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
             command = ["native_wrappers.py", "consume-language", "--repository", str(root / "repository"),
                        "--packages", str(root / "packages"), "--sdks", str(root / "sdks"),
                        "--output", str(root / "output"), "--sdk-version-file", str(version_file),
-                       "--language", "python", "--offline"]
+                       "--language", "python", "--expected-classifier", "linux-x64", "--offline"]
             with patch.object(sys, "argv", command), patch("native_wrappers.consume_language") as consume_mock:
                 main()
                 consume_mock.assert_called_once_with(
                     root / "repository", root / "packages", root / "sdks", root / "output",
-                    "0.2.0", "python", offline=True,
+                    "0.2.0", "python", offline=True, expected_classifier="linux-x64",
                 )
             with patch.object(sys, "argv", command + ["--plan", str(root / "plan")]), \
                     patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
                 parse_args()
+
+            without_classifier = command[:command.index("--expected-classifier")] + command[
+                command.index("--expected-classifier") + 2:
+            ]
+            with patch.object(sys, "argv", without_classifier), patch("sys.stderr", io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                parse_args()
+
+    def test_expected_classifier_rejects_before_consumer_or_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / "output"
+            output.mkdir()
+            (output / "stale.tsv").write_text("stale\n")
+            with patch("native_wrappers.host_classifier", return_value="linux-x64"), \
+                    patch("native_wrappers._consume") as consume_mock, \
+                    self.assertRaisesRegex(
+                        ValueError,
+                        "host classifier mismatch: expected macos-arm64, found linux-x64",
+                    ):
+                consume_language(
+                    root, root, root, output, "0.2.0", "python",
+                    expected_classifier="macos-arm64",
+                )
+            consume_mock.assert_not_called()
+            self.assertFalse(output.exists())
+
+            with patch("native_wrappers.host_classifier") as classifier_mock, \
+                    patch("native_wrappers._consume") as consume_mock, \
+                    self.assertRaisesRegex(ValueError, "unsupported expected host classifier: other"):
+                consume_language(
+                    root, root, root, output, "0.2.0", "python",
+                    expected_classifier="other",
+                )
+            classifier_mock.assert_not_called()
+            consume_mock.assert_not_called()
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

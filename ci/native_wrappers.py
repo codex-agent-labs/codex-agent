@@ -1114,6 +1114,7 @@ def consume_language(
     language: str,
     *,
     offline: bool = False,
+    expected_classifier: str | None = None,
 ) -> None:
     """Execute one imported-package host consumer; never issue a legacy lane receipt.
 
@@ -1124,6 +1125,15 @@ def consume_language(
         raise ValueError(f"unsupported native wrapper language: {language}")
     invalidate_output(output)
     try:
+        if expected_classifier is not None:
+            if expected_classifier not in HOSTS:
+                raise ValueError(f"unsupported expected host classifier: {expected_classifier}")
+            actual_classifier = host_classifier()
+            if actual_classifier != expected_classifier:
+                raise ValueError(
+                    "installed consumer host classifier mismatch: "
+                    f"expected {expected_classifier}, found {actual_classifier}"
+                )
         _consume(repository, packages, sdks, None, output, sdk_version,
                  languages=(language,), offline=offline)
     except Exception:
@@ -1468,6 +1478,7 @@ def parse_args() -> argparse.Namespace:
             consumer.add_argument("--plan", type=Path, required=True)
         else:
             consumer.add_argument("--language", choices=LANGUAGES, required=True)
+            consumer.add_argument("--expected-classifier", choices=HOSTS, required=True)
             consumer.add_argument("--offline", action="store_true")
     return parser.parse_args()
 
@@ -1486,6 +1497,7 @@ def main() -> None:
         consume_language(
             arguments.repository.resolve(), arguments.packages.resolve(), arguments.sdks.resolve(),
             output, sdk_version, arguments.language, offline=arguments.offline,
+            expected_classifier=arguments.expected_classifier,
         )
     else:
         consume(arguments.repository.resolve(), arguments.packages.resolve(), arguments.sdks.resolve(),
