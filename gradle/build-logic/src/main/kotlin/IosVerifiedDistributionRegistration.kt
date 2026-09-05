@@ -1,7 +1,9 @@
 import org.gradle.api.Project
 import org.gradle.api.file.RegularFile
 import org.gradle.api.provider.Provider
+import org.gradle.api.tasks.Sync
 import org.gradle.api.tasks.TaskProvider
+import org.gradle.kotlin.dsl.named
 import org.gradle.kotlin.dsl.register
 
 internal data class IosVerifiedDistributionTasks(
@@ -90,6 +92,42 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         xcframeworkDirectory.set(layout.buildDirectory.dir(
             "imported-verified-apple/CodexAgent.xcframework",
         ))
+    }
+    val swiftPackage = tasks.register<ImportVerifiedCodexAgentSwiftPackageTask>(
+        "importCodexAgentVerifiedSwiftPackage",
+    ) {
+        dependsOn(validate)
+        evidenceDirectory.set(layout.dir(importedPath.map(rootProject::file)))
+        verificationReceipt.set(validate.flatMap { it.verificationReceipt })
+        version.set(project.version.toString())
+        packageDirectory.set(layout.buildDirectory.dir(
+            "imported-verified-apple/consumer/CodexAgentPackage",
+        ))
+    }
+    tasks.named<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
+        // The original package is imported; checkout Sources/Tests must never reconstruct it.
+        onlyIf { false }
+    }
+    distribution.verifyCodexAgentSwiftAuthenticationTests.configure {
+        dependsOn(swiftPackage)
+        packageDirectory.set(swiftPackage.flatMap { it.packageDirectory })
+    }
+    distribution.verifyIosLicensePackaging.configure {
+        dependsOn(swiftPackage)
+        packageDirectory.set(swiftPackage.flatMap { it.packageDirectory })
+    }
+    val consumerDirectory = layout.buildDirectory.dir("imported-verified-apple/consumer/CodexAgentTestApp")
+    val stageConsumer = tasks.register<Sync>("stageImportedAppleTestApplication") {
+        dependsOn(swiftPackage)
+        // TestApp is an explicit local consumer fixture, outside the unchanged imported SDK.
+        from(layout.projectDirectory.dir("apple/TestApp"))
+        into(consumerDirectory)
+        includeEmptyDirs = false
+        duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.FAIL
+    }
+    distribution.verifyCodexAgentSwiftPackage.configure {
+        dependsOn(stageConsumer)
+        workingDir(consumerDirectory)
     }
     return IosVerifiedDistributionTasks(validate, xcframework)
 }

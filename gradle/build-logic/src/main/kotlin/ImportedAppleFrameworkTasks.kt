@@ -43,6 +43,26 @@ internal fun extractVerifiedAppleXCFramework(
     temporaryDirectory: File,
     outputDirectory: File,
 ) {
+    val heldArchive = captureVerifiedAppleArchive(
+        evidenceDirectory, verificationReceipt, version,
+        "CodexAgent-$version.xcframework.zip", temporaryDirectory,
+    )
+    val extracted = temporaryDirectory.resolve("extracted")
+    deleteReleaseTree(extracted)
+    extractStrictAppleArchive(heldArchive, extracted, "CodexAgent.xcframework/")
+    verifyExtractedXCFramework(extracted)
+    deleteReleaseTree(outputDirectory)
+    copyReleaseTree(extracted, outputDirectory)
+    verifiedRegularFiles(outputDirectory)
+}
+
+private fun captureVerifiedAppleArchive(
+    evidenceDirectory: File,
+    verificationReceipt: File,
+    version: String,
+    archiveName: String,
+    temporaryDirectory: File,
+): File {
     check(PRODUCT_SEMVER.matches(version)) { "Imported Apple SDK version is invalid" }
     val receipt = verificationReceipt.readReleaseObject()
     check(receipt.keys == setOf(
@@ -66,8 +86,7 @@ internal fun extractVerifiedAppleXCFramework(
     check(heldProof.releaseDigest() == receipt.releaseString("sourceProofSha256")) {
         "Imported Apple distribution proof differs from its verification receipt"
     }
-    val archiveName = "CodexAgent-$version.xcframework.zip"
-    val archive = files[archiveName] ?: error("Verified Apple XCFramework archive is missing")
+    val archive = files[archiveName] ?: error("Verified Apple archive is missing: $archiveName")
     val artifact = heldProof.readReleaseObject().releaseArray("artifacts").map { value ->
         value as? JsonObject ?: error("Verified Apple artifact record is invalid")
     }.singleOrNull { it.releaseString("fileName") == archiveName }
@@ -79,17 +98,10 @@ internal fun extractVerifiedAppleXCFramework(
     val heldArchive = temporaryDirectory.resolve(archiveName)
     Files.copy(archive.toPath(), heldArchive.toPath(), REPLACE_EXISTING)
     verifyReleaseRecord(heldArchive, artifact)
-    val extracted = temporaryDirectory.resolve("extracted")
-    deleteReleaseTree(extracted)
-    extractStrictXCFrameworkArchive(heldArchive, extracted)
-    deleteReleaseTree(outputDirectory)
-    copyReleaseTree(extracted, outputDirectory)
-    verifiedRegularFiles(outputDirectory)
+    return heldArchive
 }
 
-private fun extractStrictXCFrameworkArchive(archiveFile: File, output: File) {
-    val rootName = "CodexAgent.xcframework"
-    val prefix = "$rootName/"
+private fun extractStrictAppleArchive(archiveFile: File, output: File, prefix: String) {
     val seen = mutableSetOf<String>()
     var count = 0
     var bytes = 0L
@@ -107,6 +119,7 @@ private fun extractStrictXCFrameworkArchive(archiveFile: File, output: File) {
             val storedType = entry.unixMode and UnixStat.FILE_TYPE_FLAG
             check(name.startsWith(prefix) && parts.none { it.isEmpty() || it == "." || it == ".." } &&
                 '\\' !in name && name.none { it.code < 32 || it.code == 127 } &&
+                entry.rawName?.none { it == '\\'.code.toByte() } == true &&
                 seen.add(name.removeSuffix("/")) &&
                 entry.method in setOf(ZipArchiveEntry.STORED, ZipArchiveEntry.DEFLATED) &&
                 !entry.isUnixSymlink &&
@@ -159,6 +172,9 @@ private fun extractStrictXCFrameworkArchive(archiveFile: File, output: File) {
             }
         }
     }
+}
+
+private fun verifyExtractedXCFramework(output: File) {
     check(output.list()?.toSet() == setOf("Info.plist", "ios-arm64", "ios-arm64-simulator")) {
         "Verified Apple XCFramework slice inventory is invalid"
     }
@@ -174,6 +190,80 @@ private fun extractStrictXCFrameworkArchive(archiveFile: File, output: File) {
             }
         }
     }
+}
+
+internal fun extractVerifiedAppleSwiftPackage(
+    evidenceDirectory: File,
+    verificationReceipt: File,
+    version: String,
+    temporaryDirectory: File,
+    outputDirectory: File,
+) {
+    val heldArchive = captureVerifiedAppleArchive(
+        evidenceDirectory, verificationReceipt, version,
+        "CodexAgentPackage-$version.zip", temporaryDirectory,
+    )
+    val extracted = temporaryDirectory.resolve("swift-package")
+    deleteReleaseTree(extracted)
+    extractStrictAppleArchive(heldArchive, extracted, "")
+    val packageFiles = verifiedRegularFiles(extracted)
+    val compatibilityPath = "META-INF/codex-agent/sdk-compatibility.json"
+    listOf(
+        "Package.swift", "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "openai-codex-LICENSE.txt",
+        "openai-codex-NOTICE.txt", compatibilityPath,
+    ).forEach { path ->
+        check(packageFiles[path]?.length()?.let { it > 0L } == true) {
+            "Verified Apple Swift package member is missing or empty: $path"
+        }
+    }
+    listOf("Sources/", "Tests/").forEach { prefix ->
+        check(packageFiles.any { (path, file) -> path.startsWith(prefix) && file.length() > 0L }) {
+            "Verified Apple Swift package source tree is missing: $prefix"
+        }
+    }
+    val reference = temporaryDirectory.resolve("reference-xcframework")
+    extractVerifiedAppleXCFramework(
+        evidenceDirectory, verificationReceipt, version,
+        temporaryDirectory.resolve("reference-import"), reference,
+    )
+    val referenceFiles = verifiedRegularFiles(reference)
+    val compatibilityPaths = setOf("ios-arm64", "ios-arm64-simulator").map { slice ->
+        "$slice/CodexAgent.framework/$compatibilityPath"
+    }.toSet()
+    compatibilityPaths.forEach { path ->
+        check(Files.mismatch(
+            referenceFiles.getValue(path).toPath(), packageFiles.getValue(compatibilityPath).toPath(),
+        ) == -1L) { "Verified Apple Swift package compatibility differs from its XCFramework" }
+    }
+    // The existing XCFramework ZIP adds exactly these two resources; the Swift ZIP retains
+    // the original framework and carries the same declaration once at package root.
+    val expectedFrameworkFiles = referenceFiles.filterKeys { it !in compatibilityPaths }
+    val frameworkFiles = verifiedRegularFiles(extracted.resolve("CodexAgent.xcframework"))
+    check(frameworkFiles.keys == expectedFrameworkFiles.keys && frameworkFiles.all { (path, file) ->
+        Files.mismatch(file.toPath(), expectedFrameworkFiles.getValue(path).toPath()) == -1L
+    }) { "Verified Apple Swift package framework differs from its XCFramework artifact" }
+    deleteReleaseTree(outputDirectory)
+    copyReleaseTree(extracted, outputDirectory)
+    verifiedRegularFiles(outputDirectory)
+}
+
+@CacheableTask
+abstract class ImportVerifiedCodexAgentSwiftPackageTask : DefaultTask() {
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.NONE)
+    abstract val evidenceDirectory: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val verificationReceipt: RegularFileProperty
+    @get:Input abstract val version: Property<String>
+    @get:OutputDirectory abstract val packageDirectory: DirectoryProperty
+
+    @TaskAction
+    fun importPackage() = extractVerifiedAppleSwiftPackage(
+        evidenceDirectory.get().asFile,
+        verificationReceipt.get().asFile,
+        version.get(),
+        temporaryDir,
+        packageDirectory.get().asFile,
+    )
 }
 
 @CacheableTask
