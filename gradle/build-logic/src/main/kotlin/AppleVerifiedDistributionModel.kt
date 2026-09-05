@@ -1,5 +1,7 @@
 import java.io.File
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -168,6 +170,23 @@ private fun verifyAppleSdkCompatibility(
     check(payloads.first().sha256Hex() == identity.sdkCompatibilitySha256) {
         "Apple SDK compatibility digest mismatch"
     }
+    val contents = payloads.first().decodeToString()
+    val declaration = releaseJson.parseToJsonElement(contents) as? JsonObject
+        ?: error("Apple SDK compatibility declaration is not a JSON object")
+    val canonical = (Json.encodeToString(JsonElement.serializer(), declaration) + "\n").encodeToByteArray()
+    check(declaration.hasCanonicalAppleKeyOrder() && payloads.first().contentEquals(canonical)) {
+        "Apple SDK compatibility declaration is not canonically encoded"
+    }
+    val sdkVersion = declaration["sdkVersion"] as? JsonPrimitive
+    check(sdkVersion?.isString == true && sdkVersion.content == identity.version) {
+        "Apple SDK compatibility version mismatch"
+    }
+}
+
+private fun JsonElement.hasCanonicalAppleKeyOrder(): Boolean = when (this) {
+    is JsonObject -> keys.toList() == keys.sorted() && values.all(JsonElement::hasCanonicalAppleKeyOrder)
+    is JsonArray -> all(JsonElement::hasCanonicalAppleKeyOrder)
+    else -> true
 }
 
 private fun ByteArray.sha256Hex(): String = java.security.MessageDigest.getInstance("SHA-256")

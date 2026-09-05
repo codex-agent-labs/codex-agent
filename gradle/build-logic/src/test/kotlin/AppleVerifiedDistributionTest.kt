@@ -2,6 +2,7 @@ import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -51,6 +52,22 @@ class AppleVerifiedDistributionTest {
         assertFailsWith<IllegalStateException> { it.verify() }
         Unit
     }
+
+    @Test
+    fun `compatibility declaration is canonical and matches the Apple package version`() = fixture().use {
+        listOf(
+            "{\"schemaVersion\":1,\"sdkVersion\":\"0.2.1\"}\n",
+            "{\"schemaVersion\":1}\n",
+            "{\"schemaVersion\":1,\"sdkVersion\":2}\n",
+            "{ \"schemaVersion\": 1, \"sdkVersion\": \"0.2.0\" }\n",
+            "{\"sdkVersion\":\"0.2.0\",\"schemaVersion\":1}\n",
+            "{\"schemaVersion\":1,\"sdkVersion\":\"0.2.0\",\"sdkVersion\":\"0.2.0\"}\n",
+        ).forEach { contents ->
+            it.writeCompatibility(contents.toByteArray())
+            it.rebuildProof()
+            assertFails { it.verify() }
+        }
+    }
 }
 
 private val swiftCompatibilityPaths = arrayOf(
@@ -65,8 +82,8 @@ private class VerifiedDistributionFixture : AutoCloseable {
     private val provenance = root.resolve("provenance.json").apply { writeText("{}") }
     private val packageSwift = root.resolve("Package.swift").apply { writeText("// package") }
     private val nativeReceipt = root.resolve("native-receipt.json").apply { writeText("{}") }
-    private val sdkCompatibility = "{\"schemaVersion\":1}\n".toByteArray()
-    private val identity = AppleVerifiedDistributionIdentity(
+    private var sdkCompatibility = "{\"schemaVersion\":1,\"sdkVersion\":\"0.2.0\"}\n".toByteArray()
+    private val identity get() = AppleVerifiedDistributionIdentity(
         "1".repeat(40), "2".repeat(40), "0.2.0", provenance.releaseDigest(),
         packageSwift.releaseDigest(), nativeReceipt.releaseDigest(), sdkCompatibility.sha256(),
     )
@@ -105,12 +122,20 @@ private class VerifiedDistributionFixture : AutoCloseable {
 
     fun verify() = verifyAppleVerifiedDistribution(distribution, nativeEvidence, identity)
 
-    fun writeSource(vararg paths: String) {
-        distribution.resolve("CodexAgentPackage-0.2.0.zip").zip(*paths)
+    fun writeSource(vararg paths: String, payload: ByteArray = sdkCompatibility) {
+        distribution.resolve("CodexAgentPackage-0.2.0.zip").zip(*paths, payload = payload)
     }
 
     fun writeSwift(vararg paths: String, payload: ByteArray = sdkCompatibility) {
         distribution.resolve("CodexAgent-0.2.0.xcframework.zip").zip(*paths, payload = payload)
+    }
+
+    fun writeCompatibility(payload: ByteArray) {
+        sdkCompatibility = payload
+        writeSource("META-INF/codex-agent/sdk-compatibility.json")
+        writeSwift(*swiftCompatibilityPaths)
+        val swift = distribution.resolve("CodexAgent-0.2.0.xcframework.zip")
+        distribution.resolve("CodexAgent-0.2.0.xcframework.zip.sha256").writeText(swift.releaseDigest())
     }
 
     private fun File.zip(vararg paths: String, payload: ByteArray = sdkCompatibility) {
