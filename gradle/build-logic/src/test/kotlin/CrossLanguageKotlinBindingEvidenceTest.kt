@@ -3,7 +3,12 @@ import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -63,6 +68,52 @@ class CrossLanguageKotlinBindingEvidenceTest {
         assertEquals("a".repeat(64), evidence.digests.compiledTestsSha256)
         assertEquals("b".repeat(64), evidence.digests.testResultsSha256)
     }
+
+    @Test
+    fun `derives semantic test digest from complete schema three results`() = withFixture { fixture ->
+        val tests = fixture.contentTests()
+        fixture.writeReceipt(schema = 3, tests = tests)
+
+        val evidence = fixture.derive()
+
+        assertEquals(semanticTestResultsDigest(tests), evidence.digests.testResultsSha256)
+        assertEquals("a".repeat(64), evidence.digests.compiledTestsSha256)
+        assertEquals(PASSED_TEST_IDS, evidence.bindingTests.map(CrossLanguageBindingTestEvidence::testId))
+
+        fixture.receipt.atomicWriteJson(fixture.receipt.readReleaseObject())
+        assertFailsWith<IllegalStateException> { fixture.derive() }
+
+        fixture.writeReceipt(schema = 3, tests = tests)
+        val content = fixture.receipt.readReleaseObject()
+        fixture.receipt.writeText(
+            JsonObject(content + ("testResultsSha256" to JsonPrimitive("b".repeat(64)))).canonicalContentJson(),
+        )
+        assertFailsWith<IllegalStateException> { fixture.derive() }
+
+        fixture.writeReceipt(
+            schema = 3,
+            tests = tests.map { if (it.first == UNCLAIMED_TEST_ID) it.copy(second = "passed") else it },
+        )
+        assertNotEquals(evidence.digests.testResultsSha256, fixture.derive().digests.testResultsSha256)
+    }
+
+    @Test
+    fun `schema three rejects incomplete nonpassed failed duplicate unsorted and unknown test results`() =
+        withFixture { fixture ->
+            val tests = fixture.contentTests()
+            val cases = listOf(
+                tests.filterNot { it.first == PASSED_TEST_IDS.first() },
+                tests.map { if (it.first == PASSED_TEST_IDS.first()) it.copy(second = "skipped") else it },
+                (tests + tests.first()).sortedBy(Pair<String, String>::first),
+                tests.reversed(),
+                (tests + ("zz.failed.Test#failure" to "failed")).sortedBy(Pair<String, String>::first),
+                tests.map { if (it.first == UNCLAIMED_TEST_ID) it.copy(second = "unknown") else it },
+            )
+            cases.forEach { invalid ->
+                fixture.writeReceipt(schema = 3, tests = invalid)
+                assertFailsWith<IllegalStateException> { fixture.derive() }
+            }
+        }
 
     @Test
     fun `rejects incomplete unknown duplicate conflicting and stale scenario mappings`() = withFixture { fixture ->
@@ -187,25 +238,27 @@ class CrossLanguageKotlinBindingEvidenceTest {
         }
 
         fun writeReceipt(
+            schema: Int = 2,
             result: String = "passed",
             reportDigest: String = report.releaseDigest(),
             members: List<String> = MEMBERS,
             extraClaimTestId: String? = null,
             extraClaimMember: String? = null,
             compiledTestsDigest: String = "a".repeat(64),
+            tests: List<Pair<String, String>> = contentTests(),
         ) {
             val claims = PASSED_TEST_IDS.mapIndexed { index, testId ->
                 testId to listOf(MEMBERS[index % MEMBERS.size])
             }.toMutableList()
             extraClaimTestId?.let { claims += it to listOf(checkNotNull(extraClaimMember)) }
-            receipt.atomicWriteJson(buildJsonObject {
-                put("schema", JsonPrimitive(2))
+            val document = buildJsonObject {
+                put("schema", JsonPrimitive(schema))
                 put("result", JsonPrimitive(result))
                 put("kotlinCompilerVersion", JsonPrimitive("2.3.10"))
-                put("canonicalTestTask", JsonPrimitive(":codex-agent-core:jvmTest"))
+                if (schema == 2) put("canonicalTestTask", JsonPrimitive(":codex-agent-core:jvmTest"))
                 put("apiReportSha256", JsonPrimitive(reportDigest))
                 put("compiledTestsSha256", JsonPrimitive(compiledTestsDigest))
-                put("testResultsSha256", JsonPrimitive("b".repeat(64)))
+                if (schema == 2) put("testResultsSha256", JsonPrimitive("b".repeat(64)))
                 put("capabilities", buildJsonArray { members.forEach { add(JsonPrimitive(it)) } })
                 put("claims", buildJsonArray {
                     claims.forEach { (testId, claimedMembers) ->
@@ -217,8 +270,24 @@ class CrossLanguageKotlinBindingEvidenceTest {
                         })
                     }
                 })
-            })
+                if (schema == 3) put("tests", buildJsonArray {
+                    tests.forEach { (testId, status) ->
+                        add(buildJsonObject {
+                            put("testId", JsonPrimitive(testId))
+                            put("status", JsonPrimitive(status))
+                        })
+                    }
+                })
+            }
+            if (schema == 3) {
+                receipt.writeText(document.canonicalContentJson())
+            } else {
+                receipt.atomicWriteJson(document)
+            }
         }
+
+        fun contentTests(): List<Pair<String, String>> =
+            (PASSED_TEST_IDS.map { it to "passed" } + (UNCLAIMED_TEST_ID to "skipped")).sortedBy { it.first }
     }
 
     private companion object {
@@ -230,5 +299,23 @@ class CrossLanguageKotlinBindingEvidenceTest {
             .flatMap(KotlinBindingScenarioMapping::canonicalTestIds)
             .distinct()
             .sorted()
+        const val UNCLAIMED_TEST_ID = "io.github.codex_agent_labs.codexagent.agent.UnclaimedTest#skipped"
+
+        fun semanticTestResultsDigest(tests: List<Pair<String, String>>): String =
+            (tests.joinToString(
+                separator = ",",
+                prefix = "{\"schemaVersion\":1,\"tests\":[",
+                postfix = "]}\n",
+            ) { (testId, status) -> "{\"status\":\"$status\",\"testId\":\"$testId\"}" })
+                .byteInputStream().releaseDigest()
     }
+}
+
+private fun JsonElement.canonicalContentJson(): String =
+    Json.encodeToString(JsonElement.serializer(), sortedObjectKeys()) + "\n"
+
+private fun JsonElement.sortedObjectKeys(): JsonElement = when (this) {
+    is JsonArray -> JsonArray(map { it.sortedObjectKeys() })
+    is JsonObject -> JsonObject(keys.sorted().associateWith { getValue(it).sortedObjectKeys() })
+    else -> this
 }

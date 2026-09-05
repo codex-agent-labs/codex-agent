@@ -86,6 +86,27 @@ class CrossLanguageBindingAuditTest {
             val audit = verifyCompleteCrossLanguageM11Evidence(files)
 
             assertEquals(CrossLanguageBindingAuditSummary(6_116, 6_104, 0, 12, 6_104, 0), audit.summary)
+            val kotlinFile = fixture.receipt(CrossLanguageBinding.KOTLIN)
+            val kotlin = readCrossLanguageBindingReceipt(kotlinFile)
+            val auditBytes = fixture.output.readBytes()
+            for (changed in listOf(
+                kotlin.copy(testProgramSha256 = "8".repeat(64)),
+                kotlin.copy(testResultsSha256 = "9".repeat(64)),
+            )) {
+                writeCrossLanguageBindingReceipt(kotlinFile, changed)
+                val writerFailure = assertFailsWith<IllegalStateException> {
+                    fixture.writeCompleteAudit(CrossLanguageBindingPhase.M11)
+                }
+                assertTrue("digests do not match canonical evidence" in writerFailure.message.orEmpty())
+                fixture.output.writeBytes(auditBytes)
+                kotlinFile.copyTo(root.resolve("kotlin-parity.json"), overwrite = true)
+                val readerFailure = assertFailsWith<IllegalStateException> {
+                    verifyCompleteCrossLanguageM11Evidence(files)
+                }
+                assertTrue("digests do not match canonical evidence" in readerFailure.message.orEmpty())
+            }
+            writeCrossLanguageBindingReceipt(kotlinFile, kotlin)
+            fixture.writeCompleteAudit(CrossLanguageBindingPhase.M11)
             fixture.writeReceipt(CrossLanguageBinding.KOTLIN, CrossLanguageBindingPhase.M8)
             fixture.receipt(CrossLanguageBinding.KOTLIN).copyTo(
                 root.resolve("kotlin-parity.json"),

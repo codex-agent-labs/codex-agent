@@ -1085,6 +1085,7 @@ def verified_zip_contents(
     retained_paths: Iterable[str] | None = None,
     max_retained_bytes: int | None = None,
     canonical_stored: bool = False,
+    allow_empty_members: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, bytes], dict[str, Any]]:
     archive = Path(archive)
     records: list[dict[str, Any]] = []
@@ -1210,7 +1211,7 @@ def verified_zip_contents(
                                 if max_retained_bytes is not None and retained_bytes > max_retained_bytes:
                                     raise ValueError("Retained ZIP member contents are too large")
                                 retained_member.extend(chunk)
-                    if member_bytes != entry.file_size or not member_bytes:
+                    if member_bytes != entry.file_size or (not member_bytes and not allow_empty_members):
                         raise ValueError(f"ZIP archive contains an empty or truncated member: {path}")
                     paths.add(path)
                     if retained_member is not None:

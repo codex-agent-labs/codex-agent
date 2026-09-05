@@ -114,6 +114,7 @@ private fun verifyCompleteCrossLanguageEvidence(
     val receiptFiles = CrossLanguageBinding.entries.filter { it.isActive(phase) }
         .associateWith { language -> files.getValue("${language.id}-parity.json") }
     val receipts = readCrossLanguageBindingReceipts(receiptFiles)
+    verifyCanonicalKotlinReceipt(receipts, canonicalEvidence)
     val receiptDigests = receiptFiles.mapValues { (_, file) -> file.releaseDigest() }
     val audit = readCrossLanguageBindingAudit(
         auditFile = files.getValue(auditFileName),
@@ -174,6 +175,7 @@ internal fun writeCrossLanguageBindingAudit(
     Files.deleteIfExists(auditFile.toPath())
     val canonicalEvidence = readCrossLanguageCanonicalApiEvidence(apiReport, canonicalCoverageReceipt)
     val receipts = readCrossLanguageBindingReceipts(receiptFiles)
+    verifyCanonicalKotlinReceipt(receipts, canonicalEvidence)
     val receiptDigests = receiptFiles.mapValues { (_, file) -> file.releaseDigest() }
     val audit = buildCrossLanguageBindingAudit(
         phase = phase,
@@ -191,6 +193,17 @@ internal fun writeCrossLanguageBindingAudit(
         receipts = receipts,
         expectedLanguageReceiptSha256 = receiptDigests,
     )
+}
+
+private fun verifyCanonicalKotlinReceipt(
+    receipts: Map<CrossLanguageBinding, CrossLanguageBindingReceipt>,
+    canonical: CrossLanguageCanonicalApiEvidence,
+) {
+    val kotlin = checkNotNull(receipts[CrossLanguageBinding.KOTLIN]) { "Canonical Kotlin receipt is missing" }
+    check(kotlin.testProgramSha256 == canonical.compiledTestsSha256 &&
+        kotlin.testResultsSha256 == canonical.testResultsSha256) {
+        "Kotlin receipt compiled-test/result digests do not match canonical evidence"
+    }
 }
 
 internal fun buildCrossLanguageBindingAudit(

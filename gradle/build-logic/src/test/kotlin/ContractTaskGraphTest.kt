@@ -10,6 +10,77 @@ import org.gradle.testkit.runner.TaskOutcome
 
 class ContractTaskGraphTest {
     @Test
+    fun `Contract capture finalizes fresh stage and package excludes raw execution on cached rerun`() {
+        val root = createTempDirectory("contract-capture-stage").toFile().canonicalFile
+        try {
+            val source = File("src/main/kotlin/codexagent.contract-product.gradle.kts").readText()
+            val refreshPolicy = source.substringAfter("tasks.register<Sync>(\"stageContractBundleInputs\") {")
+                .substringBefore("val captureContractExecutionEvidence").lineSequence()
+                .single { it.trim().startsWith("outputs.upToDateWhen") }
+            val captureBody = source.substringAfter("tasks.register<Exec>(\"captureContractExecutionEvidence\") {")
+                .substringBefore("val writeContractBinaryOutputManifest").substringBeforeLast("}")
+            val packageBody = source.substringAfter("\"stageContractPackageFromImportedBinary\",\n) {")
+                .substringBefore("val writeContractPackageOutputManifest").substringBeforeLast("}")
+            root.resolve("settings.gradle.kts").writeText("rootProject.name = \"capture-stage\"\n")
+            root.resolve("raw/evidence").mkdirs()
+            root.resolve("raw/evidence/coverage.json").writeText("raw\n")
+            root.resolve("ci/products").mkdirs()
+            root.resolve("ci/products/contract.py").writeText(
+                """
+                import sys
+                from pathlib import Path
+                assert sys.argv[1] == 'capture-execution'
+                stage = Path(sys.argv[sys.argv.index('--staging-root') + 1])
+                for flag, suffix in [('--compiled-tests', 'classes/kotlin/jvm/test'), ('--test-results', 'test-results/jvmTest')]:
+                    assert Path(sys.argv[sys.argv.index(flag) + 1]) == Path.cwd() / 'build' / suffix
+                evidence = stage / 'evidence/coverage.json'
+                assert evidence.read_text() == 'raw\n'
+                execution = stage / 'execution'
+                assert not execution.exists()
+                execution.mkdir()
+                (execution / 'contract-execution.zip').write_bytes(evidence.read_bytes())
+                evidence.write_text('semantic\n')
+                """.trimIndent() + "\n",
+            )
+            root.resolve("build.gradle.kts").writeText(
+                """
+                val core = project
+                val importedContractBinarySnapshot = layout.buildDirectory.dir("binary stage")
+                val contractStage = importedContractBinarySnapshot.map { it.dir("outputs") }
+                val contractPackageOutputs = layout.buildDirectory.dir("package outputs")
+                val stageContractBundleInputs = tasks.register<Sync>("stageContractBundleInputs") {
+                    $refreshPolicy
+                    from("raw")
+                    into(contractStage)
+                }
+                val captureContractExecutionEvidence = tasks.register<Exec>("captureContractExecutionEvidence") {
+                    $captureBody
+                }
+                val verifyImportedContractBinaryOutputManifest = captureContractExecutionEvidence
+                tasks.register<Sync>("stageContractPackageFromImportedBinary") {
+                    $packageBody
+                }
+                """.trimIndent() + "\n",
+            )
+            val runner = GradleRunner.create().withProjectDir(root).withArguments(
+                "stageContractPackageFromImportedBinary", "--offline", "--configuration-cache",
+                "--configuration-cache-problems=fail", "--stacktrace",
+            )
+            repeat(2) { attempt ->
+                val result = runner.build()
+                assertEquals(TaskOutcome.SUCCESS, result.task(":captureContractExecutionEvidence")?.outcome)
+                assertEquals("raw\n", root.resolve("raw/evidence/coverage.json").readText())
+                assertEquals("raw\n", root.resolve("build/binary stage/outputs/execution/contract-execution.zip").readText())
+                assertEquals("semantic\n", root.resolve("build/package outputs/evidence/coverage.json").readText())
+                assertFalse(root.resolve("build/package outputs/execution").exists())
+                if (attempt == 1) assertTrue("Reusing configuration cache." in result.output)
+            }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `Contract validation passes provider values to Python on fresh and cached execution`() {
         val root = createTempDirectory("contract-validation-arguments").toFile().canonicalFile
         try {

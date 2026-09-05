@@ -891,7 +891,27 @@ def validate_contract_manifest(
     return manifest
 
 
-def contract_evidence_identity(root: Path) -> dict[str, Any]:
+def _coverage_test_results_digest(coverage: dict[str, Any]) -> str:
+    tests = require_array(coverage["tests"], "Contract content test results")
+    ids = []
+    for test in tests:
+        require_exact_keys(test, {"testId", "status"}, "Contract content test result")
+        test_id = require_string(test["testId"], "Contract content test ID")
+        if test_id != test_id.strip() or any(ord(character) < 32 for character in test_id):
+            raise ValueError("Contract content test ID is malformed")
+        if test["status"] not in {"passed", "skipped"}:
+            raise ValueError("Contract content test result is not successful or skipped")
+        ids.append(test_id)
+    if not ids:
+        raise ValueError("Contract content test results are empty")
+    _sorted_unique(ids, "Contract content test IDs")
+    passed = {test["testId"] for test in tests if test["status"] == "passed"}
+    if not {claim["testId"] for claim in coverage["claims"]}.issubset(passed):
+        raise ValueError("Contract content claims contain missing or non-passed tests")
+    return sha256_bytes(canonical_json_bytes({"schemaVersion": 1, "tests": tests})).removeprefix("sha256:")
+
+
+def contract_evidence_identity(root: Path, *, raw_execution: bool = False) -> dict[str, Any]:
     api_file = root / "evidence/canonical-api.json"
     coverage_file = root / "evidence/canonical-coverage.json"
     kotlin_file = root / "evidence/kotlin-parity.json"
@@ -948,11 +968,11 @@ def contract_evidence_identity(root: Path) -> dict[str, Any]:
         raise ValueError("Canonical API target evidence is incomplete or malformed")
 
     coverage = require_exact_keys(
-        load_json(coverage_file),
+        load_json(coverage_file) if raw_execution else load_canonical_json(coverage_file),
         {
-            "schema", "result", "kotlinCompilerVersion", "canonicalTestTask", "apiReportSha256",
-            "compiledTestsSha256", "testResultsSha256", "capabilities", "claims",
-        },
+            "schema", "result", "kotlinCompilerVersion", "apiReportSha256",
+            "compiledTestsSha256", "capabilities", "claims",
+        } | ({"canonicalTestTask", "testResultsSha256"} if raw_execution else {"tests"}),
         "canonical coverage evidence",
     )
     covered = [
@@ -961,13 +981,13 @@ def contract_evidence_identity(root: Path) -> dict[str, Any]:
     ]
     _sorted_unique(covered, "canonical coverage evidence.capabilities")
     raw_api_digest = sha256_file(api_file).removeprefix("sha256:")
-    if require_integer(coverage["schema"], "canonical coverage evidence.schema", 1) != 2 or \
+    if require_integer(coverage["schema"], "canonical coverage evidence.schema", 1) != (2 if raw_execution else 3) or \
             coverage["result"] != "passed" or \
             require_string(coverage["kotlinCompilerVersion"], "canonical coverage Kotlin compiler") == "" or \
-            coverage["canonicalTestTask"] != ":codex-agent-core:jvmTest" or \
+            (raw_execution and coverage["canonicalTestTask"] != ":codex-agent-core:jvmTest") or \
             coverage["apiReportSha256"] != raw_api_digest or \
             any(type(coverage[field]) is not str or SHA256_HEX.fullmatch(coverage[field]) is None
-                for field in ("compiledTestsSha256", "testResultsSha256")) or \
+                for field in (("compiledTestsSha256", "testResultsSha256") if raw_execution else ("compiledTestsSha256",))) or \
             covered != sorted(capabilities):
         raise ValueError("Canonical coverage evidence is not complete for the canonical API")
     claim_test_ids: list[str] = []
@@ -986,13 +1006,14 @@ def contract_evidence_identity(root: Path) -> dict[str, Any]:
     _sorted_unique(claim_test_ids, "canonical coverage claim test IDs")
     if claimed != set(covered):
         raise ValueError("Canonical coverage claims do not cover the complete API")
+    test_results_digest = coverage["testResultsSha256"] if raw_execution else _coverage_test_results_digest(coverage)
 
     semantic_api = {key: value for key, value in api.items() if key != "targets"}
     api_digest = sha256_bytes(canonical_json_bytes(semantic_api))
     coverage_digest = sha256_file(coverage_file)
 
     kotlin = require_exact_keys(
-        load_json(kotlin_file),
+        load_json(kotlin_file) if raw_execution else load_canonical_json(kotlin_file),
         {
             "schema", "result", "phase", "language", "canonical", "artifacts", "hostConsumerProofs",
             "testProgramSha256", "testResultsSha256", "publicSymbols", "tests", "scenarios", "claims",
@@ -1040,12 +1061,12 @@ def contract_evidence_identity(root: Path) -> dict[str, Any]:
         "Kotlin parity artifact",
     )
     jvm_target = next(target for target in targets if target["kind"] == "jvm-classes")
-    if require_integer(kotlin["schema"], "Kotlin parity evidence.schema", 1) != 4 or \
+    if require_integer(kotlin["schema"], "Kotlin parity evidence.schema", 1) != (4 if raw_execution else 5) or \
             kotlin["result"] != "passed" or kotlin["phase"] != "M8" or kotlin["language"] != "kotlin" or \
             canonical["apiReportSha256"] != raw_api_digest or \
             canonical["coverageReceiptSha256"] != coverage_digest.removeprefix("sha256:") or \
             kotlin["testProgramSha256"] != coverage["compiledTestsSha256"] or \
-            kotlin["testResultsSha256"] != coverage["testResultsSha256"] or \
+            kotlin["testResultsSha256"] != test_results_digest or \
             not set(test_ids).issubset(claim_test_ids) or \
             symbols != covered or len(test_ids) != 14 or set(scenario_ids) != expected_scenarios or \
             artifact != {"id": "kotlin-public-api", "sha256": jvm_target["sha256"]} or \
@@ -1148,7 +1169,7 @@ def project_contract_execution_evidence(
         snapshot_regular_tree(root / "evidence", snapshot / "evidence")
         _snapshot_execution_tree(compiled_tests, snapshot / "compiled-tests")
         _snapshot_execution_tree(test_results, snapshot / "test-results")
-        contract_evidence_identity(snapshot)
+        contract_evidence_identity(snapshot, raw_execution=True)
         coverage = load_json(snapshot / "evidence/canonical-coverage.json")
         kotlin = load_json(snapshot / "evidence/kotlin-parity.json")
         for field, directory in (
@@ -1177,6 +1198,7 @@ def project_contract_execution_evidence(
         }
         semantic_kotlin.update({
             "schema": 5,
+            "testResultsSha256": _coverage_test_results_digest(semantic_coverage),
             "canonical": {
                 "apiReportSha256": coverage["apiReportSha256"],
                 "coverageReceiptSha256": sha256_bytes(canonical_json_bytes(semantic_coverage)).removeprefix("sha256:"),
@@ -1208,7 +1230,7 @@ def _canonical_api_projection(contents: dict[str, bytes]) -> dict[str, Any]:
             for target in api["targets"]
         },
         "compiledTestsSha256": coverage["compiledTestsSha256"],
-        "testResultsSha256": coverage["testResultsSha256"],
+        "testResultsSha256": _coverage_test_results_digest(coverage),
         "coveredTestIds": sorted(claim["testId"] for claim in coverage["claims"]),
     }
 

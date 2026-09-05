@@ -1,6 +1,7 @@
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -34,20 +35,33 @@ internal fun readCrossLanguageCanonicalApiEvidence(
     val memberKeys = api.memberKeys
     val apiReportSha256 = apiReport.releaseDigest()
     val coverage = canonicalCoverageReceipt.readCanonicalCrossLanguageObject("Canonical coverage receipt")
-    coverage.requireExactKeys(
-        "canonical coverage receipt",
-        "schema", "result", "kotlinCompilerVersion", "canonicalTestTask", "apiReportSha256",
-        "compiledTestsSha256", "testResultsSha256", "capabilities", "claims",
-    )
-    check(coverage.exactInt("schema") == 2) { "Unsupported canonical coverage receipt schema" }
+    val schema = coverage.exactInt("schema")
+    when (schema) {
+        2 -> coverage.requireExactKeys(
+            "canonical coverage receipt",
+            "schema", "result", "kotlinCompilerVersion", "canonicalTestTask", "apiReportSha256",
+            "compiledTestsSha256", "testResultsSha256", "capabilities", "claims",
+        )
+        3 -> coverage.requireExactKeys(
+            "canonical coverage receipt",
+            "schema", "result", "kotlinCompilerVersion", "apiReportSha256", "compiledTestsSha256",
+            "capabilities", "claims", "tests",
+        )
+        else -> error("Unsupported canonical coverage receipt schema")
+    }
     check(coverage.exactString("result") == "passed") { "Canonical coverage receipt did not pass" }
     requireExactApiRecord(coverage.exactString("kotlinCompilerVersion"), "Canonical coverage Kotlin compiler")
-    requireExactApiRecord(coverage.exactString("canonicalTestTask"), "Canonical coverage test task")
+    if (schema == 2) {
+        requireExactApiRecord(coverage.exactString("canonicalTestTask"), "Canonical coverage test task")
+    }
     check(coverage.exactSha256("apiReportSha256") == apiReportSha256) {
         "Canonical coverage API report digest mismatch"
     }
     val compiledTestsSha256 = coverage.exactSha256("compiledTestsSha256")
-    val testResultsSha256 = coverage.exactSha256("testResultsSha256")
+    val contentTestStatuses = if (schema == 3) coverage.exactContentTestStatuses() else null
+    val testResultsSha256 = contentTestStatuses?.let {
+        canonicalContentTestResultsDigest(coverage.exactArray("tests"))
+    } ?: coverage.exactSha256("testResultsSha256")
 
     val coveredMembers = coverage.exactStrings("capabilities")
     requireUniqueApiRecords(coveredMembers, "Canonical coverage capability")
@@ -64,6 +78,12 @@ internal fun readCrossLanguageCanonicalApiEvidence(
     }
     check(claims.isNotEmpty()) { "Canonical coverage claim inventory is empty" }
     requireUniqueApiRecords(claims.map(Pair<String, List<String>>::first), "Canonical coverage claim test")
+    contentTestStatuses?.let { statuses ->
+        val nonPassedClaims = claims.map(Pair<String, List<String>>::first).filter { statuses[it] != "passed" }
+        check(nonPassedClaims.isEmpty()) {
+            "Canonical coverage claims contain missing or non-passed tests: ${nonPassedClaims.sorted()}"
+        }
+    }
     val memberSet = memberKeys.toSet()
     claims.flatMap(Pair<String, List<String>>::second).forEach { member ->
         check(member in memberSet) { "Stale canonical coverage claim member $member" }
@@ -84,6 +104,44 @@ internal fun readCrossLanguageCanonicalApiEvidence(
         testResultsSha256 = testResultsSha256,
         coveredTestIds = claims.mapTo(linkedSetOf(), Pair<String, List<String>>::first),
     )
+}
+
+private fun JsonObject.exactContentTestStatuses(): Map<String, String> {
+    val tests = exactArray("tests").map { value ->
+        val test = value.exactObject("canonical coverage test result")
+        test.requireExactKeys("canonical coverage test result", "testId", "status")
+        val testId = test.exactString("testId")
+        val status = test.exactString("status")
+        requireExactApiRecord(testId, "Canonical coverage test")
+        check(status in setOf("passed", "skipped", "failed")) {
+            "Unknown canonical coverage test status: $status"
+        }
+        testId to status
+    }
+    check(tests.isNotEmpty()) { "Canonical coverage test inventory is empty" }
+    val testIds = tests.map(Pair<String, String>::first)
+    requireUniqueApiRecords(testIds, "Canonical coverage test")
+    check(testIds == testIds.sorted()) {
+        "Canonical coverage tests are not sorted"
+    }
+    val failed = tests.filter { it.second == "failed" }.map(Pair<String, String>::first)
+    check(failed.isEmpty()) { "Canonical coverage contains failed tests: $failed" }
+    return tests.toMap()
+}
+
+private fun canonicalContentTestResultsDigest(tests: JsonArray): String {
+    val canonicalTests = JsonArray(tests.map { value ->
+        val test = value as JsonObject
+        JsonObject(linkedMapOf(
+            "status" to test.getValue("status"),
+            "testId" to test.getValue("testId"),
+        ))
+    })
+    val document = JsonObject(linkedMapOf(
+        "schemaVersion" to JsonPrimitive(1),
+        "tests" to canonicalTests,
+    ))
+    return (Json.encodeToString(JsonElement.serializer(), document) + "\n").byteInputStream().releaseDigest()
 }
 
 private data class CrossLanguageApiReportEvidence(
@@ -144,10 +202,24 @@ private fun File.readCanonicalCrossLanguageObject(label: String): JsonObject {
     check(isFile && !Files.isSymbolicLink(toPath())) { "$label is missing, non-regular, or a symlink: $this" }
     val contents = readText()
     val root = releaseJson.parseToJsonElement(contents) as? JsonObject ?: error("$label must be a JSON object")
-    check(contents == releaseJson.encodeToString(JsonElement.serializer(), root) + "\n") {
+    val expected = if ((root["schema"] as? JsonPrimitive)?.intOrNull == 3) {
+        root.canonicalContentJson()
+    } else {
+        releaseJson.encodeToString(JsonElement.serializer(), root) + "\n"
+    }
+    check(contents == expected) {
         "$label is not canonically encoded"
     }
     return root
+}
+
+private fun JsonElement.canonicalContentJson(): String =
+    Json.encodeToString(JsonElement.serializer(), sortedJsonObjectKeys()) + "\n"
+
+private fun JsonElement.sortedJsonObjectKeys(): JsonElement = when (this) {
+    is JsonArray -> JsonArray(map { it.sortedJsonObjectKeys() })
+    is JsonObject -> JsonObject(keys.sorted().associateWith { getValue(it).sortedJsonObjectKeys() })
+    else -> this
 }
 
 private fun JsonObject.requireExactKeys(label: String, vararg expected: String) {

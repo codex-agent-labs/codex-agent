@@ -65,6 +65,8 @@ val contractStage = contractBinaryPhaseRoot.map { it.dir("outputs") }
 val stageContractBundleInputs = tasks.register<Sync>("stageContractBundleInputs") {
     group = "publishing"
     description = "Stages the exact Contract Maven repository and canonical verification evidence."
+    // Capture finalizes these copies; a selected binary invocation needs fresh raw inputs.
+    outputs.upToDateWhen { false }
     dependsOn(contractPublicationTasks, prepareContractInputs)
     dependsOn(
         ":codex-agent-core:verifyKotlinBindingParity",
@@ -100,12 +102,23 @@ val stageContractBundleInputs = tasks.register<Sync>("stageContractBundleInputs"
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
+val captureContractExecutionEvidence = tasks.register<Exec>("captureContractExecutionEvidence") {
+    dependsOn(stageContractBundleInputs)
+    environment("PYTHONDONTWRITEBYTECODE", "1")
+    // The Python boundary atomically publishes raw evidence and finalizes fresh content copies.
+    commandLine(
+        "python3", "-m", "ci.products.contract", "capture-execution",
+        "--staging-root", contractStage.get().asFile.absolutePath,
+        "--compiled-tests", core.layout.buildDirectory.dir("classes/kotlin/jvm/test").get().asFile.absolutePath,
+        "--test-results", core.layout.buildDirectory.dir("test-results/jvmTest").get().asFile.absolutePath,
+    )
+}
 val writeContractBinaryOutputManifest = tasks.register<WriteProductOutputManifestTask>(
     "writeContractBinaryOutputManifest",
 ) {
     group = "publishing"
     description = "Writes and verifies the exact Contract binary-phase output manifest in place."
-    dependsOn(stageContractBundleInputs)
+    dependsOn(captureContractExecutionEvidence)
     product.set("contract")
     component.set("contract")
     phase.set("binary")
@@ -115,6 +128,7 @@ val writeContractBinaryOutputManifest = tasks.register<WriteProductOutputManifes
         "maven" to "outputs/maven",
         "evidence" to "outputs/evidence",
         "inventory" to "outputs/inventories",
+        "contract-execution" to "outputs/execution",
     ))
     outputsDirectory.set(contractStage)
     producerSources.from(layout.projectDirectory.dir("ci/products"))
@@ -159,6 +173,7 @@ val stageContractPackageFromImportedBinary = tasks.register<Sync>(
     dependsOn(verifyImportedContractBinaryOutputManifest)
     into(contractPackageOutputs)
     from(importedContractBinarySnapshot.map { it.dir("outputs") })
+    exclude("execution/**")
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
@@ -522,17 +537,26 @@ val deleteLegacyContractDevelopmentKey = tasks.register<Delete>("deleteLegacyCon
     delete(contractProductRoot.map { it.dir("development-key") })
     delete(contractBundleDirectory.map { it.file("development-ed25519.pub") })
 }
+val localContractPayload = contractProductRoot.map { it.dir("local-payload") }
+val stageLocalContractPayload = tasks.register<Sync>("stageLocalContractPayload") {
+    dependsOn(writeContractBinaryOutputManifest)
+    from(contractStage)
+    into(localContractPayload)
+    exclude("execution/**")
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
 val assembleContractBundle = tasks.register<Exec>("assembleContractBundle") {
     group = "publishing"
     description = "Builds the deterministic provenance-free Contract Bundle."
-    dependsOn(writeContractBinaryOutputManifest, deleteLegacyContractDevelopmentKey)
-    inputs.dir(contractStage)
+    dependsOn(stageLocalContractPayload, deleteLegacyContractDevelopmentKey)
+    inputs.dir(localContractPayload)
     inputs.property("contractVersion", contractVersion)
     outputs.file(contractBundle)
     environment("PYTHONDONTWRITEBYTECODE", "1")
     commandLine(
         "python3", "-m", "ci.products.contract", "build",
-        "--staging-root", contractStage.get().asFile.absolutePath,
+        "--staging-root", localContractPayload.get().asFile.absolutePath,
         "--output", contractBundle.get().asFile.absolutePath,
         "--contract-version", contractVersion,
     )

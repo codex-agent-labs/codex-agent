@@ -19,6 +19,8 @@ from .contract_model import (
     contract_digest,
     contract_evidence_identity,
     contract_maven_identity,
+    project_contract_execution_evidence,
+    _snapshot_execution_tree,
     validate_contract_maven_inventory,
     validate_contract_manifest,
     verify_contract_git_inventories,
@@ -32,6 +34,7 @@ from .inventory import (
     git_inventory_paths as inventory_paths,
     load_canonical_json_bytes,
     read_regular_file_bytes,
+    publish_regular_tree,
     regular_file_inventory,
     require_array,
     require_exact_keys,
@@ -42,6 +45,7 @@ from .inventory import (
     sha256_bytes,
     sha256_file,
     snapshot_regular_tree,
+    verified_zip_contents,
     write_canonical_json,
 )
 from .receipt import (
@@ -91,8 +95,8 @@ def _evidence_records(root: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _write_contract_zip(root: Path, output: Path) -> None:
-    records = regular_file_inventory(root)
+def _write_contract_zip(root: Path, output: Path, *, raw_execution: bool = False) -> None:
+    records = regular_file_inventory(root, allow_empty=raw_execution)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
         for record in records:
             info = zipfile.ZipInfo(record["relativePath"], (1980, 1, 1, 0, 0, 0))
@@ -100,6 +104,57 @@ def _write_contract_zip(root: Path, output: Path) -> None:
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | 0o644) << 16
             archive.writestr(info, (root / record["relativePath"]).read_bytes())
+
+
+def verify_contract_execution_archive(archive: Path) -> dict[str, Any]:
+    records, contents, _ = verified_zip_contents(
+        archive, canonical_stored=True, allow_empty_members=True,
+        max_archive_bytes=512 * 1024 * 1024, max_total_bytes=512 * 1024 * 1024,
+        max_members=16_384, max_entry_bytes=64 * 1024 * 1024,
+    )
+    evidence_paths = {path for path in CONTRACT_EVIDENCE_PATH_ROLES if path.startswith("evidence/")}
+    if {path for path in contents if path.startswith("evidence/")} != evidence_paths or \
+            any(not path.startswith(("evidence/", "compiled-tests/", "test-results/")) for path in contents) or \
+            any(record["bytes"] == 0 and not record["relativePath"].startswith("test-results/") for record in records):
+        raise ValueError("Contract execution archive has an invalid raw evidence inventory")
+    with tempfile.TemporaryDirectory(prefix="contract-execution-verify-") as temporary:
+        root = Path(temporary).resolve()
+        for relative, data in contents.items():
+            output = root / relative
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(data)
+        return project_contract_execution_evidence(root, root / "compiled-tests", root / "test-results")
+
+
+def capture_contract_execution_evidence(
+    staging_root: Path, compiled_tests: Path, test_results: Path,
+) -> dict[str, Any]:
+    """Finalize fresh stage evidence, preserving all original raw bytes externally."""
+    root = Path(staging_root)
+    destination = root / "execution/contract-execution.zip"
+    _reject_symlinked_output_parent(destination, root)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Contract execution archive already exists; never rewrite original evidence")
+    with tempfile.TemporaryDirectory(prefix="contract-execution-capture-") as temporary:
+        workspace = Path(temporary).resolve()
+        raw = workspace / "raw"
+        raw.mkdir()
+        snapshot_regular_tree(root / "evidence", raw / "evidence")
+        _snapshot_execution_tree(compiled_tests, raw / "compiled-tests")
+        _snapshot_execution_tree(test_results, raw / "test-results")
+        projection = project_contract_execution_evidence(raw, raw / "compiled-tests", raw / "test-results")
+        external = workspace / "external"
+        external.mkdir()
+        archive = external / "contract-execution.zip"
+        _write_contract_zip(raw, archive, raw_execution=True)
+        if verify_contract_execution_archive(archive) != projection:
+            raise ValueError("Contract execution archive changed its semantic projection")
+        # Preserve the original raw evidence before replacing only the fresh stage copies.
+        publish_regular_tree(external, destination.parent)
+        write_canonical_json(root / "evidence/canonical-coverage.json", projection["coverage"])
+        write_canonical_json(root / "evidence/kotlin-parity.json", projection["kotlin"])
+        contract_evidence_identity(root)
+        return projection
 
 
 def _contract_payload_identity(
@@ -448,7 +503,10 @@ def validate_contract_package_stage(
         )
         if package_receipt["outputs"] != manifest["outputs"]:
             raise ValueError("Contract package receipt and output manifest disagree")
-        if binary_receipt["outputs"] != manifest["outputs"]:
+        execution = [output for output in binary_receipt["outputs"] if output["kind"] == "contract-execution"]
+        if len(execution) != 1 or execution[0]["relativePath"] != "outputs/execution/contract-execution.zip":
+            raise ValueError("Contract binary receipt must retain exactly one external execution archive")
+        if [output for output in binary_receipt["outputs"] if output["kind"] != "contract-execution"] != manifest["outputs"]:
             raise ValueError("Contract package payload differs from its binary predecessor")
         payload, _ = _contract_payload_identity(snapshot / "outputs", contract_version)
         report = validate_contract_validation_report({
@@ -644,6 +702,10 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--staging-root", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--contract-version", required=True)
+    capture = commands.add_parser("capture-execution")
+    capture.add_argument("--staging-root", type=Path, required=True)
+    capture.add_argument("--compiled-tests", type=Path, required=True)
+    capture.add_argument("--test-results", type=Path, required=True)
     validate_package = commands.add_parser("validate-package")
     validate_package.add_argument("--package-stage", type=Path, required=True)
     validate_package.add_argument("--package-receipt", type=Path, required=True)
@@ -682,6 +744,8 @@ def main(argv: list[str] | None = None) -> int:
             arguments.output,
             arguments.contract_version,
         )
+    elif arguments.command == "capture-execution":
+        capture_contract_execution_evidence(arguments.staging_root, arguments.compiled_tests, arguments.test_results)
     elif arguments.command == "validate-package":
         validate_contract_package_stage(
             arguments.package_stage,

@@ -134,8 +134,8 @@ internal class CrossLanguageBindingCliFixture(
                 artifacts = listOf(
                     CrossLanguageBindingArtifactIdentity("${language.id}-artifact", "1".repeat(64)),
                 ),
-                testProgramSha256 = "2".repeat(64),
-                testResultsSha256 = "3".repeat(64),
+                testProgramSha256 = if (language == CrossLanguageBinding.KOTLIN) "4".repeat(64) else "2".repeat(64),
+                testResultsSha256 = if (language == CrossLanguageBinding.KOTLIN) "5".repeat(64) else "3".repeat(64),
                 publicSymbols = symbols,
                 bindingTests = listOf(
                     CrossLanguageBindingTestEvidence(language, testId, CrossLanguageBindingTestStatus.PASSED),

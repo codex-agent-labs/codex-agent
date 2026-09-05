@@ -4,7 +4,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -28,6 +30,30 @@ class CrossLanguageBindingReceiptTest {
         assertEquals(CrossLanguageBindingScenario.entries.map(CrossLanguageBindingScenario::id).sorted(),
             actual.scenarioEvidence.map { it.scenario.id })
         assertTrue(file.readText().endsWith("\n"))
+    }
+
+    @Test
+    fun `schema five is admitted only for imported Kotlin content receipts`() = withReceipt { file ->
+        val kotlin = receipt(CrossLanguageBinding.KOTLIN).copy(
+            projectionClaims = emptyList(),
+            applicabilityExclusions = emptyList(),
+        )
+        val content = JsonObject(kotlin.toJson() + ("schema" to JsonPrimitive(5)))
+        file.writeText(content.canonicalContentJson())
+
+        assertEquals(kotlin.toJson(), readCrossLanguageBindingReceipt(file).toJson())
+        assertEquals(5, file.readReleaseObject().releaseInt("schema"))
+
+        file.atomicWriteJson(content)
+        assertFailure("not canonically encoded") { readCrossLanguageBindingReceipt(file) }
+
+        file.writeText(JsonObject(receipt().toJson() + ("schema" to JsonPrimitive(5))).canonicalContentJson())
+        assertFailure("schema 5 for java") { readCrossLanguageBindingReceipt(file) }
+        file.atomicWriteJson(JsonObject(content + ("schema" to JsonPrimitive(6))))
+        assertFailure("schema 6 for kotlin") { readCrossLanguageBindingReceipt(file) }
+
+        writeCrossLanguageBindingReceipt(file, kotlin)
+        assertEquals(CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA, file.readReleaseObject().releaseInt("schema"))
     }
 
     @Test
@@ -405,6 +431,15 @@ class CrossLanguageBindingReceiptTest {
         transform: (JsonObject) -> JsonObject,
     ): JsonObject = replaceArray(name) { values ->
         listOf(transform(values.first() as JsonObject)) + values.drop(1)
+    }
+
+    private fun JsonElement.canonicalContentJson(): String =
+        Json.encodeToString(JsonElement.serializer(), sortedObjectKeys()) + "\n"
+
+    private fun JsonElement.sortedObjectKeys(): JsonElement = when (this) {
+        is JsonArray -> JsonArray(map { it.sortedObjectKeys() })
+        is JsonObject -> JsonObject(keys.sorted().associateWith { getValue(it).sortedObjectKeys() })
+        else -> this
     }
 
     private companion object {

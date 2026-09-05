@@ -1,5 +1,6 @@
 import java.io.File
 import java.nio.file.Files
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -60,8 +61,9 @@ internal fun readCrossLanguageBindingReceipt(file: File): CrossLanguageBindingRe
     val contents = file.readText()
     val root = releaseJson.parseToJsonElement(contents) as? JsonObject
         ?: error("Cross-language binding receipt must be a JSON object")
+    val schema = root.exactInt("schema")
     val receipt = root.toCrossLanguageBindingReceipt().normalized()
-    check(contents == receipt.canonicalJson()) {
+    check(contents == receipt.canonicalJson(schema)) {
         "Cross-language binding receipt is not canonically encoded"
     }
     return receipt
@@ -80,10 +82,12 @@ internal fun readCrossLanguageBindingReceipts(
     }
 }
 
-internal fun CrossLanguageBindingReceipt.toJson(): JsonObject {
+internal fun CrossLanguageBindingReceipt.toJson(): JsonObject = toJson(CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA)
+
+private fun CrossLanguageBindingReceipt.toJson(schema: Int): JsonObject {
     val receipt = normalized()
     return buildJsonObject {
-        put("schema", JsonPrimitive(CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA))
+        put("schema", JsonPrimitive(schema))
         put("result", JsonPrimitive("passed"))
         put("phase", JsonPrimitive(receipt.phase.name))
         put("language", JsonPrimitive(receipt.language.id))
@@ -163,9 +167,6 @@ private fun JsonObject.toCrossLanguageBindingReceipt(): CrossLanguageBindingRece
         "testProgramSha256", "testResultsSha256", "publicSymbols", "tests", "scenarios",
         "claims", "exclusions",
     )
-    check(exactInt("schema") == CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA) {
-        "Unsupported cross-language binding receipt schema"
-    }
     check(exactString("result") == "passed") { "Cross-language binding receipt did not pass" }
     val phaseName = exactString("phase")
     val phase = CrossLanguageBindingPhase.entries.singleOrNull { it.name == phaseName }
@@ -173,6 +174,13 @@ private fun JsonObject.toCrossLanguageBindingReceipt(): CrossLanguageBindingRece
     val languageId = exactString("language")
     val language = CrossLanguageBinding.entries.singleOrNull { it.id == languageId }
         ?: error("Unknown cross-language binding language: $languageId")
+    val schema = exactInt("schema")
+    check(
+        schema == CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA ||
+            (schema == 5 && language == CrossLanguageBinding.KOTLIN),
+    ) {
+        "Unsupported cross-language binding receipt schema $schema for $languageId"
+    }
     val canonicalObject = exactObject("canonical").also {
         it.requireKeys("canonical identity", "apiReportSha256", "coverageReceiptSha256")
     }
@@ -416,8 +424,18 @@ private fun CrossLanguageBindingReceipt.normalized(): CrossLanguageBindingReceip
     )
 }
 
-private fun CrossLanguageBindingReceipt.canonicalJson(): String =
-    releaseJson.encodeToString(JsonElement.serializer(), toJson()) + "\n"
+private fun CrossLanguageBindingReceipt.canonicalJson(schema: Int = CROSS_LANGUAGE_BINDING_RECEIPT_SCHEMA): String =
+    if (schema == 5) {
+        Json.encodeToString(JsonElement.serializer(), toJson(schema).sortedBindingReceiptKeys()) + "\n"
+    } else {
+        releaseJson.encodeToString(JsonElement.serializer(), toJson(schema)) + "\n"
+    }
+
+private fun JsonElement.sortedBindingReceiptKeys(): JsonElement = when (this) {
+    is JsonArray -> JsonArray(map { it.sortedBindingReceiptKeys() })
+    is JsonObject -> JsonObject(keys.sorted().associateWith { getValue(it).sortedBindingReceiptKeys() })
+    else -> this
+}
 
 private fun Iterable<String>.toJsonArray(): JsonArray = buildJsonArray {
     this@toJsonArray.forEach { add(JsonPrimitive(it)) }
