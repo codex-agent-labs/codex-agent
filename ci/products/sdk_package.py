@@ -9,7 +9,7 @@ from .contract import verify_contract_bundle
 from .contract_projection import verify_contract_component_projection
 from .inventory import (
     git_regular_blob_bytes, load_canonical_json_bytes,
-    read_regular_file_bytes, regular_file_inventory, require_semver, run_git, snapshot_regular_tree,
+    read_regular_file_bytes, regular_file_inventory, require_semver, run_git, sha256_bytes, snapshot_regular_tree,
 )
 from .plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
@@ -65,6 +65,7 @@ def verify_sdk_package_inputs(
     *, runtime_stage_root: Path | None = None, staged_sdks: Path | None = None,
     binary_stage_root: Path | None = None, binary_receipt_path: Path | None = None,
     binary_contract_evidence: dict[str, Any] | None = None,
+    runtime_package_stage: Path | None = None, runtime_package_receipt: Path | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify package semantics, original artifacts and the complete source-input plan.
 
@@ -77,11 +78,19 @@ def verify_sdk_package_inputs(
     receipt, original = _receipt(receipt_path)
     instance = _instance(receipt)
     native = instance.component in NATIVE_BINDINGS
+    javascript = instance.component == "javascript"
     if instance.product != "sdk" or instance.phase != "package" or (
-        not native and instance.component not in {"sdk-core", "sdk-android", "sdk-ios"}
+        not native and not javascript and instance.component not in {"sdk-core", "sdk-android", "sdk-ios"}
     ):
-        raise ValueError("SDK input verification requires a native or Maven package phase")
-    if native:
+        raise ValueError("SDK input verification requires a supported SDK package phase")
+    if javascript:
+        if runtime_package_stage is None or runtime_package_receipt is None or any(value is not None for value in (
+            runtime_stage_root, staged_sdks, binary_stage_root, binary_receipt_path, binary_contract_evidence,
+        )):
+            raise ValueError("JavaScript SDK input verification requires only its Node Runtime package")
+    elif runtime_package_stage is not None or runtime_package_receipt is not None:
+        raise ValueError("Unexpected Node Runtime package inputs for this SDK family")
+    elif native:
         if runtime_stage_root is None or staged_sdks is None or any(value is not None for value in (
             binary_stage_root, binary_receipt_path, binary_contract_evidence,
         )):
@@ -131,7 +140,26 @@ def verify_sdk_package_inputs(
             required_components=required_contract_components(instance),
             keyring=arguments["contract_keyring"], keys_directory=arguments["contract_keys_directory"],
         )
-        if native:
+        if javascript:
+            from .sdk_archive import verify_javascript_sdk_package_phase
+            node, node_bytes = _receipt(runtime_package_receipt)
+            node_identity = PhaseInstanceId("runtime", "node-js", "package", "node-js")
+            attestation = load_canonical_json_bytes(arguments["runtime_attestation"].read_bytes())
+            expected = {"component": "node-js", "phase": "package", "target": "node-js",
+                        "receiptSha256": sha256_bytes(node_bytes)}
+            if _instance(node) != node_identity or expected not in attestation["adapterReceipts"]:
+                raise ValueError("SDK Node package receipt differs from authenticated Runtime aggregate")
+            node_inventory = regular_file_inventory(runtime_package_stage)
+            node_stage, node_receipt = root / "node-stage", root / "node-receipt.json"
+            snapshot_regular_tree(runtime_package_stage, node_stage)
+            if regular_file_inventory(node_stage) != node_inventory:
+                raise ValueError("SDK Node package stage changed during snapshot")
+            node_receipt.write_bytes(node_bytes)
+            verified, verified_bytes = verify_javascript_sdk_package_phase(
+                stage, captured_receipt, handoff / REQUEST_NAME, node_stage, node_receipt,
+            )
+            upstream[node_identity] = node
+        elif native:
             from .sdk_native import verify_native_sdk_package_phase
             verified, verified_bytes = verify_native_sdk_package_phase(
                 stage, captured_receipt, handoff / REQUEST_NAME, runtime_stage_root, staged_sdks,
@@ -156,6 +184,9 @@ def verify_sdk_package_inputs(
             raise ValueError("SDK package receipt changed during semantic verification")
         _verify_plan(repository, receipt, versions,
                      [upstream[identity] for identity in phase_instance_dependencies(instance)], projection)
+        if javascript and (_receipt(runtime_package_receipt)[1] != node_bytes or
+                           regular_file_inventory(runtime_package_stage) != node_inventory):
+            raise ValueError("SDK Node package inputs changed during verification")
     if _receipt(receipt_path)[1] != original or regular_file_inventory(stage_root) != original_inventory:
         raise ValueError("SDK package stage or receipt changed during input verification")
     return receipt, original

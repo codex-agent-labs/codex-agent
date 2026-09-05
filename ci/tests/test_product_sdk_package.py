@@ -15,10 +15,12 @@ from ci.products.plan import (
 from ci.products.receipt import compute_build_key, validate_phase_receipt, write_output_manifest
 from ci.products.registry import PhaseInstanceId, phase_instance_dependencies
 from ci.products.sdk_maven import MAVEN_GROUPS, package_sdk_maven, verify_sdk_maven_binary_predecessor
+from ci.products.sdk_archive import NPM_COMPATIBILITY_PATH, verify_npm_sdk_compatibility
 from ci.products.sdk_package import _verify_plan, verify_sdk_package_inputs
 from ci.products.selection import phase_git_inventory
 from ci.tests import test_product_sdk_maven as maven_fixture
 from ci.tests import test_product_sdk_native as native_fixture
+from ci.tests import test_product_sdk_archive as javascript_fixture
 from ci.tests.product_chain_support import write_receipt
 from ci.tests.test_product_native_chain import build_chain
 from ci.tests.test_product_sdk_inputs import _request
@@ -116,6 +118,34 @@ class SdkPackagePlanTest(unittest.TestCase):
                 cls.maven_receipt = receipt
                 binary = load_canonical_json_bytes(cls.binary_receipt.read_bytes())
                 cls.bind(receipt, {**cls.upstream, identity(binary): binary}, cls.evidence)
+
+        cls.node_stage = cls.chain["adapters"]["package_stages"]["node-js"]
+        cls.node_receipt = next(record["receipt"] for record in cls.chain["adapters"]["adapter_receipts"]
+                                if (record["component"], record["phase"], record["target"]) ==
+                                ("node-js", "package", "node-js"))
+        cls.javascript_stage = cls.root / "javascript"
+        archive = cls.javascript_stage / "outputs/package/codex-agent-0.2.9.tgz"
+        archive.parent.mkdir(parents=True)
+        javascript_fixture._tar(archive, [
+            (NPM_COMPATIBILITY_PATH, cls.chain["compatibility"].read_bytes()),
+            ("package/package.json", b'{"name":"@codex-agent-labs/codex-agent","version":"0.2.9"}'),
+            ("package/index.d.ts", b"export declare const reviewed: string;\n"),
+            *((f"package/dist/{name}", (cls.node_stage / "outputs/adapter" / name).read_bytes())
+              for name in ("runtime.js", "runtime.js.map")),
+        ])
+        compatibility = cls.javascript_stage / "outputs/evidence/sdk-compatibility.json"
+        compatibility.parent.mkdir(parents=True)
+        compatibility.write_bytes(cls.chain["compatibility"].read_bytes())
+        verify_npm_sdk_compatibility(archive, compatibility,
+                                     compatibility.with_name("sdk-compatibility-archive.json"), sdk_version="0.2.9")
+        outputs = write_output_manifest(cls.javascript_stage, "sdk", "javascript", "package", "node", "0.2.9",
+                                        {"package": "outputs/package", "evidence": "outputs/evidence"})["outputs"]
+        cls.javascript_receipt = cls.root / "javascript-receipt.json"
+        write_receipt(cls.javascript_receipt, product="sdk", component="javascript", phase="package", target="node",
+                      version="0.2.9", version_identity="0.2.9", outputs=outputs, upstream=[],
+                      context={"producer": cls.producer})
+        node = load_canonical_json_bytes(cls.node_receipt.read_bytes())
+        cls.bind(cls.javascript_receipt, {**cls.upstream, identity(node): node}, cls.evidence)
 
     @classmethod
     def bind(cls, path, upstream, evidence):
@@ -217,6 +247,28 @@ class SdkPackagePlanTest(unittest.TestCase):
                 validate_phase_receipt(value)
                 with self.assertRaises(ValueError):
                     _verify_plan(self.repository, value, VERSIONS, selected, projection)
+
+    def test_javascript_exact_aggregate_attested_node_receipt_and_original_plan(self):
+        original = self.javascript_receipt.read_bytes()
+        value, raw = verify_sdk_package_inputs(
+            self.repository, self.javascript_stage, self.javascript_receipt, self.request,
+            runtime_package_stage=self.node_stage, runtime_package_receipt=self.node_receipt,
+        )
+        self.assertEqual(raw, original)
+        self.assertEqual(value["producer"], self.producer)
+        self.assertEqual(original, self.javascript_receipt.read_bytes())
+        # Same key/output content does not authorize substituting a producer's
+        # original receipt in the aggregate's immutable attestation.
+        wrong = load_canonical_json_bytes(self.node_receipt.read_bytes())
+        wrong["producer"]["runId"] += 1
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "different-producer.json"
+            path.write_bytes(canonical_json_bytes(validate_phase_receipt(wrong)))
+            with self.assertRaisesRegex(ValueError, "authenticated Runtime aggregate"):
+                verify_sdk_package_inputs(
+                    self.repository, self.javascript_stage, self.javascript_receipt, self.request,
+                    runtime_package_stage=self.node_stage, runtime_package_receipt=path,
+                )
 
     def test_public_path_rejects_missing_upstream_and_wrong_family_inputs(self):
         value = load_canonical_json_bytes(self.native_receipt.read_bytes())

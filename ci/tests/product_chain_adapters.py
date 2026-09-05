@@ -9,6 +9,7 @@ from typing import Any
 from ci.products.aggregate import RUNTIME_ADAPTERS, RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import load_canonical_json_bytes, sha256_bytes, write_canonical_json
+from ci.products.receipt import write_output_manifest
 from ci.products.runtime_evidence import (
     derive_runtime_adapter_projection,
     jvm_evidence_filename,
@@ -116,6 +117,7 @@ def build_adapters(
         receipt_paths[identity] = path
         return receipt
 
+    package_stages = {}
     for component in RUNTIME_ADAPTERS:
         binary = write(
             component,
@@ -128,15 +130,30 @@ def build_adapters(
             )],
             upstream=[contract_reference(contract, component)],
         )
+        package_outputs = [output(
+            "adapter-package", f"outputs/package/{component}.bin",
+            f"S808 synthetic {component} package fixture\n".encode(),
+        )]
+        if component == "node-js":
+            stage = root / "stages/node-js/package"
+            adapter = stage / "outputs/adapter"
+            adapter.mkdir(parents=True)
+            for name, contents in {
+                "runtime.js": b"export const runtime = 1;\n",
+                "runtime.js.map": b'{"version":3}\n',
+                "runtime.d.ts": b"export declare const generated: number;\n",
+            }.items():
+                (adapter / name).write_bytes(contents)
+            package_outputs = write_output_manifest(
+                stage, "runtime", component, "package", component, "0.2.7",
+                {"adapter": "outputs/adapter"},
+            )["outputs"]
+            package_stages[component] = stage
         package = write(
             component,
             "package",
             component,
-            outputs=[output(
-                "adapter-package",
-                f"outputs/package/{component}.bin",
-                f"S808 synthetic {component} package fixture\n".encode(),
-            )],
+            outputs=package_outputs,
             upstream=[reference(binary)],
         )
         metadata_upstream = []
@@ -210,4 +227,5 @@ def build_adapters(
         "adapter_evidence": adapter_evidence,
         "adapter_receipts": adapter_receipts,
         "adapter_report_files": adapter_report_files,
+        "package_stages": package_stages,
     }
