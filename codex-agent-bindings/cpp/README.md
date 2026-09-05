@@ -16,6 +16,12 @@ find_package(CodexAgent CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE CodexAgent::CodexAgent)
 ```
 
+The SDK carries an authenticated `native_loader.cpp` source file.
+`find_package` verifies its package hash and builds `CodexAgent::Loader` with
+the consuming C++20 toolchain. Package-only SDK assembly enables no C++
+compiler and builds neither that loader nor the Runtime; the verified,
+prebuilt platform Runtime library remains embedded in the package.
+
 The verified embedded Runtime is the default. To select a compatible external
 Runtime explicitly, call `codex_agent::CodexNativeLibrary::configure(absolutePath)`
 before the first CodexAgent API call. The wrapper never searches `PATH`, the

@@ -8,6 +8,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 import venv
 import xml.etree.ElementTree as ET
@@ -793,17 +794,40 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             packages = Path(temporary)
             version = "3.4.5"
             python = packages / "python"
+            python.mkdir()
+
+            def write_wheel(tag: str, wheel_metadata: str | None = None) -> None:
+                with zipfile.ZipFile(python / f"codex_agent-{version}-py3-none-{tag}.whl", "w") as archive:
+                    archive.writestr(f"codex_agent-{version}.dist-info/METADATA", f"Metadata-Version: 2.1\nVersion: {version}\n")
+                    archive.writestr(
+                        f"codex_agent-{version}.dist-info/WHEEL",
+                        wheel_metadata if wheel_metadata is not None else
+                        f"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: py3-none-{tag}\n",
+                    )
+
             for tag in PYTHON_TAGS.values():
-                write_zip_file(
-                    python / f"codex_agent-{version}-py3-none-{tag}.whl",
-                    f"codex_agent-{version}.dist-info/METADATA",
-                    f"Metadata-Version: 2.1\nVersion: {version}\n",
-                )
-            write_tar_file(
-                python / f"codex_agent-{version}.tar.gz",
-                f"codex_agent-{version}/PKG-INFO",
-                f"Metadata-Version: 2.1\nVersion: {version}\n",
+                write_wheel(tag)
+            source_metadata = f"Metadata-Version: 2.1\nVersion: {version}\n"
+            source_build = (
+                '[build-system]\nrequires = ["setuptools>=68", "wheel==0.45.1"]\n'
+                'build-backend = "setuptools.build_meta"\n'
+                f'[project]\nversion = "{version}"\n'
             )
+            source_records = {
+                "PKG-INFO": source_metadata,
+                "src/codex_agent.egg-info/PKG-INFO": source_metadata,
+                "pyproject.toml": source_build,
+            }
+
+            def write_sdist(records: dict[str, str]) -> None:
+                with tarfile.open(python / f"codex_agent-{version}.tar.gz", "w:gz") as archive:
+                    for relative, contents in records.items():
+                        payload = contents.encode()
+                        member = tarfile.TarInfo(f"codex_agent-{version}/{relative}")
+                        member.size = len(payload)
+                        archive.addfile(member, io.BytesIO(payload))
+
+            write_sdist(source_records)
             write_zip_file(
                 packages / f"csharp/CodexAgent.{version}.nupkg",
                 "CodexAgent.nuspec",
@@ -833,18 +857,47 @@ class NativeWrapperReleaseTest(unittest.TestCase):
 
             require_embedded_package_versions(packages, version)
 
-            write_tar_file(
-                python / f"codex_agent-{version}.tar.gz",
-                f"codex_agent-{version}/PKG-INFO",
-                "Metadata-Version: 2.1\nVersion: 0.2.0\n",
-            )
-            with self.assertRaisesRegex(ValueError, "Python sdist"):
-                require_embedded_package_versions(packages, version)
-            write_tar_file(
-                python / f"codex_agent-{version}.tar.gz",
-                f"codex_agent-{version}/PKG-INFO",
-                f"Metadata-Version: 2.1\nVersion: {version}\n",
-            )
+            tag = next(iter(PYTHON_TAGS.values()))
+            for wheel_metadata in (
+                f"Root-Is-Purelib: false\nTag: cp313-cp313-{tag}\n",
+                f"Root-Is-Purelib: true\nTag: py3-none-{tag}\n",
+                f"Root-Is-Purelib: false\nTag: py3-none-{tag}\nTag: py3-none-{tag}\n",
+                "Root-Is-Purelib: false\n",
+            ):
+                with self.subTest(wheel_metadata=wheel_metadata):
+                    write_wheel(tag, wheel_metadata)
+                    with self.assertRaisesRegex(ValueError, "Python wheel interpreter/ABI/platform"):
+                        require_embedded_package_versions(packages, version)
+            write_wheel(tag)
+
+            for records in (
+                {"PKG-INFO": source_metadata},
+                {**source_records, "src/codex_agent.egg-info/PKG-INFO": "Version: 0.2.0\n"},
+                {**source_records, "extra/PKG-INFO": source_metadata},
+                {relative: "Metadata-Version: 2.1\nVersion: 0.2.0\n" for relative in source_records},
+            ):
+                with self.subTest(sdist_records=records):
+                    write_sdist(records)
+                    with self.assertRaisesRegex(ValueError, "Python sdist"):
+                        require_embedded_package_versions(packages, version)
+            write_sdist(source_records)
+
+            for manifest in (
+                None,
+                source_build.replace(', "wheel==0.45.1"', ''),
+                source_build.replace('wheel==0.45.1', 'wheel>=0.45'),
+                source_build.replace('wheel==0.45.1', 'wheel==0.45.1", "unexpected'),
+                source_build.replace('setuptools.build_meta', 'other.backend'),
+                source_build.replace(version, '0.2.0'),
+            ):
+                with self.subTest(sdist_build_manifest=manifest):
+                    records = {key: value for key, value in source_records.items() if key != "pyproject.toml"}
+                    if manifest is not None:
+                        records["pyproject.toml"] = manifest
+                    write_sdist(records)
+                    with self.assertRaisesRegex(ValueError, "Python sdist"):
+                        require_embedded_package_versions(packages, version)
+            write_sdist(source_records)
 
             classifier = next(iter(HOSTS))
             write_zip_file(
@@ -944,6 +997,9 @@ class NativeWrapperReleaseTest(unittest.TestCase):
         self.assertIn("-p:PathMap=", ast.unparse(functions["package_once"]))
         self.assertIn("work = Path(temporary).resolve()", ast.unparse(functions["package_once"]))
         self.assertIn("-DCODEX_AGENT_CPP_PACKAGE_ONLY=ON", ast.unparse(functions["package_once"]))
+        self.assertIn("require_embedded_package_versions", calls["_consume"])
+        python_manifest = tomllib.loads((CI_ROOT.parent / "codex-agent-bindings/python/pyproject.toml").read_text())
+        self.assertIn("wheel==0.45.1", python_manifest["build-system"]["requires"])
         self.assertFalse(any(
             isinstance(node, ast.Subscript)
             and isinstance(node.ctx, ast.Store)

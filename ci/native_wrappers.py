@@ -222,9 +222,13 @@ def normalize_python_sdist(package: Path, work: Path) -> None:
 def package_python(source: Path, output: Path, work: Path) -> None:
     setup = (
         "from setuptools import Distribution, setup\n"
+        "from wheel.bdist_wheel import bdist_wheel\n"
         "class BinaryDistribution(Distribution):\n"
         "    def has_ext_modules(self): return True\n"
-        "setup(distclass=BinaryDistribution)\n"
+        "class PlatformWheel(bdist_wheel):\n"
+        "    def get_tag(self):\n"
+        "        return self.python_tag, 'none', super().get_tag()[2]\n"
+        "setup(distclass=BinaryDistribution, cmdclass={'bdist_wheel': PlatformWheel})\n"
     )
     all_source = work / "python-all"
     shutil.copytree(source, all_source)
@@ -730,13 +734,36 @@ def require_embedded_package_versions(
                 metadata = require_one(extracted, "**/*.dist-info/METADATA").read_text(encoding="utf-8")
                 versions = re.findall(r"(?m)^Version: (\S+)$", metadata)
                 require_version(versions[0] if len(versions) == 1 else None, f"Python wheel {wheel.name}")
+                wheel_metadata = require_one(extracted, "**/*.dist-info/WHEEL").read_text(encoding="utf-8")
+                tag = wheel.name.removeprefix(f"codex_agent-{version_value}-").removesuffix(".whl")
+                if (re.findall(r"(?m)^Tag: (\S+)$", wheel_metadata) != [tag] or
+                        re.findall(r"(?m)^Root-Is-Purelib: (\S+)$", wheel_metadata) != ["false"]):
+                    raise ValueError(f"Python wheel interpreter/ABI/platform metadata mismatch: {wheel.name}")
 
             python_sdist = packages / "python" / f"codex_agent-{version_value}.tar.gz"
             extracted = work / "python-sdist"
             safe_extract_tar(python_sdist, extracted)
-            metadata = require_one(extracted, "**/PKG-INFO").read_text(encoding="utf-8")
+            root_metadata = extracted / f"codex_agent-{version_value}/PKG-INFO"
+            ancillary_metadata = extracted / f"codex_agent-{version_value}/src/codex_agent.egg-info/PKG-INFO"
+            if (set(extracted.rglob("PKG-INFO")) != {root_metadata, ancillary_metadata} or
+                    not root_metadata.is_file() or not ancillary_metadata.is_file()):
+                raise ValueError("Python sdist requires its exact root and generated package metadata")
+            if root_metadata.read_bytes() != ancillary_metadata.read_bytes():
+                raise ValueError("Python sdist root and generated package metadata differ")
+            metadata = root_metadata.read_text(encoding="utf-8")
             versions = re.findall(r"(?m)^Version: (\S+)$", metadata)
             require_version(versions[0] if len(versions) == 1 else None, "Python sdist")
+            source_manifest = root_metadata.parent / "pyproject.toml"
+            if not source_manifest.is_file():
+                raise ValueError("Python sdist requires its build manifest")
+            source_project = tomllib.loads(source_manifest.read_text(encoding="utf-8"))
+            if source_project.get("build-system") != {
+                "requires": ["setuptools>=68", "wheel==0.45.1"],
+                "build-backend": "setuptools.build_meta",
+            }:
+                raise ValueError("Python sdist build dependencies/backend mismatch")
+            project = source_project.get("project")
+            require_version(project.get("version") if isinstance(project, dict) else None, "Python sdist manifest")
 
         if "csharp" in languages:
             csharp = packages / "csharp" / f"CodexAgent.{version_value}.nupkg"
@@ -1073,6 +1100,7 @@ def _consume(
     compatibility = validate_sdk_compatibility(load_canonical_json_bytes(sdk_compatibility.read_bytes()))
     if compatibility["sdkVersion"] != sdk_version:
         raise ValueError("installed consumer SDK compatibility version mismatch")
+    require_embedded_package_versions(packages, sdk_version)
     clean_output(output)
     selected = select_packages(packages, classifier, sdk_version)
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-consumer-") as temporary:

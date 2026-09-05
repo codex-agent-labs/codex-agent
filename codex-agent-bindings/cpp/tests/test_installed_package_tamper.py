@@ -55,6 +55,7 @@ def main() -> int:
             Path("include/codex_agent.h"),
             Path(arguments.library),
             Path("share/CodexAgent/native/sdk-compatibility.json"),
+            Path("share/CodexAgent/loader/native_loader.cpp"),
         )
         for index, member in enumerate(members):
             candidate = root / f"tampered-{index}"
@@ -67,6 +68,11 @@ def main() -> int:
         shutil.copytree(baseline, missing)
         (missing / "share/CodexAgent/native/sdk-compatibility.json").unlink()
         configure(missing, "missing-sidecar", succeed=False)
+
+        missing_loader = root / "missing-loader"
+        shutil.copytree(baseline, missing_loader)
+        (missing_loader / "share/CodexAgent/loader/native_loader.cpp").unlink()
+        configure(missing_loader, "missing-loader", succeed=False)
     return 0
 
 
