@@ -21,6 +21,7 @@ from ci.products.sdk_maven import (
     _verify_archive,
     main,
     package_sdk_maven,
+    verify_packaged_sdk_maven_repository,
     verify_sdk_maven_repository,
 )
 from ci.products.inventory import canonical_json_bytes
@@ -218,6 +219,18 @@ class SdkMavenPackagingTest(unittest.TestCase):
                         source, output, compatibility,
                         "io.github.codex-agent-labs", version, component,
                     )
+                    before_verification = {
+                        path.relative_to(output).as_posix(): path.read_bytes()
+                        for path in output.rglob("*") if path.is_file()
+                    }
+                    verify_packaged_sdk_maven_repository(
+                        output, compatibility,
+                        "io.github.codex-agent-labs", version, component,
+                    )
+                    self.assertEqual(before_verification, {
+                        path.relative_to(output).as_posix(): path.read_bytes()
+                        for path in output.rglob("*") if path.is_file()
+                    })
                     repeated = root / f"repeated-{component}"
                     package_sdk_maven(source, repeated, compatibility,
                                       "io.github.codex-agent-labs", version, component)
@@ -241,6 +254,85 @@ class SdkMavenPackagingTest(unittest.TestCase):
                             "io.github.codex-agent-labs", version, component,
                         )
                     compatibility.write_bytes(_compatibility())
+
+    def test_final_verifier_binds_every_carrier_to_exact_compatibility_and_product_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            version = "0.2.0"
+            compatibility = root / "sdk-compatibility.json"
+            compatibility.write_bytes(_compatibility())
+            for component, carriers in COMPONENT_CARRIERS.items():
+                with self.subTest(component=component, case="version"):
+                    source = _repository(root / f"version-{component}", component, version)
+                    packaged = root / f"packaged-version-{component}"
+                    package_sdk_maven(
+                        source, packaged, compatibility,
+                        MAVEN_GROUPS[component], version, component,
+                    )
+                    with self.assertRaisesRegex(ValueError, "Maven product version"):
+                        verify_packaged_sdk_maven_repository(
+                            packaged, compatibility,
+                            MAVEN_GROUPS[component], "0.2.1", component,
+                        )
+
+                for artifact, (kind, _resource) in carriers.items():
+                    with self.subTest(component=component, artifact=artifact):
+                        source = _repository(root / f"carrier-{component}-{artifact}", component, version)
+                        packaged = root / f"packaged-{component}-{artifact}"
+                        package_sdk_maven(
+                            source, packaged, compatibility,
+                            MAVEN_GROUPS[component], version, component,
+                        )
+                        archive = packaged.joinpath(
+                            *MAVEN_GROUPS[component].split("."), artifact, version,
+                            f"{artifact}-{version}.{kind}",
+                        )
+                        members = {"payload": b"rebound"}
+                        if kind == "aar":
+                            members = {"classes.jar": _zip_bytes({"payload": b"rebound"})}
+                        _zip(archive, members)
+                        _refresh_module_file(packaged, component, artifact, version, archive)
+                        verify_sdk_maven_repository(
+                            packaged, MAVEN_GROUPS[component], version, component,
+                        )
+                        with self.assertRaisesRegex(ValueError, "archive inventory mismatch"):
+                            verify_packaged_sdk_maven_repository(
+                                packaged, compatibility,
+                                MAVEN_GROUPS[component], version, component,
+                            )
+
+            source = _repository(root / "wrong-bytes", "sdk-android", version)
+            packaged = root / "packaged-wrong-bytes"
+            package_sdk_maven(
+                source, packaged, compatibility,
+                MAVEN_GROUPS["sdk-android"], version, "sdk-android",
+            )
+            different = sdk_compatibility()
+            different["runtime"]["defaultManifestSha256"] = "sha256:" + "f" * 64
+            compatibility.write_bytes(canonical_json_bytes(different))
+            with self.assertRaisesRegex(ValueError, "archive inventory mismatch"):
+                verify_packaged_sdk_maven_repository(
+                    packaged, compatibility,
+                    MAVEN_GROUPS["sdk-android"], version, "sdk-android",
+                )
+
+            compatibility.write_bytes(_compatibility())
+            wrong_name = root / "compatibility.json"
+            wrong_name.write_bytes(compatibility.read_bytes())
+            with self.assertRaisesRegex(ValueError, "wrong name"):
+                verify_packaged_sdk_maven_repository(
+                    packaged, wrong_name,
+                    MAVEN_GROUPS["sdk-android"], version, "sdk-android",
+                )
+
+            compatibility.write_bytes(
+                json.dumps(sdk_compatibility(), indent=2).encode("utf-8"),
+            )
+            with self.assertRaisesRegex(ValueError, "not canonical"):
+                verify_packaged_sdk_maven_repository(
+                    packaged, compatibility,
+                    MAVEN_GROUPS["sdk-android"], version, "sdk-android",
+                )
 
     def test_direct_archive_carriers_require_one_exact_resource(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

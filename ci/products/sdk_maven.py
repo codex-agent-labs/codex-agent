@@ -460,6 +460,35 @@ def verify_sdk_maven_repository(
         )
 
 
+def verify_packaged_sdk_maven_repository(
+    source: Path,
+    compatibility_file: Path,
+    group_id: str,
+    product_version: str,
+    component: str,
+) -> None:
+    """Verify final Maven coordinates and every compatibility-bearing carrier."""
+    carriers = COMPONENT_CARRIERS.get(component)
+    if carriers is None:
+        raise ValueError(f"unsupported SDK Maven component: {component}")
+    compatibility_file = Path(compatibility_file)
+    if compatibility_file.name != "sdk-compatibility.json":
+        raise ValueError("SDK compatibility input has the wrong name")
+    compatibility = read_regular_file_bytes(
+        compatibility_file, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
+    )
+    declaration = validate_sdk_compatibility_bytes(compatibility)
+    if declaration["sdkVersion"] != product_version:
+        raise ValueError("SDK compatibility version does not match the Maven product version")
+
+    source = Path(source)
+    verify_sdk_maven_repository(source, group_id, product_version, component)
+    group = source.joinpath(*group_id.split("."))
+    for artifact, (kind, resource_path) in carriers.items():
+        archive = group / artifact / product_version / f"{artifact}-{product_version}.{kind}"
+        _verify_archive(archive, kind, resource_path, compatibility)
+
+
 def _update_module_metadata(repository: Path, changed: dict[str, bytes]) -> None:
     def update(value: object, archive_name: str, contents: bytes) -> int:
         if not isinstance(value, dict) or not isinstance(value.get("variants"), list):
@@ -558,11 +587,12 @@ def package_sdk_maven(
             if not archive.is_file() or archive.is_symlink():
                 raise ValueError(f"SDK binary carrier is missing: {archive.relative_to(output)}")
             _inject_archive(archive, kind, resource_path, compatibility)
-            _verify_archive(archive, kind, resource_path, compatibility)
             changed[archive.relative_to(output).as_posix()] = archive.read_bytes()
         _update_module_metadata(output, changed)
         _refresh_checksums(output)
-        verify_sdk_maven_repository(output, group_id, version, component)
+        verify_packaged_sdk_maven_repository(
+            output, compatibility_file, group_id, version, component,
+        )
     except Exception:
         shutil.rmtree(output)
         raise
