@@ -36,7 +36,7 @@ class RuntimeIsolationFixtureTest {
     )
 
     @Test
-    fun `standalone Runtime authenticates Contract and requires artifact-only Runtime predecessors`() {
+    fun `standalone Runtime rejects hostile Contract inputs before build logic`() {
         val workspace = createTempDirectory("runtime-isolation").toFile().canonicalFile
         try {
             val base = workspace.resolve("base")
@@ -182,7 +182,19 @@ class RuntimeIsolationFixtureTest {
                 "rejects command-line composite build substitutions",
                 extraArguments = listOf("--include-build", includedBuild.absolutePath),
             )
+        } finally {
+            workspace.deleteRecursively()
+        }
+    }
 
+    @Test
+    fun `standalone Runtime authenticates genuine Contract and requires artifact-only Runtime predecessors`() {
+        val workspace = createTempDirectory("runtime-isolation-genuine").toFile().canonicalFile
+        try {
+            val base = workspace.resolve("base")
+            copyRuntimeClosure(base)
+            assertIsolatedClosure(base)
+            val target = currentHostTarget()
             val positive = workspace.resolve("positive")
             copyTree(base, positive)
             val positiveContract = positive.resolve("inputs/contract")
@@ -203,8 +215,8 @@ class RuntimeIsolationFixtureTest {
             rejectedBeforeRuntimeCompilation(
                 workspace,
                 base,
-                contract,
-                publicKey,
+                positiveContract,
+                positiveKey,
                 target,
                 testKit,
                 "project-core-dependency",
@@ -222,8 +234,8 @@ class RuntimeIsolationFixtureTest {
             rejectedBeforeRuntimeCompilation(
                 workspace,
                 base,
-                contract,
-                publicKey,
+                positiveContract,
+                positiveKey,
                 target,
                 testKit,
                 "project-repository-fallback",
