@@ -177,6 +177,44 @@ class SdkPackagePlanTest(unittest.TestCase):
         self.assertEqual(0, package_main(self.native_cli_arguments()))
         self.assertEqual(original, self.native_receipt.read_bytes())
 
+    def test_native_capability_request_rejects_signed_lifecycle_only_predecessor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve() / "capability-inputs"
+            original = self.native_receipt.read_bytes()
+            with self.assertRaisesRegex(ValueError, "full C ABI bootstrap closure"):
+                package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(output)])
+            self.assertFalse(output.exists())
+            self.assertEqual(original, self.native_receipt.read_bytes())
+
+    def test_native_capability_output_cannot_mutate_original_input_trees(self):
+        from ci.products.inventory import regular_file_inventory
+        inputs = (self.chain["variants"]["stages"], self.sdks, self.native_stage)
+        for original in inputs:
+            before = regular_file_inventory(original)
+            with self.subTest(original=original), self.assertRaisesRegex(ValueError, "overlaps an original input"):
+                package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(original / "new-handoff")])
+            self.assertEqual(before, regular_file_inventory(original))
+
+    def test_native_capability_handoff_uses_captured_request_during_source_swap(self):
+        from ci.products.sdk_inputs import stage_sdk_inputs
+        original = self.request.read_bytes()
+        def stage_captured(request, output, **kwargs):
+            self.assertNotEqual(request, self.request)
+            self.assertEqual(original, Path(request).read_bytes())
+            self.assertEqual(self.request.parent, kwargs["request_directory"])
+            self.request.write_bytes(b"temporarily replaced untrusted request\n")
+            try:
+                return stage_sdk_inputs(request, output, **kwargs)
+            finally:
+                self.request.write_bytes(original)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve() / "capability-inputs"
+            with patch("ci.products.sdk_package.stage_sdk_inputs", side_effect=stage_captured), \
+                    self.assertRaisesRegex(ValueError, "full C ABI bootstrap closure"):
+                package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(output)])
+            self.assertEqual(original, self.request.read_bytes())
+            self.assertFalse(output.exists())
+
     def test_native_cli_rejects_wrong_family_missing_inputs_and_changed_receipt(self):
         arguments = self.native_cli_arguments()
         with self.assertRaisesRegex(ValueError, "requested component"):

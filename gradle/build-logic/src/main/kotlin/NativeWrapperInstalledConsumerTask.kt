@@ -1,4 +1,6 @@
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import javax.inject.Inject
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
@@ -53,19 +55,45 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val consumerSources: ConfigurableFileCollection
     @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:OutputDirectory abstract val capabilityInputsDirectory: DirectoryProperty
+    @get:Internal abstract val ownedBuildDirectory: DirectoryProperty
     @get:Input abstract val pythonExecutable: Property<String>
     @get:Internal abstract val repositoryRoot: DirectoryProperty
 
     init {
         offlineMode.convention(project.gradle.startParameter.isOffline)
         pythonExecutable.convention("python3")
+        ownedBuildDirectory.convention(project.layout.buildDirectory)
         outputs.upToDateWhen { false }
     }
 
     @TaskAction
     fun consume() {
         val output = outputDirectory.get().asFile
+        val capabilityInputs = capabilityInputsDirectory.get().asFile
+        val owned = ownedBuildDirectory.get().asFile.toPath().toAbsolutePath().normalize()
+        val destinations = listOf(output, capabilityInputs).map { file ->
+            generateSequence(file.toPath().toAbsolutePath()) { it.parent }.forEach { path ->
+                check(!Files.isSymbolicLink(path) && (!Files.exists(path, LinkOption.NOFOLLOW_LINKS) ||
+                    Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))) { "Unsafe native validation output: $path" }
+            }
+            file.toPath().toAbsolutePath().normalize().also { path ->
+                check(path != owned && path.startsWith(owned)) { "Unowned native validation output: $path" }
+            }
+        }
+        check(!destinations[0].startsWith(destinations[1]) && !destinations[1].startsWith(destinations[0])) {
+            "Native validation outputs overlap"
+        }
+        listOf(packageStageDirectory.get().asFile, runtimeStageDirectory.get().asFile,
+            packageReceipt.get().asFile, compatibilityRequest.get().asFile, stagedSdkDirectory.get().asFile,
+            sdkVersionFile.get().asFile, consumerScript.get().asFile).forEach { input ->
+            val path = input.canonicalFile.toPath()
+            check(destinations.none { it.startsWith(path) || path.startsWith(it) }) {
+                "Native validation output overlaps an input: $input"
+            }
+        }
         output.deleteRecursively()
+        capabilityInputs.deleteRecursively()
         try {
             val languageValue = language.get()
             check(languageValue in nativeWrapperInstalledConsumerLanguages) {
@@ -87,6 +115,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
                     "--runtime-stages", runtimeStageDirectory.get().asFile.absolutePath,
                     "--staged-sdks", stagedSdkDirectory.get().asFile.absolutePath,
                     "--component", languageValue,
+                    "--validation-inputs-output", capabilityInputs.absolutePath,
                 )
             }
             val command = mutableListOf(
@@ -108,6 +137,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
             requireExactNativeWrapperInstalledConsumerEvidence(output, languageValue, classifier)
         } catch (error: Exception) {
             output.deleteRecursively()
+            capabilityInputs.deleteRecursively()
             throw error
         }
     }

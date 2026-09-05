@@ -396,7 +396,7 @@ def retained_product_closure(
                     {"component": component, "sha256": DIGEST_B}
                     for component in components
                 ],
-            }, contract_projection._VERIFIED)
+            }, contract_projection._VERIFIED, DIGEST_B)
 
     pending = set(dependency_closure(requested)) - set(resolved)
     while pending:

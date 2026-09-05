@@ -104,18 +104,23 @@ def verify_contract_execution_projection(
 class VerifiedContractProjection:
     """Opaque value created only after Contract Bundle authentication."""
 
-    __slots__ = ("_canonical", "_verified")
+    __slots__ = ("_canonical", "_verified", "_coverage")
 
-    def __init__(self, value: dict[str, Any], verified: object) -> None:
+    def __init__(self, value: dict[str, Any], verified: object, coverage_digest: str | None = None) -> None:
         if verified is not _VERIFIED:
             raise TypeError("Contract projections must be produced by verification")
         self._canonical = canonical_json_bytes(value)
         self._verified = verified
+        self._coverage = coverage_digest
 
-    def receipt_value(self) -> dict[str, Any]:
+    def receipt_value(self, *, include_coverage: bool = False) -> dict[str, Any]:
         if self._verified is not _VERIFIED:
             raise TypeError("Contract projection is not authenticated")
-        return load_canonical_json_bytes(self._canonical)
+        value = load_canonical_json_bytes(self._canonical)
+        if include_coverage:
+            value.update(schemaVersion=2, canonicalCoverageDigest=require_sha256(
+                self._coverage, "Authenticated Contract canonical coverage digest"))
+        return value
 
     def restrict(self, required_components: Iterable[str]) -> VerifiedContractProjection:
         components = _required_components(required_components)
@@ -129,7 +134,7 @@ class VerifiedContractProjection:
         return VerifiedContractProjection({
             **value,
             "componentDigests": [available[component] for component in components],
-        }, _VERIFIED)
+        }, _VERIFIED, self._coverage)
 
     @property
     def components(self) -> tuple[str, ...]:
@@ -306,4 +311,4 @@ def verify_contract_component_projection(
                 }
                 for component in components
             ],
-        }, _VERIFIED)
+        }, _VERIFIED, manifest["canonicalCoverageDigest"])

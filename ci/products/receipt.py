@@ -314,9 +314,13 @@ def validate_producer(value: Any, label: str = "producer") -> dict[str, Any]:
 
 
 def validate_contract_projection(value: Any, label: str) -> dict[str, Any]:
-    projection = require_exact_keys(value, CONTRACT_PROJECTION_KEYS, label)
-    if require_integer(projection["schemaVersion"], f"{label}.schemaVersion", 1) != 1:
+    schema = value.get("schemaVersion") if type(value) is dict else None
+    projection = require_exact_keys(value, CONTRACT_PROJECTION_KEYS | (
+        {"canonicalCoverageDigest"} if schema == 2 else set()), label)
+    if require_integer(projection["schemaVersion"], f"{label}.schemaVersion", 1) not in (1, 2):
         raise ValueError("Unsupported Contract projection schemaVersion")
+    if schema == 2:
+        require_sha256(projection["canonicalCoverageDigest"], f"{label}.canonicalCoverageDigest")
     version = require_semver(projection["contractVersion"], f"{label}.contractVersion")
     path = require_relative_path(projection["bundlePath"], f"{label}.bundlePath")
     if path != f"outputs/codex-agent-contract-{version}.zip":
@@ -478,8 +482,14 @@ def build_key_payload(
         elif projection is None:
             upstream_artifacts.append(upstream)
         else:
+            coverage = {}
+            if projection["schemaVersion"] == 2:
+                from .registry import PhaseInstanceId, requires_contract_coverage
+                if not requires_contract_coverage(PhaseInstanceId(product, component, phase, target)):
+                    raise ValueError("Contract coverage projection is attached to an unauthorized edge")
+                coverage = {"canonicalCoverageDigest": projection["canonicalCoverageDigest"]}
             upstream_artifacts.append({
-                "schemaVersion": 1,
+                "schemaVersion": projection["schemaVersion"],
                 "kind": "contract-components",
                 "product": "contract",
                 "component": "contract",
@@ -487,6 +497,7 @@ def build_key_payload(
                 "target": "common",
                 "contractDigest": projection["contractDigest"],
                 "componentDigests": projection["componentDigests"],
+                **coverage,
             })
     return {
         "schemaVersion": 1,

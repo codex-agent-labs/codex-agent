@@ -15,6 +15,32 @@ import org.gradle.work.DisableCachingByDefault
 
 class NativeWrapperInstalledConsumerTaskTest {
     @Test
+    fun `capability handoff cleanup rejects unowned overlapping and symbolic destinations`() {
+        fixture().use { fixture ->
+            val sentinel = fixture.packages.resolve("sentinel").apply { writeText("preserve") }
+            val link = fixture.root.resolve("work/link").toPath()
+            link.parent.toFile().mkdirs()
+            java.nio.file.Files.createSymbolicLink(link, fixture.packages.toPath())
+            for (destination in listOf(fixture.packages, fixture.root.resolve("work"), fixture.output,
+                link.resolve("output").toFile())) {
+                val task = fixture.task("python", offline = true).apply { capabilityInputsDirectory.set(destination) }
+                assertFailsWith<IllegalStateException> { task.consume() }
+                assertEquals("preserve", sentinel.readText())
+                assertFalse(fixture.project.projectDir.resolve("authenticated").exists())
+            }
+            // DirectoryProperty normalizes this before any filesystem access;
+            // execution receives the safe work/other path, not link/../other.
+            val normalized = fixture.task("python", offline = true).apply {
+                capabilityInputsDirectory.set(link.resolve("../other").toFile())
+            }
+            assertEquals(fixture.root.resolve("work/other"), normalized.capabilityInputsDirectory.get().asFile)
+            normalized.consume()
+            assertEquals("preserve", sentinel.readText())
+            assertTrue(fixture.root.resolve("work/other").isDirectory)
+        }
+    }
+
+    @Test
     fun `task executes one offline language and retains only exact raw evidence`() {
         fixture().use { fixture ->
             val task = fixture.task("python", offline = true)
@@ -27,6 +53,7 @@ class NativeWrapperInstalledConsumerTaskTest {
             )
             assertTrue("--offline" in files.getValue("evidence/python/toolchain.tsv").readText())
             assertFalse(fixture.output.resolve("receipt.json").exists())
+            assertTrue(fixture.root.resolve("work/capability-inputs").isDirectory)
         }
     }
 
@@ -40,6 +67,7 @@ class NativeWrapperInstalledConsumerTaskTest {
             assertFailsWith<GradleException> { fixture.task("python", offline = true).consume() }
             assertFalse(fixture.project.projectDir.resolve("authenticated").exists())
             assertFalse(fixture.output.exists())
+            assertFalse(fixture.root.resolve("work/capability-inputs").exists())
         }
     }
 
@@ -124,8 +152,9 @@ class NativeWrapperInstalledConsumerTaskTest {
     }
 
     private fun fixture(): Fixture {
-        val root = createTempDirectory("native-wrapper-installed-consumer").toFile()
+        val root = createTempDirectory("native-wrapper-installed-consumer").toFile().canonicalFile
         val project = ProjectBuilder.builder().withProjectDir(root.resolve("project").also(File::mkdirs)).build()
+        project.layout.buildDirectory.set(root.resolve("work"))
         val packages = root.resolve("packages").also(File::mkdirs)
         val sdks = root.resolve("sdks").also(File::mkdirs)
         val version = root.resolve("sdk.txt").apply { writeText("0.2.0\n") }
@@ -139,11 +168,12 @@ class NativeWrapperInstalledConsumerTaskTest {
             args = sys.argv[1:]
             assert args[0] == 'verify-native'
             for option in ('--repository', '--stage', '--receipt', '--compatibility-request',
-                           '--runtime-stages', '--staged-sdks', '--component'):
+                           '--runtime-stages', '--staged-sdks', '--component', '--validation-inputs-output'):
                 assert option in args
+            pathlib.Path(args[args.index('--validation-inputs-output') + 1]).mkdir(parents=True)
             pathlib.Path('authenticated').write_text(args[args.index('--component') + 1])
         """.trimIndent() + "\n")
-        return Fixture(root, project, packages, sdks, version, script, verifier, root.resolve("output"))
+        return Fixture(root, project, packages, sdks, version, script, verifier, root.resolve("work/output"))
     }
 
     // These fake-script/TSV fixtures exercise command wiring and fail-closed parsing only;
@@ -212,6 +242,7 @@ class NativeWrapperInstalledConsumerTaskTest {
                 consumerScript.set(script)
                 consumerSources.from(script)
                 outputDirectory.set(output)
+                capabilityInputsDirectory.set(root.resolve("work/capability-inputs"))
                 repositoryRoot.set(project.layout.projectDirectory)
             }
 

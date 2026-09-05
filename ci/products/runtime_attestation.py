@@ -149,14 +149,18 @@ def derive_desktop_validation_projection(
 
 
 def _verify_bootstrap_contract_input(value: Any, identity: dict[str, Any]) -> None:
-    record = require_exact_keys(value, _CONTRACT_UPSTREAM_FIELDS, "Runtime bootstrap Contract input")
+    schema = value.get("schemaVersion") if type(value) is dict else None
+    record = require_exact_keys(value, _CONTRACT_UPSTREAM_FIELDS | (
+        {"canonicalCoverageDigest"} if schema == 2 else set()), "Runtime bootstrap Contract input")
+    if schema == 2:
+        require_sha256(record["canonicalCoverageDigest"], "Runtime bootstrap Contract coverage digest")
     components = require_array(record["componentDigests"], "Runtime bootstrap Contract components")
     for component in components:
         require_exact_keys(component, {"component", "sha256"}, "Runtime bootstrap Contract component")
         require_sha256(component["sha256"], "Runtime bootstrap Contract component digest")
     if (
         identity["target"] != "macos-arm64"
-        or require_integer(record["schemaVersion"], "Runtime bootstrap Contract schema", 1) != 1
+        or require_integer(record["schemaVersion"], "Runtime bootstrap Contract schema", 1) not in (1, 2)
         or record["kind"] != "contract-components"
         or (record["product"], record["component"], record["phase"], record["target"])
         != ("contract", "contract", "metadata", "common")

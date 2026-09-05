@@ -3,6 +3,7 @@
 from pathlib import Path
 import tempfile
 from typing import Any
+import zipfile
 
 from .c_abi import (
     C_ABI_PACKAGE_MANIFEST, TARGET_SPECS, _check_identity, _json_bytes,
@@ -21,6 +22,55 @@ from .registry import NATIVE_BINDINGS
 INDEX_NAME = "codex-agent-native-wrapper-sdks.json"
 _LIMIT = 16 * 1024 * 1024
 _POLICIES = {"mach-o": "macos.exports", "elf": "linux.map", "pe": "windows.def"}
+
+
+def _stage_native_capability_inputs(
+    arguments: dict[str, Any], runtime: Path, sdks: Path, output: Path,
+) -> None:
+    """Copy already-authenticated private inputs; this is not standalone admission.
+
+    Called only after SDK package plan, Contract/Runtime attestations and complete
+    raw stage inventories were verified. The existing Kotlin matcher still owns
+    the exact bootstrap schema, capability, compiler/reference and test semantics.
+    """
+    receipt_path = arguments["variant_phase_receipts"]["macos-arm64"]["validation"]
+    receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    stage = runtime / "macos-arm64/validation"
+    prefix = "outputs/c-abi-bootstrap/"
+    records = [record for record in receipt["outputs"] if record["relativePath"].startswith(prefix)]
+    paths = {record["relativePath"].removeprefix(prefix) for record in records}
+    required = {"bootstrap-evidence.json", "original-runner/test.kexe",
+                "original-runner/compiler-header/libcodex_agent_api.h", "reference/codex_agent_c.def"}
+    directories = ("native-junit/", "consumers/", "original-runner/source/nativeMain/",
+                   "original-runner/source/nativeTest/")
+    if (not required <= paths or any(record["kind"] != "c-abi-bootstrap" for record in records)
+            or any(not any(path.startswith(directory) for path in paths) for directory in directories)):
+        raise ValueError("Authenticated Runtime validation lacks the full C ABI bootstrap closure")
+    # Copy raw evidence unchanged: receipt producer and execution identity are
+    # external evidence, never rewritten to impersonate this SDK consumer.
+    snapshot_regular_tree(stage / "outputs/c-abi-bootstrap", output / "bootstrap")
+    snapshot_regular_tree(sdks, output / "sdks")
+    evidence = output / "contract"
+    evidence.mkdir()
+    with zipfile.ZipFile(arguments["contract_payload"]) as bundle:
+        for name in ("canonical-api.json", "canonical-coverage.json"):
+            (evidence / name).write_bytes(bundle.read(f"evidence/{name}"))
+    bootstrap = load_json_bytes((output / "bootstrap/bootstrap-evidence.json").read_bytes())
+    if type(bootstrap) is not dict or type(bootstrap.get("canonical")) is not dict or type(bootstrap.get("artifacts")) is not dict:
+        raise ValueError("C ABI bootstrap lacks canonical and artifact identities")
+    canonical = bootstrap.get("canonical", {})
+    if (canonical.get("apiReportSha256") != sha256_bytes((evidence / "canonical-api.json").read_bytes()).removeprefix("sha256:")
+            or canonical.get("coverageReceiptSha256") != sha256_bytes((evidence / "canonical-coverage.json").read_bytes()).removeprefix("sha256:")
+            or bootstrap.get("artifacts", {}).get("releaseLibrarySha256") != sha256_bytes(
+                (output / "sdks/macos-arm64/lib/libcodex_agent.dylib").read_bytes()).removeprefix("sha256:")):
+        raise ValueError("C ABI bootstrap differs from authenticated Contract or embedded Mac Runtime")
+    receipts = output / "receipts"
+    receipts.mkdir()
+    (receipts / "runtime-macos-arm64-validation.json").write_bytes(receipt_bytes)
+    for name, path in (("runtime-macos-arm64-package", arguments["variant_phase_receipts"]["macos-arm64"]["package"]),
+                       ("contract-metadata", arguments["contract_metadata_receipt"])):
+        (receipts / f"{name}.json").write_bytes(read_regular_file_bytes(path, max_bytes=_LIMIT, reject_symlink_parents=True))
 
 
 def verify_staged_native_sdk_inputs(

@@ -149,6 +149,11 @@ class ContractProjectionTest(unittest.TestCase):
             VerifiedContractProjection(projection, object())
 
     def test_rejects_wrong_payload_manifest_and_receipt_digests(self) -> None:
+        validation = self._verify().receipt_value(include_coverage=True)
+        self.assertEqual(2, validation["schemaVersion"])
+        self.assertEqual(self.manifest["canonicalCoverageDigest"], validation["canonicalCoverageDigest"])
+        restricted = self._verify().restrict(("jvm",)).receipt_value(include_coverage=True)
+        self.assertEqual(validation["canonicalCoverageDigest"], restricted["canonicalCoverageDigest"])
         mutations = (
             ("payload", lambda value: value["payload"].__setitem__(
                 "sha256", sha256_bytes(b"wrong payload"),

@@ -11,6 +11,7 @@ from .contract_projection import verify_contract_component_projection
 from .inventory import (
     git_regular_blob_bytes, load_canonical_json_bytes,
     read_regular_file_bytes, regular_file_inventory, require_semver, run_git, sha256_bytes, snapshot_regular_tree,
+    publish_regular_tree,
 )
 from .plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
@@ -26,6 +27,20 @@ from .selection import phase_git_inventory
 
 
 _LIMIT = 16 * 1024 * 1024
+
+
+def _require_capability_output_separate(output: Path, inputs: Any) -> None:
+    destination = Path(output).resolve()
+    if isinstance(inputs, dict):
+        for value in inputs.values():
+            _require_capability_output_separate(output, value)
+    elif isinstance(inputs, (tuple, list)):
+        for value in inputs:
+            _require_capability_output_separate(output, value)
+    elif isinstance(inputs, Path):
+        source = inputs.resolve()
+        if source == destination or source in destination.parents or destination in source.parents:
+            raise ValueError("Native capability output overlaps an original input")
 
 
 def _receipt(path: Path) -> tuple[dict[str, Any], bytes]:
@@ -67,6 +82,7 @@ def verify_sdk_package_inputs(
     binary_stage_root: Path | None = None, binary_receipt_path: Path | None = None,
     binary_contract_evidence: dict[str, Any] | None = None,
     runtime_package_stage: Path | None = None, runtime_package_receipt: Path | None = None,
+    validation_inputs_output: Path | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify package semantics, original artifacts and the complete source-input plan.
 
@@ -80,6 +96,10 @@ def verify_sdk_package_inputs(
     instance = _instance(receipt)
     native = instance.component in NATIVE_BINDINGS
     javascript = instance.component == "javascript"
+    if validation_inputs_output is not None and not native:
+        raise ValueError("Capability input staging requires a native SDK package")
+    if validation_inputs_output is not None:
+        original_request_bytes = read_regular_file_bytes(Path(compatibility_request), max_bytes=_LIMIT, reject_symlink_parents=True)
     if instance.product != "sdk" or instance.phase != "package" or (
         not native and not javascript and instance.component not in {"sdk-core", "sdk-android", "sdk-ios"}
     ):
@@ -110,7 +130,20 @@ def verify_sdk_package_inputs(
         captured_receipt = root / "package-receipt.json"
         captured_receipt.write_bytes(original)
         handoff = root / "inputs"
-        stage_sdk_inputs(Path(compatibility_request), handoff)
+        if validation_inputs_output is None:
+            stage_sdk_inputs(Path(compatibility_request), handoff)
+        else:
+            captured_request = root / "captured-request.json"
+            captured_request.write_bytes(original_request_bytes)
+            request_directory = Path(compatibility_request).parent
+            original_arguments = load_sdk_compatibility_request(captured_request, request_directory=request_directory)
+            from .contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
+            _require_capability_output_separate(validation_inputs_output, (
+                Path(stage_root), Path(receipt_path), Path(compatibility_request), runtime_stage_root, staged_sdks,
+                original_arguments,
+                original_arguments["contract_attestation"].parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
+            ))
+            stage_sdk_inputs(captured_request, handoff, request_directory=request_directory)
         arguments = load_sdk_compatibility_request(handoff / REQUEST_NAME)
         compatibility = load_canonical_json_bytes((handoff / COMPATIBILITY_NAME).read_bytes())
         aggregate = load_canonical_json_bytes(arguments["runtime_manifest"].read_bytes())
@@ -162,6 +195,15 @@ def verify_sdk_package_inputs(
             upstream[node_identity] = node
         elif native:
             from .sdk_native import verify_native_sdk_package_phase
+            if validation_inputs_output is not None:
+                runtime_original, sdks_original = Path(runtime_stage_root), Path(staged_sdks)
+                runtime_inventory, sdks_inventory = regular_file_inventory(runtime_original), regular_file_inventory(sdks_original)
+                runtime_stage_root, staged_sdks = root / "runtime", root / "sdks"
+                snapshot_regular_tree(runtime_original, runtime_stage_root)
+                snapshot_regular_tree(sdks_original, staged_sdks)
+                if (regular_file_inventory(runtime_stage_root) != runtime_inventory
+                        or regular_file_inventory(staged_sdks) != sdks_inventory):
+                    raise ValueError("Native capability inputs changed during snapshot")
             verified, verified_bytes = verify_native_sdk_package_phase(
                 stage, captured_receipt, handoff / REQUEST_NAME, runtime_stage_root, staged_sdks,
             )
@@ -188,6 +230,18 @@ def verify_sdk_package_inputs(
         if javascript and (_receipt(runtime_package_receipt)[1] != node_bytes or
                            regular_file_inventory(runtime_package_stage) != node_inventory):
             raise ValueError("SDK Node package inputs changed during verification")
+        if validation_inputs_output is not None:
+            from .sdk_native import _stage_native_capability_inputs
+            prepared = root / "capability-inputs"
+            _stage_native_capability_inputs(arguments, runtime_stage_root, staged_sdks, prepared)
+            (prepared / "receipts/sdk-package.json").write_bytes(original)
+            if (regular_file_inventory(runtime_original) != runtime_inventory
+                    or regular_file_inventory(sdks_original) != sdks_inventory
+                    or read_regular_file_bytes(Path(compatibility_request), max_bytes=_LIMIT, reject_symlink_parents=True) != original_request_bytes
+                    or _receipt(receipt_path)[1] != original
+                    or regular_file_inventory(stage_root) != original_inventory):
+                raise ValueError("Native capability sources changed before publication")
+            publish_regular_tree(prepared, Path(validation_inputs_output))
     if _receipt(receipt_path)[1] != original or regular_file_inventory(stage_root) != original_inventory:
         raise ValueError("SDK package stage or receipt changed during input verification")
     return receipt, original
@@ -200,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("repository", "stage", "receipt", "compatibility-request", "runtime-stages", "staged-sdks"):
         native.add_argument(f"--{name}", type=Path, required=True)
     native.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
+    native.add_argument("--validation-inputs-output", type=Path)
     args = parser.parse_args(argv)
     expected = PhaseInstanceId("sdk", args.component, "package", "desktop")
     original, _ = _receipt(args.receipt)
@@ -208,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     verified, _ = verify_sdk_package_inputs(
         args.repository, args.stage, args.receipt, args.compatibility_request,
         runtime_stage_root=args.runtime_stages, staged_sdks=args.staged_sdks,
+        validation_inputs_output=args.validation_inputs_output,
     )
     if verified != original:
         raise ValueError("Native SDK package receipt changed during CLI verification")

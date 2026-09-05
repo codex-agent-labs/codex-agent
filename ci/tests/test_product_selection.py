@@ -59,6 +59,25 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_contract_coverage_producers_select_evidence_consumers_without_runtime_compilation(self):
+        paths = ("codex-agent-core/src/commonTest/kotlin/ContractTest.kt",
+                 "codex-agent-core/src/jvmTest/java/ContractTest.java",
+                 "ci/products/contract.py", "ci/products/contract_model.py",
+                 "gradle/build-logic/src/main/kotlin/CrossLanguageApiCoverage.kt")
+        for path in paths:
+            with self.subTest(path=path):
+                selected = classify_paths([path])
+                self.assertIn(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"), selected.instances)
+                self.assertIn(PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"), selected.instances)
+                self.assertFalse(any(item.product == "runtime" and item.phase in {"binary", "package"}
+                                     for item in selected.instances))
+                self.assertEqual({"macos-arm64"}, {item.component for item in selected.instances
+                    if item.product == "runtime" and item.phase == "validation"})
+                for language in NATIVE_BINDINGS:
+                    self.assertIn(PhaseInstanceId("sdk", language, "package", "desktop"), selected.instances)
+                self.assertEqual((), phase_inventory_paths([path], PhaseInstanceId(
+                    "runtime", "macos-arm64", "validation", "macos-arm64")))
+
     def test_native_installed_consumer_and_policy_helpers_are_direct_validation_inputs(self) -> None:
         from ci.tests.test_product_plan import plan, receipt, upstreams
 
@@ -445,7 +464,7 @@ class ProductSelectionTest(unittest.TestCase):
             ),
         )
 
-    def test_jvm_contract_change_selects_contract_runtime_jvm_and_jvm_facade_only(self) -> None:
+    def test_jvm_contract_change_selects_jvm_binary_and_coverage_evidence_consumers(self) -> None:
         result = classify_paths([
             "codex-agent-core/src/jvmMain/kotlin/example/JvmProjection.kt"
         ])
@@ -453,16 +472,14 @@ class ProductSelectionTest(unittest.TestCase):
             instance.phase for instance in component(result, "contract", "contract")
         })
         self.assertTrue(component(result, "runtime", "jvm"))
-        self.assertEqual({"validation", "metadata"}, {
+        self.assertEqual({"package", "validation", "metadata"}, {
             instance.phase for instance in component(result, "sdk", "sdk-core")
         })
-        self.assertEqual({"jvm"}, {
-            instance.target for instance in component(result, "sdk", "sdk-core")
-            if instance.phase == "validation"
-        })
+        self.assertIn(PhaseInstanceId("sdk", "sdk-core", "validation", "jvm"), result.instances)
         self.assertFalse(component(result, "runtime", "node-js"))
-        self.assertFalse(component(result, "sdk", "sdk-android"))
-        self.assertFalse(component(result, "sdk", "javascript"))
+        self.assertEqual({"jvm"}, {item.component for item in result.instances
+                                  if item.product == "runtime" and item.phase in {"binary", "package"}})
+        self.assertIn(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"), result.instances)
 
     def test_js_contract_change_selects_contract_node_js_and_js_consumers_only(self) -> None:
         result = classify_paths([
@@ -883,7 +900,9 @@ class ProductSelectionTest(unittest.TestCase):
             self.assertTrue(validation.issubset(selected))
             for instance in validation:
                 self.assertEqual((path,), phase_inventory_paths([path], instance))
-            self.assertFalse(any(item.product == "runtime" and item.phase != "metadata" for item in selected))
+            self.assertFalse(any(item.product == "runtime" and item.phase in {"binary", "package"} for item in selected))
+            self.assertEqual({"macos-arm64"} if name == "ReleaseIo.kt" else set(), {
+                item.component for item in selected if item.product == "runtime" and item.phase == "validation"})
 
     def test_cpp_configure_and_generated_dispatch_check_are_direct_validation_inputs(self) -> None:
         for path in ("codex-agent-bindings/cpp/CMakeLists.txt",
@@ -1065,9 +1084,6 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/restore.py",
             "ci/products/reuse.py",
             "ci/products/selection.py",
-            "ci/products/sdk_inputs.py",
-            "ci/products/sdk_native.py",
-            "ci/products/sdk_package.py",
         )
         result = classify_paths(paths)
         self.assertEqual(set(PHASE_INSTANCE_IDS), identities(result))
@@ -1076,10 +1092,19 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((), phase_inventory_paths(paths, instance))
 
+    def test_authenticated_native_handoff_producers_enter_only_native_validation_keys(self):
+        paths = ("ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py")
+        for instance in PHASE_INSTANCE_IDS:
+            expected = paths if (instance.product == "sdk" and instance.component in
+                {"python", "csharp", "rust", "cpp", "dart"} and instance.phase == "validation") else ()
+            with self.subTest(instance=instance):
+                self.assertEqual(tuple(sorted(expected)), phase_inventory_paths(paths, instance))
+
     def test_root_gradle_inputs_do_not_enter_standalone_runtime_inventories(self) -> None:
         paths = ("build.gradle.kts", "gradle.properties", "settings-gradle.lockfile", "settings.gradle.kts")
         result = classify_paths(paths)
-        self.assertFalse(any(instance.product == "runtime" for instance in result.instances))
+        self.assertFalse(any(instance.product == "runtime" and instance.phase in {"binary", "package"}
+                             for instance in result.instances))
         self.assertTrue(any(instance.product == "contract" for instance in result.instances))
         self.assertTrue(any(instance.product == "sdk" for instance in result.instances))
         for instance in PHASE_INSTANCE_IDS:

@@ -324,6 +324,9 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
         consumerScript.set(rootProject.layout.projectDirectory.file("ci/native_wrappers.py"))
         consumerSources.from(nativeWrapperBindingRoot.dir(language).asFileTree.matching { exclude(excluded) })
         outputDirectory.set(evidence)
+        capabilityInputsDirectory.set(layout.buildDirectory.dir(
+            nativeWrapperCandidateTree.map { "native-wrapper-capability-inputs/$it/$language" },
+        ))
         repositoryRoot.set(rootProject.layout.projectDirectory)
     }
 }

@@ -127,6 +127,14 @@ class RuntimeComponentAttestationTest(unittest.TestCase):
         rekey(records[2])
         first = derive_runtime_component_attestation(envelope, records, artifacts())
         self.assertEqual(first, derive_runtime_component_attestation(envelope, records, artifacts()))
+        coverage_records = copy.deepcopy(records)
+        coverage_records[2]["upstreamArtifacts"][0].update(schemaVersion=2, canonicalCoverageDigest=DIGEST_A)
+        rekey(coverage_records[2])
+        with_coverage = derive_runtime_component_attestation(envelope, coverage_records, artifacts())
+        coverage_records[2]["upstreamArtifacts"][0]["canonicalCoverageDigest"] = DIGEST_D
+        rekey(coverage_records[2])
+        self.assertNotEqual(with_coverage["componentProvenanceBytes"],
+            derive_runtime_component_attestation(envelope, coverage_records, artifacts())["componentProvenanceBytes"])
         for field, value in (("schemaVersion", True), ("contractDigest", DIGEST_A),
                              ("target", "linux-x64"), ("producer", {"runId": 1}),
                              ("componentDigests", contract["componentDigests"][:1]),
@@ -166,6 +174,8 @@ class RuntimeComponentAttestationTest(unittest.TestCase):
         self.assertEqual(original, canonical_json_bytes(validation))
         # Producer receipt changes cannot leak through the content projection.
         contract["contractProjection"]["receiptSha256"] = DIGEST_D
+        verify_runtime_validation_inputs(validation, package, envelope)
+        contract["contractProjection"].update(schemaVersion=2, canonicalCoverageDigest=DIGEST_A)
         verify_runtime_validation_inputs(validation, package, envelope)
         for inputs in ([reference, contract], [contract, reference, reference], [contract]):
             changed = copy.deepcopy(validation)

@@ -12,7 +12,7 @@ from ci.products.inventory import (
     canonical_json_bytes, load_json_bytes, regular_file_inventory, sha256_bytes,
     snapshot_regular_tree,
 )
-from ci.products.sdk_native import INDEX_NAME, verify_staged_native_sdk_inputs, verify_native_sdk_package_phase
+from ci.products.sdk_native import INDEX_NAME, verify_staged_native_sdk_inputs, verify_native_sdk_package_phase, _stage_native_capability_inputs
 from ci.products.receipt import write_output_manifest
 from ci.native_wrappers import HOSTS, PACKAGE_CLASSIFIERS
 from ci.tests.product_chain_support import write_receipt
@@ -67,6 +67,64 @@ class NativeSdkInputsTest(unittest.TestCase):
         self.assertEqual(value, load_json_bytes((self.sdks / INDEX_NAME).read_bytes()))
         self.assertTrue(all(record["producerCommit"] != value["producerCommit"] for record in value["targets"]))
         self.assertEqual(before, regular_file_inventory(self.sdks))
+
+    def test_private_capability_handoff_retains_exact_original_evidence(self):
+        # Explicit post-authentication copy fixture, not a valid native execution.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            runtime = root / "runtime"
+            validation = runtime / "macos-arm64/validation"
+            closure = validation / "outputs/c-abi-bootstrap"
+            closure.mkdir(parents=True)
+            required = ("original-runner/test.kexe", "original-runner/compiler-header/libcodex_agent_api.h",
+                        "reference/codex_agent_c.def", "native-junit/TEST-capi.xml", "consumers/consumer",
+                        "original-runner/source/nativeMain/source.kt", "original-runner/source/nativeTest/test.kt")
+            for name in required:
+                path = closure / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"explicit fixture\n")
+            api, coverage = b"canonical API fixture\n", b"canonical coverage fixture\n"
+            library = (self.sdks / "macos-arm64/lib/libcodex_agent.dylib").read_bytes()
+            bootstrap = {"canonical": {"apiReportSha256": sha256_bytes(api)[7:],
+                                       "coverageReceiptSha256": sha256_bytes(coverage)[7:]},
+                         "artifacts": {"releaseLibrarySha256": sha256_bytes(library)[7:]}}
+            (closure / "bootstrap-evidence.json").write_bytes(canonical_json_bytes(bootstrap))
+            payload = root / "contract.zip"
+            with zipfile.ZipFile(payload, "w") as archive:
+                archive.writestr("evidence/canonical-api.json", api)
+                archive.writestr("evidence/canonical-coverage.json", coverage)
+            outputs = write_output_manifest(validation, "runtime", "macos-arm64", "validation", "macos-arm64",
+                                            "0.2.7", {"c-abi-bootstrap": "outputs/c-abi-bootstrap"})["outputs"]
+            receipt = root / "validation.json"
+            write_receipt(receipt, product="runtime", component="macos-arm64", phase="validation",
+                          target="macos-arm64", version="0.2.7", version_identity="0.2.0",
+                          outputs=outputs, upstream=[], context=self.chain["context"])
+            args = {"contract_payload": payload, "contract_metadata_receipt": receipt,
+                    "variant_phase_receipts": {"macos-arm64": {"validation": receipt, "package": receipt}}}
+            before = regular_file_inventory(runtime)
+            raw = receipt.read_bytes()
+            _stage_native_capability_inputs(args, runtime, self.sdks, root / "result")
+            self.assertEqual(before, regular_file_inventory(runtime))
+            self.assertEqual(raw, (root / "result/receipts/runtime-macos-arm64-validation.json").read_bytes())
+            self.assertEqual(regular_file_inventory(closure), regular_file_inventory(root / "result/bootstrap"))
+            for case in ("missing", "kind", "contract", "library"):
+                changed = load_json_bytes(raw)
+                if case == "missing":
+                    changed["outputs"] = [item for item in outputs if not item["relativePath"].endswith("test.kexe")]
+                elif case == "kind":
+                    changed["outputs"][0]["kind"] = "native"
+                else:
+                    record = load_json_bytes((closure / "bootstrap-evidence.json").read_bytes())
+                    if case == "contract":
+                        record["canonical"]["apiReportSha256"] = "0" * 64
+                    else:
+                        record["artifacts"]["releaseLibrarySha256"] = "0" * 64
+                    (closure / "bootstrap-evidence.json").write_bytes(canonical_json_bytes(record))
+                receipt.write_bytes(canonical_json_bytes(changed))
+                with self.subTest(case=case), self.assertRaises(ValueError):
+                    _stage_native_capability_inputs(args, runtime, self.sdks, root / case)
+                (closure / "bootstrap-evidence.json").write_bytes(canonical_json_bytes(bootstrap))
+                receipt.write_bytes(raw)
 
     def test_index_rebinding_cannot_authenticate_tampered_staging(self):
         for case in ("header", "legal", "import", "library", "evidence", "archive", "missing", "extra", "symlink"):

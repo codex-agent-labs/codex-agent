@@ -55,14 +55,14 @@ def _copy_file(source: Path, destination: Path) -> None:
         os.close(descriptor)
 
 
-def stage_sdk_inputs(request: Path, output: Path) -> dict[str, Any]:
+def stage_sdk_inputs(request: Path, output: Path, *, request_directory: Path | None = None) -> dict[str, Any]:
     """Authenticate a private snapshot, then publish without rewriting any evidence.
 
     Only the request's path strings are relocated. Original receipts, payloads,
     external attestations, signatures and public keys remain byte-identical.
     No private keys or unrelated source-directory files are transported.
     """
-    arguments = load_sdk_compatibility_request(Path(request))
+    arguments = load_sdk_compatibility_request(Path(request), request_directory=request_directory)
     with tempfile.TemporaryDirectory(prefix="sdk-inputs-") as temporary:
         root = Path(temporary).resolve() / "handoff"
         root.mkdir()

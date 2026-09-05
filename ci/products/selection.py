@@ -15,6 +15,7 @@ from .registry import (
     PHASE_ORDER,
     PHASE_INSTANCE_IDS,
     RUNTIME_COMPONENTS,
+    SDK_COMPATIBILITY_COMPONENTS,
     PhaseId,
     PhaseInstanceId,
     phase_targets,
@@ -459,6 +460,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py"}:
+        return False  # Also produces the authenticated native validation handoff.
     if path in _CONTRACT_INVENTORY_POLICIES:
         return False  # These exact policies are embedded in the Contract binary payload.
     return path in _CONTROL_ONLY_FILES or any(
@@ -867,6 +870,9 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstanceId]:
+    if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py"}:
+        return {instance for instance in selected if instance.product == "sdk"
+                and instance.component in NATIVE_BINDINGS and instance.phase == "validation"}
     if (
         path in _CONTRACT_BUILD_INPUTS
         or path == "gradle/release/versions/contract.txt"
@@ -994,6 +1000,13 @@ def classify_paths(paths: Iterable[str]) -> PathSelection:
         if not _is_control_only(path):
             inventory.append(path)
         selected.update(owned)
+        if (PhaseInstanceId("contract", "contract", "binary", "common") in owned
+                and not _is_prefix(path, "codex-agent-core/src/jsMain/")):
+            # Coverage producers can change evidence without changing native
+            # compatibility. Plan downstream keys; do not give them Contract source ownership.
+            selected.update(_runtime(("macos-arm64",), "validation"))
+            for component in SDK_COMPATIBILITY_COMPONENTS:
+                selected.update(_from_phase("sdk", component, "package"))
     if unknown:
         selected = set(ALL_INSTANCES)
     return PathSelection(

@@ -292,6 +292,13 @@ def phase_instance_dependencies(instance: PhaseInstanceId) -> tuple[PhaseInstanc
     return tuple(sorted(set(dependencies)))
 
 
+def requires_contract_coverage(instance: PhaseInstanceId) -> bool:
+    return instance.phase == "validation" and (
+        (instance.product, instance.component) == ("runtime", "macos-arm64")
+        or instance.product == "sdk" and instance.component in NATIVE_BINDINGS
+    )
+
+
 def required_contract_components(instance: PhaseInstanceId) -> tuple[str, ...]:
     """Return the exact signed Contract components consumed by this phase."""
     phase = instance.logical_phase

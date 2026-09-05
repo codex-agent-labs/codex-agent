@@ -320,7 +320,8 @@ def _contract_projection_value(
         return None
     if type(projection) is not VerifiedContractProjection:
         raise ValueError("Authenticated Contract projection is required")
-    value = projection.receipt_value()
+    from .registry import requires_contract_coverage
+    value = projection.receipt_value(include_coverage=requires_contract_coverage(instance))
     if tuple(record["component"] for record in value["componentDigests"]) != required:
         raise ValueError("Contract projection does not contain the exact required components")
     if value["contractVersion"] != receipt["productVersion"]:

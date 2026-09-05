@@ -122,6 +122,7 @@ def verified_projection(
     *,
     bundle_digest: str = DIGEST_B,
     component_digest: str = DIGEST_C,
+    coverage_digest: str = DIGEST_C,
     contract_receipt: dict[str, object] | None = None,
 ) -> contract_projection.VerifiedContractProjection | None:
     components = required_contract_components(instance)
@@ -144,7 +145,7 @@ def verified_projection(
             {"component": component, "sha256": component_digest}
             for component in components
         ],
-    }, contract_projection._VERIFIED)
+    }, contract_projection._VERIFIED, coverage_digest)
 
 
 def verified_runtime_projection(
@@ -226,6 +227,44 @@ def toolchain_profile(profile_id: str) -> dict[str, object]:
 
 
 class ProductPlanTest(unittest.TestCase):
+    def test_contract_coverage_changes_validation_key_not_native_binary_compatibility(self):
+        validation = PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")
+        binary = PhaseInstanceId("runtime", "macos-arm64", "binary", "macos-arm64")
+        for instance in (validation, binary):
+            first = plan(instance, projection=verified_projection(instance, coverage_digest=DIGEST_A))
+            changed = plan(instance, projection=verified_projection(instance, coverage_digest=DIGEST_B))
+            with self.subTest(instance=instance):
+                self.assertEqual(instance == validation, first["buildKey"] != changed["buildKey"])
+            if instance == binary:
+                package_keys = []
+                for planned in (first, changed):
+                    predecessor = receipt(binary)
+                    predecessor.update(inputs=planned["inputs"], buildKey=planned["buildKey"])
+                    package_keys.append(plan(PhaseInstanceId("runtime", "macos-arm64", "package", "macos-arm64"),
+                                             upstream_receipts=[predecessor])["buildKey"])
+                self.assertEqual(*package_keys)
+        projected = first["inputs"]["upstreamArtifacts"][0]["contractProjection"]
+        self.assertEqual(1, projected["schemaVersion"])
+        self.assertNotIn("canonicalCoverageDigest", projected)
+
+        original_inputs = upstreams(validation)
+        changed_inputs = copy.deepcopy(original_inputs)
+        contract = next(value for value in changed_inputs if value["product"] == "contract")
+        contract["producer"]["runId"] += 1
+        first = plan(validation, upstream_receipts=original_inputs,
+                     projection=verified_projection(validation, coverage_digest=DIGEST_A))
+        changed = plan(validation, upstream_receipts=changed_inputs,
+                       projection=verified_projection(validation, contract_receipt=contract, coverage_digest=DIGEST_A))
+        self.assertNotEqual(first["inputs"], changed["inputs"])
+        self.assertEqual(first["buildKey"], changed["buildKey"])
+        with self.assertRaisesRegex(ValueError, "unauthorized edge"):
+            compute_build_key(product="runtime", component="macos-arm64", phase="binary",
+                              target="macos-arm64", inputs=first["inputs"])
+        legacy = verified_projection(validation)
+        legacy = contract_projection.VerifiedContractProjection(legacy.receipt_value(), contract_projection._VERIFIED)
+        with self.assertRaisesRegex(ValueError, "coverage digest"):
+            plan(validation, projection=legacy)
+
     def test_ordinary_phases_require_canonical_not_applicable_authorities(self) -> None:
         instance = PhaseInstanceId("contract", "contract", "binary", "common")
         self.assertEqual(
