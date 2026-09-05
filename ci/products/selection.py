@@ -477,8 +477,14 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
     language = _binding_language(path)
     if language is not None:
-        if path == "codex-agent-bindings/python/tools/produce_sdk_validation_evidence.py":
-            return _from_phase("sdk", "python", "validation")
+        if path in {
+            "codex-agent-bindings/python/tools/produce_sdk_validation_evidence.py",
+            "codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py",
+            "codex-agent-bindings/rust/tools/produce_sdk_validation_evidence.py",
+            "codex-agent-bindings/cpp/tools/produce_sdk_validation_evidence.py",
+            "codex-agent-bindings/dart/tool/produce_sdk_validation_evidence.py",
+        }:
+            return _from_phase("sdk", language, "validation")
         if language == "javascript" and _binding_validation_path(path, language):
             return _from_phase("sdk", language, "validation")
         return _bindings((language,))
@@ -508,14 +514,18 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(RUNTIME_COMPONENTS)
 
     if path in _METADATA_AUTHORITIES:
-        if path in {"ci/products/aggregate.py", "ci/products/inventory.py"}:
+        if path in {
+            "ci/products/aggregate.py", "ci/products/inventory.py",
+            "gradle/build-logic/src/main/kotlin/ReleaseToolingCli.kt",
+            "gradle/build-logic/src/main/kotlin/ReleaseIo.kt",
+        }:
             consumers = set().union(*(
                 _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
             ))
-            return set(ALL_METADATA) | consumers | (_contract() if path.endswith("inventory.py") else set())
+            contract = _contract() if path.endswith(("inventory.py", "ReleaseIo.kt")) else set()
+            return set(ALL_METADATA) | consumers | contract
         if path in {
             "ci/products/__main__.py", "ci/products/receipt.py",
-            "gradle/build-logic/src/main/kotlin/ReleaseIo.kt",
             "gradle/build-logic/src/main/kotlin/codexagent.root-release.gradle.kts",
         }:
             return set(ALL_METADATA) | _contract()
@@ -864,7 +874,11 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         return selected
 
     direct: set[PhaseInstanceId] = set()
-    if path == "ci/native_wrappers.py":
+    if path in {
+        "ci/native_wrappers.py",
+        "codex-agent-bindings/cpp/CMakeLists.txt",
+        "codex-agent-bindings/cpp/tools/generate_native_dispatch.py",
+    }:
         direct.update(instance for instance in selected if instance.phase == "validation")
     language = _binding_language(path)
     if language in NATIVE_BINDINGS and _binding_validation_path(path, language):

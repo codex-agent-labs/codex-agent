@@ -203,35 +203,45 @@ internal fun advanceCrossLanguageBindingReceiptPhase(
     }
 }
 
-internal fun deriveCrossLanguageNativeWrapperBindingReceipt(
-    input: CrossLanguageNativeWrapperEvidenceInput,
-): CrossLanguageBindingReceipt {
-    check(input.language in nativeWrapperBindings && input.language.isActive(input.phase)) {
-        "Native wrapper evidence language is inactive or not a native wrapper"
-    }
-    val canonical = readCrossLanguageCanonicalApiEvidence(input.apiReport, input.canonicalCoverageReceipt)
-    val cAbiBootstrap = readCAbiBootstrapEvidence(input.cAbiBootstrapEvidence)
-    val claims = readCrossLanguageNativeWrapperClaims(input.claims)
-    val compilerEvidence = readCrossLanguageNativeWrapperCompilerEvidence(input.compilerEvidence)
-    val testResults = readCrossLanguageNativeWrapperTestResults(input.testResults)
-    val stagedCAbiSdks = readCrossLanguageNativeWrapperSdkIndex(input.stagedCAbiSdks)
-    val (hostConsumerProofs, hostArtifacts) = deriveCrossLanguageNativeWrapperHostConsumerProofs(
-        input,
-        stagedCAbiSdks,
-    )
+internal data class CrossLanguageNativeWrapperCapabilityEvidence(
+    val canonical: CrossLanguageBindingCanonicalIdentity,
+    val claims: List<CrossLanguageNativeWrapperClaim>,
+    val compilerEvidence: List<CrossLanguageNativeWrapperCompilerEvidence>,
+    val testResults: List<String>,
+    val scenarios: List<CrossLanguageScenarioEvidence>,
+)
+
+/** Exact raw capability verification only; this grants no package or host receipt. */
+internal fun verifyCrossLanguageNativeWrapperCapabilityEvidence(
+    language: CrossLanguageBinding,
+    apiReport: File,
+    canonicalCoverageReceipt: File,
+    cAbiBootstrapEvidence: File,
+    claimsFile: File,
+    compilerEvidenceFile: File,
+    testProgram: File,
+    testResultsFile: File,
+): CrossLanguageNativeWrapperCapabilityEvidence {
+    check(language in nativeWrapperBindings) { "Not a native wrapper evidence language: ${language.id}" }
+    requireNativeWrapperEvidenceFile(testProgram, "test program")
+    val canonical = readCrossLanguageCanonicalApiEvidence(apiReport, canonicalCoverageReceipt)
+    val cAbiBootstrap = readCAbiBootstrapEvidence(cAbiBootstrapEvidence)
+    val claims = readCrossLanguageNativeWrapperClaims(claimsFile)
+    val compilerEvidence = readCrossLanguageNativeWrapperCompilerEvidence(compilerEvidenceFile)
+    val testResults = readCrossLanguageNativeWrapperTestResults(testResultsFile)
 
     check(claims.map(CrossLanguageNativeWrapperClaim::capabilityKey) == canonical.memberKeys.sorted()) {
-        "${input.language.id} wrapper claims do not exactly match the canonical capability inventory"
+        "${language.id} wrapper claims do not exactly match the canonical capability inventory"
     }
     check(cAbiBootstrap.apiReportSha256 == canonical.canonical.apiReportSha256 &&
         cAbiBootstrap.coverageReceiptSha256 == canonical.canonical.coverageReceiptSha256 &&
         cAbiBootstrap.observedCapabilityKeys == canonical.memberKeys.sorted() &&
         cAbiBootstrap.missingCapabilityKeys.isEmpty()) {
-        "${input.language.id} C ABI reference evidence does not match the canonical capability inventory"
+        "${language.id} C ABI reference evidence does not match the canonical capability inventory"
     }
     val cAbiClaims = cAbiBootstrap.claims.associateBy(CAbiBindingBootstrapClaim::capabilityKey)
     check(cAbiClaims.size == claims.size && cAbiClaims.keys == claims.mapTo(mutableSetOf()) { it.capabilityKey }) {
-        "${input.language.id} C ABI reference claim inventory is incomplete or duplicated"
+        "${language.id} C ABI reference claim inventory is incomplete or duplicated"
     }
     val passedCAbiTests = cAbiBootstrap.nativeTests.filter {
         it.status == CrossLanguageBindingTestStatus.PASSED
@@ -244,32 +254,53 @@ internal fun deriveCrossLanguageNativeWrapperBindingReceipt(
         requireExactNativeWrapperReferenceEvidence(claim, cAbiClaims.getValue(claim.capabilityKey), passedCAbiTests)
         val provenSymbols = claim.compilerEvidenceIds.flatMap { evidenceId ->
             compilerById[evidenceId]?.publicSymbols
-                ?: error("${input.language.id} claim ${claim.capabilityKey} references stale compiler evidence $evidenceId")
+                ?: error("${language.id} claim ${claim.capabilityKey} references stale compiler evidence $evidenceId")
         }.toSet()
         check(claim.publicSymbols.all(provenSymbols::contains)) {
-            "${input.language.id} claim ${claim.capabilityKey} lacks exact compiler evidence"
+            "${language.id} claim ${claim.capabilityKey} lacks exact compiler evidence"
         }
         check(claim.executedTests.all(passedTests::contains)) {
-            "${input.language.id} claim ${claim.capabilityKey} references a missing or non-passed test"
+            "${language.id} claim ${claim.capabilityKey} references a missing or non-passed test"
         }
     }
     check(usedCompilerEvidence.toSet() == compilerById.keys) {
-        "${input.language.id} compiler evidence is missing or unclaimed"
+        "${language.id} compiler evidence is missing or unclaimed"
     }
     check(usedTests.toSet() == passedTests) {
-        "${input.language.id} executed test evidence is missing or unclaimed"
+        "${language.id} executed test evidence is missing or unclaimed"
     }
     val scenarios = CrossLanguageBindingScenario.entries.map { scenario ->
         CrossLanguageScenarioEvidence(
-            input.language,
+            language,
             scenario,
             claims.filter { scenario in it.sharedScenarios }
                 .flatMap(CrossLanguageNativeWrapperClaim::executedTests)
                 .distinct()
                 .sorted()
-                .also { check(it.isNotEmpty()) { "Missing ${input.language.id} scenario ${scenario.id}" } },
+                .also { check(it.isNotEmpty()) { "Missing ${language.id} scenario ${scenario.id}" } },
         )
     }
+    return CrossLanguageNativeWrapperCapabilityEvidence(
+        canonical.canonical, claims, compilerEvidence, testResults, scenarios,
+    )
+}
+
+internal fun deriveCrossLanguageNativeWrapperBindingReceipt(
+    input: CrossLanguageNativeWrapperEvidenceInput,
+): CrossLanguageBindingReceipt {
+    check(input.language in nativeWrapperBindings && input.language.isActive(input.phase)) {
+        "Native wrapper evidence language is inactive or not a native wrapper"
+    }
+    val (canonical, claims, compilerEvidence, testResults, scenarios) =
+        verifyCrossLanguageNativeWrapperCapabilityEvidence(
+            input.language, input.apiReport, input.canonicalCoverageReceipt, input.cAbiBootstrapEvidence,
+            input.claims, input.compilerEvidence, input.testProgram, input.testResults,
+        )
+    val stagedCAbiSdks = readCrossLanguageNativeWrapperSdkIndex(input.stagedCAbiSdks)
+    val (hostConsumerProofs, hostArtifacts) = deriveCrossLanguageNativeWrapperHostConsumerProofs(
+        input,
+        stagedCAbiSdks,
+    )
     val artifacts = buildList {
         add(CrossLanguageBindingArtifactIdentity("${input.language.id}-claims", input.claims.releaseDigest()))
         add(CrossLanguageBindingArtifactIdentity(
@@ -291,12 +322,11 @@ internal fun deriveCrossLanguageNativeWrapperBindingReceipt(
         ))
     }
     check(input.packageArtifacts.isNotEmpty()) { "Native wrapper package artifact inventory is empty" }
-    requireNativeWrapperEvidenceFile(input.testProgram, "test program")
 
     return CrossLanguageBindingReceipt(
         phase = input.phase,
         language = input.language,
-        canonical = canonical.canonical,
+        canonical = canonical,
         artifacts = artifacts,
         testProgramSha256 = input.testProgram.releaseDigest(),
         testResultsSha256 = input.testResults.releaseDigest(),

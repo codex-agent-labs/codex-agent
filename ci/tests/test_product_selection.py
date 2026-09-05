@@ -821,19 +821,45 @@ class ProductSelectionTest(unittest.TestCase):
                 )
                 self.assertFalse(any(instance.product == "runtime" for instance in result.instances))
 
-    def test_python_raw_producer_is_validation_only_and_native_test_sources_have_both_owners(self) -> None:
-        producer = "codex-agent-bindings/python/tools/produce_sdk_validation_evidence.py"
-        expected = {item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
-                    item.component == "python" and item.phase in {"validation", "metadata"}}
-        self.assertEqual(expected, identities(classify_paths([producer])))
+    def test_raw_producers_are_validation_only_and_native_test_sources_have_both_owners(self) -> None:
+        for language in NATIVE_BINDINGS:
+            directory = "tool" if language == "dart" else "tools"
+            producer = f"codex-agent-bindings/{language}/{directory}/produce_sdk_validation_evidence.py"
+            expected = {item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
+                        item.component == language and item.phase in {"validation", "metadata"}}
+            self.assertEqual(expected, identities(classify_paths([producer])))
+            for instance in PHASE_INSTANCE_IDS:
+                if instance in expected and instance.phase == "validation":
+                    self.assertEqual((producer,), phase_inventory_paths([producer], instance))
+                else:
+                    self.assertEqual((), phase_inventory_paths([producer], instance))
         for language in NATIVE_BINDINGS:
             path = f"codex-agent-bindings/{language}/tests/fixture.py"
             for instance in PHASE_INSTANCE_IDS:
                 if instance.product == "sdk" and instance.component == language and instance.phase in {"package", "validation"}:
                     self.assertEqual((path,), phase_inventory_paths([path], instance))
-        for instance in expected:
-            if instance.phase == "validation":
-                self.assertEqual((producer,), phase_inventory_paths([producer], instance))
+
+    def test_raw_verifier_cli_and_digest_helper_directly_own_native_validation(self) -> None:
+        for name in ("ReleaseToolingCli.kt", "ReleaseIo.kt"):
+            path = f"gradle/build-logic/src/main/kotlin/{name}"
+            selected = identities(classify_paths([path]))
+            validation = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "sdk" and
+                          instance.component in NATIVE_BINDINGS and instance.phase == "validation"}
+            self.assertTrue(validation.issubset(selected))
+            for instance in validation:
+                self.assertEqual((path,), phase_inventory_paths([path], instance))
+            self.assertFalse(any(item.product == "runtime" and item.phase != "metadata" for item in selected))
+
+    def test_cpp_configure_and_generated_dispatch_check_are_direct_validation_inputs(self) -> None:
+        for path in ("codex-agent-bindings/cpp/CMakeLists.txt",
+                     "codex-agent-bindings/cpp/tools/generate_native_dispatch.py"):
+            selected = identities(classify_paths([path]))
+            expected = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "sdk" and
+                        instance.component == "cpp" and instance.phase in {"package", "validation", "metadata"}}
+            self.assertEqual(expected, selected)
+            for instance in expected:
+                if instance.phase in {"package", "validation"}:
+                    self.assertEqual((path,), phase_inventory_paths([path], instance))
 
     def test_mobile_external_evidence_paths_are_validation_only(self) -> None:
         cases = {

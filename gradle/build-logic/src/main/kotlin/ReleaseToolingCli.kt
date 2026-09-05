@@ -112,6 +112,25 @@ fun main(arguments: Array<String>) {
                 ),
             )
         }
+        "verify-native-wrapper-capability-evidence" -> {
+            options.requireOnly(
+                "language", "api-report", "coverage-receipt", "c-abi-bootstrap",
+                "claims", "compiler-evidence", "test-program", "test-results",
+            )
+            val languageName = options.required("language")
+            val language = CrossLanguageBinding.entries.singleOrNull { it.id == languageName }
+                ?: error("Unknown native wrapper binding language: $languageName")
+            verifyCrossLanguageNativeWrapperCapabilityEvidence(
+                language = language,
+                apiReport = options.file("api-report"),
+                canonicalCoverageReceipt = options.file("coverage-receipt"),
+                cAbiBootstrapEvidence = options.file("c-abi-bootstrap"),
+                claimsFile = options.file("claims"),
+                compilerEvidenceFile = options.file("compiler-evidence"),
+                testProgram = options.file("test-program"),
+                testResultsFile = options.file("test-results"),
+            )
+        }
         "assemble-native-wrapper-binding-receipt" -> {
             options.requireOnly(
                 "phase", "language", "api-report", "coverage-receipt", "c-abi-bootstrap",

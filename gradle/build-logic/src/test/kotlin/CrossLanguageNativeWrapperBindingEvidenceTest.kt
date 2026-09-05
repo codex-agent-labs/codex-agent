@@ -39,6 +39,49 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
     }
 
     @Test
+    fun `capability verifier shares exact matching but never grants five-host closure`() = withFixture { fixture ->
+        val receipt = deriveCrossLanguageNativeWrapperBindingReceipt(fixture.input())
+        val capabilities = fixture.verifyCapabilities()
+        assertEquals(receipt.canonical, capabilities.canonical)
+        assertEquals(receipt.scenarioEvidence, capabilities.scenarios)
+        assertEquals(receipt.projectionClaims.map { it.capabilityKey }, capabilities.claims.map { it.capabilityKey })
+        assertEquals(receipt.bindingTests.map { it.testId }, capabilities.testResults)
+        fixture.hostEvidenceDirectory.resolve("linux-x64-lane-receipt.json").delete()
+        assertEquals(capabilities, fixture.verifyCapabilities())
+        assertFailsWith<IllegalStateException> { deriveCrossLanguageNativeWrapperBindingReceipt(fixture.input()) }
+        assertFalse(fixture.receipt.exists())
+        fixture.program.writeText("")
+        assertFailsWith<IllegalStateException> { fixture.verifyCapabilities() }
+    }
+
+    @Test
+    fun `packaged capability verifier emits no receipt and rejects incomplete proof`() = withFixture { fixture ->
+        val arguments = arrayOf(
+            "verify-native-wrapper-capability-evidence",
+            "--language", "csharp",
+            "--api-report", fixture.input().apiReport.absolutePath,
+            "--coverage-receipt", fixture.input().canonicalCoverageReceipt.absolutePath,
+            "--c-abi-bootstrap", fixture.bootstrap.absolutePath,
+            "--claims", fixture.claims.absolutePath,
+            "--compiler-evidence", fixture.compiler.absolutePath,
+            "--test-program", fixture.program.absolutePath,
+            "--test-results", fixture.results.absolutePath,
+        )
+        val original = verifiedRegularFiles(fixture.root).mapValues { (_, file) -> file.releaseDigest() }
+        val passed = runReleaseTool(fixture.root, *arguments)
+        assertEquals(0, passed.first, passed.second)
+        assertEquals(original, verifiedRegularFiles(fixture.root).mapValues { (_, file) -> file.releaseDigest() })
+        val illegalOutput = runReleaseTool(fixture.root, *arguments, "--output", fixture.receipt.absolutePath)
+        assertTrue(illegalOutput.first != 0, illegalOutput.second)
+        assertFalse(fixture.receipt.exists())
+        fixture.results.writeText(fixture.results.readText().replace("\tpassed", "\tfailed"))
+        val failed = runReleaseTool(fixture.root, *arguments)
+        assertTrue(failed.first != 0, failed.second)
+        assertTrue("did not pass" in failed.second, failed.second)
+        assertFalse(fixture.receipt.exists())
+    }
+
+    @Test
     fun `cacheable task writes the receipt from an exact package directory`() = withFixture { fixture ->
         val task = ProjectBuilder.builder().withProjectDir(fixture.root).build().tasks.register(
             "nativeWrapperReceipt",
@@ -217,6 +260,7 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             corruptions.forEach { corrupt ->
                 fixture.restore()
                 corrupt()
+                assertFailsWith<IllegalStateException> { fixture.verifyCapabilities() }
                 assertFailsWith<IllegalStateException> {
                     deriveCrossLanguageNativeWrapperBindingReceipt(fixture.input())
                 }
@@ -322,6 +366,13 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             packageDirectory.mkdirs()
             packageArtifact.writeText("package")
             restore()
+        }
+
+        fun verifyCapabilities(): CrossLanguageNativeWrapperCapabilityEvidence = input().let {
+            verifyCrossLanguageNativeWrapperCapabilityEvidence(
+                it.language, it.apiReport, it.canonicalCoverageReceipt, it.cAbiBootstrapEvidence,
+                it.claims, it.compilerEvidence, it.testProgram, it.testResults,
+            )
         }
 
         fun restore() {
