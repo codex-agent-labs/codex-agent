@@ -52,6 +52,7 @@ class LocalToolingTest(GitFixture):
         source = Path(kwargs["cwd"])
         if command[-1] == "releaseToolingJar":
             self.assertIn("--offline", command)
+            self.assertEqual(["-Dkotlin.daemon.jvm.options=-Xmx2g", "releaseToolingJar"], command[-2:])
             self.assertNotIn("JAVA_TOOL_OPTIONS", kwargs["env"])
             jar = source / JAR.removeprefix("payload/")
             jar.parent.mkdir(parents=True)
@@ -142,10 +143,12 @@ class LocalToolingTest(GitFixture):
         path.write_bytes(before)
         execution = original / "build-execution.json"
         value = json.loads(execution.read_bytes())
-        value["command"][-1] = "publish"
-        write_canonical_json(execution, value)
-        with self.assertRaisesRegex(ValueError, "fixed offline task"):
-            local.verify_local_original(original, self.root)
+        command = value["command"]
+        for changed in (command[:-1] + ["publish"], command[:-2] + ["releaseToolingJar"],
+                        command[:-2] + ["-Dkotlin.daemon.jvm.options=-Xmx512m", "releaseToolingJar"]):
+            write_canonical_json(execution, {**value, "command": changed})
+            with self.assertRaisesRegex(ValueError, "fixed offline task"):
+                local.verify_local_original(original, self.root)
 
     def test_inputs_are_immutable_git_sources_and_external_initialization_is_rejected(self):
         (self.root / "gradle/build-logic/build.gradle.kts").write_bytes(b"dirty current source")

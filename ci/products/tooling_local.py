@@ -22,6 +22,7 @@ RECEIPT = "tooling-build-receipt.json"
 SOURCES = "source-inputs.git-tree"
 EXECUTIONS = ("java-execution.json", "gradle-execution.json", "build-execution.json")
 TOOLCHAINS = ("java-inputs.json", "gradle-inputs.json", "dependency-inputs.json")
+KOTLIN_HEAP = "-Dkotlin.daemon.jvm.options=-Xmx2g"
 # Same source/resource boundary as the standalone build-logic build. Source tests
 # are inventoried too, but no test or downstream product task is executed here.
 PATHS = ("gradle/build-logic/**", "gradle/libs.versions.toml", "ci/**",
@@ -121,10 +122,10 @@ def verify_local_original(root, repository):
             values[1]["command"] != prefix + ["--version"]:
         raise ValueError("Local tooling observer command mismatch")
     command = values[2]["command"]
-    if command[:4] != prefix or len(command) != 12 or command[4:6] != ["--offline", "--no-daemon"] or \
+    if command[:4] != prefix or len(command) != 13 or command[4:6] != ["--offline", "--no-daemon"] or \
             command[6:8] != ["--no-configuration-cache", "--project-dir"] or \
             not command[8].replace("\\", "/").endswith("/gradle/build-logic") or \
-            command[9:11] != ["--gradle-user-home", gradle["userHome"]] or command[11] != "releaseToolingJar":
+            command[9:11] != ["--gradle-user-home", gradle["userHome"]] or command[11:] != [KOTLIN_HEAP, "releaseToolingJar"]:
         raise ValueError("Local tooling build command is not the fixed offline task")
     if receipt["executions"] != execution_records:
         raise ValueError("Local tooling execution inventory mismatch")
@@ -211,7 +212,7 @@ def produce_local_tooling_attestation(repository, java_home, gradle_installation
         commands = ([str(java), "-XshowSettings:properties", "-version"], prefix + ["--version"],
                     prefix + ["--offline", "--no-daemon", "--no-configuration-cache", "--project-dir",
                               str(source / "gradle/build-logic"), "--gradle-user-home", str(private_cache),
-                              "releaseToolingJar"])
+                              KOTLIN_HEAP, "releaseToolingJar"])
         for name, command in zip(EXECUTIONS, commands):
             result = subprocess.run(command, cwd=source, env=environment, check=False,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
