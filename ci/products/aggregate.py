@@ -12,6 +12,7 @@ from typing import Any
 from .inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
+    load_json_bytes,
     read_regular_file_bytes,
     regular_file_inventory,
     require_array,
@@ -1023,9 +1024,8 @@ def verify_runtime_aggregate_artifacts(
             report_bytes = read_regular_file_bytes(
                 report_path, max_bytes=64 * 1024 * 1024, reject_symlink_parents=True,
             )
-            report = load_canonical_json_bytes(report_bytes)
-            if report_bytes != canonical_json_bytes(report):
-                raise ValueError(f"Runtime {component} report is not canonical: {target}")
+            # External producer reports retain their original formatting and receipt hashes.
+            report = load_json_bytes(report_bytes)
             receipt = receipt_map[(component, "validation", target)]
             expected_validation_upstreams = [_repository_reference(package_receipt)]
             expected_validation_upstreams.append(

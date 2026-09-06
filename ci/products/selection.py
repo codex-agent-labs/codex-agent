@@ -579,6 +579,9 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         )
     if path == "ci/products/runtime_aggregate.py":
         return _from_phase("runtime", "runtime-aggregate", "metadata")
+    if path == "ci/products/runtime_adapter_validation.py":
+        return _runtime(("jvm", "node-js", "node-wasm"), "validation",
+                        validation_targets=NATIVE_TARGETS)
     if path == "ci/products/sdk_compatibility.py":
         selected = set()
         for component in ("sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript"):

@@ -60,9 +60,13 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 class ProductSelectionTest(unittest.TestCase):
     def test_shared_adapter_capture_owns_only_host_validation_keys(self) -> None:
-        from ci.tests.test_product_plan import plan
+        self._assert_adapter_host_validation_keys("runtime/build-logic/src/main/kotlin/RuntimeEvidenceExecutionCapture.kt")
 
-        path = "runtime/build-logic/src/main/kotlin/RuntimeEvidenceExecutionCapture.kt"
+    def test_adapter_raw_validator_owns_only_host_validation_keys(self) -> None:
+        self._assert_adapter_host_validation_keys("ci/products/runtime_adapter_validation.py")
+
+    def _assert_adapter_host_validation_keys(self, path: str) -> None:
+        from ci.tests.test_product_plan import plan
         owners = {item for item in PHASE_INSTANCE_IDS if item.product == "runtime"
                   and item.component in {"jvm", "node-js", "node-wasm"}
                   and item.phase == "validation" and item.target in NATIVE_TARGETS}

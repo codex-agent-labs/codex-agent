@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
 from ci.products.aggregate import RUNTIME_ADAPTERS, RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
-from ci.products.inventory import load_canonical_json_bytes, sha256_bytes, write_canonical_json
+from ci.products.inventory import load_canonical_json_bytes, load_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.receipt import write_output_manifest
 from ci.products.registry import PhaseInstanceId
 from ci.products.runtime_evidence import (
@@ -38,12 +39,21 @@ def build_adapters(
         "node-js": fixture.write_node("js"),
         "node-wasm": fixture.write_node("wasm"),
     }
+    pretty_reports = context.get("adapter_report_format") == "pretty"
+    if pretty_reports:
+        # Match the Kotlin raw producer before any original receipt binds bytes.
+        # This does not alter the canonical deterministic content projection.
+        for paths in raw_paths.values():
+            for path in paths:
+                value = load_json_bytes(path.read_bytes())
+                path.write_bytes((json.dumps(value, indent=4) + "\n").encode("utf-8"))
+    read_report = load_json_bytes if pretty_reports else load_canonical_json_bytes
 
     adapter_report_files: dict[str, dict[str, Path]] = {}
     adapter_evidence: dict[str, Path] = {}
     for component in RUNTIME_ADAPTERS:
         by_target = {
-            load_canonical_json_bytes(path.read_bytes())["target"]: path
+            read_report(path.read_bytes())["target"]: path
             for path in raw_paths[component]
         }
         reports = {
@@ -52,7 +62,7 @@ def build_adapters(
         }
         projection = derive_runtime_adapter_projection(
             component,
-            [load_canonical_json_bytes(path.read_bytes()) for path in reports.values()],
+            [read_report(path.read_bytes()) for path in reports.values()],
             fixture.commits,
         )
         projection_path = root / "evidence" / f"{component}.json"

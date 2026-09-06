@@ -249,7 +249,7 @@ class RuntimeEvidenceTest(unittest.TestCase):
         }
 
     def _authenticated_adapter_inputs(
-        self, component: str,
+        self, component: str, *, pretty: bool = False,
     ) -> tuple[list[Path], list[dict[str, object]]]:
         paths = (
             self.fixture.write_jvm()
@@ -258,6 +258,9 @@ class RuntimeEvidenceTest(unittest.TestCase):
                 NODE_RUNTIME_JS_BACKEND if component == "node-js" else NODE_RUNTIME_WASM_BACKEND
             )
         )
+        if pretty:
+            for path in paths:
+                path.write_text(json.dumps(load_json(path), indent=4) + "\n", encoding="utf-8")
         product_targets = (
             "macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64",
         )
@@ -270,6 +273,17 @@ class RuntimeEvidenceTest(unittest.TestCase):
             )
         ]
         return paths, receipts
+
+    def test_pretty_original_reports_keep_exact_receipt_identity_and_canonical_projection(self):
+        for component in ("jvm", "node-js", "node-wasm"):
+            paths, receipts = self._authenticated_adapter_inputs(component)
+            expected = derive_authenticated_runtime_validation_projection(component, paths, receipts)
+            paths, original_receipts = self._authenticated_adapter_inputs(component, pretty=True)
+            originals = [path.read_bytes() for path in paths]
+            self.assertEqual(expected, derive_authenticated_runtime_validation_projection(component, paths, original_receipts))
+            self.assertEqual(originals, [path.read_bytes() for path in paths])
+            with self.assertRaises(ValueError):
+                derive_authenticated_runtime_validation_projection(component, paths, receipts)
 
     def test_authenticated_projection_binds_raw_reports_receipts_and_provenance(self) -> None:
         paths, receipts = self._authenticated_adapter_inputs("jvm")

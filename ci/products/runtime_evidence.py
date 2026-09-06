@@ -800,7 +800,7 @@ def derive_authenticated_runtime_validation_projection(
     report_files: Iterable[Path],
     validation_receipts: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Derive semantic content only from canonical reports bound to exact receipts."""
+    """Derive canonical semantic content from original reports bound to exact receipts."""
     from .receipt import validate_phase_receipt
 
     if isinstance(report_files, (str, bytes, Mapping)):
@@ -818,9 +818,7 @@ def derive_authenticated_runtime_validation_projection(
         contents = read_regular_file_bytes(
             Path(path), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,
         )
-        value = load_canonical_json_bytes(contents)
-        if canonical_json_bytes(value) != contents:
-            raise ValueError("Runtime validation report is not canonical JSON")
+        value = load_json_bytes(contents)
         reports.append(value)
         report_bytes.append(contents)
     receipts = [validate_phase_receipt(value) for value in receipt_values]
@@ -992,6 +990,44 @@ def validate_desktop_evidence(
         return [str(error)]
 
 
+def verify_adapter_report(
+    report_path: Path, component: str, target: str, commit: str,
+    proof: ClassifierProof, runner: Path,
+) -> dict[str, Any]:
+    """Check one original host report against actual classifier/compiled-runner bytes.
+
+    Shared by the five-host validators and raw-result composition; not a trust token.
+    """
+    if target not in RUNTIME_TARGETS or type(commit) is not str or not COMMIT.fullmatch(commit):
+        raise ValueError("Adapter evidence requires an exact target and immutable commit")
+    report = _load_report(report_path, _adapter_report_keys(component, projected=False))
+    _check_adapter_fields(report, component, target)
+    backend = component.removeprefix("node-")
+    tasks = ({jvm_test_task(target), IMPORTED_JVM_RUNTIME_EVIDENCE_TASK} if component == "jvm"
+             else {node_test_task(target, backend)})
+    if report["candidateCommit"] != commit or report["testTask"] not in tasks:
+        raise ValueError(f"{target}: adapter producer or task mismatch")
+    if component == "jvm":
+        inspect_jvm_runner(runner)
+        prefix, supervisor = "compiledJvmTestRuntime", "supervisorBinarySha256"
+    else:
+        inspect_node_runner(runner, backend)
+        prefix, supervisor = "compiledNodeTestRuntime", "processSupervisorSha256"
+    contents = _file_bytes(runner)
+    if (
+        proof.target != target
+        or report["classifierArchiveBytes"] != proof.archive_bytes
+        or report["classifierArchiveSha256"] != proof.archive_sha256
+        or report["appServerBinarySha256"] != proof.binary_sha256
+        or report[supervisor] != proof.supervisor_sha256
+        or report[prefix + "FileName"] != Path(runner).name
+        or report[prefix + "Bytes"] != len(contents)
+        or report[prefix + "Sha256"] != _sha256_bytes(contents)
+    ):
+        raise ValueError(f"{target}: classifier or compiled adapter runtime mismatch")
+    return report
+
+
 def validate_jvm_evidence(
     files: Iterable[Path],
     expected_commits: Mapping[str, str],
@@ -1003,28 +1039,9 @@ def validate_jvm_evidence(
         _check_commits(expected_commits)
         by_name = _files_by_name(files, {jvm_evidence_filename(target) for target in RUNTIME_TARGETS})
         _, proofs = _classifier_proofs(distribution_manifest, classifier_archives)
-        inspect_jvm_runner(runner)
-        runner_contents = _file_bytes(runner)
         for target in RUNTIME_TARGETS:
-            report = _load_report(by_name[jvm_evidence_filename(target)], JVM_KEYS)
-            _check_common_report(
-                report, schema=1, target=target, commit=expected_commits[target],
-                test_class=DESKTOP_RUNTIME_TEST_CLASS, test_methods=DESKTOP_RUNTIME_TEST_METHODS,
-            )
-            if report["testTask"] not in {jvm_test_task(target), IMPORTED_JVM_RUNTIME_EVIDENCE_TASK}:
-                raise ValueError(f"{target}: test task mismatch")
-            proof = proofs[target]
-            _safe_basename(_string(report["classifierArchiveFileName"], "classifier archive filename"), "classifier archive filename")
-            if (
-                report["classifierArchiveBytes"] != proof.archive_bytes
-                or report["classifierArchiveSha256"] != proof.archive_sha256
-                or report["appServerBinarySha256"] != proof.binary_sha256
-                or report["supervisorBinarySha256"] != proof.supervisor_sha256
-                or report["compiledJvmTestRuntimeFileName"] != JVM_RUNTIME_RUNNER_ARCHIVE
-                or report["compiledJvmTestRuntimeBytes"] != len(runner_contents)
-                or report["compiledJvmTestRuntimeSha256"] != _sha256_bytes(runner_contents)
-            ):
-                raise ValueError(f"{target}: classifier or compiled JVM runtime mismatch")
+            verify_adapter_report(by_name[jvm_evidence_filename(target)], "jvm", target,
+                                  expected_commits[target], proofs[target], runner)
         return []
     except (KeyError, StopIteration, TypeError, ValueError, RuntimeError, zipfile.BadZipFile) as error:
         return [str(error)]
@@ -1043,33 +1060,9 @@ def validate_node_evidence(
         _check_commits(expected_commits)
         by_name = _files_by_name(files, {node_evidence_filename(target, backend) for target in RUNTIME_TARGETS})
         _, proofs = _classifier_proofs(distribution_manifest, classifier_archives)
-        inspect_node_runner(runner, backend)
-        runner_contents = _file_bytes(runner)
         for target in RUNTIME_TARGETS:
-            report = _load_report(by_name[node_evidence_filename(target, backend)], NODE_KEYS)
-            _check_common_report(
-                report, schema=2, target=target, commit=expected_commits[target],
-                test_class=NODE_RUNTIME_TEST_CLASS, test_methods=NODE_RUNTIME_TEST_METHODS,
-            )
-            if (
-                report["runtimeBackend"] != backend
-                or report["nodeVersion"] != PINNED_NODE_VERSION
-                or report["testTask"] != node_test_task(target, backend)
-            ):
-                raise ValueError(f"{target}: Node identity mismatch")
-            proof = proofs[target]
-            _safe_basename(_string(report["classifierArchiveFileName"], "classifier archive filename"), "classifier archive filename")
-            _safe_basename(_string(report["compiledNodeTestRuntimeFileName"], "compiled artifact filename"), "compiled artifact filename")
-            if (
-                report["classifierArchiveBytes"] != proof.archive_bytes
-                or report["classifierArchiveSha256"] != proof.archive_sha256
-                or report["appServerBinarySha256"] != proof.binary_sha256
-                or report["processSupervisorSha256"] != proof.supervisor_sha256
-                or report["compiledNodeTestRuntimeFileName"] != Path(runner).name
-                or report["compiledNodeTestRuntimeBytes"] != len(runner_contents)
-                or report["compiledNodeTestRuntimeSha256"] != _sha256_bytes(runner_contents)
-            ):
-                raise ValueError(f"{target}: classifier or compiled Node runtime mismatch")
+            verify_adapter_report(by_name[node_evidence_filename(target, backend)], f"node-{backend}", target,
+                                  expected_commits[target], proofs[target], runner)
         return []
     except (KeyError, StopIteration, TypeError, ValueError, RuntimeError, zipfile.BadZipFile) as error:
         return [str(error)]
