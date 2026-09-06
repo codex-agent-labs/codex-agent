@@ -38,7 +38,6 @@ def main() -> None:
     if library is not None:
         if not library.is_absolute():
             parser.error("library must be an absolute path")
-        library = library.resolve(strict=True)
     if library is not None and not library.is_file():
         parser.error(f"library is not a file: {library}")
     asyncio.run(smoke(library))

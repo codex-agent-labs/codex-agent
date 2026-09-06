@@ -69,15 +69,6 @@ fn real_host_smoke(library_path: Option<&Path>) -> Result<(), CodexError> {
     }
 
     let (native, source) = if let Some(library_path) = library_path {
-        let library_path = library_path.canonicalize().map_err(|error| {
-            consumer_error(
-                Status::InvalidArgument,
-                format!(
-                    "resolve explicit C SDK library {}: {error}",
-                    library_path.display()
-                ),
-            )
-        })?;
         if !library_path.is_file() {
             return Err(consumer_error(
                 Status::InvalidArgument,
@@ -88,7 +79,7 @@ fn real_host_smoke(library_path: Option<&Path>) -> Result<(), CodexError> {
             ));
         }
         (
-            CodexNativeLibrary::load(&library_path)?,
+            CodexNativeLibrary::load(library_path)?,
             library_path.display().to_string(),
         )
     } else {
@@ -165,5 +156,32 @@ mod tests {
             parse_library_path([OsString::from("sdk"), OsString::from("extra")]).unwrap_err();
         assert_eq!(extra.status, Status::InvalidArgument);
         assert_eq!(extra.action, USAGE);
+    }
+
+    #[test]
+    fn original_override_reaches_strict_loader_without_canonicalization() {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!(
+                "codex-agent-host-consumer-path-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::fs::write(root.join("runtime"), b"not a native library\n").unwrap();
+        let original = root.join("nested").join("..").join("runtime");
+        let parsed = parse_library_path([original.clone().into_os_string()]).unwrap();
+        assert_eq!(parsed.as_deref(), Some(original.as_path()));
+        let error = real_host_smoke(parsed.as_deref()).unwrap_err();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            error.action,
+            "Codex Agent external Runtime path must already be canonical"
+        );
     }
 }
