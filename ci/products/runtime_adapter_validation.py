@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from .inventory import load_json_bytes, read_regular_file_bytes, require_array, require_exact_keys, require_integer
 from .runtime_evidence import (
     DESKTOP_RUNTIME_TEST_CLASS, DESKTOP_RUNTIME_TEST_METHODS, NODE_RUNTIME_TEST_CLASS,
-    PINNED_NODE_VERSION, RUNTIME_ADAPTER_COMPONENTS, RUNTIME_TARGETS,
+    PINNED_NODE_VERSION, PRODUCT_RUNTIME_TARGETS, RUNTIME_ADAPTER_COMPONENTS, RUNTIME_TARGETS,
     inspect_classifier, jvm_evidence_filename, node_evidence_filename,
     read_distribution_manifest, verify_adapter_report,
 )
@@ -59,6 +59,20 @@ def _verify_adapter_host_snapshot(
         raise ValueError("Adapter original evidence filename mismatch")
     proof = inspect_classifier(target, read_distribution_manifest(distribution_manifest), classifier)
     value = verify_adapter_report(report, component, target, commit, proof, runner)
+    verify_runtime_process_capture(execution, component, target, test_class)
+    cases = read_canonical_test_report(junit)
+    expected_cases = {f"{test_class}#{method}" for method in DESKTOP_RUNTIME_TEST_METHODS}
+    if (len(cases) != len(expected_cases) or {case.test_id for case in cases} != expected_cases
+            or any(case.status != CanonicalTestStatus.PASSED for case in cases)):
+        raise ValueError("Adapter JUnit case inventory/result mismatch")
+    return _verify_adapter_report_format(value, junit, component)
+
+
+def verify_runtime_process_capture(execution: Path, component: str, target: str, test_class: str) -> None:
+    """Shared original process gate; caller supplies authenticated component/host."""
+    if target not in RUNTIME_TARGETS or (component not in RUNTIME_ADAPTER_COMPONENTS
+            and component != PRODUCT_RUNTIME_TARGETS[target]):
+        raise ValueError("Runtime raw execution component/target mismatch")
     raw = require_exact_keys(load_json_bytes(read_regular_file_bytes(execution)),
                              {"schemaVersion", "component", "target", "testClass", "executions"},
                              "Adapter raw execution")
@@ -66,7 +80,7 @@ def _verify_adapter_host_snapshot(
             or raw["component"] != component or raw["target"] != target or raw["testClass"] != test_class):
         raise ValueError("Adapter raw execution identity mismatch")
     entries = require_array(raw["executions"], "Adapter executions")
-    ids = ([] if component == "jvm" else ["version"]) + ["discovery", *DESKTOP_RUNTIME_TEST_METHODS]
+    ids = (["version"] if component in {"node-js", "node-wasm"} else []) + ["discovery", *DESKTOP_RUNTIME_TEST_METHODS]
     if len(entries) != len(ids):
         raise ValueError("Adapter raw execution inventory is incomplete")
     for entry, expected in zip(entries, ids, strict=True):
@@ -82,17 +96,28 @@ def _verify_adapter_host_snapshot(
                 text = output.decode("utf-8").replace("\r", "")
                 if expected == "version" and text.strip() != f"v{PINNED_NODE_VERSION}":
                     raise ValueError("Adapter raw Node version mismatch")
-                if expected == "discovery" and [line for line in text.split("\n") if line.strip()] != [
-                    f"{test_class}.", *(f"  {method}" for method in DESKTOP_RUNTIME_TEST_METHODS),
-                ]:
-                    raise ValueError("Adapter raw discovered tests mismatch")
+                if expected == "discovery":
+                    lines = [line for line in text.split("\n") if line.strip()]
+                    if component in PRODUCT_RUNTIME_TARGETS.values():
+                        # Native test executables also contain the independently
+                        # verified C-ABI suites; select exactly the Desktop class.
+                        if lines.count(f"{test_class}.") != 1:
+                            raise ValueError("Native Desktop test class is missing or duplicated")
+                        start = lines.index(f"{test_class}.") + 1
+                        methods = []
+                        for line in lines[start:]:
+                            if not line.startswith("  "):
+                                break
+                            methods.append(line.strip())
+                        if len(methods) != len(DESKTOP_RUNTIME_TEST_METHODS) or set(methods) != set(DESKTOP_RUNTIME_TEST_METHODS):
+                            raise ValueError("Native Desktop raw discovered tests mismatch")
+                    elif lines != [f"{test_class}.", *(f"  {method}" for method in DESKTOP_RUNTIME_TEST_METHODS)]:
+                        raise ValueError("Adapter raw discovered tests mismatch")
         except (UnicodeError, ValueError) as error:
             raise ValueError("Adapter raw process output is invalid") from error
-    cases = read_canonical_test_report(junit)
-    expected_cases = {f"{test_class}#{method}" for method in DESKTOP_RUNTIME_TEST_METHODS}
-    if (len(cases) != len(expected_cases) or {case.test_id for case in cases} != expected_cases
-            or any(case.status != CanonicalTestStatus.PASSED for case in cases)):
-        raise ValueError("Adapter JUnit case inventory/result mismatch")
+
+
+def _verify_adapter_report_format(value: dict[str, Any], junit: Path, component: str) -> dict[str, Any]:
     # The shared secure parser above rejects declarations before this exact producer-format check.
     suite = ET.fromstring(read_regular_file_bytes(junit))
     if (suite.tag != "testsuite" or any(suite.get(key) != expected for key, expected in

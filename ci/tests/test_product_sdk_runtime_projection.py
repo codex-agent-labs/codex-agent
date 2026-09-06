@@ -106,7 +106,7 @@ class NativeRuntimeContentTest(unittest.TestCase):
             self.assertNotEqual(baseline["referenceFiles"], value["referenceFiles"])
             self.assertEqual(baseline["desktop"], value["desktop"])
 
-    def test_signed_desktop_report_does_not_replace_exact_raw_junit(self):
+    def test_signed_desktop_report_does_not_replace_exact_raw_execution_and_junit(self):
         from ci.products.runtime_evidence import DESKTOP_RUNTIME_TEST_METHODS
         from ci.tests.product_chain_variants import build_variants
 
@@ -115,8 +115,22 @@ class NativeRuntimeContentTest(unittest.TestCase):
             with patch("ci.tests.product_chain_variants.DESKTOP_RUNTIME_TEST_METHODS",
                        (*DESKTOP_RUNTIME_TEST_METHODS[:-1], "unexecutedReplacement")):
                 changed = build_variants(root / "variants", self.left["contract"], self.left["context"])
-            with self.assertRaisesRegex(ValueError, "methods or class"):
+            with self.assertRaisesRegex(ValueError, "raw process output is invalid"):
                 verify_native_runtime_validation_content(**self.arguments(variants=changed))
+
+    def test_signed_legacy_receipts_without_original_execution_are_not_upgraded(self):
+        from ci.tests.product_chain_variants import build_variants
+
+        with tempfile.TemporaryDirectory() as temporary:
+            variants = build_variants(Path(temporary).resolve() / "legacy", self.left["contract"],
+                                      self.left["context"], include_execution=False)
+            args = self.arguments(variants=variants)
+            before = regular_file_inventory(args["runtime_stage_root"] / "linux-x64")
+            original = args["phase_receipts"]["validation"].read_bytes()
+            with self.assertRaisesRegex(ValueError, "original Desktop process execution"):
+                verify_native_runtime_validation_content(**args)
+            self.assertEqual(original, args["phase_receipts"]["validation"].read_bytes())
+            self.assertEqual(before, regular_file_inventory(args["runtime_stage_root"] / "linux-x64"))
 
     def test_untrusted_contract_and_altered_original_receipt_cannot_enter_gate(self):
         args = self.arguments()

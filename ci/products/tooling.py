@@ -78,17 +78,21 @@ def _value(root: Path, signing, repository: Path):
 
 def _verify_capture(root: Path, repository: Path, public_key: Path, required_trust_domain: str,
                     keyring: Path | None, keys_directory: Path | None):
-    value = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(root / ATTESTATION)),
-                               {"schemaVersion", "kind", "planSha256", "laneReceiptSha256", "files", "signing"},
+    value = load_canonical_json_bytes(read_regular_file_bytes(root / ATTESTATION))
+    schema = value.get("schemaVersion") if type(value) is dict else None
+    digest_fields = {"localReceiptSha256"} if schema == 2 else {"planSha256", "laneReceiptSha256"}
+    value = require_exact_keys(value, {"schemaVersion", "kind", "files", "signing"} | digest_fields,
                                "tooling attestation")
-    if require_integer(value["schemaVersion"], "tooling attestation schema", 1) != 1 or \
+    if require_integer(value["schemaVersion"], "tooling attestation schema", 1) not in (1, 2) or \
             value["kind"] != "release-tooling-attestation":
         raise ValueError("Unsupported tooling attestation")
-    for name in ("planSha256", "laneReceiptSha256"):
+    for name in digest_fields:
         require_sha256(value[name], f"tooling {name}")
     if required_trust_domain not in {"development", "release"}:
         raise ValueError("Expected tooling trust domain is invalid")
     signing = validate_signing_metadata(value["signing"], trust_domain=required_trust_domain)
+    if schema == 2 and required_trust_domain != "development":
+        raise ValueError("Local tooling producer cannot claim release trust")
     if required_trust_domain == "release":
         if keyring is None or keys_directory is None:
             raise ValueError("Release tooling requires caller-pinned release keys")
@@ -101,13 +105,19 @@ def _verify_capture(root: Path, repository: Path, public_key: Path, required_tru
     verify_manifest_signature(root / ATTESTATION, root / SIGNATURE, public_key, signing)
     # Authenticate before inspecting original executable/source inventories. Never execute the JAR here.
     original = root / "original"
-    expected = _value(original, signing, repository)
+    if schema == 2:
+        from .tooling_local import RECEIPT, verify_local_original
+        expected = {"schemaVersion": 2, "kind": "release-tooling-attestation",
+                    "localReceiptSha256": sha256_bytes(read_regular_file_bytes(original / RECEIPT)),
+                    "files": verify_local_original(original, repository), "signing": signing}
+    else:
+        expected = _value(original, signing, repository)
     if value != expected:
         raise ValueError("Tooling attestation differs from exact original closure")
     actual_paths = {item["relativePath"] for item in regular_file_inventory(root, allow_empty=True)}
     if actual_paths != {ATTESTATION, SIGNATURE, *(f"original/{item['relativePath']}" for item in value["files"])}:
         raise ValueError("Tooling evidence object contains unexpected files")
-    return original / "lane" / JAR
+    return original / JAR if schema == 2 else original / "lane" / JAR
 
 
 @contextmanager

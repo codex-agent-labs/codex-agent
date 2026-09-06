@@ -42,7 +42,7 @@ _NATIVE_METADATA_VERIFIERS = frozenset({
     *(f"ci/products/{name}.py" for name in (
         "sdk_package", "sdk_inputs", "sdk_native", "sdk_compatibility", "sdk_runtime_content",
         "contract", "contract_model", "c_abi", "runtime_attestation", "runtime_aggregate",
-        "runtime_variant", "runtime_identity", "runtime_evidence", "test_results",
+        "runtime_variant", "runtime_identity", "runtime_evidence", "runtime_adapter_validation", "test_results",
     )),
     *(f"gradle/build-logic/src/main/kotlin/{name}.kt" for name in (
         "CrossLanguageNativeWrapperValidationEvidence", "CrossLanguageNativeWrapperBindingEvidence",
@@ -238,6 +238,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/runtime_adapter_content.py",
     "ci/products/adapter_runtime_inputs.py",
     "ci/products/tooling.py",
+    "ci/products/tooling_local.py",
     "ci/products/selection.py",
     "ci/products/sdk_inputs.py",
     "ci/products/sdk_native.py",
@@ -382,7 +383,7 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
     name = path.rsplit("/", 1)[-1]
     if name == "RuntimeEvidenceExecutionCapture.kt":
         return _runtime(("jvm", "node-js", "node-wasm"), "validation",
-                        validation_targets=NATIVE_TARGETS)
+                        validation_targets=NATIVE_TARGETS) | _runtime(NATIVE_TARGETS, "validation")
     if name in _RUNTIME_BUILD_LOGIC_JVM:
         return _runtime(("jvm",), "validation")
     if name in _RUNTIME_BUILD_LOGIC_NODE:
@@ -392,7 +393,7 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
     if name == "NodeBindingValidationExecution.kt":
         return _runtime(("node-js",), "validation", validation_targets=("node-js-binding",))
     if name == "LinuxArm64RuntimeEvidenceBundle.kt":
-        return _runtime(("linux-arm64",), "validation")
+        return _runtime(NATIVE_TARGETS, "validation")
     if name == "ImportedCAbiBootstrapTasks.kt":
         return _runtime(("macos-arm64",), "validation")
     if name == "RuntimeAdapterMetadataInputsTask.kt":
@@ -610,7 +611,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _from_phase("runtime", "runtime-aggregate", "metadata")
     if path == "ci/products/runtime_adapter_validation.py":
         return _runtime(("jvm", "node-js", "node-wasm"), "validation",
-                        validation_targets=NATIVE_TARGETS)
+                        validation_targets=NATIVE_TARGETS) | _classify("ci/products/sdk_runtime_content.py")
     if path == "ci/products/sdk_compatibility.py":
         selected = set()
         for component in ("sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript"):
@@ -959,6 +960,7 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
                       and instance.component in {"jvm", "node-js", "node-wasm"}
                       and instance.phase == "validation" and instance.target in NATIVE_TARGETS)
     if path in {"ci/products/sdk_runtime_content.py", "ci/products/contract_model.py",
+                "ci/products/runtime_adapter_validation.py",
                 "ci/products/test_results.py", "ci/products/runtime_evidence.py",
                 "ci/products/runtime_variant.py", "ci/products/c_abi.py"}:
         # Both package planning and imported validation independently execute the full gate.

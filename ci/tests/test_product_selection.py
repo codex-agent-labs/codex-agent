@@ -59,11 +59,11 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
-    def test_shared_adapter_capture_owns_only_host_validation_keys(self) -> None:
-        self._assert_adapter_host_validation_keys("runtime/build-logic/src/main/kotlin/RuntimeEvidenceExecutionCapture.kt")
+    def test_shared_capture_owns_adapter_and_native_host_validation_keys(self) -> None:
+        self._assert_adapter_host_validation_keys("runtime/build-logic/src/main/kotlin/RuntimeEvidenceExecutionCapture.kt", native=True)
 
-    def test_adapter_raw_validator_owns_only_host_validation_keys(self) -> None:
-        self._assert_adapter_host_validation_keys("ci/products/runtime_adapter_validation.py")
+    def test_raw_validator_owns_adapter_and_native_sdk_admission_keys(self) -> None:
+        self._assert_adapter_host_validation_keys("ci/products/runtime_adapter_validation.py", sdk=True)
 
     def test_distribution_manifest_owns_adapter_host_validation_and_existing_binary_keys(self) -> None:
         from ci.tests.test_product_plan import plan
@@ -103,14 +103,24 @@ class ProductSelectionTest(unittest.TestCase):
                         keys.append(plan(instance, inventory=inventory)["buildKey"])
                     self.assertEqual(instance in owners, keys[0] != keys[1])
 
-    def _assert_adapter_host_validation_keys(self, path: str) -> None:
+    def _assert_adapter_host_validation_keys(self, path: str, *, native: bool = False, sdk: bool = False) -> None:
         from ci.tests.test_product_plan import plan
         owners = {item for item in PHASE_INSTANCE_IDS if item.product == "runtime"
                   and item.component in {"jvm", "node-js", "node-wasm"}
                   and item.phase == "validation" and item.target in NATIVE_TARGETS}
+        if native:
+            owners |= {PhaseInstanceId("runtime", target, "validation", target) for target in NATIVE_TARGETS}
+        if sdk:
+            owners |= {item for item in PHASE_INSTANCE_IDS if item.product == "sdk"
+                       and item.component in NATIVE_BINDINGS and item.phase in {"package", "validation", "metadata"}}
+            owners.add(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"))
         selected = owners | {PhaseInstanceId("runtime", name, "metadata", name)
                              for name in ("jvm", "node-js", "node-wasm")}
         selected.add(PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"))
+        if native:
+            selected |= {PhaseInstanceId("runtime", target, "metadata", target) for target in NATIVE_TARGETS}
+        if sdk:
+            selected.add(PhaseInstanceId("runtime", "macos-arm64", "metadata", "macos-arm64"))
         self.assertEqual(selected, identities(classify_paths([path])))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1005,7 +1015,7 @@ class ProductSelectionTest(unittest.TestCase):
                 {"node-js", "node-wasm", "runtime-aggregate"}, {"validation", "metadata"},
             ),
             "runtime/build-logic/src/main/kotlin/LinuxArm64RuntimeEvidenceBundle.kt": (
-                {"linux-arm64", "runtime-aggregate"}, {"validation", "metadata"},
+                {*NATIVE_TARGETS, "runtime-aggregate"}, {"validation", "metadata"},
             ),
             "runtime/build-logic/src/main/kotlin/RuntimeCanonicalTestResultsClient.kt": (
                 {"jvm", "node-js", "node-wasm", *NATIVE_TARGETS, "runtime-aggregate"},

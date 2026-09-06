@@ -17,10 +17,10 @@ class ToolingAttestationTest(GitFixture):
     def test_tooling_admission_policy_replans_without_changing_payload_keys(self):
         from ci.products.registry import PHASE_INSTANCE_IDS
         from ci.products.selection import classify_paths, phase_inventory_paths
-        path = "ci/products/tooling.py"
-        self.assertEqual(set(PHASE_INSTANCE_IDS), set(classify_paths([path]).instances))
-        for instance in PHASE_INSTANCE_IDS:
-            self.assertEqual((), phase_inventory_paths([path], instance), instance)
+        for path in ("ci/products/tooling.py", "ci/products/tooling_local.py"):
+            self.assertEqual(set(PHASE_INSTANCE_IDS), set(classify_paths([path]).instances))
+            for instance in PHASE_INSTANCE_IDS:
+                self.assertEqual((), phase_inventory_paths([path], instance), (path, instance))
 
     def setUp(self):
         super().setUp()

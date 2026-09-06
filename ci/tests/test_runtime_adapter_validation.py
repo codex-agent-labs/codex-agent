@@ -9,8 +9,10 @@ import unittest
 import zipfile
 
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory
-from ci.products.runtime_adapter_validation import verify_adapter_host_evidence
-from ci.products.runtime_evidence import RUNTIME_TARGETS
+from ci.products.runtime_adapter_validation import verify_adapter_host_evidence, verify_runtime_process_capture
+from ci.products.runtime_evidence import (
+    DESKTOP_RUNTIME_TEST_CLASS, DESKTOP_RUNTIME_TEST_METHODS, PRODUCT_RUNTIME_TARGETS, RUNTIME_TARGETS,
+)
 from ci.tests.runtime_adapter_fixture import AdapterHostFixture
 from ci.tests.test_runtime_evidence import digest, write_zip
 
@@ -157,6 +159,43 @@ class RuntimeAdapterValidationTest(unittest.TestCase):
                 b"another producer's run path and diagnostic output\x00\xff").decode("ascii")
             inputs["execution"].write_bytes(canonical_json_bytes(execution))
             self.assertEqual(expected, verify_adapter_host_evidence(**{**inputs, "commit": "f" * 40}))
+
+    def test_native_capture_selects_exact_desktop_class_without_dropping_other_suites(self):
+        inputs = self.fixture.inputs("jvm", "linuxX64")
+        original = load_canonical_json_bytes(inputs["execution"].read_bytes())
+        original.update(component="linux-x64", target="linuxX64")
+        listing = f"{DESKTOP_RUNTIME_TEST_CLASS}.\n" + "".join(
+            f"  {method}\n" for method in DESKTOP_RUNTIME_TEST_METHODS)
+        path = inputs["execution"]
+
+        def check(value):
+            path.write_bytes(canonical_json_bytes(value))
+            verify_runtime_process_capture(path, "linux-x64", "linuxX64", DESKTOP_RUNTIME_TEST_CLASS)
+
+        for discovery in (listing, "Other.Class.\n  independentCase\n" + listing + "Another.Class.\n  case\n"):
+            value = copy.deepcopy(original)
+            value["executions"][0]["outputBase64"] = base64.b64encode(discovery.encode()).decode()
+            value["executions"][-1]["outputBase64"] = base64.b64encode(b"run-specific\0\xff\r\n").decode()
+            check(value)
+        for discovery in ("", listing + listing, listing.replace(DESKTOP_RUNTIME_TEST_METHODS[0], "wrong"),
+                          listing + "  unexpectedCase\n", listing.replace("  ", "", 1)):
+            value = copy.deepcopy(original)
+            value["executions"][0]["outputBase64"] = base64.b64encode(discovery.encode()).decode()
+            with self.subTest(discovery=discovery), self.assertRaises(ValueError):
+                check(value)
+        for field, changed in (("exitCode", 1), ("exitCode", True), ("outputBase64", "Zh==")):
+            value = copy.deepcopy(original)
+            value["executions"][-1][field] = changed
+            with self.subTest(field=field, value=changed), self.assertRaises(ValueError):
+                check(value)
+        with self.assertRaises(ValueError):
+            check({**original, "executions": original["executions"][:-1]})
+        for evidence_target, component in PRODUCT_RUNTIME_TARGETS.items():
+            value = {**original, "component": component, "target": evidence_target}
+            path.write_bytes(canonical_json_bytes(value))
+            verify_runtime_process_capture(path, component, evidence_target, DESKTOP_RUNTIME_TEST_CLASS)
+            with self.subTest(target=evidence_target), self.assertRaises(ValueError):
+                verify_runtime_process_capture(path, "c-abi", component, DESKTOP_RUNTIME_TEST_CLASS)
 
     def test_valid_rebound_compiled_runner_content_remains_meaningful(self):
         for component in self.components:

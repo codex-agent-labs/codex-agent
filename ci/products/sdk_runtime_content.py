@@ -26,6 +26,7 @@ from .inventory import (
     require_relative_path, require_sha256, sha256_bytes, snapshot_regular_tree,
 )
 from .test_results import read_canonical_test_report
+from .runtime_adapter_validation import verify_runtime_process_capture
 
 
 _VERIFIED_NATIVE_RUNTIME = object()
@@ -214,10 +215,12 @@ def _verify_native_runtime_validation_snapshot(
         raise ValueError("Native Runtime variant differs from authenticated Contract/target")
     verify_runtime_stages(runtime_stage_root, target, phase_receipts, authenticated)
     receipt = receipts["validation"]
+    execution_name = f"outputs/execution/desktop-runtime-{spec.target}-execution.json"
     exact_outputs = {
         f"outputs/native/desktop-runtime-{spec.target}.json": "native",
         f"outputs/native/TEST-{spec.target}Test.{DESKTOP_RUNTIME_TEST_CLASS}.xml": "native",
         f"outputs/c-abi/c-abi-package-{target}.json": "c-abi",
+        execution_name: "execution",
     }
     for item in receipt["outputs"]:
         path = item["relativePath"]
@@ -241,6 +244,9 @@ def _verify_native_runtime_validation_snapshot(
     if not any(item["kind"] == "native" and item["relativePath"] == junit_name for item in receipt["outputs"]):
         raise ValueError("Native Runtime validation lacks its exact raw Desktop JUnit")
     junit = validation / junit_name
+    if not any(item["kind"] == "execution" and item["relativePath"] == execution_name for item in receipt["outputs"]):
+        raise ValueError("Native SDK admission requires original Desktop process execution evidence")
+    verify_runtime_process_capture(validation / execution_name, target, spec.target, DESKTOP_RUNTIME_TEST_CLASS)
     verify_desktop_test_report(junit, spec.target)
     cases = read_canonical_test_report(junit)
     expected_cases = {f"{spec.target}Test.{DESKTOP_RUNTIME_TEST_CLASS}#{method}"

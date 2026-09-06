@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 from pathlib import Path
 import zipfile
@@ -199,6 +200,7 @@ def _checksum(contents: bytes, suffix: str) -> bytes:
 
 def build_variants(
     root: Path, contract: dict[str, Any], context: dict[str, Any], *, include_bootstrap: bool = False,
+    include_execution: bool = True,
 ) -> dict[str, Any]:
     """Build five authenticated Runtime variants from deterministic fixture payloads."""
     root = Path(root)
@@ -325,6 +327,17 @@ def build_variants(
             ) + "</testsuite>\n",
             encoding="utf-8", newline="\n",
         )
+        # Synthetic original execution only; not actual native-host acceptance.
+        execution_file = validation_stage / "outputs/execution" / f"desktop-runtime-{evidence_target}-execution.json"
+        listing = f"{DESKTOP_RUNTIME_TEST_CLASS}.\n" + "".join(f"  {method}\n" for method in DESKTOP_RUNTIME_TEST_METHODS)
+        if include_execution:
+            execution_file.parent.mkdir()
+            write_canonical_json(execution_file, {"schemaVersion": 1, "component": target, "target": evidence_target,
+                "testClass": DESKTOP_RUNTIME_TEST_CLASS, "executions": [
+                    {"id": method, "exitCode": 0, "outputBase64": base64.b64encode(
+                        listing.encode() if method == "discovery" else
+                        producer["commit"].encode() + b" synthetic native output\xff\0").decode("ascii")}
+                    for method in ("discovery", *DESKTOP_RUNTIME_TEST_METHODS)]})
         references = validation_stage / "outputs/c-abi-reference"
         reference_files = {
             "include/codex_agent.h": C_ABI_REVIEWED_HEADER_PATH,
@@ -348,6 +361,7 @@ def build_variants(
         validation_outputs = write_output_manifest(
             validation_stage, "runtime", target, "validation", target, _VERSION,
             {"c-abi": "outputs/c-abi", "native": "outputs/native", "c-abi-reference": "outputs/c-abi-reference"}
+            | ({"execution": "outputs/execution"} if include_execution else {})
             | ({"c-abi-bootstrap": "outputs/c-abi-bootstrap"} if has_bootstrap else {}),
         )["outputs"]
 
