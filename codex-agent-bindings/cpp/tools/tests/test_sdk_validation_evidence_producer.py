@@ -32,7 +32,7 @@ class ProducerTest(unittest.TestCase):
         self.bootstrap = self.write(self.root / "input/bootstrap.json", "explicit bootstrap")
         self.sdk = self.root / "input/sdk"
         self.header = self.write(self.sdk / "include/codex_agent.h", "explicit header")
-        self.compatibility = self.write(self.sdk / "share/CodexAgent/native/sdk-compatibility.json", "explicit compatibility")
+        self.compatibility = self.write(self.root / "input/sdk-compatibility.json", "explicit compatibility")
         self.library = self.write(self.sdk / "lib/libcodex_agent.dylib", "explicit native")
         self.output = self.root / "outputs/raw"
         self.calls = []
@@ -83,19 +83,26 @@ class ProducerTest(unittest.TestCase):
                 self.mutation(evidence, build)
         elif "--build" in command:
             self.write(build / "tests/codex_agent_cpp_value_test", "fixture compiled bytes, not native proof")
+        else:
+            private = Path(next(arg.split("=", 1)[1] for arg in command if arg.startswith("-DCodexAgent_C_SDK_ROOT=")))
+            self.assertEqual(evidence / "imported-c-sdk", private)
+            self.assertEqual(self.compatibility.read_bytes(), (private / producer.COMPATIBILITY_RESOURCE).read_bytes())
+            self.assertEqual(self.header.read_bytes(), (private / "include/codex_agent.h").read_bytes())
+            self.assertEqual(self.library.read_bytes(), (private / "lib/libcodex_agent.dylib").read_bytes())
         return subprocess.CompletedProcess(command, 0)
 
     def produce(self, **kwargs):
         with mock.patch.object(producer.subprocess, "run", side_effect=self.execute):
             producer.produce(self.api, self.bootstrap, self.sdk, self.library,
-                             kwargs.pop("output", self.output), classifier=kwargs.pop("classifier", "macos-arm64"))
+                             kwargs.pop("output", self.output), classifier=kwargs.pop("classifier", "macos-arm64"),
+                             sdk_compatibility=self.compatibility)
 
     def test_complete_existing_suite_command_and_original_raw_evidence(self):
         self.produce()
         self.assertEqual(len(self.calls), 4)
         configure = self.calls[0]
         for arg in ("-DCODEX_AGENT_CPP_BUILD_TESTS=ON", "-DCODEX_AGENT_CPP_PACKAGE_ONLY=OFF",
-                    "-DCODEX_AGENT_CPP_INSTALL_PACKAGE=OFF", f"-DCodexAgent_C_SDK_ROOT={self.sdk}",
+                    "-DCODEX_AGENT_CPP_INSTALL_PACKAGE=OFF",
                     "-DCodexAgent_NATIVE_CLASSIFIER=macos-arm64", f"-DCodexAgent_CANONICAL_API_REPORT={self.api}",
                     f"-DCodexAgent_C_ABI_BOOTSTRAP_EVIDENCE={self.bootstrap}"):
             self.assertIn(arg, configure)
@@ -111,6 +118,60 @@ class ProducerTest(unittest.TestCase):
         self.assertFalse((self.source / "build").exists())
         self.assertEqual(self.library.read_text(), "explicit native")
         self.assertEqual(self.compatibility.read_text(), "explicit compatibility")
+        self.assertFalse((self.sdk / producer.COMPATIBILITY_RESOURCE).exists())
+        expected = {path.relative_to(self.sdk): path.read_bytes() for path in self.sdk.rglob("*") if path.is_file()}
+        expected[producer.COMPATIBILITY_RESOURCE] = self.compatibility.read_bytes()
+        private = self.output / "imported-c-sdk"
+        self.assertEqual(expected, {path.relative_to(private): path.read_bytes()
+                                    for path in private.rglob("*") if path.is_file()})
+
+    def test_existing_matching_compatibility_is_retained_without_modifying_originals(self):
+        resource = self.write(self.sdk / producer.COMPATIBILITY_RESOURCE, self.compatibility.read_text())
+        before = {path.relative_to(self.sdk): path.read_bytes() for path in self.sdk.rglob("*") if path.is_file()}
+        self.produce()
+        self.assertEqual(before, {path.relative_to(self.sdk): path.read_bytes()
+                                  for path in self.sdk.rglob("*") if path.is_file()})
+        self.assertEqual(resource.read_bytes(), (self.output / "imported-c-sdk" / producer.COMPATIBILITY_RESOURCE).read_bytes())
+
+    def test_invalid_compatibility_overlay_fails_before_invalidation(self):
+        for mutation in ("conflict", "empty", "symbolic", "overlap"):
+            with self.subTest(mutation=mutation):
+                original = self.compatibility
+                original_bytes = original.read_bytes()
+                resource = self.sdk / producer.COMPATIBILITY_RESOURCE
+                sentinel = self.write(self.output / "preserved", "prior evidence")
+                if mutation == "conflict":
+                    self.write(resource, "different existing declaration")
+                elif mutation == "empty":
+                    original.write_bytes(b"")
+                elif mutation == "symbolic":
+                    original.unlink()
+                    original.symlink_to(self.api)
+                else:
+                    self.compatibility = sentinel
+                with self.assertRaises(ValueError):
+                    self.produce()
+                self.assertEqual("prior evidence", sentinel.read_text())
+                if resource.exists():
+                    resource.unlink()
+                if original.is_symlink():
+                    original.unlink()
+                original.write_bytes(original_bytes)
+                self.compatibility = original
+        self.assertEqual([], self.calls)
+
+    def test_overlay_ancestor_files_preserve_prior_evidence_before_invalidation(self):
+        sentinel = self.write(self.output / "preserved", "prior evidence")
+        for relative in ("share", "share/CodexAgent", "share/CodexAgent/native"):
+            with self.subTest(relative=relative):
+                ancestor = self.write(self.sdk / relative, "not a directory")
+                with mock.patch.object(producer, "_invalidate") as invalidate, self.assertRaises(ValueError):
+                    self.produce()
+                invalidate.assert_not_called()
+                self.assertEqual("prior evidence", sentinel.read_text())
+                self.assertEqual("not a directory", ancestor.read_text())
+                ancestor.unlink()
+        self.assertEqual([], self.calls)
 
     def test_required_imports_and_source_program_fail_before_invalidation(self):
         for path in (self.api, self.bootstrap, self.library, self.header, self.compatibility, self.program):
@@ -154,7 +215,8 @@ class ProducerTest(unittest.TestCase):
         self.write(self.output / "stale", "stale")
         with mock.patch.object(producer.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "fixture")):
             with self.assertRaises(subprocess.CalledProcessError):
-                producer.produce(self.api, self.bootstrap, self.sdk, self.library, self.output, classifier="macos-arm64")
+                producer.produce(self.api, self.bootstrap, self.sdk, self.library, self.output,
+                                 classifier="macos-arm64", sdk_compatibility=self.compatibility)
         self.assertFalse(self.output.exists())
         self.assertTrue(self.program.is_file())
 

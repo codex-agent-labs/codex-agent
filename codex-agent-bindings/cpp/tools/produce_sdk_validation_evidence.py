@@ -5,6 +5,8 @@ These are raw execution outputs, not authenticated phase/host receipts. The call
 authenticates inputs and applies the existing exact capability/14-scenario matcher.
 This excludes codex_agent_cpp_installed_package_tamper, which installs/repackages.
 That separate installed-package gate remains mandatory; this grants no acceptance.
+The explicit SDK declaration is overlaid only in a private copy of the raw C SDK,
+because CMake consumes the package resource layout, not the classifier transport.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ REQUIRED_TESTS = {VALUE_TEST, "codex_agent_cpp_enum_test", "codex_agent_cpp_test
     f"codex_agent_cpp_{family}{suffix}_test" for family in FAMILIES for suffix in ("", "_real")
 }
 CLASSIFIERS = ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64")
+COMPATIBILITY_RESOURCE = Path("share/CodexAgent/native/sdk-compatibility.json")
 
 
 def _required(path: Path, *, directory: bool = False) -> Path:
@@ -126,13 +129,25 @@ def _verify_raw(build: Path, evidence: Path) -> None:
 
 
 def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
-            native_library: Path, output: Path, *, classifier: str) -> None:
+            native_library: Path, output: Path, *, classifier: str, sdk_compatibility: Path) -> None:
     if classifier not in CLASSIFIERS:
         raise ValueError("C++ requires an exact supported native classifier (not a host attestation)")
     canonical_api, c_abi_bootstrap, native_library = map(_required, (canonical_api, c_abi_bootstrap, native_library))
+    sdk_compatibility = _required(sdk_compatibility)
+    compatibility_bytes = sdk_compatibility.read_bytes()
+    if not compatibility_bytes:
+        raise ValueError("Imported C++ SDK compatibility declaration is empty")
     c_sdk_root = _required(c_sdk_root, directory=True)
+    _tree(c_sdk_root)
     _required(c_sdk_root / "include/codex_agent.h")
-    _required(c_sdk_root / "share/CodexAgent/native/sdk-compatibility.json")
+    existing_compatibility = c_sdk_root / COMPATIBILITY_RESOURCE
+    for parent in existing_compatibility.parents:
+        if parent == c_sdk_root:
+            break
+        if parent.exists() or parent.is_symlink():
+            _required(parent, directory=True)
+    if existing_compatibility.exists() and _required(existing_compatibility).read_bytes() != compatibility_bytes:
+        raise ValueError("C++ C SDK compatibility differs from the explicit imported declaration")
     relative = ("lib/libcodex_agent.dylib" if classifier.startswith("macos-") else
                 "lib/libcodex_agent.so" if classifier.startswith("linux-") else "bin/codex_agent.dll")
     if native_library != _required(c_sdk_root / relative):
@@ -141,7 +156,7 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                  ("lib/libcodex_agent.dll.a", "lib/codex_agent.lib") if classifier == "windows-x64" else ()):
         _required(c_sdk_root / name)
     output = Path(os.path.abspath(output.expanduser()))
-    _validate_output(output, (canonical_api, c_abi_bootstrap, c_sdk_root, native_library))
+    _validate_output(output, (canonical_api, c_abi_bootstrap, c_sdk_root, native_library, sdk_compatibility))
     _sources()
     _invalidate(output)
     try:
@@ -157,13 +172,21 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                 shutil.copytree(ROOT / name, source / name, symlinks=True,
                                 ignore=shutil.ignore_patterns("__pycache__"))
             _tree(source)
+            private_sdk = evidence / "imported-c-sdk"
+            shutil.copytree(c_sdk_root, private_sdk, symlinks=True)
+            _tree(private_sdk)
+            private_compatibility = private_sdk / COMPATIBILITY_RESOURCE
+            if private_compatibility.exists() and private_compatibility.read_bytes() != compatibility_bytes:
+                raise ValueError("C++ C SDK compatibility changed during private capture")
+            private_compatibility.parent.mkdir(parents=True, exist_ok=True)
+            private_compatibility.write_bytes(compatibility_bytes)
             environment = os.environ.copy()
             environment.update({"TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)})
             commands = (
                 ("configure.log", ["cmake", "-S", str(source), "-B", str(build),
                     "-DCMAKE_BUILD_TYPE=Release", "-DCODEX_AGENT_CPP_BUILD_TESTS=ON",
                     "-DCODEX_AGENT_CPP_PACKAGE_ONLY=OFF", "-DCODEX_AGENT_CPP_INSTALL_PACKAGE=OFF",
-                    f"-DCodexAgent_C_SDK_ROOT={c_sdk_root}", f"-DCodexAgent_NATIVE_CLASSIFIER={classifier}",
+                    f"-DCodexAgent_C_SDK_ROOT={private_sdk}", f"-DCodexAgent_NATIVE_CLASSIFIER={classifier}",
                     f"-DCodexAgent_CANONICAL_API_REPORT={canonical_api}",
                     f"-DCodexAgent_C_ABI_BOOTSTRAP_EVIDENCE={c_abi_bootstrap}"]),
                 ("build.log", ["cmake", "--build", str(build), "--config", "Release"]),
@@ -202,7 +225,7 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    for name in ("canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library", "output"):
+    for name in ("canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library", "sdk-compatibility", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--classifier", choices=CLASSIFIERS, required=True)
     return parser.parse_args(argv)
@@ -211,7 +234,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     produce(args.canonical_api, args.c_abi_bootstrap, args.c_sdk_root, args.native_library,
-            args.output, classifier=args.classifier)
+            args.output, classifier=args.classifier, sdk_compatibility=args.sdk_compatibility)
 
 
 if __name__ == "__main__":
