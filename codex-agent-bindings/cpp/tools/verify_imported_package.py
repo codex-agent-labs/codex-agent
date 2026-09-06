@@ -4,6 +4,8 @@
 Retained files are raw execution evidence, not receipts or host acceptance.
 CMake configuration may detect a compiler, but never installs or builds products.
 Archive extraction and original package/receipt authentication belong to the caller.
+package-tamper-results.tsv records all seven observed cases only after they pass;
+the original command/return-code/stdout logs remain alongside it as raw evidence.
 """
 
 from __future__ import annotations
@@ -92,7 +94,11 @@ def verify_imported_package(package_root: Path, output: Path, *, cmake: str,
         verifier = evidence / "test-program.py"
         shutil.copyfile(VERIFIER, verifier)
         # Execute the retained exact program, not a second negative-test model.
-        runpy.run_path(str(verifier))["verify_package"](cmake, baseline, evidence, libdir, library)
+        cases = runpy.run_path(str(verifier))["verify_package"](cmake, baseline, evidence, libdir, library)
+        contents = "caseId\texpectedExit\tactualExitCode\tstatus\tlogPath\n" + "".join(
+            "\t".join(map(str, case)) + "\n" for case in cases
+        )
+        (evidence / "package-tamper-results.tsv").write_bytes(contents.encode("utf-8"))
         _tree(evidence)
         evidence.rename(output)
 

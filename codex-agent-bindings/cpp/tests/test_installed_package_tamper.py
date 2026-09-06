@@ -10,19 +10,22 @@ import subprocess
 import tempfile
 
 
-def run(command: list[str], *, succeed: bool, log: Path | None = None) -> None:
+def run(command: list[str], *, succeed: bool, log: Path | None = None) -> int:
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if log is not None:
         log.write_text(f"command: {command!r}\nreturncode: {result.returncode}\n{result.stdout}", encoding="utf-8")
     if (result.returncode == 0) != succeed:
         raise SystemExit(f"unexpected command result {result.returncode}: {command}\n{result.stdout}")
+    return result.returncode
 
 
-def verify_package(cmake: str, baseline: Path, root: Path, libdir: str, library: str) -> None:
+def verify_package(cmake: str, baseline: Path, root: Path, libdir: str,
+                   library: str) -> list[tuple[str, str, int, str, str]]:
     """Run the original seven configure cases on an already materialized package.
 
     The caller owns input authentication, path safety and the private workspace.
     This performs no install, packaging, product build or receipt issuance.
+    Returned rows record observed execution; they are not authenticated receipts.
     """
     source = root / "consumer"
     source.mkdir()
@@ -33,13 +36,17 @@ def verify_package(cmake: str, baseline: Path, root: Path, libdir: str, library:
         encoding="utf-8",
     )
 
+    results: list[tuple[str, str, int, str, str]] = []
+
     def configure(prefix: Path, name: str, *, succeed: bool) -> None:
-        run([
+        log = root / f"configure-{name}.log"
+        returncode = run([
             cmake,
             "-S", str(source),
             "-B", str(root / f"build-{name}"),
             f"-DCodexAgent_DIR={prefix / libdir / 'cmake/CodexAgent'}",
-        ], succeed=succeed, log=root / f"configure-{name}.log")
+        ], succeed=succeed, log=log)
+        results.append((name, "zero" if succeed else "nonzero", returncode, "passed", log.name))
 
     configure(baseline, "baseline", succeed=True)
     members = (
@@ -64,6 +71,7 @@ def verify_package(cmake: str, baseline: Path, root: Path, libdir: str, library:
     shutil.copytree(baseline, missing_loader)
     (missing_loader / "share/CodexAgent/loader/native_loader.cpp").unlink()
     configure(missing_loader, "missing-loader", succeed=False)
+    return sorted(results)
 
 
 def main() -> int:

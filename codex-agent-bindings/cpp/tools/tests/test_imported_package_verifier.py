@@ -75,10 +75,36 @@ class ImportedPackageVerifierTest(unittest.TestCase):
         self.assertEqual(original, self.snapshot(self.package))
         self.assertEqual(original, self.snapshot(self.output / "baseline"))
         self.assertEqual(verifier.VERIFIER.read_bytes(), (self.output / "test-program.py").read_bytes())
-        for name in ("baseline", *(f"tampered-{index}" for index in range(4)), "missing-sidecar", "missing-loader"):
+        names = ("baseline", *(f"tampered-{index}" for index in range(4)), "missing-sidecar", "missing-loader")
+        contents = (self.output / "package-tamper-results.tsv").read_bytes()
+        self.assertNotIn(b"\r", contents)
+        self.assertTrue(contents.endswith(b"\n"))
+        rows = contents.decode("utf-8").splitlines()
+        self.assertEqual("caseId\texpectedExit\tactualExitCode\tstatus\tlogPath", rows[0])
+        self.assertEqual([
+            f"{name}\t{'zero' if name == 'baseline' else 'nonzero'}\t"
+            f"{0 if name == 'baseline' else 1}\tpassed\tconfigure-{name}.log"
+            for name in sorted(names)
+        ], rows[1:])
+        for name in names:
             self.assertIn(f"original configure fixture {name}",
                           (self.output / f"configure-{name}.log").read_text())
+            self.assertIn(f"\nreturncode: {0 if name == 'baseline' else 1}\n",
+                          (self.output / f"configure-{name}.log").read_text())
             self.assertTrue((self.output / f"build-{name}/CMakeCache.txt").is_file())
+
+    def test_case_inventory_records_actual_nonzero_exit_without_inventing_a_fixed_code(self):
+        def observed(command, **kwargs):
+            result = self.configure_fixture(command, **kwargs)
+            if Path(command[command.index("-B") + 1]).name == "build-tampered-2":
+                result.returncode = 7
+            return result
+
+        with patch.object(subprocess, "run", side_effect=observed):
+            self.invoke()
+        self.assertIn("tampered-2\tnonzero\t7\tpassed\tconfigure-tampered-2.log\n",
+                      (self.output / "package-tamper-results.tsv").read_text())
+        self.assertIn("\nreturncode: 7\n", (self.output / "configure-tampered-2.log").read_text())
 
     def test_missing_each_required_member_preserves_prior_output_without_cmake_or_deletion(self):
         self.output.mkdir()
