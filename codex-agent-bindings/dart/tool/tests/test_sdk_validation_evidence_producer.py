@@ -111,12 +111,18 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
             self.assertEqual(source_program, fixture.program.read_bytes())
             self.assertEqual({"compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence", "dart-execution.json"},
                              {path.name for path in fixture.output.iterdir()})
-            self.assertEqual(producer.NATIVE_RECEIPTS,
+            self.assertEqual(producer.NATIVE_ENTRIES,
                              {path.name for path in (fixture.output / "native-evidence").iterdir()})
+            leaf = fixture.output / "native-evidence" / producer.LEAF_EVIDENCE
+            self.assertEqual(producer.LEAF_FILES, {path.name for path in leaf.iterdir()})
+            self.assertEqual(fixture.leaf_source.read_bytes(), (leaf / "real-leaf-boundary.c").read_bytes())
+            self.assertEqual(b"fixture executable", (leaf / producer.LEAF_EXECUTABLE).read_bytes())
             self.assertEqual(source_program, (fixture.output / "test-program").read_bytes())
 
     def test_missing_or_extra_native_auxiliaries_cannot_become_full_proof(self):
-        for mutation in ("missing", "extra", "empty", "symlink"):
+        for mutation in ("missing", "extra", "empty", "symlink", "leaf-missing", "leaf-extra",
+                         "leaf-empty", "leaf-symlink", "classifier-mismatch", "schema-bool",
+                         "exit-float", "base64-padbits", "library-directory"):
             with self.subTest(mutation=mutation), Fixture() as fixture:
                 def run(command, *, cwd, env, check, stdout, stderr):
                     result = fixture.run(command, cwd=cwd, env=env, check=check, stdout=stdout, stderr=stderr)
@@ -128,13 +134,55 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                         (native / "undeclared.tsv").write_text("extra")
                     elif mutation == "empty":
                         path.write_text("")
-                    else:
+                    elif mutation == "symlink":
                         path.unlink()
                         path.symlink_to(fixture.api)
+                    elif mutation == "leaf-missing":
+                        (native / producer.LEAF_EVIDENCE / "compiler-execution.json").unlink()
+                    elif mutation == "leaf-extra":
+                        (native / producer.LEAF_EVIDENCE / "undeclared").write_text("extra")
+                    elif mutation == "leaf-empty":
+                        (native / producer.LEAF_EVIDENCE / producer.LEAF_EXECUTABLE).write_bytes(b"")
+                    elif mutation == "leaf-symlink":
+                        leaf = native / producer.LEAF_EVIDENCE / "real-leaf-boundary.c"
+                        leaf.unlink()
+                        leaf.symlink_to(fixture.api)
+                    elif mutation == "classifier-mismatch":
+                        (native / "host-classifier.txt").write_text("linux-x64\n")
+                    else:
+                        execution = native / producer.LEAF_EVIDENCE / "compiler-execution.json"
+                        value = json.loads(execution.read_text())
+                        if mutation == "schema-bool":
+                            value["schemaVersion"] = True
+                        elif mutation == "exit-float":
+                            value["exitCode"] = 0.0
+                        elif mutation == "base64-padbits":
+                            value["stdoutBase64"] = "AB=="
+                        else:
+                            value["runtimeLibraryDirectory"] = str(fixture.root / "wrong-library")
+                        execution.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
                     return result
                 with patch.object(producer.subprocess, "run", side_effect=run), self.assertRaises(ValueError):
                     fixture.produce()
                 self.assertFalse(fixture.output.exists())
+
+    def test_all_five_classifiers_use_real_boundaries_and_leaf_retains_lossless_execution(self):
+        root = Path(__file__).resolve().parents[2]
+        for name in ("agent_parity.dart", "host_parity.dart", "conversation_parity.dart",
+                     "leaf_service_parity.dart"):
+            source = (root / "test" / name).read_text()
+            self.assertIn("currentClassifier()", source, name)
+            self.assertNotIn("if (!Platform.isMacOS) return", source, name)
+            self.assertNotIn("real-macos-arm64", source, name)
+            self.assertNotIn("requires macOS Arm64", source, name)
+        leaf = (root / "test/leaf_service_parity.dart").read_text()
+        for expected in ("codex_agent.lib", "compiler-execution.json", "boundary-execution.json",
+                         "stdoutEncoding: null", "stderrEncoding: null", "'/WX'", "'-Werror'",
+                         "'/I${requiredCSdkInclude().path}'", "'PATH': <String>[",
+                         "'runtimeLibraryDirectory': runtimeLibraryDirectory", "currentClassifier()"):
+            self.assertIn(expected, leaf)
+        self.assertIn("if (!Platform.isWindows) '-fPIC'", leaf)
+        self.assertIn("if (!Platform.isWindows)\n            '-Wl,-rpath", leaf)
 
     def test_failed_and_incomplete_execution_invalidates_only_owned_output(self):
         with Fixture() as fixture:
@@ -322,6 +370,10 @@ class Fixture:
         self.repository = self.root / "repository"
         self.source = self.repository / "codex-agent-bindings/dart"
         self.program = self.file("repository/codex-agent-bindings/dart/test/enum_parity_test.dart", "original fixture program")
+        self.leaf_source = self.file(
+            "repository/codex-agent-bindings/dart/test/native/real_leaf_boundary.c",
+            "fixture real leaf source\n",
+        )
         self.file("repository/codex-agent-bindings/dart/lib/codex_agent.dart", "fixture source")
         self.source_compatibility = self.file(
             "repository/codex-agent-bindings/dart/lib/src/native/sdk-compatibility.json", "stale source declaration")
@@ -366,8 +418,49 @@ class Fixture:
         ))
         native = cwd / "build/parity"
         native.mkdir(parents=True)
-        for name in producer.NATIVE_RECEIPTS:
-            (native / name).write_text("fixture-only native evidence\n")
+        classifier = "macos-arm64"
+        (native / "host-classifier.txt").write_text(f"{classifier}\n")
+        receipts = {
+            "agent-native-tests.tsv":
+                "capabilityKey\tcSymbol\tclassifier\tstatus\nfixture.agent\tcodex_agent_fixture\tmacos-arm64\tpassed\n",
+            "host-native-tests.tsv":
+                "executedTestId\tnativeSymbol\tclassifier\tstatus\nfixture.host\tcodex_agent_fixture\tmacos-arm64\tpassed\n",
+            "conversation-real-sdk-receipt.tsv":
+                "capabilityKey\tpublicSymbol\texactNativeCalls\tclassifier\tboundary\tstatus\n"
+                "fixture.conversation\tConversation.fixture\tcodex_agent_fixture:1\tmacos-arm64\t"
+                "typed-null-handle\tpassed\n",
+            "leaf-real-sdk-receipt.tsv":
+                "capabilityKey\tpublicSymbol\texactNativeCalls\tclassifier\tboundary\tstatus\n"
+                "fixture.leaf\tLeaf.fixture\tcodex_agent_fixture\tmacos-arm64\tnull-handle\tpassed\n",
+        }
+        for name, contents in receipts.items():
+            (native / name).write_text(contents)
+        leaf = native / producer.LEAF_EVIDENCE
+        leaf.mkdir()
+        (leaf / "real-leaf-boundary.c").write_bytes((cwd / "test/native/real_leaf_boundary.c").read_bytes())
+        executable = leaf / producer.LEAF_EXECUTABLE
+        executable.write_bytes(b"fixture executable")
+        executable.chmod(0o755)
+        for name, command in (
+            ("compiler-execution.json", [
+                "cc",
+                str(leaf / "real-leaf-boundary.c"),
+                str(Path(env["CODEX_AGENT_REAL_LIBRARY"]).absolute()),
+                "-fPIC",
+                f"-Wl,-rpath,{Path(env['CODEX_AGENT_REAL_LIBRARY']).absolute().parent}",
+            ]),
+            ("boundary-execution.json", [str(executable)]),
+        ):
+            value = {
+                "classifier": classifier,
+                "command": command,
+                "exitCode": 0,
+                "runtimeLibraryDirectory": str(Path(env["CODEX_AGENT_REAL_LIBRARY"]).absolute().parent),
+                "schemaVersion": 1,
+                "stderrBase64": base64.b64encode(b"").decode(),
+                "stdoutBase64": base64.b64encode(b"fixture output\x00\xff").decode(),
+            }
+            (leaf / name).write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
         return subprocess.CompletedProcess(command, 0)
 
     def __enter__(self):

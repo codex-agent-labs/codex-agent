@@ -6,7 +6,7 @@ import 'package:codex_agent/codex_agent.dart';
 import 'package:codex_agent/src/client.dart'
     show createLeafServicesForTesting, leafNativeCallObserver;
 import 'package:codex_agent/src/ffi.dart'
-    show authenticatedRuntimeLibraryForTesting, nativeMemory;
+    show authenticatedRuntimeLibraryForTesting, currentClassifier, nativeMemory;
 import 'package:test/test.dart';
 
 import 'test_inputs.dart';
@@ -506,76 +506,180 @@ Future<void> verifyRealLeafBoundary(
   List<DartLeafClaim> claims,
   Directory root,
 ) async {
-  if (!Platform.isMacOS) return;
+  final classifier = currentClassifier();
   final source = File('${root.path}/codex-agent-bindings/'
       'dart/test/native/real_leaf_boundary.c');
   final expected = _verifyRealBoundarySource(claims, source.readAsStringSync());
   final library = requiredRealLibrary();
-  final architecture = await Process.run('uname', ['-m']);
-  if (architecture.exitCode != 0 ||
-      (architecture.stdout as String).trim() != 'arm64') {
-    throw StateError('real leaf receipt must execute on macOS Arm64');
-  }
-  final executable = '${Directory.systemTemp.path}/'
-      'codex_agent_dart_real_leaf_$pid';
-  final compile = await Process.run('cc', [
-    '-std=c11',
-    '-Wall',
-    '-Wextra',
-    '-Werror',
-    '-pedantic',
-    '-I',
-    requiredCSdkInclude().path,
-    source.absolute.path,
-    library.absolute.path,
-    '-Wl,-rpath,${library.absolute.parent.path}',
-    '-o',
-    executable,
-  ]);
-  if (compile.exitCode != 0) {
-    throw StateError('real leaf boundary compile failed: ${compile.stderr}');
-  }
-  try {
-    final run = await Process.run(executable, const []);
-    if (run.exitCode != 0) {
-      throw StateError('real leaf boundary failed: ${run.stderr}');
-    }
-    final executed = <String, int>{};
-    for (final line in const LineSplitter().convert(run.stdout as String)) {
-      final columns = line.split('\t');
-      if (columns.length != 3 || columns[2] != 'null-handle-rejected') {
-        throw StateError('malformed real leaf receipt: $line');
-      }
-      final status = int.parse(columns[1]);
-      if (status == 0 ||
-          executed.putIfAbsent(columns[0], () => status) != status) {
-        throw StateError('invalid real leaf boundary row: $line');
-      }
-    }
-    if (executed.length != 62 ||
-        !executed.keys.toSet().containsAll(expected) ||
-        !expected.containsAll(executed.keys)) {
-      throw StateError('real leaf boundary execution is incomplete or stale');
-    }
-    final output = Directory('${root.path}/codex-agent-bindings/dart/'
-        'build/parity')
-      ..createSync(recursive: true);
-    final sorted = claims.toList()
-      ..sort(
-          (left, right) => left.capabilityKey.compareTo(right.capabilityKey));
-    File('${output.path}/leaf-real-sdk-receipt.tsv').writeAsStringSync(
-      'capabilityKey\tpublicSymbol\texactNativeCalls\tboundary\tstatus\n'
-      '${sorted.map((claim) => <String>[
-            claim.capabilityKey,
-            claim.publicSymbols.single,
-            (_serviceCalls(claim)..sort()).join(','),
-            'real-macos-arm64-null-handle',
-            'passed',
-          ].join('\t')).join('\n')}\n',
+  final output = Directory('${root.path}/codex-agent-bindings/dart/'
+      'build/parity');
+  final nativeEvidence = Directory('${output.path}/leaf-real-sdk-evidence');
+  if (nativeEvidence.existsSync()) nativeEvidence.deleteSync(recursive: true);
+  nativeEvidence.createSync(recursive: true);
+  final retainedSource = File('${nativeEvidence.path}/real-leaf-boundary.c');
+  source.copySync(retainedSource.path);
+  final executable = File('${nativeEvidence.path}/real-leaf-boundary'
+      '${Platform.isWindows ? '.exe' : ''}');
+  final compiler = Platform.environment['CC']?.trim().isNotEmpty == true
+      ? Platform.environment['CC']!.trim()
+      : Platform.isWindows
+          ? 'cl'
+          : 'cc';
+  final compilerName = compiler.split(RegExp(r'[/\\]')).last.toLowerCase();
+  final importLibrary = File(
+    '${requiredCSdkInclude().parent.path}/lib/codex_agent.lib',
+  );
+  if (Platform.isWindows &&
+      !FileSystemEntity.isFileSync(importLibrary.path)) {
+    throw StateError(
+      'Windows real leaf boundary requires ${importLibrary.path}',
     );
-  } finally {
-    final file = File(executable);
-    if (file.existsSync()) file.deleteSync();
+  }
+  final object = File('${nativeEvidence.path}/real-leaf-boundary.obj');
+  final arguments = Platform.isWindows &&
+          (compilerName == 'cl' || compilerName == 'cl.exe')
+      ? <String>[
+          '/nologo',
+          '/std:c11',
+          '/W4',
+          '/WX',
+          '/I${requiredCSdkInclude().path}',
+          retainedSource.path,
+          importLibrary.path,
+          '/Fe:${executable.path}',
+          '/Fo${object.path}',
+        ]
+      : <String>[
+          '-std=c11',
+          '-Wall',
+          '-Wextra',
+          '-Werror',
+          '-pedantic',
+          if (!Platform.isWindows) '-fPIC',
+          '-I',
+          requiredCSdkInclude().path,
+          retainedSource.path,
+          Platform.isWindows ? importLibrary.path : library.absolute.path,
+          if (!Platform.isWindows)
+            '-Wl,-rpath,${library.absolute.parent.path}',
+          '-o',
+          executable.path,
+        ];
+  final command = <String>[compiler, ...arguments];
+  final compile = await Process.run(
+    compiler,
+    arguments,
+    workingDirectory: nativeEvidence.path,
+    stdoutEncoding: null,
+    stderrEncoding: null,
+  );
+  object.deleteSyncIfPresent();
+  _writeRealLeafExecution(
+    File('${nativeEvidence.path}/compiler-execution.json'),
+    classifier,
+    library.absolute.parent.path,
+    command,
+    compile,
+  );
+  if (compile.exitCode != 0) {
+    throw StateError(
+      'real leaf boundary compile failed: '
+      '${utf8.decode(compile.stderr as List<int>, allowMalformed: true)}',
+    );
+  }
+  if (!FileSystemEntity.isFileSync(executable.path) ||
+      executable.lengthSync() == 0) {
+    throw StateError('real leaf boundary compiler produced no executable');
+  }
+  final runtimeEnvironment = Platform.isWindows
+      ? <String, String>{
+          ...Platform.environment,
+          'PATH': <String>[
+            library.absolute.parent.path,
+            if ((Platform.environment['PATH'] ?? '').isNotEmpty)
+              Platform.environment['PATH']!,
+          ].join(';'),
+        }
+      : null;
+  final run = await Process.run(
+    executable.path,
+    const [],
+    workingDirectory: nativeEvidence.path,
+    environment: runtimeEnvironment,
+    stdoutEncoding: null,
+    stderrEncoding: null,
+  );
+  _writeRealLeafExecution(
+    File('${nativeEvidence.path}/boundary-execution.json'),
+    classifier,
+    library.absolute.parent.path,
+    <String>[executable.path],
+    run,
+  );
+  if (run.exitCode != 0) {
+    throw StateError(
+      'real leaf boundary failed: '
+      '${utf8.decode(run.stderr as List<int>, allowMalformed: true)}',
+    );
+  }
+  final executed = <String, int>{};
+  for (final line in const LineSplitter().convert(
+    utf8.decode(run.stdout as List<int>),
+  )) {
+    final columns = line.split('\t');
+    if (columns.length != 3 || columns[2] != 'null-handle-rejected') {
+      throw StateError('malformed real leaf receipt: $line');
+    }
+    final status = int.parse(columns[1]);
+    if (status == 0 ||
+        executed.putIfAbsent(columns[0], () => status) != status) {
+      throw StateError('invalid real leaf boundary row: $line');
+    }
+  }
+  if (executed.length != 62 ||
+      !executed.keys.toSet().containsAll(expected) ||
+      !expected.containsAll(executed.keys)) {
+    throw StateError('real leaf boundary execution is incomplete or stale');
+  }
+  output.createSync(recursive: true);
+  File('${output.path}/host-classifier.txt').writeAsStringSync('$classifier\n');
+  final sorted = claims.toList()
+    ..sort(
+        (left, right) => left.capabilityKey.compareTo(right.capabilityKey));
+  File('${output.path}/leaf-real-sdk-receipt.tsv').writeAsStringSync(
+    'capabilityKey\tpublicSymbol\texactNativeCalls\tclassifier\tboundary\tstatus\n'
+    '${sorted.map((claim) => <String>[
+          claim.capabilityKey,
+          claim.publicSymbols.single,
+          (_serviceCalls(claim)..sort()).join(','),
+          classifier,
+          'null-handle',
+          'passed',
+        ].join('\t')).join('\n')}\n',
+  );
+}
+
+void _writeRealLeafExecution(
+  File destination,
+  String classifier,
+  String runtimeLibraryDirectory,
+  List<String> command,
+  ProcessResult result,
+) {
+  destination.writeAsStringSync('${jsonEncode(<String, Object>{
+    'classifier': classifier,
+    'command': command,
+    'exitCode': result.exitCode,
+    'runtimeLibraryDirectory': runtimeLibraryDirectory,
+    'schemaVersion': 1,
+    'stderrBase64': base64Encode(result.stderr as List<int>),
+    'stdoutBase64': base64Encode(result.stdout as List<int>),
+  })}\n');
+}
+
+extension on File {
+  void deleteSyncIfPresent() {
+    if (existsSync()) deleteSync();
   }
 }
 

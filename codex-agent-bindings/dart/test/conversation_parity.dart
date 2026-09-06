@@ -21,6 +21,7 @@ import 'package:codex_agent/src/ffi.dart'
         OperationCallbackNative,
         StateCallbackNative,
         authenticatedRuntimeLibraryForTesting,
+        currentClassifier,
         nativeMemory,
         newHandleSlot;
 import 'package:test/test.dart';
@@ -186,14 +187,8 @@ Future<void> verifyRealConversationBoundary(
   List<DartConversationClaim> claims,
   Directory root,
 ) async {
-  if (!Platform.isMacOS) return;
+  final classifier = currentClassifier();
   final library = requiredRealLibrary();
-  final architecture = await Process.run('uname', const <String>['-m']);
-  if (architecture.exitCode != 0 ||
-      (architecture.stdout as String).trim() != 'arm64') {
-    throw StateError('real Dart conversation receipt requires macOS Arm64');
-  }
-
   final core = NativeApi.load(library.absolute.path);
   final api = ConversationNativeApi(core);
   final context = Pointer<CodexNativeContext>.fromAddress(0);
@@ -365,14 +360,15 @@ Future<void> verifyRealConversationBoundary(
       ..sort(
           (left, right) => left.capabilityKey.compareTo(right.capabilityKey));
     File('${output.path}/conversation-real-sdk-receipt.tsv').writeAsStringSync(
-      'capabilityKey\tpublicSymbol\texactNativeCalls\tboundary\tstatus\n'
+      'capabilityKey\tpublicSymbol\texactNativeCalls\tclassifier\tboundary\tstatus\n'
       '${sorted.map((claim) => <String>[
             claim.capabilityKey,
             claim.publicSymbols.single,
             (_headerCalls(claim)..sort())
                 .map((symbol) => '$symbol:${statuses[symbol]}')
                 .join(','),
-            'real-macos-arm64-typed-null-handle',
+            classifier,
+            'typed-null-handle',
             'passed',
           ].join('\t')).join('\n')}\n',
     );

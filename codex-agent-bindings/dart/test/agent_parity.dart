@@ -10,6 +10,7 @@ import 'package:codex_agent/src/ffi.dart'
         CodexNativeContext,
         NativeApi,
         authenticatedRuntimeLibraryForTesting,
+        currentClassifier,
         nativeMemory,
         newHandleSlot;
 import 'package:test/test.dart';
@@ -199,18 +200,12 @@ Future<void> verifyRealAgentBoundary(
   List<DartAgentClaim> claims,
   Directory root,
 ) async {
-  if (!Platform.isMacOS) return;
+  final classifier = currentClassifier();
   final library = requiredRealLibrary();
-  final architecture = await Process.run('uname', const <String>['-m']);
-  if (architecture.exitCode != 0 ||
-      (architecture.stdout as String).trim() != 'arm64') {
-    throw StateError('real Dart Agent receipt requires macOS Arm64');
-  }
-
   NativeApi.load(library.absolute.path);
   final dylib = authenticatedRuntimeLibraryForTesting(library.absolute.path);
   final output = newHandleSlot<Void>();
-  final rows = <String>['capabilityKey\tcSymbol\tstatus'];
+  final rows = <String>['capabilityKey\tcSymbol\tclassifier\tstatus'];
   try {
     final sorted = claims.toList()
       ..sort(
@@ -228,7 +223,7 @@ Future<void> verifyRealAgentBoundary(
       if (status == 0 || output.value != nullptr) {
         throw StateError('Agent boundary did not fail closed: $symbol');
       }
-      rows.add('${claim.capabilityKey}\t$symbol\tpassed');
+      rows.add('${claim.capabilityKey}\t$symbol\t$classifier\tpassed');
     }
   } finally {
     nativeMemory.free(output);

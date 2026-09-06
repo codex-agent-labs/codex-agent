@@ -32,6 +32,14 @@ NATIVE_RECEIPTS = {
     "agent-native-tests.tsv", "host-native-tests.tsv",
     "leaf-real-sdk-receipt.tsv", "conversation-real-sdk-receipt.tsv",
 }
+CLASSIFIERS = {"macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"}
+LEAF_EVIDENCE = "leaf-real-sdk-evidence"
+LEAF_EXECUTABLE = "real-leaf-boundary.exe" if os.name == "nt" else "real-leaf-boundary"
+LEAF_FILES = {
+    "real-leaf-boundary.c", LEAF_EXECUTABLE,
+    "compiler-execution.json", "boundary-execution.json",
+}
+NATIVE_ENTRIES = NATIVE_RECEIPTS | {"host-classifier.txt", LEAF_EVIDENCE}
 IGNORED = {"build", ".dart_tool", ".pub", ".git", "doc", "__pycache__"}
 NATIVE_RESOURCE = Path("lib/src/native")
 
@@ -144,6 +152,115 @@ def _verify_raw(evidence: Path) -> None:
         raise ValueError("Dart raw evidence requires exactly 556 unique passed tests")
 
 
+def _native_rows(path: Path, header: tuple[str, ...], classifier_column: int) -> list[list[str]]:
+    data = _required(path).read_bytes()
+    if not data.endswith(b"\n") or b"\r" in data:
+        raise ValueError("Dart native evidence must use LF-delimited UTF-8")
+    rows = list(csv.reader(data.decode("utf-8").splitlines(), delimiter="\t", strict=True))
+    if not rows or tuple(rows[0]) != header or len(rows) == 1:
+        raise ValueError("Dart native evidence header/inventory is invalid")
+    records = rows[1:]
+    if any(len(row) != len(header) or not all(row) for row in records):
+        raise ValueError("Dart native evidence rows are incomplete")
+    if records != sorted(records) or len({tuple(row) for row in records}) != len(records):
+        raise ValueError("Dart native evidence rows must be sorted and unique")
+    if any(row[classifier_column] not in CLASSIFIERS or row[-1] != "passed" for row in records):
+        raise ValueError("Dart native evidence classifier/status is invalid")
+    return records
+
+
+def _execution(path: Path, classifier: str, library: Path) -> list[str]:
+    raw = _required(path).read_bytes()
+    try:
+        def object_pairs(pairs):
+            value = dict(pairs)
+            if len(value) != len(pairs):
+                raise ValueError("Dart native execution evidence has duplicate keys")
+            return value
+        value = json.loads(raw, object_pairs_hook=object_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("Dart native execution evidence is invalid JSON") from error
+    keys = {
+        "classifier", "command", "exitCode", "runtimeLibraryDirectory",
+        "schemaVersion", "stderrBase64", "stdoutBase64",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError("Dart native execution evidence keys are invalid")
+    command = value["command"]
+    if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1 or
+            type(value["exitCode"]) is not int or value["exitCode"] != 0 or
+            value["classifier"] != classifier or
+            value["runtimeLibraryDirectory"] != str(library.absolute().parent) or
+            not isinstance(command, list) or not command or
+            any(not isinstance(item, str) or not item for item in command)):
+        raise ValueError("Dart native execution evidence identity is invalid")
+    for name in ("stderrBase64", "stdoutBase64"):
+        if not isinstance(value[name], str):
+            raise ValueError("Dart native execution bytes are invalid")
+        try:
+            decoded = base64.b64decode(value[name], validate=True)
+        except (ValueError, TypeError) as error:
+            raise ValueError("Dart native execution bytes are invalid") from error
+        if base64.b64encode(decoded).decode("ascii") != value[name]:
+            raise ValueError("Dart native execution bytes are not canonical Base64")
+    return command
+
+
+def _verify_native(native: Path, source: Path, sdk: Path, library: Path) -> None:
+    if not native.is_dir() or {path.name for path in native.iterdir()} != NATIVE_ENTRIES:
+        raise ValueError("Dart native auxiliary evidence is incomplete; host acceptance is unavailable")
+    classifier_bytes = _required(native / "host-classifier.txt").read_bytes()
+    if not classifier_bytes.endswith(b"\n") or b"\r" in classifier_bytes:
+        raise ValueError("Dart host classifier is not canonical")
+    try:
+        classifier = classifier_bytes[:-1].decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("Dart host classifier is not UTF-8") from error
+    if classifier not in CLASSIFIERS:
+        raise ValueError("Dart host classifier is unsupported")
+    receipts = {
+        "agent-native-tests.tsv": (("capabilityKey", "cSymbol", "classifier", "status"), 2),
+        "host-native-tests.tsv": (("executedTestId", "nativeSymbol", "classifier", "status"), 2),
+        "conversation-real-sdk-receipt.tsv": (
+            ("capabilityKey", "publicSymbol", "exactNativeCalls", "classifier", "boundary", "status"), 3),
+        "leaf-real-sdk-receipt.tsv": (
+            ("capabilityKey", "publicSymbol", "exactNativeCalls", "classifier", "boundary", "status"), 3),
+    }
+    for name, (header, column) in receipts.items():
+        rows = _native_rows(native / name, header, column)
+        if any(row[column] != classifier for row in rows):
+            raise ValueError("Dart native evidence does not match its host classifier")
+    leaf = _required(native / LEAF_EVIDENCE, directory=True)
+    if {path.name for path in leaf.iterdir()} != LEAF_FILES:
+        raise ValueError("Dart real leaf boundary evidence inventory is not exact")
+    for name in LEAF_FILES:
+        item = _required(leaf / name)
+        if item.stat().st_size == 0:
+            raise ValueError("Dart real leaf boundary evidence is empty")
+    if (leaf / "real-leaf-boundary.c").read_bytes() != source.read_bytes():
+        raise ValueError("Dart retained real leaf boundary source changed")
+    if os.name != "nt" and not os.access(leaf / LEAF_EXECUTABLE, os.X_OK):
+        raise ValueError("Dart retained real leaf boundary executable is not executable")
+    compiler = _execution(leaf / "compiler-execution.json", classifier, library)
+    boundary = _execution(leaf / "boundary-execution.json", classifier, library)
+    retained_source = str(leaf / "real-leaf-boundary.c")
+    executable = str(leaf / LEAF_EXECUTABLE)
+    if retained_source not in compiler or boundary != [executable]:
+        raise ValueError("Dart real leaf boundary command identity is invalid")
+    if classifier == "windows-x64":
+        imported = str(sdk / "lib" / "codex_agent.lib")
+        compiler_name = Path(compiler[0]).name.lower()
+        if (imported not in compiler or compiler_name not in {"cl", "cl.exe", "clang", "clang.exe"} or
+                "-fPIC" in compiler or any(value.startswith("-Wl,-rpath") for value in compiler)):
+            raise ValueError("Dart Windows real leaf import command is invalid")
+        expected_warning = "/WX" if compiler_name in {"cl", "cl.exe"} else "-Werror"
+        if expected_warning not in compiler:
+            raise ValueError("Dart Windows real leaf compiler flags are invalid")
+    elif (str(library.absolute()) not in compiler or "-fPIC" not in compiler or
+          not any(value.startswith("-Wl,-rpath") for value in compiler)):
+        raise ValueError("Dart POSIX real leaf library command is invalid")
+
+
 def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
             native_library: Path, output: Path, *, sdk_compatibility: Path,
             dart_executable: str = "dart",
@@ -210,15 +327,10 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                     raise
             _verify_raw(evidence)
             native = source / "build" / "parity"
-            if not native.is_dir() or {path.name for path in native.iterdir()} != NATIVE_RECEIPTS:
-                raise ValueError("Dart native auxiliary evidence is incomplete; host acceptance is unavailable")
+            private_leaf_source = source / "test" / "native" / "real_leaf_boundary.c"
+            _verify_native(native, private_leaf_source, sdk, library)
             native_output = evidence / "native-evidence"
-            native_output.mkdir()
-            for name in sorted(NATIVE_RECEIPTS):
-                original = _required(native / name)
-                if not original.stat().st_size:
-                    raise ValueError("Dart native auxiliary evidence is empty")
-                shutil.copyfile(original, native_output / name)
+            shutil.copytree(native, native_output, copy_function=shutil.copy2)
             shutil.copyfile(source / test_program.relative_to(ROOT), evidence / "test-program")
             execution = {"schemaVersion": 1, "exitCode": 0,
                          "outputBase64": base64.b64encode(_required(log).read_bytes()).decode("ascii")}

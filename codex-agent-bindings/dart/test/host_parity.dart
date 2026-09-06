@@ -261,21 +261,26 @@ Future<void> verifyRealHostBoundary(
   List<DartHostClaim> claims,
   Directory root,
 ) async {
-  if (!Platform.isMacOS) return;
+  final classifier = currentClassifier();
   final library = requiredRealLibrary();
   NativeApi.load(library.absolute.path);
   final dylib = authenticatedRuntimeLibraryForTesting(library.absolute.path);
   final api = NativeApi.load(library.absolute.path);
   final handle = newHandleSlot<Void>();
   final scalar = nativeMemory.allocate<Int32>(sizeOf<Int32>());
-  final rows = <String>['executedTestId\tnativeSymbol\tstatus'];
+  final rows = <String>[
+    'executedTestId\tnativeSymbol\tclassifier\tstatus'
+  ];
   try {
     for (final claim in claims.toList()
       ..sort(
           (left, right) => left.capabilityKey.compareTo(right.capabilityKey))) {
-      for (final symbol in _headers(claim)
+      final symbols = _headers(claim)
           .where((value) => value.startsWith('codex_agent_'))
-          .where((value) => !value.endsWith('_t'))) {
+          .where((value) => !value.endsWith('_t'))
+          .toList()
+        ..sort();
+      for (final symbol in symbols) {
         dylib.lookup<NativeFunction<Void Function()>>(symbol);
         handle.value = nullptr;
         scalar.value = 0;
@@ -334,7 +339,9 @@ Future<void> verifyRealHostBoundary(
         if (status == CodexStatus.ok.value || handle.value != nullptr) {
           throw StateError('Host boundary did not fail closed: $symbol');
         }
-        rows.add('${claim.executedTests.single}\t$symbol\tpassed');
+        rows.add(
+          '${claim.executedTests.single}\t$symbol\t$classifier\tpassed',
+        );
       }
     }
   } finally {
