@@ -2,6 +2,7 @@
 
 import importlib.util
 import io
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -23,8 +24,12 @@ class RustEvidenceProducerTest(unittest.TestCase):
         self.inputs = tuple(self.root / name for name in ("canonical.json", "bootstrap.json", "sdk", "native.dylib", "compatibility.json"))
         for path in (self.inputs[0], self.inputs[1], self.inputs[3], self.inputs[4]):
             path.write_text("declared fixture")
+        self.contract_digest = "sha256:" + "b" * 64
+        self.inputs[4].write_text(json.dumps({"contract": {"digest": self.contract_digest}}))
         (self.inputs[2] / "include").mkdir(parents=True)
         (self.inputs[2] / "include/codex_agent.h").write_text("fixture header")
+        (self.inputs[2] / "lib").mkdir()
+        (self.inputs[2] / "lib/codex_agent.lib").write_bytes(b"fixture import library")
         self.output = self.root / "output"
 
     def run_fixture(self, command, **kwargs):
@@ -40,8 +45,7 @@ class RustEvidenceProducerTest(unittest.TestCase):
         (raw / "compiler-evidence.tsv").write_text("compilerEvidenceId\tpublicSymbols\nfixture\tSymbol\n")
         (raw / "executed-tests.tsv").write_text("executedTestId\tstatus\n" +
             "".join(f"fixture-{index:03d}\tpassed\n" for index in range(556)))
-        for name in ("real-sdk-leaf-service-null-boundary.c", "real-sdk-leaf-service-null-boundary.tsv",
-                     "real-sdk-leaf-service-null-boundary", "value-header-evidence.c", "value-header-evidence.o"):
+        for name in (*producer.BOUNDARY_FILES, "value-header-evidence.c", "value-header-evidence.o"):
             (raw / name).write_bytes(b"original raw native fixture\x00" + name.encode())
         real_values = source / "target/real-value-graph"
         real_values.mkdir()
@@ -64,6 +68,8 @@ class RustEvidenceProducerTest(unittest.TestCase):
             self.assertEqual(str(value), env[name])
         self.assertEqual(str(self.inputs[3]), env["CODEX_AGENT_LIBRARY"])
         self.assertEqual("true", env["CARGO_NET_OFFLINE"])
+        self.assertEqual(self.contract_digest, env["CODEX_AGENT_TEST_CONTRACT_DIGEST"])
+        self.assertTrue(env["CC"])
         self.assertEqual(str(run.call_args.kwargs["cwd"] / "target"), env["CARGO_TARGET_DIR"])
         self.assertEqual(env["TMPDIR"], env["TMP"])
         self.assertEqual(env["TMPDIR"], env["TEMP"])
@@ -72,8 +78,7 @@ class RustEvidenceProducerTest(unittest.TestCase):
                           "cross-language-evidence", "real-value-graph", "scratch", "source"},
                          {path.name for path in self.output.iterdir()})
         self.assertEqual((producer.ROOT / "tests/enum_parity.rs").read_bytes(), (self.output / "test-program").read_bytes())
-        for name in ("real-sdk-leaf-service-null-boundary.c", "real-sdk-leaf-service-null-boundary.tsv",
-                     "real-sdk-leaf-service-null-boundary", "value-header-evidence.c", "value-header-evidence.o"):
+        for name in (*producer.BOUNDARY_FILES, "value-header-evidence.c", "value-header-evidence.o"):
             self.assertEqual(b"original raw native fixture\x00" + name.encode(),
                              (self.output / "cross-language-evidence" / name).read_bytes())
         self.assertEqual(b"original real-value fixture",
@@ -189,6 +194,58 @@ class RustEvidenceProducerTest(unittest.TestCase):
                 self.assertFalse(self.output.exists())
                 self.assertEqual(original_program, (producer.ROOT / "tests/enum_parity.rs").read_bytes())
                 self.assertFalse(any(self.root.glob(".rust-binding-evidence-*")))
+
+    def test_original_native_boundary_auxiliaries_are_mandatory_before_publication(self):
+        for name in producer.BOUNDARY_FILES:
+            for empty in (False, True):
+                with self.subTest(name=name, empty=empty):
+                    def incomplete(command, **kwargs):
+                        self.run_fixture(command, **kwargs)
+                        path = kwargs["cwd"] / "target/cross-language-evidence" / name
+                        if empty:
+                            path.write_bytes(b"")
+                        else:
+                            path.unlink()
+                    with patch.object(producer.subprocess, "run", side_effect=incomplete), self.assertRaises(ValueError):
+                        producer.produce(*self.inputs, self.output)
+                    self.assertFalse(self.output.exists())
+
+    def test_imported_contract_digest_overrides_environment_and_invalid_input_preserves_output(self):
+        with patch.dict(producer.os.environ, {"CODEX_AGENT_TEST_CONTRACT_DIGEST": "stale", "CC": "explicit-cc"}), \
+                patch.object(producer.subprocess, "run", side_effect=self.run_fixture) as run:
+            producer.produce(*self.inputs, self.output)
+        self.assertEqual(self.contract_digest, run.call_args.kwargs["env"]["CODEX_AGENT_TEST_CONTRACT_DIGEST"])
+        self.assertEqual("explicit-cc", run.call_args.kwargs["env"]["CC"])
+        before = (self.output / "test-program").read_bytes()
+        for digest in (None, "sha256:short", "sha256:" + "A" * 64, "sha256:" + "g" * 64):
+            self.inputs[4].write_text(json.dumps({"contract": {"digest": digest}}))
+            with patch.object(producer.subprocess, "run") as run, \
+                    self.assertRaisesRegex(ValueError, "exact Contract digest"):
+                producer.produce(*self.inputs, self.output)
+            run.assert_not_called()
+            self.assertEqual(before, (self.output / "test-program").read_bytes())
+
+    def test_native_executor_source_has_no_platform_noop_and_preserves_windows_threaded_ownership(self):
+        # Source wiring only; no Windows/macOS/Linux compilation or host result is inferred.
+        behavior = (producer.ROOT / "tests/support/value_behavior.rs").read_text()
+        lifecycle = (producer.ROOT / "tests/lifecycle.rs").read_text()
+        fixture = (producer.ROOT / "tests/fixtures/mock_codex_agent.c").read_text()
+        self.assertEqual(1, behavior.count("fn execute_real_sdk_null_boundaries("))
+        self.assertNotIn('#[cfg(all(target_os = "macos", target_arch = "aarch64"))]', behavior)
+        for exact in ('"real-sdk-leaf-service-null-boundary.exe"', 'join("lib/codex_agent.lib")',
+                      'assert_ne!(status, ffi_status_ok()'):
+            self.assertIn(exact, behavior)
+        self.assertRegex(behavior, r'compiler\s*\.arg\(&library\)')
+        self.assertRegex(behavior, r'runner\.env\(\s*"PATH"')
+        self.assertNotIn('#[cfg(all(target_os = "macos", target_arch = "aarch64"))]', lifecycle)
+        for exact in ('format!("{library_name}.dll")', 'fn real_imported_sdk_closes_before_release()',
+                      'CODEX_AGENT_TEST_CONTRACT_DIGEST', 'CODEX_AGENT_TEST_WRONG_CONTRACT_DIGEST',
+                      "digest.as_bytes()[7] == b'f'", 'assert_eq!(error.status, Status::InternalError)'):
+            self.assertIn(exact, lifecycle)
+        for exact in ("AcquireSRWLockExclusive", "ReleaseSRWLockExclusive", "Sleep(5)", "CreateThread(",
+                      "CloseHandle(worker)", "pthread_create(", "pthread_detach(",
+                      "atomic_store_explicit(&operation->worker_done, 1, memory_order_release)"):
+            self.assertIn(exact, fixture)
 
     def test_missing_artifact_and_unsafe_outputs_never_start_cargo(self):
         with patch.object(producer.subprocess, "run") as run:

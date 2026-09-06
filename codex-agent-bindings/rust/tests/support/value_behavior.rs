@@ -1,6 +1,5 @@
 use codex_agent::*;
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1932,7 +1931,6 @@ fn validate_host_rows(
     Ok(())
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn execute_real_sdk_null_boundaries(
     rows: &[Vec<&str>],
     bootstrap_claims: &BTreeMap<String, BootstrapClaim>,
@@ -1950,7 +1948,11 @@ fn execute_real_sdk_null_boundaries(
     let output = manifest_path("target/cross-language-evidence");
     std::fs::create_dir_all(&output).expect("create Rust service evidence directory");
     let source = output.join("real-sdk-leaf-service-null-boundary.c");
-    let executable = output.join("real-sdk-leaf-service-null-boundary");
+    let executable = output.join(if cfg!(windows) {
+        "real-sdk-leaf-service-null-boundary.exe"
+    } else {
+        "real-sdk-leaf-service-null-boundary"
+    });
     let mut program = String::from(
         "#include <stdio.h>\n#include \"codex_agent.h\"\nint main(void) {\n  int failures = 0;\n",
     );
@@ -1979,15 +1981,31 @@ fn execute_real_sdk_null_boundaries(
     program.push_str("  return failures == 0 ? 0 : 1;\n}\n");
     std::fs::write(&source, program).expect("write exact real-SDK boundary source");
     let library_directory = library.parent().expect("SDK library directory");
-    let compile = Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()))
+    let mut compiler = Command::new(std::env::var_os("CC").unwrap_or_else(|| {
+        if cfg!(windows) {
+            "clang".into()
+        } else {
+            "cc".into()
+        }
+    }));
+    compiler
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
         .arg(&source)
         .arg("-I")
-        .arg(header_path.parent().expect("header directory"))
-        .arg("-L")
-        .arg(library_directory)
-        .arg("-lcodex_agent")
-        .arg(format!("-Wl,-rpath,{}", library_directory.display()))
+        .arg(header_path.parent().expect("header directory"));
+    if cfg!(windows) {
+        let import_library = super::artifact_inputs::c_sdk_root().join("lib/codex_agent.lib");
+        assert!(
+            import_library.is_file(),
+            "declared Windows C SDK import library is missing"
+        );
+        compiler.arg(import_library);
+    } else {
+        compiler
+            .arg(&library)
+            .arg(format!("-Wl,-rpath,{}", library_directory.display()));
+    }
+    let compile = compiler
         .arg("-o")
         .arg(&executable)
         .output()
@@ -1997,7 +2015,18 @@ fn execute_real_sdk_null_boundaries(
         "real-SDK boundary compile failed:\n{}",
         String::from_utf8_lossy(&compile.stderr)
     );
-    let run = Command::new(&executable)
+    let mut runner = Command::new(&executable);
+    if cfg!(windows) {
+        let mut paths = vec![library_directory.to_path_buf()];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        runner.env(
+            "PATH",
+            std::env::join_paths(paths).expect("native DLL search path"),
+        );
+    }
+    let run = runner
         .output()
         .expect("execute exact real-SDK null boundary");
     assert!(
@@ -2042,13 +2071,9 @@ fn execute_real_sdk_null_boundaries(
     .expect("write exact real-SDK boundary receipt");
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const fn ffi_status_ok() -> i32 {
     0
 }
-
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-fn execute_real_sdk_null_boundaries(_: &[Vec<&str>], _: &BTreeMap<String, BootstrapClaim>) {}
 
 pub fn verify_and_execute(rows: &[Vec<&str>]) -> Evidence {
     assert_eq!(rows.len(), 556, "exact combined Rust claim count");

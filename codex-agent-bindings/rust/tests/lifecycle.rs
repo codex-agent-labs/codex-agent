@@ -55,17 +55,23 @@ fn compile_fixture_with_defines(
         directory.join(format!("lib{library_name}.dylib"))
     } else if cfg!(target_os = "linux") {
         directory.join(format!("lib{library_name}.so"))
+    } else if cfg!(windows) {
+        directory.join(format!("{library_name}.dll"))
     } else {
-        panic!("native mock compilation is supported on macOS and Linux")
+        panic!("unsupported native mock platform")
     };
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(source_name);
-    let mut command = Command::new("cc");
+    let mut command = Command::new(std::env::var_os("CC").unwrap_or_else(|| {
+        if cfg!(windows) {
+            "clang".into()
+        } else {
+            "cc".into()
+        }
+    }));
     command
         .arg("-std=gnu11")
-        .arg("-fPIC")
-        .arg("-pthread")
         .arg("-Wall")
         .arg("-Wextra")
         .arg("-Werror");
@@ -73,6 +79,33 @@ fn compile_fixture_with_defines(
         command.arg("-dynamiclib");
     } else {
         command.arg("-shared");
+    }
+    if !cfg!(windows) {
+        command.args(["-fPIC", "-pthread"]);
+    }
+    if let Some(value) = std::env::var_os("CODEX_AGENT_TEST_CONTRACT_DIGEST") {
+        let digest = value.to_str().expect("fixture Contract digest is UTF-8");
+        assert!(
+            digest.len() == 71
+                && digest.starts_with("sha256:")
+                && digest[7..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "fixture Contract digest must be exact lowercase SHA-256"
+        );
+        let wrong = format!(
+            "sha256:{}",
+            if digest.as_bytes()[7] == b'f' {
+                "0"
+            } else {
+                "f"
+            }
+            .repeat(64)
+        );
+        command.arg(format!("-DCODEX_AGENT_TEST_CONTRACT_DIGEST=\"{digest}\""));
+        command.arg(format!(
+            "-DCODEX_AGENT_TEST_WRONG_CONTRACT_DIGEST=\"{wrong}\""
+        ));
     }
     for definition in definitions {
         command.arg(format!("-D{definition}"));
@@ -82,7 +115,7 @@ fn compile_fixture_with_defines(
         .arg("-o")
         .arg(&output)
         .output()
-        .expect("run cc");
+        .expect("run fixture C compiler");
     assert!(
         result.status.success(),
         "mock C SDK compile failed:\n{}",
@@ -336,17 +369,16 @@ fn private_ffi_symbols_are_declared_by_the_c_sdk_header() {
     assert!(header.contains("#define CODEX_AGENT_ABI_VERSION_PATCH UINT32_C(0)"));
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
-#[ignore = "requires CODEX_AGENT_REAL_SDK pointing to the built macOS Arm64 C SDK"]
-fn real_macos_sdk_closes_before_release() {
+#[ignore = "requires CODEX_AGENT_REAL_SDK pointing to the imported matching-host C SDK"]
+fn real_imported_sdk_closes_before_release() {
     let path = std::env::var_os("CODEX_AGENT_REAL_SDK")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .expect("CODEX_AGENT_REAL_SDK must name a declared C SDK library");
     assert!(path.is_file(), "real C SDK is missing: {}", path.display());
     let _ = CodexNativeLibrary::take_cleanup_issues();
-    let native = CodexNativeLibrary::load(&path).expect("load real macOS C SDK");
+    let native = CodexNativeLibrary::load(&path).expect("load real matching-host C SDK");
 
     let unclosed =
         CodexHost::create_with_library(&native, host_options()).expect("create unclosed real host");

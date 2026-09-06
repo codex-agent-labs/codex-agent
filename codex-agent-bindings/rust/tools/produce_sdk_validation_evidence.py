@@ -8,6 +8,7 @@ Input authentication and final compiler/behavior/parity admission belong to the 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -21,6 +22,8 @@ CHECKOUT = ROOT.parents[1]
 SOURCE_MEMBERS = ("Cargo.toml", "Cargo.lock", "build.rs", "src", "tests", "parity", "README.md", "LICENSE")
 SOURCE_DIRECTORIES = frozenset(("src", "tests", "parity"))
 REPORTS = ("compiler-evidence.tsv", "executed-tests.tsv")
+BOUNDARY_FILES = ("real-sdk-leaf-service-null-boundary.c", "real-sdk-leaf-service-null-boundary.tsv",
+                  "real-sdk-leaf-service-null-boundary" + (".exe" if os.name == "nt" else ""))
 
 
 def _required(path: Path, *, directory: bool = False) -> Path:
@@ -100,6 +103,9 @@ def _rows(path: Path, header: str) -> list[list[str]]:
 
 
 def _verify_reports(directory: Path) -> None:
+    for name in BOUNDARY_FILES:
+        if not _required(directory / name).stat().st_size:
+            raise ValueError(f"Rust imported-library boundary evidence is empty: {name}")
     compiler = _rows(directory / REPORTS[0], "compilerEvidenceId\tpublicSymbols")
     if any(symbols.split(",") != sorted(set(symbols.split(","))) or
            any(not symbol for symbol in symbols.split(",")) for _, symbols in compiler):
@@ -114,8 +120,18 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
     canonical_api, c_abi_bootstrap, native_library, sdk_compatibility = map(
         _required, (canonical_api, c_abi_bootstrap, native_library, sdk_compatibility))
     compatibility_bytes = sdk_compatibility.read_bytes()
+    # This is fixture identity selection only; the unchanged real Rust loader
+    # validates the full imported declaration and Runtime identity independently.
+    declaration = json.loads(compatibility_bytes)
+    contract = declaration.get("contract") if isinstance(declaration, dict) else None
+    digest = contract.get("digest") if isinstance(contract, dict) else None
+    if (not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:")
+            or any(value not in "0123456789abcdef" for value in digest[7:])):
+        raise ValueError("Rust imported SDK compatibility requires an exact Contract digest")
     c_sdk_root = _required(c_sdk_root, directory=True)
     _required(c_sdk_root / "include/codex_agent.h")
+    if os.name == "nt":
+        _required(c_sdk_root / "lib/codex_agent.lib")
     output = Path(os.path.abspath(output.expanduser()))
     _validate_output(output, (canonical_api, c_abi_bootstrap, c_sdk_root, native_library, sdk_compatibility))
     _validate_sources(ROOT)
@@ -139,9 +155,11 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                 "CODEX_AGENT_C_ABI_BOOTSTRAP_EVIDENCE": str(c_abi_bootstrap),
                 "CODEX_AGENT_C_SDK_ROOT": str(c_sdk_root),
                 "CODEX_AGENT_REAL_SDK": str(native_library), "CODEX_AGENT_LIBRARY": str(native_library),
+                "CODEX_AGENT_TEST_CONTRACT_DIGEST": digest,
+                "CC": environment.get("CC") or ("clang" if os.name == "nt" else "cc"),
                 "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch),
             })
-            # Include the existing ignored macOS real-library tests, not just mock/unit proofs.
+            # Include the ignored matching-host real-library test, not just mock/unit proofs.
             with (evidence / "cargo-test.log").open("w+b") as log:
                 try:
                     subprocess.run(["cargo", "test", "--locked", "--offline", "--", "--include-ignored"],

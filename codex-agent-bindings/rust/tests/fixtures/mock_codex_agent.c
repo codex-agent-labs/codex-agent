@@ -3,12 +3,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
-#include <pthread.h>
 #include <time.h>
 
 #if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+/* Preserve the fixture's two statically initialized exclusive mutexes. */
+typedef SRWLOCK pthread_mutex_t;
+#define PTHREAD_MUTEX_INITIALIZER SRWLOCK_INIT
+static void pthread_mutex_lock(pthread_mutex_t *mutex) { AcquireSRWLockExclusive(mutex); }
+static void pthread_mutex_unlock(pthread_mutex_t *mutex) { ReleaseSRWLockExclusive(mutex); }
 #define API __declspec(dllexport)
 #else
+#include <pthread.h>
 #define API __attribute__((visibility("default")))
 #endif
 
@@ -20,7 +27,7 @@
 #define CODEX_AGENT_TEST_TARGET "linux-arm64"
 #elif defined(__linux__) && defined(__x86_64__)
 #define CODEX_AGENT_TEST_TARGET "linux-x64"
-#elif defined(_WIN32) && defined(_M_X64)
+#elif defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
 #define CODEX_AGENT_TEST_TARGET "windows-x64"
 #else
 #define CODEX_AGENT_TEST_TARGET "unsupported"
@@ -33,6 +40,12 @@
 #endif
 #ifndef CODEX_AGENT_TEST_CONTEXT_CREATE_STATUS
 #define CODEX_AGENT_TEST_CONTEXT_CREATE_STATUS 0
+#endif
+#ifndef CODEX_AGENT_TEST_CONTRACT_DIGEST
+#define CODEX_AGENT_TEST_CONTRACT_DIGEST "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#endif
+#ifndef CODEX_AGENT_TEST_WRONG_CONTRACT_DIGEST
+#define CODEX_AGENT_TEST_WRONG_CONTRACT_DIGEST "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 #endif
 
 typedef int32_t status_t;
@@ -204,10 +217,18 @@ static status_t start_operation(
     return 0;
 }
 
+#if defined(_WIN32)
+static DWORD WINAPI complete_operation_on_worker(LPVOID value) {
+#else
 static void *complete_operation_on_worker(void *value) {
+#endif
     operation_t *operation = (operation_t *)value;
+#if defined(_WIN32)
+    Sleep(5);
+#else
     struct timespec delay = { .tv_sec = 0, .tv_nsec = 5000000 };
     nanosleep(&delay, NULL);
+#endif
     if (atomic_exchange_explicit(&operation->callback_sent, 1, memory_order_acq_rel) == 0) {
         atomic_store_explicit(&operation->callback_active, 1, memory_order_release);
         atomic_store_explicit(&operation->complete, 1, memory_order_release);
@@ -215,7 +236,11 @@ static void *complete_operation_on_worker(void *value) {
         atomic_store_explicit(&operation->callback_active, 0, memory_order_release);
     }
     atomic_store_explicit(&operation->worker_done, 1, memory_order_release);
+#if defined(_WIN32)
+    return 0;
+#else
     return NULL;
+#endif
 }
 
 static status_t start_threaded_operation(
@@ -225,9 +250,15 @@ static status_t start_threaded_operation(
     operation_t **out_operation) {
     status_t status = start_operation(context, 0, 0, 2, callback, user_data, out_operation);
     if (status != 0) return status;
+#if defined(_WIN32)
+    HANDLE worker = CreateThread(NULL, 0, complete_operation_on_worker, *out_operation, 0, NULL);
+    if (worker == NULL) return 8;
+    CloseHandle(worker); /* Detach without changing callback/worker_done ownership. */
+#else
     pthread_t worker;
     if (pthread_create(&worker, NULL, complete_operation_on_worker, *out_operation) != 0) return 8;
     pthread_detach(worker);
+#endif
     return 0;
 }
 
@@ -243,49 +274,49 @@ API status_t codex_agent_runtime_identity(char *buffer, size_t *inout_size) {
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
-        "\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
         "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char schema[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
-        "\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
         "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":2,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char wrong_target[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
-        "\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
         "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"wrong-target\"}";
     static const char wrong_contract[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
-        "\"contractDigest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_WRONG_CONTRACT_DIGEST "\","
         "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char old_abi[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.12.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
-        "\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
         "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char incompatible_runtime[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.13.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
-        "\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
         "\"runtimeCompatibilityVersion\":\"0.3.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char above_actual_abi[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"1.14.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
-        "\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
         "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     static const char wrong_abi_major[] =
         "{\"appServerVersion\":\"0.149.0\",\"buildInputDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\","
         "\"cAbiVersion\":\"2.0.0\",\"componentId\":\"" CODEX_AGENT_TEST_COMPONENT_ID "\","
         "\"contractComponentDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
-        "\"contractDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+        "\"contractDigest\":\"" CODEX_AGENT_TEST_CONTRACT_DIGEST "\","
         "\"runtimeCompatibilityVersion\":\"0.2.0\",\"schemaVersion\":1,\"target\":\"" CODEX_AGENT_TEST_TARGET "\"}";
     const char *identity = valid;
     switch (atomic_load(&identity_mode)) {
