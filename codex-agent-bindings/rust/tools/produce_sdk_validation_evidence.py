@@ -3,6 +3,9 @@
 
 Outputs are raw execution evidence, not deterministic product payloads or receipts.
 Input authentication and final compiler/behavior/parity admission belong to the caller.
+Cargo's original artifact messages remain in cargo-test.log. Each reported test
+executable is retained at cargo-test-executables/<path relative to original target/>,
+so relocation never requires reopening its deleted original workspace path.
 """
 
 from __future__ import annotations
@@ -115,6 +118,63 @@ def _verify_reports(directory: Path) -> None:
         raise ValueError("Rust raw evidence must contain exactly 556 unique passed tests")
 
 
+def _retain_cargo_test_executables(log: Path, source: Path, evidence: Path) -> None:
+    target_root = source / "target"
+    artifacts: dict[Path, Path] = {}
+    finished = False
+    # Read only Cargo's compiler stream, before build-finished. Test stdout after
+    # that marker is raw evidence, never an executable discovery authority.
+    with log.open("rb") as stream:
+        for line in stream:
+            try:
+                message = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if not isinstance(message, dict):
+                continue
+            if message.get("reason") == "build-finished":
+                if message.get("success") is not True:
+                    raise ValueError("Cargo did not report a successful completed build")
+                finished = True
+                break
+            if message.get("reason") != "compiler-artifact":
+                continue
+            if message.get("manifest_path") != str(source / "Cargo.toml"):
+                continue
+            profile = message.get("profile")
+            if not isinstance(profile, dict) or profile.get("test") is not True:
+                continue
+            value = message.get("executable")
+            if not isinstance(value, str) or not value:
+                raise ValueError("Cargo test artifact is missing its executable")
+            executable = Path(value)
+            target = message.get("target")
+            source_path = target.get("src_path") if isinstance(target, dict) else None
+            if not isinstance(source_path, str):
+                raise ValueError("Cargo test artifact is missing its original source")
+            original = Path(source_path)
+            for path, owner, raw_path in ((executable, target_root, value), (original, source, source_path)):
+                if not path.is_absolute() or ".." in path.parts or str(path) != raw_path or (
+                    not path.is_relative_to(owner) or path == owner
+                    or any(item.is_symlink() for item in (path, *path.parents))
+                    or not path.is_file() or not path.stat().st_size
+                ):
+                    raise ValueError("Cargo test artifact path is missing, empty, symbolic or outside its owner")
+            if executable in artifacts or original in artifacts.values():
+                raise ValueError("Cargo emitted duplicate test executable/source artifacts")
+            artifacts[executable] = original
+    required_sources = {source / name for name in ("src/lib.rs", "tests/enum_parity.rs", "tests/lifecycle.rs")}
+    if not finished or not required_sources.issubset(set(artifacts.values())):
+        raise ValueError("Cargo test executable inventory is incomplete")
+    for executable in sorted(artifacts):
+        contents = executable.read_bytes()
+        destination = evidence / "cargo-test-executables" / executable.relative_to(target_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(executable, destination)
+        if destination.read_bytes() != contents or executable.read_bytes() != contents:
+            raise ValueError("Cargo test executable changed during evidence capture")
+
+
 def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
             native_library: Path, sdk_compatibility: Path, output: Path) -> None:
     canonical_api, c_abi_bootstrap, native_library, sdk_compatibility = map(
@@ -162,7 +222,7 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
             # Include the ignored matching-host real-library test, not just mock/unit proofs.
             with (evidence / "cargo-test.log").open("w+b") as log:
                 try:
-                    subprocess.run(["cargo", "test", "--locked", "--offline", "--", "--include-ignored"],
+                    subprocess.run(["cargo", "test", "--locked", "--offline", "--message-format=json", "--", "--include-ignored"],
                                    cwd=source, env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
                 except subprocess.CalledProcessError:
                     log.flush()
@@ -170,6 +230,7 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                     shutil.copyfileobj(log, sys.stderr.buffer)
                     sys.stderr.buffer.flush()
                     raise
+            _retain_cargo_test_executables(evidence / "cargo-test.log", source, evidence)
             raw = source / "target/cross-language-evidence"
             _verify_reports(raw)
             for name in REPORTS:

@@ -53,7 +53,20 @@ class RustEvidenceProducerTest(unittest.TestCase):
         scratch = Path(kwargs["env"]["TMPDIR"]) / "codex-agent-rust-enum-evidence-123"
         scratch.mkdir()
         (scratch / "codex-agent-enum-evidence").write_bytes(b"original enum executable")
-        kwargs["stdout"].write(b"synthetic Cargo command output; no compiler executed\n")
+        self.artifact_messages = []
+        for index, name in enumerate(("src/lib.rs", "tests/enum_parity.rs", "tests/lifecycle.rs")):
+            executable = source / f"target/debug/deps/test-runner-{index}"
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.write_bytes(b"synthetic executable\xff\x00" + name.encode())
+            self.artifact_messages.append({
+                "reason": "compiler-artifact", "manifest_path": str(source / "Cargo.toml"),
+                "profile": {"test": True}, "target": {"src_path": str(source / name)},
+                "executable": str(executable),
+            })
+        self.cargo_output = b"".join(json.dumps(message).encode() + b"\n" for message in (
+            *self.artifact_messages, {"reason": "build-finished", "success": True},
+        )) + b"synthetic Cargo/test output\xff\x00; no compiler executed\n"
+        kwargs["stdout"].write(self.cargo_output)
 
     def test_complete_offline_command_explicit_inputs_and_raw_only_outputs(self):
         self.output.mkdir()
@@ -61,7 +74,7 @@ class RustEvidenceProducerTest(unittest.TestCase):
         with patch.object(producer.subprocess, "run", side_effect=self.run_fixture) as run:
             producer.produce(*self.inputs, self.output)
         run.assert_called_once()
-        self.assertEqual(["cargo", "test", "--locked", "--offline", "--", "--include-ignored"], run.call_args.args[0])
+        self.assertEqual(["cargo", "test", "--locked", "--offline", "--message-format=json", "--", "--include-ignored"], run.call_args.args[0])
         env = run.call_args.kwargs["env"]
         for name, value in zip(("CODEX_AGENT_CANONICAL_API_REPORT", "CODEX_AGENT_C_ABI_BOOTSTRAP_EVIDENCE",
                                 "CODEX_AGENT_C_SDK_ROOT", "CODEX_AGENT_REAL_SDK"), self.inputs):
@@ -75,8 +88,13 @@ class RustEvidenceProducerTest(unittest.TestCase):
         self.assertEqual(env["TMPDIR"], env["TEMP"])
         self.assertTrue(run.call_args.kwargs["check"])
         self.assertEqual({"compiler-evidence.tsv", "executed-tests.tsv", "test-program", "cargo-test.log",
-                          "cross-language-evidence", "real-value-graph", "scratch", "source"},
+                          "cargo-test-executables", "cross-language-evidence", "real-value-graph", "scratch", "source"},
                          {path.name for path in self.output.iterdir()})
+        self.assertEqual(self.cargo_output, (self.output / "cargo-test.log").read_bytes())
+        for index, name in enumerate(("src/lib.rs", "tests/enum_parity.rs", "tests/lifecycle.rs")):
+            self.assertEqual(b"synthetic executable\xff\x00" + name.encode(),
+                             (self.output / f"cargo-test-executables/debug/deps/test-runner-{index}").read_bytes())
+        self.assertFalse(run.call_args.kwargs["cwd"].exists())
         self.assertEqual((producer.ROOT / "tests/enum_parity.rs").read_bytes(), (self.output / "test-program").read_bytes())
         for name in (*producer.BOUNDARY_FILES, "value-header-evidence.c", "value-header-evidence.o"):
             self.assertEqual(b"original raw native fixture\x00" + name.encode(),
@@ -91,6 +109,79 @@ class RustEvidenceProducerTest(unittest.TestCase):
                     self.assertEqual(path.read_bytes(), (self.output / "source" / path.relative_to(producer.ROOT)).read_bytes())
         self.assertFalse((self.output / "source/target").exists())
         self.assertEqual(self.inputs[4].read_bytes(), (self.output / "source/native/sdk-compatibility.json").read_bytes())
+
+    def test_cargo_test_executable_closure_rejects_missing_unsafe_or_incomplete_artifacts(self):
+        cases = ("missing", "empty", "symbolic", "symbolic-parent", "outside", "relative", "dotdot",
+                 "duplicate", "missing-message", "wrong-manifest", "wrong-source", "no-finish", "failed-finish")
+        for case in cases:
+            with self.subTest(case=case):
+                def invalid(command, **kwargs):
+                    self.run_fixture(command, **kwargs)
+                    messages = self.artifact_messages
+                    executable = Path(messages[0]["executable"])
+                    finish = {"reason": "build-finished", "success": True}
+                    if case == "missing":
+                        executable.unlink()
+                    elif case == "empty":
+                        executable.write_bytes(b"")
+                    elif case == "symbolic":
+                        executable.unlink()
+                        executable.symlink_to(self.inputs[0])
+                    elif case == "symbolic-parent":
+                        alias = kwargs["cwd"] / "target/alias"
+                        alias.symlink_to(executable.parent, target_is_directory=True)
+                        messages[0]["executable"] = str(alias / executable.name)
+                    elif case == "outside":
+                        messages[0]["executable"] = str(self.inputs[0])
+                    elif case == "relative":
+                        messages[0]["executable"] = "target/debug/deps/test-runner-0"
+                    elif case == "dotdot":
+                        messages[0]["executable"] = str(executable.parent / ".." / "deps" / executable.name)
+                    elif case == "duplicate":
+                        messages.append(messages[0])
+                    elif case == "missing-message":
+                        messages.pop()
+                    elif case == "wrong-manifest":
+                        messages[0]["manifest_path"] = str(self.root / "Cargo.toml")
+                    elif case == "wrong-source":
+                        messages[0]["target"]["src_path"] = str(self.inputs[0])
+                    elif case == "failed-finish":
+                        finish["success"] = False
+                    log = kwargs["stdout"]
+                    log.seek(0)
+                    log.truncate()
+                    for message in [*messages, *([] if case == "no-finish" else [finish])]:
+                        log.write(json.dumps(message).encode() + b"\n")
+
+                with patch.object(producer.subprocess, "run", side_effect=invalid), self.assertRaises(ValueError):
+                    producer.produce(*self.inputs, self.output)
+                self.assertFalse(self.output.exists())
+                self.assertEqual("declared fixture", self.inputs[0].read_text())
+
+    def test_test_stdout_cannot_add_artifacts_after_cargo_build_finished(self):
+        def additional(command, **kwargs):
+            self.run_fixture(command, **kwargs)
+            message = dict(self.artifact_messages[0], executable=str(self.inputs[0]))
+            kwargs["stdout"].write(json.dumps(message).encode() + b"\n")
+
+        with patch.object(producer.subprocess, "run", side_effect=additional):
+            producer.produce(*self.inputs, self.output)
+        self.assertEqual(3, len(list((self.output / "cargo-test-executables/debug/deps").iterdir())))
+
+    def test_corrupted_executable_capture_is_not_published(self):
+        copy = producer.shutil.copy2
+
+        def corrupt(source, destination, *args, **kwargs):
+            result = copy(source, destination, *args, **kwargs)
+            if "cargo-test-executables" in Path(destination).parts:
+                Path(destination).write_bytes(b"changed capture")
+            return result
+
+        with patch.object(producer.subprocess, "run", side_effect=self.run_fixture), \
+                patch.object(producer.shutil, "copy2", side_effect=corrupt), \
+                self.assertRaisesRegex(ValueError, "changed during evidence capture"):
+            producer.produce(*self.inputs, self.output)
+        self.assertFalse(self.output.exists())
 
     def test_source_native_payloads_are_excluded_and_only_explicit_compatibility_is_materialized(self):
         source = self.root / "stale-source"
