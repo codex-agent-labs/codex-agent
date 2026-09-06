@@ -3269,5 +3269,130 @@ class ProductReuseAdapterTest(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
+class ContractCatalogExecutionClosureTest(unittest.TestCase):
+    """Synthetic signed originals exercise transport, not hosted release admission."""
+
+    @classmethod
+    def setUpClass(cls):
+        from products.contract_attestation import build_contract_attestation, capture_contract_execution_closure
+        from ci.tests.test_contract_execution_closure import execution_closure_fixture
+
+        cls.temporary = tempfile.TemporaryDirectory(prefix="contract-catalog-closure-")
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.root = Path(cls.temporary.name).resolve()
+        cls.producer = {
+            "repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": COMMIT, "tree": TREE, "event": "pull_request",
+            "runId": 7, "runAttempt": 2, "pullRequest": 31,
+        }
+        payload, receipts, raw = execution_closure_fixture(cls.root / "original", producer=cls.producer)
+        closure = cls.root / "closure"
+        capture_contract_execution_closure(payload, receipts, raw, closure)
+        private, public, signing = generate_development_key(cls.root / "keys")
+        attestation = cls.root / "attestation"
+        build_contract_attestation(payload, receipts["metadata"], signing, private, public,
+                                   attestation, execution_closure=closure)
+        stored = store_local_object(payload.parent.parent, receipts["metadata"], cls.root / "objects")
+        receipt_bytes = receipts["metadata"].read_bytes()
+        receipt = product_inventory.load_canonical_json_bytes(receipt_bytes)
+        envelope = {"receipt": receipt, "receiptSha256": stored["receiptSha256"]}
+        entry = ProductReuseAdapterTest.product_index_entry(envelope)
+        index = {
+            "schemaVersion": 1, "repository": cls.producer["repository"],
+            "context": {"kind": "pull-request", "pullRequest": 31, "commit": COMMIT,
+                        "tree": TREE, "runId": 7, "runAttempt": 2},
+            "entries": [entry], "trustDomain": "development", "signing": signing,
+            "producer": cls.producer,
+        }
+        manifest = cls.root / "product-index.json"
+        manifest.write_bytes(canonical_json_bytes(index))
+        signature = sign_manifest(manifest, private, signing)
+        cls.object_relative = product_reuse.object_relative_path(receipt["buildKey"], stored["receiptSha256"])
+        cls.build_key = receipt["buildKey"]
+        cls.files = {
+            "product-index.json": manifest.read_bytes(), "product-index.sig": signature.read_bytes(),
+            "public-key.pub": public.read_bytes(), cls.object_relative: stored["path"].read_bytes(),
+            **{path.relative_to(attestation).as_posix(): path.read_bytes()
+               for path in attestation.rglob("*") if path.is_file()},
+        }
+        # A second internally valid closure keeps product bytes but has different original execution evidence.
+        other_payload, other_receipts, other_raw = execution_closure_fixture(
+            cls.root / "other-original", context="second", producer={**cls.producer, "runId": 8})
+        other_closure = cls.root / "other-closure"
+        capture_contract_execution_closure(other_payload, other_receipts, other_raw, other_closure)
+        cls.other_closure = {"execution-closure/" + path.relative_to(other_closure).as_posix(): path.read_bytes()
+                             for path in other_closure.rglob("*") if path.is_file()}
+        cls.original_inventory = product_inventory.regular_file_inventory(cls.root, allow_empty=True)
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="contract-catalog-import-")
+        self.addCleanup(temporary.cleanup)
+        self.destination = Path(temporary.name).resolve()
+
+    def tearDown(self):
+        self.assertEqual(self.original_inventory, product_inventory.regular_file_inventory(self.root, allow_empty=True))
+
+    def materialize(self, changes=None, *, name="capture"):
+        files = dict(self.files)
+        for relative, contents in (changes or {}).items():
+            if contents is None:
+                files.pop(relative)
+            else:
+                files[relative] = contents
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+            for relative, contents in sorted(files.items()):
+                archive.writestr(relative, contents)
+        artifact = {"id": 71, "workflow_run": {"id": 7, "head_sha": "f" * 40},
+                    "digest": sha256_bytes(buffer.getvalue()), "expired": False}
+        run = {
+            "id": 7, "run_attempt": 2, "status": "completed", "conclusion": "success",
+            "path": self.producer["workflowPath"], "event": "pull_request", "head_sha": "f" * 40,
+            "repository": {"full_name": self.producer["repository"], "fork": False},
+            "head_repository": {"full_name": self.producer["repository"], "fork": False},
+            "pull_requests": [{"number": 31, "base": {"sha": "c" * 40}, "head": {"sha": "f" * 40}}],
+        }
+        tested = {"sha": COMMIT, "tree": {"sha": TREE}, "parents": [{"sha": "c" * 40}, {"sha": "f" * 40}]}
+        with mock.patch.object(product_reuse, "download_artifact", return_value=buffer.getvalue()), \
+                mock.patch.object(product_reuse, "api_json", side_effect=[run, tested]):
+            return product_reuse._materialize_catalog(
+                "same-pr", artifact, "not-a-real-token", self.destination / name,
+                self.producer["repository"], 31, None, api="https://api.github.test")
+
+    def test_complete_signed_catalog_preserves_original_closure_and_object_bytes(self):
+        catalog = self.materialize()
+        imported = catalog.contract_attestation.parent
+        self.assertEqual(set(self.files), product_reuse._catalog_files(imported))
+        for relative, contents in self.files.items():
+            self.assertEqual(contents, (imported / relative).read_bytes(), relative)
+        self.assertEqual(self.files[self.object_relative], catalog.objects[self.build_key].read_bytes())
+
+    def test_absent_metadata_object_retains_closure_as_safe_missing_object(self):
+        catalog = self.materialize({self.object_relative: None})
+        self.assertNotIn(self.build_key, catalog.objects)
+        self.assertEqual([{"buildKey": self.build_key, "objectPath": None}], catalog.request["objects"])
+        for relative, contents in self.files.items():
+            if relative.startswith("execution-closure/"):
+                self.assertEqual(contents, (catalog.contract_attestation.parent / relative).read_bytes())
+
+    def test_missing_extra_tampered_or_crosspaired_closure_fails(self):
+        closure_files = [relative for relative in self.files if relative.startswith("execution-closure/")]
+        receipt = "execution-closure/receipts/binary.json"
+        raw_archive = next(relative for relative in closure_files if relative.endswith(".zip"))
+        cases = [
+            {relative: None for relative in closure_files},
+            {receipt: None},
+            {"execution-closure/unexpected.txt": b"unexpected\n"},
+            {receipt: self.files[receipt] + b" "},
+            {raw_archive: self.files[raw_archive][:-1] + bytes([self.files[raw_archive][-1] ^ 1])},
+            self.other_closure,
+            {"codex-agent-contract-0.2.0.attestation.sig": b"invalid signature\n"},
+        ]
+        for number, changes in enumerate(cases):
+            with self.subTest(number=number), self.assertRaises(ValueError):
+                self.materialize(changes, name=f"invalid-{number}")
+
+
 if __name__ == "__main__":
     unittest.main()

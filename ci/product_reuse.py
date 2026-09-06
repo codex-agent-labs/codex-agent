@@ -19,7 +19,9 @@ from impact import validate_legacy_lane_projection, validate_remote_build_author
 from receipt import safe_extract
 from reuse import api_json, download_artifact, github_output, paginated_items, run_matches_pr
 from products.aggregate import RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS, validate_product_index
-from products.contract_attestation import validate_contract_attestation, verify_contract_execution_closure
+from products.contract_attestation import (
+    validate_contract_attestation, verify_contract_attestation, verify_contract_execution_closure,
+)
 from products.inventory import (
     canonical_json_bytes,
     git_regular_blob_bytes,
@@ -39,6 +41,7 @@ from products.inventory import (
     sha256_bytes,
     snapshot_regular_tree,
     tree_entries,
+    verify_regular_file_inventory,
     verified_zip_contents,
     write_canonical_json,
 )
@@ -49,6 +52,7 @@ from products.registry import (
     phase_instance_dependencies,
     required_toolchain_profile,
 )
+from products.index import _verify_index_receipt
 from products.plan import (
     NOT_APPLICABLE_FLAGS_DIGEST,
     NOT_APPLICABLE_TOOLCHAIN_DIGEST,
@@ -84,7 +88,7 @@ from products.reuse import (
 )
 from products.native_runtime_inputs import load_native_runtime_evidence, stage_native_runtime_evidence
 from products.selection import classify_paths
-from products.signatures import load_keyring, public_key_for_metadata
+from products.signatures import load_keyring, public_key_for_metadata, public_key_path
 from products.toolchain import load_toolchain_profile_bytes
 
 
@@ -461,17 +465,23 @@ def capture_contract_ci_artifact(
 def capture_contract_original_ci_phases(
     capture_root: Path, destination: Path, *, contract_version: str,
     trusted_workflow_sha: str, token: str,
+    release_handoffs: tuple[Path, ...] = (), keyring: Path | None = None,
+    keys_directory: Path | None = None,
 ) -> dict[str, Any]:
-    """Bind original CI uploads to exact retained receipts; never mint release trust."""
+    """Bind original CI or release-attested receipts; never authorize new signing."""
     require_semver(contract_version, "Original Contract version")
+    if bool(release_handoffs) != (keyring is not None and keys_directory is not None) or \
+            (keyring is None) != (keys_directory is None):
+        raise ValueError("Retained release Contract handoffs require caller-owned keyring and keys only")
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("Original Contract CI destination must not exist")
     source = Path(capture_root)
-    resolved_source = source.resolve(strict=True)
     resolved_destination = destination.parent.resolve(strict=False) / destination.name
-    if resolved_source == resolved_destination or resolved_source in resolved_destination.parents or resolved_destination in resolved_source.parents:
-        raise ValueError("Original Contract CI capture source and destination must not overlap")
+    for original in (source, *release_handoffs, *(path for path in (keyring, keys_directory) if path is not None)):
+        resolved_source = Path(original).resolve(strict=True)
+        if resolved_source == resolved_destination or resolved_source in resolved_destination.parents or resolved_destination in resolved_source.parents:
+            raise ValueError("Original Contract CI capture source and destination must not overlap")
     phases = ("binary", "package", "validation", "metadata")
     with tempfile.TemporaryDirectory(prefix="contract-original-ci-") as temporary:
         root = Path(temporary).resolve()
@@ -482,10 +492,51 @@ def capture_contract_original_ci_phases(
         originals = {phase: read_regular_file_bytes(capture / f"execution-closure/receipts/{phase}.json",
                      max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) for phase in phases}
         producers = {phase: load_canonical_json_bytes(raw)["producer"] for phase, raw in originals.items()}
-        observed = verify_contract_producer_runs(producers, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        releases = {}
+        if release_handoffs:
+            policy = prepared / "release-policy"
+            policy.mkdir()
+            captured_keyring = policy / "keyring.json"
+            captured_keyring.write_bytes(read_regular_file_bytes(keyring, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+            captured_keys = policy / "keys"
+            captured_keys.mkdir()
+            public_policy = load_keyring(captured_keyring, keys_directory)
+            for record in ([public_policy["activeKey"]] if public_policy["activeKey"] else []) + public_policy["retiredKeys"]:
+                key_id = record["keyId"]
+                (captured_keys / f"{key_id}.pub").write_bytes(read_regular_file_bytes(
+                    public_key_path(keys_directory, key_id), max_bytes=1024 * 1024, reject_symlink_parents=True))
+            load_keyring(captured_keyring, captured_keys)
+            for number, original in enumerate(release_handoffs):
+                retained = prepared / "release-handoffs" / str(number)
+                snapshot_regular_tree(original, retained)
+                stem = f"codex-agent-contract-{contract_version}"
+                payload = retained / f"{stem}.zip"
+                closure = retained / "execution-closure"
+                verify_contract_attestation(
+                    payload, closure / "receipts/metadata.json",
+                    retained / f"{stem}.attestation.json", retained / f"{stem}.attestation.sig",
+                    retained / "public-key.pub", required_trust_domain="release",
+                    keyring=captured_keyring, keys_directory=captured_keys)
+                expected = {payload.name, "public-key.pub", f"{stem}.attestation.json", f"{stem}.attestation.sig",
+                            "execution-closure/contract-execution-closure.json",
+                            "execution-closure/execution/contract-execution.zip",
+                            *(f"execution-closure/receipts/{phase}.json" for phase in phases)}
+                if {record["relativePath"] for record in regular_file_inventory(retained)} != expected:
+                    raise ValueError("Retained release Contract handoff inventory is not exact")
+                matching = [phase for phase in phases if read_regular_file_bytes(
+                    closure / f"receipts/{phase}.json", max_bytes=16 * 1024 * 1024,
+                    reject_symlink_parents=True) == originals[phase]]
+                if not matching:
+                    raise ValueError("Retained release Contract handoff proves no requested original phase")
+                for phase in matching:
+                    releases.setdefault(phase, number)
+        ci_phases = tuple(phase for phase in phases if phase not in releases)
+        observed = _observe_contract_producer_runs(
+            {phase: producers[phase] for phase in ci_phases}, phases=ci_phases,
+            trusted_workflow_sha=trusted_workflow_sha, token=token)
         attempts = {(value["run"]["id"], value["run"]["run_attempt"]): value for value in observed}
         inventories, artifacts = {}, {}
-        for phase in phases:
+        for phase in ci_phases:
             producer = producers[phase]
             run_id = producer["runId"]
             if run_id not in inventories:
@@ -524,6 +575,8 @@ def capture_contract_original_ci_phases(
             artifacts[phase] = artifact
         evidence = {"observed": observed, "artifacts": artifacts,
                     "receiptSha256s": {phase: sha256_bytes(raw) for phase, raw in originals.items()}}
+        if release_handoffs:
+            evidence["releaseAttestations"] = releases
         write_canonical_json(prepared / "transport/original-ci-phases.json", evidence)
         publish_regular_tree(prepared, destination)
     return evidence
@@ -754,6 +807,10 @@ def _materialize_catalog(
         contract_attestation = extracted / f"codex-agent-contract-{version}.attestation.json"
         contract_attestation_signature = extracted / f"codex-agent-contract-{version}.attestation.sig"
         controls.update({contract_attestation.name, contract_attestation_signature.name})
+        controls.update({"execution-closure/contract-execution-closure.json",
+                         "execution-closure/execution/contract-execution.zip",
+                         *(f"execution-closure/receipts/{phase}.json"
+                           for phase in ("binary", "package", "validation", "metadata"))})
     actual = _catalog_files(extracted)
     native_root = extracted / "native-runtime-evidence"
     native_records = []
@@ -797,6 +854,36 @@ def _materialize_catalog(
                 release_trust.keys,
                 allow_retired=True,
             )
+        closure_bytes = read_regular_file_bytes(
+            extracted / "execution-closure/contract-execution-closure.json",
+            max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        if sha256_bytes(closure_bytes) != attestation["executionClosureSha256"]:
+            raise ValueError("Contract catalog closure differs from its original attestation")
+        closure = require_exact_keys(load_canonical_json_bytes(closure_bytes),
+            {"schemaVersion", "product", "contractVersion", "payload", "files"}, "Contract catalog execution closure")
+        verify_regular_file_inventory(extracted / "execution-closure", sorted([
+            *require_array(closure["files"], "Contract catalog execution closure files"),
+            {"relativePath": "contract-execution-closure.json", "bytes": len(closure_bytes),
+             "sha256": sha256_bytes(closure_bytes)},
+        ], key=lambda record: record["relativePath"]), with_kind=False)
+        entry = contract_entries[0]
+        metadata_object = objects.get(entry["buildKey"])
+        if metadata_object is not None:
+            if contract_public_key is None:
+                raise ValueError("Contract catalog lacks caller-owned attestation trust")
+            with tempfile.TemporaryDirectory(prefix="contract-catalog-closure-") as temporary:
+                stage = Path(temporary).resolve() / "stage"
+                restored = restore_object(metadata_object, stage,
+                    build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+                _verify_index_receipt(entry, {**restored, "receiptSha256": sha256_bytes(restored["receiptBytes"])})
+                receipt = stage.parent / "metadata-receipt.json"
+                receipt.write_bytes(restored["receiptBytes"])
+                verify_contract_attestation(
+                    stage / f"outputs/codex-agent-contract-{entry['productVersion']}.zip",
+                    receipt, contract_attestation, contract_attestation_signature, contract_public_key,
+                    required_trust_domain="development" if source == "same-pr" else "release",
+                    keyring=release_trust.keyring if source != "same-pr" and release_trust else None,
+                    keys_directory=release_trust.keys if source != "same-pr" and release_trust else None)
     request_objects = [{
         "buildKey": entry["buildKey"],
         "objectPath": _relative(destination, objects[entry["buildKey"]])
@@ -2600,6 +2687,9 @@ def parser() -> argparse.ArgumentParser:
     originals_command.add_argument("--destination", type=Path, required=True)
     originals_command.add_argument("--contract-version", required=True)
     originals_command.add_argument("--trusted-workflow-sha", required=True)
+    originals_command.add_argument("--release-handoff", type=Path, action="append", default=[])
+    originals_command.add_argument("--keyring", type=Path)
+    originals_command.add_argument("--keys-directory", type=Path)
     return result
 
 
@@ -2648,7 +2738,9 @@ def main(argv: list[str] | None = None) -> int:
         elif arguments.command == "capture-contract-original-ci":
             capture_contract_original_ci_phases(
                 arguments.capture_root, arguments.destination, contract_version=arguments.contract_version,
-                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
+                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
+                release_handoffs=tuple(arguments.release_handoff),
+                keyring=arguments.keyring, keys_directory=arguments.keys_directory)
         else:
             materialize_contract(
                 arguments.plan,
