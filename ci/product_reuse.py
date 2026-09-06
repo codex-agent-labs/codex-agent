@@ -107,7 +107,7 @@ _WAVE_REQUEST_KEYS = {
 }
 _NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
 _ADAPTER_REQUEST_KEY = "adapterRuntimeComparisonEvidence"
-_SDK_REQUEST_KEYS = {"sdkValidationEvidence", "sdkValidationTooling"}
+_SDK_REQUEST_KEYS = {"sdkValidationEvidence"}
 _VERSION_PATHS = {
     "contract": "gradle/release/versions/contract.txt",
     "runtime-release": "gradle/release/versions/runtime.txt",
@@ -1148,6 +1148,8 @@ def _rebase_native_evidence_paths(value, source_root: Path, repository_root: Pat
 
 
 def _rebase_native_request(request, source_root, artifact_root):
+    if "sdkValidationTooling" in request:
+        raise ValueError("Retained SDK evidence cannot supply current-invocation tooling authority")
     result = {key: _rebase_native_evidence_paths(request[key], source_root, artifact_root,
                                              comparison=key == "nativeRuntimeComparisonEvidence")
             for key in _NATIVE_REQUEST_KEYS if key in request}
@@ -1155,9 +1157,6 @@ def _rebase_native_request(request, source_root, artifact_root):
         result[_ADAPTER_REQUEST_KEY] = rebase_adapter_comparison_records(request[_ADAPTER_REQUEST_KEY], source_root, artifact_root)
     if "sdkValidationEvidence" in request:
         result["sdkValidationEvidence"] = rebase_sdk_validation_records(request["sdkValidationEvidence"], source_root, artifact_root)
-    if "sdkValidationTooling" in request:
-        # Invocation-owned absolute tooling policy is not a transported SDK evidence path.
-        result["sdkValidationTooling"] = request["sdkValidationTooling"]
     return result
 
 

@@ -1967,12 +1967,18 @@ class ProductReuseAdapterTest(unittest.TestCase):
         record = {"receiptSha256": "sha256:" + "a" * 64, "component": "python", "target": "linux-x64",
                   **{field: field for field in ("packageStage", "packageReceipt", "compatibilityRequest", "runtimeStages",
                                                 "stagedSdks", "validationStage", "validationReceipt")}}
-        tooling = {"caller-owned": "not transported evidence"}
-        rebased = product_reuse._rebase_native_request({"sdkValidationEvidence": [record], "sdkValidationTooling": tooling},
+        rebased = product_reuse._rebase_native_request({"sdkValidationEvidence": [record]},
                                                        self.root / "original", self.root)
         self.assertEqual("original/validationStage", rebased["sdkValidationEvidence"][0]["validationStage"])
         self.assertEqual(record["receiptSha256"], rebased["sdkValidationEvidence"][0]["receiptSha256"])
-        self.assertIs(tooling, rebased["sdkValidationTooling"])
+        with self.assertRaisesRegex(ValueError, "current-invocation tooling authority"):
+            product_reuse._rebase_native_request({"sdkValidationEvidence": [record], "sdkValidationTooling": {}},
+                                                 self.root / "original", self.root)
+        request = self.root / "retained-with-tooling.json"
+        request.write_bytes(canonical_json_bytes({**{name: None for name in product_reuse._WAVE_REQUEST_KEYS},
+                                                 "sdkValidationTooling": {}}))
+        with self.assertRaises(ValueError):
+            product_reuse._wave_control(request, "untrusted retained request")
 
     def test_outer_jvm_handoff_orders_five_reports_and_rejects_cross_pairing(self) -> None:
         root = self.root.resolve()
