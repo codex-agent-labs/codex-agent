@@ -23,6 +23,7 @@ from ci.products.contract_model import verify_extracted_contract_directory
 from ci.products.inventory import (
     load_canonical_json,
     public_key_fingerprint,
+    regular_file_inventory,
     sha256_bytes,
     write_canonical_json,
 )
@@ -97,6 +98,72 @@ class ContractAttestationTest(unittest.TestCase):
         )
         stem = f"codex-agent-contract-{VERSION}.attestation"
         return output / f"{stem}.json", output / f"{stem}.sig", value
+
+    def test_complete_handoff_is_atomic_relocatable_and_never_rebuilds_payload(self) -> None:
+        closure = _closure(self.payload, self.receipt, self.root / "original-closure")
+        before = regular_file_inventory(closure)
+        originals = {path: path.read_bytes() for path in (self.payload, self.receipt, self.public_key)}
+        output = self.root / "handoff"
+        policy = self.root / "signing.json"
+        write_canonical_json(policy, self.signing)
+        with mock.patch("ci.products.contract.build_contract_bundle", side_effect=AssertionError("payload rebuild")):
+            self.assertEqual(0, main(["build", "--complete-handoff", "--payload", str(self.payload),
+                "--metadata-receipt", str(self.receipt), "--signing-metadata", str(policy),
+                "--execution-closure", str(closure), "--private-key", str(self.private_key),
+                "--public-key", str(self.public_key), "--output-directory", str(output)]))
+        self.assertEqual(before, regular_file_inventory(closure))
+        self.assertEqual(originals, {path: path.read_bytes() for path in originals})
+        self.assertEqual(originals[self.payload], (output / self.payload.name).read_bytes())
+        self.assertEqual(originals[self.public_key], (output / "public-key.pub").read_bytes())
+        self.assertEqual(originals[self.receipt], (output / "execution-closure/receipts/metadata.json").read_bytes())
+        self.assertEqual(10, len(regular_file_inventory(output)))
+        retained = regular_file_inventory(output)
+        moved = self.root / "relocated"
+        output.rename(moved)
+        self.payload.rename(self.root / "hidden-payload")
+        self.receipt.rename(self.root / "hidden-receipt")
+        closure.rename(self.root / "hidden-closure")
+        self.private_key.parent.rename(self.root / "hidden-keys")
+        stem = f"codex-agent-contract-{VERSION}.attestation"
+        value = verify_contract_attestation(moved / self.payload.name,
+            moved / "execution-closure/receipts/metadata.json", moved / f"{stem}.json",
+            moved / f"{stem}.sig", moved / "public-key.pub", required_trust_domain="development")[2]
+        self.assertEqual(self.signing, value["signing"])
+        self.assertEqual(retained, regular_file_inventory(moved))
+        with self.assertRaisesRegex(ValueError, "destination must not exist"), \
+                mock.patch("ci.products.contract_attestation.sign_manifest", side_effect=AssertionError("resign")):
+            build_contract_attestation(self.payload, self.receipt, self.signing, self.private_key,
+                self.public_key, moved, execution_closure=closure, complete_handoff=True)
+
+    def test_complete_handoff_rejects_overlap_mutation_and_extra_bytes_before_publication(self) -> None:
+        closure = _closure(self.payload, self.receipt, self.root / "original-closure")
+        def build(output):
+            return build_contract_attestation(self.payload, self.receipt, self.signing, self.private_key,
+                self.public_key, output, execution_closure=closure, complete_handoff=True)
+        for output in (closure / "nested", self.private_key / "nested", self.root):
+            with self.subTest(output=output), self.assertRaises(ValueError), \
+                    mock.patch("ci.products.contract_attestation.sign_manifest", side_effect=AssertionError("sign")):
+                build(output)
+        receipt_bytes = self.receipt.read_bytes()
+        for case in ("extra", "payload", "original", "closure"):
+            def mutate(manifest, key, metadata):
+                signature = sign_manifest(manifest, key, metadata)
+                if case == "extra":
+                    (manifest.parent / "unexpected-private-file").write_bytes(b"must not be published")
+                elif case == "payload":
+                    (manifest.parent / self.payload.name).write_bytes(b"changed captured payload")
+                elif case == "original":
+                    self.receipt.write_bytes(b"changed original receipt")
+                else:
+                    (closure / "unexpected-original-file").write_bytes(b"changed original closure")
+                return signature
+            output = self.root / f"rejected-{case}"
+            with self.subTest(case=case), mock.patch("ci.products.contract_attestation.sign_manifest", side_effect=mutate), \
+                    self.assertRaises(ValueError):
+                build(output)
+            self.assertFalse(output.exists())
+            self.receipt.write_bytes(receipt_bytes)
+            (closure / "unexpected-original-file").unlink(missing_ok=True)
 
     def verify(self, attestation: Path, signature: Path, **changes):
         arguments = {
@@ -268,6 +335,14 @@ class ContractAttestationTest(unittest.TestCase):
     def test_release_and_development_use_the_same_verifier(self) -> None:
         self._check_release_attestation()
 
+    def test_complete_release_handoff_keeps_exact_payload_receipt_and_pinned_public_key(self) -> None:
+        self._check_release_attestation(complete_handoff=True)
+        output = self.root / "release-output"
+        self.assertEqual(self.payload.read_bytes(), (output / self.payload.name).read_bytes())
+        self.assertEqual(self.public_key.read_bytes(), (output / "public-key.pub").read_bytes())
+        self.assertEqual(self.receipt.read_bytes(), (output / "execution-closure/receipts/metadata.json").read_bytes())
+        self.assertEqual(10, len(regular_file_inventory(output)))
+
     def test_release_attestation_preserves_exact_local_payload_and_receipt(self) -> None:
         local = {**_producer(7), "event": "local", "workflowPath": None,
                  "runId": None, "runAttempt": None, "pullRequest": None}
@@ -276,7 +351,7 @@ class ContractAttestationTest(unittest.TestCase):
         self._check_release_attestation()
         self.assertEqual(original, (self.payload.read_bytes(), self.receipt.read_bytes()))
 
-    def _check_release_attestation(self) -> None:
+    def _check_release_attestation(self, *, complete_handoff=False) -> None:
         release_signing = {**self.signing, "trustDomain": "release"}
         keys = self.root / "release-keys"
         keys.mkdir()
@@ -304,6 +379,7 @@ class ContractAttestationTest(unittest.TestCase):
             execution_closure=_closure(self.payload, self.receipt, self.root / "release-closure"),
             keyring=keyring,
             keys_directory=keys,
+            complete_handoff=complete_handoff,
         )
         stem = f"codex-agent-contract-{VERSION}.attestation"
         verified = verify_contract_attestation(

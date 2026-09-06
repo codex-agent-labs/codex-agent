@@ -365,7 +365,26 @@ def build_contract_attestation(
     execution_closure: Path,
     keyring: Path | None = None,
     keys_directory: Path | None = None,
+    complete_handoff: bool = False,
 ) -> dict[str, Any]:
+    if type(complete_handoff) is not bool:
+        raise ValueError("Complete Contract handoff selection must be boolean")
+    payload, metadata_receipt, public_key = Path(payload), Path(metadata_receipt), Path(public_key)
+    originals = {}
+    closure_inventory = None
+    if complete_handoff:
+        output = Path(output_directory)
+        if output.exists() or output.is_symlink():
+            raise ValueError("Complete Contract handoff destination must not exist")
+        sources = (payload, metadata_receipt, public_key, Path(private_key), Path(execution_closure),
+                   *(Path(path) for path in (keyring, keys_directory) if path is not None))
+        for source in sources:
+            for left, right in ((source.absolute(), output.absolute()), (source.resolve(), output.resolve())):
+                if left == right or left in right.parents or right in left.parents:
+                    raise ValueError("Complete Contract handoff output overlaps an original input")
+        originals = {path: read_regular_file_bytes(path, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True)
+                     for path in (payload, metadata_receipt, public_key)}
+        closure_inventory = regular_file_inventory(execution_closure)
     signing = validate_signing_metadata(signing_metadata)
     if signing["trustDomain"] == "release":
         if keyring is None or keys_directory is None:
@@ -387,6 +406,17 @@ def build_contract_attestation(
         prepared.mkdir()
         closure = prepared / CONTRACT_EXECUTION_CLOSURE_DIRECTORY
         snapshot_regular_tree(execution_closure, closure)
+        if complete_handoff:
+            if regular_file_inventory(closure) != closure_inventory:
+                raise ValueError("Contract execution closure changed during handoff capture")
+            if read_regular_file_bytes(closure / _CLOSURE_RECEIPTS["metadata"]) != originals[metadata_receipt]:
+                raise ValueError("Contract handoff metadata receipt differs from its original closure")
+            captured_payload = prepared / payload.name
+            captured_payload.write_bytes(originals[payload])
+            captured_key = prepared / "public-key.pub"
+            captured_key.write_bytes(originals[public_key])
+            payload, public_key = captured_payload, captured_key
+            metadata_receipt = closure / _CLOSURE_RECEIPTS["metadata"]
         receipt, receipt_bytes, _, payload_identity, manifest_sha256, closure_digest = _bound_execution_inputs(
             Path(payload), Path(metadata_receipt), closure,
         )
@@ -414,6 +444,15 @@ def build_contract_attestation(
             keyring=keyring,
             keys_directory=keys_directory,
         )
+        if complete_handoff:
+            expected_paths = {payload.name, "public-key.pub", attestation.name, signature.name,
+                              *(f"{CONTRACT_EXECUTION_CLOSURE_DIRECTORY}/{record['relativePath']}"
+                                for record in closure_inventory)}
+            if {record["relativePath"] for record in regular_file_inventory(prepared)} != expected_paths:
+                raise ValueError("Complete Contract handoff file inventory is not exact")
+            if any(read_regular_file_bytes(path, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True) != raw
+                   for path, raw in originals.items()) or regular_file_inventory(execution_closure) != closure_inventory:
+                raise ValueError("Original Contract inputs changed during handoff assembly")
         publish_regular_tree(prepared, output)
     return value
 
@@ -518,6 +557,8 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--execution-closure", type=Path, required=True)
     build.add_argument("--private-key", type=Path, required=True)
     build.add_argument("--output-directory", type=Path, required=True)
+    build.add_argument("--complete-handoff", action="store_true",
+                       help="Atomically include the original payload and public-key.pub; never a private key")
     verify.add_argument("--attestation", type=Path, required=True)
     verify.add_argument("--signature", type=Path, required=True)
     verify.add_argument(
@@ -553,6 +594,7 @@ def main(argv: list[str] | None = None) -> int:
             execution_closure=arguments.execution_closure,
             keyring=arguments.keyring,
             keys_directory=arguments.keys_directory,
+            complete_handoff=arguments.complete_handoff,
         )
     elif arguments.command == "verify":
         verify_contract_attestation(
