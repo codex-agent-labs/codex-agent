@@ -127,6 +127,16 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         outputDirectory.set(sdkPackageArtifactRoot.map { it.dir("outputs") })
         validationEvidenceDirectory.set(sdkPackageArtifactRoot.map { it.dir("validation-evidence") })
     }
+    tasks.register<VerifyTransportedAppleSdkPackageClosureTask>(
+        "verifyTransportedCodexAgentIosSdkPackageClosure",
+    ) {
+        dependsOn(sdkPackageArtifacts)
+        productDirectory.set(sdkPackageArtifacts.flatMap { it.outputDirectory })
+        validationEvidenceDirectory.set(sdkPackageArtifacts.flatMap { it.validationEvidenceDirectory })
+        version.set(project.version.toString())
+        ownedBuildDirectory.set(sdkPackageArtifactRoot)
+        workDirectory.set(sdkPackageArtifactRoot.map { it.dir("transported-verification-work") })
+    }
     tasks.named<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
         // The original package is imported; checkout Sources/Tests must never reconstruct it.
         onlyIf { false }

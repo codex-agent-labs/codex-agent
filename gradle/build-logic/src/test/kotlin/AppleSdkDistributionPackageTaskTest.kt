@@ -153,9 +153,22 @@ class AppleSdkDistributionPackageTaskTest {
         assertTrue("nativeEvidenceDirectory.set(nativeEvidence)" in registration)
         assertTrue("nativeEvidenceReceipt.set(nativeReceipt)" in registration)
         assertTrue("validationEvidenceDirectory.set" in registration)
+        val transported = registration.substringAfter(
+            "tasks.register<VerifyTransportedAppleSdkPackageClosureTask>",
+        )
+        assertTrue("\"verifyTransportedCodexAgentIosSdkPackageClosure\"" in transported)
+        assertTrue("dependsOn(sdkPackageArtifacts)" in transported)
+        assertTrue("productDirectory.set(sdkPackageArtifacts.flatMap { it.outputDirectory })" in transported)
+        assertTrue(
+            "validationEvidenceDirectory.set(sdkPackageArtifacts.flatMap { it.validationEvidenceDirectory })" in transported,
+        )
+        assertTrue("version.set(project.version.toString())" in transported)
+        assertTrue("ownedBuildDirectory.set(sdkPackageArtifactRoot)" in transported)
+        assertTrue("transported-verification-work" in transported)
         assertFalse("prepareCodexAgentReleaseXCFramework" in registration)
         assertFalse("assembleCodexAgentReleaseXCFramework" in registration)
         assertFalse("compileKotlin" in registration)
+        assertFalse("packageCodexAgent" in transported)
     }
 }
 
