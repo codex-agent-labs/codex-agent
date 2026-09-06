@@ -36,6 +36,21 @@ class PathSelection:
 ALL_INSTANCES = frozenset(PHASE_INSTANCE_IDS)
 ALL_METADATA = frozenset(instance for instance in PHASE_INSTANCE_IDS if instance.phase == "metadata")
 _GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+# The imported metadata join reruns these semantic gates without consumer/compiler
+# producers. Existing planner/transport control-only exemptions remain unchanged.
+_NATIVE_METADATA_VERIFIERS = frozenset({
+    *(f"ci/products/{name}.py" for name in (
+        "sdk_package", "sdk_inputs", "sdk_native", "sdk_compatibility", "sdk_runtime_content",
+        "contract", "contract_model", "c_abi", "runtime_attestation", "runtime_aggregate",
+        "runtime_variant", "runtime_identity", "runtime_evidence", "test_results",
+    )),
+    *(f"gradle/build-logic/src/main/kotlin/{name}.kt" for name in (
+        "CrossLanguageNativeWrapperValidationEvidence", "CrossLanguageNativeWrapperBindingEvidence",
+        "NativeWrapperInstalledConsumerTask", "CrossLanguageApiEvidence", "CrossLanguageCAbiBindingEvidence",
+        "CrossLanguageBindingParity", "CrossLanguageCAbiClient",
+    )),
+    "ci/native_wrappers.py",
+})
 _DOC_FILES = frozenset({"README.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"})
 _STATIC_ONLY_FILES = frozenset({".github/actionlint.yaml", ".github/dependabot.yml"})
 _BINDING_VALIDATION_DIRECTORIES = frozenset({
@@ -377,6 +392,8 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(("linux-arm64",), "validation")
     if name == "ImportedCAbiBootstrapTasks.kt":
         return _runtime(("macos-arm64",), "validation")
+    if name == "RuntimeAdapterMetadataInputsTask.kt":
+        return _runtime(("jvm", "node-js", "node-wasm"), "metadata") | _runtime(("macos-arm64",), "validation")
     if name == "ImportedRuntimeVariantTask.kt":
         return _runtime(NATIVE_TARGETS, "metadata")
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_VALIDATION:
@@ -405,6 +422,13 @@ def _sdk_validation() -> set[PhaseInstanceId]:
     for language in (*NATIVE_BINDINGS, "javascript"):
         selected.update(_from_phase("sdk", language, "validation"))
     return selected
+
+
+def _native_metadata_owners(path: str) -> set[PhaseInstanceId]:
+    languages = NATIVE_BINDINGS if path in _NATIVE_METADATA_VERIFIERS else (
+        ("cpp",) if path == "codex-agent-bindings/cpp/tools/verify_imported_package.py" else ()
+    )
+    return {PhaseInstanceId("sdk", language, "metadata", "desktop") for language in languages}
 
 
 def _control_selection(path: str) -> set[PhaseInstanceId] | None:
@@ -994,7 +1018,7 @@ def phase_inventory_paths(
         selected = _classify(path)
         if selected is None:
             owned.append(path)
-        elif not _is_control_only(path) and instance in _direct_owners(path, selected):
+        elif not _is_control_only(path) and instance in (_direct_owners(path, selected) | _native_metadata_owners(path)):
             owned.append(path)
     return tuple(owned)
 
@@ -1047,7 +1071,7 @@ def classify_paths(paths: Iterable[str]) -> PathSelection:
             continue
         if not _is_control_only(path):
             inventory.append(path)
-        selected.update(owned)
+        selected.update(owned | _native_metadata_owners(path))
         if (PhaseInstanceId("contract", "contract", "binary", "common") in owned
                 and not _is_prefix(path, "codex-agent-core/src/jsMain/")):
             # Coverage producers can change evidence without changing native

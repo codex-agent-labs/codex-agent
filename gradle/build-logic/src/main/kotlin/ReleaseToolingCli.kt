@@ -152,6 +152,16 @@ fun main(arguments: Array<String>) {
                 options.file("runtime-stages"), options.file("staged-sdks"),
                 options.file("validation-stage"), options.file("validation-receipt"), contentOutput)
         }
+        "write-native-wrapper-metadata-content" -> {
+            options.requireOnly("repository", "language", "package-stage", "package-receipt", "compatibility-request",
+                "runtime-stages", "staged-sdks", "validation-stages", "validation-receipts", "content-output")
+            val language = nativeWrapperBindings.singleOrNull { it.id == options.required("language") }
+                ?: error("Unsupported native metadata language")
+            writeImportedNativeWrapperMetadataContent(options.file("repository"), language,
+                options.file("package-stage"), options.file("package-receipt"), options.file("compatibility-request"),
+                options.file("runtime-stages"), options.file("staged-sdks"), options.file("validation-stages"),
+                options.file("validation-receipts"), options.file("content-output"))
+        }
         "assemble-native-wrapper-binding-receipt" -> {
             options.requireOnly(
                 "phase", "language", "api-report", "coverage-receipt", "c-abi-bootstrap",

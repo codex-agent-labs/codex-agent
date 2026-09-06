@@ -134,7 +134,7 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertFalse(any(instance.phase == "binary" for instance in result.instances))
         for instance in PHASE_INSTANCE_IDS:
             owns = instance == owner or (instance.product == "sdk" and instance.component in NATIVE_BINDINGS
-                                         and instance.phase in {"package", "validation"})
+                                         and instance.phase in {"package", "validation", "metadata"})
             self.assertEqual((path,) if owns else (), phase_inventory_paths([path], instance), instance)
 
     def test_runtime_raw_stage_verifier_retains_metadata_and_actual_sdk_owners(self):
@@ -142,7 +142,7 @@ class ProductSelectionTest(unittest.TestCase):
         expected = {item for item in PHASE_INSTANCE_IDS if (
             item.product == "runtime" and item.component in NATIVE_TARGETS and item.phase == "metadata"
             or item.product == "sdk" and item.phase == "package"
-            or item.product == "sdk" and item.component in NATIVE_BINDINGS and item.phase == "validation"
+            or item.product == "sdk" and item.component in NATIVE_BINDINGS and item.phase in {"validation", "metadata"}
         )}
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance), instance)
@@ -512,7 +512,8 @@ class ProductSelectionTest(unittest.TestCase):
                     path = f"gradle/build-logic/src/main/kotlin/{name}"
                     for instance in PHASE_INSTANCE_IDS:
                         owns = (instance.product == "sdk" and instance.component in NATIVE_BINDINGS
-                                and instance.phase == "validation")
+                                and (instance.phase == "validation" or
+                                     name == "CrossLanguageNativeWrapperValidationEvidence.kt" and instance.phase == "metadata"))
                         self.assertEqual((path,) if owns else (), phase_inventory_paths([path], instance))
 
     def test_current_runtime_version_does_not_select_mobile_sdk_products(self) -> None:
@@ -1055,14 +1056,14 @@ class ProductSelectionTest(unittest.TestCase):
                 if instance.product == "sdk" and instance.component == language and instance.phase in {"package", "validation"}:
                     self.assertEqual((path,), phase_inventory_paths([path], instance))
 
-    def test_cpp_imported_package_verifier_is_a_direct_validation_only_input(self) -> None:
+    def test_cpp_imported_package_verifier_is_a_direct_validation_and_metadata_input(self) -> None:
         path = "codex-agent-bindings/cpp/tools/verify_imported_package.py"
         expected = {item for item in PHASE_INSTANCE_IDS if item.product == "sdk" and
                     item.component == "cpp" and item.phase in {"validation", "metadata"}}
         self.assertEqual(expected, identities(classify_paths([path])))
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual(
-                (path,) if instance in expected and instance.phase == "validation" else (),
+                (path,) if instance in expected else (),
                 phase_inventory_paths([path], instance),
             )
 
@@ -1179,7 +1180,8 @@ class ProductSelectionTest(unittest.TestCase):
 
         aggregate = classify_paths(["ci/products/runtime_aggregate.py"])
         self.assertEqual(
-            {("runtime", "runtime-aggregate", "metadata", "aggregate")},
+            {("runtime", "runtime-aggregate", "metadata", "aggregate")} |
+            {("sdk", language, "metadata", "desktop") for language in NATIVE_BINDINGS},
             {
                 (instance.product, instance.component, instance.phase, instance.target)
                 for instance in aggregate.instances
@@ -1274,13 +1276,48 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((), phase_inventory_paths(paths, instance))
 
-    def test_authenticated_native_handoff_producers_enter_only_native_validation_keys(self):
+    def test_authenticated_native_handoff_and_metadata_join_have_exact_direct_owners(self):
         paths = ("ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py")
         for instance in PHASE_INSTANCE_IDS:
             expected = paths if (instance.product == "sdk" and instance.component in
                 {"python", "csharp", "rust", "cpp", "dart"} and instance.phase == "validation") else ()
+            if instance.product == "sdk" and instance.component in {"python", "csharp", "rust", "cpp", "dart"} \
+                    and instance.phase == "metadata":
+                expected = paths
             with self.subTest(instance=instance):
                 self.assertEqual(tuple(sorted(expected)), phase_inventory_paths(paths, instance))
+        path = "gradle/build-logic/src/main/kotlin/CrossLanguageNativeWrapperValidationEvidence.kt"
+        for instance in PHASE_INSTANCE_IDS:
+            expected = (path,) if instance.product == "sdk" and instance.component in \
+                {"python", "csharp", "rust", "cpp", "dart"} and instance.phase in {"validation", "metadata"} else ()
+            self.assertEqual(expected, phase_inventory_paths((path,), instance))
+
+    def test_native_metadata_independently_keys_executed_verifiers_not_compiler_producers(self):
+        from ci.products.selection import _NATIVE_METADATA_VERIFIERS
+        languages = {"python", "csharp", "rust", "cpp", "dart"}
+        for path in (*_NATIVE_METADATA_VERIFIERS, "codex-agent-bindings/cpp/tools/verify_imported_package.py"):
+            expected_languages = {"cpp"} if path.startswith("codex-agent-bindings/") else languages
+            selected = identities(classify_paths((path,)))
+            for language in languages:
+                instance = PhaseInstanceId("sdk", language, "metadata", "desktop")
+                with self.subTest(path=path, language=language):
+                    self.assertEqual((path,) if language in expected_languages else (), phase_inventory_paths((path,), instance))
+                    if language in expected_languages:
+                        self.assertIn(instance, selected)
+        for path in ("ci/products/plan.py", "ci/products/selection.py", "ci/products/registry.py",
+                     "ci/products/contract_projection.py", "ci/products/contract_attestation.py",
+                     "codex-agent-bindings/python/tools/produce_sdk_validation_evidence.py"):
+            for language in languages:
+                self.assertEqual((), phase_inventory_paths((path,), PhaseInstanceId("sdk", language, "metadata", "desktop")))
+
+    def test_runtime_adapter_metadata_safety_keys_only_metadata_and_shared_mac_validation(self):
+        path = "runtime/build-logic/src/main/kotlin/RuntimeAdapterMetadataInputsTask.kt"
+        direct = {PhaseInstanceId("runtime", component, "metadata", component) for component in ("jvm", "node-js", "node-wasm")}
+        direct.add(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"))
+        selected = identities(classify_paths((path,)))
+        self.assertFalse(any(instance.phase in {"binary", "package"} for instance in selected))
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance in direct else (), phase_inventory_paths((path,), instance))
 
     def test_root_gradle_inputs_do_not_enter_standalone_runtime_inventories(self) -> None:
         paths = ("build.gradle.kts", "gradle.properties", "settings-gradle.lockfile", "settings.gradle.kts")

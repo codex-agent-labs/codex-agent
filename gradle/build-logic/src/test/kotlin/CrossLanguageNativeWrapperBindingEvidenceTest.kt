@@ -232,6 +232,11 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
                 if args[0] == 'native-content':
                     sys.stdout.write('{"fixture":"deterministic content"}\n')
                     raise SystemExit(0)
+                if args[0] == 'native-metadata':
+                    assert sorted(p.name for p in arg('--contents').iterdir()) == [
+                        'linux-arm64.json', 'linux-x64.json', 'macos-arm64.json', 'macos-x64.json', 'windows-x64.json']
+                    sys.stdout.write('{"fixture":"five full matcher calls"}\n')
+                    raise SystemExit(0)
                 destination = arg('--validation-inputs-output')
                 shutil.copytree('handoff', destination)
                 shutil.copytree(arg('--validation-stage'), destination / 'validation')
@@ -266,6 +271,52 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
         }
         assertFalse(root.resolve("unsafe-content.json").exists())
         assertFalse(handoff.resolve("unsafe-content.json").exists())
+        // Five-host orchestration only: authenticating Python remains a fixture,
+        // but every host must pass the real packaged Kotlin full matcher.
+        val stages = root.resolve("host-stages").apply { mkdir() }
+        val receipts = root.resolve("host-receipts").apply { mkdir() }
+        val targets = crossLanguageCAbiTargetSpecs.values.map { it.classifier.removePrefix("c-abi-") }.sorted()
+        targets.forEach { target ->
+            importedStage.copyRecursively(stages.resolve(target))
+            val hostDirectory = stages.resolve("$target/outputs/installed/evidence/csharp")
+            val hostBytes = hostDirectory.resolve("linux-x64.tsv").readText().replace("linux-x64", target)
+            hostDirectory.resolve("linux-x64.tsv").delete()
+            hostDirectory.resolve("$target.tsv").writeText(hostBytes)
+            receipts.resolve("$target.json").writeText("original $target fixture receipt\n")
+            val library = crossLanguageCAbiTargetSpecs.values.single { it.classifier == "c-abi-$target" }.libraryPath
+            handoff.resolve("sdks/$target/$library").apply { parentFile.mkdirs(); writeBytes(native.readBytes()) }
+        }
+        val metadata = root.resolve("metadata.json")
+        val metadataArguments = arrayOf("write-native-wrapper-metadata-content", "--repository", root.absolutePath,
+            "--language", "csharp", "--package-stage", handoff.absolutePath,
+            "--package-receipt", handoff.resolve("receipts/sdk-package.json").absolutePath,
+            "--compatibility-request", request.absolutePath, "--runtime-stages", handoff.absolutePath,
+            "--staged-sdks", handoff.absolutePath, "--validation-stages", stages.absolutePath,
+            "--validation-receipts", receipts.absolutePath, "--content-output", metadata.absolutePath)
+        val originalHosts = verifiedRegularFiles(stages).mapValues { it.value.releaseDigest() }
+        val originalReceipts = verifiedRegularFiles(receipts).mapValues { it.value.releaseDigest() }
+        val metadataCli = runReleaseTool(root, *metadataArguments)
+        assertEquals(0, metadataCli.first, metadataCli.second)
+        assertEquals("{\"fixture\":\"five full matcher calls\"}\n", metadata.readText())
+        assertTrue(runReleaseTool(root, *metadataArguments).first != 0, "Metadata cannot overwrite finalized bytes")
+        metadata.delete()
+        targets.forEach { target ->
+            val results = stages.resolve("$target/outputs/capability/executed-tests.tsv")
+            val original = results.readBytes()
+            results.writeText(results.readText().replace("\tpassed", "\tfailed"))
+            assertTrue(runReleaseTool(root, *metadataArguments).first != 0, "Every host requires the full matcher: $target")
+            assertFalse(metadata.exists(), "A failed host cannot publish partial metadata")
+            results.writeBytes(original)
+        }
+        receipts.resolve("extra.json").writeText("not an original target\n")
+        assertTrue(runReleaseTool(root, *metadataArguments).first != 0)
+        receipts.resolve("extra.json").delete()
+        stages.resolve("extra").mkdir()
+        assertTrue(runReleaseTool(root, *metadataArguments).first != 0)
+        stages.resolve("extra").delete()
+        assertFalse(metadata.exists())
+        assertEquals(originalHosts, verifiedRegularFiles(stages).mapValues { it.value.releaseDigest() })
+        assertEquals(originalReceipts, verifiedRegularFiles(receipts).mapValues { it.value.releaseDigest() })
         val importedResults = importedStage.resolve("outputs/capability/executed-tests.tsv")
         importedResults.writeText(importedResults.readText().replace("\tpassed", "\tfailed"))
         assertTrue(runReleaseTool(root, *importArguments).first != 0, "Input success must not bypass full matcher")

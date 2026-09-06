@@ -12,14 +12,14 @@ from .contract_projection import verify_contract_component_projection
 from .inventory import (
     canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes,
     read_regular_file_bytes, regular_file_inventory, require_semver, run_git, sha256_bytes, snapshot_regular_tree,
-    publish_regular_tree, require_sha256,
+    publish_regular_tree, require_sha256, require_exact_keys, require_integer, require_array,
 )
 from .plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
     _contract_projection_from_request, _native_runtime_projections_from_request,
     native_runtime_validation_dependencies, plan_phase,
 )
-from .receipt import validate_phase_receipt, verify_output_manifest_identity, write_output_manifest
+from .receipt import output_inventory_digest, validate_phase_receipt, verify_output_manifest_identity, write_output_manifest
 from .registry import (
     NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId, phase_instance_dependencies, required_contract_components,
 )
@@ -430,8 +430,9 @@ def native_validation_content(inputs: Path, component: str, target: str) -> dict
             raise ValueError("Native validation content input is empty")
         files.append({"relativePath": name, "bytes": len(contents), "sha256": sha256_bytes(contents)})
     result = {
-        "schemaVersion": 1, "kind": "sdk-native-validation-content", "component": component,
+        "schemaVersion": 2, "kind": "sdk-native-validation-content", "component": component,
         "target": target, "sdkVersion": package["productVersion"],
+        "packageOutputsDigest": output_inventory_digest(package["outputs"]),
         **{key: require_sha256(contract.get(key), f"Native content {key}") for key in
            ("contractDigest", "canonicalApiDigest", "canonicalCoverageDigest")},
         "files": files, "packageNegativeCases": cases,
@@ -439,6 +440,60 @@ def native_validation_content(inputs: Path, component: str, target: str) -> dict
     if before != regular_file_inventory(inputs):
         raise ValueError("Native validation content inputs changed during projection")
     return result
+
+
+def native_metadata_content(contents: Path, package_receipt: Path, component: str) -> dict[str, Any]:
+    """Join full-gate projections, not receipts or caller-mintable trust tokens.
+
+    Only the trusted Kotlin caller authenticates all original host closures.
+    This serializer checks the exact content grammar and common product identity.
+    """
+    before = regular_file_inventory(contents)
+    if {record["relativePath"] for record in before} != {f"{target}.json" for target in NATIVE_TARGETS}:
+        raise ValueError("Native metadata requires exactly five target content files")
+    package, original = _receipt(package_receipt)
+    if component not in NATIVE_BINDINGS or _instance(package) != PhaseInstanceId("sdk", component, "package", "desktop"):
+        raise ValueError("Native metadata requires its original language package")
+    package_digest = output_inventory_digest(package["outputs"])
+    digests = ("contractDigest", "canonicalApiDigest", "canonicalCoverageDigest")
+    names = {"claims.tsv", "compiler-evidence.tsv", "executed-tests.tsv", "installed.tsv", "test-program-source"}
+    if component == "cpp":
+        names.add("package-negative-source.py")
+    expected_cases = [{"caseId": case, "expectedExit": "zero" if case == "baseline" else "nonzero", "result": "passed"}
+                      for case in sorted(("baseline", "tampered-0", "tampered-1", "tampered-2", "tampered-3",
+                                          "missing-sidecar", "missing-loader"))] if component == "cpp" else []
+    hosts = []
+    for target in sorted(NATIVE_TARGETS):
+        value = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(
+            contents / f"{target}.json", max_bytes=_LIMIT, reject_symlink_parents=True,
+        )), {"schemaVersion", "kind", "component", "target", "sdkVersion", *digests,
+             "packageOutputsDigest", "files", "packageNegativeCases"},
+            "native validation content")
+        if (require_integer(value["schemaVersion"], "native content schema", 1) != 2
+                or value["kind"] != "sdk-native-validation-content" or value["component"] != component
+                or value["target"] != target or value["sdkVersion"] != package["productVersion"]):
+            raise ValueError("Native metadata host content has a different product identity")
+        if value["packageOutputsDigest"] != package_digest:
+            raise ValueError("Native metadata host content belongs to another exact package")
+        for key in digests:
+            require_sha256(value[key], f"native content {key}")
+            if hosts and value[key] != hosts[0][key]:
+                raise ValueError("Native metadata hosts have different Contract content")
+        files = require_array(value["files"], "native content files")
+        for record in files:
+            require_exact_keys(record, {"relativePath", "bytes", "sha256"}, "native content file")
+            require_integer(record["bytes"], "native content bytes", 1)
+            require_sha256(record["sha256"], "native content digest")
+        if [record["relativePath"] for record in files] != sorted(names):
+            raise ValueError("Native metadata host content has unexpected semantic files")
+        if value["packageNegativeCases"] != expected_cases:
+            raise ValueError("Native metadata host content lacks exact package negative cases")
+        hosts.append(value)
+    if before != regular_file_inventory(contents) or _receipt(package_receipt)[1] != original:
+        raise ValueError("Native metadata content inputs changed during join")
+    return {"schemaVersion": 1, "kind": "sdk-native-metadata-content", "component": component,
+            "sdkVersion": package["productVersion"], **{key: hosts[0][key] for key in digests},
+            "packageOutputsDigest": package_digest, "hosts": hosts}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -457,7 +512,14 @@ def main(argv: list[str] | None = None) -> int:
     content.add_argument("--inputs", type=Path, required=True)
     content.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     content.add_argument("--target", choices=NATIVE_TARGETS, required=True)
+    metadata = commands.add_parser("native-metadata", allow_abbrev=False)
+    metadata.add_argument("--contents", type=Path, required=True)
+    metadata.add_argument("--package-receipt", type=Path, required=True)
+    metadata.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     args = parser.parse_args(argv)
+    if args.command == "native-metadata":
+        sys.stdout.buffer.write(canonical_json_bytes(native_metadata_content(args.contents, args.package_receipt, args.component)))
+        return 0
     if args.command == "native-content":
         sys.stdout.buffer.write(canonical_json_bytes(native_validation_content(args.inputs, args.component, args.target)))
         return 0

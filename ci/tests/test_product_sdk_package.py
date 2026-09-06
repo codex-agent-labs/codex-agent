@@ -12,13 +12,13 @@ from ci.products.plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
     _contract_projection_from_request, plan_phase,
 )
-from ci.products.receipt import compute_build_key, validate_phase_receipt, write_output_manifest
+from ci.products.receipt import compute_build_key, output_inventory_digest, validate_phase_receipt, write_output_manifest
 from ci.products.registry import PhaseInstanceId, phase_instance_dependencies
 from ci.products.sdk_maven import MAVEN_GROUPS, package_sdk_maven, verify_sdk_maven_binary_predecessor
 from ci.products.sdk_archive import NPM_COMPATIBILITY_PATH, verify_npm_sdk_compatibility
 from ci.products.sdk_package import (
     _capture_validation_sources, _verify_native_validation_stage, _verify_plan,
-    native_validation_content, verify_sdk_package_inputs, main as package_main,
+    native_validation_content, native_metadata_content, verify_sdk_package_inputs, main as package_main,
 )
 from ci.products.selection import phase_git_inventory
 from ci.tests import test_product_sdk_maven as maven_fixture
@@ -31,6 +31,83 @@ from ci.tests.test_product_sdk_inputs import _request
 
 VERSIONS = {"contract": "0.2.0", "sdk": "0.2.9", "runtime-release": "0.2.7",
             "runtime-compatibility": "0.2.0"}
+
+
+class NativeMetadataContentTest(unittest.TestCase):
+    """Strict deterministic join grammar, not a substitute for the full host gate."""
+
+    def test_all_languages_join_exact_hosts_and_preserve_external_producers(self):
+        from ci.products.registry import NATIVE_BINDINGS, NATIVE_TARGETS
+        for component in NATIVE_BINDINGS:
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                contents = root / "contents"
+                contents.mkdir()
+                receipt = root / "package.json"
+                producer = {"repository": "fixture/repository", "workflowPath": None, "commit": "a" * 40,
+                            "tree": "b" * 40, "event": "local", "runId": None, "runAttempt": None, "pullRequest": None}
+                outputs = [{"kind": "package", "relativePath": "outputs/package.zip", "bytes": 1,
+                            "sha256": "sha256:" + "a" * 64}]
+                def rebind():
+                    write_receipt(receipt, product="sdk", component=component, phase="package", target="desktop",
+                                  version="0.2.9", version_identity="0.2.9", upstream=[],
+                                  context={"producer": producer}, outputs=outputs)
+                rebind()
+                names = ["claims.tsv", "compiler-evidence.tsv", "executed-tests.tsv", "installed.tsv", "test-program-source"]
+                cases = []
+                if component == "cpp":
+                    names.append("package-negative-source.py")
+                    cases = [{"caseId": case, "expectedExit": "zero" if case == "baseline" else "nonzero", "result": "passed"}
+                             for case in sorted(("baseline", "tampered-0", "tampered-1", "tampered-2", "tampered-3",
+                                                 "missing-sidecar", "missing-loader"))]
+                values = {}
+                for target in sorted(NATIVE_TARGETS):
+                    values[target] = {"schemaVersion": 2, "kind": "sdk-native-validation-content", "component": component,
+                        "packageOutputsDigest": output_inventory_digest(outputs),
+                        "target": target, "sdkVersion": "0.2.9", **{key: "sha256:" + "b" * 64 for key in
+                            ("contractDigest", "canonicalApiDigest", "canonicalCoverageDigest")},
+                        "files": [{"relativePath": name, "bytes": 1, "sha256": "sha256:" + "c" * 64} for name in sorted(names)],
+                        "packageNegativeCases": cases}
+                    (contents / f"{target}.json").write_bytes(canonical_json_bytes(values[target]))
+                before = receipt.read_bytes()
+                first = canonical_json_bytes(native_metadata_content(contents, receipt, component))
+                self.assertEqual(before, receipt.read_bytes())
+                producer.update(commit="c" * 40, tree="d" * 40)
+                rebind()
+                self.assertNotEqual(before, receipt.read_bytes())
+                self.assertEqual(first, canonical_json_bytes(native_metadata_content(contents, receipt, component)))
+                outputs[0]["sha256"] = "sha256:" + "d" * 64
+                rebind()
+                with self.assertRaisesRegex(ValueError, "another exact package"):
+                    native_metadata_content(contents, receipt, component)
+                outputs[0]["sha256"] = "sha256:" + "a" * 64
+                rebind()
+                selected = contents / "linux-x64.json"
+                original = values["linux-x64"]
+                mutations = []
+                for key, value in (("schemaVersion", True), ("component", "javascript"), ("target", "macos-x64"),
+                                   ("schemaVersion", 1), ("packageOutputsDigest", "sha256:" + "d" * 64),
+                                   ("sdkVersion", "0.2.8"), ("producer", producer), ("contractDigest", "sha256:" + "d" * 64),
+                                   ("files", original["files"][:-1]), ("packageNegativeCases", [{"caseId": "fake"}])):
+                    mutations.append({**original, key: value})
+                mutations.append({**original, "files": [original["files"][0]] + original["files"]})
+                for mutated in mutations:
+                    selected.write_bytes(canonical_json_bytes(mutated))
+                    with self.assertRaises(ValueError):
+                        native_metadata_content(contents, receipt, component)
+                selected.write_bytes(canonical_json_bytes(original))
+                selected.rename(root / "missing-host.json")
+                with self.assertRaises(ValueError):
+                    native_metadata_content(contents, receipt, component)
+                (root / "missing-host.json").rename(selected)
+                (contents / "extra.json").write_bytes(b"{}\n")
+                with self.assertRaises(ValueError):
+                    native_metadata_content(contents, receipt, component)
+                (contents / "extra.json").unlink()
+                changed = copy.deepcopy(original)
+                changed["files"][0]["sha256"] = "sha256:" + "d" * 64
+                selected.write_bytes(canonical_json_bytes(changed))
+                self.assertNotEqual(first, canonical_json_bytes(native_metadata_content(contents, receipt, component)))
 
 
 class NativeValidationContentTest(unittest.TestCase):
