@@ -2528,6 +2528,59 @@ def materialize_contract(
         return restored
 
 
+def capture_product_resume_inputs(
+    plan_path: Path, destination: Path, *, uploads: Mapping[str, Any],
+    trusted_workflow_sha: str, repository_root: Path | None = None,
+    environ: Mapping[str, str] | None = None, token: str,
+) -> dict[str, Any]:
+    """Capture exact caller-selected uploads; payload trust is verified on resume."""
+    supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
+    destination = _prepare_destination(destination, supplied_root)
+    destination.rmdir()
+    root = supplied_root.resolve()
+    require_exact_keys(uploads, {"plan", "state", "release"}, "Product resume uploads")
+    for name, record in uploads.items():
+        require_exact_keys(record, {"artifactId", "artifactSha256"}, f"Product resume {name}")
+        require_integer(record["artifactId"], f"Product resume {name} artifact ID", 1)
+        require_sha256(record["artifactSha256"], f"Product resume {name} artifact digest")
+    if len({record["artifactId"] for record in uploads.values()}) != 3:
+        raise ValueError("Product resume upload IDs must be distinct")
+    with tempfile.TemporaryDirectory(prefix="codex-agent-resume-capture-", dir=root) as temporary:
+        private = Path(temporary).resolve()
+        captured_plan = private / "impact-plan.json"
+        plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
+                                            reject_symlink_parents=True)
+        captured_plan.write_bytes(plan_bytes)
+        plan = _validate_plan(captured_plan, root)
+        if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
+            raise ValueError("Product resume capture requires an authorized PR or merge-group run")
+        producer = _consumer(plan, os.environ if environ is None else environ)["producer"]
+        observed = _observe_contract_producer_runs(
+            {"metadata": producer}, phases=("metadata",),
+            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        prepared = private / "result"
+        prepared.mkdir()
+        artifacts = {}
+        for name, prefix in (("plan", "ci-plan"), ("state", "contract-phase-state"),
+                             ("release", "contract-release-handoff")):
+            record = uploads[name]
+            artifact, raw = _download_contract_ci_upload(
+                record["artifactId"], record["artifactSha256"],
+                f"codex-agent-{prefix}-{producer['tree']}", producer, observed[0]["run"], token)
+            archive = private / f"{name}.zip"
+            archive.write_bytes(raw)
+            verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
+            safe_extract(archive, prepared / name)
+            artifacts[name] = artifact
+        if read_regular_file_bytes(prepared / "plan/impact-plan.json",
+                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes:
+            raise ValueError("Captured product plan differs from the validated original plan")
+        transport = {"artifacts": artifacts, "captureProducer": producer, "observed": observed}
+        write_canonical_json(prepared / "capture-transport.json", transport)
+        publish_regular_tree(prepared, destination)
+    return transport
+
+
 def _capture_completed_contract_handoff(
     plan_path: Path, state_root: Path, handoff_root: Path, destination: Path, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
@@ -2883,6 +2936,13 @@ def parser() -> argparse.ArgumentParser:
         resume_command.add_argument(f"--{name}", type=Path, required=True)
     resume_command.add_argument("--sdk-validation-tooling", type=Path,
                                help="Current caller-owned tooling policy JSON, never a retained request field")
+    resume_capture = commands.add_parser("capture-product-resume-inputs")
+    resume_capture.add_argument("--plan", type=Path, required=True)
+    resume_capture.add_argument("--destination", type=Path, required=True)
+    resume_capture.add_argument("--trusted-workflow-sha", required=True)
+    for name in ("plan", "state", "release"):
+        resume_capture.add_argument(f"--{name}-artifact-id", type=int, required=True)
+        resume_capture.add_argument(f"--{name}-artifact-sha256", required=True)
     for command in (discover_command, products_command):
         command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-tooling", type=Path,
@@ -2955,6 +3015,13 @@ def main(argv: list[str] | None = None) -> int:
                 transport_producer=_canonical_control(arguments.transport_producer, "Caller capture producer"),
                 trusted_workflow_sha=arguments.trusted_workflow_sha,
                 contract_version=arguments.contract_version, token=os.environ.get("GITHUB_TOKEN", ""))
+        elif arguments.command == "capture-product-resume-inputs":
+            capture_product_resume_inputs(
+                arguments.plan, arguments.destination,
+                uploads={name: {"artifactId": getattr(arguments, f"{name}_artifact_id"),
+                                "artifactSha256": getattr(arguments, f"{name}_artifact_sha256")}
+                         for name in ("plan", "state", "release")},
+                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
         elif arguments.command == "resume-products":
             resume_products(
                 arguments.plan, arguments.discovery_root, arguments.state_root,

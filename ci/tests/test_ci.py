@@ -222,6 +222,7 @@ class RunLaneContractTest(unittest.TestCase):
             "product",
             "contract-continuation",
             "contract-attestation",
+            "product-resume",
             "android",
             "android-runtime-evidence",
             "desktop",
@@ -1467,7 +1468,7 @@ class ImpactPlanTest(GitFixture):
             self.assertEqual(2, workflow.count(f"matrix.lane == '{consumer}'"))
         gate = workflow[workflow.index("\n  merge-gate:"):]
         self.assertIn(
-            "needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]",
+            "needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]",
             gate,
         )
         self.assertIn("pattern: codex-agent-ci-*", gate)

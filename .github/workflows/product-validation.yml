@@ -128,6 +128,8 @@ jobs:
       validation_tree: ${{ steps.impact.outputs.validation_tree }}
       android_evidence_required: ${{ steps.impact.outputs.android_evidence_required }}
       plan_artifact: codex-agent-ci-plan-${{ steps.impact.outputs.validation_tree }}
+      plan_id: ${{ steps.upload_plan.outputs.artifact-id }}
+      plan_digest: sha256:${{ steps.upload_plan.outputs.artifact-digest }}
       product_matrix: ${{ steps.impact.outputs.product_matrix }}
       consumer_matrix: ${{ steps.impact.outputs.consumer_matrix }}
       desktop_matrix: ${{ steps.impact.outputs.desktop_matrix }}
@@ -208,10 +210,11 @@ jobs:
           python3 ci/product_reuse.py discover --plan build/ci/impact-plan.json \
             --destination build/product-reuse --handoff build/ci/product-reuse \
             --github-output "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: upload_plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
-          overwrite: true
+          overwrite: false
           name: codex-agent-ci-plan-${{ steps.impact.outputs.validation_tree }}
           path: build/ci
           compression-level: 0
@@ -266,6 +269,8 @@ jobs:
     outputs:
       contract_complete: ${{ steps.select_final_state.outputs.contract_complete }}
       state_artifact: codex-agent-contract-phase-state-${{ needs.plan.outputs.validation_tree }}
+      state_id: ${{ steps.upload_final_state.outputs.artifact-id }}
+      state_digest: sha256:${{ steps.upload_final_state.outputs.artifact-digest }}
       attestation_inputs_artifact: codex-agent-contract-attestation-inputs-${{ needs.plan.outputs.validation_tree }}
       attestation_inputs_id: ${{ steps.upload_attestation_inputs.outputs.artifact-id }}
       attestation_inputs_digest: sha256:${{ steps.upload_attestation_inputs.outputs.artifact-digest }}
@@ -572,6 +577,7 @@ jobs:
           printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
             "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
       - name: Preserve the complete unsigned Contract state for separate attestation
+        id: upload_final_state
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -673,6 +679,77 @@ jobs:
           include-hidden-files: true
           name: codex-agent-contract-release-handoff-${{ needs.plan.outputs.validation_tree }}
           path: ${{ runner.temp }}/contract-release-evidence
+          compression-level: 0
+          retention-days: 90
+
+  product-resume:
+    name: product-resume
+    if: >-
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.validation_reused != 'true' &&
+      github.event_name != 'workflow_dispatch' &&
+      needs.contract-continuation.result == 'success' &&
+      needs.contract-continuation.outputs.contract_complete == 'true' &&
+      needs.contract-attestation.result == 'success'
+    needs: [workflow-lint, plan, contract-continuation, contract-attestation]
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_name: codex-agent-product-resume-${{ needs.plan.outputs.validation_tree }}
+      artifact_id: ${{ steps.upload_resume.outputs.artifact-id }}
+      artifact_digest: sha256:${{ steps.upload_resume.outputs.artifact-digest }}
+      full_reuse: ${{ steps.resume.outputs.full_reuse }}
+      target_jobs_required: ${{ steps.resume.outputs.target_jobs_required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          path: build/product-resume-plan
+          merge-multiple: true
+      - name: Capture exact original plan, completed state and signed external evidence
+        env:
+          PLAN_ARTIFACT_ID: ${{ needs.plan.outputs.plan_id }}
+          PLAN_ARTIFACT_SHA256: ${{ needs.plan.outputs.plan_digest }}
+          STATE_ARTIFACT_ID: ${{ needs.contract-continuation.outputs.state_id }}
+          STATE_ARTIFACT_SHA256: ${{ needs.contract-continuation.outputs.state_digest }}
+          RELEASE_ARTIFACT_ID: ${{ needs.contract-attestation.outputs.artifact_id }}
+          RELEASE_ARTIFACT_SHA256: ${{ needs.contract-attestation.outputs.artifact_digest }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 ci/product_reuse.py capture-product-resume-inputs \
+            --plan build/product-resume-plan/impact-plan.json \
+            --plan-artifact-id "$PLAN_ARTIFACT_ID" --plan-artifact-sha256 "$PLAN_ARTIFACT_SHA256" \
+            --state-artifact-id "$STATE_ARTIFACT_ID" --state-artifact-sha256 "$STATE_ARTIFACT_SHA256" \
+            --release-artifact-id "$RELEASE_ARTIFACT_ID" --release-artifact-sha256 "$RELEASE_ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --destination build/product-resume-inputs
+      - name: Resume the existing product planner from authenticated Contract bytes
+        id: resume
+        run: |
+          python3 ci/product_reuse.py resume-products \
+            --plan build/product-resume-inputs/plan/impact-plan.json \
+            --discovery-root build/product-resume-inputs/plan/product-reuse \
+            --state-root build/product-resume-inputs/state \
+            --contract-handoff build/product-resume-inputs/release/contract-input \
+            --destination build/product-resume-state \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Preserve the resumed state and all original transport evidence
+        id: upload_resume
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-product-resume-${{ needs.plan.outputs.validation_tree }}
+          path: |
+            build/product-resume-inputs
+            build/product-resume-state
           compression-level: 0
           retention-days: 90
 
@@ -872,7 +949,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, product-resume, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -886,6 +963,9 @@ jobs:
           CONTRACT_ATTESTATION_RESULT: ${{ needs.contract-attestation.result }}
           CONTRACT_ATTESTATION_ARTIFACT_ID: ${{ needs.contract-attestation.outputs.artifact_id }}
           CONTRACT_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.contract-attestation.outputs.artifact_digest }}
+          PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
+          PRODUCT_RESUME_ARTIFACT_ID: ${{ needs.product-resume.outputs.artifact_id }}
+          PRODUCT_RESUME_ARTIFACT_DIGEST: ${{ needs.product-resume.outputs.artifact_digest }}
         run: |
           if [ "$EVENT_AUTHORIZED" != true ]; then
             echo 'The workflow-owned event gate did not authorize remote product CI.' >&2
@@ -905,7 +985,10 @@ jobs:
           if [ "$CONTRACT_COMPLETE" = true ]; then
             test "$CONTRACT_ATTESTATION_RESULT" = success
             test -n "$CONTRACT_ATTESTATION_ARTIFACT_ID"
-            [[ "$CONTRACT_ATTESTATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+            [[ "$CONTRACT_ATTESTATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            test "$PRODUCT_RESUME_RESULT" = success
+            [[ "$PRODUCT_RESUME_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$PRODUCT_RESUME_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

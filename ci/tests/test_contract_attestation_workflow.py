@@ -142,6 +142,8 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
             "REMOTE_BUILD_AUTHORIZATION_REASON": "pull-request-final", "RESULTS": "success success",
             "CONTRACT_COMPLETE": "true", "CONTRACT_ATTESTATION_RESULT": "success",
             "CONTRACT_ATTESTATION_ARTIFACT_ID": "700", "CONTRACT_ATTESTATION_ARTIFACT_DIGEST": "sha256:" + "a" * 64,
+            "PRODUCT_RESUME_RESULT": "success", "PRODUCT_RESUME_ARTIFACT_ID": "701",
+            "PRODUCT_RESUME_ARTIFACT_DIGEST": "sha256:" + "b" * 64,
         }
         cases = [({}, True), ({"CONTRACT_COMPLETE": "false", "CONTRACT_ATTESTATION_RESULT": "skipped",
                                "CONTRACT_ATTESTATION_ARTIFACT_ID": "", "CONTRACT_ATTESTATION_ARTIFACT_DIGEST": ""}, True)]
