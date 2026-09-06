@@ -1219,6 +1219,38 @@ class NativeWrapperReleaseTest(unittest.TestCase):
 class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
     """Dispatch/evidence fixtures only: external tools and runtime execution are mocked."""
 
+    def test_cpp_negative_outputs_are_separate_and_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root = Path(temporary).resolve()
+            repository, packages, sdks, library, selected = self.fixture(root, ("cpp",))
+            probes = self.controls(stack, selected, library)
+            output, negatives = root / "output", root / "negatives"
+            for directory in (output, negatives):
+                directory.mkdir()
+                (directory / "sentinel").write_text("preserve")
+            link = root / "link"
+            link.symlink_to(packages, target_is_directory=True)
+            for invalid in (None, output, output / "nested", root, packages, sdks, link / "child"):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    consume_language(repository, packages, sdks, output, "0.2.0", "cpp",
+                                     package_negative_evidence=invalid)
+                self.assertEqual("preserve", (output / "sentinel").read_text())
+                self.assertEqual("preserve", (negatives / "sentinel").read_text())
+            probes["run"].assert_not_called()
+
+            def fail_negatives(*command, **kwargs):
+                if any(str(value).endswith("/tools/verify_imported_package.py") for value in command):
+                    negatives.mkdir()
+                    (negatives / "partial").write_text("not accepted")
+                    raise ValueError("actual negative verifier failure")
+            probes["run"].side_effect = fail_negatives
+            with self.assertRaisesRegex(ValueError, "actual negative verifier failure"):
+                consume_language(repository, packages, sdks, output, "0.2.0", "cpp",
+                                 package_negative_evidence=negatives)
+            self.assertFalse(output.exists())
+            self.assertFalse(negatives.exists())
+            self.assertTrue(selected["cpp"].is_file())
+
     def fixture(self, root: Path, languages: tuple[str, ...]):
         from ci.tests.test_products import sdk_compatibility
 
@@ -1297,6 +1329,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                 self.assertIsNone(consume_language(
                     repository, packages, sdks, output, "0.2.0", language, offline=True,
                     expected_classifier="linux-x64",
+                    package_negative_evidence=root / "negatives" if language == "cpp" else None,
                 ))
                 self.assertEqual({language}, {path.name for path in (repository / "codex-agent-bindings").iterdir()})
                 probes["require_embedded_package_versions"].assert_called_once_with(packages, "0.2.0", (language,))
@@ -1308,6 +1341,13 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                 observed_tools = {Path(call.args[0]).name for call in probes["version"].call_args_list}
                 self.assertEqual(expected_tools[language], observed_tools)
                 commands = [list(map(str, call.args)) for call in probes["run"].call_args_list]
+                if language == "cpp":
+                    negative = next(command for command in commands if any(
+                        value.endswith("/tools/verify_imported_package.py") for value in command))
+                    self.assertEqual(str(root / "negatives"), negative[negative.index("--output") + 1])
+                    self.assertTrue(negative[negative.index("--package-root") + 1].endswith(
+                        "/cpp-package/codex-agent-cpp-0.2.0"))
+                    self.assertEqual("lib/libcodex_agent.so", negative[negative.index("--library") + 1])
                 self.assertFalse(any("ci/receipt.py" in argument for command in commands for argument in command))
                 for call in probes["run"].call_args_list + probes["run_expect_failure"].call_args_list:
                     if "env" in call.kwargs:
@@ -1371,6 +1411,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                 consume_mock.assert_called_once_with(
                     root / "repository", root / "packages", root / "sdks", root / "output",
                     "0.2.0", "python", offline=True, expected_classifier="linux-x64",
+                    package_negative_evidence=None,
                 )
             with patch.object(sys, "argv", command + ["--plan", str(root / "plan")]), \
                     patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
@@ -1396,7 +1437,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                         "host classifier mismatch: expected macos-arm64, found linux-x64",
                     ):
                 consume_language(
-                    root, root, root, output, "0.2.0", "python",
+                    root, root / "packages", root / "sdks", output, "0.2.0", "python",
                     expected_classifier="macos-arm64",
                 )
             consume_mock.assert_not_called()
@@ -1406,7 +1447,7 @@ class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
                     patch("native_wrappers._consume") as consume_mock, \
                     self.assertRaisesRegex(ValueError, "unsupported expected host classifier: other"):
                 consume_language(
-                    root, root, root, output, "0.2.0", "python",
+                    root, root / "packages", root / "sdks", output, "0.2.0", "python",
                     expected_classifier="other",
                 )
             classifier_mock.assert_not_called()

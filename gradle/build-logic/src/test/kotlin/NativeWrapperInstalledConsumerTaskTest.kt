@@ -15,6 +15,36 @@ import org.gradle.work.DisableCachingByDefault
 
 class NativeWrapperInstalledConsumerTaskTest {
     @Test
+    fun `C++ negative output is mandatory separated forwarded and cleared on failure`() {
+        fixture().use { fixture ->
+            assertFailsWith<IllegalStateException> { fixture.task("cpp", offline = true).consume() }
+            val negatives = fixture.root.resolve("work/negatives")
+            val sentinel = fixture.packages.resolve("sentinel").apply { writeText("preserve") }
+            for (unsafe in listOf(fixture.packages, fixture.output, fixture.root.resolve("work/capability-inputs"))) {
+                assertFailsWith<IllegalStateException> {
+                    fixture.task("cpp", offline = true).apply { packageNegativeEvidenceDirectory.set(unsafe) }.consume()
+                }
+                assertEquals("preserve", sentinel.readText())
+            }
+            fixture.script.writeText("""
+                import pathlib, sys
+                args = sys.argv
+                negative = pathlib.Path(args[args.index('--package-negative-evidence') + 1])
+                negative.mkdir(parents=True)
+                (negative / 'partial').write_text('not accepted')
+                raise SystemExit('synthetic actual negative failure')
+            """.trimIndent())
+            assertFailsWith<GradleException> {
+                fixture.task("cpp", offline = true).apply { packageNegativeEvidenceDirectory.set(negatives) }.consume()
+            }
+            assertFalse(negatives.exists())
+            assertFalse(fixture.output.exists())
+            assertFalse(fixture.root.resolve("work/capability-inputs").exists())
+            assertEquals("preserve", sentinel.readText())
+        }
+    }
+
+    @Test
     fun `capability handoff cleanup rejects unowned overlapping and symbolic destinations`() {
         fixture().use { fixture ->
             val sentinel = fixture.packages.resolve("sentinel").apply { writeText("preserve") }

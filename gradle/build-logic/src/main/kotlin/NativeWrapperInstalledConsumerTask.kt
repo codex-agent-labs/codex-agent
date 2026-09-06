@@ -13,6 +13,7 @@ import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -56,6 +57,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
     abstract val consumerSources: ConfigurableFileCollection
     @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
     @get:OutputDirectory abstract val capabilityInputsDirectory: DirectoryProperty
+    @get:Optional @get:OutputDirectory abstract val packageNegativeEvidenceDirectory: DirectoryProperty
     @get:Internal abstract val ownedBuildDirectory: DirectoryProperty
     @get:Input abstract val pythonExecutable: Property<String>
     @get:Internal abstract val repositoryRoot: DirectoryProperty
@@ -71,8 +73,12 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
     fun consume() {
         val output = outputDirectory.get().asFile
         val capabilityInputs = capabilityInputsDirectory.get().asFile
+        val negatives = packageNegativeEvidenceDirectory.orNull?.asFile
+        check((language.get() == "cpp") == (negatives != null)) {
+            "C++ requires separate package negative evidence"
+        }
         val owned = ownedBuildDirectory.get().asFile.toPath().toAbsolutePath().normalize()
-        val destinations = listOf(output, capabilityInputs).map { file ->
+        val destinations = listOfNotNull(output, capabilityInputs, negatives).map { file ->
             generateSequence(file.toPath().toAbsolutePath()) { it.parent }.forEach { path ->
                 check(!Files.isSymbolicLink(path) && (!Files.exists(path, LinkOption.NOFOLLOW_LINKS) ||
                     Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))) { "Unsafe native validation output: $path" }
@@ -81,12 +87,15 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
                 check(path != owned && path.startsWith(owned)) { "Unowned native validation output: $path" }
             }
         }
-        check(!destinations[0].startsWith(destinations[1]) && !destinations[1].startsWith(destinations[0])) {
+        check(destinations.indices.all { first -> destinations.indices.all { second ->
+            first == second || !destinations[first].startsWith(destinations[second])
+        } }) {
             "Native validation outputs overlap"
         }
         listOf(packageStageDirectory.get().asFile, runtimeStageDirectory.get().asFile,
             packageReceipt.get().asFile, compatibilityRequest.get().asFile, stagedSdkDirectory.get().asFile,
-            sdkVersionFile.get().asFile, consumerScript.get().asFile).forEach { input ->
+            sdkVersionFile.get().asFile, consumerScript.get().asFile).plus(consumerSources.files)
+            .plus(verifierSources.files).forEach { input ->
             val path = input.canonicalFile.toPath()
             check(destinations.none { it.startsWith(path) || path.startsWith(it) }) {
                 "Native validation output overlaps an input: $input"
@@ -94,6 +103,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
         }
         output.deleteRecursively()
         capabilityInputs.deleteRecursively()
+        negatives?.deleteRecursively()
         try {
             val languageValue = language.get()
             check(languageValue in nativeWrapperInstalledConsumerLanguages) {
@@ -129,6 +139,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
                 "--expected-classifier", classifier,
             )
             if (offlineMode.get()) command += "--offline"
+            if (negatives != null) command += listOf("--package-negative-evidence", negatives.absolutePath)
             processes.exec {
                 workingDir(repositoryRoot.get().asFile)
                 environment("PYTHONDONTWRITEBYTECODE", "1")
@@ -138,6 +149,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
         } catch (error: Exception) {
             output.deleteRecursively()
             capabilityInputs.deleteRecursively()
+            negatives?.deleteRecursively()
             throw error
         }
     }

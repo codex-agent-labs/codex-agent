@@ -1115,6 +1115,7 @@ def consume_language(
     *,
     offline: bool = False,
     expected_classifier: str | None = None,
+    package_negative_evidence: Path | None = None,
 ) -> None:
     """Execute one imported-package host consumer; never issue a legacy lane receipt.
 
@@ -1123,7 +1124,26 @@ def consume_language(
     """
     if language not in LANGUAGES:
         raise ValueError(f"unsupported native wrapper language: {language}")
+    if (language == "cpp") != (package_negative_evidence is not None):
+        raise ValueError("C++ requires a separate package negative evidence output")
+    destinations = [output] + ([package_negative_evidence] if package_negative_evidence is not None else [])
+    for destination in destinations:
+        if any(path.is_symlink() or path.exists() and not path.is_dir()
+               for path in (destination, *destination.parents)):
+            raise ValueError("Unsafe installed consumer evidence output")
+        resolved = destination.resolve()
+        protected = (packages, sdks, repository / "ci", repository / "codex-agent-bindings")
+        if (resolved == Path(resolved.anchor) or resolved in (Path.home().resolve(), repository.resolve()) or
+                any(resolved.is_relative_to(path.resolve()) or path.resolve().is_relative_to(resolved)
+                    for path in protected) or
+                any(other != destination and (resolved.is_relative_to(other.resolve()) or
+                    other.resolve().is_relative_to(resolved)) for other in destinations)):
+            raise ValueError("Installed consumer evidence outputs overlap inputs or each other")
+    if len({path.resolve() for path in destinations}) != len(destinations):
+        raise ValueError("Installed consumer evidence outputs overlap each other")
     invalidate_output(output)
+    if package_negative_evidence is not None:
+        invalidate_output(package_negative_evidence)
     try:
         if expected_classifier is not None:
             if expected_classifier not in HOSTS:
@@ -1135,9 +1155,11 @@ def consume_language(
                     f"expected {expected_classifier}, found {actual_classifier}"
                 )
         _consume(repository, packages, sdks, None, output, sdk_version,
-                 languages=(language,), offline=offline)
+                 languages=(language,), offline=offline, package_negative_evidence=package_negative_evidence)
     except Exception:
         invalidate_output(output)
+        if package_negative_evidence is not None:
+            invalidate_output(package_negative_evidence)
         raise
 
 
@@ -1151,6 +1173,7 @@ def _consume(
     *,
     languages: tuple[str, ...] = LANGUAGES,
     offline: bool = False,
+    package_negative_evidence: Path | None = None,
 ) -> None:
     if (plan is None and (len(languages) != 1 or languages[0] not in LANGUAGES) or
             plan is not None and languages != LANGUAGES):
@@ -1335,6 +1358,13 @@ def _consume(
                 cpp_prefix, "share/CodexAgent/native/sdk-compatibility.json", sdk_compatibility, "C++",
             )
             reject_raw_c_abi_proofs(cpp_prefix, "C++")
+            if package_negative_evidence is not None:
+                run(
+                    sys.executable, repository / "codex-agent-bindings/cpp/tools/verify_imported_package.py",
+                    "--package-root", cpp_prefix, "--output", package_negative_evidence,
+                    "--cmake", "cmake", "--libdir", "lib", "--library", HOSTS[classifier][4],
+                    cwd=work,
+                )
             cpp_env = consumer_env.copy()
             run(executable(cpp_build, "codex_agent_host_smoke"), cwd=work, env=cpp_env)
             run(executable(cpp_build, "codex_agent_host_smoke"), cpp_library, cwd=work, env=cpp_env)
@@ -1480,13 +1510,15 @@ def parse_args() -> argparse.Namespace:
             consumer.add_argument("--language", choices=LANGUAGES, required=True)
             consumer.add_argument("--expected-classifier", choices=HOSTS, required=True)
             consumer.add_argument("--offline", action="store_true")
+            consumer.add_argument("--package-negative-evidence", type=Path)
     return parser.parse_args()
 
 
 def main() -> None:
     arguments = parse_args()
-    output = arguments.output.resolve()
-    invalidate_output(output)
+    output = arguments.output.absolute()
+    if arguments.command != "consume-language":
+        invalidate_output(output)
     sdk_version = require_sdk_version_file(arguments.sdk_version_file.resolve())
     if arguments.command == "package":
         package_all(
@@ -1498,6 +1530,7 @@ def main() -> None:
             arguments.repository.resolve(), arguments.packages.resolve(), arguments.sdks.resolve(),
             output, sdk_version, arguments.language, offline=arguments.offline,
             expected_classifier=arguments.expected_classifier,
+            package_negative_evidence=arguments.package_negative_evidence,
         )
     else:
         consume(arguments.repository.resolve(), arguments.packages.resolve(), arguments.sdks.resolve(),

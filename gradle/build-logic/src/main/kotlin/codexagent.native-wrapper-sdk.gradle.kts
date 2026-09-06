@@ -329,6 +329,9 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
         capabilityInputsDirectory.set(layout.buildDirectory.dir(
             nativeWrapperCandidateTree.map { "native-wrapper-capability-inputs/$it/$language" },
         ))
+        if (language == "cpp") packageNegativeEvidenceDirectory.set(layout.buildDirectory.dir(
+            nativeWrapperCandidateTree.map { "native-wrapper-package-negatives/$it/$language" },
+        ))
         repositoryRoot.set(rootProject.layout.projectDirectory)
     }
 }
