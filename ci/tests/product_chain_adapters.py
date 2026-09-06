@@ -10,6 +10,7 @@ from ci.products.aggregate import RUNTIME_ADAPTERS, RUNTIME_EVIDENCE_TARGETS, RU
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.inventory import load_canonical_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.receipt import write_output_manifest
+from ci.products.registry import PhaseInstanceId
 from ci.products.runtime_evidence import (
     derive_runtime_adapter_projection,
     jvm_evidence_filename,
@@ -61,6 +62,7 @@ def build_adapters(
 
     runtime_maven_files = list(variants["runtime_maven_files"])
     maven_outputs: dict[str, list[dict[str, Any]]] = {}
+    maven_contents_by_component: dict[str, dict[str, bytes]] = {}
     for component in RUNTIME_ADAPTERS:
         contents = f"S808 synthetic {component} Maven Runtime fixture\n".encode()
         logical_path = f"maven/{component}/runtime.bin"
@@ -91,9 +93,13 @@ def build_adapters(
             output("maven", f"outputs/{record['path']}", Path(record["file"]).read_bytes())
             for record in files
         ]
+        maven_contents_by_component[component] = {
+            f"outputs/{record['path']}": Path(record["file"]).read_bytes() for record in files
+        }
     runtime_maven_files.sort(key=lambda record: record["path"])
 
     receipt_paths: dict[tuple[str, str, str], Path] = {}
+    phase_stages: dict[PhaseInstanceId, Path] = {}
 
     def write(
         component: str,
@@ -101,9 +107,34 @@ def build_adapters(
         target: str,
         *,
         outputs: list[dict[str, Any]],
+        contents: dict[str, bytes],
         upstream: list[dict[str, Any]],
     ) -> dict[str, Any]:
         identity = (component, phase, target)
+        stage = root / "stages" / component / (
+            "package" if component == "node-js" and phase == "package" else f"{phase}-{target}"
+        )
+        if set(contents) != {value["relativePath"] for value in outputs}:
+            raise ValueError("Adapter fixture stage requires the exact original output bytes")
+        for value in outputs:
+            relative = value["relativePath"]
+            if output(value["kind"], relative, contents[relative]) != value:
+                raise ValueError("Adapter fixture source bytes differ from declared outputs")
+            destination = stage / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                if destination.read_bytes() != contents[relative]:
+                    raise ValueError("Adapter fixture must not overwrite different original stage bytes")
+            else:
+                destination.write_bytes(contents[relative])
+        staged = write_output_manifest(stage, "runtime", component, phase, target, "0.2.7", {
+            value["kind"]: "/".join(value["relativePath"].split("/")[:2]) for value in outputs
+        })["outputs"]
+        if staged != sorted(outputs, key=lambda value: value["relativePath"]):
+            raise ValueError("Adapter fixture stage differs from the original output inventory")
+        instance = PhaseInstanceId("runtime", component, phase, target)
+        phase_stages[instance] = stage
+        context.setdefault("phase_stages", {})[instance] = stage
         path = root / "receipts" / component / f"{phase}-{target}.json"
         receipt = write_receipt(
             path,
@@ -128,12 +159,16 @@ def build_adapters(
                 f"outputs/binary/{component}.bin",
                 f"S808 synthetic {component} binary fixture\n".encode(),
             )],
+            contents={f"outputs/binary/{component}.bin": f"S808 synthetic {component} binary fixture\n".encode()},
             upstream=[contract_reference(contract, component)],
         )
         package_outputs = [output(
             "adapter-package", f"outputs/package/{component}.bin",
             f"S808 synthetic {component} package fixture\n".encode(),
         )]
+        package_contents = {
+            f"outputs/package/{component}.bin": f"S808 synthetic {component} package fixture\n".encode(),
+        }
         if component == "node-js":
             stage = root / "stages/node-js/package"
             adapter = stage / "outputs/adapter"
@@ -149,11 +184,14 @@ def build_adapters(
                 {"adapter": "outputs/adapter"},
             )["outputs"]
             package_stages[component] = stage
+            package_contents = {value["relativePath"]: (stage / value["relativePath"]).read_bytes()
+                                for value in package_outputs}
         package = write(
             component,
             "package",
             component,
             outputs=package_outputs,
+            contents=package_contents,
             upstream=[reference(binary)],
         )
         metadata_upstream = []
@@ -175,6 +213,7 @@ def build_adapters(
                 "validation",
                 target,
                 outputs=[output(kind, relative_path, report.read_bytes())],
+                contents={relative_path: report.read_bytes()},
                 upstream=[reference(package), reference(variants["receipts"][target]["package"])],
             )
             semantic = reference(validation)
@@ -194,6 +233,7 @@ def build_adapters(
                     "outputs/node-js-binding/evidence.json",
                     b"S808 synthetic Node binding validation fixture\n",
                 )],
+                contents={"outputs/node-js-binding/evidence.json": b"S808 synthetic Node binding validation fixture\n"},
                 upstream=[reference(package)],
             )
             metadata_upstream.append(reference(binding))
@@ -210,6 +250,8 @@ def build_adapters(
                 ),
                 *maven_outputs[component],
             ],
+            contents={f"outputs/evidence/{component}.json": projection_contents,
+                      **maven_contents_by_component[component]},
             upstream=metadata_upstream,
         )
 
@@ -228,4 +270,5 @@ def build_adapters(
         "adapter_receipts": adapter_receipts,
         "adapter_report_files": adapter_report_files,
         "package_stages": package_stages,
+        "phase_stages": phase_stages,
     }

@@ -925,7 +925,7 @@ class ContractBundleTest(unittest.TestCase):
         return archive
 
     def _product_phase_stages(self, root: Path, *, execution_context: str = "first", producer=None,
-                              trust_domain="development", target_hash_salt=b""):
+                              trust_domain="development", target_hash_salt=b"", plan_factory=plan_phase):
         versions = {
             "contract": VERSION,
             "runtime-release": VERSION,
@@ -949,7 +949,7 @@ class ContractBundleTest(unittest.TestCase):
             binary_stage, "contract", "contract", "binary", "common", VERSION,
             {**output_roots, "contract-execution": "outputs/execution"},
         )
-        binary_plan = plan_phase(
+        binary_plan = plan_factory(
             binary_id,
             inventory=[{
                 "relativePath": "contract-input", "bytes": 1, "sha256": sha256_bytes(b"b"),
@@ -981,7 +981,7 @@ class ContractBundleTest(unittest.TestCase):
         write_output_manifest(
             package_stage, "contract", "contract", "package", "common", VERSION, output_roots,
         )
-        package_plan = plan_phase(
+        package_plan = plan_factory(
             package_id,
             inventory=[{
                 "relativePath": "contract-package", "bytes": 1, "sha256": sha256_bytes(b"p"),

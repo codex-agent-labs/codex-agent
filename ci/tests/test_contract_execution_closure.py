@@ -21,10 +21,11 @@ from ci.tests import test_contract_bundle as fixture
 
 
 def execution_closure_fixture(root: Path, context: str = "first", *, producer=None,
-                              trust_domain="development", target_hash_salt=b""):
+                              trust_domain="development", target_hash_salt=b"", plan_factory=plan_phase):
     phases = fixture.ContractBundleTest()._product_phase_stages(
         root, execution_context=context, producer=producer, trust_domain=trust_domain,
         target_hash_salt=target_hash_salt,
+        plan_factory=plan_factory,
     )
     version = fixture.VERSION
     validation = root / "validation-stage"
@@ -45,7 +46,7 @@ def execution_closure_fixture(root: Path, context: str = "first", *, producer=No
     receipts = {phase: phases[f"{phase}_receipt_path"] for phase in ("binary", "package")}
     upstream = phases["package_receipt"]
     for index, (phase, stage) in enumerate((("validation", validation), ("metadata", metadata)), 2):
-        plan = plan_phase(
+        plan = plan_factory(
             PhaseInstanceId("contract", "contract", phase, "common"),
             inventory=[{"relativePath": f"contract-{phase}", "bytes": 1, "sha256": sha256_bytes(b"p")}],
             versions={"contract": version, "runtime-release": version, "runtime-compatibility": version, "sdk": version},

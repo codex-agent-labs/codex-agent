@@ -14,27 +14,39 @@ from ci.products.inventory import load_canonical_json_bytes, sha256_file
 from ci.products.runtime_aggregate import produce_runtime_aggregate, build_runtime_aggregate_attestation
 from ci.products.sdk_compatibility import produce_sdk_compatibility
 from ci.products.signatures import generate_development_key
+from ci.products.registry import PhaseInstanceId
+from ci.products.receipt import write_output_manifest
 from ci.tests.product_chain_support import output, reference, write_receipt
 from ci.tests.product_chain_variants import build_variants
 from ci.tests.product_chain_adapters import build_adapters
 from ci.tests.test_contract_execution_closure import execution_closure_fixture
 
 
-def build_chain(root: Path, run: int, *, variants: dict | None = None, include_bootstrap: bool = False) -> dict:
+def build_chain(root: Path, run: int, *, variants: dict | None = None, include_bootstrap: bool = False,
+                context: dict | None = None) -> dict:
     root.mkdir()
-    private_key, public_key, signing = generate_development_key(root / "keys")
-    context = {
-        "private_key": private_key, "public_key": public_key, "signing": signing,
-        "producer": {
-            "repository": "codex-agent-labs/codex-agent",
-            "workflowPath": ".github/workflows/product-validation.yml",
-            "commit": f"{run:040x}", "tree": f"{run + 100:040x}",
-            "event": "pull_request", "runId": run, "runAttempt": 1, "pullRequest": 31,
-        },
-    }
+    if context is None:
+        private_key, public_key, signing = generate_development_key(root / "keys")
+        context = {
+            "private_key": private_key, "public_key": public_key, "signing": signing,
+            "producer": {
+                "repository": "codex-agent-labs/codex-agent",
+                "workflowPath": ".github/workflows/product-validation.yml",
+                "commit": f"{run:040x}", "tree": f"{run + 100:040x}",
+                "event": "pull_request", "runId": run, "runAttempt": 1, "pullRequest": 31,
+            },
+        }
+    private_key, public_key, signing = (context[key] for key in ("private_key", "public_key", "signing"))
     payload, receipts, execution_archive = execution_closure_fixture(
         root / "contract-source", context=f"producer-run-{run}", producer=context["producer"],
+        **({"plan_factory": context["plan_factory"]} if "plan_factory" in context else {}),
     )
+    if "plan_factory" in context:
+        for phase, path in receipts.items():
+            instance = PhaseInstanceId("contract", "contract", phase, "common")
+            context["planned_receipts"][instance] = load_canonical_json_bytes(path.read_bytes())
+            context["receipt_paths"][instance] = path
+            context["phase_stages"][instance] = root / "contract-source" / f"{phase}-stage"
     manifest = verify_contract_bundle(payload)
     receipt = receipts["metadata"]
     execution_closure = root / "contract-execution-closure"
@@ -50,6 +62,8 @@ def build_chain(root: Path, run: int, *, variants: dict | None = None, include_b
         "signature": trust / "codex-agent-contract-0.2.0.attestation.sig",
         "execution_closure": trust / "execution-closure",
     }
+    if "plan_factory" in context:
+        context["contract"] = contract
     if variants is None:
         variants = build_variants(root / "variants", contract, context, include_bootstrap=include_bootstrap)
     adapters = build_adapters(root / "adapters", contract, variants, context)
@@ -74,6 +88,14 @@ def build_chain(root: Path, run: int, *, variants: dict | None = None, include_b
     )
     aggregate_path = aggregate["manifestPath"]
     aggregate_receipt = root / "aggregate-receipt.json"
+    if "plan_factory" in context:
+        aggregate_stage = root / "aggregate-stage"
+        aggregate_payload = aggregate_stage / "outputs" / aggregate_path.name
+        aggregate_payload.parent.mkdir(parents=True)
+        aggregate_payload.write_bytes(aggregate_path.read_bytes())
+        write_output_manifest(aggregate_stage, "runtime", "runtime-aggregate", "metadata", "aggregate",
+                              "0.2.7", {"runtime-aggregate": "outputs"})
+        context["phase_stages"][PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")] = aggregate_stage
     metadata_receipts = [values["metadata"] for values in variants["variant_phase_receipts"].values()]
     metadata_receipts.extend(
         record["receipt"] for record in adapters["adapter_receipts"] if record["phase"] == "metadata"

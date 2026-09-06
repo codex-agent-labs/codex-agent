@@ -37,6 +37,7 @@ from ci.products.inventory import (
     write_canonical_json,
 )
 from ci.products.receipt import write_output_manifest
+from ci.products.registry import PhaseInstanceId
 from ci.products.runtime_attestation import build_runtime_variant_attestation
 from ci.products.runtime_evidence import (
     DESKTOP_RUNTIME_TEST_CLASS,
@@ -51,9 +52,7 @@ from ci.products.runtime_evidence import (
 from ci.products.runtime_identity import derive_runtime_identity
 from ci.products.runtime_variant import produce_runtime_variant
 from ci.tests.product_chain_support import (
-    TOOLCHAIN,
     contract_reference,
-    output,
     reference,
     write_receipt,
 )
@@ -356,9 +355,20 @@ def build_variants(
             phase: root / "receipts" / target / f"{phase}.json"
             for phase in ("binary", "package", "validation", "metadata")
         }
+        binary_stage = root / "producer-stages" / target / "binary"
+        binary_relative = f"outputs/binary/{target}/{library.name}" if "plan_factory" in context else f"outputs/binary/{library.name}"
+        binary_library = binary_stage / binary_relative
+        binary_library.parent.mkdir(parents=True)
+        binary_library.write_bytes(library.read_bytes())
+        binary_outputs = write_output_manifest(
+            binary_stage, "runtime", target, "binary", target, _VERSION,
+            {"runtime-binary": "outputs/binary"},
+        )["outputs"]
+        for phase, stage in (("binary", binary_stage), ("package", package_stage), ("validation", validation_stage)):
+            context.setdefault("phase_stages", {})[PhaseInstanceId("runtime", target, phase, target)] = stage
         binary = write_receipt(
             receipt_paths["binary"], component=target, phase="binary", target=target,
-            outputs=[output("runtime-binary", f"outputs/binary/{library.name}", library.read_bytes())],
+            outputs=binary_outputs,
             upstream=[contract_reference(contract, target)], context=context,
         )
         package = write_receipt(
@@ -401,7 +411,7 @@ def build_variants(
                 "releaseTag": f"rust-v{_APP_SERVER_VERSION}",
                 "binarySha256": f"sha256:{proof.binary_sha256}",
             },
-            "toolchainProfile": {"id": target, "digest": TOOLCHAIN},
+            "toolchainProfile": {"id": target, "digest": binary["inputs"]["toolchainProfileDigest"]},
         })
         variant_output = root / "variants" / target
         variant_output.mkdir(parents=True)
@@ -429,11 +439,18 @@ def build_variants(
             "kind": "runtime-validation-content",
             "sha256": validation_projection,
         }
+        metadata_stage = root / "producer-stages" / target / "metadata"
+        metadata_bundle = metadata_stage / "outputs" / bundle.name
+        metadata_bundle.parent.mkdir(parents=True)
+        metadata_bundle.write_bytes(bundle.read_bytes())
+        metadata_outputs = write_output_manifest(
+            metadata_stage, "runtime", target, "metadata", target, _VERSION,
+            {"runtime-variant": "outputs"},
+        )["outputs"]
+        context["phase_stages"][PhaseInstanceId("runtime", target, "metadata", target)] = metadata_stage
         metadata = write_receipt(
             receipt_paths["metadata"], component=target, phase="metadata", target=target,
-            outputs=[output(
-                "runtime-variant", f"outputs/{bundle.name}", bundle.read_bytes(),
-            )],
+            outputs=metadata_outputs,
             upstream=[metadata_upstream], context=context,
         )
         attestation_dir = root / "attestations" / target
