@@ -95,35 +95,77 @@ class RuntimeToolchainSettingsContractTest {
     }
 
     @Test
-    fun `native binary rejects task exclusions before an observer can be removed`() {
-        val guard = plugin.substringAfter(
-            "if (requestedRuntimeTarget in runtimeBinaryFlags && " +
-                "(requestedRuntimePhase == null || requestedRuntimePhase == \"binary\")) {",
-        ).substringBefore("    verifyRuntimeBinaryFlagsAgainstPlan(")
+    fun `every native phase rejects task exclusions before its compiler guard can be removed`() {
+        val guard = plugin.substringBefore("    verifyRuntimeBinaryFlagsAgainstPlan(")
+            .substringAfterLast("if (requestedRuntimeTarget in runtimeBinaryFlags) {")
+            .substringBefore("\n}")
         assertTrue("gradle.startParameter.excludedTaskNames.isEmpty()" in guard)
+        assertFalse("requestedRuntimePhase" in guard)
 
         val root = createTempDirectory("runtime-excluded-observer").toFile().canonicalFile
         try {
             root.resolve("settings.gradle.kts").writeText(
                 """
                 val requestedRuntimeTarget = "macos-arm64"
-                val requestedRuntimePhase: String? = "binary"
                 val runtimeBinaryFlags = setOf("macos-arm64")
-                if (requestedRuntimeTarget in runtimeBinaryFlags &&
-                    (requestedRuntimePhase == null || requestedRuntimePhase == "binary")) {
+                if (requestedRuntimeTarget in runtimeBinaryFlags) {
                 $guard
                 }
                 rootProject.name = "excluded-runtime-observer"
                 """.trimIndent() + "\n",
             )
-            val result = GradleRunner.create()
-                .withProjectDir(root)
-                .withArguments("help", "-x", "verifyRuntimeProducerToolchain", "--offline", "--stacktrace")
-                .buildAndFail()
-            assertTrue(
-                "Native Runtime binary producer verification rejects excluded tasks" in result.output,
-                result.output,
+            listOf("binary", "package", "validation", "metadata").forEach { phase ->
+                val result = GradleRunner.create()
+                    .withProjectDir(root)
+                    .withArguments(
+                        "help", "-PcodexAgent.phase=$phase", "-x", "verifyRuntimeProducerToolchain",
+                        "--offline", "--stacktrace",
+                    )
+                    .buildAndFail()
+                assertTrue(
+                    "Native Runtime binary producer verification rejects excluded tasks" in result.output,
+                    result.output,
+                )
+            }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `artifact-only compiler guard rejects direct production without evaluating toolchain inputs`() {
+        val rejection = plugin.substringAfter("} else if (requestedRuntimeTarget in runtimeBinaryFlags) {")
+            .substringBefore("} else {\n    null\n}")
+        assertTrue("tasks.register(\"verifyRuntimeProducerToolchain\")" in rejection)
+        listOf("providers.", "System.", "Exec", "commandLine", "runtimeBinaryPlan").forEach {
+            assertFalse(it in rejection, "Artifact-only rejection must not evaluate $it")
+        }
+        val supervisorEdge = plugin.substringAfter("val compileDesktopProcessSupervisor =")
+            .substringBefore("val desktopPackageTasks =")
+            .lineSequence().single { "verifyRuntimeProducerToolchain?.let { dependsOn(it) }" in it }
+        val root = createTempDirectory("runtime-artifact-only-compiler-guard").toFile().canonicalFile
+        try {
+            root.resolve("settings.gradle.kts").writeText("rootProject.name = \"artifact-only-guard\"\n")
+            root.resolve("build.gradle.kts").writeText(
+                """
+                val verifyRuntimeProducerToolchain = $rejection
+                tasks.register("compileDesktopProcessSupervisor") {
+                    $supervisorEdge
+                    doLast { error("COMPILER_MUST_NOT_RUN") }
+                }
+                tasks.register("artifactOnly")
+                tasks.register("validationCConsumer")
+                """.trimIndent() + "\n",
             )
+            val admitted = GradleRunner.create().withProjectDir(root)
+                .withArguments("artifactOnly", "validationCConsumer", "--offline", "--stacktrace")
+                .build()
+            assertFalse(":verifyRuntimeProducerToolchain" in admitted.output, admitted.output)
+            val rejected = GradleRunner.create().withProjectDir(root)
+                .withArguments("compileDesktopProcessSupervisor", "--offline", "--stacktrace")
+                .buildAndFail()
+            assertTrue("Native Runtime product compilation requires the binary phase" in rejected.output)
+            assertFalse("COMPILER_MUST_NOT_RUN" in rejected.output, rejected.output)
         } finally {
             root.deleteRecursively()
         }

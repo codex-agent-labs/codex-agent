@@ -95,10 +95,12 @@ if (requestedRuntimeTarget in runtimeBinaryFlags) {
         }
     }
 }
-if (requestedRuntimeTarget in runtimeBinaryFlags && (requestedRuntimePhase == null || requestedRuntimePhase == "binary")) {
+if (requestedRuntimeTarget in runtimeBinaryFlags) {
     require(gradle.startParameter.excludedTaskNames.isEmpty()) {
         "Native Runtime binary producer verification rejects excluded tasks"
     }
+}
+if (requestedRuntimeTarget in runtimeBinaryFlags && (requestedRuntimePhase == null || requestedRuntimePhase == "binary")) {
     verifyRuntimeBinaryFlagsAgainstPlan(
         runtimeBinaryFlags,
         requestedRuntimeTarget,
@@ -178,6 +180,14 @@ val verifyRuntimeProducerToolchain = if (
             command += listOf("--supervisor-compiler", it)
         }
         commandLine(command)
+    }
+} else if (requestedRuntimeTarget in runtimeBinaryFlags) {
+    tasks.register("verifyRuntimeProducerToolchain") {
+        group = "verification"
+        description = "Rejects Runtime product compilation during an artifact-only phase."
+        doLast {
+            error("Native Runtime product compilation requires the binary phase, not an explicit artifact-only phase")
+        }
     }
 } else {
     null
