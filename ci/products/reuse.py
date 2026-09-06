@@ -26,6 +26,7 @@ from .index import (
     IndexEntrySource,
     release_attested_contract_admission,
     release_attested_runtime_variant_admission,
+    release_attested_runtime_aggregate_admission,
     verify_contract_index_object,
     verify_native_runtime_index_object,
     verify_adapter_runtime_index_object,
@@ -247,6 +248,7 @@ class LookupSession:
         native_runtime_projection=None,
         native_runtime_evidence=None,
         adapter_runtime_projection=None,
+        adapter_runtime_evidence=None,
         sdk_validation_projection=None,
     ) -> None:
         self.repository = require_relative_path(repository, "lookup repository")
@@ -266,6 +268,7 @@ class LookupSession:
         if adapter_runtime_projection is not None and not callable(adapter_runtime_projection):
             raise ValueError("Adapter Runtime comparison provider must be callable")
         self._adapter_runtime_projection = adapter_runtime_projection
+        self._adapter_runtime_evidence = {} if adapter_runtime_evidence is None else dict(adapter_runtime_evidence)
         self._adapter_projections: dict[bytes, VerifiedAdapterRuntimeProjection] = {}
         if sdk_validation_projection is not None and not callable(sdk_validation_projection):
             raise ValueError("SDK validation comparison provider must be callable")
@@ -485,6 +488,8 @@ class LookupSession:
                         self._verify_release_attested_contract(path, envelope, candidate)
                     elif identity.product == "runtime" and identity.component == identity.target in NATIVE_TARGETS:
                         self._verify_release_attested_native_runtime(envelope, candidate)
+                    elif identity == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"):
+                        self._verify_release_attested_runtime_aggregate(envelope, candidate)
                     else:
                         raise ValueError("Restored receipt trust does not match its product index source")
                 if identity.product == "contract" and identity.phase in {"binary", "metadata"} and self._restore_root is not None:
@@ -546,6 +551,68 @@ class LookupSession:
                 validation_evidence=Path(runtime["stageRoot"]) / target / "validation/outputs/native" / f"desktop-runtime-{spec.target}.json",
                 attestation=Path(runtime["attestation"]), signature=Path(runtime["attestationSignature"]),
                 public_key=Path(runtime["publicKey"]), keyring=catalog.keyring, keys_directory=catalog.keys_directory,
+            )
+
+    def _verify_release_attested_runtime_aggregate(self, envelope, candidate):
+        from .sdk_inputs import _copy_file
+        from .signatures import load_keyring, public_key_path
+
+        catalog = candidate.catalog
+        if catalog.keyring is None or catalog.keys_directory is None:
+            raise ValueError("Release Runtime aggregate reuse requires caller-pinned catalog keys")
+        matched = None
+        for arguments in self._adapter_runtime_evidence.values():
+            inputs = arguments["aggregate_inputs"]
+            original = read_regular_file_bytes(
+                Path(inputs["aggregate_metadata_receipt"]), max_bytes=16 * 1024 * 1024,
+                reject_symlink_parents=True)
+            if original == envelope["receiptBytes"]:
+                matched = arguments
+                break
+        if matched is None:
+            raise ValueError("Runtime aggregate release reuse lacks its exact original metadata evidence")
+        inputs = matched["aggregate_inputs"]
+        with tempfile.TemporaryDirectory(prefix="release-runtime-aggregate-inputs-") as temporary:
+            root = Path(temporary).resolve()
+            captured = {}
+
+            def capture(value):
+                path = Path(value)
+                if path not in captured:
+                    destination = root / "originals" / str(len(captured)) / path.name
+                    _copy_file(path, destination, max_bytes=1024 * 1024 * 1024)
+                    captured[path] = destination
+                return captured[path]
+
+            metadata = root / "selected-metadata.json"
+            metadata.write_bytes(envelope["receiptBytes"])
+            keyring = capture(catalog.keyring)
+            keys = root / "caller-keys"
+            keys.mkdir()
+            policy = load_keyring(keyring, catalog.keys_directory)
+            for record in ([policy["activeKey"]] if policy["activeKey"] else []) + policy["retiredKeys"]:
+                name = record["keyId"]
+                _copy_file(public_key_path(catalog.keys_directory, name), keys / f"{name}.pub")
+            _, index_bytes = verify_release_product_index(
+                SignedProductIndex(capture(catalog.manifest), capture(catalog.signature)),
+                keyring_path=keyring, keys_directory=keys)
+            if sha256_bytes(index_bytes) != candidate.index_sha256:
+                raise ValueError("Release Runtime aggregate index changed during reuse")
+            release_attested_runtime_aggregate_admission(
+                IndexEntrySource(envelope["receiptBytes"], candidate.entry["artifactName"]),
+                manifest=capture(matched["aggregate_manifest"]), metadata_receipt=metadata,
+                attestation=capture(inputs["aggregate_attestation"]),
+                signature=capture(inputs["aggregate_attestation_signature"]),
+                public_key=capture(inputs["aggregate_public_key"]),
+                **{field: {target: capture(path) for target, path in inputs[field].items()} for field in (
+                    "variant_bundles", "variant_attestations", "variant_attestation_signatures",
+                    "variant_public_keys", "variant_validation_evidence")},
+                variant_phase_receipts={target: {phase: capture(path) for phase, path in phases.items()}
+                                        for target, phases in inputs["variant_phase_receipts"].items()},
+                adapter_receipts=[{**record, "receipt": capture(record["receipt"])}
+                                  for record in inputs["adapter_receipts"]],
+                keyring=keyring, keys_directory=keys,
+                variant_keyring=keyring, variant_keys_directory=keys,
             )
 
     @staticmethod
@@ -947,7 +1014,8 @@ def plan_reuse_wave(
     repository_root = _absolute_path(request["repositoryRoot"], "reuse-wave request.repositoryRoot")
     artifact_root = _absolute_path(request["artifactRoot"], "reuse-wave request.artifactRoot")
     native_originals = _native_comparison_records(artifact_root, request.get("nativeRuntimeComparisonEvidence", []))
-    decode_adapter_comparison_records(artifact_root, request.get("adapterRuntimeComparisonEvidence", []))
+    adapter_originals = decode_adapter_comparison_records(
+        artifact_root, request.get("adapterRuntimeComparisonEvidence", []))
     revision = require_string(request["repositoryRevision"], "reuse-wave request.repositoryRevision")
     if _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Reuse-wave repositoryRevision must be an exact lowercase Git object ID")
@@ -1129,6 +1197,7 @@ def plan_reuse_wave(
             native_runtime_projection=native_comparison,
             native_runtime_evidence=native_originals,
             adapter_runtime_projection=adapter_comparison,
+            adapter_runtime_evidence=adapter_originals,
             sdk_validation_projection=sdk_comparison,
             pull_request=pull_request,
             restore_root=restore_root / "remote",
