@@ -25,6 +25,7 @@ from .index import (
     _verify_index_receipt,
     IndexEntrySource,
     release_attested_contract_admission,
+    release_attested_runtime_variant_admission,
     verify_contract_index_object,
     verify_native_runtime_index_object,
     verify_adapter_runtime_index_object,
@@ -244,6 +245,7 @@ class LookupSession:
         same_pr: RemoteCatalog | None = None,
         local: LocalCatalog | None = None,
         native_runtime_projection=None,
+        native_runtime_evidence=None,
         adapter_runtime_projection=None,
         sdk_validation_projection=None,
     ) -> None:
@@ -259,6 +261,7 @@ class LookupSession:
         if native_runtime_projection is not None and not callable(native_runtime_projection):
             raise ValueError("Native Runtime comparison provider must be callable")
         self._native_runtime_projection = native_runtime_projection
+        self._native_runtime_evidence = {} if native_runtime_evidence is None else dict(native_runtime_evidence)
         self._native_projections: dict[bytes, VerifiedNativeRuntimeProjection] = {}
         if adapter_runtime_projection is not None and not callable(adapter_runtime_projection):
             raise ValueError("Adapter Runtime comparison provider must be callable")
@@ -476,11 +479,14 @@ class LookupSession:
                     if not (
                         source in {"stable", "promoted-main"}
                         and envelope["receipt"]["trustDomain"] == "development"
-                        and (identity.product, identity.component, identity.target) == ("contract", "contract", "common")
-                        and identity.phase in {"binary", "package", "validation", "metadata"}
                     ):
                         raise ValueError("Restored receipt trust does not match its product index source")
-                    self._verify_release_attested_contract(path, envelope, candidate)
+                    if (identity.product, identity.component, identity.target) == ("contract", "contract", "common"):
+                        self._verify_release_attested_contract(path, envelope, candidate)
+                    elif identity.product == "runtime" and identity.component == identity.target in NATIVE_TARGETS:
+                        self._verify_release_attested_native_runtime(envelope, candidate)
+                    else:
+                        raise ValueError("Restored receipt trust does not match its product index source")
                 if identity.product == "contract" and identity.phase in {"binary", "metadata"} and self._restore_root is not None:
                     self._restore_contract_stage(path, envelope)
             except (CacheObjectError, OSError, TypeError, ValueError) as error:
@@ -492,6 +498,55 @@ class LookupSession:
                 "artifactSha256": candidate.entry["artifactSha256"],
             })
         return _LookupResult(None, "artifact-unavailable")
+
+    def _verify_release_attested_native_runtime(self, envelope, candidate):
+        from .c_abi import TARGET_SPECS
+
+        catalog = candidate.catalog
+        if catalog.keyring is None or catalog.keys_directory is None:
+            raise ValueError("Release native Runtime reuse requires caller-pinned catalog keys")
+        receipt = envelope["receipt"]
+        metadata_entries = [item.entry for catalogs in self._remote.values() for candidates in catalogs.values()
+                            for item in candidates if item.catalog is catalog and
+                            _identity(item.entry) == PhaseInstanceId("runtime", receipt["target"], "metadata", receipt["target"])]
+        if len(metadata_entries) != 1:
+            raise ValueError("Release native Runtime reuse requires its indexed metadata receipt")
+        matches = []
+        for validation_digest, (_, runtime) in self._native_runtime_evidence.items():
+            if runtime["target"] != receipt["target"]:
+                continue
+            originals = {phase: read_regular_file_bytes(Path(path), max_bytes=16 * 1024 * 1024,
+                                                       reject_symlink_parents=True)
+                         for phase, path in runtime["phaseReceipts"].items()}
+            metadata_digest = sha256_bytes(originals["metadata"])
+            if metadata_digest != metadata_entries[0]["receiptSha256"]:
+                continue
+            _verify_index_receipt(metadata_entries[0], {
+                "receipt": validate_phase_receipt(load_canonical_json_bytes(originals["metadata"])),
+                "receiptSha256": metadata_digest,
+            })
+            if originals[receipt["phase"]] != envelope["receiptBytes"]:
+                continue
+            if sha256_bytes(originals["validation"]) != validation_digest:
+                raise ValueError("Native Runtime release evidence differs from its original validation receipt")
+            matches.append((runtime, originals))
+        if len(matches) != 1:
+            raise ValueError("Native Runtime release reuse lacks its exact original phase evidence")
+        runtime, originals = matches[0]
+        target = receipt["target"]
+        spec = next(spec for spec in TARGET_SPECS.values() if spec.classifier == f"c-abi-{target}")
+        with tempfile.TemporaryDirectory(prefix="release-native-runtime-receipts-") as temporary:
+            phases = {phase: Path(temporary).resolve() / f"{phase}.json" for phase in originals}
+            for phase, path in phases.items():
+                path.write_bytes(originals[phase])
+            release_attested_runtime_variant_admission(
+                IndexEntrySource(envelope["receiptBytes"], candidate.entry["artifactName"]),
+                payload=Path(runtime["payload"]),
+                **{f"{phase}_receipt": path for phase, path in phases.items()},
+                validation_evidence=Path(runtime["stageRoot"]) / target / "validation/outputs/native" / f"desktop-runtime-{spec.target}.json",
+                attestation=Path(runtime["attestation"]), signature=Path(runtime["attestationSignature"]),
+                public_key=Path(runtime["publicKey"]), keyring=catalog.keyring, keys_directory=catalog.keys_directory,
+            )
 
     @staticmethod
     def _verify_release_attested_contract(
@@ -1072,6 +1127,7 @@ def plan_reuse_wave(
         session = LookupSession(
             repository=require_string(request["repository"], "reuse-wave request.repository"),
             native_runtime_projection=native_comparison,
+            native_runtime_evidence=native_originals,
             adapter_runtime_projection=adapter_comparison,
             sdk_validation_projection=sdk_comparison,
             pull_request=pull_request,
