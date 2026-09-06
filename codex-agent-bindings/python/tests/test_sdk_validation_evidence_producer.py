@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import subprocess
 import sys
@@ -54,7 +55,7 @@ class PythonSdkValidationEvidenceProducerTest(unittest.TestCase):
                 {path.name for path in fixture.output.iterdir()},
             )
             self.assertEqual(
-                {"enum-evidence", "mcp-value-evidence"},
+                {"enum-evidence", "mcp-value-evidence", "host-surface-evidence", "loader-security-evidence"},
                 {path.name for path in (fixture.output / "native-evidence").iterdir()},
             )
             self.assertEqual(
@@ -63,13 +64,17 @@ class PythonSdkValidationEvidenceProducerTest(unittest.TestCase):
             )
             self.assertEqual(
                 b"original MCP fixture",
-                (fixture.output / "native-evidence/mcp-value-evidence/libcodex_agent_python_fixture.so").read_bytes(),
+                (fixture.output / "native-evidence/mcp-value-evidence" / fixture.mcp_library).read_bytes(),
             )
             self.assertEqual(
                 b"synthetic unittest log; no suite executed\n",
                 (fixture.output / "python-test.log").read_bytes(),
             )
             self.assertEqual(fixture.test_program.read_bytes(), (fixture.output / "test-program").read_bytes())
+            self.assertEqual(b"original host object",
+                             (fixture.output / "native-evidence/host-surface-evidence/host_surface.o").read_bytes())
+            self.assertEqual({"schemaVersion": 1, "exitCode": 0, "outputBase64": ""}, json.loads(
+                (fixture.output / "native-evidence/host-surface-evidence/compiler-execution.json").read_bytes()))
             self.assertEqual("stale source compatibility\n", fixture.source_compatibility.read_text())
             self.assertTrue(all(path.read_text() == "stale source Runtime\n" for path in fixture.source_runtimes))
 
@@ -120,6 +125,47 @@ class PythonSdkValidationEvidenceProducerTest(unittest.TestCase):
                 self.assertFalse(fixture.output.exists())
                 self.assertEqual(original_program, fixture.test_program.read_bytes())
                 self.assertFalse(any(fixture.output.parent.glob(".python-binding-evidence-*")))
+
+    def test_missing_host_artifacts_or_diagnostics_cannot_publish_partial_evidence(self) -> None:
+        for name in ("host_surface.c", "host_surface.o", "compiler-execution.json"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
+                def run(*arguments, **kwargs):
+                    result = fixture.run(*arguments, **kwargs)
+                    (Path(kwargs["cwd"]) / "build/host-surface-evidence" / name).unlink()
+                    return result
+                with patch.object(producer.subprocess, "run", side_effect=run), self.assertRaises(ValueError):
+                    produce(*fixture.inputs, fixture.output)
+                self.assertFalse(fixture.output.exists())
+
+    def test_loader_child_and_compiler_originals_are_mandatory_and_nonempty(self) -> None:
+        case = "test_noncanonical_native_identity_fails"
+        library = "noncanonical.dll" if sys.platform == "win32" else "libnoncanonical" + (
+            ".dylib" if sys.platform == "darwin" else ".so")
+        for name in ("child-execution.json", "noncanonical.c", "noncanonical-compiler-execution.json", library):
+            for empty in (False, True):
+                with self.subTest(name=name, empty=empty), tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
+                    def run(*arguments, **kwargs):
+                        result = fixture.run(*arguments, **kwargs)
+                        path = Path(kwargs["cwd"]) / "build/loader-security-evidence" / case / name
+                        if empty:
+                            path.write_bytes(b"")
+                        else:
+                            path.unlink()
+                        return result
+                    with patch.object(producer.subprocess, "run", side_effect=run), self.assertRaises(ValueError):
+                        produce(*fixture.inputs, fixture.output)
+                    self.assertFalse(fixture.output.exists())
+
+    def test_missing_mcp_library_cannot_publish_otherwise_complete_native_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
+            def run(*arguments, **kwargs):
+                result = fixture.run(*arguments, **kwargs)
+                (Path(kwargs["cwd"]) / "build/mcp-value-evidence" / fixture.mcp_library).unlink()
+                return result
+            with patch.object(producer.subprocess, "run", side_effect=run), \
+                    self.assertRaisesRegex(ValueError, "MCP compiler evidence"):
+                produce(*fixture.inputs, fixture.output)
+            self.assertFalse(fixture.output.exists())
 
     def test_missing_import_or_program_preserves_existing_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
@@ -211,6 +257,8 @@ class PythonSdkValidationEvidenceProducerTest(unittest.TestCase):
 
 
 class Fixture:
+    mcp_library = "codex_agent_python_fixture.dll" if sys.platform == "win32" else "libcodex_agent_python_fixture" + (
+        ".dylib" if sys.platform == "darwin" else ".so")
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self.checkout = self.root / "checkout"
@@ -286,9 +334,24 @@ class Fixture:
 
     def _write_native(self, build: Path) -> None:
         self._file_at(build / "enum-evidence/codex-agent-enum-evidence", "original enum program")
+        self._file_at(build / "host-surface-evidence/host_surface.c", "original host source")
+        self._file_at(build / "host-surface-evidence/host_surface.o", "original host object")
+        for directory in (("host-surface-evidence", "mcp-value-evidence") if not self.omit_native
+                          else ("host-surface-evidence",)):
+            self._file_at(build / directory / "compiler-execution.json",
+                          '{"exitCode":0,"outputBase64":"","schemaVersion":1}\n')
+        for case, names in producer.LOADER_NATIVE_CASES.items():
+            self._file_at(build / "loader-security-evidence" / case / "child-execution.json",
+                          '{"exitCode":0,"outputBase64":"","schemaVersion":1}\n')
+            for name in names:
+                library = name + ".dll" if sys.platform == "win32" else "lib" + name + (
+                    ".dylib" if sys.platform == "darwin" else ".so")
+                for member in (name + ".c", name + "-compiler-execution.json", library):
+                    self._file_at(build / "loader-security-evidence" / case / member, "synthetic original native proof")
         if not self.omit_native:
+            self._file_at(build / "mcp-value-evidence/real_mcp_value_fixture.c", "original MCP source")
             self._file_at(
-                build / "mcp-value-evidence/libcodex_agent_python_fixture.so",
+                build / "mcp-value-evidence" / self.mcp_library,
                 "original MCP fixture",
             )
 

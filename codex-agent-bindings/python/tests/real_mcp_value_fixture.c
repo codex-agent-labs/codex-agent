@@ -1,8 +1,13 @@
 #include "codex_agent.h"
 
 #define VIEW(literal) { (const uint8_t *)(literal), sizeof(literal) - 1U }
+#if defined(_WIN32)
+#define FIXTURE_API __declspec(dllexport)
+#else
+#define FIXTURE_API __attribute__((visibility("default")))
+#endif
 
-CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_test_mcp_server_fixture(
+FIXTURE_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_test_mcp_server_fixture(
     codex_agent_context_t *context,
     int32_t variant,
     int32_t *out_stage,

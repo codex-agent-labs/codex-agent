@@ -24,6 +24,12 @@ SOURCE_DIRECTORIES = frozenset(("src", "tests", "parity", "consumer", "tools"))
 EVIDENCE_ENV = "CODEX_AGENT_PYTHON_EVIDENCE_DIRECTORY"
 COMPILER_HEADER = ("compilerEvidenceId", "publicSymbols")
 TEST_HEADER = ("executedTestId", "status")
+LOADER_NATIVE_CASES = {
+    "test_real_missing_identity_and_abi_mismatch_above_floor_fail": (
+        "missing_identity", "abi_1.12", "wrong_abi_major", "abi_mismatch", "incompatible_override",
+    ),
+    "test_noncanonical_native_identity_fails": ("noncanonical",),
+}
 
 
 def _required_file(path: Path, label: str) -> Path:
@@ -77,17 +83,34 @@ def _copy_sources(files: list[Path], source_root: Path, destination: Path) -> No
 
 def _retain_native_evidence(source: Path, destination: Path) -> None:
     source = _required_directory(source, "Python native evidence")
-    if {path.name for path in source.iterdir()} != {"enum-evidence", "mcp-value-evidence"}:
+    directories = {"enum-evidence", "mcp-value-evidence", "host-surface-evidence", "loader-security-evidence"}
+    if {path.name for path in source.iterdir()} != directories:
         raise ValueError("Python native evidence inventory is not exact")
+    for name in ("host_surface.c", "host_surface.o", "compiler-execution.json"):
+        _required_file(source / "host-surface-evidence" / name, "Host compiler evidence")
+    mcp_library = "codex_agent_python_fixture.dll" if sys.platform == "win32" else "libcodex_agent_python_fixture" + (
+        ".dylib" if sys.platform == "darwin" else ".so")
+    for name in ("real_mcp_value_fixture.c", "compiler-execution.json", mcp_library):
+        _required_file(source / "mcp-value-evidence" / name, "MCP compiler evidence")
+    loader = source / "loader-security-evidence"
+    if {path.name for path in loader.iterdir()} != set(LOADER_NATIVE_CASES):
+        raise ValueError("Python native loader case inventory is not exact")
+    for case, names in LOADER_NATIVE_CASES.items():
+        _required_file(loader / case / "child-execution.json", "Native loader child evidence")
+        for name in names:
+            library = name + ".dll" if sys.platform == "win32" else "lib" + name + (
+                ".dylib" if sys.platform == "darwin" else ".so")
+            for member in (name + ".c", name + "-compiler-execution.json", library):
+                _required_file(loader / case / member, "Native loader compiler evidence")
     files: list[Path] = []
     for path in source.rglob("*"):
         if path.is_symlink() or not (path.is_file() or path.is_dir()):
             raise ValueError("Python native evidence contains a symbolic or special file")
         if path.is_file():
             files.append(path)
-    if any(not any(child.is_file() for child in (source / name).iterdir()) for name in (
-        "enum-evidence", "mcp-value-evidence",
-    )) or any(not path.stat().st_size for path in files):
+    if any(not any(child.is_file() for child in (source / name).rglob("*")) for name in directories) or any(
+        not path.stat().st_size for path in files
+    ):
         raise ValueError("Python native evidence contains an empty file or program directory")
     shutil.copytree(source, destination)
 

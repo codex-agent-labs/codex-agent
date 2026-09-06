@@ -9,7 +9,6 @@ import re
 import runpy
 import shlex
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 from typing import get_type_hints
@@ -37,6 +36,7 @@ from test_z_leaf_service_parity import (
     _real_library_path,
 )
 from test_zzz_agent_parity import AgentFakeLibrary
+from test_runtime_loader_security import write_execution
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -425,41 +425,29 @@ static void python_host_surface(void) {
 int main(void) { python_host_surface(); return 0; }
 """
     include = c_include_directory()
-    compiler = shlex.split(os.environ.get("CC", "cl" if os.name == "nt" else "cc"))
-    with tempfile.TemporaryDirectory() as directory:
-        source_path = Path(directory) / "host_surface.c"
-        object_path = Path(directory) / "host_surface.o"
-        source_path.write_text(source, encoding="utf-8")
-        if Path(compiler[0]).name.lower() in {"cl", "cl.exe"}:
-            command = [
-                *compiler,
-                "/nologo",
-                "/std:c11",
-                "/W4",
-                "/WX",
-                f"/I{include}",
-                "/c",
-                str(source_path),
-                f"/Fo{object_path}",
-            ]
-        else:
-            command = [
-                *compiler,
-                "-std=c11",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                "-pedantic",
-                "-I",
-                str(include),
-                "-c",
-                str(source_path),
-                "-o",
-                str(object_path),
-            ]
-        result = subprocess.run(command, check=False, capture_output=True, text=True)
-        if result.returncode:
-            raise AssertionError(f"Host C surface compilation failed:\n{result.stderr}")
+    compiler = shlex.split(os.environ.get("CC") or ("cl" if os.name == "nt" else "cc"))
+    directory = ROOT / "build" / "host-surface-evidence"
+    directory.mkdir(parents=True, exist_ok=True)
+    source_path = directory / "host_surface.c"
+    object_path = directory / "host_surface.o"
+    source_path.write_text(source, encoding="utf-8")
+    object_path.unlink(missing_ok=True)
+    if Path(compiler[0]).name.lower() in {"cl", "cl.exe"}:
+        command = [
+            *compiler, "/nologo", "/std:c11", "/W4", "/WX", f"/I{include}",
+            "/c", str(source_path), f"/Fo{object_path}",
+        ]
+    else:
+        command = [
+            *compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic",
+            "-I", str(include), "-c", str(source_path), "-o", str(object_path),
+        ]
+    result = subprocess.run(command, cwd=directory, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    write_execution(directory / "compiler-execution.json", result)
+    if result.returncode:
+        raise AssertionError(f"Host C surface compilation failed:\n{result.stdout.decode('utf-8', errors='replace')}")
+    if not object_path.is_file() or not object_path.stat().st_size:
+        raise AssertionError("Host C surface compiler did not produce its declared object")
 
 
 def _exact_signature(symbol: str) -> tuple[object, ...]:

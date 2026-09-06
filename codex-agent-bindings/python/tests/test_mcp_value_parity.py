@@ -24,12 +24,14 @@ from artifact_inputs import (  # noqa: E402
     c_abi_bootstrap_evidence,
     c_header,
     c_include_directory,
+    c_sdk_root,
     real_library,
 )
 from codex_agent._errors import check  # noqa: E402
 from codex_agent._ffi import Handle, HandlePointer, NativeLibrary  # noqa: E402
 from codex_agent._mcp_native import read_owned_mcp_server  # noqa: E402
 import test_enum_parity as enum_parity  # noqa: E402
+from test_runtime_loader_security import write_execution  # noqa: E402
 
 
 OWNER_TYPES = {
@@ -241,39 +243,47 @@ def _compile_fixture(sdk: Path) -> Path:
     output = directory / (
         "libcodex_agent_python_fixture.dylib"
         if system == "darwin"
+        else "codex_agent_python_fixture.dll" if system == "windows"
         else "libcodex_agent_python_fixture.so"
     )
-    command = [
-        *shlex.split(os.environ.get("CC", "cc")),
-        "-std=c11",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        "-dynamiclib" if system == "darwin" else "-shared",
-    ]
-    if system != "darwin":
-        command.append("-fPIC")
-    command.extend(
-        [
-            "-I",
-            str(c_include_directory()),
-            str(ROOT / "tests" / "real_mcp_value_fixture.c"),
-            str(sdk),
-            f"-Wl,-rpath,{sdk.parent}",
-            "-o",
-            str(output),
-        ]
-    )
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    source = directory / "real_mcp_value_fixture.c"
+    source.write_bytes((ROOT / "tests" / "real_mcp_value_fixture.c").read_bytes())
+    output.unlink(missing_ok=True)
+    compiler = shlex.split(os.environ.get("CC") or ("cl" if system == "windows" else "cc"))
+    library = c_sdk_root() / "lib/codex_agent.lib" if system == "windows" else sdk
+    if not library.is_file() or library.is_symlink():
+        raise AssertionError(f"Declared MCP fixture link library is missing or unsafe: {library}")
+    if system == "windows" and Path(compiler[0]).name.lower() in {"cl", "cl.exe"}:
+        command = [*compiler, "/nologo", "/std:c11", "/W4", "/WX", "/LD",
+                   f"/I{c_include_directory()}", str(source), str(library),
+                   f"/Fe:{output}", f"/Fo{directory / 'real_mcp_value_fixture.obj'}"]
+    else:
+        command = [*compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                   "-dynamiclib" if system == "darwin" else "-shared"]
+        if system != "windows":
+            command.append("-fPIC")
+        command += ["-I", str(c_include_directory()), str(source), str(library)]
+        if system != "windows":
+            command.append(f"-Wl,-rpath,{sdk.parent}")
+        command += ["-o", str(output)]
+    result = subprocess.run(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    write_execution(directory / "compiler-execution.json", result)
     if result.returncode:
-        raise AssertionError(f"real MCP fixture compilation failed:\n{result.stderr}")
+        raise AssertionError(f"real MCP fixture compilation failed:\n{result.stdout.decode('utf-8', errors='replace')}")
+    if not output.is_file() or not output.stat().st_size:
+        raise AssertionError("MCP fixture compiler did not produce its declared library")
     return output
 
 
 def _native_graph() -> tuple[object, object, object]:
     sdk = _sdk_path()
     native = NativeLibrary.load(sdk)
-    fixture = ctypes.CDLL(str(_compile_fixture(sdk)))
+    fixture_path = _compile_fixture(sdk)
+    if platform.system() == "Windows":
+        with os.add_dll_directory(str(sdk.parent)):
+            fixture = ctypes.CDLL(str(fixture_path))
+    else:
+        fixture = ctypes.CDLL(str(fixture_path))
     create = fixture.codex_agent_test_mcp_server_fixture
     create.argtypes = [
         Handle,

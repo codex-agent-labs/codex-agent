@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ctypes
+import base64
 import hashlib
 import json
 import os
 import platform
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -13,6 +15,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+NATIVE_LOADER_TESTS = ("test_real_missing_identity_and_abi_mismatch_above_floor_fail",
+                       "test_noncanonical_native_identity_fails")
+_native_loader_directory: Path | None = None
 sys.path.insert(0, str(ROOT / "src"))
 
 from codex_agent._ffi import (  # noqa: E402
@@ -88,15 +93,37 @@ def canonical(value: dict[str, object], final_lf: bool = True) -> bytes:
     return result + (b"\n" if final_lf else b"")
 
 
+def write_execution(path: Path, result: subprocess.CompletedProcess) -> None:
+    # Same lossless external execution envelope as the other language producers.
+    path.write_bytes((json.dumps({"schemaVersion": 1, "exitCode": result.returncode,
+        "outputBase64": base64.b64encode(result.stdout).decode("ascii")},
+        sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
+
+
+def _run_native_loader_test(name: str) -> None:
+    if name not in NATIVE_LOADER_TESTS:
+        raise ValueError("Unsupported native loader child test")
+    directory = ROOT / "build/loader-security-evidence" / name
+    directory.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()),
+                             "--native-loader-child", name, str(directory)],
+                            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    write_execution(directory / "child-execution.json", result)
+    if result.returncode:
+        raise AssertionError(f"Native loader security child failed:\n{result.stdout.decode('utf-8', errors='replace')}")
+
+
 def compile_library(directory: Path, name: str, identity_json: bytes | None, abi: int) -> Path:
-    suffix = ".dylib" if platform.system() == "Darwin" else ".so"
-    library = directory / f"lib{name}{suffix}"
+    system = platform.system()
+    library = directory / (f"{name}.dll" if system == "Windows" else
+                           f"lib{name}" + (".dylib" if system == "Darwin" else ".so"))
+    library.unlink(missing_ok=True)
     source = directory / f"{name}.c"
     identity_function = ""
     if identity_json is not None:
         literal = json.dumps(identity_json.decode())
         identity_function = f"""
-int32_t codex_agent_runtime_identity(char *buffer, size_t *size) {{
+API int32_t codex_agent_runtime_identity(char *buffer, size_t *size) {{
     static const char identity[] = {literal};
     const size_t required = sizeof(identity);
     if (size == NULL) return 1;
@@ -108,13 +135,31 @@ int32_t codex_agent_runtime_identity(char *buffer, size_t *size) {{
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-uint32_t codex_agent_abi_version(void) {{ return UINT32_C(0x{abi:08x}); }}
-int32_t codex_agent_abi_is_compatible(uint32_t requested) {{ return requested <= UINT32_C(0x{abi:08x}); }}
+#if defined(_WIN32)
+#define API __declspec(dllexport)
+#else
+#define API __attribute__((visibility("default")))
+#endif
+API uint32_t codex_agent_abi_version(void) {{ return UINT32_C(0x{abi:08x}); }}
+API int32_t codex_agent_abi_is_compatible(uint32_t requested) {{ return requested <= UINT32_C(0x{abi:08x}); }}
 {identity_function}
 """)
-    command = ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror"]
-    command += ["-dynamiclib"] if platform.system() == "Darwin" else ["-shared", "-fPIC"]
-    subprocess.run([*command, str(source), "-o", str(library)], check=True, capture_output=True)
+    compiler = shlex.split(os.environ.get("CC") or ("cl" if system == "Windows" else "cc"))
+    if system == "Windows" and Path(compiler[0]).name.lower() in {"cl", "cl.exe"}:
+        command = [*compiler, "/nologo", "/std:c11", "/W4", "/WX", "/LD", str(source),
+                   f"/Fe:{library}", f"/Fo{directory / (name + '.obj')}"]
+    else:
+        command = [*compiler, "-std=c11", "-Wall", "-Wextra", "-Werror"]
+        command += ["-dynamiclib"] if system == "Darwin" else ["-shared"]
+        if system != "Windows":
+            command.append("-fPIC")
+        command += [str(source), "-o", str(library)]
+    result = subprocess.run(command, cwd=directory, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    write_execution(directory / f"{name}-compiler-execution.json", result)
+    if result.returncode:
+        raise AssertionError(f"Runtime loader fixture compilation failed:\n{result.stdout.decode('utf-8', errors='replace')}")
+    if not library.is_file() or not library.stat().st_size:
+        raise AssertionError("Runtime loader fixture compiler did not produce its declared library")
     return library
 
 
@@ -256,8 +301,11 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
                 resolve_library_path(linked_parent / "library")
 
     def test_real_missing_identity_and_abi_mismatch_above_floor_fail(self) -> None:
-        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
-            root = Path(directory)
+        if _native_loader_directory is None:
+            _run_native_loader_test(self._testMethodName)
+            return
+        root = _native_loader_directory
+        if root is not None:
             missing = compile_library(root, "missing_identity", None, 0x010D0000)
             with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility):
                 with self.assertRaises(AttributeError):
@@ -297,7 +345,11 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
                     NativeLibrary.load(incompatible)
 
     def test_noncanonical_native_identity_fails(self) -> None:
-        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+        if _native_loader_directory is None:
+            _run_native_loader_test(self._testMethodName)
+            return
+        directory = _native_loader_directory
+        if directory is not None:
             value = identity(current_classifier())
             noncanonical = json.dumps(value, indent=2).encode()
             library = compile_library(Path(directory), "noncanonical", noncanonical, 0x010D0000)
@@ -306,4 +358,14 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--native-loader-child"]:
+        if len(sys.argv) != 4 or sys.argv[2] not in NATIVE_LOADER_TESTS:
+            raise SystemExit("Invalid native loader child invocation")
+        _native_loader_directory = ROOT / "build/loader-security-evidence" / sys.argv[2]
+        if Path(sys.argv[3]) != _native_loader_directory or not _native_loader_directory.is_dir():
+            raise SystemExit("Native loader child evidence directory mismatch")
+        result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([
+            RuntimeLoaderSecurityTests(sys.argv[2]),
+        ]))
+        raise SystemExit(0 if result.wasSuccessful() and result.testsRun == 1 and not result.skipped else 1)
     unittest.main()
