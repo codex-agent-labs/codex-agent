@@ -3,6 +3,10 @@ name: Product Validation
 on:
   workflow_call:
     inputs:
+      trustedWorkflowSha:
+        description: Reviewed SHA matching the caller's literal reusable workflow pin
+        required: true
+        type: string
       baseCommit:
         required: false
         type: string
@@ -265,6 +269,7 @@ jobs:
       attestation_inputs_artifact: codex-agent-contract-attestation-inputs-${{ needs.plan.outputs.validation_tree }}
       attestation_inputs_id: ${{ steps.upload_attestation_inputs.outputs.artifact-id }}
       attestation_inputs_digest: sha256:${{ steps.upload_attestation_inputs.outputs.artifact-digest }}
+      contract_version: ${{ steps.capture_attestation_inputs.outputs.contract_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -577,6 +582,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - name: Capture unsigned Contract attestation inputs from exact original phases
+        id: capture_attestation_inputs
         shell: bash
         run: |
           for phase in binary package validation metadata; do
@@ -589,6 +595,7 @@ jobs:
           done
           IFS= read -r contract_version < gradle/release/versions/contract.txt
           originals=build/contract-attestation-inputs/phases
+          printf 'contract_version=%s\n' "$contract_version" >> "$GITHUB_OUTPUT"
           python3 -m ci.products.contract_attestation capture-closure \
             --payload "$originals/metadata/stage/outputs/codex-agent-contract-$contract_version.zip" \
             --execution-archive "$originals/binary/stage/outputs/execution/contract-execution.zip" \
@@ -607,6 +614,65 @@ jobs:
           path: |
             build/contract-attestation-inputs/phases/metadata/stage
             build/contract-attestation-inputs/execution-closure
+          compression-level: 0
+          retention-days: 90
+
+  contract-attestation:
+    name: contract-attestation
+    if: >-
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.validation_reused != 'true' &&
+      github.event_name != 'workflow_dispatch' &&
+      needs.contract-continuation.result == 'success' &&
+      needs.contract-continuation.outputs.contract_complete == 'true'
+    needs: [workflow-lint, plan, contract-continuation]
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_name: codex-agent-contract-release-handoff-${{ needs.plan.outputs.validation_tree }}
+      artifact_id: ${{ steps.upload_attestation.outputs.artifact-id }}
+      artifact_digest: sha256:${{ steps.upload_attestation.outputs.artifact-digest }}
+    steps:
+      - name: Check out reviewed signer code only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: 0953cb9ca87d30cf08b0f1227a204b701cafea75
+          path: trusted-source
+          persist-credentials: false
+      - name: Authenticate original Contract bytes and establish detached release trust
+        id: attest
+        env:
+          TRUSTED_SOURCE_SHA: 0953cb9ca87d30cf08b0f1227a204b701cafea75
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          ARTIFACT_ID: ${{ needs.contract-continuation.outputs.attestation_inputs_id }}
+          ARTIFACT_SHA256: ${{ needs.contract-continuation.outputs.attestation_inputs_digest }}
+          CONTRACT_VERSION: ${{ needs.contract-continuation.outputs.contract_version }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/contract_release.py \
+            --repository-root "$GITHUB_WORKSPACE/trusted-source" \
+            --destination "$RUNNER_TEMP/contract-release-evidence" \
+            --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+            --contract-version "$CONTRACT_VERSION" --validation-tree "$VALIDATION_TREE"
+      - name: Preserve the exact release handoff and all external source evidence
+        id: upload_attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-release-handoff-${{ needs.plan.outputs.validation_tree }}
+          path: ${{ runner.temp }}/contract-release-evidence
           compression-level: 0
           retention-days: 90
 
@@ -806,7 +872,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always()
-    needs: [workflow-lint, plan, product, contract-continuation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
+    needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -816,6 +882,10 @@ jobs:
           REMOTE_BUILD_AUTHORIZED: ${{ needs.plan.outputs.remote_build_authorized }}
           REMOTE_BUILD_AUTHORIZATION_REASON: ${{ needs.plan.outputs.remote_build_authorization_reason }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          CONTRACT_COMPLETE: ${{ needs.contract-continuation.outputs.contract_complete }}
+          CONTRACT_ATTESTATION_RESULT: ${{ needs.contract-attestation.result }}
+          CONTRACT_ATTESTATION_ARTIFACT_ID: ${{ needs.contract-attestation.outputs.artifact_id }}
+          CONTRACT_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.contract-attestation.outputs.artifact_digest }}
         run: |
           if [ "$EVENT_AUTHORIZED" != true ]; then
             echo 'The workflow-owned event gate did not authorize remote product CI.' >&2
@@ -831,6 +901,11 @@ jobs:
           fi
           if grep -Eq 'failure|cancelled' <<<"$RESULTS"; then
             exit 1
+          fi
+          if [ "$CONTRACT_COMPLETE" = true ]; then
+            test "$CONTRACT_ATTESTATION_RESULT" = success
+            test -n "$CONTRACT_ATTESTATION_ARTIFACT_ID"
+            [[ "$CONTRACT_ATTESTATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

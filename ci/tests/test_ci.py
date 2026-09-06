@@ -221,6 +221,7 @@ class RunLaneContractTest(unittest.TestCase):
         for name in (
             "product",
             "contract-continuation",
+            "contract-attestation",
             "android",
             "android-runtime-evidence",
             "desktop",
@@ -294,7 +295,7 @@ class RunLaneContractTest(unittest.TestCase):
             encoding="utf-8"
         )
         match = re.search(
-            r"^  contract-continuation:\n(?P<body>.*?)(?=^  android:\n)",
+            r"^  contract-continuation:\n(?P<body>.*?)(?=^  contract-attestation:\n)",
             workflow,
             re.MULTILINE | re.DOTALL,
         )
@@ -384,7 +385,7 @@ class RunLaneContractTest(unittest.TestCase):
 
     def test_contract_workflow_state_scripts_cover_metadata_only_and_fail_closed(self) -> None:
         workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text()
-        job = workflow.split("\n  contract-continuation:\n", 1)[1].split("\n  android:\n", 1)[0]
+        job = workflow.split("\n  contract-continuation:\n", 1)[1].split("\n  contract-attestation:\n", 1)[0]
         selectors = (("select_after_binary", "binary", "package"),
                      ("select_after_package", "package", "validation"),
                      ("select_after_validation", "validation", "metadata"),
@@ -1466,7 +1467,7 @@ class ImpactPlanTest(GitFixture):
             self.assertEqual(2, workflow.count(f"matrix.lane == '{consumer}'"))
         gate = workflow[workflow.index("\n  merge-gate:"):]
         self.assertIn(
-            "needs: [workflow-lint, plan, product, contract-continuation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]",
+            "needs: [workflow-lint, plan, product, contract-continuation, contract-attestation, android, android-runtime-evidence, desktop, apple, consumers, sdk-javascript]",
             gate,
         )
         self.assertIn("pattern: codex-agent-ci-*", gate)
