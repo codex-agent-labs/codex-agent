@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import codex_agent  # noqa: E402
 from artifact_inputs import canonical_api_report, c_include_directory  # noqa: E402
+from test_runtime_loader_security import write_execution  # noqa: E402
 
 
 CLAIMS_HEADER = (
@@ -92,7 +93,12 @@ def _compile_header_values() -> list[int]:
     executable = output_directory / (
         "codex-agent-enum-evidence.exe" if os.name == "nt" else "codex-agent-enum-evidence"
     )
-    source = ROOT / "tests" / "enum_evidence.c"
+    source = output_directory / "enum_evidence.c"
+    source.write_bytes((ROOT / "tests" / "enum_evidence.c").read_bytes())
+    executable.unlink(missing_ok=True)
+    for name in ("compiler-execution.json", "compiler-stderr-execution.json",
+                 "runtime-execution.json", "runtime-stderr-execution.json"):
+        (output_directory / name).unlink(missing_ok=True)
     include = c_include_directory()
     compiler = shlex.split(os.environ.get("CC", "cl" if os.name == "nt" else "cc"))
     if Path(compiler[0]).name.lower() in {"cl", "cl.exe"}:
@@ -124,18 +130,24 @@ def _compile_header_values() -> list[int]:
         cwd=output_directory,
         check=False,
         capture_output=True,
-        text=True,
     )
+    write_execution(output_directory / "compiler-execution.json", compile_result)
+    write_execution(output_directory / "compiler-stderr-execution.json", subprocess.CompletedProcess(
+        command, compile_result.returncode, compile_result.stderr))
     if compile_result.returncode != 0:
-        raise AssertionError(f"C-header enum evidence compilation failed:\n{compile_result.stderr}")
+        raise AssertionError(f"C-header enum evidence compilation failed:\n{compile_result.stderr.decode('utf-8', errors='replace')}")
+    if executable.is_symlink() or not executable.is_file() or not executable.stat().st_size:
+        raise AssertionError("C-header enum compiler did not produce its declared executable")
     run_result = subprocess.run(
         [executable],
         check=False,
         capture_output=True,
-        text=True,
     )
+    write_execution(output_directory / "runtime-execution.json", run_result)
+    write_execution(output_directory / "runtime-stderr-execution.json", subprocess.CompletedProcess(
+        [executable], run_result.returncode, run_result.stderr))
     if run_result.returncode != 0:
-        raise AssertionError(f"C-header enum evidence execution failed:\n{run_result.stderr}")
+        raise AssertionError(f"C-header enum evidence execution failed:\n{run_result.stderr.decode('utf-8', errors='replace')}")
     try:
         return [int(value) for value in run_result.stdout.splitlines()]
     except ValueError as error:

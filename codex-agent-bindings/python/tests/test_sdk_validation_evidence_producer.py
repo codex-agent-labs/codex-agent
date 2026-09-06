@@ -60,7 +60,7 @@ class PythonSdkValidationEvidenceProducerTest(unittest.TestCase):
             )
             self.assertEqual(
                 b"original enum program",
-                (fixture.output / "native-evidence/enum-evidence/codex-agent-enum-evidence").read_bytes(),
+                (fixture.output / "native-evidence/enum-evidence" / fixture.enum_program).read_bytes(),
             )
             self.assertEqual(
                 b"original MCP fixture",
@@ -77,6 +77,24 @@ class PythonSdkValidationEvidenceProducerTest(unittest.TestCase):
                 (fixture.output / "native-evidence/host-surface-evidence/compiler-execution.json").read_bytes()))
             self.assertEqual("stale source compatibility\n", fixture.source_compatibility.read_text())
             self.assertTrue(all(path.read_text() == "stale source Runtime\n" for path in fixture.source_runtimes))
+
+    def test_enum_original_program_and_both_raw_streams_are_mandatory(self) -> None:
+        executable = "codex-agent-enum-evidence" + (".exe" if os.name == "nt" else "")
+        for name in ("enum_evidence.c", executable, "compiler-execution.json", "compiler-stderr-execution.json",
+                     "runtime-execution.json", "runtime-stderr-execution.json"):
+            for empty in (False, True):
+                with self.subTest(name=name, empty=empty), tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
+                    def run(*arguments, **kwargs):
+                        result = fixture.run(*arguments, **kwargs)
+                        path = Path(kwargs["cwd"]) / "build/enum-evidence" / name
+                        if empty:
+                            path.write_bytes(b"")
+                        else:
+                            path.unlink()
+                        return result
+                    with patch.object(producer.subprocess, "run", side_effect=run), self.assertRaises(ValueError):
+                        produce(*fixture.inputs, fixture.output)
+                    self.assertFalse(fixture.output.exists())
 
     def test_failed_or_incomplete_suite_cannot_leave_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
@@ -333,7 +351,13 @@ class Fixture:
         return subprocess.CompletedProcess(command, 0)
 
     def _write_native(self, build: Path) -> None:
-        self._file_at(build / "enum-evidence/codex-agent-enum-evidence", "original enum program")
+        self.enum_program = "codex-agent-enum-evidence" + (".exe" if os.name == "nt" else "")
+        self._file_at(build / "enum-evidence" / self.enum_program, "original enum program")
+        self._file_at(build / "enum-evidence/enum_evidence.c", "original enum source")
+        for name in ("compiler-execution.json", "compiler-stderr-execution.json",
+                     "runtime-execution.json", "runtime-stderr-execution.json"):
+            self._file_at(build / "enum-evidence" / name,
+                          '{"exitCode":0,"outputBase64":"","schemaVersion":1}\n')
         self._file_at(build / "host-surface-evidence/host_surface.c", "original host source")
         self._file_at(build / "host-surface-evidence/host_surface.o", "original host object")
         for directory in (("host-surface-evidence", "mcp-value-evidence") if not self.omit_native

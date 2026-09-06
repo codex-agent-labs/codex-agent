@@ -8,13 +8,80 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import test_enum_parity as enums
 import test_mcp_value_parity as mcp
 import test_runtime_loader_security as loader
 
 
 class NativeFixtureCommandsTest(unittest.TestCase):
+    def test_enum_c_source_executable_and_separate_raw_streams_are_retained(self):
+        original = (enums.ROOT / "tests/enum_evidence.c").read_bytes()
+        for system, compiler in (("posix", "cc"), ("nt", "cl"), ("nt", "clang")):
+            for failure in (None, "compiler", "runtime", "values", "missing-executable"):
+                with self.subTest(system=system, compiler=compiler, failure=failure), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    (root / "tests").mkdir()
+                    (root / "tests/enum_evidence.c").write_bytes(original)
+                    evidence = root / "build/enum-evidence"
+                    evidence.mkdir(parents=True)
+                    executable = evidence / ("codex-agent-enum-evidence.exe" if system == "nt" else "codex-agent-enum-evidence")
+                    executable.write_bytes(b"stale executable")
+                    (evidence / "runtime-execution.json").write_bytes(b"stale success")
+                    compiler_stdout, compiler_stderr = b"compiler\xff\x00\r\n", b""
+                    runtime_stdout = b"invalid\xff\x00\n" if failure == "values" else b"1\n-2\n"
+                    runtime_stderr = b"diagnostic\xff\x00\r\n"
+
+                    def execute(command, **kwargs):
+                        self.assertTrue(kwargs["capture_output"])
+                        self.assertNotIn("text", kwargs)
+                        if command[0] == compiler:
+                            self.assertIn(str(evidence / "enum_evidence.c"), command)
+                            self.assertNotIn(str(root / "tests/enum_evidence.c"), command)
+                            self.assertEqual(original, (evidence / "enum_evidence.c").read_bytes())
+                            self.assertEqual(evidence, kwargs["cwd"])
+                            self.assertFalse(executable.exists())
+                            self.assertFalse((evidence / "runtime-execution.json").exists())
+                            if compiler == "cl":
+                                self.assertIn("/WX", command)
+                                self.assertIn(f"/Fe:{executable}", command)
+                            else:
+                                self.assertIn("-Werror", command)
+                                self.assertEqual(str(executable), command[command.index("-o") + 1])
+                            if failure not in ("compiler", "missing-executable"):
+                                executable.write_bytes(b"original executable\x00")
+                            return subprocess.CompletedProcess(command, 7 if failure == "compiler" else 0,
+                                                               compiler_stdout, compiler_stderr)
+                        self.assertEqual([executable], command)
+                        return subprocess.CompletedProcess(command, 9 if failure == "runtime" else 0,
+                                                           runtime_stdout, runtime_stderr)
+
+                    with patch.object(enums, "ROOT", root), \
+                            patch.object(enums, "os", SimpleNamespace(name=system, environ={"CC": compiler})), \
+                            patch.object(enums, "c_include_directory", return_value=root), \
+                            patch.object(enums.subprocess, "run", side_effect=execute) as run:
+                        if failure:
+                            with self.assertRaises(AssertionError):
+                                enums._compile_header_values()
+                        else:
+                            self.assertEqual([1, -2], enums._compile_header_values())
+                    reached_runtime = failure not in ("compiler", "missing-executable")
+                    self.assertEqual(2 if reached_runtime else 1, run.call_count)
+                    captures = [("compiler-execution.json", compiler_stdout, 7 if failure == "compiler" else 0),
+                                ("compiler-stderr-execution.json", compiler_stderr, 7 if failure == "compiler" else 0)]
+                    if reached_runtime:
+                        captures += [("runtime-execution.json", runtime_stdout, 9 if failure == "runtime" else 0),
+                                     ("runtime-stderr-execution.json", runtime_stderr, 9 if failure == "runtime" else 0)]
+                    for name, raw, status in captures:
+                        contents = (evidence / name).read_bytes()
+                        capture = json.loads(contents)
+                        self.assertEqual(status, capture["exitCode"])
+                        self.assertEqual(raw, base64.b64decode(capture["outputBase64"], validate=True))
+                        self.assertEqual((json.dumps(capture, sort_keys=True, separators=(",", ":")) + "\n").encode(), contents)
+                    self.assertEqual(original, (root / "tests/enum_evidence.c").read_bytes())
+
     def test_mcp_uses_explicit_imports_and_exports_for_each_host_compiler(self):
         original = (mcp.ROOT / "tests/real_mcp_value_fixture.c").read_bytes()
         self.assertIn(b"#define FIXTURE_API __declspec(dllexport)", original)

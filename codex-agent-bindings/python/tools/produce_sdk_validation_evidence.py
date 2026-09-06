@@ -86,6 +86,10 @@ def _retain_native_evidence(source: Path, destination: Path) -> None:
     directories = {"enum-evidence", "mcp-value-evidence", "host-surface-evidence", "loader-security-evidence"}
     if {path.name for path in source.iterdir()} != directories:
         raise ValueError("Python native evidence inventory is not exact")
+    enum_program = "codex-agent-enum-evidence" + (".exe" if os.name == "nt" else "")
+    for name in ("enum_evidence.c", enum_program, "compiler-execution.json", "compiler-stderr-execution.json",
+                 "runtime-execution.json", "runtime-stderr-execution.json"):
+        _required_file(source / "enum-evidence" / name, "Enum compiler/runtime evidence")
     for name in ("host_surface.c", "host_surface.o", "compiler-execution.json"):
         _required_file(source / "host-surface-evidence" / name, "Host compiler evidence")
     mcp_library = "codex_agent_python_fixture.dll" if sys.platform == "win32" else "libcodex_agent_python_fixture" + (
