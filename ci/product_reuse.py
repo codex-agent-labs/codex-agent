@@ -39,6 +39,7 @@ from products.inventory import (
     require_sha256,
     require_string,
     sha256_bytes,
+    sha256_file,
     snapshot_regular_tree,
     tree_entries,
     verify_regular_file_inventory,
@@ -1662,6 +1663,22 @@ def _available_object_records(
     return records
 
 
+def _completed_contract_objects(plan, state, artifact_root, environment):
+    contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+    result = _canonical_control(state / "contract-reuse-result.json", "Completed Contract result")
+    _, selected, phases = _validate_reuse_result(result, (contract,), require_complete=True)
+    carrier = verify_carrier(state / "carrier", selected, _consumer(plan, environment))
+    phases_by_id = {_identity(phase): phase for phase in phases}
+    sources = {}
+    for record in carrier["objects"]:
+        instance = _identity(record)
+        if any(record[field] != phases_by_id[instance][field]
+               for field in ("buildKey", "receiptSha256", "objectSha256")):
+            raise ValueError("Initial Contract object differs from completed state")
+        sources[instance] = state / "carrier" / object_relative_path(record["buildKey"], record["receiptSha256"])
+    return _available_object_records(phases_by_id, sources, artifact_root), carrier["resolution"]["phases"]
+
+
 def _runtime_report_output(
     metadata: PhaseInstanceId, dependency: PhaseInstanceId,
     stage: Path, receipt: Mapping[str, Any],
@@ -2061,6 +2078,31 @@ def advance_products(
     authorities, unavailable = _authorities(root, plan["validationCommit"], closure)
     if authorities is None:
         raise ValueError(unavailable or "Product phase authority is unavailable")
+    initial_objects = []
+    if request["availableObjects"]:
+        supplied_objects = require_array(request["availableObjects"], "Initial availableObjects")
+        supplied_ids = []
+        for record in supplied_objects:
+            require_exact_keys(record, set(_IDENTITY_KEYS) | {
+                "buildKey", "receiptSha256", "objectSha256", "objectPath"}, "Initial availableObjects member")
+            supplied_ids.append(_identity(record))
+        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+        if tuple(supplied_ids) != _dependency_closure((contract,)):
+            raise ValueError("Initial availableObjects must be the exact complete Contract closure")
+        with tempfile.TemporaryDirectory(prefix="codex-agent-initial-contract-", dir=root) as temporary:
+            verified = Path(temporary).resolve() / "verified"
+            evidence = _capture_completed_contract_handoff(
+                plan_path, discovery_root / "contract-state",
+                discovery_root / "authenticated-contract/contract-input", verified,
+                repository_root=root, environ=environment)
+            if regular_file_inventory(verified) != regular_file_inventory(discovery_root / "authenticated-contract"):
+                raise ValueError("Initial Contract evidence or public policy differs from tracked authority")
+            expected_evidence = _rebase_contract_evidence_paths(
+                evidence, discovery_root / "authenticated-contract", discovery_root)
+            if request["contractEvidence"] != expected_evidence:
+                raise ValueError("Initial Contract evidence paths do not identify the authenticated handoff")
+        initial_objects, _ = _completed_contract_objects(
+            plan, discovery_root / "contract-state", discovery_root, environment)
     expected_fixed = {
         "schemaVersion": 1,
         "requestType": "reuse-wave",
@@ -2072,7 +2114,7 @@ def advance_products(
         "versions": _versions(root, plan["validationCommit"]),
         "phaseAuthorities": authorities,
         "runtimeValidationEvidence": [],
-        "availableObjects": [],
+        "availableObjects": initial_objects,
     }
     for field, expected in expected_fixed.items():
         if request[field] != expected:
@@ -2088,6 +2130,10 @@ def advance_products(
     rebased_request["contractEvidence"] = _rebase_contract_evidence_paths(
         request["contractEvidence"], discovery_root, root,
     )
+    rebased_request["availableObjects"] = [{
+        **record,
+        "objectPath": (discovery_root / record["objectPath"]).relative_to(root).as_posix(),
+    } for record in initial_objects]
     rebased_request.update(_rebase_native_request(request, discovery_root, root))
 
     def retain(
@@ -2482,6 +2528,175 @@ def materialize_contract(
         return restored
 
 
+def _capture_completed_contract_handoff(
+    plan_path: Path, state_root: Path, handoff_root: Path, destination: Path, *,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Bind a release envelope to exact original state; never reissue its receipts."""
+    supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
+    destination = _prepare_destination(destination, supplied_root)
+    destination.rmdir()
+    root = supplied_root.resolve()
+    for source in (Path(state_root), Path(handoff_root), Path(plan_path)):
+        source = source.resolve(strict=True)
+        output = destination.resolve(strict=False)
+        if source == output or source in output.parents or output in source.parents:
+            raise ValueError("Contract handoff destination overlaps original input")
+    with tempfile.TemporaryDirectory(prefix="codex-agent-contract-resume-", dir=root) as temporary:
+        private = Path(temporary).resolve()
+        captured_plan = private / "impact-plan.json"
+        captured_plan.write_bytes(read_regular_file_bytes(
+            plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+        plan = _validate_plan(captured_plan, root)
+        prepared = private / "result"
+        prepared.mkdir()
+        trust = _release_trust(root, plan["validationCommit"], prepared)
+        if trust is None:
+            raise ValueError("Completed Contract handoff requires tracked release trust")
+        state = private / "state"
+        snapshot_regular_tree(state_root, state)
+        result = _canonical_control(state / "contract-reuse-result.json", "Completed Contract result")
+        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+        _validate_reuse_result(result, (contract,), require_complete=True)
+        handoff = prepared / "contract-input"
+        snapshot_regular_tree(handoff_root, handoff)
+        phases = ("binary", "package", "validation", "metadata")
+        originals = {}
+        for phase in phases:
+            originals[phase] = materialize_contract(
+                captured_plan, state, phase, private / phase, with_receipt=True,
+                repository_root=root, environ=environ)
+            raw = read_regular_file_bytes(handoff / f"execution-closure/receipts/{phase}.json",
+                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+            if raw != originals[phase]["receiptBytes"]:
+                raise ValueError(f"Signed Contract {phase} receipt differs from completed original state")
+        version = originals["metadata"]["receipt"]["productVersion"]
+        stem = f"codex-agent-contract-{version}"
+        payload = handoff / f"{stem}.zip"
+        expected = {f"{stem}.zip", f"{stem}.attestation.json", f"{stem}.attestation.sig", "public-key.pub",
+                    "execution-closure/contract-execution-closure.json",
+                    "execution-closure/execution/contract-execution.zip",
+                    *(f"execution-closure/receipts/{phase}.json" for phase in phases)}
+        if {record["relativePath"] for record in regular_file_inventory(handoff)} != expected:
+            raise ValueError("Completed Contract release handoff inventory is not exact")
+        for original, retained in (
+            (private / f"metadata/stage/outputs/{stem}.zip", payload),
+            (private / "binary/stage/outputs/execution/contract-execution.zip",
+             handoff / "execution-closure/execution/contract-execution.zip"),
+        ):
+            if sha256_file(original) != sha256_file(retained):
+                raise ValueError("Signed Contract payload or execution archive differs from original state")
+        verify_contract_attestation(
+            payload, handoff / "execution-closure/receipts/metadata.json",
+            handoff / f"{stem}.attestation.json", handoff / f"{stem}.attestation.sig",
+            handoff / "public-key.pub", required_trust_domain="release",
+            keyring=trust.keyring, keys_directory=trust.keys)
+        evidence = {
+            "attestation": f"contract-input/{stem}.attestation.json",
+            "attestationSignature": f"contract-input/{stem}.attestation.sig",
+            "publicKey": "contract-input/public-key.pub", "expectedTrustDomain": "release",
+            "keyring": _relative(prepared, trust.keyring), "keysDirectory": _relative(prepared, trust.keys),
+        }
+        publish_regular_tree(prepared, destination)
+    return evidence
+
+
+def resume_products(
+    plan_path: Path, discovery_root: Path, state_root: Path, contract_handoff: Path,
+    destination: Path, github_output_path: Path, *, repository_root: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resume the original discovery after Contract signing, with no new lookup."""
+    github_output(github_output_path, {"full_reuse": False, "target_jobs_required": True,
+                                      "product_reuse_reason": "not-evaluated"})
+    supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
+    destination = _prepare_destination(destination, supplied_root)
+    destination.rmdir()
+    root = supplied_root.resolve()
+    environment = os.environ if environ is None else environ
+    for original in (plan_path, discovery_root, state_root, contract_handoff):
+        source, output = Path(original).resolve(strict=True), destination.resolve(strict=False)
+        if source == output or source in output.parents or output in source.parents:
+            raise ValueError("Product resume destination overlaps original input")
+    with tempfile.TemporaryDirectory(prefix="codex-agent-product-resume-", dir=root) as temporary:
+        private = Path(temporary).resolve()
+        prepared = private / "result"
+        prepared.mkdir()
+        captured_plan = private / "impact-plan.json"
+        captured_plan.write_bytes(read_regular_file_bytes(
+            plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+        plan = _validate_plan(captured_plan, root)
+        snapshot_regular_tree(discovery_root, prepared / "discovery")
+        snapshot_regular_tree(state_root, prepared / "contract-state")
+        complete = advance_contract(
+            captured_plan, prepared / "discovery", prepared / "contract-state", [],
+            private / "replayed-contract", private / "contract-outputs",
+            repository_root=root, environ=environment, sdk_validation_tooling=sdk_validation_tooling)
+        if complete["fullReuse"] is not True:
+            raise ValueError("Product resume requires complete original Contract phases")
+        evidence_root = prepared / "authenticated-contract"
+        evidence = _capture_completed_contract_handoff(
+            captured_plan, prepared / "contract-state", contract_handoff, evidence_root,
+            repository_root=root, environ=environment)
+        contract_request = _wave_control(
+            prepared / "discovery/contract-reuse-request.json", "Original Contract request")
+        requested = _requested(plan)
+        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+        if contract not in _dependency_closure(requested):
+            raise ValueError("Product resume selection has no Contract dependency")
+        authorities, unavailable = _authorities(root, plan["validationCommit"], _dependency_closure(requested))
+        if authorities is None:
+            raise ValueError(unavailable or "Product phase authority is unavailable")
+        wave = _wave_request(
+            plan, root, prepared, requested, _versions(root, plan["validationCommit"]), authorities, [],
+            _rebase_contract_evidence_paths(evidence, evidence_root, prepared))
+        wave["catalogs"] = _rebase_catalog_paths(contract_request["catalogs"], prepared / "discovery", prepared)
+        wave.update(_rebase_native_request(contract_request, prepared / "discovery", prepared))
+        initial_objects, original_phases = _completed_contract_objects(
+            plan, prepared / "contract-state", prepared, environment)
+        wave["availableObjects"] = initial_objects
+        ready_plans = {}
+
+        def retain(instance, phase_plan):
+            if instance in ready_plans:
+                raise ValueError("Product resume elected a duplicate ready phase")
+            ready_plans[instance] = phase_plan
+
+        reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, build_plan_consumer=retain)
+        _, selected, phases = _validate_reuse_result(reuse, requested, require_complete=False)
+        by_id = {_identity(phase): phase for phase in phases}
+        originals = {_identity(phase): phase for phase in original_phases}
+        if any(by_id.get(instance, {}).get("state") != "retained" for instance in originals):
+            raise ValueError("Product resume did not retain every authenticated Contract object")
+        sources = {_identity(record): prepared / record["objectPath"] for record in initial_objects}
+        remote_sources = _catalog_object_sources(wave)
+        for instance in selected:
+            if instance not in sources:
+                phase = by_id[instance]
+                sources[instance] = remote_sources[(phase["source"], phase["transportSource"]["indexSha256"], phase["buildKey"])]
+        normalized = {"schemaVersion": 1, "result": "complete", "fullReuse": True,
+                      "phases": [originals.get(instance, by_id[instance]) for instance in selected],
+                      "matrices": {"contract": [], "runtime": [], "sdk": []}}
+        write_carrier(prepared / ("carrier" if reuse["fullReuse"] else "reused-carrier"),
+                      normalized, selected, sources, _consumer(plan, environment))
+        _write_ready_plans(prepared, ready_plans)
+        # This fixed logical root is the existing relocatable discovery protocol;
+        # consumers rebase only relative transport paths to their private capture.
+        wave["artifactRoot"] = str(root / "build/product-reuse")
+        write_canonical_json(prepared / "reuse-wave-request.json", wave)
+        write_canonical_json(prepared / "reuse-wave-result.json", reuse)
+        write_canonical_json(prepared / "producer.json", _consumer(plan, environment)["producer"])
+        result = _result(requested, complete=reuse["fullReuse"],
+                         reason="verified-full-reuse" if reuse["fullReuse"] else "product-build-required", reuse=reuse)
+        write_canonical_json(prepared / "request.json", _discovery_request(plan, requested))
+        write_canonical_json(prepared / "result.json", result)
+        publish_regular_tree(prepared, destination)
+    github_output(github_output_path, {"full_reuse": result["fullReuse"],
+        "target_jobs_required": result["targetJobsRequired"], "product_reuse_reason": result["reason"]})
+    return result
+
+
 def discover(
     plan_path: Path, destination: Path, github_output_path: Path, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
@@ -2663,6 +2878,11 @@ def parser() -> argparse.ArgumentParser:
     products_command.add_argument("--github-output", type=Path, required=True)
     products_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
     products_command.add_argument("--adapter-runtime-evidence", type=Path, action="append", default=[])
+    resume_command = commands.add_parser("resume-products")
+    for name in ("plan", "discovery-root", "state-root", "contract-handoff", "destination", "github-output"):
+        resume_command.add_argument(f"--{name}", type=Path, required=True)
+    resume_command.add_argument("--sdk-validation-tooling", type=Path,
+                               help="Current caller-owned tooling policy JSON, never a retained request field")
     for command in (discover_command, products_command):
         command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-tooling", type=Path,
@@ -2735,6 +2955,11 @@ def main(argv: list[str] | None = None) -> int:
                 transport_producer=_canonical_control(arguments.transport_producer, "Caller capture producer"),
                 trusted_workflow_sha=arguments.trusted_workflow_sha,
                 contract_version=arguments.contract_version, token=os.environ.get("GITHUB_TOKEN", ""))
+        elif arguments.command == "resume-products":
+            resume_products(
+                arguments.plan, arguments.discovery_root, arguments.state_root,
+                arguments.contract_handoff, arguments.destination, arguments.github_output,
+                sdk_validation_tooling=tooling)
         elif arguments.command == "capture-contract-original-ci":
             capture_contract_original_ci_phases(
                 arguments.capture_root, arguments.destination, contract_version=arguments.contract_version,
