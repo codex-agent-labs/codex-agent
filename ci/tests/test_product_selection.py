@@ -345,7 +345,7 @@ class ProductSelectionTest(unittest.TestCase):
                 self.assertEqual((), phase_inventory_paths([path], instance))
         # Control changes can request broad reuse planning, but cannot change payload keys.
         for path in ("ci/products/contract_attestation.py", "ci/products/contract_projection.py",
-                     "ci/products/reuse.py", "ci/products/selection.py"):
+                     "ci/products/reuse.py", "ci/products/native_runtime_inputs.py", "ci/products/selection.py"):
             self.assertEqual((), phase_inventory_paths([path], instance))
 
     def test_embedded_contract_git_inventories_are_a_subset_of_binary_key_inputs(self) -> None:
@@ -1195,6 +1195,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/registry.py",
             "ci/products/restore.py",
             "ci/products/reuse.py",
+            "ci/products/native_runtime_inputs.py",
             "ci/products/selection.py",
         )
         result = classify_paths(paths)

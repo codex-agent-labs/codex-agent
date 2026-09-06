@@ -35,6 +35,7 @@ from products.inventory import (
     require_sha256,
     require_string,
     sha256_bytes,
+    snapshot_regular_tree,
     tree_entries,
     verified_zip_contents,
     write_canonical_json,
@@ -70,7 +71,11 @@ from products.restore import (
     write_carrier,
 )
 from products.receipt import validate_producer
-from products.reuse import SOURCES, _dependency_closure, plan_reuse_wave
+from products.reuse import (
+    SOURCES, _dependency_closure, plan_reuse_wave,
+    _native_comparison_records, _native_evidence_paths,
+)
+from products.native_runtime_inputs import load_native_runtime_evidence, stage_native_runtime_evidence
 from products.selection import classify_paths
 from products.signatures import load_keyring, public_key_for_metadata
 from products.toolchain import load_toolchain_profile_bytes
@@ -96,6 +101,7 @@ _WAVE_REQUEST_KEYS = {
     "repositoryRevision", "artifactRoot", "requested", "versions", "phaseAuthorities",
     "contractEvidence", "runtimeValidationEvidence", "availableObjects", "catalogs",
 }
+_NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
 _VERSION_PATHS = {
     "contract": "gradle/release/versions/contract.txt",
     "runtime-release": "gradle/release/versions/runtime.txt",
@@ -132,6 +138,7 @@ class Catalog:
     objects: Mapping[str, Path]
     contract_attestation: Path | None = None
     contract_attestation_signature: Path | None = None
+    native_runtime_evidence: tuple[dict[str, Any], ...] = ()
 
 
 def _identity(value: Mapping[str, Any]) -> PhaseInstanceId:
@@ -433,6 +440,12 @@ def _materialize_catalog(
         contract_attestation_signature = extracted / f"codex-agent-contract-{version}.attestation.sig"
         controls.update({contract_attestation.name, contract_attestation_signature.name})
     actual = _catalog_files(extracted)
+    native_root = extracted / "native-runtime-evidence"
+    native_records = []
+    if native_root.exists():
+        native_records = _rebase_native_evidence_paths(
+            load_native_runtime_evidence(native_root), native_root, destination, comparison=True)
+        controls.update(f"native-runtime-evidence/{path}" for path in _catalog_files(native_root))
     if not controls.issubset(actual) or not actual.issubset(controls | set(expected_objects.values())):
         raise ValueError("Product catalog file set is incomplete or unexpected")
     contract_public_key = None
@@ -482,6 +495,7 @@ def _materialize_catalog(
         objects,
         contract_attestation,
         contract_attestation_signature,
+        tuple(native_records),
     )
 
 
@@ -574,7 +588,7 @@ def _wave_request(
     contract_evidence: dict[str, Any] | None,
 ) -> dict[str, Any]:
     closure = set(_dependency_closure(requested))
-    return {
+    request = {
         "schemaVersion": 1,
         "requestType": "reuse-wave",
         "repository": plan["repository"],
@@ -590,6 +604,13 @@ def _wave_request(
         "availableObjects": [],
         "catalogs": _catalog_request(catalogs),
     }
+    records = {}
+    for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source)):
+        for record in catalog.native_runtime_evidence:
+            records.setdefault(record["receiptSha256"], record)
+    if records:
+        request["nativeRuntimeComparisonEvidence"] = [records[key] for key in sorted(records)]
+    return request
 
 
 def _catalog_for_phase(catalogs: list[Catalog], phase: Mapping[str, Any]) -> Catalog:
@@ -1081,6 +1102,73 @@ def _rebase_contract_evidence_paths(
     }
 
 
+def _rebase_native_evidence_paths(value, source_root: Path, repository_root: Path, *, comparison=False):
+    """Relocate transport paths only; signatures and original receipts are untouched."""
+    def relative(path):
+        return None if path is None else Path(path).relative_to(repository_root).as_posix()
+
+    def runtime(record):
+        return {"target": record["target"],
+                "phaseReceipts": {phase: relative(path) for phase, path in record["phaseReceipts"].items()},
+                **{name: relative(path) for name, path in record.items() if name not in {"target", "phaseReceipts"}}}
+
+    if comparison:
+        return [{"receiptSha256": digest, "runtimeEvidence": runtime(r),
+                 "contractEvidence": {name: path if name == "expectedTrustDomain" else relative(path)
+                                      for name, path in k.items()}}
+                for digest, (k, r) in _native_comparison_records(source_root, value).items()]
+    records = [_native_evidence_paths(source_root, record)
+               for record in require_array(value, "native Runtime evidence")]
+    targets = [record["target"] for record in records]
+    if targets != sorted(set(targets)):
+        raise ValueError("Native Runtime evidence must be sorted and unique by target")
+    return [runtime(record) for record in records]
+
+
+def _rebase_native_request(request, source_root, artifact_root):
+    return {key: _rebase_native_evidence_paths(request[key], source_root, artifact_root,
+                                             comparison=key == "nativeRuntimeComparisonEvidence")
+            for key in _NATIVE_REQUEST_KEYS if key in request}
+
+
+def _wave_control(path, label):
+    value = _canonical_control(path, label)
+    return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & _NATIVE_REQUEST_KEYS), label)
+
+
+def _merge_native_comparison_records(request, records):
+    originals = {record["receiptSha256"]: record
+                 for record in request.get("nativeRuntimeComparisonEvidence", [])}
+    for record in records:
+        originals.setdefault(record["receiptSha256"], record)
+    if originals:
+        request["nativeRuntimeComparisonEvidence"] = [originals[key] for key in sorted(originals)]
+
+
+def _capture_native_handoffs(evidence_roots, destination, artifact_root, release_trust=None):
+    records = []
+    for index, source in enumerate(evidence_roots):
+        target = destination / str(index)
+        captured = stage_native_runtime_evidence(load_native_runtime_evidence(source), source, target,
+                    keyring=release_trust.keyring if release_trust else None,
+                    keys_directory=release_trust.keys if release_trust else None)
+        records.extend(_rebase_native_evidence_paths(captured, target, artifact_root, comparison=True))
+    return records
+
+
+def _retained_native_handoffs(state_root, artifact_root):
+    path = state_root / "native-runtime-evidence"
+    if not path.exists():
+        return []
+    records = []
+    # Each directory is one immutable, independently captured handoff. The
+    # exact request decoder and full K/R gate, not directory naming, grant trust.
+    for child in sorted(path.iterdir()):
+        records.extend(_rebase_native_evidence_paths(
+            load_native_runtime_evidence(child), child, artifact_root, comparison=True))
+    return records
+
+
 def _available_object_records(
     phases: Mapping[PhaseInstanceId, Mapping[str, Any]],
     sources: Mapping[PhaseInstanceId, Path],
@@ -1228,13 +1316,7 @@ def advance_contract(
     if producer != consumer["producer"]:
         raise ValueError("Contract producer does not match the current workflow run")
 
-    request = require_exact_keys(
-        _canonical_control(
-            discovery_root / "contract-reuse-request.json", "Contract reuse request",
-        ),
-        _WAVE_REQUEST_KEYS,
-        "Contract reuse request",
-    )
+    request = _wave_control(discovery_root / "contract-reuse-request.json", "Contract reuse request")
     contract = PhaseInstanceId("contract", "contract", "metadata", "common")
     contract_closure = _dependency_closure((contract,))
     authorities, unavailable = _authorities(root, plan["validationCommit"], contract_closure)
@@ -1264,6 +1346,7 @@ def advance_contract(
     rebased_request = dict(request)
     rebased_request["artifactRoot"] = str(root)
     rebased_request["catalogs"] = _rebase_catalog_paths(request["catalogs"], discovery_root, root)
+    rebased_request.update(_rebase_native_request(request, discovery_root, root))
     replay_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
 
     def retain(plans: dict[PhaseInstanceId, dict[str, Any]], instance: PhaseInstanceId,
@@ -1457,6 +1540,7 @@ def advance_products(
     shard_roots: list[Path], destination: Path,
     github_output_path: Path, *, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None,
+    native_evidence_roots: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -1489,11 +1573,7 @@ def advance_products(
     if producer != consumer["producer"]:
         raise ValueError("Product producer does not match the current workflow run")
 
-    request = require_exact_keys(
-        _canonical_control(discovery_root / "reuse-wave-request.json", "Reuse-wave request"),
-        _WAVE_REQUEST_KEYS,
-        "Reuse-wave request",
-    )
+    request = _wave_control(discovery_root / "reuse-wave-request.json", "Reuse-wave request")
     requested = tuple(
         _identity(value)
         for value in require_array(request["requested"], "Reuse-wave request.requested")
@@ -1529,6 +1609,7 @@ def advance_products(
     rebased_request["contractEvidence"] = _rebase_contract_evidence_paths(
         request["contractEvidence"], discovery_root, root,
     )
+    rebased_request.update(_rebase_native_request(request, discovery_root, root))
 
     def retain(
         plans: dict[PhaseInstanceId, dict[str, Any]],
@@ -1594,6 +1675,7 @@ def advance_products(
                 phase_records, sources, root,
             )
             state_request["runtimeValidationEvidence"] = evidence
+            _merge_native_comparison_records(state_request, _retained_native_handoffs(state_root, root))
             prior_ready_plans = {}
             state_replay = plan_reuse_wave(
                 state_request,
@@ -1673,6 +1755,19 @@ def advance_products(
             phase_records, sources, root,
         )
         advanced_request["runtimeValidationEvidence"] = evidence
+        native_destination = temporary_root / "result/native-runtime-evidence"
+        prior_native = state_root / "native-runtime-evidence"
+        if prior_native.exists():
+            snapshot_regular_tree(prior_native, native_destination)
+        offset = len(list(native_destination.iterdir())) if native_destination.exists() else 0
+        native_trust = _release_trust(root, plan["validationCommit"], temporary_root) if native_evidence_roots else None
+        for index, source in enumerate(native_evidence_roots, offset):
+            target = native_destination / str(index)
+            stage_native_runtime_evidence(load_native_runtime_evidence(source), source, target,
+                    keyring=native_trust.keyring if native_trust else None,
+                    keys_directory=native_trust.keys if native_trust else None)
+        retained_native = _retained_native_handoffs(temporary_root / "result", root)
+        _merge_native_comparison_records(advanced_request, retained_native)
         ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         advanced = plan_reuse_wave(
             advanced_request,
@@ -1719,7 +1814,7 @@ def advance_products(
         }
         final_carrier_name = "carrier" if advanced["fullReuse"] else "reused-carrier"
         staged_destination = temporary_root / "result"
-        staged_destination.mkdir()
+        staged_destination.mkdir(exist_ok=True)
         write_carrier(
             staged_destination / final_carrier_name,
             normalized,
@@ -1736,6 +1831,7 @@ def advance_products(
         )
         staged_prefix = staged_destination.relative_to(root).as_posix()
         staged_request = dict(rebased_request)
+        _merge_native_comparison_records(staged_request, retained_native)
         staged_request["runtimeValidationEvidence"] = [{
             **record,
             "reports": [f"{staged_prefix}/{path}" for path in record["reports"]],
@@ -1762,6 +1858,19 @@ def advance_products(
 
         destination_prefix = destination.relative_to(root).as_posix()
         final_request = dict(staged_request)
+        if "nativeRuntimeComparisonEvidence" in final_request:
+            # Move only paths inside this staged transport. Original discovery
+            # catalogs remain at their separately retained discovery paths.
+            def relocated_native(value):
+                if isinstance(value, dict):
+                    return {key: relocated_native(member) for key, member in value.items()}
+                if isinstance(value, list):
+                    return [relocated_native(member) for member in value]
+                if isinstance(value, str) and value.startswith(staged_prefix + "/"):
+                    return destination_prefix + value[len(staged_prefix):]
+                return value
+            final_request["nativeRuntimeComparisonEvidence"] = relocated_native(
+                final_request["nativeRuntimeComparisonEvidence"])
         final_request["runtimeValidationEvidence"] = [{
             **record,
             "reports": [
@@ -1869,6 +1978,7 @@ def materialize_contract(
 def discover(
     plan_path: Path, destination: Path, github_output_path: Path, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    native_evidence_roots: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     # A failing adapter must never make a missing output look like permission to skip work.
     github_output(github_output_path, {
@@ -1902,6 +2012,8 @@ def discover(
     environment = os.environ if environ is None else environ
     trust = _release_trust(root, plan["validationCommit"], destination)
     catalogs = _discover_catalogs(plan, destination, trust, environment, versions)
+    native_records = _capture_native_handoffs(
+        native_evidence_roots, destination / "native-runtime-evidence", destination, trust)
 
     contract_evidence = None
     contract = PhaseInstanceId("contract", "contract", "metadata", "common")
@@ -1915,6 +2027,7 @@ def discover(
         contract_request = _wave_request(
             plan, root, destination, (contract,), versions, contract_authorities, catalogs, None,
         )
+        _merge_native_comparison_records(contract_request, native_records)
         write_canonical_json(destination / "contract-reuse-request.json", contract_request)
         contract_ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         contract_result = plan_reuse_wave(
@@ -1959,6 +2072,7 @@ def discover(
     wave_request = _wave_request(
         plan, root, destination, requested, versions, authorities, catalogs, contract_evidence,
     )
+    _merge_native_comparison_records(wave_request, native_records)
     write_canonical_json(destination / "reuse-wave-request.json", wave_request)
     ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
 
@@ -1969,8 +2083,9 @@ def discover(
 
     reuse = plan_reuse_wave(wave_request, build_plan_consumer=retain_ready_plan)
     _write_ready_plans(destination, ready_plans)
-    if ready_plans:
-        write_canonical_json(destination / "producer.json", _consumer(plan, environment)["producer"])
+    # Evidence-only waits still need original workflow control provenance when
+    # advance-products resumes them; an empty build matrix must not lose it.
+    write_canonical_json(destination / "producer.json", _consumer(plan, environment)["producer"])
     write_canonical_json(destination / "reuse-wave-result.json", reuse)
     matrices = reuse.get("matrices")
     complete = (
@@ -2006,6 +2121,7 @@ def parser() -> argparse.ArgumentParser:
     discover_command.add_argument("--plan", type=Path, required=True)
     discover_command.add_argument("--destination", type=Path, required=True)
     discover_command.add_argument("--handoff", type=Path)
+    discover_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
     discover_command.add_argument("--github-output", type=Path, required=True)
     advance_command = commands.add_parser("advance-contract")
     advance_command.add_argument("--plan", type=Path, required=True)
@@ -2021,6 +2137,7 @@ def parser() -> argparse.ArgumentParser:
     products_command.add_argument("--phase-shard", type=Path, action="append", default=[])
     products_command.add_argument("--destination", type=Path, required=True)
     products_command.add_argument("--github-output", type=Path, required=True)
+    products_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
     materialize_command = commands.add_parser("materialize-contract")
     materialize_command.add_argument("--plan", type=Path, required=True)
     materialize_command.add_argument("--state-root", type=Path, required=True)
@@ -2034,7 +2151,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     try:
         if arguments.command == "discover":
-            discover(arguments.plan, arguments.destination, arguments.github_output)
+            discover(arguments.plan, arguments.destination, arguments.github_output,
+                     native_evidence_roots=tuple(arguments.native_runtime_evidence))
             if arguments.handoff is not None:
                 publish_regular_tree(arguments.destination, arguments.handoff)
         elif arguments.command == "advance-contract":
@@ -2054,6 +2172,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.phase_shard,
                 arguments.destination,
                 arguments.github_output,
+                native_evidence_roots=tuple(arguments.native_runtime_evidence),
             )
         else:
             materialize_contract(

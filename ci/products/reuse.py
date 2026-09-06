@@ -733,7 +733,7 @@ def _native_evidence_paths(root, value):
     }
 
 
-def _native_comparison_provider(root, value):
+def _native_comparison_records(root, value):
     records = {}
     for member in require_array(value, "native Runtime comparison evidence"):
         record = require_exact_keys(member, {"receiptSha256", "contractEvidence", "runtimeEvidence"},
@@ -750,12 +750,24 @@ def _native_comparison_provider(root, value):
                            _native_evidence_paths(root, record["runtimeEvidence"]))
     if list(records) != sorted(records):
         raise ValueError("Native Runtime comparison receipts must be sorted")
+    return records
+
+
+def _native_comparison_provider(root, value, *, keyring=None, keys_directory=None):
+    records = _native_comparison_records(root, value)
+    if (keyring is None) != (keys_directory is None):
+        raise ValueError("Native release comparison requires both caller-pinned trust paths")
 
     def verify(entry, _verified_object):
         pair = records.get(entry["receiptSha256"])
         if pair is None:
             raise ValueError("Native Runtime comparison lacks original K/R evidence")
         contract, runtime = pair
+        if contract["expectedTrustDomain"] == "release":
+            if keyring is None:
+                raise ValueError("Release native comparison requires a caller-pinned product keyring")
+            pinned = {"keyring": str(keyring), "keysDirectory": str(keys_directory)}
+            contract, runtime = {**contract, **pinned}, {**runtime, **pinned}
         if runtime["target"] != entry["target"]:
             raise ValueError("Native Runtime comparison target differs from index")
         receipt = validate_phase_receipt(load_canonical_json_bytes(read_regular_file_bytes(
@@ -801,7 +813,7 @@ def plan_reuse_wave(
         raise ValueError("Unsupported plan requestType")
     repository_root = _absolute_path(request["repositoryRoot"], "reuse-wave request.repositoryRoot")
     artifact_root = _absolute_path(request["artifactRoot"], "reuse-wave request.artifactRoot")
-    native_comparison = _native_comparison_provider(artifact_root, request.get("nativeRuntimeComparisonEvidence", []))
+    native_originals = _native_comparison_records(artifact_root, request.get("nativeRuntimeComparisonEvidence", []))
     revision = require_string(request["repositoryRevision"], "reuse-wave request.repositoryRevision")
     if _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Reuse-wave repositoryRevision must be an exact lowercase Git object ID")
@@ -928,6 +940,19 @@ def plan_reuse_wave(
         catalogs["samePr"],
         "reuse-wave request.catalogs.samePr",
     )
+    comparison_trust = {}
+    if contract_evidence is not None and contract_evidence["expectedTrustDomain"] == "release":
+        comparison_trust = {"keyring": contract_evidence["keyring"],
+                            "keys_directory": contract_evidence["keysDirectory"]}
+    else:
+        # Catalog request trust roots are caller-pinned index authorities, unlike
+        # paths inside transported native comparison evidence.
+        release_catalog = next(iter((*stable, *((promoted_main,) if promoted_main else ()))), None)
+        if release_catalog is not None:
+            comparison_trust = {"keyring": release_catalog.keyring,
+                                "keys_directory": release_catalog.keys_directory}
+    native_comparison = _native_comparison_provider(
+        artifact_root, request.get("nativeRuntimeComparisonEvidence", []), **comparison_trust)
     pull_request = request["pullRequest"]
     if pull_request is not None:
         pull_request = require_integer(pull_request, "reuse-wave request.pullRequest", 1)
@@ -1023,15 +1048,22 @@ def plan_reuse_wave(
 
         def native_runtime_projection_provider(instance, envelopes, projection):
             targets = [dependency.target for dependency in native_runtime_validation_dependencies(instance)]
-            if any(target not in native_evidence for target in targets):
+            selected = [native_evidence.get(target) or native_originals.get(envelope["receiptSha256"], (None, None))[1]
+                        for target, envelope in zip(targets, envelopes, strict=True)]
+            if any(record is None for record in selected):
                 return None
             if master_projection is None or master_contract_stage is None or contract_evidence is None:
                 raise ValueError("Native Runtime reuse lacks authenticated Contract evidence")
+            # Release Runtime evidence must use the same caller-pinned product
+            # keyring as the authenticated Contract, not a transported trust root.
+            if contract_evidence["expectedTrustDomain"] == "release":
+                selected = [{**record, "keyring": str(contract_evidence["keyring"]),
+                             "keysDirectory": str(contract_evidence["keysDirectory"])} for record in selected]
             keys = [(target, envelope["receiptSha256"]) for target, envelope in zip(targets, envelopes, strict=True)]
             if any(key not in native_projection_cache for key in keys):
                 verified = _native_runtime_projections_from_request(
                     instance, [envelope["receipt"] for envelope in envelopes],
-                    [native_evidence[target] for target in targets], projection,
+                    selected, projection,
                     master_contract_stage / master_projection.receipt_value()["bundlePath"],
                     contract_evidence["expectedTrustDomain"],
                 )

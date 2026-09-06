@@ -1435,7 +1435,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         with mock.patch.object(product_reuse, "discover") as discover, \
                 mock.patch.object(product_reuse, "publish_regular_tree") as publish:
             self.assertEqual(0, product_reuse.main(arguments))
-        discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"))
+        discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"), native_evidence_roots=())
         publish.assert_called_once_with(Path("discovery"), Path("handoff"))
 
         materialize_arguments = [
@@ -1460,6 +1460,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         advance.assert_called_once_with(
             Path("plan.json"), Path("discovery"), Path("state"),
             [Path("one"), Path("two")], Path("advanced"), Path("output"),
+            native_evidence_roots=(),
         )
 
     def test_contract_ready_phase_is_exactly_one_known_contract_phase(self) -> None:

@@ -34,11 +34,11 @@ INVENTORY_NAME = "sdk-inputs-inventory.json"
 _FILE_LIMIT = 512 * 1024 * 1024
 
 
-def _copy_file(source: Path, destination: Path) -> None:
+def _copy_file(source: Path, destination: Path, *, max_bytes: int | None = None) -> None:
     """Bounded regular-file snapshot; never follow a source symlink or load a ZIP into RAM."""
     descriptor, before = _open_regular_file(source, "SDK input", reject_symlink_parents=True)
     try:
-        if not 0 < before.st_size <= _FILE_LIMIT:
+        if not 0 < before.st_size <= (_FILE_LIMIT if max_bytes is None else max_bytes):
             raise ValueError(f"SDK input size is invalid: {source}")
         destination.parent.mkdir(parents=True, exist_ok=True)
         remaining = before.st_size
