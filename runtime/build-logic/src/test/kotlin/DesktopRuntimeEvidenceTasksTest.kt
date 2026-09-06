@@ -3,11 +3,92 @@ import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.assertEquals
+import kotlin.test.assertContentEquals
+import kotlin.test.assertFalse
+import java.util.Base64
+import org.gradle.testfixtures.ProjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
 class DesktopRuntimeEvidenceTasksTest {
+    @Test
+    fun `imported native task declares and stages an independently invalidated raw capture`() = withDirectory { root ->
+        val project = ProjectBuilder.builder().withProjectDir(root).build()
+        val task = project.tasks.create("nativeEvidence", ExecuteImportedNativeRuntimeEvidenceTask::class.java)
+        val evidence = root.resolve("desktop-runtime-linuxX64.json")
+        task.evidenceFile.set(evidence)
+        assertEquals(root.resolve("desktop-runtime-linuxX64-execution.json"), task.executionFile.get().asFile)
+        val plugin = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
+        val native = plugin.substringAfter("val importedNativeExecutionFile =").substringBefore("val jvmValidationTarget =")
+        assertTrue("importedNativeExecutionFile," in native)
+        assertTrue("executionFile.set(layout.file(importedNativeExecutionFile))" in native)
+        assertTrue("from(importedNativeEvidence.flatMap { it.executionFile }) { into(\"execution\") }" in native)
+        assertTrue("\"execution\" to \"outputs/execution\"" in native)
+    }
+
+    @Test
+    fun `all native targets capture discovery and four exact returned process outputs losslessly`() = withDirectory { root ->
+        val test = root.resolve("test.kexe").apply { writeText("synthetic runner") }
+        val raw = byteArrayOf(0, -1, 13, 10)
+        desktopRuntimeEvidenceTargets.keys.forEach { target ->
+            val capture = root.resolve("$target.json")
+            val commands = mutableListOf<List<String>>()
+            executeDesktopRuntimeEvidenceTests(target, test, mapOf("declared" to "environment"), capture) { command, env ->
+                commands += command
+                assertEquals(mapOf("declared" to "environment"), env)
+                if (commands.size == 1) DesktopEvidenceProcessResult(0, nativeListing())
+                else DesktopEvidenceProcessResult(0, "decoded output is not the byte authority", raw)
+            }
+            val records = capture.readReleaseObject().releaseArray("executions").map { it as kotlinx.serialization.json.JsonObject }
+            assertEquals(listOf("discovery") + desktopRuntimeTestMethods, records.map { it.releaseString("id") })
+            assertEquals(5, commands.size)
+            records.drop(1).forEach { assertContentEquals(raw, Base64.getDecoder().decode(it.releaseString("outputBase64"))) }
+            desktopRuntimeTestMethods.forEachIndexed { index, method ->
+                assertEquals(listOf(test.absolutePath, "--ktest_filter=$DESKTOP_RUNTIME_TEST_CLASS.$method",
+                    "--ktest_logger=SILENT"), commands[index + 1])
+            }
+        }
+    }
+
+    @Test
+    fun `native failures preserve only actually returned processes and never run later methods`() = withDirectory { root ->
+        val test = root.resolve("test.kexe").apply { writeText("synthetic runner") }
+        for (failureAt in 0..4) {
+            val output = root.resolve("failed-$failureAt.json")
+            var calls = 0
+            assertFailsWith<IllegalStateException> {
+                executeDesktopRuntimeEvidenceTests("linuxX64", test, emptyMap(), output) { _, _ ->
+                    val index = calls++
+                    if (index == failureAt) DesktopEvidenceProcessResult(9, "failure", byteArrayOf(-1, 0))
+                    else DesktopEvidenceProcessResult(0, if (index == 0) nativeListing() else "")
+                }
+            }
+            val records = output.readReleaseObject().releaseArray("executions").map { it as kotlinx.serialization.json.JsonObject }
+            assertEquals(failureAt + 1, calls)
+            assertEquals(calls, records.size)
+            assertEquals(9, records.last().releaseInt("exitCode"))
+            assertContentEquals(byteArrayOf(-1, 0), Base64.getDecoder().decode(records.last().releaseString("outputBase64")))
+        }
+        val timedOut = root.resolve("timeout.json")
+        assertFailsWith<IllegalStateException> {
+            executeDesktopRuntimeEvidenceTests("linuxX64", test, emptyMap(), timedOut) { _, _ ->
+                DesktopEvidenceProcessResult(0, nativeListing(), byteArrayOf(1), timedOut = true)
+            }
+        }
+        assertEquals(1, timedOut.readReleaseObject().releaseArray("executions").size)
+        val source = File("src/main/kotlin/LinuxArm64RuntimeEvidenceBundle.kt").readText()
+        val runner = source.substringAfter("internal fun runDesktopEvidenceProcess(").substringBefore("fun main(")
+        assertTrue("val bytes = log.readBytes()" in runner)
+        assertFalse("log.readText()" in runner)
+    }
+
+    private fun nativeListing() = buildString {
+        append(DESKTOP_RUNTIME_TEST_CLASS).append(".\n")
+        desktopRuntimeTestMethods.forEach { append("  ").append(it).append('\n') }
+    }
+
     @Test
     fun `record task is owned by desktop runtime evidence build logic`() {
         val taskType = "RecordDesktopRuntimeEvidenceTask"
@@ -81,7 +162,7 @@ class DesktopRuntimeEvidenceTasksTest {
     }
 
     private fun withDirectory(block: (File) -> Unit) {
-        val root = createTempDirectory("desktop-evidence").toFile()
+        val root = createTempDirectory("desktop-evidence").toFile().canonicalFile
         try { block(root) } finally { root.deleteRecursively() }
     }
 

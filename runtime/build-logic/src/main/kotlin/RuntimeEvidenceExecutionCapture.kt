@@ -39,8 +39,11 @@ internal fun writeRuntimeEvidenceExecution(
     testClass: String,
     executions: List<RuntimeEvidenceProcessCapture>,
 ) {
-    check(component in setOf("jvm", "node-js", "node-wasm")) { "Unknown adapter execution component" }
     check(target in desktopRuntimeEvidenceTargets) { "Unknown adapter execution target" }
+    check(component in setOf("jvm", "node-js", "node-wasm") ||
+        component == desktopRuntimeEvidenceTargets.getValue(target).classifier.removePrefix("app-server-")) {
+        "Unknown or mismatched Runtime execution component"
+    }
     check(executions.map { it.id }.distinct().size == executions.size) { "Duplicate execution capture" }
     file.atomicWriteJson(buildJsonObject {
         put("schemaVersion", JsonPrimitive(1))

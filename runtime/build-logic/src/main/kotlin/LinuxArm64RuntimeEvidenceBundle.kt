@@ -24,7 +24,44 @@ private val ARM_INPUTS = linkedSetOf(
 )
 private val ARM_ZIP_EPOCH = LocalDateTime.of(1980, 1, 1, 0, 0)
 
-internal data class DesktopEvidenceProcessResult(val exitCode: Int, val output: String)
+internal data class DesktopEvidenceProcessResult(
+    val exitCode: Int,
+    val output: String,
+    val rawOutput: ByteArray = output.toByteArray(Charsets.UTF_8),
+    val timedOut: Boolean = false,
+)
+
+internal fun executeDesktopRuntimeEvidenceTests(
+    target: String,
+    test: File,
+    environment: Map<String, String>,
+    executionFile: File,
+    runner: (List<String>, Map<String, String>) -> DesktopEvidenceProcessResult = ::runDesktopEvidenceProcess,
+) {
+    val component = desktopRuntimeEvidenceTargets.getValue(target).classifier.removePrefix("app-server-")
+    validateRuntimeEvidenceOutputs(listOf(executionFile), listOf(test))
+    val executions = mutableListOf<RuntimeEvidenceProcessCapture>()
+    fun execute(id: String, arguments: List<String>): DesktopEvidenceProcessResult {
+        val result = runner(listOf(test.absolutePath) + arguments, environment)
+        executions += RuntimeEvidenceProcessCapture(id, result.exitCode, result.rawOutput)
+        writeRuntimeEvidenceExecution(executionFile, component, target, DESKTOP_RUNTIME_TEST_CLASS, executions)
+        check(!result.timedOut) { "Imported native runtime test timed out ($id)" }
+        check(result.exitCode == 0) { "Imported native runtime test failed ($id): ${result.output}" }
+        return result
+    }
+    writeRuntimeEvidenceExecution(executionFile, component, target, DESKTOP_RUNTIME_TEST_CLASS, executions)
+    val listing = execute("discovery", listOf("--ktest_list_tests"))
+    val lines = listing.output.lineSequence().filter(String::isNotBlank).toList()
+    val classIndex = lines.indexOf("$DESKTOP_RUNTIME_TEST_CLASS.")
+    val tests = lines.drop(classIndex + 1).takeWhile { it.startsWith("  ") }.map(String::trim)
+    check(classIndex >= 0 && tests.toSet() == desktopRuntimeTestMethods &&
+        tests.size == desktopRuntimeTestMethods.size) {
+        "Imported native test executable has an unexpected test set"
+    }
+    desktopRuntimeTestMethods.forEach { method ->
+        execute(method, listOf("--ktest_filter=$DESKTOP_RUNTIME_TEST_CLASS.$method", "--ktest_logger=SILENT"))
+    }
+}
 
 internal fun stageLinuxArm64RuntimeEvidenceBundle(
     candidateCommit: String,
@@ -102,11 +139,14 @@ internal fun executeLinuxArm64RuntimeEvidenceBundle(
     validateRuntimeEvidenceOutputs(
         listOf(desktopEvidence, desktopReport, jvmEvidence, nodeEvidence, nodeReport, wasmEvidence, wasmReport,
             jvmEvidence.resolveSibling(jvmRuntimeEvidenceTestReportName(ARM_TARGET))) +
-            listOf(jvmEvidence, nodeEvidence, wasmEvidence).map {
+            listOf(desktopEvidence, jvmEvidence, nodeEvidence, wasmEvidence).map {
                 it.resolveSibling("${it.nameWithoutExtension}-execution.json")
             },
         listOf(bundle),
     )
+    desktopEvidence.delete()
+    desktopReport.delete()
+    desktopEvidence.resolveSibling("${desktopEvidence.nameWithoutExtension}-execution.json").delete()
     val temporary = Files.createTempDirectory("codex-agent-linux-arm64-runtime-evidence").toFile()
     try {
         val inputs = extractArmBundle(bundle, temporary, candidateCommit)
@@ -207,6 +247,7 @@ internal fun executeLinuxArm64DesktopEvidenceInputs(
     report: File,
     environment: Map<String, String> = System.getenv(),
     runner: (List<String>, Map<String, String>) -> DesktopEvidenceProcessResult = ::runDesktopEvidenceProcess,
+    executionFile: File = evidence.resolveSibling("${evidence.nameWithoutExtension}-execution.json"),
 ) {
     requireArmCommit(candidateCommit)
     check(environment["RUNNER_OS"] == "Linux" && environment["RUNNER_ARCH"] == "ARM64") {
@@ -216,6 +257,11 @@ internal fun executeLinuxArm64DesktopEvidenceInputs(
     check(report.name == "TEST-linuxArm64Test.$DESKTOP_RUNTIME_TEST_CLASS.xml") {
         "Desktop test report filename mismatch"
     }
+    validateRuntimeEvidenceOutputs(listOf(evidence, report, executionFile),
+        listOf(test, classifier, executables.appServer, executables.supervisor))
+    evidence.delete()
+    report.delete()
+    executionFile.delete()
     check(test.isFile && test.setExecutable(true, false)) { "Linux ARM64 test executable could not be enabled" }
     validateDesktopRuntimeExecutables(ARM_TARGET, binarySha256, supervisorSha256, executables)
     val runtimeRoot = Files.createTempDirectory("codex-agent-linux-arm64-platform-evidence").toFile()
@@ -226,21 +272,7 @@ internal fun executeLinuxArm64DesktopEvidenceInputs(
             ARM_CLASSIFIER.removeSuffix(".zip"),
             runtimeRoot,
         ).environment(ARM_TARGET)
-        val listing = runner(listOf(test.absolutePath, "--ktest_list_tests"), processEnvironment)
-        check(listing.exitCode == 0) { "Linux ARM64 test discovery failed: ${listing.output}" }
-        val lines = listing.output.lineSequence().filter(String::isNotBlank).toList()
-        val classIndex = lines.indexOf("$DESKTOP_RUNTIME_TEST_CLASS.")
-        val tests = lines.drop(classIndex + 1).takeWhile { it.startsWith("  ") }.map(String::trim)
-        check(classIndex >= 0 && tests.toSet() == desktopRuntimeTestMethods &&
-            tests.size == desktopRuntimeTestMethods.size) {
-            "Linux ARM64 test executable has an unexpected test set"
-        }
-        desktopRuntimeTestMethods.forEach { method ->
-            val result = runner(listOf(
-                test.absolutePath, "--ktest_filter=$DESKTOP_RUNTIME_TEST_CLASS.$method", "--ktest_logger=SILENT",
-            ), processEnvironment)
-            check(result.exitCode == 0) { "Linux ARM64 desktop test failed ($method): ${result.output}" }
-        }
+        executeDesktopRuntimeEvidenceTests(ARM_TARGET, test, processEnvironment, executionFile, runner)
     } finally {
         runtimeRoot.deleteRecursively()
     }
@@ -269,11 +301,13 @@ internal fun runDesktopEvidenceProcess(
         val process = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log).apply {
             environment().putAll(environment)
         }.start()
-        check(process.waitFor(5, TimeUnit.MINUTES)) {
+        val timedOut = !process.waitFor(5, TimeUnit.MINUTES)
+        if (timedOut) {
             process.destroyForcibly()
-            "Linux ARM64 desktop test timed out"
+            process.waitFor()
         }
-        return DesktopEvidenceProcessResult(process.exitValue(), log.readText())
+        val bytes = log.readBytes()
+        return DesktopEvidenceProcessResult(process.exitValue(), bytes.toString(Charsets.UTF_8), bytes, timedOut)
     } finally {
         log.delete()
     }

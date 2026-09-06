@@ -62,8 +62,14 @@ abstract class ExecuteImportedNativeRuntimeEvidenceTask : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val distributionManifest: RegularFileProperty
     @get:OutputFile abstract val evidenceFile: RegularFileProperty
     @get:OutputFile abstract val testReport: RegularFileProperty
+    @get:OutputFile abstract val executionFile: RegularFileProperty
 
-    init { outputs.upToDateWhen { false } }
+    init {
+        outputs.upToDateWhen { false }
+        executionFile.convention(project.layout.file(evidenceFile.locationOnly.map {
+            it.asFile.resolveSibling("${it.asFile.nameWithoutExtension}-execution.json")
+        }))
+    }
 
     @TaskAction
     fun execute() {
@@ -74,6 +80,15 @@ abstract class ExecuteImportedNativeRuntimeEvidenceTask : DefaultTask() {
             "Imported native runtime evidence target does not match the current host: $targetName"
         }
         val classifier = classifierArchive.get().asFile
+        val sourceTest = nativeTestExecutable.get().asFile
+        val evidence = evidenceFile.get().asFile
+        val report = testReport.get().asFile
+        val execution = executionFile.get().asFile
+        validateRuntimeEvidenceOutputs(listOf(evidence, report, execution),
+            listOf(classifier, sourceTest, distributionManifest.get().asFile))
+        evidence.delete()
+        report.delete()
+        execution.delete()
         val proof = inspectDesktopClassifier(
             targetName,
             readDesktopCodexManifest(distributionManifest.get().asFile),
@@ -82,7 +97,6 @@ abstract class ExecuteImportedNativeRuntimeEvidenceTask : DefaultTask() {
         check(proof.libraryVersion == expectedCompatibilityVersion.get()) {
             "Imported native runtime compatibility version mismatch"
         }
-        val sourceTest = nativeTestExecutable.get().asFile
         check(sourceTest.isFile && !Files.isSymbolicLink(sourceTest.toPath())) {
             "Imported native runtime test executable is missing or symbolic"
         }
@@ -99,32 +113,10 @@ abstract class ExecuteImportedNativeRuntimeEvidenceTask : DefaultTask() {
                 desktopRuntimeEvidenceTargets.getValue(targetName).classifier,
                 runtimeRoot,
             ).environment(targetName)
-            val listing = runDesktopEvidenceProcess(listOf(test.absolutePath, "--ktest_list_tests"), environment)
-            check(listing.exitCode == 0) { "Imported native test discovery failed: ${listing.output}" }
-            val lines = listing.output.lineSequence().filter(String::isNotBlank).toList()
-            val classIndex = lines.indexOf("$DESKTOP_RUNTIME_TEST_CLASS.")
-            val tests = lines.drop(classIndex + 1).takeWhile { it.startsWith("  ") }.map(String::trim)
-            check(classIndex >= 0 && tests.toSet() == desktopRuntimeTestMethods &&
-                tests.size == desktopRuntimeTestMethods.size) {
-                "Imported native test executable has an unexpected test set"
-            }
-            desktopRuntimeTestMethods.forEach { method ->
-                val result = runDesktopEvidenceProcess(
-                    listOf(
-                        test.absolutePath,
-                        "--ktest_filter=$DESKTOP_RUNTIME_TEST_CLASS.$method",
-                        "--ktest_logger=SILENT",
-                    ),
-                    environment,
-                )
-                check(result.exitCode == 0) {
-                    "Imported native desktop test failed ($method): ${result.output}"
-                }
-            }
+            executeDesktopRuntimeEvidenceTests(targetName, test, environment, execution)
         } finally {
             runtimeRoot.deleteRecursively()
         }
-        val report = testReport.get().asFile
         report.parentFile.mkdirs()
         report.writeText(buildString {
             append("<testsuite tests=\"").append(desktopRuntimeTestMethods.size)
@@ -137,7 +129,7 @@ abstract class ExecuteImportedNativeRuntimeEvidenceTask : DefaultTask() {
             append("</testsuite>\n")
         })
         verifyDesktopRuntimeTestReport(report, targetName)
-        evidenceFile.get().asFile.atomicWriteJson(buildDesktopRuntimeEvidence(DesktopRuntimeEvidenceValues(
+        evidence.atomicWriteJson(buildDesktopRuntimeEvidence(DesktopRuntimeEvidenceValues(
             commit,
             targetName,
             proof.binarySha256,

@@ -3,6 +3,7 @@ import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertEquals
 
 class RuntimeEvidenceExecutionCaptureTest {
     @Test
@@ -25,12 +26,28 @@ class RuntimeEvidenceExecutionCaptureTest {
             for ((component, target, captures) in listOf(
                 Triple("unknown", "linuxX64", emptyList()),
                 Triple("jvm", "unknown", emptyList()),
+                Triple("macos-arm64", "linuxX64", emptyList()),
                 Triple("jvm", "linuxX64", listOf(RuntimeEvidenceProcessCapture("discovery", 0, byteArrayOf()),
                     RuntimeEvidenceProcessCapture("discovery", 0, byteArrayOf()))),
             )) {
                 assertFailsWith<IllegalStateException> {
                     writeRuntimeEvidenceExecution(output, component, target, "ExactClass", captures)
                 }
+            }
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test
+    fun `native capture accepts only the target-matching product component`() {
+        val root = createTempDirectory("native-runtime-capture").toFile().canonicalFile
+        try {
+            desktopRuntimeEvidenceTargets.forEach { (target, spec) ->
+                val output = root.resolve("$target.json")
+                val component = spec.classifier.removePrefix("app-server-")
+                writeRuntimeEvidenceExecution(output, component, target, DESKTOP_RUNTIME_TEST_CLASS,
+                    listOf(RuntimeEvidenceProcessCapture("discovery", 0, byteArrayOf())))
+                assertEquals(component, output.readReleaseObject().releaseString("component"))
+                assertEquals(target, output.readReleaseObject().releaseString("target"))
             }
         } finally { root.deleteRecursively() }
     }

@@ -47,7 +47,7 @@ class LinuxArm64RuntimeEvidenceBundleTest {
             assertTrue(inputs.desktopEvidence.isFile && inputs.jvmEvidence.isFile)
             assertTrue(fixture.evidence("linuxArm64").isFile)
             assertTrue(fixture.evidence("linuxArm64", NODE_RUNTIME_WASM_BACKEND).isFile)
-            listOf(inputs.jvmEvidence, fixture.evidence("linuxArm64"),
+            listOf(inputs.desktopEvidence, inputs.jvmEvidence, fixture.evidence("linuxArm64"),
                 fixture.evidence("linuxArm64", NODE_RUNTIME_WASM_BACKEND)).forEach { evidence ->
                 assertTrue(evidence.resolveSibling("${evidence.nameWithoutExtension}-execution.json").isFile)
             }
@@ -102,6 +102,34 @@ class LinuxArm64RuntimeEvidenceBundleTest {
             }
             assertEquals(1, calls.get())
             assertFalse(inputs.desktopEvidence.exists())
+            assertFalse(inputs.desktopReport.exists())
+            assertEquals(1, inputs.desktopEvidence.resolveSibling(
+                "${inputs.desktopEvidence.nameWithoutExtension}-execution.json",
+            ).readReleaseObject().releaseArray("executions").size)
+        }
+
+    @Test
+    fun `native execution failure retains partial raw captures but clears stale success reports`() =
+        withNodeRuntimeEvidenceFixture { fixture ->
+            val inputs = inputs(fixture)
+            stage(inputs)
+            inputs.desktopEvidence.writeText("stale success")
+            inputs.desktopReport.writeText("stale JUnit")
+            val calls = AtomicInteger()
+            assertFailsWith<IllegalStateException> { execute(inputs, calls, nativeFailureAt = 3) }
+            assertEquals(3, calls.get())
+            assertFalse(inputs.desktopEvidence.exists())
+            assertFalse(inputs.desktopReport.exists())
+            assertFalse(inputs.jvmEvidence.exists())
+            val capture = inputs.desktopEvidence.resolveSibling(
+                "${inputs.desktopEvidence.nameWithoutExtension}-execution.json",
+            ).readReleaseObject()
+            assertEquals("linux-arm64", capture.releaseString("component"))
+            val records = capture.releaseArray("executions").map { it as kotlinx.serialization.json.JsonObject }
+            assertEquals(3, records.size)
+            assertEquals(7, records.last().releaseInt("exitCode"))
+            assertContentEquals(byteArrayOf(-1, 0, 13, 10),
+                java.util.Base64.getDecoder().decode(records.last().releaseString("outputBase64")))
         }
 
     @Test
@@ -147,14 +175,17 @@ class LinuxArm64RuntimeEvidenceBundleTest {
         calls: AtomicInteger? = null,
         nativeListing: String = desktopListing(),
         wasmEvidence: File = input.fixture.evidence("linuxArm64", NODE_RUNTIME_WASM_BACKEND),
+        nativeFailureAt: Int? = null,
     ) = executeLinuxArm64RuntimeEvidenceBundle(
         COMMIT, input.bundle, "java", "node", input.desktopEvidence, input.desktopReport, input.jvmEvidence,
         input.fixture.evidence("linuxArm64"), input.fixture.report("linuxArm64"),
         wasmEvidence,
         input.fixture.report("linuxArm64", NODE_RUNTIME_WASM_BACKEND), ARM_ENV,
         desktopRunner = { command, _ ->
-            calls?.incrementAndGet()
-            if (command.contains("--ktest_list_tests")) DesktopEvidenceProcessResult(0, nativeListing)
+            val invocation = calls?.incrementAndGet()
+            if (nativeFailureAt != null && invocation == nativeFailureAt)
+                DesktopEvidenceProcessResult(7, "failed", byteArrayOf(-1, 0, 13, 10))
+            else if (command.contains("--ktest_list_tests")) DesktopEvidenceProcessResult(0, nativeListing)
             else DesktopEvidenceProcessResult(0, "")
         },
         jvmRunner = { command, _ ->

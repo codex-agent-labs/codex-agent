@@ -1109,6 +1109,9 @@ desktopManifest.distributions.forEach { distribution ->
     val importedNativeEvidenceFile = layout.buildDirectory.file(
         "reports/imported-desktop-runtime-evidence/${desktopRuntimeEvidenceFileName(distribution.target)}",
     )
+    val importedNativeExecutionFile = importedNativeEvidenceFile.map {
+        it.asFile.resolveSibling("${it.asFile.nameWithoutExtension}-execution.json")
+    }
     val importedNativeTestReport = layout.buildDirectory.file(
         "test-results/imported-desktop-runtime-evidence/TEST-${distribution.target}Test." +
             "$DESKTOP_RUNTIME_TEST_CLASS.xml",
@@ -1119,6 +1122,7 @@ desktopManifest.distributions.forEach { distribution ->
         delete(
             validationPhaseRoot,
             importedNativeEvidenceFile,
+            importedNativeExecutionFile,
             importedNativeTestReport,
             cAbiPackageEvidence.flatMap { it.evidenceFile },
         )
@@ -1186,6 +1190,7 @@ desktopManifest.distributions.forEach { distribution ->
         })
         distributionManifest.set(desktopManifestFile)
         evidenceFile.set(importedNativeEvidenceFile)
+        executionFile.set(layout.file(importedNativeExecutionFile))
         testReport.set(importedNativeTestReport)
     }
     val importedBootstrapTest = if (distribution.target == "macosArm64" && importedCAbiBootstrap) {
@@ -1235,6 +1240,7 @@ desktopManifest.distributions.forEach { distribution ->
         from(cAbiConsumerSources) { into("c-abi-reference/consumer") }
         from(importedNativeEvidence.flatMap { it.evidenceFile }) { into("native") }
         from(importedNativeEvidence.flatMap { it.testReport }) { into("native") }
+        from(importedNativeEvidence.flatMap { it.executionFile }) { into("execution") }
         if (importedBootstrapTest != null) {
             dependsOn(generateCAbiBootstrapEvidence)
             from(generateCAbiBootstrapEvidence.flatMap { it.evidenceFile }) { into("c-abi-bootstrap") }
@@ -1262,6 +1268,7 @@ desktopManifest.distributions.forEach { distribution ->
             "c-abi" to "outputs/c-abi",
             "c-abi-reference" to "outputs/c-abi-reference",
             "native" to "outputs/native",
+            "execution" to "outputs/execution",
         ) + if (importedBootstrapTest != null) mapOf("c-abi-bootstrap" to "outputs/c-abi-bootstrap") else emptyMap(),
         validationPhaseOutputs,
         validationPhaseRoot,
