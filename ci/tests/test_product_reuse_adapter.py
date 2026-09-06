@@ -1436,7 +1436,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 mock.patch.object(product_reuse, "publish_regular_tree") as publish:
             self.assertEqual(0, product_reuse.main(arguments))
         discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"),
-                                         native_evidence_roots=(), adapter_evidence_roots=())
+                                         native_evidence_roots=(), adapter_evidence_roots=(),
+                                         sdk_evidence_roots=(), sdk_validation_tooling=None)
         publish.assert_called_once_with(Path("discovery"), Path("handoff"))
 
         materialize_arguments = [
@@ -1463,7 +1464,31 @@ class ProductReuseAdapterTest(unittest.TestCase):
             Path("plan.json"), Path("discovery"), Path("state"),
             [Path("one"), Path("two")], Path("advanced"), Path("output"),
             native_evidence_roots=(), adapter_evidence_roots=(Path("adapter-originals"),),
+            sdk_evidence_roots=(), sdk_validation_tooling=None,
         )
+
+        tooling = self.root.resolve() / "caller-tooling.json"
+        context = {"evidence": "/caller/original-tooling", "publicKey": "/caller/key.pub",
+                   "javaExecutable": "/caller/java", "requiredTrustDomain": "development",
+                   "keyring": None, "keysDirectory": None}
+        tooling.write_bytes(canonical_json_bytes(context))
+        with mock.patch.object(product_reuse, "advance_products") as advance:
+            self.assertEqual(0, product_reuse.main(advance_arguments + [
+                "--sdk-validation-tooling", str(tooling), "--sdk-validation-evidence", "sdk-originals"]))
+        self.assertEqual(context, advance.call_args.kwargs["sdk_validation_tooling"])
+        self.assertEqual((Path("sdk-originals"),), advance.call_args.kwargs["sdk_evidence_roots"])
+
+    def test_sdk_tooling_is_injected_only_into_current_planner_invocation(self):
+        retained = {"sdkValidationEvidence": []}
+        authority = {"caller": "only"}
+        with mock.patch.object(product_reuse, "plan_reuse_wave", return_value={"result": "fixture"}) as wave:
+            result = product_reuse._plan_with_sdk_tooling(retained, authority)
+        self.assertEqual({"result": "fixture"}, result)
+        self.assertEqual({**retained, "sdkValidationTooling": authority}, wave.call_args.args[0])
+        self.assertEqual({"sdkValidationEvidence": []}, retained)
+        with mock.patch.object(product_reuse, "plan_reuse_wave") as wave, self.assertRaisesRegex(ValueError, "current-invocation"):
+            product_reuse._plan_with_sdk_tooling({**retained, "sdkValidationTooling": authority}, authority)
+        wave.assert_not_called()
 
     def test_contract_ready_phase_is_exactly_one_known_contract_phase(self) -> None:
         binary = PhaseInstanceId("contract", "contract", "binary", "common")

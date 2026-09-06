@@ -240,6 +240,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/tooling.py",
     "ci/products/tooling_local.py",
     "ci/products/sdk_validation.py",
+    "ci/products/sdk_validation_inputs.py",
     "ci/products/selection.py",
     "ci/products/sdk_inputs.py",
     "ci/products/sdk_native.py",

@@ -57,6 +57,7 @@ from products.plan import (
 from products.runtime_flags import load_runtime_binary_flags_bytes
 from products.runtime_adapter_content import rebase_adapter_comparison_records
 from products.sdk_validation import rebase_sdk_validation_records
+from products.sdk_validation_inputs import load_sdk_validation_evidence, stage_sdk_validation_evidence
 from products.adapter_runtime_inputs import load_adapter_runtime_evidence, stage_adapter_runtime_evidence
 from products.runtime_evidence import (
     derive_authenticated_runtime_validation_projection,
@@ -1165,6 +1166,34 @@ def _wave_control(path, label):
     return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY} | _SDK_REQUEST_KEYS)), label)
 
 
+def _plan_with_sdk_tooling(request, tooling, **kwargs):
+    # Never serialize invocation authority into retained control or evidence.
+    if "sdkValidationTooling" in request:
+        raise ValueError("Retained SDK evidence cannot supply current-invocation tooling authority")
+    invocation = dict(request)
+    if tooling is not None:
+        invocation["sdkValidationTooling"] = tooling
+    return plan_reuse_wave(invocation, **kwargs)
+
+
+def _capture_sdk_handoffs(evidence_roots, destination, artifact_root, *, repository, policy_revision, tooling):
+    records = []
+    for index, source in enumerate(evidence_roots):
+        target = destination / str(index)
+        captured = stage_sdk_validation_evidence(load_sdk_validation_evidence(source), source, target,
+            repository=repository, policy_revision=policy_revision, tooling=tooling)
+        records.extend(rebase_sdk_validation_records(captured, target, artifact_root))
+    return records
+
+
+def _retained_sdk_handoffs(state_root, artifact_root):
+    path = state_root / "sdk-validation-evidence"
+    if not path.exists():
+        return []
+    return [record for child in sorted(path.iterdir())
+            for record in rebase_sdk_validation_records(load_sdk_validation_evidence(child), child, artifact_root)]
+
+
 def _merge_native_comparison_records(request, records, *, key="nativeRuntimeComparisonEvidence"):
     originals = {record["receiptSha256"]: record
                  for record in request.get(key, [])}
@@ -1575,6 +1604,8 @@ def advance_products(
     environ: Mapping[str, str] | None = None,
     native_evidence_roots: tuple[Path, ...] = (),
     adapter_evidence_roots: tuple[Path, ...] = (),
+    sdk_evidence_roots: tuple[Path, ...] = (),
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -1637,6 +1668,12 @@ def advance_products(
     if request["artifactRoot"] != str(root / "build/product-reuse"):
         raise ValueError("Reuse-wave request has an unexpected original artifact root")
 
+    retained_sdk_request = {}
+    _merge_native_comparison_records(retained_sdk_request,
+        _retained_sdk_handoffs(discovery_root, discovery_root), key="sdkValidationEvidence")
+    if request.get("sdkValidationEvidence", []) != retained_sdk_request.get("sdkValidationEvidence", []):
+        raise ValueError("SDK discovery request differs from its complete retained evidence carrier")
+
     rebased_request = dict(request)
     rebased_request["artifactRoot"] = str(root)
     rebased_request["catalogs"] = _rebase_catalog_paths(request["catalogs"], discovery_root, root)
@@ -1655,8 +1692,8 @@ def advance_products(
         plans[instance] = value
 
     replay_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
-    replay = plan_reuse_wave(
-        rebased_request,
+    replay = _plan_with_sdk_tooling(
+        rebased_request, sdk_validation_tooling,
         build_plan_consumer=lambda instance, value: retain(replay_plans, instance, value),
     )
     initial = _canonical_control(discovery_root / "reuse-wave-result.json", "Initial reuse result")
@@ -1712,9 +1749,10 @@ def advance_products(
             _merge_native_comparison_records(state_request, _retained_native_handoffs(state_root, root))
             _merge_native_comparison_records(state_request, _retained_native_handoffs(state_root, root, adapter=True),
                                              key=_ADAPTER_REQUEST_KEY)
+            _merge_native_comparison_records(state_request, _retained_sdk_handoffs(state_root, root), key="sdkValidationEvidence")
             prior_ready_plans = {}
-            state_replay = plan_reuse_wave(
-                state_request,
+            state_replay = _plan_with_sdk_tooling(
+                state_request, sdk_validation_tooling,
                 build_plan_consumer=lambda instance, value: retain(
                     prior_ready_plans, instance, value,
                 ),
@@ -1816,9 +1854,19 @@ def advance_products(
                 keys_directory=adapter_trust.keys if adapter_trust else None)
         retained_adapter = _retained_native_handoffs(temporary_root / "result", root, adapter=True)
         _merge_native_comparison_records(advanced_request, retained_adapter, key=_ADAPTER_REQUEST_KEY)
+        sdk_destination = temporary_root / "result/sdk-validation-evidence"
+        prior_sdk = state_root / "sdk-validation-evidence"
+        if prior_sdk.exists():
+            snapshot_regular_tree(prior_sdk, sdk_destination)
+        sdk_offset = len(list(sdk_destination.iterdir())) if sdk_destination.exists() else 0
+        for index, source in enumerate(sdk_evidence_roots, sdk_offset):
+            stage_sdk_validation_evidence(load_sdk_validation_evidence(source), source, sdk_destination / str(index),
+                repository=root, policy_revision=plan["validationCommit"], tooling=sdk_validation_tooling)
+        retained_sdk = _retained_sdk_handoffs(temporary_root / "result", root)
+        _merge_native_comparison_records(advanced_request, retained_sdk, key="sdkValidationEvidence")
         ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
-        advanced = plan_reuse_wave(
-            advanced_request,
+        advanced = _plan_with_sdk_tooling(
+            advanced_request, sdk_validation_tooling,
             build_plan_consumer=lambda instance, value: retain(ready_plans, instance, value),
         )
         supplied = set(sources)
@@ -1881,6 +1929,7 @@ def advance_products(
         staged_request = dict(rebased_request)
         _merge_native_comparison_records(staged_request, retained_native)
         _merge_native_comparison_records(staged_request, retained_adapter, key=_ADAPTER_REQUEST_KEY)
+        _merge_native_comparison_records(staged_request, retained_sdk, key="sdkValidationEvidence")
         staged_request["runtimeValidationEvidence"] = [{
             **record,
             "reports": [f"{staged_prefix}/{path}" for path in record["reports"]],
@@ -1895,7 +1944,7 @@ def advance_products(
                 f"{object_relative_path(phase['buildKey'], phase['receiptSha256'])}"
             ),
         } for instance, phase in zip(selected, selected_phases, strict=True)]
-        staged_replay = plan_reuse_wave(staged_request)
+        staged_replay = _plan_with_sdk_tooling(staged_request, sdk_validation_tooling)
         staged_by_instance = {_identity(phase): phase for phase in staged_replay["phases"]}
         for instance in selected:
             staged_by_instance[instance].update({
@@ -1907,7 +1956,7 @@ def advance_products(
 
         destination_prefix = destination.relative_to(root).as_posix()
         final_request = dict(staged_request)
-        if {"nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY} & final_request.keys():
+        if {"nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, "sdkValidationEvidence"} & final_request.keys():
             # Move only paths inside this staged transport. Original discovery
             # catalogs remain at their separately retained discovery paths.
             def relocated_native(value):
@@ -1918,7 +1967,7 @@ def advance_products(
                 if isinstance(value, str) and value.startswith(staged_prefix + "/"):
                     return destination_prefix + value[len(staged_prefix):]
                 return value
-            for key in ("nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY):
+            for key in ("nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY, "sdkValidationEvidence"):
                 if key in final_request:
                     final_request[key] = relocated_native(final_request[key])
         final_request["runtimeValidationEvidence"] = [{
@@ -2030,6 +2079,8 @@ def discover(
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     native_evidence_roots: tuple[Path, ...] = (),
     adapter_evidence_roots: tuple[Path, ...] = (),
+    sdk_evidence_roots: tuple[Path, ...] = (),
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     # A failing adapter must never make a missing output look like permission to skip work.
     github_output(github_output_path, {
@@ -2067,6 +2118,8 @@ def discover(
         native_evidence_roots, destination / "native-runtime-evidence", destination, trust)
     adapter_records = _capture_native_handoffs(
         adapter_evidence_roots, destination / "adapter-runtime-evidence", destination, trust, adapter=True)
+    sdk_records = _capture_sdk_handoffs(sdk_evidence_roots, destination / "sdk-validation-evidence", destination,
+        repository=root, policy_revision=plan["validationCommit"], tooling=sdk_validation_tooling)
 
     contract_evidence = None
     contract = PhaseInstanceId("contract", "contract", "metadata", "common")
@@ -2082,10 +2135,11 @@ def discover(
         )
         _merge_native_comparison_records(contract_request, native_records)
         _merge_native_comparison_records(contract_request, adapter_records, key=_ADAPTER_REQUEST_KEY)
+        _merge_native_comparison_records(contract_request, sdk_records, key="sdkValidationEvidence")
         write_canonical_json(destination / "contract-reuse-request.json", contract_request)
         contract_ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
-        contract_result = plan_reuse_wave(
-            contract_request,
+        contract_result = _plan_with_sdk_tooling(
+            contract_request, sdk_validation_tooling,
             build_plan_consumer=lambda instance, phase_plan: contract_ready_plans.setdefault(
                 instance, phase_plan,
             ),
@@ -2128,6 +2182,7 @@ def discover(
     )
     _merge_native_comparison_records(wave_request, native_records)
     _merge_native_comparison_records(wave_request, adapter_records, key=_ADAPTER_REQUEST_KEY)
+    _merge_native_comparison_records(wave_request, sdk_records, key="sdkValidationEvidence")
     write_canonical_json(destination / "reuse-wave-request.json", wave_request)
     ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
 
@@ -2136,7 +2191,7 @@ def discover(
             raise ValueError(f"Duplicate ready phase plan: {instance}")
         ready_plans[instance] = phase_plan
 
-    reuse = plan_reuse_wave(wave_request, build_plan_consumer=retain_ready_plan)
+    reuse = _plan_with_sdk_tooling(wave_request, sdk_validation_tooling, build_plan_consumer=retain_ready_plan)
     _write_ready_plans(destination, ready_plans)
     # Evidence-only waits still need original workflow control provenance when
     # advance-products resumes them; an empty build matrix must not lose it.
@@ -2195,6 +2250,10 @@ def parser() -> argparse.ArgumentParser:
     products_command.add_argument("--github-output", type=Path, required=True)
     products_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
     products_command.add_argument("--adapter-runtime-evidence", type=Path, action="append", default=[])
+    for command in (discover_command, products_command):
+        command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
+        command.add_argument("--sdk-validation-tooling", type=Path,
+                             help="Current caller-owned tooling policy JSON, never a retained request field")
     materialize_command = commands.add_parser("materialize-contract")
     materialize_command.add_argument("--plan", type=Path, required=True)
     materialize_command.add_argument("--state-root", type=Path, required=True)
@@ -2207,10 +2266,14 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     try:
+        tooling = None
+        if getattr(arguments, "sdk_validation_tooling", None) is not None:
+            tooling = _canonical_control(arguments.sdk_validation_tooling, "Caller SDK tooling policy")
         if arguments.command == "discover":
             discover(arguments.plan, arguments.destination, arguments.github_output,
                      native_evidence_roots=tuple(arguments.native_runtime_evidence),
-                     adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence))
+                     adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
+                     sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling)
             if arguments.handoff is not None:
                 publish_regular_tree(arguments.destination, arguments.handoff)
         elif arguments.command == "advance-contract":
@@ -2232,6 +2295,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.github_output,
                 native_evidence_roots=tuple(arguments.native_runtime_evidence),
                 adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
+                sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
             )
         else:
             materialize_contract(
