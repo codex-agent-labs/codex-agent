@@ -59,6 +59,31 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_shared_adapter_capture_owns_only_host_validation_keys(self) -> None:
+        from ci.tests.test_product_plan import plan
+
+        path = "runtime/build-logic/src/main/kotlin/RuntimeEvidenceExecutionCapture.kt"
+        owners = {item for item in PHASE_INSTANCE_IDS if item.product == "runtime"
+                  and item.component in {"jvm", "node-js", "node-wasm"}
+                  and item.phase == "validation" and item.target in NATIVE_TARGETS}
+        selected = owners | {PhaseInstanceId("runtime", name, "metadata", name)
+                             for name in ("jvm", "node-js", "node-wasm")}
+        selected.add(PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"))
+        self.assertEqual(selected, identities(classify_paths([path])))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / path
+            source.parent.mkdir(parents=True)
+            for instance in PHASE_INSTANCE_IDS:
+                self.assertEqual((path,) if instance in owners else (), phase_inventory_paths([path], instance))
+                if instance.product != "runtime":
+                    continue
+                keys = []
+                for contents in (b"a", b"b"):
+                    source.write_bytes(contents)
+                    keys.append(plan(instance, inventory=phase_file_inventory(root, [path], instance))["buildKey"])
+                self.assertEqual(instance in owners, keys[0] != keys[1], instance)
+
     def test_bootstrap_content_projector_owns_runtime_validation_and_sdk_admission(self) -> None:
         path = "ci/products/sdk_runtime_content.py"
         owner = PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")

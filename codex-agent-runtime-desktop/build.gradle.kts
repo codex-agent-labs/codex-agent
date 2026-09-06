@@ -437,6 +437,7 @@ fun registerNodeRuntimeValidation(
             importedNodeNativePackageSnapshotRoot,
             evidenceTask.flatMap { it.evidenceFile },
             evidenceTask.flatMap { it.testReport },
+            evidenceTask.flatMap { it.executionFile },
         )
     }
     snapshotImportedPackage.configure { dependsOn(invalidate) }
@@ -499,6 +500,7 @@ fun registerNodeRuntimeValidation(
         into(phaseOutputs)
         from(evidenceTask.flatMap { it.evidenceFile }) { into("node-evidence") }
         from(evidenceTask.flatMap { it.testReport }) { into("test-report") }
+        from(evidenceTask.flatMap { it.executionFile }) { into("execution") }
         includeEmptyDirs = false
         duplicatesStrategy = DuplicatesStrategy.FAIL
     }
@@ -512,6 +514,7 @@ fun registerNodeRuntimeValidation(
         mapOf(
             "node-evidence" to "outputs/node-evidence",
             "test-report" to "outputs/test-report",
+            "execution" to "outputs/execution",
         ),
         phaseOutputs,
         phaseRoot,

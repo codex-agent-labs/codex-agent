@@ -1417,6 +1417,8 @@ val stageJvmRuntimeValidation = tasks.register<Sync>("stageJvmRuntimeValidation"
     dependsOn(importedJvmRuntimeEvidence)
     into(jvmRuntimeValidationOutputs)
     from(importedJvmRuntimeEvidence.flatMap { it.evidenceFile }) { into("jvm-evidence") }
+    from(importedJvmRuntimeEvidence.flatMap { it.executionFile }) { into("execution") }
+    from(importedJvmRuntimeEvidence.flatMap { it.testReport }) { into("test-report") }
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
 }
@@ -1427,7 +1429,8 @@ registerRuntimeOutputManifest(
     "validation",
     jvmValidationComponent,
     runtimeProductVersion,
-    mapOf("jvm-evidence" to "outputs/jvm-evidence"),
+    mapOf("jvm-evidence" to "outputs/jvm-evidence", "execution" to "outputs/execution",
+        "test-report" to "outputs/test-report"),
     jvmRuntimeValidationOutputs,
     jvmRuntimeValidationPhaseRoot,
     runtimeProductTooling,

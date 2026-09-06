@@ -4,7 +4,11 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipFile
 
-internal data class JvmEvidenceProcessResult(val exitCode: Int, val output: String)
+internal data class JvmEvidenceProcessResult(
+    val exitCode: Int,
+    val output: String,
+    val rawOutput: ByteArray = output.toByteArray(Charsets.UTF_8),
+)
 
 internal fun executeJvmRuntimeEvidence(
     candidateCommit: String,
@@ -18,8 +22,14 @@ internal fun executeJvmRuntimeEvidence(
     evidenceFile: File,
     runner: (List<String>, Map<String, String>) -> JvmEvidenceProcessResult = ::runJvmEvidenceProcess,
     testTask: String = jvmRuntimeEvidenceTestTask(target),
+    executionFile: File = evidenceFile.resolveSibling("${evidenceFile.nameWithoutExtension}-execution.json"),
+    testReport: File = evidenceFile.resolveSibling(jvmRuntimeEvidenceTestReportName(target)),
 ) {
+    validateRuntimeEvidenceOutputs(listOf(evidenceFile, executionFile, testReport),
+        listOf(distributionManifest, classifierArchive, compiledJvmTestRuntime))
     evidenceFile.delete()
+    testReport.delete()
+    executionFile.delete()
     check(candidateCommit.matches(Regex("[0-9a-f]{40}"))) { "JVM evidence commit is not immutable" }
     val expected = desktopRuntimeEvidenceTargets.getValue(target)
     check(runnerOs == expected.runnerOs && runnerArch == expected.runnerArch) {
@@ -35,6 +45,12 @@ internal fun executeJvmRuntimeEvidence(
         classifierArchive,
     )
     inspectJvmRuntimeRunnerArchive(compiledJvmTestRuntime)
+    val executions = mutableListOf<RuntimeEvidenceProcessCapture>()
+    fun capture(id: String, result: JvmEvidenceProcessResult) {
+        executions += RuntimeEvidenceProcessCapture(id, result.exitCode, result.rawOutput.copyOf())
+        writeRuntimeEvidenceExecution(executionFile, "jvm", target, DESKTOP_RUNTIME_TEST_CLASS, executions)
+    }
+    writeRuntimeEvidenceExecution(executionFile, "jvm", target, DESKTOP_RUNTIME_TEST_CLASS, executions)
     val temporary = Files.createTempDirectory("codex-agent-jvm-evidence-$target").toFile().canonicalFile
     try {
         val runtime = stageRuntimeBundleForEvidence(
@@ -50,6 +66,7 @@ internal fun executeJvmRuntimeEvidence(
         val baseCommand = listOf(javaExecutable, "-cp", classpath, JVM_RUNTIME_RUNNER_ENTRYPOINT)
         val environment = runtime.environment(target)
         val listing = runner(baseCommand + "--list-tests", environment)
+        capture("discovery", listing)
         check(listing.exitCode == 0) { "JVM test discovery failed: ${listing.output}" }
         verifyJvmTestListing(listing.output)
         desktopRuntimeTestMethods.forEach { method ->
@@ -57,15 +74,23 @@ internal fun executeJvmRuntimeEvidence(
                 baseCommand + "--run-test=$DESKTOP_RUNTIME_TEST_CLASS.$method",
                 environment,
             )
+            capture(method, result)
             check(result.exitCode == 0) { "JVM runtime test failed ($method): ${result.output}" }
         }
-        evidenceFile.atomicWriteJson(buildJvmRuntimeEvidence(JvmRuntimeEvidenceValues(
+        val evidence = buildJvmRuntimeEvidence(JvmRuntimeEvidenceValues(
             candidateCommit,
             target,
             classifier,
             compiledJvmTestRuntime,
             testTask,
-        )))
+        ))
+        writeRuntimeEvidenceTestReport(testReport, DESKTOP_RUNTIME_TEST_CLASS, desktopRuntimeTestMethods)
+        verifyRuntimeEvidenceTestReport(testReport, DESKTOP_RUNTIME_TEST_CLASS, desktopRuntimeTestMethods)
+        evidenceFile.atomicWriteJson(evidence)
+    } catch (failure: Throwable) {
+        evidenceFile.delete()
+        testReport.delete()
+        throw failure
     } finally {
         temporary.deleteRecursively()
     }
@@ -103,7 +128,9 @@ internal fun runJvmEvidenceProcess(
             .start()
         val completed = process.waitFor(5, TimeUnit.MINUTES)
         if (!completed) process.destroyForcibly().waitFor()
-        JvmEvidenceProcessResult(if (completed) process.exitValue() else -1, log.readText())
+        val rawOutput = log.readBytes()
+        JvmEvidenceProcessResult(if (completed) process.exitValue() else -1,
+            rawOutput.toString(Charsets.UTF_8), rawOutput)
     } finally {
         log.delete()
     }

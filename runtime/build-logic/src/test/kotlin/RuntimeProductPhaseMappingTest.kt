@@ -154,7 +154,14 @@ class RuntimeProductPhaseMappingTest {
 
     @Test
     fun `adapter raw validation manifests retain their canonical evidence kinds`() {
-        assertTrue("mapOf(\"jvm-evidence\" to \"outputs/jvm-evidence\")" in runtimePlugin)
+        assertTrue("\"jvm-evidence\" to \"outputs/jvm-evidence\"" in runtimePlugin)
+        val jvmValidation = jvmValidation()
+        listOf(jvmValidation, nodeValidation()).forEach { source ->
+            assertTrue("\"execution\" to \"outputs/execution\"" in source)
+            assertTrue("\"test-report\" to \"outputs/test-report\"" in source)
+            assertTrue("it.executionFile" in source)
+            assertTrue("it.testReport" in source)
+        }
         val nodeValidation = nodeValidation()
         assertTrue("\"node-evidence\" to \"outputs/node-evidence\"" in nodeValidation)
         assertFalse("adapter-evidence" in nodeValidation)

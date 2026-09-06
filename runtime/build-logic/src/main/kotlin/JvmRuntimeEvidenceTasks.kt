@@ -31,8 +31,18 @@ abstract class RecordJvmRuntimeEvidenceTask : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val compiledJvmTestRuntime: RegularFileProperty
     @get:OutputFile abstract val evidenceFile: RegularFileProperty
+    @get:OutputFile abstract val executionFile: RegularFileProperty
+    @get:OutputFile abstract val testReport: RegularFileProperty
 
-    init { outputs.upToDateWhen { false } }
+    init {
+        outputs.upToDateWhen { false }
+        executionFile.convention(project.layout.file(evidenceFile.locationOnly.map {
+            it.asFile.resolveSibling("${it.asFile.nameWithoutExtension}-execution.json")
+        }))
+        testReport.convention(project.layout.file(evidenceFile.locationOnly.zip(target) { evidence, selectedTarget ->
+            evidence.asFile.resolveSibling(jvmRuntimeEvidenceTestReportName(selectedTarget))
+        }))
+    }
 
     @TaskAction
     fun record() = executeJvmRuntimeEvidence(
@@ -46,6 +56,8 @@ abstract class RecordJvmRuntimeEvidenceTask : DefaultTask() {
         compiledJvmTestRuntime.get().asFile,
         evidenceFile.get().asFile,
         testTask = testTask.get(),
+        executionFile = executionFile.get().asFile,
+        testReport = testReport.get().asFile,
     )
 }
 

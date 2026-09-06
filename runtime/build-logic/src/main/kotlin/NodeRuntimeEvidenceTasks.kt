@@ -32,8 +32,14 @@ abstract class RecordNodeRuntimeEvidenceTask : DefaultTask() {
     abstract val compiledNodeTestRuntime: RegularFileProperty
     @get:OutputFile abstract val evidenceFile: RegularFileProperty
     @get:OutputFile abstract val testReport: RegularFileProperty
+    @get:OutputFile abstract val executionFile: RegularFileProperty
 
-    init { outputs.upToDateWhen { false } }
+    init {
+        executionFile.convention(project.layout.file(evidenceFile.locationOnly.map { evidence ->
+            evidence.asFile.resolveSibling("${evidence.asFile.nameWithoutExtension}-execution.json")
+        }))
+        outputs.upToDateWhen { false }
+    }
 
     @TaskAction
     fun record() = executeNodeRuntimeEvidence(
@@ -48,6 +54,7 @@ abstract class RecordNodeRuntimeEvidenceTask : DefaultTask() {
         compiledNodeTestRuntime.get().asFile,
         evidenceFile.get().asFile,
         testReport.get().asFile,
+        executionFile = executionFile.get().asFile,
     )
 }
 

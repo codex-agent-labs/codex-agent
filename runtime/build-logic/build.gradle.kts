@@ -114,6 +114,10 @@ tasks.register<JavaExec>("executeLinuxArm64RuntimeEvidenceBundle") {
     inputs.property("runnerOs", providers.environmentVariable("RUNNER_OS"))
     inputs.property("runnerArch", providers.environmentVariable("RUNNER_ARCH"))
     outputs.files(desktopEvidence, desktopReport, jvmEvidence, nodeEvidence, nodeReport, wasmEvidence, wasmReport)
+    listOf(jvmEvidence, nodeEvidence, wasmEvidence).forEach { evidence ->
+        outputs.file(evidence.map { it.resolveSibling("${it.nameWithoutExtension}-execution.json") })
+    }
+    outputs.file(jvmEvidence.map { it.resolveSibling("TEST-jvm-runtime-linuxArm64.xml") })
     outputs.upToDateWhen { false }
     argumentProviders.add(DesktopEvidenceArgumentProvider(
         "execute", listOf(candidateCommit, bundle, java, node, desktopEvidence, desktopReport,

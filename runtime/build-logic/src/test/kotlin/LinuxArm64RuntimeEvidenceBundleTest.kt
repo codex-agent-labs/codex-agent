@@ -3,11 +3,31 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipFile
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LinuxArm64RuntimeEvidenceBundleTest {
+    @Test
+    fun `split output collisions reject before any runner or original byte is touched`() =
+        withNodeRuntimeEvidenceFixture { fixture ->
+            val inputs = inputs(fixture)
+            stage(inputs)
+            val original = inputs.bundle.readBytes()
+            val raw = inputs.jvmEvidence.resolveSibling("${inputs.jvmEvidence.nameWithoutExtension}-execution.json")
+            raw.writeText("original raw")
+            for (collision in listOf(inputs.bundle, raw)) {
+                val calls = AtomicInteger()
+                assertFailsWith<IllegalStateException> {
+                    execute(inputs, calls, wasmEvidence = collision)
+                }
+                assertEquals(0, calls.get())
+                assertContentEquals(original, inputs.bundle.readBytes())
+                assertContentEquals("original raw".toByteArray(), raw.readBytes())
+            }
+        }
+
     @Test
     fun `one bundle executes four backends against shared hash-bound inputs`() =
         withNodeRuntimeEvidenceFixture { fixture ->
@@ -27,6 +47,12 @@ class LinuxArm64RuntimeEvidenceBundleTest {
             assertTrue(inputs.desktopEvidence.isFile && inputs.jvmEvidence.isFile)
             assertTrue(fixture.evidence("linuxArm64").isFile)
             assertTrue(fixture.evidence("linuxArm64", NODE_RUNTIME_WASM_BACKEND).isFile)
+            listOf(inputs.jvmEvidence, fixture.evidence("linuxArm64"),
+                fixture.evidence("linuxArm64", NODE_RUNTIME_WASM_BACKEND)).forEach { evidence ->
+                assertTrue(evidence.resolveSibling("${evidence.nameWithoutExtension}-execution.json").isFile)
+            }
+            verifyRuntimeEvidenceTestReport(inputs.jvmEvidence.resolveSibling("TEST-jvm-runtime-linuxArm64.xml"),
+                DESKTOP_RUNTIME_TEST_CLASS, desktopRuntimeTestMethods)
         }
 
     @Test
@@ -120,10 +146,11 @@ class LinuxArm64RuntimeEvidenceBundleTest {
         input: Inputs,
         calls: AtomicInteger? = null,
         nativeListing: String = desktopListing(),
+        wasmEvidence: File = input.fixture.evidence("linuxArm64", NODE_RUNTIME_WASM_BACKEND),
     ) = executeLinuxArm64RuntimeEvidenceBundle(
         COMMIT, input.bundle, "java", "node", input.desktopEvidence, input.desktopReport, input.jvmEvidence,
         input.fixture.evidence("linuxArm64"), input.fixture.report("linuxArm64"),
-        input.fixture.evidence("linuxArm64", NODE_RUNTIME_WASM_BACKEND),
+        wasmEvidence,
         input.fixture.report("linuxArm64", NODE_RUNTIME_WASM_BACKEND), ARM_ENV,
         desktopRunner = { command, _ ->
             calls?.incrementAndGet()

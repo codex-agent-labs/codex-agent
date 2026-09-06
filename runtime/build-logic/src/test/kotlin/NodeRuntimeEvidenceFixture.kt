@@ -134,6 +134,9 @@ internal class NodeRuntimeEvidenceFixture(val root: File) {
     fun report(target: String, runtimeBackend: String = NODE_RUNTIME_JS_BACKEND) =
         root.resolve(nodeRuntimeTestReportFileName(target, runtimeBackend))
 
+    fun execution(target: String, runtimeBackend: String = NODE_RUNTIME_JS_BACKEND) =
+        evidence(target, runtimeBackend).let { it.resolveSibling("${it.nameWithoutExtension}-execution.json") }
+
     fun record(
         target: String,
         runtimeBackend: String = NODE_RUNTIME_JS_BACKEND,
@@ -177,7 +180,7 @@ internal class NodeRuntimeEvidenceFixture(val root: File) {
 }
 
 internal fun withNodeRuntimeEvidenceFixture(block: (NodeRuntimeEvidenceFixture) -> Unit) {
-    val root = createTempDirectory("node-runtime-evidence").toFile()
+    val root = createTempDirectory("node-runtime-evidence").toFile().canonicalFile
     try { block(NodeRuntimeEvidenceFixture(root)) } finally { root.deleteRecursively() }
 }
 

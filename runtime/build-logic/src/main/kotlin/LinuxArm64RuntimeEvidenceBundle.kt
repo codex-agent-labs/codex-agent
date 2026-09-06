@@ -99,6 +99,14 @@ internal fun executeLinuxArm64RuntimeEvidenceBundle(
     check(environment["RUNNER_OS"] == "Linux" && environment["RUNNER_ARCH"] == "ARM64") {
         "Linux ARM64 runtime evidence requires RUNNER_OS=Linux and RUNNER_ARCH=ARM64"
     }
+    validateRuntimeEvidenceOutputs(
+        listOf(desktopEvidence, desktopReport, jvmEvidence, nodeEvidence, nodeReport, wasmEvidence, wasmReport,
+            jvmEvidence.resolveSibling(jvmRuntimeEvidenceTestReportName(ARM_TARGET))) +
+            listOf(jvmEvidence, nodeEvidence, wasmEvidence).map {
+                it.resolveSibling("${it.nameWithoutExtension}-execution.json")
+            },
+        listOf(bundle),
+    )
     val temporary = Files.createTempDirectory("codex-agent-linux-arm64-runtime-evidence").toFile()
     try {
         val inputs = extractArmBundle(bundle, temporary, candidateCommit)

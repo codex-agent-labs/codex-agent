@@ -22,6 +22,7 @@ internal const val IMPORTED_JVM_RUNTIME_EVIDENCE_TASK =
     ":codex-agent-runtime-desktop:executeImportedJvmRuntimeEvidence"
 
 fun jvmRuntimeEvidenceFileName(target: String) = "jvm-runtime-$target.json"
+fun jvmRuntimeEvidenceTestReportName(target: String) = "TEST-jvm-runtime-$target.xml"
 
 internal data class JvmRuntimeEvidenceValues(
     val candidateCommit: String,

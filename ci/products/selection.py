@@ -360,6 +360,9 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
     ):
         return None
     name = path.rsplit("/", 1)[-1]
+    if name == "RuntimeEvidenceExecutionCapture.kt":
+        return _runtime(("jvm", "node-js", "node-wasm"), "validation",
+                        validation_targets=NATIVE_TARGETS)
     if name in _RUNTIME_BUILD_LOGIC_JVM:
         return _runtime(("jvm",), "validation")
     if name in _RUNTIME_BUILD_LOGIC_NODE:

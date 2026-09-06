@@ -1,14 +1,146 @@
 import java.io.File
+import java.util.Base64
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 class NodeRuntimeEvidenceTasksTest {
+    @Test
+    fun `execution output aliases reject before touching original artifacts or previous evidence`() =
+        withNodeRuntimeEvidenceFixture { fixture ->
+            val target = "linuxX64"
+            fixture.record(target)
+            val originals = listOf(fixture.manifest, fixture.compiled, fixture.classifiers.getValue(target),
+                fixture.evidence(target), fixture.report(target), fixture.execution(target)).associateWith { it.readBytes() }
+            listOf(fixture.compiled, fixture.evidence(target), fixture.report(target)).forEach { aliased ->
+                assertFailsWith<IllegalStateException> {
+                    executeNodeRuntimeEvidence(
+                        NODE_EVIDENCE_COMMIT, target, NODE_RUNTIME_JS_BACKEND, "Linux", "X64", "node",
+                        fixture.manifest, fixture.classifiers.getValue(target), fixture.compiled,
+                        fixture.evidence(target), fixture.report(target),
+                        runner = { _, _ -> error("must not execute") }, executionFile = aliased,
+                    )
+                }
+                originals.forEach { (file, bytes) -> assertContentEquals(bytes, file.readBytes()) }
+            }
+        }
+
+    @Test
+    fun `static failure invalidates old raw capture and late model failure leaves no success reports`() =
+        withNodeRuntimeEvidenceFixture { fixture ->
+            val target = "linuxX64"
+            fixture.record(target)
+            val originalRunner = fixture.compiled.readBytes()
+            fixture.compiled.nodeEvidenceWriteZip(mapOf("unexpected.js" to byteArrayOf(1)))
+            assertFailsWith<IllegalStateException> {
+                fixture.record(target) { _, _ -> error("must not execute invalid runner") }
+            }
+            assertTrue(!fixture.execution(target).exists())
+            assertTrue(!fixture.evidence(target).exists())
+            assertTrue(!fixture.report(target).exists())
+            fixture.compiled.writeBytes(originalRunner)
+            fixture.record(target)
+            assertFailsWith<IllegalStateException> {
+                fixture.record(target) { command, _ ->
+                    if (command.last() == "--run-test=$NODE_RUNTIME_TEST_CLASS.${nodeRuntimeTestMethods.last()}") {
+                        fixture.compiled.nodeEvidenceWriteZip(mapOf("unexpected.js" to byteArrayOf(1)))
+                    }
+                    successfulNodeEvidenceResult(command)
+                }
+            }
+            assertEquals(2 + nodeRuntimeTestMethods.size,
+                fixture.execution(target).readReleaseObject().releaseArray("executions").size)
+            assertTrue(!fixture.evidence(target).exists())
+            assertTrue(!fixture.report(target).exists())
+        }
+
+    @Test
+    fun `execution capture retains exact bytes and actual version discovery method order for both backends`() =
+        withNodeRuntimeEvidenceFixture { fixture ->
+            val target = "linuxX64"
+            val raw = byteArrayOf(0, 13, 10, 0x80.toByte(), 0xff.toByte())
+            nodeRuntimeBackends.forEach { backend ->
+                fixture.record(target, backend) { command, _ ->
+                    if (command.last().startsWith("--run-test=")) {
+                        NodeEvidenceProcessResult(0, raw.toString(Charsets.UTF_8), raw)
+                    } else successfulNodeEvidenceResult(command)
+                }
+                val capture = fixture.execution(target, backend).readReleaseObject()
+                assertEquals(setOf("schemaVersion", "component", "target", "testClass", "executions"), capture.keys)
+                assertEquals(1, capture.releaseInt("schemaVersion"))
+                assertEquals("node-$backend", capture.releaseString("component"))
+                assertEquals(target, capture.releaseString("target"))
+                assertEquals(NODE_RUNTIME_TEST_CLASS, capture.releaseString("testClass"))
+                val executions = capture.releaseArray("executions").map { it.jsonObject }
+                assertEquals(listOf("version", "discovery") + nodeRuntimeTestMethods,
+                    executions.map { it.releaseString("id") })
+                executions.forEach { record ->
+                    assertEquals(setOf("id", "exitCode", "outputBase64"), record.keys)
+                    assertEquals(0, record.releaseInt("exitCode"))
+                }
+                val decoder = Base64.getDecoder()
+                assertContentEquals("v$PINNED_NODE_VERSION\n".toByteArray(Charsets.UTF_8),
+                    decoder.decode(executions[0].releaseString("outputBase64")))
+                assertContentEquals(exactNodeEvidenceListing().toByteArray(Charsets.UTF_8),
+                    decoder.decode(executions[1].releaseString("outputBase64")))
+                executions.drop(2).forEach { record ->
+                    assertContentEquals(raw, decoder.decode(record.releaseString("outputBase64")))
+                }
+                verifyNodeRuntimeTestReport(fixture.report(target, backend))
+            }
+        }
+
+    @Test
+    fun `failed version discovery or method preserves only actual returned executions and no stale success`() =
+        withNodeRuntimeEvidenceFixture { fixture ->
+            val target = "linuxX64"
+            val ids = listOf("version", "discovery") + nodeRuntimeTestMethods
+            nodeRuntimeBackends.forEach { backend ->
+                listOf(0, 1, 3).forEach { failureIndex ->
+                    fixture.record(target, backend)
+                    var calls = 0
+                    val raw = byteArrayOf(0xff.toByte(), 0, 10)
+                    assertFailsWith<IllegalStateException> {
+                        fixture.record(target, backend) { command, _ ->
+                            val index = calls++
+                            if (index == failureIndex) {
+                                // Successful exit still fails bad version/list semantics.
+                                NodeEvidenceProcessResult(if (index < 2) 0 else 7, "invalid", raw)
+                            } else successfulNodeEvidenceResult(command)
+                        }
+                    }
+                    val executions = fixture.execution(target, backend).readReleaseObject()
+                        .releaseArray("executions").map { it.jsonObject }
+                    assertEquals(failureIndex + 1, calls)
+                    assertEquals(ids.take(calls), executions.map { it.releaseString("id") })
+                    assertEquals(if (failureIndex < 2) 0 else 7, executions.last().releaseInt("exitCode"))
+                    assertContentEquals(raw, Base64.getDecoder().decode(executions.last().releaseString("outputBase64")))
+                    assertTrue(!fixture.evidence(target, backend).exists())
+                    assertTrue(!fixture.report(target, backend).exists())
+                }
+            }
+        }
+
+    @Test
+    fun `process launch exception retains empty current capture without claiming a returned process`() =
+        withNodeRuntimeEvidenceFixture { fixture ->
+            val target = "linuxX64"
+            fixture.record(target)
+            assertFailsWith<IllegalStateException> {
+                fixture.record(target) { _, _ -> error("process did not return") }
+            }
+            assertTrue(fixture.execution(target).readReleaseObject().releaseArray("executions").isEmpty())
+            assertTrue(!fixture.evidence(target).exists())
+            assertTrue(!fixture.report(target).exists())
+        }
+
     @Test
     fun `Node owns host tests while build logic owns split ARM execution`() {
         nodeRuntimeBackends.forEach { backend ->
