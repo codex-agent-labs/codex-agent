@@ -18,7 +18,7 @@ from impact import validate_legacy_lane_projection, validate_remote_build_author
 from receipt import safe_extract
 from reuse import api_json, download_artifact, github_output, paginated_items, run_matches_pr
 from products.aggregate import RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS, validate_product_index
-from products.contract_attestation import validate_contract_attestation
+from products.contract_attestation import validate_contract_attestation, verify_contract_execution_closure
 from products.inventory import (
     canonical_json_bytes,
     git_regular_blob_bytes,
@@ -26,6 +26,7 @@ from products.inventory import (
     load_json_bytes,
     publish_regular_tree,
     read_regular_file_bytes,
+    regular_file_inventory,
     require_array,
     require_boolean,
     require_exact_keys,
@@ -75,7 +76,7 @@ from products.restore import (
     verify_phase_shard,
     write_carrier,
 )
-from products.receipt import validate_producer
+from products.receipt import validate_producer, verify_output_manifest_identity
 from products.reuse import (
     SOURCES, _dependency_closure, plan_reuse_wave,
     _native_comparison_records, _native_evidence_paths,
@@ -245,7 +246,14 @@ def verify_contract_producer_runs(
     protected signing policy must still pass before a private key is used.
     Returned API evidence stays external to reusable payloads and original receipts.
     """
-    phases = ("binary", "package", "validation", "metadata")
+    return _observe_contract_producer_runs(
+        producers, phases=("binary", "package", "validation", "metadata"),
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+
+
+def _observe_contract_producer_runs(
+    producers: Mapping[str, Any], *, phases: tuple[str, ...], trusted_workflow_sha: str, token: str,
+) -> list[dict[str, Any]]:
     require_exact_keys(producers, set(phases), "Contract phase producers")
     if not isinstance(trusted_workflow_sha, str) or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None:
         raise ValueError("Contract producer admission requires a caller-pinned workflow SHA")
@@ -325,6 +333,73 @@ def verify_contract_producer_runs(
                     or job.get("status") != "completed" or job.get("conclusion") != "success"):
                 raise ValueError("Contract original producer job did not succeed for its exact commit")
         evidence.append({"run": run, "testedCommit": commit, "jobs": jobs})
+    return evidence
+
+
+def capture_contract_ci_artifact(
+    destination: Path, *, artifact_id: int, artifact_sha256: str,
+    transport_producer: Mapping[str, Any], trusted_workflow_sha: str,
+    contract_version: str, token: str,
+) -> dict[str, Any]:
+    """Capture one caller-bound upload; this is not release-signing authorization.
+
+    ID/digest must come from the successful capture job's upload outputs in the
+    trusted caller, never from the artifact. Reused original receipts still need
+    their own signed-index/original-CI admission before a release signature.
+    """
+    require_integer(artifact_id, "Contract upload artifact ID", 1)
+    require_sha256(artifact_sha256, "Contract upload artifact digest")
+    require_semver(contract_version, "Contract upload version")
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Contract CI capture destination must not exist")
+    # Capturing reused phases requires only the current capture job, not a new
+    # binary job. The original four producers are never relabelled as this one.
+    observed = _observe_contract_producer_runs(
+        {"metadata": transport_producer}, phases=("metadata",),
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+    repository = "codex-agent-labs/codex-agent"
+    url = f"https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}"
+    artifact = api_json(url, token)
+    transport = artifact.get("workflow_run")
+    if (require_integer(artifact.get("id"), "Contract uploaded artifact ID", 1) != artifact_id
+            or artifact.get("digest") != artifact_sha256
+            or artifact.get("expired") is not False
+            or artifact.get("name") != f"codex-agent-contract-attestation-inputs-{transport_producer['tree']}"
+            or artifact.get("archive_download_url") != f"{url}/zip"
+            or not isinstance(transport, dict)
+            or require_integer(transport.get("id"), "Contract upload run ID", 1) != transport_producer["runId"]
+            or transport.get("head_sha") != observed[0]["run"]["head_sha"]):
+        raise ValueError("Contract uploaded artifact differs from the caller-bound transport identity")
+    size = require_integer(artifact.get("size_in_bytes"), "Contract upload transport bytes", 1)
+    if size > _CATALOG_LIMIT:
+        raise ValueError("Contract uploaded artifact exceeds the transport limit")
+    raw = download_artifact(artifact, token)
+    if len(raw) != size or sha256_bytes(raw) != artifact_sha256:
+        raise ValueError("Contract uploaded artifact bytes differ from the caller-bound identity")
+    with tempfile.TemporaryDirectory(prefix="contract-ci-capture-") as temporary:
+        root = Path(temporary).resolve()
+        archive = root / "transport.zip"
+        archive.write_bytes(raw)
+        verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
+        prepared = root / "captured"
+        safe_extract(archive, prepared)
+        stage = prepared / "phases/metadata/stage"
+        manifest = verify_output_manifest_identity(
+            stage, "contract", "contract", "metadata", "common", contract_version)
+        payload = stage / f"outputs/codex-agent-contract-{contract_version}.zip"
+        closure = verify_contract_execution_closure(payload, prepared / "execution-closure")
+        expected = {"phases/metadata/stage/output-manifest.json", payload.relative_to(prepared).as_posix(),
+                    "execution-closure/contract-execution-closure.json",
+                    *(f"execution-closure/{record['relativePath']}" for record in closure["files"])}
+        if {record["relativePath"] for record in regular_file_inventory(prepared)} != expected:
+            raise ValueError("Contract uploaded artifact inventory is not exact")
+        metadata = _canonical_control(prepared / "execution-closure/receipts/metadata.json", "Original Contract metadata receipt")
+        if manifest["outputs"] != metadata["outputs"]:
+            raise ValueError("Contract uploaded metadata stage differs from its original receipt")
+        evidence = {"artifact": artifact, "captureProducer": dict(transport_producer), "observed": observed}
+        write_canonical_json(prepared / "transport/ci-artifact.json", evidence)
+        publish_regular_tree(prepared, destination)
     return evidence
 
 
@@ -2377,6 +2452,15 @@ def parser() -> argparse.ArgumentParser:
     materialize_command.add_argument("--phase", required=True)
     materialize_command.add_argument("--destination", type=Path, required=True)
     materialize_command.add_argument("--with-receipt", action="store_true")
+    capture_command = commands.add_parser("capture-contract-ci")
+    capture_command.add_argument("--destination", type=Path, required=True)
+    capture_command.add_argument("--artifact-id", type=int, required=True)
+    capture_command.add_argument("--artifact-sha256", required=True,
+                                 help="sha256:-prefixed digest from the trusted upload action output")
+    capture_command.add_argument("--transport-producer", type=Path, required=True,
+                                 help="Current trusted caller producer, never a downloaded receipt")
+    capture_command.add_argument("--trusted-workflow-sha", required=True)
+    capture_command.add_argument("--contract-version", required=True)
     return result
 
 
@@ -2415,6 +2499,13 @@ def main(argv: list[str] | None = None) -> int:
                 adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
                 sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
             )
+        elif arguments.command == "capture-contract-ci":
+            capture_contract_ci_artifact(
+                arguments.destination, artifact_id=arguments.artifact_id,
+                artifact_sha256=arguments.artifact_sha256,
+                transport_producer=_canonical_control(arguments.transport_producer, "Caller capture producer"),
+                trusted_workflow_sha=arguments.trusted_workflow_sha,
+                contract_version=arguments.contract_version, token=os.environ.get("GITHUB_TOKEN", ""))
         else:
             materialize_contract(
                 arguments.plan,

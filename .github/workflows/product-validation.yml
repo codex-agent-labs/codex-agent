@@ -263,6 +263,8 @@ jobs:
       contract_complete: ${{ steps.select_final_state.outputs.contract_complete }}
       state_artifact: codex-agent-contract-phase-state-${{ needs.plan.outputs.validation_tree }}
       attestation_inputs_artifact: codex-agent-contract-attestation-inputs-${{ needs.plan.outputs.validation_tree }}
+      attestation_inputs_id: ${{ steps.upload_attestation_inputs.outputs.artifact-id }}
+      attestation_inputs_digest: sha256:${{ steps.upload_attestation_inputs.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -596,6 +598,7 @@ jobs:
             --metadata-receipt "$originals/metadata/receipt/phase-receipt.json" \
             --output-directory build/contract-attestation-inputs/execution-closure
       - name: Preserve unsigned payload and full original execution closure
+        id: upload_attestation_inputs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error

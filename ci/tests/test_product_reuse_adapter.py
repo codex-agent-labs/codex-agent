@@ -220,6 +220,121 @@ class ContractProducerRunTest(unittest.TestCase):
             self.assertEqual([{"run": run, "testedCommit": self.commit, "jobs": jobs}], self.verify())
 
 
+class ContractCiArtifactCaptureTest(unittest.TestCase):
+    def setUp(self):
+        from ci.tests.test_contract_execution_closure import execution_closure_fixture
+        from products.contract_attestation import capture_contract_execution_closure
+
+        ContractProducerRunTest.setUp(self)
+        self.temporary = tempfile.TemporaryDirectory(prefix="contract-ci-artifact-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.source = self.root / "original"
+        payload, receipts, archive = execution_closure_fixture(self.source)
+        self.inputs = self.root / "upload"
+        shutil.copytree(payload.parent.parent, self.inputs / "phases/metadata/stage")
+        capture_contract_execution_closure(payload, receipts, archive, self.inputs / "execution-closure")
+        self.raw = self.archive()
+        self.artifact = {
+            "id": 41, "name": f"codex-agent-contract-attestation-inputs-{TREE}",
+            "size_in_bytes": len(self.raw), "digest": sha256_bytes(self.raw), "expired": False,
+            "archive_download_url": "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/41/zip",
+            "workflow_run": {"id": 7, "head_sha": self.run["head_sha"]},
+        }
+        self.output = self.root / "capture"
+
+    def archive(self, changes=None):
+        files = {path.relative_to(self.inputs).as_posix(): path.read_bytes()
+                 for path in self.inputs.rglob("*") if path.is_file()}
+        for name, contents in (changes or {}).items():
+            if contents is None:
+                del files[name]
+            else:
+                files[name] = contents
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name, contents in sorted(files.items()):
+                archive.writestr(name, contents)
+        return buffer.getvalue()
+
+    def capture(self):
+        return product_reuse.capture_contract_ci_artifact(
+            self.output, artifact_id=41, artifact_sha256=self.artifact["digest"],
+            transport_producer=self.producer, trusted_workflow_sha=self.pin,
+            contract_version="0.2.0", token="not-a-real-token")
+
+    def test_cli_captures_exact_bytes_original_receipts_and_external_transport_without_building(self):
+        before = product_inventory.regular_file_inventory(self.source, allow_empty=True)
+        expected = product_inventory.regular_file_inventory(self.inputs)
+        producer = self.root / "caller.json"
+        producer.write_bytes(canonical_json_bytes(self.producer))
+        # No current binary job: that phase was reused from another original run.
+        with mock.patch.object(product_reuse, "api_json", side_effect=[self.run, self.commit, self.artifact]), \
+                mock.patch.object(product_reuse, "paginated_items", return_value=self.jobs[1:]), \
+                mock.patch("reuse.api_request", return_value=self.raw) as download, \
+                mock.patch("products.contract.build_contract_bundle", side_effect=AssertionError("rebuild")), \
+                mock.patch("products.signatures.sign_manifest", side_effect=AssertionError("signing")), \
+                mock.patch.dict(os.environ, {"GITHUB_TOKEN": "not-a-real-token"}):
+            self.assertEqual(0, product_reuse.main([
+                "capture-contract-ci", "--destination", str(self.output), "--artifact-id", "41",
+                "--artifact-sha256", self.artifact["digest"], "--transport-producer", str(producer),
+                "--trusted-workflow-sha", self.pin, "--contract-version", "0.2.0"]))
+        download.assert_called_once_with(self.artifact["archive_download_url"], "not-a-real-token")
+        evidence = product_inventory.load_canonical_json_bytes((self.output / "transport/ci-artifact.json").read_bytes())
+        self.assertEqual({"artifact": self.artifact, "captureProducer": self.producer,
+                          "observed": [{"run": self.run, "testedCommit": self.commit, "jobs": self.jobs[1:]}]}, evidence)
+        self.assertEqual(expected, [record for record in product_inventory.regular_file_inventory(self.output)
+                                    if record["relativePath"] != "transport/ci-artifact.json"])
+        self.assertEqual(before, product_inventory.regular_file_inventory(self.source, allow_empty=True))
+        shutil.move(self.source, self.root / "hidden-original")
+        product_reuse.verify_contract_execution_closure(
+            self.output / "phases/metadata/stage/outputs/codex-agent-contract-0.2.0.zip",
+            self.output / "execution-closure")
+        with mock.patch.object(product_reuse, "api_json") as query:
+            with self.assertRaisesRegex(ValueError, "must not exist"):
+                self.capture()
+            query.assert_not_called()
+        workflow = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text()
+        self.assertIn("attestation_inputs_id: ${{ steps.upload_attestation_inputs.outputs.artifact-id }}", workflow)
+        self.assertIn("attestation_inputs_digest: sha256:${{ steps.upload_attestation_inputs.outputs.artifact-digest }}", workflow)
+
+    def test_mismatched_provider_identity_fails_before_download(self):
+        for change in ({"id": 42}, {"expired": True}, {"name": "other"},
+                       {"digest": sha256_bytes(b"different")}, {"workflow_run": {"id": 8}},
+                       {"workflow_run": {"id": 7, "head_sha": COMMIT}},
+                       {"archive_download_url": "https://attacker.invalid/zip"},
+                       {"size_in_bytes": product_reuse._CATALOG_LIMIT + 1}):
+            with self.subTest(change=change), \
+                    mock.patch.object(product_reuse, "api_json", side_effect=[self.run, self.commit, {**self.artifact, **change}]), \
+                    mock.patch.object(product_reuse, "paginated_items", return_value=self.jobs[1:]), \
+                    mock.patch("reuse.api_request") as download:
+                with self.assertRaises(ValueError):
+                    self.capture()
+                download.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_digest_and_closure_tampering_never_publish_partial_capture(self):
+        cases = [self.raw + b"changed"]
+        for changes in ({"transport/ci-artifact.json": b"{}\n"},
+                        {"execution-closure/receipts/binary.json": None},
+                        {"phases/metadata/stage/outputs/codex-agent-contract-0.2.0.zip": b"tampered"},
+                        {"../escape": b"escape"}):
+            cases.append(self.archive(changes))
+        for number, raw in enumerate(cases):
+            artifact = self.artifact if number == 0 else {**self.artifact, "digest": sha256_bytes(raw), "size_in_bytes": len(raw)}
+            with self.subTest(number=number), \
+                    mock.patch.object(product_reuse, "api_json", side_effect=[self.run, self.commit, artifact]), \
+                    mock.patch.object(product_reuse, "paginated_items", return_value=self.jobs[1:]), \
+                    mock.patch("reuse.api_request", return_value=raw):
+                with self.assertRaises((ValueError, OSError)):
+                    product_reuse.capture_contract_ci_artifact(
+                        self.output, artifact_id=41, artifact_sha256=artifact["digest"],
+                        transport_producer=self.producer, trusted_workflow_sha=self.pin,
+                        contract_version="0.2.0", token="not-a-real-token")
+                self.assertFalse(self.output.exists())
+                self.assertFalse((self.root / "escape").exists())
+
+
 class ProductReuseAdapterTest(unittest.TestCase):
     def test_catalog_accepts_object_bound_and_rejects_oversized_member_before_extraction(self) -> None:
         limits = product_reuse._CATALOG_ZIP_LIMITS
