@@ -1457,7 +1457,7 @@ def advance_contract(
     prior_by_instance = {_identity(phase): phase for phase in prior["phases"]}
     sources: dict[PhaseInstanceId, Path] = {}
     prior_carrier_phases: dict[PhaseInstanceId, dict[str, Any]] = {}
-    carrier_root = state_root / "reused-carrier"
+    carrier_root = state_root / ("carrier" if prior["fullReuse"] else "reused-carrier")
     if prior_materialized:
         verified_carrier = verify_carrier(carrier_root, prior_materialized, consumer)
         prior_carrier_phases = {
@@ -1608,8 +1608,9 @@ def advance_contract(
         write_carrier(staged_destination / carrier_name, normalized, selected, sources, consumer)
         write_canonical_json(staged_destination / "contract-reuse-result.json", advanced)
         _write_ready_plans(staged_destination, ready_plans)
-        if ready_plans:
-            write_canonical_json(staged_destination / "producer.json", producer)
+        # Current-consumer control is required to materialize completed state too;
+        # it is external to every original product object and producer receipt.
+        write_canonical_json(staged_destination / "producer.json", producer)
         publish_regular_tree(staged_destination, destination)
     github_output(github_output_path, {
         "contract_complete": advanced["fullReuse"],

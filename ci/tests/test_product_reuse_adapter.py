@@ -2288,6 +2288,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         }
 
         advanced_second = None
+        later_waves = {}
         tooling = {"current-caller": "contract-replay-only"}
 
         def wave(value, *, build_plan_consumer):
@@ -2298,6 +2299,11 @@ class ProductReuseAdapterTest(unittest.TestCase):
             if len(value["availableObjects"]) == 1:
                 build_plan_consumer(package, package_plan)
                 return json.loads(json.dumps(advanced))
+            if len(value["availableObjects"]) in later_waves:
+                result, next_plan = later_waves[len(value["availableObjects"])]
+                if next_plan is not None:
+                    build_plan_consumer(product_reuse._identity(next_plan), next_plan)
+                return copy.deepcopy(result)
             assert advanced_second is not None
             validation_plan = advanced_second[1]
             build_plan_consumer(validation_plan[0], validation_plan[1])
@@ -2473,8 +2479,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
         validation_plan = {
             "schemaVersion": 1,
             **product_reuse._identity_record(validation),
-            "buildKey": sha256_bytes(b"validation"),
-            "inputs": {"planner": "owned"},
+            "buildKey": compute_build_key(**product_reuse._identity_record(validation), inputs=binary_plan["inputs"]),
+            "inputs": binary_plan["inputs"],
         }
         second_phases = []
         for instance in closure:
@@ -2525,6 +2531,55 @@ class ProductReuseAdapterTest(unittest.TestCase):
             (package_shard / "phase-receipt.json").read_bytes(),
             second_carrier["objects"][1]["receiptBytes"],
         )
+
+        # Exercise the actual shard/carrier/receipt transport through metadata.
+        # Planner results are synthetic; this is not product or hosted evidence.
+        descriptors = {binary: descriptor, package: package_descriptor}
+        metadata_plan = {"schemaVersion": 1, **product_reuse._identity_record(contract),
+            "inputs": binary_plan["inputs"],
+            "buildKey": compute_build_key(**product_reuse._identity_record(contract), inputs=binary_plan["inputs"])}
+        current_state = second_destination
+        for instance, elected, next_plan in ((validation, validation_plan, metadata_plan), (contract, metadata_plan, None)):
+            phase_stage = resolved_root / f"{instance.phase}-stage"
+            (phase_stage / "outputs").mkdir(parents=True)
+            (phase_stage / "outputs/original.bin").write_bytes(b"unchanged fixture phase bytes\n")
+            write_output_manifest(phase_stage, "contract", "contract", instance.phase, "common", "0.2.0", {"artifact": "outputs"})
+            phase_shard = resolved_root / f"{instance.phase}-shard"
+            descriptors[instance] = finalize_phase_object(stage_root=phase_stage, phase_plan=elected,
+                producer=producer, product_version="0.2.0", trust_domain="development", destination=phase_shard)
+            phases = []
+            for member in closure:
+                record = descriptors.get(member)
+                phases.append({**product_reuse._identity_record(member),
+                    "buildKey": record["buildKey"] if record else next_plan["buildKey"],
+                    "state": "retained" if record else "build", "source": None, "transportSource": None,
+                    "receiptSha256": record["receiptSha256"] if record else None,
+                    "objectSha256": record["objectSha256"] if record else None,
+                    "misses": [] if record else [{"source": source, "reason": "fixture-miss"} for source in product_reuse.SOURCES]})
+            complete = next_plan is None
+            expected = {"schemaVersion": 1, "result": "complete" if complete else "build-required",
+                "fullReuse": complete, "phases": phases, "continuationRequirements": [],
+                "matrices": {"contract": [] if complete else [{**product_reuse._identity_record(contract),
+                    "buildKey": next_plan["buildKey"]}], "runtime": [], "sdk": []}}
+            later_waves[len(descriptors)] = expected, next_plan
+            result, current_state, phase_output = reconcile(f"after-{instance.phase}", [phase_shard], state=current_state)
+            self.assertEqual(expected, result)
+        self.assertEqual(canonical_json_bytes(producer), (current_state / "producer.json").read_bytes())
+        self.assertFalse((current_state / "phase-plans").exists())
+        self.assertIn("contract_complete=true", phase_output.read_text())
+        final_inventory = product_inventory.regular_file_inventory(current_state)
+        for instance, original in descriptors.items():
+            with mock.patch.object(product_reuse, "_validate_plan", return_value=plan):
+                extracted = resolved_root / f"final-{instance.phase}"
+                restored = product_reuse.materialize_contract(self.plan_path, current_state, instance.phase,
+                    extracted, with_receipt=True, repository_root=resolved_root,
+                    environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"})
+            self.assertEqual(original["receiptBytes"], restored["receiptBytes"])
+            self.assertEqual(original["receiptBytes"], (extracted / "receipt/phase-receipt.json").read_bytes())
+        repeated, repeated_state, _ = reconcile("repeated-complete", [], state=current_state)
+        self.assertEqual(result, repeated)
+        self.assertEqual(final_inventory, product_inventory.regular_file_inventory(current_state))
+        self.assertEqual(final_inventory, product_inventory.regular_file_inventory(repeated_state))
 
         with self.assertRaisesRegex(ValueError, "do not exactly match"):
             reconcile("missing-shard", [])

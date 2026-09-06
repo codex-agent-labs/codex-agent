@@ -253,11 +253,14 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
       needs.plan.outputs.contract_reconciliation_required == 'true' &&
-      needs.plan.outputs.contract_next_phase != 'none' &&
-      needs.plan.outputs.contract_next_phase != 'metadata'
+      needs.plan.outputs.contract_next_phase != 'none'
     needs: [workflow-lint, plan, product]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    outputs:
+      contract_complete: ${{ steps.select_final_state.outputs.contract_complete }}
+      state_artifact: codex-agent-contract-phase-state-${{ needs.plan.outputs.validation_tree }}
+      attestation_inputs_artifact: codex-agent-contract-attestation-inputs-${{ needs.plan.outputs.validation_tree }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -459,8 +462,8 @@ jobs:
             --phase-shard build/product-phase/contract-contract-validation-common \
             --destination build/contract-state/after-validation \
             --github-output "$GITHUB_OUTPUT"
-      - name: Select final Contract continuation state
-        id: select_final_state
+      - name: Select Contract state after validation reconciliation
+        id: select_after_validation
         env:
           CURRENT_COMPLETE: ${{ steps.select_after_package.outputs.contract_complete }}
           CURRENT_NEXT_PHASE: ${{ steps.select_after_package.outputs.next_phase }}
@@ -483,7 +486,83 @@ jobs:
           esac
           printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
             "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
-      - name: Preserve Contract state through the metadata boundary
+      - name: Materialize the exact Contract validation stage and receipt
+        if: steps.select_after_validation.outputs.next_phase == 'metadata'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py materialize-contract \
+            --plan build/ci/impact-plan.json \
+            --state-root "${{ steps.select_after_validation.outputs.state }}" \
+            --phase validation \
+            --destination build/contract-handoff/validation \
+            --with-receipt
+      - name: Produce and finalize the deterministic Contract metadata phase
+        if: steps.select_after_validation.outputs.next_phase == 'metadata'
+        env:
+          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+        shell: bash
+        run: |
+          ./gradlew ciProductPhase \
+            -PcodexAgent.product=contract \
+            -PcodexAgent.component=contract \
+            -PcodexAgent.phase=metadata \
+            -PcodexAgent.contractValidationStageRoot="$PWD/build/contract-handoff/validation/stage" \
+            -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
+            -PcodexAgent.candidateTree="$VALIDATION_TREE" \
+            --stacktrace
+          IFS= read -r contract_version < gradle/release/versions/contract.txt
+          python3 -m ci.products restore store-phase \
+            --stage-root build/product-stage/contract/contract/metadata \
+            --phase-plan "${{ steps.select_after_validation.outputs.state }}/phase-plans/contract-contract-metadata-common.json" \
+            --producer "${{ steps.select_after_validation.outputs.state }}/producer.json" \
+            --product-version "$contract_version" \
+            --trust-domain "$CONTRACT_TRUST_DOMAIN" \
+            --destination build/product-phase/contract-contract-metadata-common
+      - name: Upload the Contract metadata phase
+        if: steps.select_after_validation.outputs.next_phase == 'metadata'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-product-phase-contract-contract-metadata-common-${{ needs.plan.outputs.validation_tree }}
+          path: build/product-phase/contract-contract-metadata-common
+          compression-level: 0
+          retention-days: 90
+      - name: Reconcile the fresh Contract metadata phase
+        id: reconcile_metadata
+        if: steps.select_after_validation.outputs.next_phase == 'metadata'
+        shell: bash
+        run: |
+          python3 ci/product_reuse.py advance-contract \
+            --plan build/ci/impact-plan.json \
+            --discovery-root build/ci/product-reuse \
+            --state-root "${{ steps.select_after_validation.outputs.state }}" \
+            --phase-shard build/product-phase/contract-contract-metadata-common \
+            --destination build/contract-state/after-metadata \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Select final Contract continuation state
+        id: select_final_state
+        env:
+          CURRENT_COMPLETE: ${{ steps.select_after_validation.outputs.contract_complete }}
+          CURRENT_NEXT_PHASE: ${{ steps.select_after_validation.outputs.next_phase }}
+          CURRENT_STATE: ${{ steps.select_after_validation.outputs.state }}
+          RECONCILED_COMPLETE: ${{ steps.reconcile_metadata.outputs.contract_complete }}
+          RECONCILED_NEXT_PHASE: ${{ steps.reconcile_metadata.outputs.next_phase }}
+        shell: bash
+        run: |
+          state=$CURRENT_STATE
+          next_phase=$CURRENT_NEXT_PHASE
+          complete=$CURRENT_COMPLETE
+          if [ "$CURRENT_NEXT_PHASE" = metadata ]; then
+            state=build/contract-state/after-metadata
+            next_phase=$RECONCILED_NEXT_PHASE
+            complete=$RECONCILED_COMPLETE
+          fi
+          test "$next_phase:$complete" = none:true
+          printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
+            "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
+      - name: Preserve the complete unsigned Contract state for separate attestation
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -491,6 +570,38 @@ jobs:
           include-hidden-files: true
           name: codex-agent-contract-phase-state-${{ needs.plan.outputs.validation_tree }}
           path: ${{ steps.select_final_state.outputs.state }}
+          compression-level: 0
+          retention-days: 90
+      - name: Capture unsigned Contract attestation inputs from exact original phases
+        shell: bash
+        run: |
+          for phase in binary package validation metadata; do
+            python3 ci/product_reuse.py materialize-contract \
+              --plan build/ci/impact-plan.json \
+              --state-root "${{ steps.select_final_state.outputs.state }}" \
+              --phase "$phase" \
+              --destination "build/contract-attestation-inputs/phases/$phase" \
+              --with-receipt
+          done
+          IFS= read -r contract_version < gradle/release/versions/contract.txt
+          originals=build/contract-attestation-inputs/phases
+          python3 -m ci.products.contract_attestation capture-closure \
+            --payload "$originals/metadata/stage/outputs/codex-agent-contract-$contract_version.zip" \
+            --execution-archive "$originals/binary/stage/outputs/execution/contract-execution.zip" \
+            --binary-receipt "$originals/binary/receipt/phase-receipt.json" \
+            --package-receipt "$originals/package/receipt/phase-receipt.json" \
+            --validation-receipt "$originals/validation/receipt/phase-receipt.json" \
+            --metadata-receipt "$originals/metadata/receipt/phase-receipt.json" \
+            --output-directory build/contract-attestation-inputs/execution-closure
+      - name: Preserve unsigned payload and full original execution closure
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-contract-attestation-inputs-${{ needs.plan.outputs.validation_tree }}
+          path: |
+            build/contract-attestation-inputs/phases/metadata/stage
+            build/contract-attestation-inputs/execution-closure
           compression-level: 0
           retention-days: 90
 
