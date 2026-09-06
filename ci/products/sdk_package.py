@@ -3,15 +3,16 @@
 import argparse
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from typing import Any
 
 from .contract import verify_contract_bundle
 from .contract_projection import verify_contract_component_projection
 from .inventory import (
-    git_regular_blob_bytes, load_canonical_json_bytes,
+    canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes,
     read_regular_file_bytes, regular_file_inventory, require_semver, run_git, sha256_bytes, snapshot_regular_tree,
-    publish_regular_tree,
+    publish_regular_tree, require_sha256,
 )
 from .plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
@@ -46,6 +47,16 @@ def _require_capability_output_separate(output: Path, inputs: Any) -> None:
 def _receipt(path: Path) -> tuple[dict[str, Any], bytes]:
     contents = read_regular_file_bytes(Path(path), max_bytes=_LIMIT, reject_symlink_parents=True)
     return validate_phase_receipt(load_canonical_json_bytes(contents)), contents
+
+
+def _original_artifact_directories(inputs: Any) -> list[Path]:
+    if isinstance(inputs, dict):
+        return [path for value in inputs.values() for path in _original_artifact_directories(value)]
+    if isinstance(inputs, (tuple, list)):
+        return [path for value in inputs for path in _original_artifact_directories(value)]
+    if isinstance(inputs, Path):
+        return [inputs if inputs.is_dir() else inputs.parent]
+    return []
 
 
 def _instance(receipt: dict[str, Any]) -> PhaseInstanceId:
@@ -134,6 +145,7 @@ def verify_sdk_package_inputs(
     validation_inputs_output: Path | None = None,
     validation_receipt_path: Path | None = None,
     validation_stage_root: Path | None = None, validation_target: str | None = None,
+    validation_content_output: Path | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify package semantics, original artifacts and the complete source-input plan.
 
@@ -155,7 +167,7 @@ def verify_sdk_package_inputs(
             raise ValueError("Native SDK validation receipt identity differs from its package")
     if validation_inputs_output is not None and not native:
         raise ValueError("Capability input staging requires a native SDK package")
-    if validation_stage_root is not None or validation_target is not None:
+    if validation_stage_root is not None or validation_target is not None or validation_content_output is not None:
         if (validation_stage_root is None or validation_target is None or validation is None
                 or validation_inputs_output is None):
             raise ValueError("Validation stage import requires receipt, expected target and private inputs output")
@@ -207,6 +219,13 @@ def verify_sdk_package_inputs(
             request_directory = Path(compatibility_request).parent
             original_arguments = load_sdk_compatibility_request(captured_request, request_directory=request_directory)
             from .contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
+            if validation_content_output is not None:
+                _require_capability_output_separate(validation_content_output, (
+                    Path(stage_root), Path(receipt_path), Path(compatibility_request), runtime_stage_root, staged_sdks,
+                    Path(validation_stage_root), Path(validation_receipt_path),
+                    _original_artifact_directories(original_arguments),
+                    original_arguments["contract_attestation"].parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
+                ))
             _require_capability_output_separate(validation_inputs_output, (
                 Path(stage_root), Path(receipt_path), Path(compatibility_request), runtime_stage_root, staged_sdks,
                 Path(validation_receipt_path) if validation_receipt_path is not None else None,
@@ -338,6 +357,69 @@ def verify_sdk_package_inputs(
     return receipt, original
 
 
+def native_validation_content(inputs: Path, component: str, target: str) -> dict[str, Any]:
+    """Content projection only, NOT authentication or a planner/release capability.
+
+    The trusted Kotlin entry calls this only after original input/source/host,
+    full capability and C++ negative verification. Raw receipts remain external.
+    """
+    if component not in NATIVE_BINDINGS or target not in NATIVE_TARGETS:
+        raise ValueError("Unsupported native validation content identity")
+    before = regular_file_inventory(inputs)
+    package, _ = _receipt(inputs / "receipts/sdk-package.json")
+    validation, _ = _receipt(inputs / "receipts/sdk-validation.json")
+    if (_instance(package) != PhaseInstanceId("sdk", component, "package", "desktop")
+            or _instance(validation) != PhaseInstanceId("sdk", component, "validation", target)
+            or package["productVersion"] != validation["productVersion"]):
+        raise ValueError("Native validation content differs from original phase identities")
+    _verify_native_validation_stage(inputs / "validation", validation, target)
+    if component != "csharp" and read_regular_file_bytes(
+        inputs / "validation/outputs/capability/test-program", max_bytes=_LIMIT,
+    ) != read_regular_file_bytes(inputs / "validation-source/test-program-source", max_bytes=_LIMIT):
+        raise ValueError("Native validation source program differs from its captured original")
+    contract = load_canonical_json_bytes(read_regular_file_bytes(inputs / "contract/contract-manifest.json", max_bytes=_LIMIT))
+    paths = {
+        "claims.tsv": "validation-source/capability-claims.tsv",
+        "compiler-evidence.tsv": "validation/outputs/capability/compiler-evidence.tsv",
+        "executed-tests.tsv": "validation/outputs/capability/executed-tests.tsv",
+        "installed.tsv": f"validation/outputs/installed/evidence/{component}/{target}.tsv",
+        "test-program-source": "validation-source/test-program-source",
+    }
+    cases = []
+    if component == "cpp":
+        paths["package-negative-source.py"] = "validation-source/test_installed_package_tamper.py"
+        rows = read_regular_file_bytes(inputs / "validation/outputs/package-negatives/package-tamper-results.tsv",
+                                      max_bytes=_LIMIT).decode("utf-8").splitlines()
+        if not rows or rows[0] != "caseId\texpectedExit\tactualExitCode\tstatus\tlogPath":
+            raise ValueError("Malformed C++ negative content table")
+        for row in rows[1:]:
+            fields = row.split("\t")
+            if (len(fields) != 5 or fields[3] != "passed"
+                    or fields[1] != ("zero" if fields[0] == "baseline" else "nonzero")):
+                raise ValueError("Unsuccessful C++ negative content case")
+            cases.append({"caseId": fields[0], "expectedExit": fields[1], "result": fields[3]})
+        expected = sorted(("baseline", "tampered-0", "tampered-1", "tampered-2", "tampered-3",
+                           "missing-sidecar", "missing-loader"))
+        if [case["caseId"] for case in cases] != expected:
+            raise ValueError("Incomplete C++ negative content cases")
+    files = []
+    for name, path in sorted(paths.items()):
+        contents = read_regular_file_bytes(inputs / path, max_bytes=_LIMIT, reject_symlink_parents=True)
+        if not contents:
+            raise ValueError("Native validation content input is empty")
+        files.append({"relativePath": name, "bytes": len(contents), "sha256": sha256_bytes(contents)})
+    result = {
+        "schemaVersion": 1, "kind": "sdk-native-validation-content", "component": component,
+        "target": target, "sdkVersion": package["productVersion"],
+        **{key: require_sha256(contract.get(key), f"Native content {key}") for key in
+           ("contractDigest", "canonicalApiDigest", "canonicalCoverageDigest")},
+        "files": files, "packageNegativeCases": cases,
+    }
+    if before != regular_file_inventory(inputs):
+        raise ValueError("Native validation content inputs changed during projection")
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -349,7 +431,15 @@ def main(argv: list[str] | None = None) -> int:
     native.add_argument("--validation-receipt", type=Path)
     native.add_argument("--validation-stage", type=Path)
     native.add_argument("--validation-target", choices=NATIVE_TARGETS)
+    native.add_argument("--validation-content-output", type=Path)
+    content = commands.add_parser("native-content", allow_abbrev=False)
+    content.add_argument("--inputs", type=Path, required=True)
+    content.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
+    content.add_argument("--target", choices=NATIVE_TARGETS, required=True)
     args = parser.parse_args(argv)
+    if args.command == "native-content":
+        sys.stdout.buffer.write(canonical_json_bytes(native_validation_content(args.inputs, args.component, args.target)))
+        return 0
     expected = PhaseInstanceId("sdk", args.component, "package", "desktop")
     original, _ = _receipt(args.receipt)
     if _instance(original) != expected:
@@ -360,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         validation_inputs_output=args.validation_inputs_output,
         validation_receipt_path=args.validation_receipt,
         validation_stage_root=args.validation_stage, validation_target=args.validation_target,
+        validation_content_output=args.validation_content_output,
     )
     if verified != original:
         raise ValueError("Native SDK package receipt changed during CLI verification")

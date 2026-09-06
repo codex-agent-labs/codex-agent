@@ -93,6 +93,7 @@ class NativeSdkInputsTest(unittest.TestCase):
             with zipfile.ZipFile(payload, "w") as archive:
                 archive.writestr("evidence/canonical-api.json", api)
                 archive.writestr("evidence/canonical-coverage.json", coverage)
+                archive.writestr("contract-manifest.json", b'{"fixture":"original Contract manifest"}\n')
             outputs = write_output_manifest(validation, "runtime", "macos-arm64", "validation", "macos-arm64",
                                             "0.2.7", {"c-abi-bootstrap": "outputs/c-abi-bootstrap"})["outputs"]
             receipt = root / "validation.json"
@@ -107,6 +108,8 @@ class NativeSdkInputsTest(unittest.TestCase):
             self.assertEqual(before, regular_file_inventory(runtime))
             self.assertEqual(raw, (root / "result/receipts/runtime-macos-arm64-validation.json").read_bytes())
             self.assertEqual(regular_file_inventory(closure), regular_file_inventory(root / "result/bootstrap"))
+            self.assertEqual(b'{"fixture":"original Contract manifest"}\n',
+                             (root / "result/contract/contract-manifest.json").read_bytes())
             for case in ("missing", "kind", "contract", "library"):
                 changed = load_json_bytes(raw)
                 if case == "missing":

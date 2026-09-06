@@ -18,7 +18,7 @@ from ci.products.sdk_maven import MAVEN_GROUPS, package_sdk_maven, verify_sdk_ma
 from ci.products.sdk_archive import NPM_COMPATIBILITY_PATH, verify_npm_sdk_compatibility
 from ci.products.sdk_package import (
     _capture_validation_sources, _verify_native_validation_stage, _verify_plan,
-    verify_sdk_package_inputs, main as package_main,
+    native_validation_content, verify_sdk_package_inputs, main as package_main,
 )
 from ci.products.selection import phase_git_inventory
 from ci.tests import test_product_sdk_maven as maven_fixture
@@ -31,6 +31,94 @@ from ci.tests.test_product_sdk_inputs import _request
 
 VERSIONS = {"contract": "0.2.0", "sdk": "0.2.9", "runtime-release": "0.2.7",
             "runtime-compatibility": "0.2.0"}
+
+
+class NativeValidationContentTest(unittest.TestCase):
+    def test_content_excludes_run_receipt_compiled_and_cpp_exit_noise_but_retains_semantics(self):
+        # Projection grammar/determinism fixture only, not bootstrap/host acceptance.
+        for component in ("python", "csharp", "rust", "cpp", "dart"):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                raw = root / "validation/outputs"
+                originals = {
+                    "contract/contract-manifest.json": canonical_json_bytes({key: "sha256:" + "a" * 64 for key in
+                        ("contractDigest", "canonicalApiDigest", "canonicalCoverageDigest")}),
+                    "validation-source/capability-claims.tsv": b"original claims fixture\n",
+                    "validation-source/test-program-source": b"original source fixture\n",
+                    "validation/outputs/capability/compiler-evidence.tsv": b"compiler evidence fixture\n",
+                    "validation/outputs/capability/executed-tests.tsv": b"test\tpassed\n",
+                    "validation/outputs/capability/test-program":
+                        b"compiled program fixture\n" if component == "csharp" else b"original source fixture\n",
+                    f"validation/outputs/installed/evidence/{component}/linux-x64.tsv": b"installed content fixture\n",
+                    f"validation/outputs/installed/evidence/{component}/toolchain.tsv": b"tool\tversion\ncompiler\tfixture\n",
+                    "validation/outputs/capability/raw.log": b"original run path/timing fixture\n",
+                }
+                if component == "cpp":
+                    originals["validation-source/test_installed_package_tamper.py"] = b"original negative program\n"
+                    cases = sorted(("baseline", "tampered-0", "tampered-1", "tampered-2", "tampered-3",
+                                    "missing-sidecar", "missing-loader"))
+                    originals["validation/outputs/package-negatives/package-tamper-results.tsv"] = (
+                        "caseId\texpectedExit\tactualExitCode\tstatus\tlogPath\n" + "".join(
+                            f"{case}\t{'zero' if case == 'baseline' else 'nonzero'}\t{0 if case == 'baseline' else 1}\tpassed\t{case}.log\n"
+                            for case in cases)).encode()
+                for relative, contents in originals.items():
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(contents)
+                producer = {"repository": "fixture/repository", "workflowPath": None, "commit": "a" * 40,
+                            "tree": "b" * 40, "event": "local", "runId": None, "runAttempt": None, "pullRequest": None}
+                package = root / "receipts/sdk-package.json"
+                write_receipt(package, product="sdk", component=component, phase="package", target="desktop",
+                              version="0.2.9", version_identity="0.2.9", upstream=[], context={"producer": producer},
+                              outputs=[{"kind": "package", "relativePath": "outputs/package.zip", "bytes": 1,
+                                        "sha256": "sha256:" + "a" * 64}])
+                roots = {"native-wrapper-installed": "outputs/installed", "native-wrapper-capability": "outputs/capability"}
+                if component == "cpp":
+                    roots["native-wrapper-package-negatives"] = "outputs/package-negatives"
+                def rebind():
+                    manifest = write_output_manifest(root / "validation", "sdk", component, "validation", "linux-x64", "0.2.9", roots)
+                    write_receipt(root / "receipts/sdk-validation.json", product="sdk", component=component,
+                                  phase="validation", target="linux-x64", version="0.2.9", version_identity="0.2.9",
+                                  upstream=[], context={"producer": producer}, outputs=manifest["outputs"])
+                rebind()
+                first = canonical_json_bytes(native_validation_content(root, component, "linux-x64"))
+                producer.update(commit="c" * 40, tree="d" * 40)
+                (raw / "capability/raw.log").write_bytes(b"another run path/time\n")
+                if component == "csharp":
+                    (raw / "capability/test-program").write_bytes(b"different compiled execution envelope\n")
+                (raw / f"installed/evidence/{component}/toolchain.tsv").write_bytes(b"different observed tool provenance\n")
+                if component == "cpp":
+                    table = raw / "package-negatives/package-tamper-results.tsv"
+                    table.write_bytes(table.read_bytes().replace(b"\t1\tpassed", b"\t17\tpassed"))
+                rebind()
+                self.assertEqual(first, canonical_json_bytes(native_validation_content(root, component, "linux-x64")))
+                for relative in ("validation-source/test-program-source", "validation-source/capability-claims.tsv",
+                                 "validation/outputs/capability/compiler-evidence.tsv"):
+                    path = root / relative
+                    previous = path.read_bytes()
+                    path.write_bytes(previous + b"meaningful input mutation\n")
+                    if relative == "validation-source/test-program-source" and component != "csharp":
+                        (raw / "capability/test-program").write_bytes(path.read_bytes())
+                    rebind()
+                    self.assertNotEqual(first, canonical_json_bytes(native_validation_content(root, component, "linux-x64")))
+                    path.write_bytes(previous)
+                    if relative == "validation-source/test-program-source" and component != "csharp":
+                        (raw / "capability/test-program").write_bytes(previous)
+                    rebind()
+                with self.assertRaises(ValueError):
+                    native_validation_content(root, component, "macos-arm64")
+                if component == "cpp":
+                    table = raw / "package-negatives/package-tamper-results.tsv"
+                    original = table.read_bytes()
+                    table.write_bytes(original.replace(b"baseline\tzero\t", b"baseline\tnonzero\t"))
+                    rebind()
+                    with self.assertRaisesRegex(ValueError, r"Unsuccessful C\+\+ negative content case"):
+                        native_validation_content(root, component, "linux-x64")
+                    table.write_bytes(original)
+                    rebind()
+                (raw / "capability/raw.log").write_bytes(b"unreceipted raw evidence\n")
+                with self.assertRaises(ValueError):
+                    native_validation_content(root, component, "linux-x64")
 
 
 class NativeValidationStageInventoryTest(unittest.TestCase):
@@ -334,6 +422,15 @@ class SdkPackagePlanTest(unittest.TestCase):
                 "--validation-stage", str(stage), "--validation-receipt", str(receipt),
                 "--validation-target", "linux-x64", "--validation-inputs-output", str(output),
             ]
+            from ci.products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
+            for protected in (
+                self.chain["contract"]["attestation"].parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
+                self.chain["context"]["public_key"].parent,
+            ):
+                with self.subTest(protected=protected), self.assertRaisesRegex(ValueError, "overlaps an original input"):
+                    package_main(arguments + ["--validation-content-output", str(protected / "new-content.json")])
+                self.assertFalse(output.exists())
+                self.assertFalse((protected / "new-content.json").exists())
             def fixture_handoff(arguments, runtime, sdks, prepared):
                 (prepared / "receipts").mkdir(parents=True)
 
@@ -342,7 +439,7 @@ class SdkPackagePlanTest(unittest.TestCase):
             try:
                 source.write_bytes(b"uncommitted wrong claims\n")
                 with patch("ci.products.sdk_native._stage_native_capability_inputs", side_effect=fixture_handoff):
-                    self.assertEqual(0, package_main(arguments))
+                    self.assertEqual(0, package_main(arguments + ["--validation-content-output", str(root / "safe-content.json")]))
                 self.assertEqual(original_source, (output / "validation-source/capability-claims.tsv").read_bytes())
                 self.assertEqual(b"// original synthetic program\n", (output / "validation-source/test-program-source").read_bytes())
                 self.assertEqual(original, (output / "receipts/sdk-validation.json").read_bytes())

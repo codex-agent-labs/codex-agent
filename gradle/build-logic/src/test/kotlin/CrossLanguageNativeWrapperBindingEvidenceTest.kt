@@ -229,6 +229,9 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
                 import pathlib, shutil, sys
                 args = sys.argv[1:]
                 def arg(name): return pathlib.Path(args[args.index(name) + 1])
+                if args[0] == 'native-content':
+                    sys.stdout.write('{"fixture":"deterministic content"}\n')
+                    raise SystemExit(0)
                 destination = arg('--validation-inputs-output')
                 shutil.copytree('handoff', destination)
                 shutil.copytree(arg('--validation-stage'), destination / 'validation')
@@ -248,9 +251,26 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
         assertEquals(0, importedCli.first, importedCli.second)
         assertEquals(importedBefore, verifiedRegularFiles(importedStage).mapValues { it.value.releaseDigest() })
         assertEquals("original fixture receipt\n", validationReceipt.readText())
+        val content = root.resolve("content.json")
+        val contentArguments = arrayOf("write-native-wrapper-validation-content", *importArguments.drop(1).toTypedArray(),
+            "--content-output", content.absolutePath)
+        val contentCli = runReleaseTool(root, *contentArguments)
+        assertEquals(0, contentCli.first, contentCli.second)
+        assertEquals("{\"fixture\":\"deterministic content\"}\n", content.readText())
+        assertTrue(runReleaseTool(root, *contentArguments).first != 0, "Content must not overwrite finalized bytes")
+        assertEquals("{\"fixture\":\"deterministic content\"}\n", content.readText())
+        content.delete()
+        listOf(handoff.resolve("unsafe-content.json").absolutePath,
+            root.resolve("handoff/../unsafe-content.json").absolutePath).forEach { unsafe ->
+            assertTrue(runReleaseTool(root, *contentArguments.dropLast(1).toTypedArray(), unsafe).first != 0)
+        }
+        assertFalse(root.resolve("unsafe-content.json").exists())
+        assertFalse(handoff.resolve("unsafe-content.json").exists())
         val importedResults = importedStage.resolve("outputs/capability/executed-tests.tsv")
         importedResults.writeText(importedResults.readText().replace("\tpassed", "\tfailed"))
         assertTrue(runReleaseTool(root, *importArguments).first != 0, "Input success must not bypass full matcher")
+        assertTrue(runReleaseTool(root, *contentArguments).first != 0, "Failed full matcher cannot publish content")
+        assertFalse(content.exists())
         inputVerifier.writeText("# Successful process without authenticated private handoff\n")
         assertTrue(runReleaseTool(root, *importArguments).first != 0, "A success token must not admit an import")
         val originalHost = installed.resolve("linux-x64.tsv").readText()

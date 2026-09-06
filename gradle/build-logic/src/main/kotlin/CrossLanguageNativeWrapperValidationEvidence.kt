@@ -1,6 +1,7 @@
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.StandardOpenOption
 import kotlinx.serialization.json.jsonObject
 
 /** Joins exact installed-package identity to full capability proof; no phase/host trust is minted. */
@@ -46,6 +47,7 @@ internal fun verifyImportedNativeWrapperValidation(
     repository: File, language: CrossLanguageBinding, classifier: String,
     packageStage: File, packageReceipt: File, compatibilityRequest: File,
     runtimeStages: File, stagedSdks: File, validationStage: File, validationReceipt: File,
+    contentOutput: File? = null,
 ) {
     check(language in nativeWrapperBindings && crossLanguageCAbiTargetSpecs.values.any {
         it.classifier == "c-abi-$classifier"
@@ -54,6 +56,25 @@ internal fun verifyImportedNativeWrapperValidation(
         validationStage, validationReceipt, repository.resolve("ci")) +
         if (language.id == "cpp") listOf(repository.resolve(
             "codex-agent-bindings/cpp/tools/verify_imported_package.py")) else emptyList()
+    if (contentOutput != null) {
+        val destination = contentOutput.toPath()
+        check(destination.isAbsolute && destination == destination.normalize()) {
+            "Native content destination must be an absolute normalized path"
+        }
+        check(!Files.exists(destination, LinkOption.NOFOLLOW_LINKS) && Files.isDirectory(destination.parent)) {
+            "Native content destination must be a new file with an existing parent"
+        }
+        generateSequence(destination) { it.parent }.forEach { path ->
+            check(!Files.isSymbolicLink(path)) { "Unsafe native content destination: $path" }
+        }
+        sources.forEach { source ->
+            val original = source.toPath().toAbsolutePath().normalize()
+            check(!destination.startsWith(original) && !original.startsWith(destination)) {
+                "Native content destination overlaps an original input"
+            }
+        }
+    }
+    val contentParent = contentOutput?.toPath()?.toAbsolutePath()?.normalize()?.parent?.toRealPath()
     fun inventory(): Map<String, String> = buildMap {
         sources.forEach { source ->
             generateSequence(source.toPath().toAbsolutePath()) { it.parent }.forEach { path ->
@@ -73,9 +94,11 @@ internal fun verifyImportedNativeWrapperValidation(
     val work = Files.createTempDirectory("native-validation-import-").toFile()
     try {
         val handoff = work.resolve("inputs")
-        fun runPython(vararg arguments: String) {
+        fun runPython(vararg arguments: String, stdout: File? = null) {
             val process = ProcessBuilder(listOf("python3", "-E", "-s", "-B") + arguments)
-                .directory(repository).inheritIO().start()
+                .directory(repository).redirectError(ProcessBuilder.Redirect.INHERIT)
+                .apply { if (stdout == null) redirectOutput(ProcessBuilder.Redirect.INHERIT) else redirectOutput(stdout) }
+                .start()
             check(process.waitFor() == 0) { "Imported native validation input/evidence verification failed" }
         }
         runPython("-m", "ci.products.sdk_package", "verify-native",
@@ -85,7 +108,8 @@ internal fun verifyImportedNativeWrapperValidation(
             "--runtime-stages", runtimeStages.absolutePath, "--staged-sdks", stagedSdks.absolutePath,
             "--validation-stage", validationStage.absolutePath,
             "--validation-receipt", validationReceipt.absolutePath, "--validation-target", classifier,
-            "--validation-inputs-output", handoff.absolutePath)
+            "--validation-inputs-output", handoff.absolutePath,
+            *(if (contentOutput != null) arrayOf("--validation-content-output", contentOutput.absolutePath) else emptyArray()))
         check(handoff.resolve("receipts/sdk-validation.json").releaseDigest() ==
             before.getValue(validationReceipt.absolutePath)) { "Imported validation receipt changed" }
         val captured = verifiedRegularFiles(handoff).mapValues { it.value.releaseDigest() }
@@ -97,8 +121,29 @@ internal fun verifyImportedNativeWrapperValidation(
         verifyCrossLanguageNativeWrapperValidationEvidence(language, classifier, handoff,
             raw.resolve("installed"), raw.resolve("capability"),
             handoff.resolve("validation-source/capability-claims.tsv"))
+        val content = work.resolve("content.json")
+        if (contentOutput != null) runPython("-m", "ci.products.sdk_package", "native-content",
+            "--inputs", handoff.absolutePath, "--component", language.id, "--target", classifier, stdout = content)
         check(captured == verifiedRegularFiles(handoff).mapValues { it.value.releaseDigest() } && before == inventory()) {
             "Imported validation inputs changed during full semantic verification"
+        }
+        if (contentOutput != null) {
+            check(content.isFile && !Files.isSymbolicLink(content.toPath()) && content.length() in 1..(16L * 1024 * 1024)) {
+                "Missing or oversized native validation content"
+            }
+            // Only canonical Python-produced bytes are forwarded, after every input recheck.
+            val destination = contentOutput.toPath().toAbsolutePath().normalize()
+            generateSequence(destination) { it.parent }.forEach { path ->
+                check(!Files.isSymbolicLink(path)) { "Native content destination changed to a symbolic path" }
+            }
+            check(destination.parent.toRealPath() == contentParent) { "Native content destination parent changed" }
+            val stream = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+            try {
+                stream.use { it.write(content.readBytes()) }
+            } catch (failure: Exception) {
+                Files.deleteIfExists(destination) // Only the new file just created by this invocation.
+                throw failure
+            }
         }
     } finally {
         // The only removed tree is this invocation's newly allocated private work.

@@ -56,6 +56,7 @@ def _stage_native_capability_inputs(
     with zipfile.ZipFile(arguments["contract_payload"]) as bundle:
         for name in ("canonical-api.json", "canonical-coverage.json"):
             (evidence / name).write_bytes(bundle.read(f"evidence/{name}"))
+        (evidence / "contract-manifest.json").write_bytes(bundle.read("contract-manifest.json"))
     bootstrap = load_json_bytes((output / "bootstrap/bootstrap-evidence.json").read_bytes())
     if type(bootstrap) is not dict or type(bootstrap.get("canonical")) is not dict or type(bootstrap.get("artifacts")) is not dict:
         raise ValueError("C ABI bootstrap lacks canonical and artifact identities")

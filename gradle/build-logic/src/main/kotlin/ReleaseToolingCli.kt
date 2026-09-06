@@ -140,15 +140,17 @@ fun main(arguments: Array<String>) {
                 options.file("installed-evidence"), options.file("capability-evidence"), options.file("claims"),
             )
         }
-        "verify-imported-native-wrapper-validation" -> {
-            options.requireOnly("repository", "language", "target", "package-stage", "package-receipt",
+        "verify-imported-native-wrapper-validation", "write-native-wrapper-validation-content" -> {
+            val names = arrayOf("repository", "language", "target", "package-stage", "package-receipt",
                 "compatibility-request", "runtime-stages", "staged-sdks", "validation-stage", "validation-receipt")
+            val contentOutput = if (command == "write-native-wrapper-validation-content") options.file("content-output") else null
+            options.requireOnly(*(names + if (contentOutput != null) arrayOf("content-output") else emptyArray()))
             val language = nativeWrapperBindings.singleOrNull { it.id == options.required("language") }
                 ?: error("Unsupported imported native wrapper language")
             verifyImportedNativeWrapperValidation(options.file("repository"), language, options.required("target"),
                 options.file("package-stage"), options.file("package-receipt"), options.file("compatibility-request"),
                 options.file("runtime-stages"), options.file("staged-sdks"),
-                options.file("validation-stage"), options.file("validation-receipt"))
+                options.file("validation-stage"), options.file("validation-receipt"), contentOutput)
         }
         "assemble-native-wrapper-binding-receipt" -> {
             options.requireOnly(
