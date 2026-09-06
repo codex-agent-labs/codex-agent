@@ -105,7 +105,7 @@ class RuntimeProductPhaseMappingTest {
     }
 
     @Test
-    fun `adapter metadata owns canonical projection and Maven outputs without product work`() {
+    fun `adapter metadata owns canonical projection and imported primary Maven outputs`() {
         val metadata = nodeBuild.substringAfter("val runtimeAdapterMetadataComponents = linkedMapOf(")
             .substringBefore("mavenPublishing {")
         listOf("jvm", "node-js", "node-wasm").forEach { component ->
@@ -113,12 +113,15 @@ class RuntimeProductPhaseMappingTest {
         }
         listOf(
             "providers.gradleProperty(\"codexAgent.runtimeValidationHandoff\")",
-            "providers.gradleProperty(\"codexAgent.runtimeMavenRepository\")",
+            "providers.gradleProperty(\"codexAgent.runtimePackageStage\")",
+            "providers.gradleProperty(\"codexAgent.runtimePackageVersion\")",
+            "dependsOn(\"finalize\${title}RuntimeMavenHandoff\")",
             "ValidateRuntimeAdapterMetadataInputsTask",
             "it.resolve(\"projection.json\")",
             "\"adapter-evidence\" to \"outputs/evidence\"",
             "\"maven\" to \"outputs/maven\"",
         ).forEach { contract -> assertTrue(contract in nodeBuild, contract) }
+        assertFalse("providers.gradleProperty(\"codexAgent.runtimeMavenRepository\")" in nodeBuild)
         listOf(
             "validation-output-manifest.json",
             "validation-manifest",

@@ -91,6 +91,44 @@ class RuntimeValidationSettingsContractTest {
                             }
                         }
                         for (component in adapters) {
+                            // Metadata consumes the original package/version,
+                            // never an unrelated caller-supplied Maven tree.
+                            check(route(component, "metadata", component,
+                                mapOf("codexAgent.runtimePackageVersion" to "0.2.4")) == component)
+                            for (bad in listOf(null, "", "relative", ${quote(root.resolve("missing").path)},
+                                ${quote(original.path)}, ${quote(root.resolve("symbolic-parent").path)},
+                                ${quote(root.resolve("symbolic-parent/predecessor").path)},
+                                ${quote(root.resolve("predecessor/../predecessor").path)})) {
+                                check(runCatching { route(component, "metadata", component,
+                                    mapOf("codexAgent.runtimePackageStage" to bad)) }.isFailure) {
+                                    component + " metadata package stage: " + bad
+                                }
+                            }
+                            for (bad in listOf(null, "", "latest", "0.2", "01.2.0", " 0.2.4", "0.2.4\n")) {
+                                check(runCatching { route(component, "metadata", component,
+                                    mapOf("codexAgent.runtimePackageVersion" to bad)) }.isFailure) {
+                                    component + " metadata original version: " + bad
+                                }
+                            }
+                            for (bad in listOf("", ${quote(root.resolve("predecessor").path)})) {
+                                check(runCatching { route(component, "metadata", component,
+                                    mapOf("codexAgent.runtimeMavenRepository" to bad)) }.isFailure) {
+                                    component + " metadata must reject an external Maven tree"
+                                }
+                            }
+                            for (property in listOf("runtimePackageStage", "runtimePackageVersion", "runtimeMavenRepository")) {
+                                val systemProperty = "org.gradle.project.codexAgent." + property
+                                val previous = System.getProperty(systemProperty)
+                                try {
+                                    System.setProperty(systemProperty, if (property == "runtimePackageVersion") "0.2.4"
+                                        else ${quote(root.resolve("predecessor").path)})
+                                    check(runCatching { route(component, "metadata", component) }.isFailure) {
+                                        component + " metadata must reject system-property input: " + property
+                                    }
+                                } finally {
+                                    if (previous == null) System.clearProperty(systemProperty) else System.setProperty(systemProperty, previous)
+                                }
+                            }
                             for (missing in listOf("runtimePackageStage", "runtimeNativePackageStage", "runtimePackageVersion", "runtimeNativePackageVersion")) {
                                 check(runCatching { route(component, "validation", "macos-arm64", mapOf("codexAgent." + missing to null)) }.isFailure)
                             }

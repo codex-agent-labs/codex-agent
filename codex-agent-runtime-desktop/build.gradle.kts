@@ -27,8 +27,6 @@ val importedRuntimeBinaryVersion =
     project.extra["codexAgent.runtimeBinaryVersion"] as Provider<String>
 val importedRuntimeValidationHandoff =
     providers.gradleProperty("codexAgent.runtimeValidationHandoff").map(::file)
-val importedRuntimeMavenRepository =
-    providers.gradleProperty("codexAgent.runtimeMavenRepository").map(::file)
 
 kotlin {
     explicitApi()
@@ -171,6 +169,7 @@ val writeNodeJsRuntimeBinaryOutputManifest =
         runtimeProductVersion,
         mapOf(
             "adapter" to "outputs/adapter",
+            "publication" to "outputs/publication",
             "validation-runner" to "outputs/validation-runner",
             "binding-test-runner" to "outputs/binding-test-runner",
         ),
@@ -208,6 +207,7 @@ val writeNodeWasmRuntimeBinaryOutputManifest =
         runtimeProductVersion,
         mapOf(
             "adapter" to "outputs/adapter",
+            "publication" to "outputs/publication",
             "validation-runner" to "outputs/validation-runner",
         ),
         nodeWasmRuntimeBinaryOutputs,
@@ -268,6 +268,7 @@ val stageNodeJsRuntimePackage = tasks.register<Sync>("stageNodeJsRuntimePackage"
     })
     into(nodeJsRuntimePackageOutputs)
     from(nodeJsPackageInput.map { it.dir("outputs/adapter") }) { into("adapter") }
+    from(nodeJsPackageInput.map { it.dir("outputs/publication") }) { into("publication") }
     from(nodeJsPackageInput.map { it.dir("outputs/validation-runner") }) {
         into("validation-runner")
     }
@@ -286,6 +287,7 @@ registerRuntimeOutputManifest(
     runtimeProductVersion,
     mapOf(
         "adapter" to "outputs/adapter",
+        "publication" to "outputs/publication",
         "validation-runner" to "outputs/validation-runner",
         "binding-test-runner" to "outputs/binding-test-runner",
     ),
@@ -332,6 +334,7 @@ val stageNodeWasmRuntimePackage = tasks.register<Sync>("stageNodeWasmRuntimePack
     })
     into(nodeWasmRuntimePackageOutputs)
     from(nodeWasmPackageInput.map { it.dir("outputs/adapter") }) { into("adapter") }
+    from(nodeWasmPackageInput.map { it.dir("outputs/publication") }) { into("publication") }
     from(nodeWasmPackageInput.map { it.dir("outputs/validation-runner") }) {
         into("validation-runner")
     }
@@ -347,6 +350,7 @@ registerRuntimeOutputManifest(
     runtimeProductVersion,
     mapOf(
         "adapter" to "outputs/adapter",
+        "publication" to "outputs/publication",
         "validation-runner" to "outputs/validation-runner",
     ),
     nodeWasmRuntimePackageOutputs,
@@ -669,16 +673,17 @@ runtimeAdapterMetadataComponents.forEach { (component, title) ->
         "verify${title}RuntimeMetadataInputs",
     ) {
         group = "verification"
-        description = "Verifies the authenticated $component projection and prebuilt Runtime Maven inputs."
+        description = "Verifies the authenticated $component projection and original-primary Maven handoff."
+        dependsOn("finalize${title}RuntimeMavenHandoff")
         this.component.set(component)
         stageDirectory.set(phaseRoot)
         validationHandoff.set(layout.dir(importedRuntimeValidationHandoff))
         this.projection.set(projection)
-        mavenRepository.set(layout.dir(importedRuntimeMavenRepository))
+        mavenRepository.set(layout.buildDirectory.dir("runtime-adapter-maven/$component/repository"))
     }
     val stage = tasks.register("stage${title}RuntimeMetadata") {
         group = "verification"
-        description = "Stages the authenticated $component projection and prebuilt Runtime Maven bytes."
+        description = "Stages the authenticated $component projection and original-primary Runtime Maven bytes."
         dependsOn(verifyInputs)
     }
     registerRuntimeOutputManifest(
@@ -740,6 +745,31 @@ mavenPublishing {
             connection.set("scm:git:$codexAgentRepositoryUrl.git")
             developerConnection.set("scm:git:ssh://git@github.com/${codexAgentRepositoryUrl.substringAfter("github.com/")}.git")
         }
+    }
+}
+
+val runtimeAdapterPublications = mapOf("jvm" to "jvm", "node-js" to "js", "node-wasm" to "wasmJs")
+// Create imported publications early enough for Vanniktech's own afterEvaluate callbacks.
+afterEvaluate {
+    runtimeAdapterMetadataComponents.forEach { (component, title) ->
+        if (providers.gradleProperty("codexAgent.product").orNull == "runtime" &&
+            providers.gradleProperty("codexAgent.phase").orNull == "metadata" &&
+            providers.gradleProperty("codexAgent.component").orNull == component) {
+            registerRuntimeAdapterMavenHandoff(
+                component, title, runtimeAdapterPublications.getValue(component),
+                layout.dir(providers.gradleProperty("codexAgent.runtimePackageStage").map(::file)),
+                providers.gradleProperty("codexAgent.runtimePackageVersion"),
+                runtimeProductTooling, repositoryRootFile,
+            )
+        }
+    }
+}
+// KGP supplies main/sources through nested afterEvaluate callbacks. Capture only
+// after all of them finish; the metadata helper also attaches original usages then.
+gradle.projectsEvaluated {
+    runtimeAdapterMetadataComponents.forEach { (component, title) ->
+        val publicationName = runtimeAdapterPublications.getValue(component)
+        retainRuntimeAdapterPublication(component, title, publicationName)
     }
 }
 

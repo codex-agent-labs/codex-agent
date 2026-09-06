@@ -171,6 +171,12 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
                 else receipt_map[(component, "metadata", component)]
             )
             owner["outputs"].append(_output("maven", f"outputs/{logical_path}", contents))
+            if component in RUNTIME_ADAPTERS:
+                primary = "main.jar" if component == "jvm" else "main.klib"
+                for phase in ("binary", "package"):
+                    receipt_map[(component, phase, component)]["outputs"].append(
+                        _output("publication", f"outputs/publication/{primary}", contents),
+                    )
             for suffix in CONTRACT_CHECKSUM_SUFFIXES:
                 sidecar_contents = (
                     hashlib.new(suffix[1:], contents).hexdigest().encode("ascii") + b"\n"
@@ -512,6 +518,37 @@ class RuntimeAggregateIntegrationTest(unittest.TestCase):
             refresh_reference(wrong_maven_path["aggregate_receipt"], receipt)
             with self.assertRaisesRegex(ValueError, "owned by exactly one"):
                 self.verify(wrong_maven_path)
+
+    def test_adapter_maven_primary_requires_both_original_publication_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.fixture(Path(temporary).resolve())
+            self.assertEqual(fixture["aggregate"], self.verify(fixture))
+            for component in RUNTIME_ADAPTERS:
+                primary = "main.jar" if component == "jvm" else "main.klib"
+                relative = f"outputs/publication/{primary}"
+                for phase in ("binary", "package"):
+                    for mutation in ("missing", "mismatch"):
+                        changed = copy.deepcopy(fixture)
+                        receipt = next(
+                            value for value in changed["adapter_receipt_values"]
+                            if (value["component"], value["phase"], value["target"])
+                            == (component, phase, component)
+                        )
+                        publication = next(
+                            value for value in receipt["outputs"]
+                            if value["relativePath"] == relative
+                        )
+                        if mutation == "missing":
+                            receipt["outputs"].remove(publication)
+                        else:
+                            publication["sha256"] = sha256_bytes(b"different original publication")
+                        with self.subTest(component=component, phase=phase, mutation=mutation), \
+                                self.assertRaisesRegex(
+                                    ValueError,
+                                    f"Runtime {component} Maven runtime-resolution differs from "
+                                    f"its original {phase} publication",
+                                ):
+                            self.verify(changed)
 
     def test_attestation_builder_rejects_unverified_aggregate_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -68,6 +68,8 @@ pluginManagement {
         commandLineProperties["codexAgent.component"] == "node-js" && requestedPhase == "validation"
     val adapterHostValidation = requestedProduct == "runtime" && requestedPhase == "validation" &&
         requestedComponent in adapterTargets && requestedTarget in nativeRuntimeTargets
+    val adapterMetadata = requestedProduct == "runtime" && requestedPhase == "metadata" &&
+        requestedComponent in adapterTargets
     if (requestedProduct != null) {
         require(requestedProduct == "runtime" && requestedComponent in runtimeTargets &&
             requestedPhase in setOf("binary", "package", "validation", "metadata") &&
@@ -98,6 +100,8 @@ pluginManagement {
     }
     val requiredPredecessors = if (adapterHostValidation) {
         listOf("codexAgent.runtimePackageStage", "codexAgent.runtimeNativePackageStage")
+    } else if (adapterMetadata) {
+        listOf("codexAgent.runtimePackageStage")
     } else {
         listOfNotNull(nativePredecessorProperty)
     }
@@ -133,7 +137,14 @@ pluginManagement {
             }
         }
     }
-    if (adapterHostValidation || bindingValidation) {
+    if (adapterMetadata) {
+        val name = "codexAgent.runtimeMavenRepository"
+        require(name !in commandLineProperties && System.getProperty("org.gradle.project.$name") == null &&
+            System.getenv("ORG_GRADLE_PROJECT_$name") == null) {
+            "$name is not an adapter metadata input; publish from the original Runtime package stage"
+        }
+    }
+    if (adapterHostValidation || bindingValidation || adapterMetadata) {
         val versionProperties = listOf("codexAgent.runtimePackageVersion") +
             if (adapterHostValidation) listOf("codexAgent.runtimeNativePackageVersion") else emptyList()
         versionProperties.forEach { name ->

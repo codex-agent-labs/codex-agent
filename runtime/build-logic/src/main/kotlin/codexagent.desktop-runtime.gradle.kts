@@ -495,6 +495,11 @@ val runtimeNativeBinaryManifestTasks = desktopManifest.distributions.associate {
             dependsOn(compileDesktopProcessSupervisor)
         }
         into(phaseOutputs)
+        // Retain the exact settings-verified identity for later artifact-only metadata.
+        val runtimeBinaryIdentity = verifiedContractDirectory.map { it.file("runtime-binary-identity.json") }
+        inputs.file(runtimeBinaryIdentity).withPropertyName("runtimeBinaryIdentity")
+            .withPathSensitivity(PathSensitivity.NONE)
+        from(runtimeBinaryIdentity) { into("identity") }
         from(layout.buildDirectory.dir("classes/kotlin/$target/main/klib/codex-agent-runtime-desktop")) {
             into("kmp-klib")
         }
@@ -538,6 +543,7 @@ val runtimeNativeBinaryManifestTasks = desktopManifest.distributions.associate {
             "app-server" to "outputs/app-server",
             "c-abi" to "outputs/c-abi",
             "kmp-klib" to "outputs/kmp-klib",
+            "runtime-identity" to "outputs/identity",
             "supervisor" to "outputs/supervisor",
             "validation-runner" to "outputs/validation-runner",
         ),
@@ -899,6 +905,7 @@ val writeJvmRuntimeBinaryOutputManifest = registerRuntimeOutputManifest(
     runtimeProductVersion,
     mapOf(
         "adapter" to "outputs/adapter",
+        "publication" to "outputs/publication",
         "validation-runner" to "outputs/validation-runner",
     ),
     jvmRuntimeBinaryOutputs,
@@ -950,6 +957,7 @@ val stageJvmRuntimePackage = tasks.register<Sync>("stageJvmRuntimePackage") {
     })
     into(jvmRuntimePackageOutputs)
     from(jvmRuntimeBinaryStageRoot.map { it.dir("outputs/adapter") }) { into("adapter") }
+    from(jvmRuntimeBinaryStageRoot.map { it.dir("outputs/publication") }) { into("publication") }
     from(jvmRuntimeBinaryStageRoot.map { it.dir("outputs/validation-runner") }) {
         into("validation-runner")
     }
@@ -965,6 +973,7 @@ registerRuntimeOutputManifest(
     runtimeProductVersion,
     mapOf(
         "adapter" to "outputs/adapter",
+        "publication" to "outputs/publication",
         "validation-runner" to "outputs/validation-runner",
     ),
     jvmRuntimePackageOutputs,

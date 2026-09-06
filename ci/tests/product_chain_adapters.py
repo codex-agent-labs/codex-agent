@@ -123,6 +123,8 @@ def build_adapters(
     runtime_maven_files = list(variants["runtime_maven_files"])
     maven_outputs: dict[str, list[dict[str, Any]]] = {}
     maven_contents_by_component: dict[str, dict[str, bytes]] = {}
+    publication_outputs: dict[str, list[dict[str, Any]]] = {}
+    publication_contents: dict[str, dict[str, bytes]] = {}
     for component in RUNTIME_ADAPTERS:
         contents = f"S808 synthetic {component} Maven Runtime fixture\n".encode()
         logical_path = f"maven/{component}/runtime.bin"
@@ -156,6 +158,9 @@ def build_adapters(
         maven_contents_by_component[component] = {
             f"outputs/{record['path']}": Path(record["file"]).read_bytes() for record in files
         }
+        publication_path = f"outputs/publication/{'main.jar' if component == 'jvm' else 'main.klib'}"
+        publication_outputs[component] = [output("publication", publication_path, contents)]
+        publication_contents[component] = {publication_path: contents}
     runtime_maven_files.sort(key=lambda record: record["path"])
 
     receipt_paths: dict[tuple[str, str, str], Path] = {}
@@ -224,9 +229,9 @@ def build_adapters(
                 "adapter-binary",
                 f"outputs/binary/{component}.bin",
                 f"S808 synthetic {component} binary fixture\n".encode(),
-            ), *runner_outputs],
+            ), *publication_outputs[component], *runner_outputs],
             contents={f"outputs/binary/{component}.bin": f"S808 synthetic {component} binary fixture\n".encode(),
-                      **runner_contents},
+                      **publication_contents[component], **runner_contents},
             upstream=[contract_reference(contract, component)],
         )
         package_payload = f"S808 synthetic {component} package fixture\n".encode() + package_suffix
@@ -254,7 +259,8 @@ def build_adapters(
             package_stages[component] = stage
             package_contents = {value["relativePath"]: (stage / value["relativePath"]).read_bytes()
                                 for value in package_outputs}
-        package_outputs.extend(runner_outputs)
+        package_outputs.extend((*publication_outputs[component], *runner_outputs))
+        package_contents.update(publication_contents[component])
         package_contents.update(runner_contents)
         package = write(
             component,

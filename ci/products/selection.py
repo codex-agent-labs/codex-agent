@@ -403,6 +403,8 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(("macos-arm64",), "validation")
     if name == "RuntimeAdapterMetadataInputsTask.kt":
         return _runtime(("jvm", "node-js", "node-wasm"), "metadata") | _runtime(("macos-arm64",), "validation")
+    if name == "RuntimeAdapterMavenHandoff.kt":
+        return _runtime(("jvm", "node-js", "node-wasm"))
     if name == "ImportedRuntimeVariantTask.kt":
         return _runtime(NATIVE_TARGETS, "metadata")
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_VALIDATION:
@@ -996,6 +998,10 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         direct.update(PhaseInstanceId("runtime", target, "validation", target) for target in NATIVE_TARGETS)
     if path == "runtime/build-logic/src/main/kotlin/RuntimeAdapterMetadataInputsTask.kt":
         direct.add(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"))
+    if path == "runtime/build-logic/src/main/kotlin/RuntimeAdapterMavenHandoff.kt":
+        # Metadata executes the imported publication producer independently of binary capture.
+        direct.update(PhaseInstanceId("runtime", component, "metadata", component)
+                      for component in ("jvm", "node-js", "node-wasm"))
     if path == "runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt":
         # Checked-byte adapter staging hashes imports independently of validation.
         direct.update(instance for instance in selected if instance.phase == "validation")

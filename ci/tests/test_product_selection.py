@@ -1361,6 +1361,42 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((path,) if instance in expected else (), phase_inventory_paths((path,), instance))
 
+    def test_runtime_adapter_maven_handoff_keys_binary_capture_and_metadata_only(self):
+        from ci.tests.test_product_plan import plan
+        path = "runtime/build-logic/src/main/kotlin/RuntimeAdapterMavenHandoff.kt"
+        adapters = {"jvm", "node-js", "node-wasm"}
+        direct = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "runtime"
+                  and instance.component in adapters and instance.phase in {"binary", "metadata"}}
+        selected = identities(classify_paths((path,)))
+        self.assertEqual(6, len(direct))
+        self.assertTrue({instance for instance in PHASE_INSTANCE_IDS
+                         if instance.product == "runtime" and instance.component in adapters}.issubset(selected))
+        self.assertIn(PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"), selected)
+        self.assertFalse(any(instance.product == "runtime" and instance.component in NATIVE_TARGETS
+                             and instance.phase in {"binary", "package"} for instance in selected))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / path
+            source.parent.mkdir(parents=True)
+            for instance in PHASE_INSTANCE_IDS:
+                with self.subTest(instance=instance):
+                    self.assertEqual((path,) if instance in direct else (),
+                                     phase_inventory_paths((path,), instance))
+                    if instance.product != "runtime":
+                        continue
+                    keys = []
+                    for contents in (b"a", b"b"):
+                        source.write_bytes(contents)
+                        inventory = phase_file_inventory(root, (path,), instance)
+                        self.assertEqual(
+                            [{"relativePath": path, "bytes": 1, "sha256": sha256_bytes(contents)}]
+                            if instance in direct else [], inventory,
+                        )
+                        # Fixed original predecessors isolate direct execution
+                        # ownership from normal artifact-driven successor misses.
+                        keys.append(plan(instance, inventory=inventory)["buildKey"])
+                    self.assertEqual(instance in direct, keys[0] != keys[1])
+
     def test_standalone_python_capture_keys_every_independent_caller(self):
         path = "runtime/build-logic/src/main/kotlin/RuntimeProductPythonTooling.kt"
         expected = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "runtime" and (
