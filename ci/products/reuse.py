@@ -10,7 +10,9 @@ from typing import Any
 from .aggregate import verified_index_content, verify_immutable_product_indexes
 from .contract_projection import VerifiedContractProjection, VerifiedContractExecutionProjection, verify_contract_component_projection
 from .inventory import (
+    canonical_json_bytes,
     load_canonical_json_bytes,
+    read_regular_file_bytes,
     require_array,
     require_exact_keys,
     require_integer,
@@ -22,6 +24,7 @@ from .inventory import (
 from .index import (
     _verify_index_receipt,
     verify_contract_index_object,
+    verify_native_runtime_index_object,
     SignedProductIndex,
     stable_index_identity,
     verify_release_product_index,
@@ -40,6 +43,7 @@ from .plan import (
     verify_runtime_validation_projection,
     native_runtime_validation_dependencies, _native_runtime_projections_from_request,
     NATIVE_RUNTIME_EVIDENCE_KEYS, VerifiedNativeRuntimeProjection,
+    _native_runtime_projection_from_record, _contract_projection_from_request_components,
 )
 from .receipt import output_inventory_digest, validate_phase_receipt
 from .receipt import build_key_payload
@@ -230,6 +234,7 @@ class LookupSession:
         promoted_main: RemoteCatalog | None = None,
         same_pr: RemoteCatalog | None = None,
         local: LocalCatalog | None = None,
+        native_runtime_projection=None,
     ) -> None:
         self.repository = require_relative_path(repository, "lookup repository")
         if self.repository.count("/") != 1:
@@ -240,6 +245,10 @@ class LookupSession:
         self._restore_root = None if restore_root is None else Path(restore_root)
         self._contract_stages: dict[tuple[str, str], Path] = {}
         self._execution_projections: dict[tuple[str, str, str], VerifiedContractExecutionProjection] = {}
+        if native_runtime_projection is not None and not callable(native_runtime_projection):
+            raise ValueError("Native Runtime comparison provider must be callable")
+        self._native_runtime_projection = native_runtime_projection
+        self._native_projections: dict[bytes, VerifiedNativeRuntimeProjection] = {}
         self._remote: dict[str, dict[str, list[_RemoteCandidate]]] = {
             source: {} for source in SOURCES[:-1]
         }
@@ -250,6 +259,7 @@ class LookupSession:
             for prior in stable_indexes:
                 verify_immutable_product_indexes(
                     prior, index, contract_execution_projection=self._catalog_execution_projection,
+                    native_runtime_projection=self._catalog_native_projection,
                 )
             stable_indexes.append(index)
             loaded_indexes.append(index)
@@ -329,14 +339,30 @@ class LookupSession:
                 return proof
         raise ValueError("Conflicting Contract execution inventories require both authenticated objects")
 
+    def _catalog_native_projection(self, entry: dict[str, Any]) -> VerifiedNativeRuntimeProjection:
+        key = canonical_json_bytes(entry)
+        if key in self._native_projections:
+            return self._native_projections[key]
+        for catalog in self._remote.values():
+            for candidate in catalog.get(entry["buildKey"], ()):
+                if candidate.entry != entry or candidate.object_path is None:
+                    continue
+                try:
+                    proof = verify_native_runtime_index_object(entry, candidate.object_path, self._native_runtime_projection)
+                except FileNotFoundError:
+                    continue
+                self._native_projections[key] = proof
+                return proof
+        raise ValueError("Conflicting native Runtime inventories require both authenticated objects")
+
     def _reject_conflicting_catalog_outputs(self, indexes: list[dict[str, Any]]) -> None:
         entries_by_key: dict[str, dict[str, Any]] = {}
         for index in indexes:
             for entry in index["entries"]:
                 prior = entries_by_key.setdefault(entry["buildKey"], entry)
                 if prior["outputs"] != entry["outputs"]:
-                    left = verified_index_content(prior, self._catalog_execution_projection)
-                    right = verified_index_content(entry, self._catalog_execution_projection)
+                    left = verified_index_content(prior, self._catalog_execution_projection, self._catalog_native_projection)
+                    right = verified_index_content(entry, self._catalog_execution_projection, self._catalog_native_projection)
                     if left["outputs"] != right["outputs"]:
                         raise ValueError("Signed product indexes conflict for an identical build key")
 
@@ -690,6 +716,58 @@ def _local_catalog(restore_root: Path, value: Any) -> LocalCatalog | None:
     })
 
 
+def _native_evidence_paths(root, value):
+    record = require_exact_keys(value, NATIVE_RUNTIME_EVIDENCE_KEYS, "native Runtime evidence")
+    target = require_string(record["target"], "native Runtime target")
+    if target not in NATIVE_TARGETS:
+        raise ValueError("Native Runtime evidence target is unsupported")
+    phases = require_exact_keys(record["phaseReceipts"], {"binary", "package", "validation", "metadata"},
+                                "native Runtime phase receipts")
+    return {
+        "target": target,
+        "phaseReceipts": {phase: str(_artifact_path(root, path, f"native Runtime {phase} receipt"))
+                          for phase, path in phases.items()},
+        **{name: None if record[name] is None and name in {"keyring", "keysDirectory"} else
+           str(_artifact_path(root, record[name], f"native Runtime {name}"))
+           for name in NATIVE_RUNTIME_EVIDENCE_KEYS - {"target", "phaseReceipts"}},
+    }
+
+
+def _native_comparison_provider(root, value):
+    records = {}
+    for member in require_array(value, "native Runtime comparison evidence"):
+        record = require_exact_keys(member, {"receiptSha256", "contractEvidence", "runtimeEvidence"},
+                                    "native Runtime comparison evidence")
+        digest = require_sha256(record["receiptSha256"], "native Runtime comparison receipt digest")
+        if digest in records:
+            raise ValueError("Duplicate native Runtime comparison receipt")
+        contract = require_exact_keys(record["contractEvidence"], _CONTRACT_EVIDENCE_KEYS | {"stageRoot", "phaseReceipt"},
+                                      "native comparison Contract evidence")
+        evidence = _contract_evidence(root, {key: contract[key] for key in _CONTRACT_EVIDENCE_KEYS})
+        evidence.update({key: _artifact_path(root, contract[key], f"comparison Contract {key}")
+                         for key in ("stageRoot", "phaseReceipt")})
+        records[digest] = ({key: str(value) if isinstance(value, Path) else value for key, value in evidence.items()},
+                           _native_evidence_paths(root, record["runtimeEvidence"]))
+    if list(records) != sorted(records):
+        raise ValueError("Native Runtime comparison receipts must be sorted")
+
+    def verify(entry, _verified_object):
+        pair = records.get(entry["receiptSha256"])
+        if pair is None:
+            raise ValueError("Native Runtime comparison lacks original K/R evidence")
+        contract, runtime = pair
+        if runtime["target"] != entry["target"]:
+            raise ValueError("Native Runtime comparison target differs from index")
+        receipt = validate_phase_receipt(load_canonical_json_bytes(read_regular_file_bytes(
+            Path(contract["phaseReceipt"]), max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)))
+        projection = _contract_projection_from_request_components(
+            {"contract": receipt["productVersion"]}, contract, ("common", entry["target"]))
+        return _native_runtime_projection_from_record(runtime, projection,
+            Path(contract["stageRoot"]) / projection.receipt_value()["bundlePath"], contract["expectedTrustDomain"])
+
+    return verify if records else None
+
+
 def plan_reuse_wave(
     value: Any,
     *,
@@ -713,7 +791,8 @@ def plan_reuse_wave(
             "runtimeValidationEvidence",
             "availableObjects",
             "catalogs",
-        } | ({"nativeRuntimeEvidence"} if type(value) is dict and "nativeRuntimeEvidence" in value else set()),
+        } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence") if key in value}
+             if type(value) is dict else set()),
         "reuse-wave request",
     )
     if require_integer(request["schemaVersion"], "reuse-wave request.schemaVersion", 1) != 1:
@@ -722,6 +801,7 @@ def plan_reuse_wave(
         raise ValueError("Unsupported plan requestType")
     repository_root = _absolute_path(request["repositoryRoot"], "reuse-wave request.repositoryRoot")
     artifact_root = _absolute_path(request["artifactRoot"], "reuse-wave request.artifactRoot")
+    native_comparison = _native_comparison_provider(artifact_root, request.get("nativeRuntimeComparisonEvidence", []))
     revision = require_string(request["repositoryRevision"], "reuse-wave request.repositoryRevision")
     if _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Reuse-wave repositoryRevision must be an exact lowercase Git object ID")
@@ -789,20 +869,11 @@ def plan_reuse_wave(
     native_targets = {dependency.target for instance in closure for dependency in native_runtime_validation_dependencies(instance)}
     native_evidence = {}
     for member in require_array(request.get("nativeRuntimeEvidence", []), "reuse-wave native Runtime evidence"):
-        record = require_exact_keys(member, NATIVE_RUNTIME_EVIDENCE_KEYS, "reuse-wave native Runtime evidence")
+        record = _native_evidence_paths(artifact_root, member)
         target = record["target"]
         if target not in native_targets or target in native_evidence:
             raise ValueError("Unexpected or duplicate reuse-wave native Runtime evidence target")
-        phases = require_exact_keys(record["phaseReceipts"], {"binary", "package", "validation", "metadata"},
-                                    "reuse-wave native Runtime phase receipts")
-        native_evidence[target] = {
-            "target": target,
-            "phaseReceipts": {phase: str(_artifact_path(artifact_root, path, f"native Runtime {phase} receipt"))
-                              for phase, path in phases.items()},
-            **{name: None if record[name] is None and name in {"keyring", "keysDirectory"} else
-               str(_artifact_path(artifact_root, record[name], f"native Runtime {name}"))
-               for name in NATIVE_RUNTIME_EVIDENCE_KEYS - {"target", "phaseReceipts"}},
-        }
+        native_evidence[target] = record
     if list(native_evidence) != sorted(native_evidence):
         raise ValueError("Reuse-wave native Runtime evidence targets must be sorted")
     phase_inputs: dict[PhaseInstanceId, dict[str, Any]] = {}
@@ -891,6 +962,7 @@ def plan_reuse_wave(
         restore_root = Path(temporary).resolve()
         session = LookupSession(
             repository=require_string(request["repository"], "reuse-wave request.repository"),
+            native_runtime_projection=native_comparison,
             pull_request=pull_request,
             restore_root=restore_root / "remote",
             stable=stable,

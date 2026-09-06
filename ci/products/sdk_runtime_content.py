@@ -34,9 +34,10 @@ _VERIFIED_NATIVE_RUNTIME = object()
 class VerifiedNativeRuntimeProjection:
     """One exact original Runtime receipt authenticated for native SDK key use."""
 
-    __slots__ = ("_receipt", "_value", "_contract", "_verified")
+    __slots__ = ("_receipt", "_value", "_contract", "_verified", "_content")
 
-    def __init__(self, receipt: bytes, digest: str, contract: dict[str, Any], verified: object):
+    def __init__(self, receipt: bytes, digest: str, contract: dict[str, Any], verified: object,
+                 content: bytes | None = None):
         if verified is not _VERIFIED_NATIVE_RUNTIME:
             raise TypeError("Native Runtime projection must come from full K/R verification")
         self._receipt = receipt
@@ -47,6 +48,7 @@ class VerifiedNativeRuntimeProjection:
         })
         self._contract = canonical_json_bytes(contract)
         self._verified = verified
+        self._content = content
 
     def receipt_value(self, receipt: dict[str, Any], contract_projection: Any) -> dict[str, Any]:
         from .contract_projection import VerifiedContractProjection
@@ -61,6 +63,26 @@ class VerifiedNativeRuntimeProjection:
     @property
     def target(self) -> str:
         return load_canonical_json_bytes(self._receipt)["target"]
+
+    def output_inventory(self, receipt_sha256: str, outputs: list[dict[str, Any]], *,
+                         identity: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Comparison-only content inventory; never a replacement stage or receipt."""
+        if self._verified is not _VERIFIED_NATIVE_RUNTIME or self._content is None:
+            raise ValueError("Verified native Runtime content is required for comparison")
+        value = load_canonical_json_bytes(self._value)
+        if receipt_sha256 != sha256_bytes(self._receipt) or value["receiptSha256"] != receipt_sha256:
+            raise ValueError("Native Runtime content requires its exact original receipt")
+        receipt = load_canonical_json_bytes(self._receipt)
+        if identity is not None and any(identity.get(key) != receipt[key] for key in
+                ("product", "component", "phase", "target", "productVersion", "buildKey")):
+            raise ValueError("Native Runtime comparison identity differs from its original receipt")
+        if outputs != receipt["outputs"]:
+            raise ValueError("Native Runtime content and original output inventory differ")
+        if sha256_bytes(self._content) != value["sha256"]:
+            raise ValueError("Native Runtime content digest differs from verified bytes")
+        return [{"kind": "runtime-native-validation-content",
+                 "relativePath": "outputs/runtime-native-validation-content.json",
+                 "bytes": len(self._content), "sha256": value["sha256"]}]
 
 
 def _native_contract_identity(projection: Any, target: str) -> dict[str, Any]:
@@ -79,10 +101,9 @@ def verify_native_runtime_projection(*args: Any, **kwargs: Any) -> VerifiedNativ
     """Mint only after the complete captured K/R gate; never accept a supplied digest."""
     content, receipt = verify_native_runtime_validation_content(*args, **kwargs)
     projection = kwargs.get("contract_projection") if "contract_projection" in kwargs else args[7]
-    return VerifiedNativeRuntimeProjection(
-        receipt, sha256_bytes(canonical_json_bytes(content)),
-        _native_contract_identity(projection, content["target"]), _VERIFIED_NATIVE_RUNTIME,
-    )
+    data = canonical_json_bytes(content)
+    return VerifiedNativeRuntimeProjection(receipt, sha256_bytes(data),
+        _native_contract_identity(projection, content["target"]), _VERIFIED_NATIVE_RUNTIME, data)
 
 
 def verify_native_runtime_validation_content(

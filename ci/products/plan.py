@@ -496,7 +496,7 @@ def plan_phase(
 
 
 def verify_build_key_output_consistency(
-    receipts: list[dict[str, Any]], *, contract_execution_projection=None,
+    receipts: list[dict[str, Any]], *, contract_execution_projection=None, native_runtime_projection=None,
 ) -> None:
     """Reject conflicting content; differing raw execution requires verified proof."""
     receipts_by_key: dict[str, dict[str, Any]] = {}
@@ -504,6 +504,19 @@ def verify_build_key_output_consistency(
         receipt = validate_phase_receipt(value)
         previous = receipts_by_key.setdefault(receipt["buildKey"], receipt)
         if previous["outputs"] != receipt["outputs"]:
+            if native_runtime_projection is not None and all(
+                member["product"] == "runtime" and member["phase"] == "validation"
+                and member["component"] == member["target"] and member["target"] in NATIVE_TARGETS
+                for member in (previous, receipt)
+            ):
+                content = []
+                for member in (previous, receipt):
+                    proof = native_runtime_projection(member)
+                    if type(proof) is not VerifiedNativeRuntimeProjection:
+                        raise ValueError("Verified native Runtime projection is required for consistency")
+                    content.append(proof.output_inventory(sha256_bytes(canonical_json_bytes(member)), member["outputs"]))
+                if content[0] == content[1]:
+                    continue
             if contract_execution_projection is not None and all(
                 _receipt_identity(member) == PhaseInstanceId("contract", "contract", "binary", "common")
                 for member in (previous, receipt)
@@ -655,6 +668,21 @@ NATIVE_RUNTIME_EVIDENCE_KEYS = {
 }
 
 
+def _native_runtime_projection_from_record(value, contract_projection, contract_payload, expected_trust_domain):
+    record = require_exact_keys(value, NATIVE_RUNTIME_EVIDENCE_KEYS, "native Runtime evidence")
+    def path(name: str, optional: bool = False) -> Path | None:
+        return None if optional and record[name] is None else Path(require_string(record[name], f"native Runtime {name}"))
+    phases = require_exact_keys(record["phaseReceipts"], {"binary", "package", "validation", "metadata"},
+                                "native Runtime phase receipts")
+    return verify_native_runtime_projection(
+        target=require_string(record["target"], "native Runtime target"), runtime_stage_root=path("stageRoot"),
+        phase_receipts={phase: Path(require_string(source, f"native Runtime {phase} receipt")) for phase, source in phases.items()},
+        variant_payload=path("payload"), attestation=path("attestation"), signature=path("attestationSignature"),
+        public_key=path("publicKey"), contract_projection=contract_projection, contract_payload=contract_payload,
+        required_trust_domain=expected_trust_domain, keyring=path("keyring", True), keys_directory=path("keysDirectory", True),
+    )
+
+
 def _native_runtime_projections_from_request(
     instance: PhaseInstanceId, upstream_receipts: Any, value: Any,
     contract_projection: VerifiedContractProjection | None, contract_payload: Path | None,
@@ -671,18 +699,7 @@ def _native_runtime_projections_from_request(
     receipts = {_receipt_identity(validate_phase_receipt(item)): item for item in upstream_receipts}
     projections = []
     for identity, member in zip(dependencies, records, strict=True):
-        record = require_exact_keys(member, NATIVE_RUNTIME_EVIDENCE_KEYS, "native Runtime evidence")
-        def path(name: str, optional: bool = False) -> Path | None:
-            return None if optional and record[name] is None else Path(require_string(record[name], f"native Runtime {name}"))
-        phases = require_exact_keys(record["phaseReceipts"], {"binary", "package", "validation", "metadata"},
-                                    "native Runtime phase receipts")
-        projection = verify_native_runtime_projection(
-            target=identity.target, runtime_stage_root=path("stageRoot"),
-            phase_receipts={phase: Path(require_string(source, f"native Runtime {phase} receipt")) for phase, source in phases.items()},
-            variant_payload=path("payload"), attestation=path("attestation"), signature=path("attestationSignature"),
-            public_key=path("publicKey"), contract_projection=contract_projection, contract_payload=contract_payload,
-            required_trust_domain=expected_trust_domain, keyring=path("keyring", True), keys_directory=path("keysDirectory", True),
-        )
+        projection = _native_runtime_projection_from_record(member, contract_projection, contract_payload, expected_trust_domain)
         if identity not in receipts:
             raise ValueError("Native Runtime evidence lacks its exact upstream receipt")
         projection.receipt_value(receipts[identity], contract_projection)

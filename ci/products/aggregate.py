@@ -36,7 +36,8 @@ from .receipt import (
     validate_producer,
     verify_output_manifest,
 )
-from .registry import PhaseInstanceId
+from .registry import NATIVE_TARGETS, PhaseInstanceId
+from .sdk_runtime_content import VerifiedNativeRuntimeProjection
 from .restore import (
     PHASE_RECEIPT_NAME,
     object_relative_path,
@@ -1351,8 +1352,18 @@ def validate_product_index(value: Any) -> dict[str, Any]:
     return index
 
 
-def verified_index_content(entry: dict[str, Any], contract_execution_projection=None) -> dict[str, Any]:
+def verified_index_content(entry: dict[str, Any], contract_execution_projection=None,
+                           native_runtime_projection=None) -> dict[str, Any]:
     """Comparison-only view; never rewrite the signed index or original receipt."""
+    if (native_runtime_projection is not None and entry["product"] == "runtime"
+            and entry["phase"] == "validation" and entry["component"] == entry["target"]
+            and entry["target"] in NATIVE_TARGETS):
+        proof = native_runtime_projection(entry)
+        if type(proof) is not VerifiedNativeRuntimeProjection:
+            raise ValueError("Verified native Runtime projection is required for index consistency")
+        outputs = proof.output_inventory(entry["receiptSha256"], entry["outputs"], identity=entry)
+        return {**entry, "outputs": outputs, "outputInventoryDigest": output_inventory_digest(outputs),
+                "artifactName": None, "artifactSha256": None}
     if contract_execution_projection is None or tuple(entry[field] for field in (
         "product", "component", "phase", "target",
     )) != ("contract", "contract", "binary", "common"):
@@ -1367,7 +1378,8 @@ def verified_index_content(entry: dict[str, Any], contract_execution_projection=
     return result
 
 
-def verify_immutable_product_indexes(existing: Any, candidate: Any, *, contract_execution_projection=None) -> None:
+def verify_immutable_product_indexes(existing: Any, candidate: Any, *, contract_execution_projection=None,
+                                     native_runtime_projection=None) -> None:
     prior = validate_product_index(existing)["entries"]
     proposed = validate_product_index(candidate)["entries"]
     by_build_key = {entry["buildKey"]: entry for entry in prior}
@@ -1382,18 +1394,18 @@ def verify_immutable_product_indexes(existing: Any, candidate: Any, *, contract_
             by_build_key[entry["buildKey"]]["outputInventoryDigest"] != entry["outputInventoryDigest"]
             or by_build_key[entry["buildKey"]]["outputs"] != entry["outputs"]
         ):
-            left = verified_index_content(by_build_key[entry["buildKey"]], contract_execution_projection)
-            right = verified_index_content(entry, contract_execution_projection)
+            left = verified_index_content(by_build_key[entry["buildKey"]], contract_execution_projection, native_runtime_projection)
+            right = verified_index_content(entry, contract_execution_projection, native_runtime_projection)
             if left["outputs"] != right["outputs"]:
                 raise ValueError("Identical product build key has a conflicting output inventory")
     for identity in set(prior_releases) & set(proposed_releases):
         if _release_output_projection(prior_releases[identity]) != \
                 _release_output_projection(proposed_releases[identity]):
             left = _release_output_projection([
-                verified_index_content(entry, contract_execution_projection) for entry in prior_releases[identity]
+                verified_index_content(entry, contract_execution_projection, native_runtime_projection) for entry in prior_releases[identity]
             ])
             right = _release_output_projection([
-                verified_index_content(entry, contract_execution_projection) for entry in proposed_releases[identity]
+                verified_index_content(entry, contract_execution_projection, native_runtime_projection) for entry in proposed_releases[identity]
             ])
             if left != right:
                 raise ValueError("Stable product identity has different asset names or output bytes")

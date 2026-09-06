@@ -282,6 +282,20 @@ class ProductIndexTest(unittest.TestCase):
         shutil.copyfile(stored["path"], transport)
         return IndexEntrySource(contents, "outputs/execution/contract-execution.zip"), transport
 
+    def test_signed_writer_forwards_native_comparison_authorities_to_the_same_builder(self):
+        provider = mock.Mock()
+        with mock.patch.object(product_index, "build_product_index", wraps=build_product_index) as builder:
+            write_signed_product_index(
+                [source(trust_domain="development")], repository=REPOSITORY,
+                context=context("development"), trust_domain="development", signing=self.development_signing,
+                producer=producer("development"), stable_history=None, private_key=self.private_key,
+                public_key=self.public_key, manifest_path=self.root / "native-forwarding.json",
+                native_runtime_objects={}, native_runtime_projection=provider,
+            )
+        self.assertEqual({}, builder.call_args.kwargs["native_runtime_objects"])
+        self.assertIs(provider, builder.call_args.kwargs["native_runtime_projection"])
+        provider.assert_not_called()  # No conflict/history means no unnecessary K/R verification.
+
     def test_stable_publication_authenticates_original_execution_objects_without_rewriting(self):
         first, first_object = self.execution_source("first-execution")
         second, second_object = self.execution_source("second-execution", execution_context="second")
