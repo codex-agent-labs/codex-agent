@@ -1477,6 +1477,11 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 "--sdk-validation-tooling", str(tooling), "--sdk-validation-evidence", "sdk-originals"]))
         self.assertEqual(context, advance.call_args.kwargs["sdk_validation_tooling"])
         self.assertEqual((Path("sdk-originals"),), advance.call_args.kwargs["sdk_evidence_roots"])
+        with mock.patch.object(product_reuse, "advance_contract") as advance:
+            self.assertEqual(0, product_reuse.main([
+                "advance-contract", "--plan", "plan.json", "--discovery-root", "discovery",
+                "--destination", "advanced", "--github-output", "output", "--sdk-validation-tooling", str(tooling)]))
+        self.assertEqual(context, advance.call_args.kwargs["sdk_validation_tooling"])
 
     def test_sdk_tooling_is_injected_only_into_current_planner_invocation(self):
         retained = {"sdkValidationEvidence": []}
@@ -1489,6 +1494,40 @@ class ProductReuseAdapterTest(unittest.TestCase):
         with mock.patch.object(product_reuse, "plan_reuse_wave") as wave, self.assertRaisesRegex(ValueError, "current-invocation"):
             product_reuse._plan_with_sdk_tooling({**retained, "sdkValidationTooling": authority}, authority)
         wave.assert_not_called()
+
+    def test_discovery_captures_sdk_catalog_roots_in_lookup_order_before_planning(self):
+        root = self.root.resolve()
+        plan = impact_plan(changed=["codex-agent-bindings/python/src/codex_agent/_ffi.py"])
+        instance = PhaseInstanceId("contract", "contract", "metadata", "common")
+        catalogs = [product_reuse.Catalog(source, {}, sha256_bytes(source.encode()),
+                    {"manifest": source + "/product-index.json"}, {}, sdk_validation_evidence_root=root / source)
+                    for source in ("same-pr", "stable", "promoted-main")]
+        tooling = {"current-caller": "never-serialized"}
+        records = [{"receiptSha256": "sha256:" + "a" * 64}]
+        def capture(roots, destination, artifact_root, **policy):
+            self.assertEqual(tuple(root / name for name in ("stable", "promoted-main", "same-pr", "explicit")), roots)
+            self.assertEqual(root, policy["repository"])
+            self.assertEqual(plan["validationCommit"], policy["policy_revision"])
+            self.assertIs(tooling, policy["tooling"])
+            return records  # Routing fixture only; real carrier authentication has separate tests.
+        def wave(request, **kwargs):
+            self.assertEqual(records, request["sdkValidationEvidence"])
+            self.assertIs(tooling, request["sdkValidationTooling"])
+            return {"fullReuse": False, "phases": []}
+        destination = root / "build/product-reuse"
+        with mock.patch.object(product_reuse, "_validate_plan", return_value=plan), \
+                mock.patch.object(product_reuse, "_requested", return_value=(instance,)), \
+                mock.patch.object(product_reuse, "_authorities", return_value=([], None)), \
+                mock.patch.object(product_reuse, "_versions", return_value=VERSIONS), \
+                mock.patch.object(product_reuse, "_release_trust", return_value=None), \
+                mock.patch.object(product_reuse, "_discover_catalogs", return_value=catalogs), \
+                mock.patch.object(product_reuse, "_capture_sdk_handoffs", side_effect=capture), \
+                mock.patch.object(product_reuse, "plan_reuse_wave", side_effect=wave):
+            product_reuse.discover(self.plan_path, destination, self.output, repository_root=root,
+                environ={}, sdk_evidence_roots=(root / "explicit",), sdk_validation_tooling=tooling)
+        retained = product_inventory.load_canonical_json_bytes((destination / "contract-reuse-request.json").read_bytes())
+        self.assertEqual(records, retained["sdkValidationEvidence"])
+        self.assertNotIn("sdkValidationTooling", retained)
 
     def test_contract_ready_phase_is_exactly_one_known_contract_phase(self) -> None:
         binary = PhaseInstanceId("contract", "contract", "binary", "common")
@@ -2249,8 +2288,10 @@ class ProductReuseAdapterTest(unittest.TestCase):
         }
 
         advanced_second = None
+        tooling = {"current-caller": "contract-replay-only"}
 
         def wave(value, *, build_plan_consumer):
+            self.assertIs(tooling, value["sdkValidationTooling"])
             if not value["availableObjects"]:
                 build_plan_consumer(binary, binary_plan)
                 return prior
@@ -2278,6 +2319,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                     output,
                     repository_root=resolved_root,
                     environ={"GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "2"},
+                    sdk_validation_tooling=tooling,
                 )
             return result, destination, output
 

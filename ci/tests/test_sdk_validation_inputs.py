@@ -4,10 +4,14 @@ from copy import deepcopy
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, sha256_bytes, snapshot_regular_tree
 from ci.products.receipt import output_inventory_digest, write_output_manifest
+from ci.products.index import IndexEntrySource, SignedProductIndex, build_product_index, verify_signed_product_index
+from ci.products.restore import object_relative_path, store_local_object
+from ci.products.signatures import generate_development_key, sign_manifest
 from ci.products.registry import PHASE_INSTANCE_IDS
 from ci.products.selection import classify_paths, phase_inventory_paths
 from ci.products.sdk_validation import VerifiedSdkValidationProjection, _VERIFIED, decode_sdk_validation_records
@@ -42,8 +46,8 @@ class SdkValidationInputsTest(unittest.TestCase):
         cls.original = cls.root / "original"
         cls.original.mkdir()
         (cls.original / "request.json").write_bytes(canonical_json_bytes(_request(cls.chain["compatibility_args"])))
-        context = {"producer": {"repository": "fixture/repository", "workflowPath": None,
-            "commit": "a" * 40, "tree": "b" * 40, "event": "local", "runId": None, "runAttempt": None, "pullRequest": None}}
+        context = {"producer": {"repository": "fixture/repository", "workflowPath": ".github/workflows/products.yml",
+            "commit": "a" * 40, "tree": "b" * 40, "event": "pull_request", "runId": 7, "runAttempt": 1, "pullRequest": 31}}
         record = {"component": "rust", "target": "linux-x64", "compatibilityRequest": "request.json"}
         for name in ("packageStage", "validationStage", "runtimeStages", "stagedSdks"):
             stage = cls.original / name
@@ -196,3 +200,71 @@ class SdkValidationInputsTest(unittest.TestCase):
             self.assertEqual(self.tooling, wave.call_args.args[0]["sdkValidationTooling"])
             self.assertNotIn("sdkValidationTooling", request)
             self.assertEqual(self.captured, load_sdk_validation_evidence(destination / "0"))
+
+    def test_catalog_extracts_only_index_bound_sdk_carriers_without_network(self):
+        from ci.tests.test_product_reuse_adapter import product_reuse
+        from ci.tests.test_product_index import producer
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private, public, signing = generate_development_key(root / "keys")
+            record = self.captured[0]
+            receipt_path = self.carrier / record["validationReceipt"]
+            original = receipt_path.read_bytes()
+            receipt = load_canonical_json_bytes(original)
+            index_producer = {**producer("development"), "repository": receipt["producer"]["repository"]}
+            index = build_product_index([IndexEntrySource(original, receipt["outputs"][0]["relativePath"])],
+                repository=index_producer["repository"], context={"kind": "pull-request", **{key: index_producer[key]
+                    for key in ("pullRequest", "commit", "tree", "runId", "runAttempt")}},
+                trust_domain="development", signing=signing, producer=index_producer, stable_history=None)
+            manifest = root / "product-index.json"
+            manifest.write_bytes(canonical_json_bytes(index))
+            signature = sign_manifest(manifest, private, signing)
+            verify_signed_product_index(SignedProductIndex(manifest, signature), public)
+            obj = store_local_object(self.carrier / record["validationStage"], receipt_path, root / "cache")["path"]
+            object_name = object_relative_path(receipt["buildKey"], record["receiptSha256"])
+            workflow_run = {"id": index_producer["runId"], "run_attempt": index_producer["runAttempt"],
+                "head_sha": index_producer["commit"], "path": index_producer["workflowPath"],
+                "head_commit": {"tree_id": index_producer["tree"]}}
+            for case in ("valid", "unindexed", "extra", "missing-receipt"):
+                with self.subTest(case=case):
+                    value = deepcopy(index)
+                    if case == "unindexed":
+                        value["entries"][0]["receiptSha256"] = "sha256:" + "f" * 64
+                    archive = root / f"{case}.zip"
+                    members = {"product-index.json": canonical_json_bytes(value),
+                               "product-index.sig": signature.read_bytes(), "public-key.pub": public.read_bytes(),
+                               object_name: obj.read_bytes()}
+                    for item in regular_file_inventory(self.carrier, allow_empty=True):
+                        name = item["relativePath"]
+                        if case == "missing-receipt" and name == record["validationReceipt"]:
+                            continue
+                        members["sdk-validation-evidence/" + name] = (self.carrier / name).read_bytes()
+                    if case == "extra":
+                        members["sdk-validation-evidence/private-key"] = b"unrequested secret"
+                    with zipfile.ZipFile(archive, "w") as stream:
+                        for name, contents in sorted(members.items()):
+                            stream.writestr(name, contents)
+                    destination = root / case
+                    artifact = {"id": 7, "digest": sha256_bytes(archive.read_bytes()),
+                                "archive_download_url": "https://example.invalid/never-requested"}
+                    with patch.object(product_reuse, "download_artifact", return_value=archive.read_bytes()):
+                        if case != "valid":
+                            with self.assertRaises((ValueError, OSError)):
+                                product_reuse._materialize_catalog("same-pr", artifact, "fixture", destination,
+                                    index_producer["repository"], 31, None, workflow_run)
+                            continue
+                        catalog = product_reuse._materialize_catalog("same-pr", artifact, "fixture", destination,
+                            index_producer["repository"], 31, None, workflow_run)
+                    self.assertEqual(self.captured, load_sdk_validation_evidence(catalog.sdk_validation_evidence_root))
+                    self.assertEqual(original, (catalog.sdk_validation_evidence_root / record["validationReceipt"]).read_bytes())
+                    self.assertEqual(obj.read_bytes(), catalog.objects[receipt["buildKey"]].read_bytes())
+                    def stage(records, source, output, **policy):
+                        return self.stage(records, source, output)
+                    with patch.object(product_reuse, "stage_sdk_validation_evidence", side_effect=stage):
+                        retained = product_reuse._capture_sdk_handoffs((catalog.sdk_validation_evidence_root,),
+                            destination / "sdk-validation-evidence", destination,
+                            repository=self.root, policy_revision="a" * 40, tooling=self.tooling)
+                    product_reuse._verify_discovery_sdk_records({"sdkValidationEvidence": retained}, destination)
+                    with self.assertRaises(ValueError):
+                        product_reuse._verify_discovery_sdk_records({}, destination)
+                    self.assertEqual(self.captured, load_sdk_validation_evidence(destination / "sdk-validation-evidence/0"))
