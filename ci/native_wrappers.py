@@ -1321,24 +1321,23 @@ def _consume(
             run(*rust_command, rust_library, cwd=work, env=cargo_env)
             run_expect_failure(*rust_command, native_name, cwd=work, env=cargo_env)
             run_expect_failure(*rust_command, rust_library, rust_library, cwd=work, env=cargo_env)
-            if platform.system() in {"Darwin", "Linux"}:
-                fixture = work / ("libcodex_agent_rust_lifecycle.dylib" if platform.system() == "Darwin"
-                                  else "libcodex_agent_rust_lifecycle.so")
-                compiler = shlex.split(os.environ.get("CC", "cc"))
-                flags = ["-std=gnu11", "-fPIC", "-pthread", "-Wall", "-Wextra", "-Werror"]
-                flags += ["-dynamiclib" if platform.system() == "Darwin" else "-shared"]
-                run(
-                    *compiler,
-                    *flags,
-                    repository / "codex-agent-bindings/rust/tests/fixtures/mock_codex_agent.c",
-                    "-o", fixture,
-                    cwd=work,
-                )
-                run(
-                    "cargo", "run", "--manifest-path", cargo_toml, "--release", "--locked", "--offline",
-                    "--bin", "codex-agent-rust-lifecycle-smoke", "--", fixture,
-                    cwd=work, env=cargo_env,
-                )
+            fixture = work / ("rust-lifecycle-" + native_name)
+            rust_fixture_compiler = shlex.split(os.environ.get("CC", "clang" if classifier == "windows-x64" else "cc"))
+            flags = ["-std=gnu11", "-Wall", "-Wextra", "-Werror"]
+            flags += ["-dynamiclib" if classifier.startswith("macos-") else "-shared"]
+            if classifier != "windows-x64":
+                flags += ["-fPIC", "-pthread"]
+            flags += [f'-DCODEX_AGENT_TEST_CONTRACT_DIGEST="{compatibility["runtime"]["requiredContractDigest"]}"']
+            run(
+                *rust_fixture_compiler, *flags,
+                repository / "codex-agent-bindings/rust/tests/fixtures/mock_codex_agent.c",
+                "-o", fixture, cwd=work,
+            )
+            run(
+                "cargo", "run", "--manifest-path", cargo_toml, "--release", "--locked", "--offline",
+                "--bin", "codex-agent-rust-lifecycle-smoke", "--", fixture,
+                cwd=work, env=cargo_env,
+            )
 
         if "cpp" in languages:
             cpp_root = work / "cpp-package"
@@ -1455,8 +1454,7 @@ def _consume(
         tools["dotnet"] = version("dotnet", "--version")
     if "rust" in languages:
         tools.update(cargo=version("cargo", "--version"), rustc=version("rustc", "-vV"))
-        if plan is None and platform.system() in {"Darwin", "Linux"}:
-            tools["rustFixtureCompiler"] = version(*shlex.split(os.environ.get("CC", "cc")), "--version")
+        tools["rustFixtureCompiler"] = version(*rust_fixture_compiler, "--version")
     if "cpp" in languages:
         compiler = "cl" if os.name == "nt" else os.environ.get("CXX", "c++")
         tools["cppCompiler"] = (version(compiler, allowed_return_codes=(0, 2)) if os.name == "nt"

@@ -59,7 +59,7 @@ from native_wrappers import (  # noqa: E402
     stage_dart_release,
     write_package_toolchains,
 )
-from products.inventory import canonical_json_bytes  # noqa: E402
+from products.inventory import canonical_json_bytes, load_canonical_json_bytes  # noqa: E402
 
 
 def write_tar_file(path: Path, name: str, contents: str) -> None:
@@ -1218,6 +1218,43 @@ class NativeWrapperReleaseTest(unittest.TestCase):
 
 class NativeWrapperSingleLanguageConsumerTest(unittest.TestCase):
     """Dispatch/evidence fixtures only: external tools and runtime execution are mocked."""
+
+    def test_rust_lifecycle_runs_on_every_host_with_imported_contract_identity(self) -> None:
+        for classifier in HOSTS:
+            for fails in (False, True):
+                with self.subTest(classifier=classifier, fails=fails), tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+                    root = Path(temporary).resolve()
+                    repository, packages, sdks, library, selected = self.fixture(root, ("rust",))
+                    native = sdks / classifier / HOSTS[classifier][4]
+                    native.parent.mkdir(parents=True, exist_ok=True)
+                    if native != library:
+                        native.write_bytes(library.read_bytes())
+                    probes = self.controls(stack, selected, native)
+                    probes["host_classifier"].return_value = classifier
+                    probes["platform.system"].return_value = HOSTS[classifier][0]
+                    stack.enter_context(patch.dict("os.environ", {"CC": "explicit-cc", "CODEX_AGENT_TEST_CONTRACT_DIGEST": "stale"}))
+                    compatibility = load_canonical_json_bytes((sdks / "sdk-compatibility.json").read_bytes())
+                    if fails:
+                        def fail_lifecycle(*command, **kwargs):
+                            if "codex-agent-rust-lifecycle-smoke" in command:
+                                raise ValueError("observed lifecycle failure")
+                        probes["run"].side_effect = fail_lifecycle
+                        with self.assertRaisesRegex(ValueError, "observed lifecycle failure"):
+                            consume_language(repository, packages, sdks, root / "output", "0.2.0", "rust", offline=True)
+                        self.assertFalse((root / "output").exists())
+                    else:
+                        consume_language(repository, packages, sdks, root / "output", "0.2.0", "rust", offline=True)
+                    commands = [list(map(str, call.args)) for call in probes["run"].call_args_list]
+                    compile_command = next(command for command in commands if command[0] == "explicit-cc")
+                    self.assertIn(f'-DCODEX_AGENT_TEST_CONTRACT_DIGEST="{compatibility["runtime"]["requiredContractDigest"]}"', compile_command)
+                    self.assertEqual(classifier != "windows-x64", "-pthread" in compile_command)
+                    self.assertEqual(classifier != "windows-x64", "-fPIC" in compile_command)
+                    self.assertIn("-dynamiclib" if classifier.startswith("macos-") else "-shared", compile_command)
+                    lifecycle = next(command for command in commands if "codex-agent-rust-lifecycle-smoke" in command)
+                    self.assertEqual(compile_command[-1], lifecycle[-1])
+                    self.assertIn("--offline", lifecycle)
+                    if not fails:
+                        self.assertIn("rustFixtureCompiler\t", (root / f"output/evidence/rust/toolchain.tsv").read_text())
 
     def test_cpp_negative_outputs_are_separate_and_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
