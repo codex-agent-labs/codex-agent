@@ -94,10 +94,28 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
         copy(fixture.input().apiReport, "contract/canonical-api.json")
         copy(fixture.input().canonicalCoverageReceipt, "contract/canonical-coverage.json")
         copy(fixture.bootstrap, "bootstrap/bootstrap-evidence.json")
+        val native = handoff.resolve("sdks/linux-x64/lib/libcodex_agent.so").apply {
+            parentFile.mkdirs()
+            writeText("synthetic native identity fixture")
+        }
+        handoff.resolve("receipts/sdk-package.json").apply {
+            parentFile.mkdirs()
+            atomicWriteJson(buildJsonObject {
+                put("product", JsonPrimitive("sdk"))
+                put("component", JsonPrimitive("csharp"))
+                put("phase", JsonPrimitive("package"))
+                put("target", JsonPrimitive("desktop"))
+                put("outputs", buildJsonArray { add(buildJsonObject {
+                    put("kind", JsonPrimitive("package"))
+                    put("relativePath", JsonPrimitive("outputs/csharp/package.nupkg"))
+                    put("sha256", JsonPrimitive("sha256:" + "a".repeat(64)))
+                }) })
+            })
+        }
         val installed = root.resolve("installed/evidence/csharp").also(File::mkdirs)
         installed.resolve("linux-x64.tsv").writeText(
             "classifier\tpackageArtifactId\tpackageSha256\tnativeLibrarySha256\ttestId\tstatus\n" +
-                "linux-x64\tcsharp-package/package.nupkg\t${"a".repeat(64)}\t${"b".repeat(64)}\t" +
+                "linux-x64\tcsharp-package/package.nupkg\t${"a".repeat(64)}\t${native.releaseDigest()}\t" +
                 "csharp-installed-host-lifecycle\tpassed\n",
         )
         installed.resolve("toolchain.tsv").writeText("tool\tversion\ndotnet\tfixture\n")
@@ -137,6 +155,20 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             verifiedRegularFiles(output).keys)
         assertEquals(fixture.compiler.readText(), output.resolve("compiler-evidence.tsv").readText())
         assertFalse(fixture.receipt.exists())
+        val cli = runReleaseTool(root, "verify-native-wrapper-validation-evidence", "--language", "csharp",
+            "--target", "linux-x64", "--capability-inputs", handoff.absolutePath,
+            "--installed-evidence", root.resolve("installed").absolutePath,
+            "--capability-evidence", output.absolutePath, "--claims", fixture.claims.absolutePath)
+        assertEquals(0, cli.first, cli.second)
+        val originalHost = installed.resolve("linux-x64.tsv").readText()
+        listOf("a".repeat(64), native.releaseDigest()).forEach { digest ->
+            installed.resolve("linux-x64.tsv").writeText(originalHost.replace(digest, "e".repeat(64)))
+            assertFailsWith<IllegalStateException> {
+                verifyCrossLanguageNativeWrapperValidationEvidence(CrossLanguageBinding.CSHARP,
+                    "linux-x64", handoff, root.resolve("installed"), output, fixture.claims)
+            }
+        }
+        installed.resolve("linux-x64.tsv").writeText(originalHost)
         root.resolve("tamper").writeText("fixture mutation")
         assertFailsWith<IllegalStateException> { task.produce() }
         assertFalse(output.exists())

@@ -161,6 +161,60 @@ class SdkPackagePlanTest(unittest.TestCase):
         path.write_bytes(canonical_json_bytes(validate_phase_receipt(receipt)))
         cls.projections[instance] = (selected, projection)
 
+    def validation_receipt(self, root):
+        # Original-plan fixture only: its output bytes are NOT full native proof.
+        package = load_canonical_json_bytes(self.native_receipt.read_bytes())
+        output = root / "outputs/fixture.txt"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"not behavior acceptance\n")
+        manifest = write_output_manifest(root, "sdk", "csharp", "validation", "linux-x64", "0.2.9",
+                                         {"fixture": "outputs"})
+        receipt = root / "receipt.json"
+        write_receipt(receipt, product="sdk", component="csharp", phase="validation", target="linux-x64",
+                      version="0.2.9", version_identity="0.2.9", outputs=manifest["outputs"], upstream=[],
+                      context={"producer": self.producer})
+        self.bind(receipt, {**self.upstream, identity(package): package}, self.evidence)
+        return receipt
+
+    def test_native_validation_original_plan_is_bound_without_granting_behavior_acceptance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            validation = self.validation_receipt(root)
+            original = validation.read_bytes()
+            package, package_bytes = verify_sdk_package_inputs(
+                self.repository, self.native_stage, self.native_receipt, self.request,
+                runtime_stage_root=self.chain["variants"]["stages"], staged_sdks=self.sdks,
+                validation_receipt_path=validation,
+            )
+            self.assertEqual("package", package["phase"])
+            self.assertEqual(self.native_receipt.read_bytes(), package_bytes)
+            self.assertEqual(original, validation.read_bytes())
+            for name in ("coverage", "package", "source", "version", "component"):
+                with self.subTest(name=name):
+                    changed = load_canonical_json_bytes(original)
+                    if name == "coverage":
+                        contract = next(item for item in changed["inputs"]["upstreamArtifacts"]
+                                        if item["product"] == "contract")
+                        contract["contractProjection"]["canonicalCoverageDigest"] = "sha256:" + "e" * 64
+                    elif name == "package":
+                        predecessor = next(item for item in changed["inputs"]["upstreamArtifacts"]
+                                           if item["product"] == "sdk")
+                        predecessor["outputsDigest"] = "sha256:" + "e" * 64
+                    elif name == "source":
+                        changed["producer"]["tree"] = "e" * 40
+                    elif name == "version":
+                        changed["productVersion"] = "0.2.8"
+                    else:
+                        changed["component"] = "python"
+                    changed["buildKey"] = compute_build_key(
+                        product="sdk", component=changed["component"], phase="validation", target="linux-x64",
+                        inputs=changed["inputs"],
+                    )
+                    validation.write_bytes(canonical_json_bytes(changed))
+                    with self.assertRaises(ValueError):
+                        package_main(self.native_cli_arguments() + ["--validation-receipt", str(validation)])
+            validation.write_bytes(original)
+
     def verify_native(self, receipt=None):
         return verify_sdk_package_inputs(self.repository, self.native_stage, receipt or self.native_receipt,
                                          self.request, runtime_stage_root=self.chain["variants"]["stages"],

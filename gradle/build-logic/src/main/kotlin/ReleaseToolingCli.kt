@@ -131,6 +131,15 @@ fun main(arguments: Array<String>) {
                 testResultsFile = options.file("test-results"),
             )
         }
+        "verify-native-wrapper-validation-evidence" -> {
+            options.requireOnly("language", "target", "capability-inputs", "installed-evidence", "capability-evidence", "claims")
+            val language = nativeWrapperBindings.singleOrNull { it.id == options.required("language") }
+                ?: error("Unsupported native wrapper validation language")
+            verifyCrossLanguageNativeWrapperValidationEvidence(
+                language, options.required("target"), options.file("capability-inputs"),
+                options.file("installed-evidence"), options.file("capability-evidence"), options.file("claims"),
+            )
+        }
         "assemble-native-wrapper-binding-receipt" -> {
             options.requireOnly(
                 "phase", "language", "api-report", "coverage-receipt", "c-abi-bootstrap",

@@ -145,7 +145,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
 
 internal fun requireExactNativeWrapperInstalledConsumerEvidence(
     output: File, language: String, expectedClassifier: String? = null,
-) {
+): List<String> {
     check(language in nativeWrapperInstalledConsumerLanguages) {
         "Unsupported native wrapper language: $language"
     }
@@ -197,6 +197,7 @@ internal fun requireExactNativeWrapperInstalledConsumerEvidence(
         } }) {
         "Installed native wrapper toolchain evidence is invalid"
     }
+    return result
 }
 
 private fun exactNativeWrapperEvidenceLines(file: File): List<String> {

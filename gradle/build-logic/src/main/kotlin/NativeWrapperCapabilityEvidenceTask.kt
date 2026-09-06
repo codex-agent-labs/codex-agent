@@ -87,12 +87,8 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
             // Keep the complete raw directory (including language auxiliaries); the existing
             // matcher alone owns compiler/reference/executed-test/scenario semantics.
             check(verifiedRegularFiles(output).isNotEmpty()) { "Capability producer output is empty" }
-            verifyCrossLanguageNativeWrapperCapabilityEvidence(
-                binding, handoff.resolve("contract/canonical-api.json"),
-                handoff.resolve("contract/canonical-coverage.json"),
-                handoff.resolve("bootstrap/bootstrap-evidence.json"), claims.get().asFile,
-                output.resolve("compiler-evidence.tsv"), output.resolve("test-program"),
-                output.resolve("executed-tests.tsv"),
+            verifyCrossLanguageNativeWrapperValidationEvidence(
+                binding, classifier, handoff, host, output, claims.get().asFile,
             )
             check(before == capabilityInputInventory(inputs)) { "Capability inputs changed during validation" }
         } catch (error: Exception) {

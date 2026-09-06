@@ -104,6 +104,8 @@ val releaseToolingClasses = listOf(
     "CrossLanguageProjectionClaim",
     "CrossLanguageScenarioEvidence",
     "CrossLanguageNativeWrapperBindingEvidenceKt",
+    "CrossLanguageNativeWrapperValidationEvidenceKt",
+    "NativeWrapperInstalledConsumerTaskKt",
     "CrossLanguageNativeWrapperClaim",
     "CrossLanguageNativeWrapperCapabilityEvidence",
     "CrossLanguageNativeWrapperCompilerEvidence",

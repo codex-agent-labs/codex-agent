@@ -59,6 +59,32 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_root_build_scripts_do_not_enter_standalone_runtime_keys(self) -> None:
+        from ci.tests.test_product_plan import plan
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path in ("gradle/build-logic/build.gradle.kts", "gradle/build-logic/settings.gradle.kts",
+                         "gradle/libs.versions.toml", "gradle/wrapper/gradle-wrapper.properties"):
+                source = root / path
+                source.parent.mkdir(parents=True, exist_ok=True)
+                self.assertEqual(set(PHASE_INSTANCE_IDS), identities(classify_paths([path])))
+                for instance in PHASE_INSTANCE_IDS:
+                    owned = (instance.phase == "binary" or
+                             (instance.product == "sdk" and instance.component in (*NATIVE_BINDINGS, "javascript")
+                              and instance.phase == "package"))
+                    if instance.product == "runtime":
+                        owned = instance.phase == "binary" and not path.startswith("gradle/build-logic/")
+                    self.assertEqual((path,) if owned else (), phase_inventory_paths([path], instance),
+                                     (path, instance))
+                    if not owned and not (instance.product == "runtime" and instance.phase == "binary"):
+                        continue
+                    keys = []
+                    for content in (b"a", b"b"):
+                        source.write_bytes(content)
+                        keys.append(plan(instance, inventory=phase_file_inventory(root, [path], instance))["buildKey"])
+                    self.assertEqual(owned, keys[0] != keys[1], (path, instance))
+
     def test_contract_coverage_producers_select_evidence_consumers_without_runtime_compilation(self):
         paths = ("codex-agent-core/src/commonTest/kotlin/ContractTest.kt",
                  "codex-agent-core/src/jvmTest/java/ContractTest.java",
@@ -327,6 +353,7 @@ class ProductSelectionTest(unittest.TestCase):
             "CrossLanguageNativeWrapperGradleTasks.kt",
             "CrossLanguageCAbiClient.kt",
             "CrossLanguageNativeWrapperBindingEvidence.kt",
+            "CrossLanguageNativeWrapperValidationEvidence.kt",
             "NativeWrapperInstalledConsumerTask.kt",
             "NativeWrapperCapabilityEvidenceTask.kt",
         ):
@@ -335,13 +362,14 @@ class ProductSelectionTest(unittest.TestCase):
                 self.assertEqual({"sdk"}, {instance.product for instance in selected})
                 self.assertEqual(set(NATIVE_BINDINGS), {instance.component for instance in selected})
                 phases = {"validation", "metadata"}
-                if name not in {"CrossLanguageNativeWrapperBindingEvidence.kt", "NativeWrapperInstalledConsumerTask.kt",
+                if name not in {"CrossLanguageNativeWrapperBindingEvidence.kt", "CrossLanguageNativeWrapperValidationEvidence.kt",
+                                "NativeWrapperInstalledConsumerTask.kt",
                                 "NativeWrapperCapabilityEvidenceTask.kt"}:
                     phases.add("package")
                 for binding in NATIVE_BINDINGS:
                     self.assertEqual(phases, {instance.phase for instance in selected
                                               if instance.component == binding})
-                if name == "NativeWrapperCapabilityEvidenceTask.kt":
+                if name in {"NativeWrapperCapabilityEvidenceTask.kt", "CrossLanguageNativeWrapperValidationEvidence.kt"}:
                     path = f"gradle/build-logic/src/main/kotlin/{name}"
                     for instance in PHASE_INSTANCE_IDS:
                         owns = (instance.product == "sdk" and instance.component in NATIVE_BINDINGS
