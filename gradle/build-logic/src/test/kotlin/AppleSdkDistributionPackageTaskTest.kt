@@ -17,10 +17,13 @@ class AppleSdkDistributionPackageTaskTest {
     @Test
     fun `artifact stage preserves exact original archives`() = fixture().use { fixture ->
         val before = fixture.originalDigests()
+        val expectedValidation = fixture.expectedValidationDigests()
         fixture.output.apply { mkdirs() }.resolve("stale").writeText("remove")
+        fixture.validationOutput.apply { mkdirs() }.resolve("stale").writeText("remove")
         fixture.stage()
         assertEquals(before, fixture.originalDigests())
-        assertEquals(before.filterKeys { it != IOS_VERIFIED_DISTRIBUTION_PROOF }, fixture.outputDigests())
+        assertEquals(fixture.productDigests(), fixture.outputDigests())
+        assertEquals(expectedValidation, fixture.validationDigests())
     }
 
     @Test
@@ -28,6 +31,7 @@ class AppleSdkDistributionPackageTaskTest {
         listOf("framework", "compatibility", "checksum", "missing").forEach { mutation ->
             fixture().use { fixture ->
                 fixture.output.apply { mkdirs() }.resolve("sentinel").writeText("preserved")
+                fixture.validationOutput.apply { mkdirs() }.resolve("sentinel").writeText("preserved")
                 when (mutation) {
                     "framework" -> fixture.rewritePackage("different-device-binary")
                     "compatibility" -> fixture.rewritePackage(compatibility = "different")
@@ -37,6 +41,7 @@ class AppleSdkDistributionPackageTaskTest {
                 if (mutation != "missing") fixture.rebindProof()
                 assertFailsWith<IllegalStateException>(mutation) { fixture.stage() }
                 assertEquals("preserved", fixture.output.resolve("sentinel").readText())
+                assertEquals("preserved", fixture.validationOutput.resolve("sentinel").readText())
             }
         }
     }
@@ -48,6 +53,27 @@ class AppleSdkDistributionPackageTaskTest {
             fixture.stageWithEvidenceOutput()
         }
         assertEquals(before, fixture.originalDigests())
+    }
+
+    @Test
+    fun `external validation handoff cannot overlap product or source inputs`() = fixture().use { fixture ->
+        val before = fixture.originalDigests()
+        listOf(fixture.output, fixture.evidence).forEach { unsafe ->
+            assertFailsWith<IllegalStateException> { fixture.stage(validation = unsafe) }
+            assertEquals(before, fixture.originalDigests())
+        }
+    }
+
+    @Test
+    fun `missing native closure preserves both prior outputs`() {
+        listOf("evidence", "receipt").forEach { missing -> fixture().use { fixture ->
+            fixture.output.apply { mkdirs() }.resolve("sentinel").writeText("product")
+            fixture.validationOutput.apply { mkdirs() }.resolve("sentinel").writeText("validation")
+            if (missing == "evidence") fixture.removeNativeEvidence() else fixture.removeNativeReceipt()
+            assertFailsWith<IllegalStateException>(missing) { fixture.stage() }
+            assertEquals("product", fixture.output.resolve("sentinel").readText())
+            assertEquals("validation", fixture.validationOutput.resolve("sentinel").readText())
+        } }
     }
 
     @Test
@@ -86,6 +112,9 @@ class AppleSdkDistributionPackageTaskTest {
         assertTrue("dependsOn(validate)" in registration)
         assertTrue("verificationReceipt.set(validate.flatMap" in registration)
         assertTrue("sdkCompatibility.set(it)" in registration)
+        assertTrue("nativeEvidenceDirectory.set(nativeEvidence)" in registration)
+        assertTrue("nativeEvidenceReceipt.set(nativeReceipt)" in registration)
+        assertTrue("validationEvidenceDirectory.set" in registration)
         assertFalse("prepareCodexAgentReleaseXCFramework" in registration)
         assertFalse("assembleCodexAgentReleaseXCFramework" in registration)
         assertFalse("compileKotlin" in registration)
@@ -97,11 +126,16 @@ private class AppleSdkPackageFixture : AutoCloseable {
     private val owned = root.resolve("owned").apply { mkdirs() }
     val evidence = root.resolve("evidence").apply { mkdirs() }
     val receipt = root.resolve("receipt.json")
+    private val nativeEvidence = root.resolve("native-evidence").apply { mkdirs() }
+    private val nativeReceipt = root.resolve("current-native-evidence-receipt.json").apply {
+        writeText("current native receipt")
+    }
     private val compatibility = root.resolve("sdk-compatibility.json").apply {
         writeText("{\"schemaVersion\":1,\"sdkVersion\":\"0.2.0\"}\n")
     }
     private val work = owned.resolve("work")
     val output = owned.resolve("output")
+    val validationOutput = owned.resolve("validation-evidence")
     val unownedOutput = root.resolve("unowned/output")
     private val packageArchive = evidence.resolve("CodexAgentPackage-0.2.0.zip")
     private val frameworkArchive = evidence.resolve("CodexAgent-0.2.0.xcframework.zip")
@@ -120,19 +154,30 @@ private class AppleSdkPackageFixture : AutoCloseable {
     }
 
     init {
+        evidence.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).apply {
+            parentFile.mkdirs()
+            writeText("original native receipt")
+        }
+        nativeEvidence.resolve("ios-native-tests-proof.json").writeText("native test evidence")
         writeZip(frameworkArchive, frameworkMembers)
         rewritePackage()
         checksum.writeText("${frameworkArchive.releaseDigest()}\n")
         rebindProof()
     }
 
-    fun stage(output: File = this.output, compatibility: File = this.compatibility) =
+    fun stage(
+        output: File = this.output,
+        compatibility: File = this.compatibility,
+        validation: File = validationOutput,
+    ) =
         stageImportedAppleSdkPackageArtifacts(
-        evidence, receipt, compatibility, "0.2.0", owned, work, output,
-    )
+            evidence, receipt, compatibility, nativeEvidence, nativeReceipt,
+            "0.2.0", owned, work, output, validation,
+        )
 
     fun stageWithEvidenceOutput() = stageImportedAppleSdkPackageArtifacts(
-        evidence, receipt, compatibility, "0.2.0", root, work, evidence,
+        evidence, receipt, compatibility, nativeEvidence, nativeReceipt,
+        "0.2.0", root, work, evidence, validationOutput,
     )
 
     fun symbolicOutput(): File {
@@ -178,19 +223,33 @@ private class AppleSdkPackageFixture : AutoCloseable {
 
     fun rewriteChecksum(contents: String) = checksum.writeText(contents)
     fun removePackageArchive() = packageArchive.delete().let { }
+    fun removeNativeEvidence() = nativeEvidence.resolve("ios-native-tests-proof.json").delete().let { }
+    fun removeNativeReceipt() = nativeReceipt.delete().let { }
 
     fun rebindProof() {
         val proof = evidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF)
         proof.atomicWriteJson(buildJsonObject {
             put("candidateCommit", JsonPrimitive("1".repeat(40)))
             put("candidateTree", JsonPrimitive("2".repeat(40)))
-            put("nativeEvidenceReceiptSha256", JsonPrimitive("5".repeat(64)))
+            put("nativeEvidenceReceiptSha256", JsonPrimitive(
+                evidence.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).releaseDigest(),
+            ))
             put("artifacts", buildJsonArray {
                 listOf(packageArchive, frameworkArchive, checksum).forEach { file -> add(buildJsonObject {
                     put("fileName", JsonPrimitive(file.name))
                     put("bytes", JsonPrimitive(file.length()))
                     put("sha256", JsonPrimitive(file.releaseDigest()))
                 }) }
+            })
+            put("reports", buildJsonArray { })
+            put("toolchain", buildJsonArray { })
+            put("receipts", buildJsonArray {
+                add(evidence.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).releaseRecord(
+                    IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT,
+                ))
+            })
+            put("nativeEvidence", buildJsonArray {
+                verifiedRegularFiles(nativeEvidence).forEach { (path, file) -> add(file.releaseRecord(path)) }
             })
         })
         receipt.atomicWriteJson(buildJsonObject {
@@ -202,13 +261,41 @@ private class AppleSdkPackageFixture : AutoCloseable {
             put("consumerCommit", JsonPrimitive("3".repeat(40)))
             put("consumerTree", JsonPrimitive("4".repeat(40)))
             put("sourceProofSha256", JsonPrimitive(proof.releaseDigest()))
-            put("originalNativeEvidenceReceiptSha256", JsonPrimitive("5".repeat(64)))
-            put("currentNativeEvidenceReceiptSha256", JsonPrimitive("6".repeat(64)))
+            put("originalNativeEvidenceReceiptSha256", JsonPrimitive(
+                evidence.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).releaseDigest(),
+            ))
+            put("currentNativeEvidenceReceiptSha256", JsonPrimitive(nativeReceipt.releaseDigest()))
         })
     }
 
-    fun originalDigests() = verifiedRegularFiles(evidence).mapValues { it.value.releaseDigest() }
+    private val artifactNames get() = setOf(packageArchive.name, frameworkArchive.name, checksum.name)
+
+    fun originalDigests() = buildMap {
+        verifiedRegularFiles(evidence).forEach { (path, file) ->
+            put("distribution/$path", file.releaseDigest())
+        }
+        verifiedRegularFiles(nativeEvidence).forEach { (path, file) ->
+            put("native/$path", file.releaseDigest())
+        }
+        put("import-receipt", receipt.releaseDigest())
+        put("current-native-receipt", nativeReceipt.releaseDigest())
+    }
+
+    fun productDigests() = artifactNames.associateWith { evidence.resolve(it).releaseDigest() }
+
+    fun expectedValidationDigests() = buildMap {
+        verifiedRegularFiles(evidence).filterKeys { it !in artifactNames }.forEach { (path, file) ->
+            put("verified-distribution/$path", file.releaseDigest())
+        }
+        verifiedRegularFiles(nativeEvidence).forEach { (path, file) ->
+            put("current-native-evidence/$path", file.releaseDigest())
+        }
+        put("receipts/verified-distribution-import.json", receipt.releaseDigest())
+        put("receipts/current-ios-native-evidence.json", nativeReceipt.releaseDigest())
+    }
+
     fun outputDigests() = verifiedRegularFiles(output).mapValues { it.value.releaseDigest() }
+    fun validationDigests() = verifiedRegularFiles(validationOutput).mapValues { it.value.releaseDigest() }
 
     private fun writeZip(file: File, members: Map<String, String>) {
         ZipOutputStream(file.outputStream()).use { archive -> members.forEach { (path, contents) ->

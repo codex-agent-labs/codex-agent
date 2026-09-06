@@ -249,20 +249,28 @@ abstract class StageImportedAppleSdkPackageArtifactsTask : DefaultTask() {
     abstract val verificationReceipt: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val sdkCompatibility: RegularFileProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.NONE)
+    abstract val nativeEvidenceDirectory: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val nativeEvidenceReceipt: RegularFileProperty
     @get:Input abstract val version: Property<String>
     @get:Internal abstract val ownedBuildDirectory: DirectoryProperty
     @get:LocalState abstract val workDirectory: DirectoryProperty
     @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:OutputDirectory abstract val validationEvidenceDirectory: DirectoryProperty
 
     @TaskAction
     fun stage() = stageImportedAppleSdkPackageArtifacts(
         evidenceDirectory.get().asFile,
         verificationReceipt.get().asFile,
         sdkCompatibility.get().asFile,
+        nativeEvidenceDirectory.get().asFile,
+        nativeEvidenceReceipt.get().asFile,
         version.get(),
         ownedBuildDirectory.get().asFile,
         workDirectory.get().asFile,
         outputDirectory.get().asFile,
+        validationEvidenceDirectory.get().asFile,
     )
 }
 
@@ -270,27 +278,40 @@ internal fun stageImportedAppleSdkPackageArtifacts(
     evidenceDirectory: File,
     verificationReceipt: File,
     sdkCompatibility: File,
+    nativeEvidenceDirectory: File,
+    nativeEvidenceReceipt: File,
     version: String,
     ownedBuildDirectory: File,
     temporaryDirectory: File,
     outputDirectory: File,
+    validationEvidenceDirectory: File,
 ) {
-    listOf(evidenceDirectory, verificationReceipt, sdkCompatibility).forEach {
+    listOf(
+        evidenceDirectory, verificationReceipt, sdkCompatibility,
+        nativeEvidenceDirectory, nativeEvidenceReceipt,
+    ).forEach {
         requireApplePackagePathWithoutSymlinks(it, "input")
     }
-    listOf(ownedBuildDirectory, temporaryDirectory, outputDirectory).forEach {
+    listOf(
+        ownedBuildDirectory, temporaryDirectory, outputDirectory, validationEvidenceDirectory,
+    ).forEach {
         requireApplePackagePathWithoutSymlinks(it, "owned")
     }
     val evidence = evidenceDirectory.canonicalFile
     val receipt = verificationReceipt.canonicalFile
     val compatibility = sdkCompatibility.canonicalFile
+    val nativeEvidence = nativeEvidenceDirectory.canonicalFile
+    val nativeReceipt = nativeEvidenceReceipt.canonicalFile
     val ownedRoot = ownedBuildDirectory.canonicalFile
     val temporary = temporaryDirectory.canonicalFile
     val output = outputDirectory.canonicalFile
-    check(evidence.isDirectory && !Files.isSymbolicLink(evidence.toPath())) {
-        "Imported Apple distribution evidence is missing or unsafe"
+    val validationOutput = validationEvidenceDirectory.canonicalFile
+    listOf(evidence, nativeEvidence).forEach { input ->
+        check(input.isDirectory && !Files.isSymbolicLink(input.toPath())) {
+            "Imported Apple SDK evidence is missing or unsafe: $input"
+        }
     }
-    listOf(receipt, compatibility).forEach { input ->
+    listOf(receipt, compatibility, nativeReceipt).forEach { input ->
         check(input.isFile && !Files.isSymbolicLink(input.toPath())) {
             "Imported Apple SDK input is missing or unsafe: ${input.name}"
         }
@@ -298,7 +319,8 @@ internal fun stageImportedAppleSdkPackageArtifacts(
     check(!ownedRoot.exists() || ownedRoot.isDirectory) {
         "Imported Apple SDK owned build path is not a directory: $ownedRoot"
     }
-    listOf(temporary, output).forEach { owned ->
+    val ownedOutputs = listOf(temporary, output, validationOutput)
+    ownedOutputs.forEach { owned ->
         check(owned.toPath() != ownedRoot.toPath() &&
             owned.toPath().startsWith(ownedRoot.toPath())) {
             "Imported Apple SDK output is outside its owned build directory: $owned"
@@ -307,25 +329,38 @@ internal fun stageImportedAppleSdkPackageArtifacts(
             !Files.isSymbolicLink(owned.toPath())) {
             "Imported Apple SDK output is a symbolic link: $owned"
         }
-        listOf(evidence, receipt, compatibility).forEach { input ->
+        listOf(evidence, receipt, compatibility, nativeEvidence, nativeReceipt).forEach { input ->
             check(!owned.toPath().startsWith(input.toPath()) && !input.toPath().startsWith(owned.toPath())) {
                 "Imported Apple SDK output overlaps an input: $owned"
             }
         }
     }
-    check(!temporary.toPath().startsWith(output.toPath()) && !output.toPath().startsWith(temporary.toPath())) {
-        "Imported Apple SDK temporary and output directories overlap"
+    ownedOutputs.forEachIndexed { index, left -> ownedOutputs.drop(index + 1).forEach { right ->
+        check(!left.toPath().startsWith(right.toPath()) && !right.toPath().startsWith(left.toPath())) {
+            "Imported Apple SDK owned directories overlap: $left and $right"
+        }
+    } }
+
+    val sourceFiles = verifiedRegularFiles(evidence)
+    val nativeFiles = verifiedRegularFiles(nativeEvidence)
+    check(nativeFiles.isNotEmpty()) {
+        "Imported Apple native evidence is empty"
     }
 
     // Resolve and validate every source before invalidating either owned destination.
-    val sourceFiles = verifiedRegularFiles(evidence)
     val receiptBytes = receipt.readBytes()
     val compatibilityBytes = compatibility.readBytes()
+    val nativeReceiptBytes = nativeReceipt.readBytes()
     ownedRoot.mkdirs()
     deleteReleaseTree(temporary)
-    val capturedEvidence = temporary.resolve("evidence").apply { mkdirs() }
+    val capturedEvidence = temporary.resolve("verified-distribution").apply { mkdirs() }
+    sourceFiles.forEach { (path, source) -> copyVerified(source, capturedEvidence.resolve(path)) }
+    val capturedNativeEvidence = temporary.resolve("current-native-evidence").apply { mkdirs() }
+    nativeFiles.forEach { (path, source) -> copyVerified(source, capturedNativeEvidence.resolve(path)) }
     val capturedReceipt = temporary.resolve("verification-receipt.json")
     capturedReceipt.writeBytes(receiptBytes)
+    val capturedNativeReceipt = temporary.resolve("current-native-evidence-receipt.json")
+    capturedNativeReceipt.writeBytes(nativeReceiptBytes)
     val capturedCompatibility = temporary.resolve("sdk-compatibility.json")
     capturedCompatibility.writeBytes(compatibilityBytes)
     val names = listOf(
@@ -336,8 +371,19 @@ internal fun stageImportedAppleSdkPackageArtifacts(
     val sourceProof = sourceFiles[IOS_VERIFIED_DISTRIBUTION_PROOF]
         ?: error("Verified Apple distribution proof is missing")
     val capturedProof = capturedEvidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF)
-    Files.copy(sourceProof.toPath(), capturedProof.toPath(), REPLACE_EXISTING)
-    val artifactValues = capturedProof.readReleaseObject().releaseArray("artifacts")
+    val capturedSourceFiles = verifiedRegularFiles(capturedEvidence)
+    val capturedNativeFiles = verifiedRegularFiles(capturedNativeEvidence)
+    val importReceipt = capturedReceipt.readReleaseObject()
+    val originalNativeReceipt = capturedEvidence.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT)
+    check(importReceipt.releaseInt("schemaVersion") == 2 && originalNativeReceipt.isFile &&
+        originalNativeReceipt.releaseDigest() ==
+        importReceipt.releaseString("originalNativeEvidenceReceiptSha256") &&
+        capturedNativeReceipt.releaseDigest() ==
+        importReceipt.releaseString("currentNativeEvidenceReceiptSha256")) {
+        "Imported Apple SDK native receipt closure mismatch"
+    }
+    val proofObject = capturedProof.readReleaseObject()
+    val artifactValues = proofObject.releaseArray("artifacts")
     val artifactRecords = artifactValues.map { value ->
         value as? JsonObject ?: error("Verified Apple artifact record is invalid")
     }
@@ -350,9 +396,18 @@ internal fun stageImportedAppleSdkPackageArtifacts(
             "Verified Apple artifact record is invalid: $name"
         }
         val destination = capturedEvidence.resolve(name)
-        Files.copy(source.toPath(), destination.toPath(), REPLACE_EXISTING)
         verifyReleaseRecord(destination, record)
         destination
+    }
+    val distributionRecords = listOf("artifacts", "reports", "toolchain", "receipts").flatMap {
+        verifyApplePackageRecordGroup(proofObject, it, capturedSourceFiles)
+    }
+    check(distributionRecords.size == distributionRecords.toSet().size &&
+        distributionRecords.toSet() + IOS_VERIFIED_DISTRIBUTION_PROOF == sourceFiles.keys) {
+        "Imported Apple distribution closure inventory mismatch"
+    }
+    check(verifyApplePackageRecordGroup(proofObject, "nativeEvidence", capturedNativeFiles) == nativeFiles.keys) {
+        "Imported Apple native evidence closure inventory mismatch"
     }
     val packageDirectory = temporary.resolve("verified-package")
     extractVerifiedAppleSwiftPackage(
@@ -371,21 +426,68 @@ internal fun stageImportedAppleSdkPackageArtifacts(
     check(checksum.readBytes().contentEquals("${archive.releaseDigest()}\n".toByteArray())) {
         "Imported Apple SDK checksum is not exact"
     }
-    check(Files.mismatch(receipt.toPath(), capturedReceipt.toPath()) == -1L &&
+    check(sameApplePackageFiles(sourceFiles, evidence, capturedEvidence) &&
+        sameApplePackageFiles(nativeFiles, nativeEvidence, capturedNativeEvidence) &&
+        Files.mismatch(receipt.toPath(), capturedReceipt.toPath()) == -1L &&
+        Files.mismatch(nativeReceipt.toPath(), capturedNativeReceipt.toPath()) == -1L &&
         Files.mismatch(compatibility.toPath(), capturedCompatibility.toPath()) == -1L &&
-        Files.mismatch(sourceProof.toPath(), capturedProof.toPath()) == -1L &&
-        captured.all { (name, file) ->
-            Files.mismatch(sourceFiles.getValue(name).toPath(), file.toPath()) == -1L
-        }) { "Imported Apple SDK input changed while it was being verified" }
+        Files.mismatch(sourceProof.toPath(), capturedProof.toPath()) == -1L) {
+        "Imported Apple SDK input changed while it was being verified"
+    }
 
-    val staged = temporary.resolve("staged").apply { mkdirs() }
+    val staged = temporary.resolve("staged-product").apply { mkdirs() }
     captured.forEach { (name, source) -> Files.copy(source.toPath(), staged.resolve(name).toPath()) }
+    val stagedValidation = temporary.resolve("staged-validation").apply { mkdirs() }
+    val validationSources = buildMap {
+        sourceFiles.keys.filter { it !in names }.forEach { path ->
+            put("verified-distribution/$path", capturedEvidence.resolve(path))
+        }
+        nativeFiles.keys.forEach { path ->
+            put("current-native-evidence/$path", capturedNativeEvidence.resolve(path))
+        }
+        put("receipts/verified-distribution-import.json", capturedReceipt)
+        put("receipts/current-ios-native-evidence.json", capturedNativeReceipt)
+    }
+    validationSources.forEach { (path, source) -> copyVerified(source, stagedValidation.resolve(path)) }
     deleteReleaseTree(output)
     copyReleaseTree(staged, output)
+    deleteReleaseTree(validationOutput)
+    copyReleaseTree(stagedValidation, validationOutput)
     val published = verifiedRegularFiles(output)
     check(published.keys == names.toSet() && published.all { (name, file) ->
         Files.mismatch(file.toPath(), captured.getValue(name).toPath()) == -1L
     }) { "Imported Apple SDK package artifact copy changed" }
+    val publishedValidation = verifiedRegularFiles(validationOutput)
+    check(publishedValidation.keys == validationSources.keys && publishedValidation.all { (path, file) ->
+        Files.mismatch(file.toPath(), validationSources.getValue(path).toPath()) == -1L
+    }) {
+        "Imported Apple SDK validation evidence inventory changed"
+    }
+}
+
+private fun verifyApplePackageRecordGroup(
+    proof: JsonObject,
+    name: String,
+    available: Map<String, File>,
+): Set<String> = proof.releaseArray(name).map { value ->
+    val record = value as? JsonObject ?: error("Imported Apple $name record is invalid")
+    check(record.keys == setOf("fileName", "bytes", "sha256")) {
+        "Imported Apple $name record is invalid"
+    }
+    val path = record.releaseString("fileName")
+    val file = available[path] ?: error("Imported Apple $name file is missing: $path")
+    verifyReleaseRecord(file, record)
+    path
+}.also { paths ->
+    check(paths.size == paths.toSet().size) { "Imported Apple $name records are duplicated" }
+}.toSet()
+
+private fun sameApplePackageFiles(expected: Map<String, File>, source: File, captured: File): Boolean {
+    val current = verifiedRegularFiles(source)
+    val held = verifiedRegularFiles(captured)
+    return current.keys == expected.keys && held.keys == expected.keys && expected.keys.all { path ->
+        Files.mismatch(current.getValue(path).toPath(), held.getValue(path).toPath()) == -1L
+    }
 }
 
 private fun requireApplePackagePathWithoutSymlinks(file: File, role: String) {

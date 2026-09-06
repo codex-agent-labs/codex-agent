@@ -119,10 +119,13 @@ internal fun Project.registerIosVerifiedDistributionTasks(
         evidenceDirectory.set(layout.dir(importedPath.map(rootProject::file)))
         verificationReceipt.set(validate.flatMap { it.verificationReceipt })
         distribution.sdkCompatibilityFile?.let { sdkCompatibility.set(it) }
+        nativeEvidenceDirectory.set(nativeEvidence)
+        nativeEvidenceReceipt.set(nativeReceipt)
         version.set(project.version.toString())
         ownedBuildDirectory.set(sdkPackageArtifactRoot)
         workDirectory.set(sdkPackageArtifactRoot.map { it.dir("work") })
         outputDirectory.set(sdkPackageArtifactRoot.map { it.dir("outputs") })
+        validationEvidenceDirectory.set(sdkPackageArtifactRoot.map { it.dir("validation-evidence") })
     }
     tasks.named<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
         // The original package is imported; checkout Sources/Tests must never reconstruct it.
