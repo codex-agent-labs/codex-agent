@@ -70,6 +70,8 @@ val npmConsumerDirectory = layout.buildDirectory.dir("npm/consumer")
 val npmConsumerCacheDirectory = layout.buildDirectory.dir("npm/cache")
 val npmPublicApiReport = layout.buildDirectory.file("npm/consumer/public-api.json")
 val npmPackedTestReport = layout.buildDirectory.file("npm/consumer/packed-tests.xml")
+val npmCompilerExecution = layout.buildDirectory.file("npm/consumer/typescript-execution.json")
+val npmConsumerExecution = layout.buildDirectory.file("npm/consumer/packed-consumer-execution.json")
 val javaScriptBindingParityReceipt =
     layout.buildDirectory.file("reports/cross-language-api/bindings/javascript-typescript-parity.json")
 val invalidateJavaScriptTypeScriptBindingParityOutput = tasks.register<Delete>(
@@ -1653,7 +1655,7 @@ val importedNpmSdkSnapshotRoot = layout.buildDirectory.dir(
 val invalidateJavaScriptSdkValidationOutputs = tasks.register<Delete>("invalidateJavaScriptSdkValidationOutputs") {
     delete(javascriptSdkValidationPhaseRoot, importedNpmSdkSnapshotRoot,
         importedNpmContractSnapshotRoot, importedNpmRuntimeValidationSnapshotRoot,
-        npmPublicApiReport, npmPackedTestReport)
+        npmPublicApiReport, npmPackedTestReport, npmCompilerExecution, npmConsumerExecution)
 }
 if (importedNpmSdkPackageStage.isPresent) {
     snapshotImportedNpmContractBinaryStage.configure { dependsOn(invalidateJavaScriptSdkValidationOutputs) }
@@ -1750,7 +1752,7 @@ val verifyPackedNpmConsumers = tasks.register<Exec>("verifyPackedNpmConsumers") 
     workingDir(npmConsumerDirectory)
     inputs.file(npmConsumerArchive)
     inputs.files(npmConsumerSourceDirectory.asFileTree)
-    outputs.files(npmPublicApiReport, npmPackedTestReport)
+    outputs.files(npmPublicApiReport, npmPackedTestReport, npmCompilerExecution, npmConsumerExecution)
     environment("CODEX_AGENT_NPM_TARBALL", npmConsumerArchive.get().asFile.absolutePath)
     environment(
         "CODEX_AGENT_EXPECTED_DEFAULT_RUNTIME_VERSION",
@@ -1763,6 +1765,7 @@ val verifyPackedNpmConsumers = tasks.register<Exec>("verifyPackedNpmConsumers") 
     doLast {
         val publicApi = outputs.files.single { it.name == "public-api.json" }
         val junit = outputs.files.single { it.name == "packed-tests.xml" }
+        verifyJavaScriptConsumerExecutions(publicApi.parentFile)
         val publicApiText = publicApi.takeIf(File::isFile)?.readText().orEmpty()
         check(publicApi.isFile && publicApi.length() > 0 &&
             publicApiText.startsWith("{\n    \"schema\": 2,") && publicApiText.endsWith("}\n") &&
@@ -1837,6 +1840,7 @@ val stageJavaScriptSdkValidationPhase = tasks.register<Sync>("stageJavaScriptSdk
     from(javaScriptBindingParityReceipt) { into("binding-evidence") }
     from(npmPublicApiReport) { into("compiler-evidence") }
     from(npmPackedTestReport) { into("test-report") }
+    from(listOf(npmCompilerExecution, npmConsumerExecution)) { into("execution") }
     from(npmConsumerSourceDirectory) { into("test-program") }
     includeEmptyDirs = false
     duplicatesStrategy = DuplicatesStrategy.FAIL
@@ -1858,6 +1862,7 @@ tasks.register<WriteProductOutputManifestTask>("writeJavaScriptSdkValidationOutp
         "binding-evidence" to "outputs/binding-evidence",
         "compiler-evidence" to "outputs/compiler-evidence",
         "test-report" to "outputs/test-report",
+        "execution" to "outputs/execution",
         "test-program" to "outputs/test-program",
     ))
     outputsDirectory.set(javascriptSdkValidationOutputs)

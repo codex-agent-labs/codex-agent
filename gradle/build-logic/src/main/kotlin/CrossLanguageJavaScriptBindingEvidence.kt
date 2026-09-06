@@ -56,7 +56,48 @@ private val requiredJavaScriptConsumerProgramFiles = setOf(
     "smoke.mjs",
     "smoke.ts",
     "tsconfig.json",
+    "verify.mjs",
 )
+
+/** Original compiler/consumer execution records; never npm product content. */
+internal fun verifyJavaScriptConsumerExecutions(directory: File) {
+    var observedNode: String? = null
+    listOf("typescript-execution.json", "packed-consumer-execution.json").forEach { name ->
+        val file = directory.resolve(name)
+        check(file.isFile && !Files.isSymbolicLink(file.toPath()) && file.length() > 0) {
+            "Missing original JavaScript consumer execution: $name"
+        }
+        val contents = file.readText()
+        val value = releaseJson.parseToJsonElement(contents) as? JsonObject
+            ?: error("JavaScript execution must be an object")
+        value.jsRequireKeys("JavaScript execution", "command", "exitCode", "schemaVersion", "stderrBase64", "stdoutBase64")
+        check(contents == kotlinx.serialization.json.Json.encodeToString(JsonElement.serializer(), value) + "\n") {
+            "JavaScript execution must use exact compact JSON bytes"
+        }
+        check(value.keys.toList() == value.keys.sorted() && value.jsExactInt("schemaVersion") == 1 &&
+            value.jsExactInt("exitCode") == 0) { "JavaScript execution did not succeed with the supported schema" }
+        listOf("stderrBase64", "stdoutBase64").forEach { field ->
+            val encoded = value.jsExactString(field)
+            val decoded = java.util.Base64.getDecoder().decode(encoded)
+            check(java.util.Base64.getEncoder().encodeToString(decoded) == encoded) {
+                "JavaScript execution bytes are not canonical Base64"
+            }
+        }
+        val command = value.jsExactStrings("command")
+        val executable = command.firstOrNull() ?: error("JavaScript execution command missing")
+        check(File(executable).isAbsolute && File(executable).name in setOf("node", "node.exe")) {
+            "JavaScript execution must use its explicit Node executable"
+        }
+        if (observedNode == null) observedNode = executable
+        check(executable == observedNode) { "Compiler and consumer executed different Node programs" }
+        val arguments = if (name == "typescript-execution.json") {
+            listOf(directory.resolve("node_modules/typescript/bin/tsc").absolutePath, "--noEmit")
+        } else {
+            listOf("--test", "--test-reporter=junit", "--test-reporter-destination=packed-tests.xml", "smoke.cjs", "smoke.mjs")
+        }
+        check(command == listOf(executable) + arguments) { "JavaScript execution command differs from exact installed consumer" }
+    }
+}
 
 private val requiredJavaScriptArtifactIds =
     listOf("commonJs", "declaration", "esm", "packageJson", "tarball")

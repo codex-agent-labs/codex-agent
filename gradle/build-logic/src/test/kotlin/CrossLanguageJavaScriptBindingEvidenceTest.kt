@@ -7007,6 +7007,7 @@ class CrossLanguageJavaScriptBindingEvidenceTest {
             "smoke.mjs",
             "smoke.ts",
             "tsconfig.json",
+            "verify.mjs",
         )
 
         private fun digest(character: Char): String = character.toString().repeat(64)
