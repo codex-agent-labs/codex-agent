@@ -328,17 +328,25 @@ class ProductSelectionTest(unittest.TestCase):
             "CrossLanguageCAbiClient.kt",
             "CrossLanguageNativeWrapperBindingEvidence.kt",
             "NativeWrapperInstalledConsumerTask.kt",
+            "NativeWrapperCapabilityEvidenceTask.kt",
         ):
             with self.subTest(name=name):
                 selected = identities(classify_paths([f"gradle/build-logic/src/main/kotlin/{name}"]))
                 self.assertEqual({"sdk"}, {instance.product for instance in selected})
                 self.assertEqual(set(NATIVE_BINDINGS), {instance.component for instance in selected})
                 phases = {"validation", "metadata"}
-                if name not in {"CrossLanguageNativeWrapperBindingEvidence.kt", "NativeWrapperInstalledConsumerTask.kt"}:
+                if name not in {"CrossLanguageNativeWrapperBindingEvidence.kt", "NativeWrapperInstalledConsumerTask.kt",
+                                "NativeWrapperCapabilityEvidenceTask.kt"}:
                     phases.add("package")
                 for binding in NATIVE_BINDINGS:
                     self.assertEqual(phases, {instance.phase for instance in selected
                                               if instance.component == binding})
+                if name == "NativeWrapperCapabilityEvidenceTask.kt":
+                    path = f"gradle/build-logic/src/main/kotlin/{name}"
+                    for instance in PHASE_INSTANCE_IDS:
+                        owns = (instance.product == "sdk" and instance.component in NATIVE_BINDINGS
+                                and instance.phase == "validation")
+                        self.assertEqual((path,) if owns else (), phase_inventory_paths([path], instance))
 
     def test_current_runtime_version_does_not_select_mobile_sdk_products(self) -> None:
         selected = identities(classify_paths(["gradle/release/versions/runtime.txt"]))

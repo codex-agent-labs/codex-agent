@@ -282,6 +282,8 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
     )
     val invalidate = tasks.register<Delete>("invalidate${title}NativeWrapperInstalledConsumer") {
         delete(importedSnapshot, evidence)
+        delete(layout.buildDirectory.dir(nativeWrapperCandidateTree.map { "native-wrapper-capability-inputs/$it/$language" }))
+        delete(layout.buildDirectory.dir(nativeWrapperCandidateTree.map { "reports/native-wrapper-capability/$it/$language" }))
     }
     snapshotImportedNativeWrapperRuntimeStages.configure { mustRunAfter(invalidate) }
     generateNativeWrapperSdkCompatibility.configure { mustRunAfter(invalidate) }
@@ -326,6 +328,36 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
         outputDirectory.set(evidence)
         capabilityInputsDirectory.set(layout.buildDirectory.dir(
             nativeWrapperCandidateTree.map { "native-wrapper-capability-inputs/$it/$language" },
+        ))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
+}
+
+val nativeWrapperCapabilityEvidenceTasks = nativeWrapperLanguageSpecs.mapValues { (language, identity) ->
+    val (title, excluded) = identity
+    val authenticated = nativeWrapperInstalledConsumerTasks.getValue(language)
+    tasks.register<NativeWrapperCapabilityEvidenceTask>("verify${title}NativeWrapperCapabilityEvidence") {
+        group = "verification"
+        description = "Runs and verifies full $language capability evidence from authenticated imported inputs."
+        dependsOn(authenticated)
+        this.language.set(language)
+        expectedClassifier.set(providers.gradleProperty("codexAgent.target"))
+        capabilityInputsDirectory.set(authenticated.flatMap { it.capabilityInputsDirectory })
+        installedConsumerEvidence.set(authenticated.flatMap { it.outputDirectory })
+        producerScript.set(nativeWrapperBindingRoot.file(
+            "$language/${if (language == "dart") "tool" else "tools"}/produce_sdk_validation_evidence.py",
+        ))
+        claims.set(nativeWrapperBindingRoot.file("$language/parity/capability-claims.tsv"))
+        producerSources.from(nativeWrapperBindingRoot.dir(language).asFileTree.matching { exclude(excluded) })
+        if (language == "csharp") producerSources.from(
+            nativeWrapperBindingRoot.dir("csharp/src/CodexAgent/obj").asFileTree.matching { include("*") },
+            nativeWrapperBindingRoot.dir("csharp/tests/CodexAgent.Tests/obj").asFileTree.matching { include("*") },
+        )
+        dotnetExecutable.set(providers.gradleProperty("codexAgent.dotnetExecutable"))
+        dartExecutable.set(providers.gradleProperty("codexAgent.dartExecutable"))
+        dartPackageConfig.set(layout.file(providers.gradleProperty("codexAgent.dartPackageConfig").map(::file)))
+        outputDirectory.set(layout.buildDirectory.dir(
+            nativeWrapperCandidateTree.map { "reports/native-wrapper-capability/$it/$language" },
         ))
         repositoryRoot.set(rootProject.layout.projectDirectory)
     }

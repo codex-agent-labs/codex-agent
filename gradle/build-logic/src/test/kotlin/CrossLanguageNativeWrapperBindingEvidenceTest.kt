@@ -82,6 +82,103 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
     }
 
     @Test
+    fun `imported capability task retains complete raw proof and clears failed output`() = withFixture { fixture ->
+        // Synthetic compiler/host fixtures exercise the actual task and matcher,
+        // not a real compiler execution or hosted capability acceptance.
+        val root = fixture.root.canonicalFile
+        val handoff = root.resolve("handoff").also(File::mkdirs)
+        fun copy(source: File, path: String) = handoff.resolve(path).also {
+            it.parentFile.mkdirs()
+            source.copyTo(it)
+        }
+        copy(fixture.input().apiReport, "contract/canonical-api.json")
+        copy(fixture.input().canonicalCoverageReceipt, "contract/canonical-coverage.json")
+        copy(fixture.bootstrap, "bootstrap/bootstrap-evidence.json")
+        val installed = root.resolve("installed/evidence/csharp").also(File::mkdirs)
+        installed.resolve("linux-x64.tsv").writeText(
+            "classifier\tpackageArtifactId\tpackageSha256\tnativeLibrarySha256\ttestId\tstatus\n" +
+                "linux-x64\tcsharp-package/package.nupkg\t${"a".repeat(64)}\t${"b".repeat(64)}\t" +
+                "csharp-installed-host-lifecycle\tpassed\n",
+        )
+        installed.resolve("toolchain.tsv").writeText("tool\tversion\ndotnet\tfixture\n")
+        val script = root.resolve("producer.py").apply { writeText("""
+            import pathlib, shutil, sys
+            args = sys.argv[1:]
+            def arg(name): return pathlib.Path(args[args.index(name) + 1])
+            assert arg('--sdk-compatibility') == pathlib.Path('handoff/sdks/sdk-compatibility.json').absolute()
+            assert arg('--native-library') == pathlib.Path('handoff/sdks/linux-x64/lib/libcodex_agent.so').absolute()
+            assert arg('--dotnet').is_absolute()
+            output = arg('--output')
+            output.mkdir(parents=True)
+            for source, target in [('compiler.tsv', 'compiler-evidence.tsv'),
+                                   ('results.tsv', 'executed-tests.tsv'), ('tests.bin', 'test-program')]:
+                shutil.copyfile(source, output / target)
+            (output / 'auxiliary').mkdir()
+            (output / 'auxiliary/raw.log').write_text('full raw fixture log\n')
+            if pathlib.Path('tamper').exists():
+                (arg('--canonical-api').parent / 'injected.txt').write_text('changed input')
+        """.trimIndent() + "\n") }
+        val project = ProjectBuilder.builder().withProjectDir(root).build()
+        val output = root.resolve("build/capability")
+        val task = project.tasks.create("capabilities", NativeWrapperCapabilityEvidenceTask::class.java).apply {
+            language.set("csharp")
+            expectedClassifier.set("linux-x64")
+            dotnetExecutable.set(root.resolve("fixture-dotnet").absolutePath)
+            capabilityInputsDirectory.set(handoff)
+            installedConsumerEvidence.set(root.resolve("installed"))
+            producerScript.set(script)
+            claims.set(fixture.claims)
+            producerSources.from(script, fixture.claims)
+            outputDirectory.set(output)
+            repositoryRoot.set(root)
+        }
+        task.produce()
+        assertEquals(setOf("compiler-evidence.tsv", "executed-tests.tsv", "test-program", "auxiliary/raw.log"),
+            verifiedRegularFiles(output).keys)
+        assertEquals(fixture.compiler.readText(), output.resolve("compiler-evidence.tsv").readText())
+        assertFalse(fixture.receipt.exists())
+        root.resolve("tamper").writeText("fixture mutation")
+        assertFailsWith<IllegalStateException> { task.produce() }
+        assertFalse(output.exists())
+        root.resolve("tamper").delete()
+        handoff.resolve("contract/injected.txt").delete()
+        fixture.results.writeText(fixture.results.readText().replace("\tpassed", "\tfailed"))
+        assertFailsWith<IllegalStateException> { task.produce() }
+        assertFalse(output.exists())
+        val sentinel = handoff.resolve("preserve").apply { writeText("original") }
+        task.ownedBuildDirectory.set(root) // Permit the path; the input-overlap guard must still reject it.
+        task.outputDirectory.set(handoff)
+        assertFailsWith<IllegalStateException> { task.produce() }
+        assertEquals("original", sentinel.readText())
+        val link = root.resolve("build/link").toPath()
+        java.nio.file.Files.createSymbolicLink(link, handoff.toPath())
+        task.outputDirectory.set(link.resolve("unsafe-output").toFile())
+        assertFailsWith<IllegalStateException> { task.produce() }
+        assertFalse(handoff.resolve("unsafe-output").exists())
+        assertEquals("original", sentinel.readText())
+    }
+
+    @Test
+    fun `capability producer commands use imported resources for all five languages and targets`() {
+        val handoff = File("handoff").absoluteFile
+        nativeWrapperBindings.forEach { binding ->
+            listOf("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64").forEach { target ->
+                val command = nativeWrapperCapabilityCommand("python3", File("producer.py"), binding.id, target,
+                    handoff, File("output"), File("dotnet").absolutePath, "dart", File("config.json"))
+                assertTrue(handoff.resolve("sdks/sdk-compatibility.json").absolutePath in command)
+                assertTrue(handoff.resolve("sdks/$target").absolutePath in command)
+                assertEquals(binding == CrossLanguageBinding.CPP, "--classifier" in command)
+                assertEquals(binding == CrossLanguageBinding.CSHARP, "--dotnet" in command)
+                assertEquals(binding == CrossLanguageBinding.DART, "--package-config" in command)
+                assertFalse(command.any { it.contains("runtime/build") })
+            }
+        }
+        assertFailsWith<IllegalStateException> {
+            nativeWrapperCapabilityCommand("python3", File("producer.py"), "csharp", "linux-x64", handoff, File("out"))
+        }
+    }
+
+    @Test
     fun `cacheable task writes the receipt from an exact package directory`() = withFixture { fixture ->
         val task = ProjectBuilder.builder().withProjectDir(fixture.root).build().tasks.register(
             "nativeWrapperReceipt",

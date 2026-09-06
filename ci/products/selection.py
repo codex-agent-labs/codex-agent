@@ -812,6 +812,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         if name.startswith("CrossLanguageNativeWrapper") or name in {
             "CrossLanguageCAbiBindingEvidence.kt",
             "NativeWrapperInstalledConsumerTask.kt",
+            "NativeWrapperCapabilityEvidenceTask.kt",
         }:
             return set().union(*(
                 _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS

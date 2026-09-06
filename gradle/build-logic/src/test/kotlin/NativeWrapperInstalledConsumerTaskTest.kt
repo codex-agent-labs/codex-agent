@@ -143,6 +143,10 @@ class NativeWrapperInstalledConsumerTaskTest {
         assertTrue("codexAgent.sdkPackageReceipt" in seam)
         assertTrue("compatibilityRequest.set(" in seam)
         assertTrue("runtimeStageDirectory.set(nativeWrapperRuntimeSnapshotRoot)" in seam)
+        assertTrue("tasks.register<NativeWrapperCapabilityEvidenceTask>" in seam)
+        assertTrue("dependsOn(authenticated)" in seam)
+        assertTrue("capabilityInputsDirectory.set(authenticated.flatMap { it.capabilityInputsDirectory })" in seam)
+        assertTrue("installedConsumerEvidence.set(authenticated.flatMap { it.outputDirectory })" in seam)
 
         val type = NativeWrapperInstalledConsumerTask::class.java
         assertTrue(type.isAnnotationPresent(DisableCachingByDefault::class.java))
