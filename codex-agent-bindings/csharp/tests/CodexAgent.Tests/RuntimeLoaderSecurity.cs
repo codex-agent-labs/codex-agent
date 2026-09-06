@@ -29,22 +29,31 @@ internal static class RuntimeLoaderSecurity
         _ => throw new PlatformNotSupportedException(),
     };
 
-    private static JsonObject Identity(string target = "macos-arm64") => new()
+    private static string DifferentDigest(string digest) =>
+        "sha256:" + (digest[7] == '0' ? "1" : "0") + digest[8..];
+
+    private static string NativeName(string suffix = "") => OperatingSystem.IsWindows()
+        ? "codex_agent" + suffix + ".dll"
+        : "libcodex_agent" + suffix + (OperatingSystem.IsMacOS() ? ".dylib" : ".so");
+
+    private static JsonObject Identity(string target = "macos-arm64")
     {
-        ["appServerVersion"] = "0.149.0",
-        ["buildInputDigest"] = "sha256:" + new string('e', 64),
-        ["cAbiVersion"] = "1.13.0",
-        ["componentId"] = "sha256:" + new string(target switch
+        var compatibility = JsonNode.Parse(Compatibility())!;
+        var variant = compatibility["runtime"]!["embeddedVariants"]!.AsArray()
+            .Single(value => value!["target"]!.GetValue<string>() == target)!;
+        return new JsonObject
         {
-            "linux-arm64" => '0', "linux-x64" => '1', "macos-arm64" => '2',
-            "macos-x64" => '3', "windows-x64" => '4', _ => throw new ArgumentException("target"),
-        }, 64),
-        ["contractComponentDigest"] = "sha256:" + new string('f', 64),
-        ["contractDigest"] = "sha256:" + new string('a', 64),
-        ["runtimeCompatibilityVersion"] = "0.2.0",
-        ["schemaVersion"] = 1,
-        ["target"] = target,
-    };
+            ["appServerVersion"] = "0.149.0",
+            ["buildInputDigest"] = "sha256:" + new string('e', 64),
+            ["cAbiVersion"] = "1.13.0",
+            ["componentId"] = variant["componentId"]!.GetValue<string>(),
+            ["contractComponentDigest"] = "sha256:" + new string('f', 64),
+            ["contractDigest"] = compatibility["contract"]!["digest"]!.GetValue<string>(),
+            ["runtimeCompatibilityVersion"] = "0.2.0",
+            ["schemaVersion"] = 1,
+            ["target"] = target,
+        };
+    }
 
     internal static void Verify()
     {
@@ -53,7 +62,7 @@ internal static class RuntimeLoaderSecurity
         NativeLibraryLoader.ValidateIdentityForTests(compatibility, Identity().ToJsonString(), "macos-arm64", true);
 
         var external = Identity();
-        external["componentId"] = "sha256:" + new string('9', 64);
+        external["componentId"] = DifferentDigest(external["componentId"]!.GetValue<string>());
         NativeLibraryLoader.ValidateIdentityForTests(compatibility, external.ToJsonString(), "macos-arm64", false);
         Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateIdentityForTests(
             compatibility, external.ToJsonString(), "macos-arm64", true));
@@ -65,7 +74,7 @@ internal static class RuntimeLoaderSecurity
             value => value["cAbiVersion"] = "1.12.0",
             value => value["cAbiVersion"] = "1.0.0",
             value => value["cAbiVersion"] = "2.13.0",
-            value => value["contractDigest"] = "sha256:" + new string('9', 64),
+            value => value["contractDigest"] = DifferentDigest(value["contractDigest"]!.GetValue<string>()),
             value => value["target"] = "linux-arm64",
             value => value["runtimeCompatibilityVersion"] = "0.3.0",
         })
@@ -90,7 +99,7 @@ internal static class RuntimeLoaderSecurity
 
         foreach (var mutation in new Action<JsonObject>[]
         {
-            value => value["contract"]!["digest"] = "sha256:" + new string('9', 64),
+            value => value["contract"]!["digest"] = DifferentDigest(value["contract"]!["digest"]!.GetValue<string>()),
             value => value["runtime"]!["defaultRuntimeVersion"] = "0.3.0",
             value => value["runtime"]!["embeddedVariants"]![1]!["componentId"] =
                 value["runtime"]!["embeddedVariants"]![0]!["componentId"]!.GetValue<string>(),
@@ -189,11 +198,11 @@ internal static class RuntimeLoaderSecurity
 
     private static void VerifyInvalidNativeLibraries(string compatibility)
     {
-        var extension = OperatingSystem.IsMacOS() ? ".dylib" : ".so";
-        var valid = Path.Combine(AppContext.BaseDirectory, "libcodex_agent" + extension);
+        var valid = Path.Combine(AppContext.BaseDirectory, NativeName());
         var incompatibleOverride = JsonNode.Parse(compatibility)!.AsObject();
-        incompatibleOverride["contract"]!["digest"] = "sha256:" + new string('9', 64);
-        incompatibleOverride["runtime"]!["requiredContractDigest"] = "sha256:" + new string('9', 64);
+        var incompatibleDigest = DifferentDigest(incompatibleOverride["contract"]!["digest"]!.GetValue<string>());
+        incompatibleOverride["contract"]!["digest"] = incompatibleDigest;
+        incompatibleOverride["runtime"]!["requiredContractDigest"] = incompatibleDigest;
         Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateNativePathForTests(
             valid,
             incompatibleOverride.ToJsonString(new JsonSerializerOptions
@@ -202,10 +211,10 @@ internal static class RuntimeLoaderSecurity
             }) + "\n",
             Target));
 
-        var missing = Path.Combine(AppContext.BaseDirectory, "libcodex_agent_missing_identity" + extension);
+        var missing = Path.Combine(AppContext.BaseDirectory, NativeName("_missing_identity"));
         Reject<EntryPointNotFoundException>(() => NativeLibraryLoader.ValidateNativePathForTests(
             missing, compatibility, Target));
-        var mismatch = Path.Combine(AppContext.BaseDirectory, "libcodex_agent_abi_mismatch" + extension);
+        var mismatch = Path.Combine(AppContext.BaseDirectory, NativeName("_abi_mismatch"));
         Reject<InvalidDataException>(() => NativeLibraryLoader.ValidateNativePathForTests(
             mismatch, compatibility, Target));
     }
@@ -217,8 +226,7 @@ internal static class RuntimeLoaderSecurity
         var snapshotRoot = Directory.CreateDirectory(Path.Combine(root, "snapshots")).FullName;
         try
         {
-            var extension = OperatingSystem.IsWindows() ? ".dll" : OperatingSystem.IsMacOS() ? ".dylib" : ".so";
-            var library = Path.Combine(AppContext.BaseDirectory, "libcodex_agent" + extension);
+            var library = Path.Combine(AppContext.BaseDirectory, NativeName());
             var digest = "sha256:" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(library))).ToLowerInvariant();
             var document = JsonNode.Parse(compatibility)!.AsObject();
             var variants = document["runtime"]!["embeddedVariants"]!.AsArray();

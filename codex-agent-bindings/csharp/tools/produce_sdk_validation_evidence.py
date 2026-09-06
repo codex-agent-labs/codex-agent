@@ -11,6 +11,7 @@ import base64
 import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,57 @@ NATIVE_EVIDENCE = {
 }
 COMPILER_HEADER = ("compilerEvidenceId", "publicSymbols")
 TEST_HEADER = ("executedTestId", "status")
+TARGETS = ("linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-x64")
+
+
+def _fixture_environment(compatibility: Path) -> dict[str, str]:
+    # This selects test-fixture identities, not authentication authority. The
+    # caller authenticates the input, and the existing managed loader validates it.
+    declaration = json.loads(compatibility.read_bytes())
+    contract = declaration["contract"]["digest"]
+    variants = declaration["runtime"]["embeddedVariants"]
+    if not isinstance(contract, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", contract):
+        raise ValueError("SDK compatibility Contract digest is invalid")
+    if not isinstance(variants, list) or len(variants) != len(TARGETS):
+        raise ValueError("SDK compatibility must declare all five fixture targets")
+    result: dict[str, str] = {}
+    for variant in variants:
+        target, component = variant["target"], variant["componentId"]
+        if target not in TARGETS or not isinstance(component, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", component):
+            raise ValueError("SDK compatibility fixture target/component identity is invalid")
+        name = "CODEX_AGENT_TEST_IDENTITY_" + target.upper().replace("-", "_")
+        if name in result:
+            raise ValueError("SDK compatibility fixture target is duplicated")
+        result[name] = json.dumps({
+            "appServerVersion": "0.149.0", "buildInputDigest": "sha256:" + "e" * 64,
+            "cAbiVersion": "1.13.0", "componentId": component,
+            "contractComponentDigest": "sha256:" + "f" * 64, "contractDigest": contract,
+            "runtimeCompatibilityVersion": "0.2.0", "schemaVersion": 1, "target": target,
+        }, sort_keys=True, separators=(",", ":"))
+    return result
+
+
+def _native_program_files() -> tuple[str, ...]:
+    prefix, extension = ("", ".dll") if sys.platform == "win32" else (
+        "lib", ".dylib" if sys.platform == "darwin" else ".so"
+    )
+    return tuple(prefix + "codex_agent" + suffix + extension for suffix in (
+        "", "_missing_identity", "_abi_mismatch", "_csharp_fixture",
+    ))
+
+
+def _verify_program_tree(program: Path) -> None:
+    for name in (TEST_PROGRAM, "CodexAgent.dll", "CodexAgent.Tests.deps.json",
+                 "CodexAgent.Tests.runtimeconfig.json", *_native_program_files()):
+        _required_file(program / name, "C# runnable/native program closure")
+    for directory, names, files in os.walk(program, followlinks=False):
+        parent = Path(directory)
+        for name in names:
+            _required_directory(parent / name, "C# program directory")
+        for name in files:
+            path = _required_file(parent / name, "C# program file")
+            if not path.stat().st_size:
+                raise ValueError(f"C# program closure contains an empty file: {path}")
 
 
 def _execution_bytes(output: bytes) -> bytes:
@@ -212,6 +264,9 @@ def produce(
     test_source = _required_file(TEST_SOURCE, "C# test program source")
     restore_assets = tuple(_required_file(path, "C# no-restore assets") for path in RESTORE_ASSETS)
     source_files = _source_files()
+    fixture_environment = _fixture_environment(sdk_compatibility)
+    if sys.platform == "win32":
+        _required_file(c_sdk_root / "lib" / "codex_agent.lib", "Windows C SDK import library")
     _validate_output_scope(
         output,
         (dotnet, canonical_api, c_abi_bootstrap, sdk_compatibility, c_sdk_root,
@@ -234,6 +289,7 @@ def produce(
             private_project = source / project.relative_to(ROOT)
             environment = {
                 **os.environ,
+                **fixture_environment,
                 "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
                 "DOTNET_NOLOGO": "1",
                 "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
@@ -247,6 +303,7 @@ def produce(
                 "dotnet-build-execution.json": work / "dotnet-build.log",
                 "native-values-execution.json": work / "native-values.log",
                 "complete-suite-execution.json": work / "complete-suite.log",
+                "loader-security-execution.json": work / "loader-security.log",
             }
             _run_logged(
                 [
@@ -270,7 +327,12 @@ def produce(
                 [str(dotnet), str(test_program)],
                 cwd=source, env=environment, log=logs["complete-suite-execution.json"],
             )
+            _run_logged(
+                [str(dotnet), str(test_program), "--runtime-loader-security"],
+                cwd=source, env=environment, log=logs["loader-security-execution.json"],
+            )
             compiler, tests, test_program, native = _verify_suite_outputs(program)
+            _verify_program_tree(program)
             for name, log in logs.items():
                 (evidence / name).write_bytes(_execution_bytes(log.read_bytes()))
             for raw in (compiler, tests):
@@ -280,10 +342,13 @@ def produce(
             native_output.mkdir()
             for name in sorted(NATIVE_EVIDENCE):
                 shutil.copyfile(native / name, native_output / name)
+            # Preserve the exact runnable assembly/dependency/native-fixture tree,
+            # not just its entry DLL. This is external execution evidence.
+            program.rename(evidence / "program")
             if {path.name for path in evidence.iterdir()} != {
                 "compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence",
                 "dotnet-build-execution.json", "native-values-execution.json",
-                "complete-suite-execution.json",
+                "complete-suite-execution.json", "loader-security-execution.json", "program",
             } or {path.name for path in native_output.iterdir()} != NATIVE_EVIDENCE:
                 raise ValueError("Published C# evidence inventory is not exact")
             evidence.rename(output)

@@ -242,11 +242,11 @@ static const int32_t canonical_enum_values[] = {
     CODEX_AGENT_WORKSPACE_REASON_NOT_SELECTED,
 };
 
-size_t codex_agent_test_enum_count(void) {
+CODEX_AGENT_API size_t codex_agent_test_enum_count(void) {
     return sizeof(canonical_enum_values) / sizeof(canonical_enum_values[0]);
 }
 
-codex_agent_status_t codex_agent_test_enum_value(size_t index, int32_t *out_value) {
+CODEX_AGENT_API codex_agent_status_t codex_agent_test_enum_value(size_t index, int32_t *out_value) {
     if (out_value == NULL || index >= codex_agent_test_enum_count())
         return CODEX_AGENT_STATUS_INVALID_ARGUMENT;
     *out_value = canonical_enum_values[index];
@@ -324,13 +324,28 @@ codex_agent_status_t codex_agent_runtime_identity(char *buffer, size_t *inout_si
 #else
 #error unsupported Codex Agent test target
 #endif
-    const size_t required = sizeof(identity);
+    /* The raw producer supplies the imported compatibility identity explicitly.
+       Defaults above are only for the ordinary source fixture. The public loader
+       still authenticates and checks the selected identity without a test bypass. */
+#if defined(__APPLE__) && defined(__aarch64__)
+    const char *selected_identity = getenv("CODEX_AGENT_TEST_IDENTITY_MACOS_ARM64");
+#elif defined(__APPLE__) && defined(__x86_64__)
+    const char *selected_identity = getenv("CODEX_AGENT_TEST_IDENTITY_MACOS_X64");
+#elif defined(__linux__) && defined(__aarch64__)
+    const char *selected_identity = getenv("CODEX_AGENT_TEST_IDENTITY_LINUX_ARM64");
+#elif defined(__linux__) && defined(__x86_64__)
+    const char *selected_identity = getenv("CODEX_AGENT_TEST_IDENTITY_LINUX_X64");
+#elif defined(_WIN64)
+    const char *selected_identity = getenv("CODEX_AGENT_TEST_IDENTITY_WINDOWS_X64");
+#endif
+    if (selected_identity == NULL) selected_identity = identity;
+    const size_t required = strlen(selected_identity) + 1U;
     if (inout_size == NULL) return CODEX_AGENT_STATUS_INVALID_ARGUMENT;
     if (buffer == NULL || *inout_size < required) {
         *inout_size = required;
         return CODEX_AGENT_STATUS_BUFFER_TOO_SMALL;
     }
-    memcpy(buffer, identity, required);
+    memcpy(buffer, selected_identity, required);
     *inout_size = required;
     return CODEX_AGENT_STATUS_OK;
 }
@@ -407,7 +422,7 @@ codex_agent_status_t codex_agent_host_create(
     return CODEX_AGENT_STATUS_OK;
 }
 
-int32_t codex_agent_test_host_copied_input_count(void) {
+CODEX_AGENT_API int32_t codex_agent_test_host_copied_input_count(void) {
     static const char *expected[] = {
         "/host-parity-bundle",
         "/host-parity-data",
@@ -499,7 +514,7 @@ codex_agent_status_t codex_agent_host_close(
     return complete_operation(context, callback, user_data, CODEX_AGENT_STATUS_OK, out_operation);
 }
 
-codex_agent_status_t codex_agent_test_complete_host_operation(codex_agent_status_t result) {
+CODEX_AGENT_API codex_agent_status_t codex_agent_test_complete_host_operation(codex_agent_status_t result) {
     codex_agent_operation_t *operation = pending_host_operation;
     if (operation == NULL) return CODEX_AGENT_STATUS_NOT_READY;
     pending_host_operation = NULL;
@@ -541,7 +556,7 @@ codex_agent_status_t codex_agent_host_state_subscribe(
     return CODEX_AGENT_STATUS_OK;
 }
 
-codex_agent_status_t codex_agent_test_advance_host_subscription(codex_agent_context_t *context) {
+CODEX_AGENT_API codex_agent_status_t codex_agent_test_advance_host_subscription(codex_agent_context_t *context) {
     codex_agent_subscription_t *subscription = pending_host_subscription;
     codex_agent_snapshot_t *snapshot = NULL;
     if (subscription == NULL) return CODEX_AGENT_STATUS_NOT_READY;
@@ -621,7 +636,7 @@ codex_agent_status_t codex_agent_agent_release(
     return CODEX_AGENT_STATUS_OK;
 }
 
-int32_t codex_agent_test_agent_release_calls(void) { return agent_release_calls; }
+CODEX_AGENT_API int32_t codex_agent_test_agent_release_calls(void) { return agent_release_calls; }
 
 codex_agent_status_t codex_agent_agent_conversations(
     codex_agent_context_t *context,
@@ -751,7 +766,7 @@ static codex_agent_status_t complete_leaf_operation(
 #define COMPLETE_LEAF(service, kind) \
     complete_leaf_operation(context, (service), (kind), CODEX_AGENT_STATUS_OK, 0, callback, user_data, out_operation)
 
-codex_agent_status_t codex_agent_test_complete_leaf_operation(codex_agent_context_t *context) {
+CODEX_AGENT_API codex_agent_status_t codex_agent_test_complete_leaf_operation(codex_agent_context_t *context) {
     codex_agent_operation_t *operation = pending_leaf_operation;
     if (operation == NULL || operation->callback == NULL) return CODEX_AGENT_STATUS_NOT_READY;
     pending_leaf_operation = NULL;
@@ -2411,7 +2426,7 @@ codex_agent_status_t codex_agent_conversations_active_subscribe(
     return CODEX_AGENT_STATUS_OK;
 }
 
-codex_agent_status_t codex_agent_test_advance_active_subscription(codex_agent_context_t *context) {
+CODEX_AGENT_API codex_agent_status_t codex_agent_test_advance_active_subscription(codex_agent_context_t *context) {
     codex_agent_subscription_t *subscription = pending_active_subscription;
     codex_agent_snapshot_t *snapshot = NULL;
     (void)context;

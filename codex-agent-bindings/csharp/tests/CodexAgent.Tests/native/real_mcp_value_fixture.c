@@ -2,7 +2,13 @@
 
 #define VIEW(literal) { (const uint8_t *)(literal), sizeof(literal) - 1U }
 
-CODEX_AGENT_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_test_mcp_server_fixture(
+#if defined(_WIN32)
+#define CODEX_AGENT_FIXTURE_API __declspec(dllexport)
+#else
+#define CODEX_AGENT_FIXTURE_API CODEX_AGENT_API
+#endif
+
+CODEX_AGENT_FIXTURE_API codex_agent_status_t CODEX_AGENT_CALL codex_agent_test_mcp_server_fixture(
     codex_agent_context_t *context,
     int32_t variant,
     int32_t *out_stage,
