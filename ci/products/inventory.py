@@ -440,7 +440,7 @@ def _open_created_directory(parent: int, name: str, mode: int, label: str) -> in
     return descriptor
 
 
-def _copy_directory_descriptor(source: int, destination: int) -> None:
+def _copy_directory_descriptor(source: int, destination: int, *, allow_empty: bool = False) -> None:
     before = os.fstat(source)
     names = sorted(os.listdir(source))
     for name in names:
@@ -461,13 +461,13 @@ def _copy_directory_descriptor(source: int, destination: int) -> None:
                     opened = os.fstat(child)
                     if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
                         raise ValueError(f"Snapshot directory changed while opening: {name}")
-                    _copy_directory_descriptor(child, target)
+                    _copy_directory_descriptor(child, target, allow_empty=allow_empty)
                     os.fchmod(target, stat.S_IMODE(metadata.st_mode))
                 finally:
                     os.close(target)
             finally:
                 os.close(child)
-        elif stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0:
+        elif stat.S_ISREG(metadata.st_mode) and (allow_empty or metadata.st_size > 0):
             flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
             file_descriptor = os.open(name, flags, dir_fd=source)
             try:
@@ -506,7 +506,7 @@ def _copy_directory_descriptor(source: int, destination: int) -> None:
         raise ValueError("Snapshot source directory changed while copying")
 
 
-def _validate_snapshot_source(source: int) -> None:
+def _validate_snapshot_source(source: int, *, allow_empty: bool = False) -> None:
     for name in sorted(os.listdir(source)):
         metadata = os.stat(name, dir_fd=source, follow_symlinks=False)
         if stat.S_ISLNK(metadata.st_mode) or _is_reparse_point(metadata):
@@ -518,10 +518,10 @@ def _validate_snapshot_source(source: int) -> None:
                 opened = os.fstat(child)
                 if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
                     raise ValueError(f"Snapshot directory changed while opening: {name}")
-                _validate_snapshot_source(child)
+                _validate_snapshot_source(child, allow_empty=allow_empty)
             finally:
                 os.close(child)
-        elif stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0:
+        elif stat.S_ISREG(metadata.st_mode) and (allow_empty or metadata.st_size > 0):
             descriptor = os.open(
                 name,
                 os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -540,6 +540,7 @@ def _validate_snapshot_source(source: int) -> None:
 def _directory_inventory(
     directory: int,
     prefix: str = "",
+    *, allow_empty: bool = False,
 ) -> tuple[tuple[str, str, int, str], ...]:
     before = os.fstat(directory)
     names = sorted(os.listdir(directory))
@@ -558,10 +559,10 @@ def _directory_inventory(
                 if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
                     raise ValueError(f"Snapshot directory changed while verifying: {relative}")
                 records.append((relative, "directory", opened.st_mode, ""))
-                records.extend(_directory_inventory(child, relative))
+                records.extend(_directory_inventory(child, relative, allow_empty=allow_empty))
             finally:
                 os.close(child)
-        elif stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0:
+        elif stat.S_ISREG(metadata.st_mode) and (allow_empty or metadata.st_size > 0):
             file_descriptor = os.open(
                 name,
                 os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -614,6 +615,7 @@ def _windows_directory_path(path: Path, label: str, *, create: bool = False) -> 
 
 def _windows_snapshot_inventory(
     root: Path,
+    *, allow_empty: bool = False,
 ) -> tuple[dict[str, tuple[int, int, int, int, int]], dict[str, tuple[int, int, int, int, int]]]:
     root = _windows_directory_path(root, "Snapshot tree")
     directories: dict[str, tuple[int, int, int, int, int]] = {}
@@ -633,7 +635,7 @@ def _windows_snapshot_inventory(
                 raise ValueError(f"Snapshot tree contains an unsafe entry: {child_relative.as_posix()}")
             if stat.S_ISDIR(metadata.st_mode):
                 scan(child, child_relative)
-            elif stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0:
+            elif stat.S_ISREG(metadata.st_mode) and (allow_empty or metadata.st_size > 0):
                 files[child_relative.as_posix()] = _stat_identity(metadata)
             else:
                 raise ValueError(
@@ -683,7 +685,7 @@ def _copy_windows_snapshot_file(source: Path, destination: Path, expected: tuple
             os.close(destination_descriptor)
 
 
-def _snapshot_regular_tree_windows(source: Path, destination: Path) -> None:
+def _snapshot_regular_tree_windows(source: Path, destination: Path, *, allow_empty: bool = False) -> None:
     source = _windows_directory_path(source, "Snapshot source")
     destination = Path(os.path.abspath(destination))
     parent = _windows_directory_path(destination.parent, "Snapshot destination", create=True)
@@ -692,7 +694,7 @@ def _snapshot_regular_tree_windows(source: Path, destination: Path) -> None:
     for left, right in ((source, destination), (resolved_source, resolved_destination)):
         if left == right or left in right.parents or right in left.parents:
             raise ValueError("Snapshot source and destination must not overlap")
-    source_directories, source_files = _windows_snapshot_inventory(source)
+    source_directories, source_files = _windows_snapshot_inventory(source, allow_empty=allow_empty)
     with tempfile.TemporaryDirectory(prefix=f".{destination.name}-snapshot-", dir=parent) as wrapper_name:
         staged = Path(wrapper_name) / "tree"
         staged.mkdir(mode=0o700)
@@ -703,9 +705,9 @@ def _snapshot_regular_tree_windows(source: Path, destination: Path) -> None:
             relative: _copy_windows_snapshot_file(source / relative, staged / relative, identity)
             for relative, identity in sorted(source_files.items())
         }
-        if _windows_snapshot_inventory(source) != (source_directories, source_files):
+        if _windows_snapshot_inventory(source, allow_empty=allow_empty) != (source_directories, source_files):
             raise ValueError("Snapshot source tree changed while copying")
-        staged_directories, staged_files = _windows_snapshot_inventory(staged)
+        staged_directories, staged_files = _windows_snapshot_inventory(staged, allow_empty=allow_empty)
         if set(staged_directories) != set(source_directories) or set(staged_files) != set(source_files):
             raise ValueError("Snapshot destination inventory does not match the source")
         for relative, expected_digest in copied.items():
@@ -719,9 +721,9 @@ def _snapshot_regular_tree_windows(source: Path, destination: Path) -> None:
             raise
 
 
-def snapshot_regular_tree(source: Path, destination: Path) -> None:
+def snapshot_regular_tree(source: Path, destination: Path, *, allow_empty: bool = False) -> None:
     if _is_windows():
-        _snapshot_regular_tree_windows(Path(source), Path(destination))
+        _snapshot_regular_tree_windows(Path(source), Path(destination), allow_empty=allow_empty)
         return
     source = Path(os.path.abspath(source))
     destination = Path(os.path.abspath(destination))
@@ -734,7 +736,7 @@ def snapshot_regular_tree(source: Path, destination: Path) -> None:
     parent_descriptor: int | None = None
     destination_descriptor: int | None = None
     try:
-        _validate_snapshot_source(source_descriptor)
+        _validate_snapshot_source(source_descriptor, allow_empty=allow_empty)
         parent_descriptor = _open_directory(destination.parent, "Snapshot destination", create=True)
         try:
             destination_descriptor = _open_created_directory(
@@ -745,7 +747,7 @@ def snapshot_regular_tree(source: Path, destination: Path) -> None:
             )
         except FileExistsError as error:
             raise ValueError(f"Snapshot destination must not exist: {destination}") from error
-        _copy_directory_descriptor(source_descriptor, destination_descriptor)
+        _copy_directory_descriptor(source_descriptor, destination_descriptor, allow_empty=allow_empty)
     finally:
         os.close(source_descriptor)
         if destination_descriptor is not None:
@@ -778,10 +780,10 @@ def _remove_directory_link(parent: int, descriptor: int) -> None:
             return
 
 
-def publish_regular_tree(source: Path, destination: Path) -> None:
+def publish_regular_tree(source: Path, destination: Path, *, allow_empty: bool = False) -> None:
     """Publish a verified tree atomically without following a replaced parent path."""
     if _is_windows():
-        _snapshot_regular_tree_windows(Path(source), Path(destination))
+        _snapshot_regular_tree_windows(Path(source), Path(destination), allow_empty=allow_empty)
         return
     source = Path(os.path.abspath(source))
     destination = Path(os.path.abspath(destination))
@@ -796,7 +798,7 @@ def publish_regular_tree(source: Path, destination: Path) -> None:
     staged_name: str | None = None
     published = False
     try:
-        source_inventory = _directory_inventory(source_descriptor)
+        source_inventory = _directory_inventory(source_descriptor, allow_empty=allow_empty)
         parent_descriptor = _open_directory(destination.parent, "Snapshot destination", create=True)
         try:
             os.stat(destination.name, dir_fd=parent_descriptor, follow_symlinks=False)
@@ -812,9 +814,9 @@ def publish_regular_tree(source: Path, destination: Path) -> None:
                 )
             except FileExistsError:
                 continue
-        _copy_directory_descriptor(source_descriptor, staged_descriptor)
-        staged_inventory = _directory_inventory(staged_descriptor)
-        if _directory_inventory(source_descriptor) != source_inventory:
+        _copy_directory_descriptor(source_descriptor, staged_descriptor, allow_empty=allow_empty)
+        staged_inventory = _directory_inventory(staged_descriptor, allow_empty=allow_empty)
+        if _directory_inventory(source_descriptor, allow_empty=allow_empty) != source_inventory:
             raise ValueError("Snapshot source contents changed during publication")
         if staged_inventory != source_inventory:
             raise ValueError("Snapshot staged contents do not match the source")
@@ -859,7 +861,7 @@ def publish_regular_tree(source: Path, destination: Path) -> None:
             except FileNotFoundError:
                 pass
             raise ValueError("Snapshot staging directory changed during publication")
-        if _directory_inventory(staged_descriptor) != staged_inventory:
+        if _directory_inventory(staged_descriptor, allow_empty=allow_empty) != staged_inventory:
             raise ValueError("Snapshot contents changed during publication")
         published = True
     finally:

@@ -12,7 +12,10 @@ import stat
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from impact import LANES, validate_legacy_lane_projection
+if __package__:
+    from .impact import LANES, validate_legacy_lane_projection
+else:
+    from impact import LANES, validate_legacy_lane_projection
 
 
 SCHEMA_VERSION = 1
@@ -146,10 +149,11 @@ def validate_receipt(
     runner: dict[str, str] | None = None,
     toolchain: dict[str, str] | None = None,
     categories: tuple[str, ...] = tuple(INPUT_NAMES),
+    repository_root: Path | None = None,
 ) -> dict[str, object]:
     receipt = read_json(receipt_path)
     plan = read_json(plan_path)
-    validate_legacy_lane_projection(plan, plan_path=plan_path)
+    validate_legacy_lane_projection(plan, repository_root=repository_root, plan_path=plan_path)
     expected_keys = {
         "schemaVersion", "repository", "workflowPath", "event", "runId", "runAttempt", "pullRequest",
         "baseCommit", "headCommit", "validationCommit", "validationTree", "lane", "artifactName", "runner",

@@ -2497,7 +2497,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         (source / "complete.txt").write_bytes(b"complete")
         destination = root / "published"
 
-        def interrupted(_source: int, staged: int) -> None:
+        def interrupted(_source: int, staged: int, *, allow_empty: bool = False) -> None:
             partial = os.open(
                 "partial.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=staged,
             )
@@ -2530,8 +2530,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
         destination = parent / "published"
         real_copy = product_inventory._copy_directory_descriptor
 
-        def replace_parent(source_descriptor: int, destination_descriptor: int) -> None:
-            real_copy(source_descriptor, destination_descriptor)
+        def replace_parent(source_descriptor: int, destination_descriptor: int, *, allow_empty: bool = False) -> None:
+            real_copy(source_descriptor, destination_descriptor, allow_empty=allow_empty)
             parent.rename(moved_parent)
             parent.symlink_to(outside, target_is_directory=True)
 
@@ -2608,8 +2608,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
         destination = root / "copy-race-parent/published"
         real_copy = product_inventory._copy_directory_descriptor
 
-        def mutate_after_copy(source_descriptor: int, staged_descriptor: int) -> None:
-            real_copy(source_descriptor, staged_descriptor)
+        def mutate_after_copy(source_descriptor: int, staged_descriptor: int, *, allow_empty: bool = False) -> None:
+            real_copy(source_descriptor, staged_descriptor, allow_empty=allow_empty)
             descriptor = os.open(
                 "complete.txt",
                 os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),

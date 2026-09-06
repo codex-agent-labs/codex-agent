@@ -237,6 +237,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/native_runtime_inputs.py",
     "ci/products/runtime_adapter_content.py",
     "ci/products/adapter_runtime_inputs.py",
+    "ci/products/tooling.py",
     "ci/products/selection.py",
     "ci/products/sdk_inputs.py",
     "ci/products/sdk_native.py",
