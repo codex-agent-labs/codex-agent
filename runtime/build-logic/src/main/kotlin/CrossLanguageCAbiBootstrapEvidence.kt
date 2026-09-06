@@ -1,5 +1,7 @@
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import javax.inject.Inject
 import kotlinx.serialization.json.JsonArray
@@ -8,9 +10,11 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.LocalState
@@ -3570,6 +3574,9 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
 
     @get:LocalState abstract val consumerOutputDirectory: DirectoryProperty
     @get:OutputFile abstract val evidenceFile: RegularFileProperty
+    @get:OutputFile abstract val bootstrapContentFile: RegularFileProperty
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val contentProducerSources: ConfigurableFileCollection
 
     init {
         outputs.upToDateWhen { false }
@@ -3579,6 +3586,8 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
     @TaskAction
     fun generate() {
         val output = evidenceFile.get().asFile
+        val content = bootstrapContentFile.get().asFile
+        prepareCAbiBootstrapContent(output, content, inputs.files.files)
         Files.deleteIfExists(output.toPath())
         check(System.getProperty("os.name").lowercase().contains("mac") &&
             System.getProperty("os.arch").lowercase() in setOf("aarch64", "arm64")) {
@@ -4047,6 +4056,17 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
         check(output.readText() == releaseJson.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), report) + "\n") {
             "C ABI bootstrap evidence is not canonically encoded"
         }
+        // The full raw compiler/JUnit/reference gate above remains the authority.
+        // This sidecar is deterministic content only, never an execution receipt.
+        writeCAbiBootstrapContent(output, content, contractDirectory.get().asFile) { command, capture ->
+            capture.outputStream().use { stdout ->
+                processes.exec {
+                    workingDir(repositoryRoot.get().asFile)
+                    commandLine(command)
+                    standardOutput = stdout
+                }.assertNormalExitValue()
+            }
+        }
     }
 
     private fun compileConsumer(
@@ -4085,6 +4105,63 @@ abstract class GenerateCAbiBootstrapEvidenceTask @Inject constructor(
         check(artifact.isFile && artifact.length() > 0L) { "C ABI consumer artifact is empty: $id" }
         if (execute) processes.captureRuntimeProcess(listOf(artifact.absolutePath))
         return CompiledCAbiConsumer(id, source, artifact, execute)
+    }
+}
+
+private fun requireCAbiBootstrapOutputPaths(raw: File, content: File) {
+    listOf(raw, content).forEach { file ->
+        val path = file.toPath()
+        check(path.isAbsolute && path == path.normalize()) { "Bootstrap output must be absolute and normalized" }
+        check(!Files.isSymbolicLink(path)) { "Bootstrap output must not be symbolic" }
+        generateSequence(path.parent) { it.parent }.forEach { parent ->
+            check(!Files.isSymbolicLink(parent) && (!Files.exists(parent, LinkOption.NOFOLLOW_LINKS) ||
+                Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS))) { "Unsafe bootstrap output parent: $parent" }
+        }
+    }
+    check(content.name == "bootstrap-content.json" && content.parentFile == raw.parentFile && raw != content) {
+        "Bootstrap content must be the separate bootstrap-content.json sibling of raw evidence"
+    }
+}
+
+internal fun prepareCAbiBootstrapContent(raw: File, content: File, protectedInputs: Collection<File>) {
+    requireCAbiBootstrapOutputPaths(raw, content)
+    val destination = content.toPath()
+    protectedInputs.forEach { input ->
+        val path = input.canonicalFile.toPath()
+        check(listOf(raw.toPath(), destination).none { it.startsWith(path) || path.startsWith(it) }) {
+            "Bootstrap output overlaps an original input: $input"
+        }
+    }
+    check(!Files.exists(destination, LinkOption.NOFOLLOW_LINKS) ||
+        Files.isRegularFile(destination, LinkOption.NOFOLLOW_LINKS)) { "Bootstrap content output must be regular" }
+    Files.deleteIfExists(destination)
+}
+
+internal fun writeCAbiBootstrapContent(raw: File, content: File, contract: File, run: (List<String>, File) -> Unit) {
+    requireCAbiBootstrapOutputPaths(raw, content)
+    check(Files.isRegularFile(raw.toPath(), LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(raw.toPath()) &&
+        raw.length() > 0) { "Missing original bootstrap evidence" }
+    check(!Files.exists(content.toPath(), LinkOption.NOFOLLOW_LINKS)) { "Bootstrap content was not invalidated" }
+    val original = raw.length() to raw.releaseDigest()
+    val temporary = Files.createTempFile(content.parentFile.toPath(), "bootstrap-content-", ".tmp").toFile()
+    try {
+        run(listOf("python3", "-E", "-s", "-B", "-m", "ci.products.sdk_runtime_content", "bootstrap",
+            "--raw", raw.absolutePath, "--contract-directory", contract.absolutePath), temporary)
+        requireCAbiBootstrapOutputPaths(raw, content)
+        check(Files.isRegularFile(raw.toPath(), LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(raw.toPath()) &&
+            (raw.length() to raw.releaseDigest()) == original) { "Original bootstrap evidence changed during projection" }
+        check(!Files.isSymbolicLink(temporary.toPath()) && temporary.isFile && temporary.length() in 1..(16L * 1024 * 1024)) {
+            "Bootstrap content projector did not emit bounded regular bytes"
+        }
+        val stream = Files.newOutputStream(content.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+        try {
+            stream.use { it.write(temporary.readBytes()) }
+        } catch (failure: Exception) {
+            Files.deleteIfExists(content.toPath())
+            throw failure
+        }
+    } finally {
+        Files.deleteIfExists(temporary.toPath())
     }
 }
 

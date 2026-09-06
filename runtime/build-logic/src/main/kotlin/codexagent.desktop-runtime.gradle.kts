@@ -642,6 +642,8 @@ tasks.register("packageDesktopCAbiSdks") {
 
 val cAbiBootstrapEvidenceFile =
     layout.buildDirectory.file("reports/cross-language-api/c-abi/bootstrap-evidence.json")
+val cAbiBootstrapContentFile =
+    layout.buildDirectory.file("reports/cross-language-api/c-abi/bootstrap-content.json")
 val cAbiBootstrapConsumerOutput = layout.buildDirectory.dir("c-abi-bootstrap/consumers")
 val importedCAbiBootstrap = importedRuntimePackageStage.isPresent &&
     providers.gradleProperty("codexAgent.product").orNull == "runtime" &&
@@ -652,7 +654,7 @@ val invalidateCAbiBootstrapEvidence = tasks.register<Delete>(
 ) {
     group = "verification"
     description = "Deletes stale observed C ABI bootstrap evidence before prerequisites execute."
-    delete(cAbiBootstrapEvidenceFile, cAbiBootstrapConsumerOutput)
+    delete(cAbiBootstrapEvidenceFile, cAbiBootstrapContentFile, cAbiBootstrapConsumerOutput)
 }
 tasks.configureEach {
     if (name != invalidateCAbiBootstrapEvidence.name) {
@@ -782,6 +784,8 @@ val generateCAbiBootstrapEvidence =
     ))
     consumerOutputDirectory.set(cAbiBootstrapConsumerOutput)
     evidenceFile.set(cAbiBootstrapEvidenceFile)
+    bootstrapContentFile.set(cAbiBootstrapContentFile)
+    contentProducerSources.from(runtimeProductTooling)
 }
 val nodeRuntimeEvidenceRunnerArchive = layout.file(
     providers.gradleProperty("codexAgent.nodeRuntimeEvidenceRunnerArchive").map(::File),
@@ -1224,6 +1228,7 @@ desktopManifest.distributions.forEach { distribution ->
         if (importedBootstrapTest != null) {
             dependsOn(generateCAbiBootstrapEvidence)
             from(generateCAbiBootstrapEvidence.flatMap { it.evidenceFile }) { into("c-abi-bootstrap") }
+            from(generateCAbiBootstrapEvidence.flatMap { it.bootstrapContentFile }) { into("c-abi-bootstrap") }
             from(importedBootstrapReports) { into("c-abi-bootstrap/native-junit") }
             from(cAbiBootstrapConsumerOutput) { into("c-abi-bootstrap/consumers") }
             from(validationPackageRoot.map { it.dir("outputs/validation-runner") }) {

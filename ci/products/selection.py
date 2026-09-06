@@ -462,6 +462,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _is_control_only(path: str) -> bool:
+    if path == "ci/products/sdk_runtime_content.py":
+        return False  # Produces the native Mac bootstrap content sidecar.
     if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py"}:
         return False  # Also produces the authenticated native validation handoff.
     if path in _CONTRACT_INVENTORY_POLICIES:
@@ -557,6 +559,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(NATIVE_TARGETS)
     if path == "ci/products/runtime_variant.py":
         return _runtime(NATIVE_TARGETS, "metadata")
+    if path == "ci/products/sdk_runtime_content.py":
+        return _runtime(("macos-arm64",), "validation")
     if path == "ci/products/runtime_attestation.py":
         return _runtime(NATIVE_TARGETS, "metadata")
     if path == "ci/products/runtime_aggregate.py":

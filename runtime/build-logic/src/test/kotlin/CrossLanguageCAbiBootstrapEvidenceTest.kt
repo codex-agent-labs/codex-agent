@@ -229,9 +229,10 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
         listOf(
             "rootProject.extra[\"codexAgent.verifiedContractDirectory\"]",
             "reports/cross-language-api/c-abi/bootstrap-evidence.json",
+            "reports/cross-language-api/c-abi/bootstrap-content.json",
             "c-abi-bootstrap/consumers",
             "tasks.register<Delete>(",
-            "delete(cAbiBootstrapEvidenceFile, cAbiBootstrapConsumerOutput)",
+            "delete(cAbiBootstrapEvidenceFile, cAbiBootstrapContentFile, cAbiBootstrapConsumerOutput)",
             "mustRunAfter(invalidateCAbiBootstrapEvidence)",
         ).forEach { contract ->
             assertTrue(contract in wiring, "Missing standalone C bootstrap contract: $contract")
@@ -239,6 +240,8 @@ class CrossLanguageCAbiBootstrapEvidenceTest {
         listOf(
             "invalidateCAbiBootstrapEvidence",
             "contractDirectory.set(verifiedContractDirectory)",
+            "bootstrapContentFile.set(cAbiBootstrapContentFile)",
+            "contentProducerSources.from(runtimeProductTooling)",
             "contractVersion.set(providers.gradleProperty(\"codexAgent.contractVersion\"))",
             "contractComponent.set(\"macos-arm64\")",
             "repositoryRoot.set(repositoryRootDirectory)",

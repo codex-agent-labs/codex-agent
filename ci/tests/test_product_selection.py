@@ -59,6 +59,15 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_bootstrap_content_projector_owns_mac_validation_only(self) -> None:
+        path = "ci/products/sdk_runtime_content.py"
+        owner = PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")
+        result = classify_paths([path])
+        self.assertIn(owner, result.instances)
+        self.assertFalse(any(instance.phase == "binary" for instance in result.instances))
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance == owner else (), phase_inventory_paths([path], instance), instance)
+
     def test_imported_runtime_variant_task_owns_only_native_metadata(self) -> None:
         from ci.tests.test_product_plan import plan
 

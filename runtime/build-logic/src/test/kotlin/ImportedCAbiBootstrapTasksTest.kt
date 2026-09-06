@@ -116,6 +116,8 @@ class ImportedCAbiBootstrapTasksTest {
         assertTrue("outputs/validation-runner/source/nativeMain" in imports)
         assertTrue("outputs/validation-runner/source/nativeTest" in imports)
         val validation = source.substringAfter("val stageValidation =").substringBefore("val jvmValidationTarget =")
+        assertTrue("from(generateCAbiBootstrapEvidence.flatMap { it.evidenceFile })" in validation)
+        assertTrue("from(generateCAbiBootstrapEvidence.flatMap { it.bootstrapContentFile })" in validation)
         for (part in listOf("c-abi-bootstrap/native-junit", "c-abi-bootstrap/consumers", "c-abi-bootstrap/original-runner")) {
             assertTrue(part in validation, part)
         }
