@@ -239,6 +239,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/adapter_runtime_inputs.py",
     "ci/products/tooling.py",
     "ci/products/tooling_local.py",
+    "ci/products/sdk_validation.py",
     "ci/products/selection.py",
     "ci/products/sdk_inputs.py",
     "ci/products/sdk_native.py",
@@ -381,6 +382,8 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
     ):
         return None
     name = path.rsplit("/", 1)[-1]
+    if path == "runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt":
+        return _runtime(RUNTIME_COMPONENTS)
     if name == "RuntimeEvidenceExecutionCapture.kt":
         return _runtime(("jvm", "node-js", "node-wasm"), "validation",
                         validation_targets=NATIVE_TARGETS) | _runtime(NATIVE_TARGETS, "validation")
@@ -993,6 +996,19 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         direct.add(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"))
     if path == "runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt":
         # Checked-byte adapter staging hashes imports independently of validation.
+        direct.update(instance for instance in selected if instance.phase == "validation")
+        direct.update(PhaseInstanceId("runtime", component, "metadata", component)
+                      for component in ("jvm", "node-js", "node-wasm"))
+    if path in {"runtime/build-logic/src/main/kotlin/RuntimeProductPythonTooling.kt",
+                "runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt"}:
+        # The isolated verifier hashes its capture in each independently imported phase.
+        direct.update(PhaseInstanceId("runtime", component, "binary", component)
+                      for component in RUNTIME_COMPONENTS)
+        direct.update(PhaseInstanceId("runtime", target, "package", target) for target in NATIVE_TARGETS)
+    if path == "runtime/build-logic/src/main/kotlin/RuntimeProductPythonTooling.kt":
+        direct.update(PhaseInstanceId("runtime", target, "validation", target) for target in NATIVE_TARGETS)
+        direct.update(PhaseInstanceId("runtime", component, "validation", target)
+                      for component in ("jvm", "node-js", "node-wasm") for target in NATIVE_TARGETS)
         direct.update(PhaseInstanceId("runtime", component, "metadata", component)
                       for component in ("jvm", "node-js", "node-wasm"))
     components = {(instance.product, instance.component) for instance in selected}

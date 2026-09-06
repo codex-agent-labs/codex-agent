@@ -1,6 +1,7 @@
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.TimeUnit
 
@@ -21,43 +22,19 @@ private val runtimeProductPythonModules = setOf("runtime_evidence", "c_abi", "ru
 
 private object RuntimeProductPythonToolingMarker
 
-private val extractedRuntimeProductPythonRoot: java.io.File by lazy {
-    val root = Files.createTempDirectory("codex-agent-runtime-product-python-").toFile().also {
-        it.deleteOnExit()
-    }
-    root.resolve("ci").also {
-        check(it.mkdir()) { "Could not create packaged Runtime Python ci directory" }
-        it.deleteOnExit()
-    }
-    root.resolve("ci/products").also {
-        check(it.mkdir()) { "Could not create packaged Runtime Python products directory" }
-        it.deleteOnExit()
-    }
-    runtimeProductPythonResources.forEach { relative ->
-        val resource = "python/$relative"
-        val output = root.resolve(relative)
-        check(output.parentFile.isDirectory || output.parentFile.mkdirs()) {
-            "Could not create packaged Runtime product resource directory: ${output.parentFile}"
-        }
-        val input = RuntimeProductPythonToolingMarker::class.java.classLoader.getResourceAsStream(resource)
-            ?: error("Packaged Runtime product Python resource is missing: $resource")
-        input.use { source ->
-            Files.newOutputStream(output.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use {
-                source.copyTo(it)
-            }
-        }
-        output.deleteOnExit()
-    }
-    root
-}
-
-internal fun runRuntimeProductPythonModule(module: String, arguments: List<String>): String {
+internal fun runRuntimeProductPythonModule(
+    module: String, arguments: List<String>,
+    resource: (String) -> java.io.InputStream? =
+        { RuntimeProductPythonToolingMarker::class.java.classLoader.getResourceAsStream(it) },
+): String {
     check(module in runtimeProductPythonModules) {
         "Unsupported packaged Runtime product Python module: $module"
     }
     return runRuntimeProductPython(
         "ci.products.$module",
-        listOf("python3", "-m", "ci.products.$module") + arguments,
+        "runpy.run_module('ci.products.$module', run_name='__main__', alter_sys=True)",
+        arguments,
+        resource,
     )
 }
 
@@ -67,10 +44,7 @@ internal fun verifyRuntimeAdapterProjection(component: String, projection: java.
     }
     runRuntimeProductPython(
         "Runtime adapter projection verifier",
-        listOf(
-            "python3",
-            "-c",
-            """
+        """
 from pathlib import Path
 import sys
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes
@@ -85,28 +59,53 @@ if projection["component"] != sys.argv[1]:
 if canonical_json_bytes(projection) != contents:
     raise ValueError("Runtime adapter projection is not canonical JSON")
             """.trimIndent(),
-            component,
-            projection.absolutePath,
-        ),
+        listOf(component, projection.absolutePath),
     )
 }
 
-private fun runRuntimeProductPython(label: String, command: List<String>): String {
-    val root = extractedRuntimeProductPythonRoot
-    val log = Files.createTempFile("codex-agent-runtime-product-python-", ".log")
+private fun runtimePythonInventory(root: java.io.File): Map<String, String> =
+    Files.walk(root.toPath()).use { paths ->
+        paths.toList().associate { path ->
+            check(!Files.isSymbolicLink(path)) { "Packaged Runtime Python resource is symbolic: $path" }
+            val identity = when {
+                Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS) -> "directory"
+                Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) -> path.toFile().releaseDigest()
+                else -> error("Packaged Runtime Python resource is not regular: $path")
+            }
+            root.toPath().relativize(path).toString() to identity
+        }
+    }
+
+private fun runRuntimeProductPython(
+    label: String, entry: String, arguments: List<String>,
+    resource: (String) -> java.io.InputStream? =
+        { RuntimeProductPythonToolingMarker::class.java.classLoader.getResourceAsStream(it) },
+): String {
+    val root = Files.createTempDirectory("codex-agent-runtime-product-python-").toRealPath().toFile()
+    var log: java.nio.file.Path? = null
     try {
+        runtimeProductPythonResources.forEach { relative ->
+            val name = "python/$relative"
+            val output = root.resolve(relative)
+            Files.createDirectories(output.parentFile.toPath())
+            val input = resource(name) ?: error("Packaged Runtime product Python resource is missing: $name")
+            input.use { source ->
+                Files.newOutputStream(output.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use {
+                    source.copyTo(it)
+                }
+            }
+        }
+        // A regular private package cannot resolve an ambient namespace portion.
+        Files.write(root.resolve("ci/__init__.py").toPath(), byteArrayOf(), StandardOpenOption.CREATE_NEW)
+        val captured = runtimePythonInventory(root)
+        val processLog = Files.createTempFile("codex-agent-runtime-product-python-", ".log").also { log = it }
+        val bootstrap = "import runpy,sys; sys.path.insert(0,sys.argv.pop(1));\n$entry"
+        val command = listOf("python3", "-I", "-S", "-B", "-c", bootstrap, root.absolutePath) + arguments
         val process = ProcessBuilder(command)
             .directory(root)
             .redirectErrorStream(true)
-            .redirectOutput(log.toFile())
+            .redirectOutput(processLog.toFile())
             .apply {
-                environment().remove("PYTHONHOME")
-                environment().remove("PYTHONINSPECT")
-                environment().remove("PYTHONSTARTUP")
-                environment()["PYTHONPATH"] = root.absolutePath
-                environment()["PYTHONDONTWRITEBYTECODE"] = "1"
-                environment()["PYTHONNOUSERSITE"] = "1"
-                environment()["PYTHONSAFEPATH"] = "1"
                 environment()["LC_ALL"] = "C"
                 environment()["LANG"] = "C"
             }
@@ -114,16 +113,21 @@ private fun runRuntimeProductPython(label: String, command: List<String>): Strin
         process.outputStream.close()
         val completed = process.waitFor(10, TimeUnit.MINUTES)
         if (!completed) process.destroyForcibly().waitFor()
+        check(captured == runtimePythonInventory(root)) {
+            "Packaged Runtime Python resources changed during execution"
+        }
         val text = Charsets.UTF_8.newDecoder()
             .onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT)
-            .decode(ByteBuffer.wrap(Files.readAllBytes(log)))
+            .decode(ByteBuffer.wrap(Files.readAllBytes(processLog)))
             .toString()
         check(completed && process.exitValue() == 0) {
             "$label failed (${if (completed) process.exitValue() else "timeout"}): ${text.trim()}"
         }
         return text
     } finally {
-        Files.deleteIfExists(log)
+        log?.let(Files::deleteIfExists)
+        // Only this invocation's private extraction; Files.walk never follows links.
+        Files.walk(root.toPath()).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
     }
 }

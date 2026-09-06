@@ -1354,8 +1354,21 @@ class ProductSelectionTest(unittest.TestCase):
     def test_runtime_adapter_metadata_directly_keys_shared_capture_digest(self):
         path = "runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt"
         expected = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "runtime" and (
-            instance.phase == "validation" or
+            instance.phase in {"binary", "validation"} or
+            (instance.phase == "package" and instance.component in NATIVE_TARGETS) or
             (instance.phase == "metadata" and instance.component in {"jvm", "node-js", "node-wasm"}))}
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance in expected else (), phase_inventory_paths((path,), instance))
+
+    def test_standalone_python_capture_keys_every_independent_caller(self):
+        path = "runtime/build-logic/src/main/kotlin/RuntimeProductPythonTooling.kt"
+        expected = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "runtime" and (
+            instance.phase == "binary" or
+            (instance.phase == "package" and instance.component in NATIVE_TARGETS) or
+            (instance.phase == "validation" and instance.target in NATIVE_TARGETS) or
+            (instance.phase == "metadata" and instance.component in {"jvm", "node-js", "node-wasm"}))}
+        self.assertEqual(36, len(expected))
+        self.assertTrue(expected.issubset(identities(classify_paths((path,)))))
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((path,) if instance in expected else (), phase_inventory_paths((path,), instance))
 
