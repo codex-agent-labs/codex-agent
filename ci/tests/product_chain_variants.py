@@ -39,6 +39,8 @@ from ci.products.inventory import (
 from ci.products.receipt import write_output_manifest
 from ci.products.runtime_attestation import build_runtime_variant_attestation
 from ci.products.runtime_evidence import (
+    DESKTOP_RUNTIME_TEST_CLASS,
+    DESKTOP_RUNTIME_TEST_METHODS,
     PRODUCT_RUNTIME_TARGETS,
     RUNTIME_TARGETS,
     build_desktop_evidence,
@@ -309,6 +311,19 @@ def build_variants(root: Path, contract: dict[str, Any], context: dict[str, Any]
             proof.archive_sha256,
             test_task=imported_desktop_test_task(evidence_target),
         ))
+        # Exact imported-producer XML shape, with synthetic outcomes only. This
+        # fixture does not claim that any native executable or host test ran.
+        desktop_junit = validation_stage / "outputs/native" / (
+            f"TEST-{evidence_target}Test.{DESKTOP_RUNTIME_TEST_CLASS}.xml"
+        )
+        desktop_junit.write_text(
+            f'<testsuite tests="{len(DESKTOP_RUNTIME_TEST_METHODS)}" skipped="0" failures="0" errors="0">\n'
+            + "".join(
+                f'  <testcase classname="{evidence_target}Test.{DESKTOP_RUNTIME_TEST_CLASS}" name="{method}"/>\n'
+                for method in DESKTOP_RUNTIME_TEST_METHODS
+            ) + "</testsuite>\n",
+            encoding="utf-8", newline="\n",
+        )
         references = validation_stage / "outputs/c-abi-reference"
         reference_files = {
             "include/codex_agent.h": C_ABI_REVIEWED_HEADER_PATH,
