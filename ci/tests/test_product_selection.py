@@ -65,6 +65,44 @@ class ProductSelectionTest(unittest.TestCase):
     def test_adapter_raw_validator_owns_only_host_validation_keys(self) -> None:
         self._assert_adapter_host_validation_keys("ci/products/runtime_adapter_validation.py")
 
+    def test_distribution_manifest_owns_adapter_host_validation_and_existing_binary_keys(self) -> None:
+        from ci.tests.test_product_plan import plan
+        path = "codex-agent-runtime-desktop/codex-app-server-distributions.json"
+        host_validation = {item for item in PHASE_INSTANCE_IDS if item.product == "runtime"
+                           and item.component in {"jvm", "node-js", "node-wasm"}
+                           and item.phase == "validation" and item.target in NATIVE_TARGETS}
+        binary = {PhaseInstanceId("runtime", name, "binary", name) for name in RUNTIME_COMPONENTS}
+        owners = binary | host_validation
+        self.assertEqual(15, len(host_validation))
+        self.assertEqual({item for item in PHASE_INSTANCE_IDS if item.product == "runtime"},
+                         identities(classify_paths([path])))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / path
+            source.parent.mkdir(parents=True)
+            for instance in PHASE_INSTANCE_IDS:
+                with self.subTest(instance=instance):
+                    # Broad Runtime selection is not direct ownership: package,
+                    # native validation, binding validation, metadata and SDK
+                    # do not independently read this source through this edge.
+                    self.assertEqual((path,) if instance in owners else (),
+                                     phase_inventory_paths([path], instance))
+                    if instance.product != "runtime":
+                        continue
+                    keys = []
+                    for contents in (b"a", b"b"):
+                        source.write_bytes(contents)
+                        inventory = phase_file_inventory(root, [path], instance)
+                        if instance in owners:
+                            self.assertEqual([{"relativePath": path, "bytes": 1, "sha256": sha256_bytes(contents)}],
+                                             inventory)
+                        else:
+                            self.assertEqual([], inventory)
+                        # Predecessors remain fixed, isolating this direct input
+                        # from legitimate downstream invalidation via artifacts.
+                        keys.append(plan(instance, inventory=inventory)["buildKey"])
+                    self.assertEqual(instance in owners, keys[0] != keys[1])
+
     def _assert_adapter_host_validation_keys(self, path: str) -> None:
         from ci.tests.test_product_plan import plan
         owners = {item for item in PHASE_INSTANCE_IDS if item.product == "runtime"
@@ -1225,6 +1263,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/restore.py",
             "ci/products/reuse.py",
             "ci/products/native_runtime_inputs.py",
+            "ci/products/runtime_adapter_content.py",
             "ci/products/selection.py",
         )
         result = classify_paths(paths)

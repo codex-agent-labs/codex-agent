@@ -53,6 +53,7 @@ from .runtime_flags import load_runtime_binary_flags_bytes
 from .runtime_identity import derive_runtime_identity_from_git
 from .toolchain import load_toolchain_profile_bytes
 from .sdk_runtime_content import VerifiedNativeRuntimeProjection, verify_native_runtime_projection
+from .runtime_adapter_content import VerifiedAdapterRuntimeProjection
 
 
 _RUNTIME_BINARY_FLAGS_PATH = "codex-agent-runtime-desktop/native/c-api/binary-flags.json"
@@ -497,6 +498,7 @@ def plan_phase(
 
 def verify_build_key_output_consistency(
     receipts: list[dict[str, Any]], *, contract_execution_projection=None, native_runtime_projection=None,
+    adapter_runtime_projection=None,
 ) -> None:
     """Reject conflicting content; differing raw execution requires verified proof."""
     receipts_by_key: dict[str, dict[str, Any]] = {}
@@ -504,6 +506,20 @@ def verify_build_key_output_consistency(
         receipt = validate_phase_receipt(value)
         previous = receipts_by_key.setdefault(receipt["buildKey"], receipt)
         if previous["outputs"] != receipt["outputs"]:
+            if adapter_runtime_projection is not None and all(
+                member["product"] == "runtime" and member["phase"] == "validation"
+                and member["component"] in {"jvm", "node-js", "node-wasm"} and member["target"] in NATIVE_TARGETS
+                for member in (previous, receipt)
+            ):
+                content = []
+                for member in (previous, receipt):
+                    proof = adapter_runtime_projection(member)
+                    if type(proof) is not VerifiedAdapterRuntimeProjection:
+                        raise ValueError("Verified adapter Runtime projection is required for consistency")
+                    content.append(proof.output_inventory(sha256_bytes(canonical_json_bytes(member)),
+                                                          member["outputs"], identity=member))
+                if content[0] == content[1]:
+                    continue
             if native_runtime_projection is not None and all(
                 member["product"] == "runtime" and member["phase"] == "validation"
                 and member["component"] == member["target"] and member["target"] in NATIVE_TARGETS

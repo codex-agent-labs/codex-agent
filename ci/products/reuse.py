@@ -25,6 +25,7 @@ from .index import (
     _verify_index_receipt,
     verify_contract_index_object,
     verify_native_runtime_index_object,
+    verify_adapter_runtime_index_object,
     SignedProductIndex,
     stable_index_identity,
     verify_release_product_index,
@@ -46,6 +47,7 @@ from .plan import (
     _native_runtime_projection_from_record, _contract_projection_from_request_components,
 )
 from .receipt import output_inventory_digest, validate_phase_receipt
+from .runtime_adapter_content import VerifiedAdapterRuntimeProjection
 from .receipt import build_key_payload
 from .registry import (
     NATIVE_TARGETS,
@@ -235,6 +237,7 @@ class LookupSession:
         same_pr: RemoteCatalog | None = None,
         local: LocalCatalog | None = None,
         native_runtime_projection=None,
+        adapter_runtime_projection=None,
     ) -> None:
         self.repository = require_relative_path(repository, "lookup repository")
         if self.repository.count("/") != 1:
@@ -249,6 +252,10 @@ class LookupSession:
             raise ValueError("Native Runtime comparison provider must be callable")
         self._native_runtime_projection = native_runtime_projection
         self._native_projections: dict[bytes, VerifiedNativeRuntimeProjection] = {}
+        if adapter_runtime_projection is not None and not callable(adapter_runtime_projection):
+            raise ValueError("Adapter Runtime comparison provider must be callable")
+        self._adapter_runtime_projection = adapter_runtime_projection
+        self._adapter_projections: dict[bytes, VerifiedAdapterRuntimeProjection] = {}
         self._remote: dict[str, dict[str, list[_RemoteCandidate]]] = {
             source: {} for source in SOURCES[:-1]
         }
@@ -260,6 +267,7 @@ class LookupSession:
                 verify_immutable_product_indexes(
                     prior, index, contract_execution_projection=self._catalog_execution_projection,
                     native_runtime_projection=self._catalog_native_projection,
+                    adapter_runtime_projection=self._catalog_adapter_projection,
                 )
             stable_indexes.append(index)
             loaded_indexes.append(index)
@@ -361,10 +369,28 @@ class LookupSession:
             for entry in index["entries"]:
                 prior = entries_by_key.setdefault(entry["buildKey"], entry)
                 if prior["outputs"] != entry["outputs"]:
-                    left = verified_index_content(prior, self._catalog_execution_projection, self._catalog_native_projection)
-                    right = verified_index_content(entry, self._catalog_execution_projection, self._catalog_native_projection)
+                    left = verified_index_content(prior, self._catalog_execution_projection,
+                                                  self._catalog_native_projection, self._catalog_adapter_projection)
+                    right = verified_index_content(entry, self._catalog_execution_projection,
+                                                   self._catalog_native_projection, self._catalog_adapter_projection)
                     if left["outputs"] != right["outputs"]:
                         raise ValueError("Signed product indexes conflict for an identical build key")
+
+    def _catalog_adapter_projection(self, entry: dict[str, Any]) -> VerifiedAdapterRuntimeProjection:
+        key = canonical_json_bytes(entry)
+        if key in self._adapter_projections:
+            return self._adapter_projections[key]
+        for catalog in self._remote.values():
+            for candidate in catalog.get(entry["buildKey"], ()):
+                if candidate.entry != entry or candidate.object_path is None:
+                    continue
+                try:
+                    proof = verify_adapter_runtime_index_object(entry, candidate.object_path, self._adapter_runtime_projection)
+                except FileNotFoundError:
+                    continue
+                self._adapter_projections[key] = proof
+                return proof
+        raise ValueError("Conflicting adapter Runtime inventories require both authenticated objects")
 
     @staticmethod
     def _snapshot_local(local: LocalCatalog | None) -> LocalCatalog | None:

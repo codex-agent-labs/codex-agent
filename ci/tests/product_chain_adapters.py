@@ -4,21 +4,55 @@ from __future__ import annotations
 
 import hashlib
 import json
+import base64
 from pathlib import Path
 from typing import Any
 
 from ci.products.aggregate import RUNTIME_ADAPTERS, RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
-from ci.products.inventory import load_canonical_json_bytes, load_json_bytes, sha256_bytes, write_canonical_json
+from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, sha256_bytes, write_canonical_json
 from ci.products.receipt import write_output_manifest
 from ci.products.registry import PhaseInstanceId
 from ci.products.runtime_evidence import (
+    DESKTOP_RUNTIME_TEST_CLASS, DESKTOP_RUNTIME_TEST_METHODS,
+    NODE_RUNTIME_TEST_CLASS, NODE_RUNTIME_TEST_METHODS, PINNED_NODE_VERSION,
     derive_runtime_adapter_projection,
+    inspect_classifier,
     jvm_evidence_filename,
     node_evidence_filename,
+    read_distribution_manifest,
 )
 from ci.tests.product_chain_support import contract_reference, output, reference, write_receipt
 from ci.tests.test_runtime_evidence import RuntimeEvidenceFixture
+
+
+def _synthetic_host_capture(component: str, target: str, report: Path) -> dict[str, bytes]:
+    """Fixture-only returned process bytes and JUnit; no runtime is executed."""
+    is_jvm = component == "jvm"
+    test_class = DESKTOP_RUNTIME_TEST_CLASS if is_jvm else NODE_RUNTIME_TEST_CLASS
+    methods = DESKTOP_RUNTIME_TEST_METHODS if is_jvm else NODE_RUNTIME_TEST_METHODS
+
+    def capture(identifier, raw):
+        return {"id": identifier, "exitCode": 0, "outputBase64": base64.b64encode(raw).decode("ascii")}
+
+    executions = [] if is_jvm else [capture("version", f"v{PINNED_NODE_VERSION}\n".encode())]
+    executions.append(capture("discovery", (f"{test_class}.\n" + "".join(f"  {method}\n" for method in methods)).encode()))
+    executions.extend(capture(method, b"" if index == len(methods) - 1 else b"\xff\x00Synthetic fixture output\n")
+                      for index, method in enumerate(methods))
+    prefix = "nodeRuntime" if component == "node-js" else "nodeWasmRuntime"
+    junit_name = (f"TEST-jvm-runtime-{target}.xml" if is_jvm
+                  else f"TEST-{prefix}{target[0].upper()}{target[1:]}Test.{test_class}.xml")
+    return {
+        f"{report.stem}-execution.json": canonical_json_bytes({
+            "schemaVersion": 1, "component": component, "target": target,
+            "testClass": test_class, "executions": executions,
+        }),
+        junit_name: (
+            f'<testsuite tests="{len(methods)}" skipped="0" failures="0" errors="0">\n'
+            + "".join(f'  <testcase classname="{test_class}" name="{method}"/>\n' for method in methods)
+            + "</testsuite>\n"
+        ).encode("utf-8"),
+    }
 
 
 def build_adapters(
@@ -29,11 +63,27 @@ def build_adapters(
 ) -> dict[str, Any]:
     """Build deterministic adapter payloads and their authenticated receipt closure."""
     root = Path(root)
+    package_suffix = context.get("adapter_package_suffix", b"")
+    if type(package_suffix) is not bytes:
+        raise ValueError("Synthetic adapter package suffix must be bytes")
     root.mkdir(parents=True)
     raw_root = root / "raw"
     raw_root.mkdir()
     fixture = RuntimeEvidenceFixture(raw_root)
     fixture.commits = dict.fromkeys(fixture.commits, context["producer"]["commit"])
+    raw_closure = context.get("adapter_raw_closure") is True
+    if raw_closure:
+        fixture.manifest_path = variants["stages"].parent / "inputs/codex-app-server-distributions.json"
+        fixture.manifest = read_distribution_manifest(fixture.manifest_path)
+        fixture.classifiers = {}
+        for target in RUNTIME_TARGETS:
+            archives = [record["relativePath"] for record in variants["receipts"][target]["package"]["outputs"]
+                        if record["kind"] == "app-server" and record["relativePath"].endswith(".zip")]
+            if len(archives) != 1:
+                raise ValueError("Synthetic adapter requires one original native package classifier")
+            fixture.classifiers[RUNTIME_EVIDENCE_TARGETS[target]] = variants["stages"] / target / "package" / archives[0]
+        fixture.proofs = {target: inspect_classifier(target, fixture.manifest, archive)
+                          for target, archive in fixture.classifiers.items()}
     raw_paths = {
         "jvm": fixture.write_jvm(),
         "node-js": fixture.write_node("js"),
@@ -119,6 +169,7 @@ def build_adapters(
         outputs: list[dict[str, Any]],
         contents: dict[str, bytes],
         upstream: list[dict[str, Any]],
+        inventory: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         identity = (component, phase, target)
         stage = root / "stages" / component / (
@@ -154,12 +205,17 @@ def build_adapters(
             outputs=outputs,
             upstream=upstream,
             context=context,
+            **({"inventory": inventory} if inventory is not None else {}),
         )
         receipt_paths[identity] = path
         return receipt
 
     package_stages = {}
     for component in RUNTIME_ADAPTERS:
+        runner = {"jvm": fixture.jvm_runner, "node-js": fixture.node_runner, "node-wasm": fixture.wasm_runner}[component]
+        runner_contents = {f"outputs/validation-runner/{runner.name}": runner.read_bytes()} if raw_closure else {}
+        runner_outputs = [output("validation-runner", relative, contents)
+                          for relative, contents in runner_contents.items()]
         binary = write(
             component,
             "binary",
@@ -168,23 +224,25 @@ def build_adapters(
                 "adapter-binary",
                 f"outputs/binary/{component}.bin",
                 f"S808 synthetic {component} binary fixture\n".encode(),
-            )],
-            contents={f"outputs/binary/{component}.bin": f"S808 synthetic {component} binary fixture\n".encode()},
+            ), *runner_outputs],
+            contents={f"outputs/binary/{component}.bin": f"S808 synthetic {component} binary fixture\n".encode(),
+                      **runner_contents},
             upstream=[contract_reference(contract, component)],
         )
+        package_payload = f"S808 synthetic {component} package fixture\n".encode() + package_suffix
         package_outputs = [output(
             "adapter-package", f"outputs/package/{component}.bin",
-            f"S808 synthetic {component} package fixture\n".encode(),
+            package_payload,
         )]
         package_contents = {
-            f"outputs/package/{component}.bin": f"S808 synthetic {component} package fixture\n".encode(),
+            f"outputs/package/{component}.bin": package_payload,
         }
         if component == "node-js":
             stage = root / "stages/node-js/package"
             adapter = stage / "outputs/adapter"
             adapter.mkdir(parents=True)
             for name, contents in {
-                "runtime.js": b"export const runtime = 1;\n",
+                "runtime.js": b"export const runtime = 1;\n" + package_suffix,
                 "runtime.js.map": b'{"version":3}\n',
                 "runtime.d.ts": b"export declare const generated: number;\n",
             }.items():
@@ -196,6 +254,8 @@ def build_adapters(
             package_stages[component] = stage
             package_contents = {value["relativePath"]: (stage / value["relativePath"]).read_bytes()
                                 for value in package_outputs}
+        package_outputs.extend(runner_outputs)
+        package_contents.update(runner_contents)
         package = write(
             component,
             "package",
@@ -218,13 +278,28 @@ def build_adapters(
                 relative_path = (
                     f"outputs/node-evidence/{node_evidence_filename(evidence_target, backend)}"
                 )
+            validation_contents = {relative_path: report.read_bytes()}
+            validation_outputs = [output(kind, relative_path, validation_contents[relative_path])]
+            validation_inventory = None
+            if raw_closure:
+                for name, contents in _synthetic_host_capture(component, evidence_target, report).items():
+                    capture_kind = "test-report" if name.endswith(".xml") else "execution"
+                    capture_path = f"outputs/{capture_kind}/{name}"
+                    validation_contents[capture_path] = contents
+                    validation_outputs.append(output(capture_kind, capture_path, contents))
+                manifest_bytes = fixture.manifest_path.read_bytes()
+                validation_inventory = [{
+                    "relativePath": "codex-agent-runtime-desktop/codex-app-server-distributions.json",
+                    "bytes": len(manifest_bytes), "sha256": sha256_bytes(manifest_bytes),
+                }]
             validation = write(
                 component,
                 "validation",
                 target,
-                outputs=[output(kind, relative_path, report.read_bytes())],
-                contents={relative_path: report.read_bytes()},
+                outputs=validation_outputs,
+                contents=validation_contents,
                 upstream=[reference(package), reference(variants["receipts"][target]["package"])],
+                inventory=validation_inventory,
             )
             semantic = reference(validation)
             semantic["semanticProjection"] = {
@@ -281,4 +356,5 @@ def build_adapters(
         "adapter_report_files": adapter_report_files,
         "package_stages": package_stages,
         "phase_stages": phase_stages,
+        "distribution_manifest": fixture.manifest_path,
     }

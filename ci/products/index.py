@@ -34,6 +34,7 @@ from .inventory import (
 from .receipt import output_inventory_digest, validate_phase_receipt
 from .registry import published_coordinate
 from .sdk_runtime_content import VerifiedNativeRuntimeProjection
+from .runtime_adapter_content import VerifiedAdapterRuntimeProjection
 from .signatures import (
     load_keyring,
     public_key_for_metadata,
@@ -94,6 +95,7 @@ class VerifiedStableIndexHistory:
     _token: object
     _contract_objects: tuple[tuple[str, Path], ...] = ()
     _native_runtime_objects: tuple[tuple[str, Path], ...] = ()
+    _adapter_runtime_objects: tuple[tuple[str, Path], ...] = ()
 
 
 def _verify_signed_bytes(
@@ -277,6 +279,24 @@ def verify_native_runtime_index_object(entry: dict[str, Any], archive: Path, pro
     return proof
 
 
+def verify_adapter_runtime_index_object(entry: dict[str, Any], archive: Path, projection_provider):
+    """Require the retained original object and complete signed adapter-stage proof."""
+    from .aggregate import RUNTIME_ADAPTERS
+    from .registry import NATIVE_TARGETS
+    if (entry["product"] != "runtime" or entry["phase"] != "validation"
+            or entry["component"] not in RUNTIME_ADAPTERS or entry["target"] not in NATIVE_TARGETS):
+        raise ValueError("Adapter Runtime comparison requires an exact adapter host validation entry")
+    if not callable(projection_provider):
+        raise ValueError("Adapter Runtime comparison requires authenticated original evidence")
+    verified = verify_object(archive, build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+    _verify_index_receipt(entry, {**verified, "receiptSha256": sha256_bytes(verified["receiptBytes"])})
+    proof = projection_provider(entry, archive)
+    if type(proof) is not VerifiedAdapterRuntimeProjection:
+        raise ValueError("Verified adapter Runtime projection is required for index consistency")
+    proof.output_inventory(entry["receiptSha256"], verified["receipt"]["outputs"], identity=entry)
+    return proof
+
+
 def _contract_object_references(objects, label="Contract"):
     if objects is None:
         return {}
@@ -306,11 +326,11 @@ def _contract_object_projection(objects):
     return verify
 
 
-def _native_object_projection(objects, provider):
+def _runtime_object_projection(objects, provider, *, adapter=False):
     if provider is None:
         return None
     if not callable(provider):
-        raise ValueError("Native Runtime projection provider must be callable")
+        raise ValueError("Runtime projection provider must be callable")
     proofs = {}
 
     def verify(entry):
@@ -318,8 +338,9 @@ def _native_object_projection(objects, provider):
         if key not in proofs:
             archive = objects.get(entry["receiptSha256"])
             if archive is None:
-                raise ValueError("Conflicting native Runtime inventories require both authenticated objects")
-            proofs[key] = verify_native_runtime_index_object(entry, archive, provider)
+                raise ValueError("Conflicting Runtime inventories require both authenticated objects")
+            verifier = verify_adapter_runtime_index_object if adapter else verify_native_runtime_index_object
+            proofs[key] = verifier(entry, archive, provider)
         return proofs[key]
 
     return verify
@@ -334,11 +355,15 @@ def verify_stable_index_history(
     contract_objects: Mapping[str, Path] | None = None,
     native_runtime_objects: Mapping[str, Path] | None = None,
     native_runtime_projection=None,
+    adapter_runtime_objects: Mapping[str, Path] | None = None,
+    adapter_runtime_projection=None,
 ) -> VerifiedStableIndexHistory:
     objects = _contract_object_references(contract_objects)
     execution_projection = _contract_object_projection(objects)
     native_objects = _contract_object_references(native_runtime_objects, "Native Runtime")
-    native_projection = _native_object_projection(native_objects, native_runtime_projection)
+    native_projection = _runtime_object_projection(native_objects, native_runtime_projection)
+    adapter_objects = _contract_object_references(adapter_runtime_objects, "Adapter Runtime")
+    adapter_projection = _runtime_object_projection(adapter_objects, adapter_runtime_projection, adapter=True)
     keyring = load_keyring(Path(keyring_path), Path(keys_directory))
     authoritative_refs = _authoritative_stable_refs(repository)
     verified: list[bytes] = []
@@ -356,7 +381,8 @@ def verify_stable_index_history(
         tags.append(index["context"]["tag"])
         for prior in indexes:
             verify_immutable_product_indexes(prior, index, contract_execution_projection=execution_projection,
-                                             native_runtime_projection=native_projection)
+                                             native_runtime_projection=native_projection,
+                                             adapter_runtime_projection=adapter_projection)
         indexes.append(index)
         verified.append(contents)
     if len(tags) != len(set(tags)) or set(tags) != set(authoritative_refs):
@@ -364,7 +390,7 @@ def verify_stable_index_history(
             "Stable product-index sources do not match the current protected stable-tag inventory"
         )
     return VerifiedStableIndexHistory(repository, tuple(verified), _HISTORY_TOKEN,
-                                      tuple(objects.items()), tuple(native_objects.items()))
+                                      tuple(objects.items()), tuple(native_objects.items()), tuple(adapter_objects.items()))
 
 
 def _validated_entry_source(
@@ -590,9 +616,12 @@ def build_product_index(
     contract_objects: Mapping[str, Path] | None = None,
     native_runtime_objects: Mapping[str, Path] | None = None,
     native_runtime_projection=None,
+    adapter_runtime_objects: Mapping[str, Path] | None = None,
+    adapter_runtime_projection=None,
 ) -> dict[str, Any]:
     objects = _contract_object_references(contract_objects)
     native_objects = _contract_object_references(native_runtime_objects, "Native Runtime")
+    adapter_objects = _contract_object_references(adapter_runtime_objects, "Adapter Runtime")
     pairs = sorted(
         (_entry(source, repository=repository, trust_domain=trust_domain) for source in sources),
         key=lambda pair: pair[0]["buildKey"],
@@ -632,13 +661,16 @@ def build_product_index(
                 stable_history._repository != repository:
             raise ValueError("Stable product index requires explicit authenticated history")
         execution_projection = _contract_object_projection({**dict(stable_history._contract_objects), **objects})
-        native_projection = _native_object_projection(
+        native_projection = _runtime_object_projection(
             {**dict(stable_history._native_runtime_objects), **native_objects}, native_runtime_projection)
+        adapter_projection = _runtime_object_projection(
+            {**dict(stable_history._adapter_runtime_objects), **adapter_objects}, adapter_runtime_projection, adapter=True)
         for contents in stable_history._index_bytes:
             verify_immutable_product_indexes(
                 validate_product_index(load_canonical_json_bytes(contents)), index,
                 contract_execution_projection=execution_projection,
                 native_runtime_projection=native_projection,
+                adapter_runtime_projection=adapter_projection,
             )
     elif stable_history is not None:
         raise ValueError("Only a stable product index accepts stable history")
@@ -915,6 +947,8 @@ def write_signed_product_index(
     contract_objects: Mapping[str, Path] | None = None,
     native_runtime_objects: Mapping[str, Path] | None = None,
     native_runtime_projection=None,
+    adapter_runtime_objects: Mapping[str, Path] | None = None,
+    adapter_runtime_projection=None,
 ) -> dict[str, Any]:
     index = build_product_index(
         sources,
@@ -927,6 +961,8 @@ def write_signed_product_index(
         contract_objects=contract_objects,
         native_runtime_objects=native_runtime_objects,
         native_runtime_projection=native_runtime_projection,
+        adapter_runtime_objects=adapter_runtime_objects,
+        adapter_runtime_projection=adapter_runtime_projection,
     )
     manifest = Path(os.path.abspath(manifest_path))
     signature = manifest.with_suffix(".sig")

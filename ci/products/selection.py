@@ -218,6 +218,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/restore.py",
     "ci/products/reuse.py",
     "ci/products/native_runtime_inputs.py",
+    "ci/products/runtime_adapter_content.py",
     "ci/products/selection.py",
     "ci/products/sdk_inputs.py",
     "ci/products/sdk_native.py",
@@ -914,6 +915,11 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         return selected
 
     direct: set[PhaseInstanceId] = set()
+    if path == "codex-agent-runtime-desktop/codex-app-server-distributions.json":
+        # Imported JVM/Node host validation reads this original source independently of binary reuse.
+        direct.update(instance for instance in selected if instance.product == "runtime"
+                      and instance.component in {"jvm", "node-js", "node-wasm"}
+                      and instance.phase == "validation" and instance.target in NATIVE_TARGETS)
     if path in {"ci/products/sdk_runtime_content.py", "ci/products/contract_model.py",
                 "ci/products/test_results.py", "ci/products/runtime_evidence.py",
                 "ci/products/runtime_variant.py", "ci/products/c_abi.py"}:

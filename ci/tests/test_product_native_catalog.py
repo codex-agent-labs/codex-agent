@@ -209,14 +209,14 @@ class NativeRuntimeCatalogTest(unittest.TestCase):
         left, right = self.catalog("left", "promoted-main"), self.catalog("right", "same-pr")
         provider = _native_comparison_provider(self.root, records)
         self.session(left, right, provider)
-        from ci.products.index import _native_object_projection
+        from ci.products.index import _runtime_object_projection
         indexed = load_canonical_json_bytes(left.manifest.read_bytes())["entries"][0]
-        object_provider = _native_object_projection(
+        object_provider = _runtime_object_projection(
             {sha256_bytes(raw): self.objects[name] for name, raw in self.receipts.items()}, provider)
         proof = object_provider(indexed)
         self.assertIs(proof, object_provider(indexed))
         with self.assertRaisesRegex(ValueError, "both authenticated objects"):
-            _native_object_projection({}, provider)(indexed)
+            _runtime_object_projection({}, provider)(indexed)
         with self.assertRaisesRegex(ValueError, "lacks original"):
             self.session(left, right, _native_comparison_provider(self.root, records[:1]))
         for invalid in (records * 2, list(reversed(records)), [{**records[0], "claimedDigest": "sha256:" + "a" * 64}],

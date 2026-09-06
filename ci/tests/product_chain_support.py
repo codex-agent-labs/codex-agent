@@ -51,9 +51,11 @@ def write_receipt(
     outputs: list[dict[str, Any]], upstream: list[dict[str, Any]],
     context: dict[str, Any], product: str = "runtime", version: str = "0.2.7",
     version_identity: str = "0.2.0", toolchain: str = TOOLCHAIN,
+    inventory: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     marker = f"S808 synthetic input:{product}:{component}:{phase}:{target}".encode()
-    inventory = [{"relativePath": "fixture/input.txt", "bytes": len(marker), "sha256": sha256_bytes(marker)}]
+    if inventory is None:
+        inventory = [{"relativePath": "fixture/input.txt", "bytes": len(marker), "sha256": sha256_bytes(marker)}]
     inputs = {
         "inventory": inventory,
         "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
