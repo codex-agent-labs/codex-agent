@@ -1319,6 +1319,22 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((path,) if instance in direct else (), phase_inventory_paths((path,), instance))
 
+    def test_runtime_adapter_metadata_directly_keys_shared_capture_digest(self):
+        path = "runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt"
+        expected = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "runtime" and (
+            instance.phase == "validation" or
+            (instance.phase == "metadata" and instance.component in {"jvm", "node-js", "node-wasm"}))}
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance in expected else (), phase_inventory_paths((path,), instance))
+
+    def test_native_metadata_task_keys_only_five_sdk_metadata_phases(self):
+        path = "gradle/build-logic/src/main/kotlin/NativeWrapperMetadataContentTask.kt"
+        expected = {PhaseInstanceId("sdk", language, "metadata", "desktop")
+                    for language in ("python", "csharp", "rust", "cpp", "dart")}
+        self.assertEqual(expected, identities(classify_paths((path,))))
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance in expected else (), phase_inventory_paths((path,), instance))
+
     def test_root_gradle_inputs_do_not_enter_standalone_runtime_inventories(self) -> None:
         paths = ("build.gradle.kts", "gradle.properties", "settings-gradle.lockfile", "settings.gradle.kts")
         result = classify_paths(paths)

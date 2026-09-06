@@ -9,6 +9,7 @@ import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.MapProperty
+import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
@@ -77,6 +78,7 @@ abstract class WriteProductOutputManifestTask @Inject constructor(
     @get:Input abstract val productVersion: Property<String>
     @get:Input abstract val pythonExecutable: Property<String>
     @get:Input abstract val outputRoots: MapProperty<String, String>
+    @get:Input abstract val expectedOutputPaths: ListProperty<String>
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val outputsDirectory: DirectoryProperty
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -87,6 +89,7 @@ abstract class WriteProductOutputManifestTask @Inject constructor(
 
     init {
         pythonExecutable.convention("python3")
+        expectedOutputPaths.convention(emptyList())
     }
 
     @TaskAction
@@ -127,6 +130,9 @@ abstract class WriteProductOutputManifestTask @Inject constructor(
         )
         outputRoots.get().toSortedMap().forEach { (kind, path) ->
             arguments += listOf("--output-root", "$kind=$path")
+        }
+        expectedOutputPaths.getOrElse(emptyList()).forEach { path ->
+            arguments += listOf("--expected-output-path", path)
         }
         processes.exec {
             workingDir(repositoryRoot.get().asFile)

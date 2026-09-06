@@ -235,7 +235,7 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
                 if args[0] == 'native-metadata':
                     assert sorted(p.name for p in arg('--contents').iterdir()) == [
                         'linux-arm64.json', 'linux-x64.json', 'macos-arm64.json', 'macos-x64.json', 'windows-x64.json']
-                    sys.stdout.write('{"fixture":"five full matcher calls"}\n')
+                    sys.stdout.write('{"fixture":"five full matcher calls","sdkVersion":"0.2.0"}\n')
                     raise SystemExit(0)
                 destination = arg('--validation-inputs-output')
                 shutil.copytree('handoff', destination)
@@ -292,14 +292,19 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             "--package-receipt", handoff.resolve("receipts/sdk-package.json").absolutePath,
             "--compatibility-request", request.absolutePath, "--runtime-stages", handoff.absolutePath,
             "--staged-sdks", handoff.absolutePath, "--validation-stages", stages.absolutePath,
-            "--validation-receipts", receipts.absolutePath, "--content-output", metadata.absolutePath)
+            "--validation-receipts", receipts.absolutePath, "--content-output", metadata.absolutePath,
+            "--sdk-version", "0.2.0")
         val originalHosts = verifiedRegularFiles(stages).mapValues { it.value.releaseDigest() }
         val originalReceipts = verifiedRegularFiles(receipts).mapValues { it.value.releaseDigest() }
         val metadataCli = runReleaseTool(root, *metadataArguments)
         assertEquals(0, metadataCli.first, metadataCli.second)
-        assertEquals("{\"fixture\":\"five full matcher calls\"}\n", metadata.readText())
+        assertEquals("{\"fixture\":\"five full matcher calls\",\"sdkVersion\":\"0.2.0\"}\n", metadata.readText())
         assertTrue(runReleaseTool(root, *metadataArguments).first != 0, "Metadata cannot overwrite finalized bytes")
         metadata.delete()
+        val wrongVersion = metadataArguments.copyOf().also { it[it.lastIndex] = "0.2.1" }
+        val versionFailure = runReleaseTool(root, *wrongVersion)
+        assertTrue(versionFailure.first != 0 && "SDK version differs" in versionFailure.second, versionFailure.second)
+        assertFalse(metadata.exists(), "A wrong SDK version must fail before publication")
         targets.forEach { target ->
             val results = stages.resolve("$target/outputs/capability/executed-tests.tsv")
             val original = results.readBytes()

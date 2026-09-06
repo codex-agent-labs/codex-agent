@@ -47,6 +47,11 @@ class ProductPhaseMappingContractTest {
             Triple("sdk", "rust", "validation") to "writeRustNativeWrapperSdkValidationOutputManifest",
             Triple("sdk", "cpp", "validation") to "writeCppNativeWrapperSdkValidationOutputManifest",
             Triple("sdk", "dart", "validation") to "writeDartNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "python", "metadata") to "writePythonNativeWrapperSdkMetadataOutputManifest",
+            Triple("sdk", "csharp", "metadata") to "writeCSharpNativeWrapperSdkMetadataOutputManifest",
+            Triple("sdk", "rust", "metadata") to "writeRustNativeWrapperSdkMetadataOutputManifest",
+            Triple("sdk", "cpp", "metadata") to "writeCppNativeWrapperSdkMetadataOutputManifest",
+            Triple("sdk", "dart", "metadata") to "writeDartNativeWrapperSdkMetadataOutputManifest",
         )
 
         assertEquals(expected.size, Regex("""Triple\("""").findAll(mapping).count())
@@ -245,7 +250,7 @@ class ProductPhaseMappingContractTest {
                 "\"writeJavaScriptSdkPackageOutputManifest\")" in javascriptPackage(),
         )
         assertEquals(
-            3, // Maven package, native package, and native validation share the same writer.
+            4, // Maven package, native package, validation, and metadata share the same writer.
             Regex("tasks\\.register<WriteProductOutputManifestTask>").findAll(nativeWrapperPackage()).count(),
         )
         assertEquals(1, Regex("abstract class WriteProductOutputManifestTask").findAll(manifestTask).count())
@@ -423,10 +428,13 @@ class ProductPhaseMappingContractTest {
     fun JVM_validation_verifies_both_packages_and_stages_only_JVM_evidence() {
         val validation = jvmValidation()
         assertEquals(
-            mapOf("jvm-evidence" to "outputs/jvm-evidence"),
+            mapOf("jvm-evidence" to "outputs/jvm-evidence", "execution" to "outputs/execution",
+                "test-report" to "outputs/test-report"),
             outputRoots(validation),
         )
         assertTrue("into(\"jvm-evidence\")" in validation)
+        assertTrue("from(importedJvmRuntimeEvidence.flatMap { it.executionFile })" in validation)
+        assertTrue("from(importedJvmRuntimeEvidence.flatMap { it.testReport })" in validation)
         assertTrue(
             "val jvmValidationPackageRoot = if (importedRuntimePackageStage.isPresent)" in validation,
         )
@@ -469,10 +477,11 @@ class ProductPhaseMappingContractTest {
             mapOf(
                 "node-evidence" to "outputs/node-evidence",
                 "test-report" to "outputs/test-report",
+                "execution" to "outputs/execution",
             ),
             outputRoots(validation),
         )
-        listOf("node-evidence", "test-report").forEach { root ->
+        listOf("node-evidence", "test-report", "execution").forEach { root ->
             assertTrue("into(\"$root\")" in validation, root)
         }
         assertTrue("providers.gradleProperty(\"codexAgent.runtimePackageStage\")" in validation)
@@ -499,6 +508,7 @@ class ProductPhaseMappingContractTest {
         )
         assertTrue("evidenceTask.flatMap { it.evidenceFile }" in validation)
         assertTrue("evidenceTask.flatMap { it.testReport }" in validation)
+        assertTrue("evidenceTask.flatMap { it.executionFile }" in validation)
         assertEquals(
             2,
             Regex("^registerNodeRuntimeValidation\\(", RegexOption.MULTILINE)
@@ -611,6 +621,33 @@ class ProductPhaseMappingContractTest {
         assertFalse("include(\"codex-agent-native-wrapper-sdks.json\"" in sdkPackage)
         assertFalse("\"package-source\" to" in sdkPackage)
         assertFalse("\"runtime-sdks\" to" in sdkPackage)
+    }
+
+    @Test
+    fun native_metadata_consumes_original_five_host_artifacts_without_producer_edges() {
+        val metadata = between(nativeWrappers, "// Metadata consumes original artifacts only.", "val nativeWrapperReleaseDirectory =")
+        listOf(
+            "tasks.register<NativeWrapperMetadataContentTask>",
+            "codexAgent.sdkValidationStagesRoot", "codexAgent.sdkValidationReceiptsRoot",
+            "codexAgent.nativeWrapperStagedSdkRoot", "codexAgent.sdkPackageReceipt",
+            "packageStageDirectory.set(layout.dir(importedNativeWrapperSdkPackageStage))",
+            "runtimeStageDirectory.set(layout.dir(nativeWrapperRuntimeStageRoot))",
+            "compatibilityRequest.set(layout.file(nativeWrapperSdkCompatibilityRequest))",
+            "product-stage/sdk/\$language/metadata", "outputs/evidence/native-metadata.json",
+            "\"native-wrapper-metadata\" to \"outputs/evidence\"",
+            "phase.set(\"metadata\")", "target.set(\"desktop\")",
+            "productVersion.set(nativeWrapperSdkVersion)",
+            "sdkVersion.set(nativeWrapperSdkVersion)",
+            "expectedOutputPaths.set(listOf(\"outputs/evidence/native-metadata.json\"))",
+        ).forEach { assertTrue(it in metadata, it) }
+        assertEquals(1, Regex("dependsOn\\(").findAll(metadata).count())
+        assertTrue("dependsOn(content)" in metadata)
+        listOf("<Delete>", "<Sync>", "dependsOn(verify", "stageNativeWrapperCAbiSdks",
+            "nativeWrapperInstalledConsumerTasks", "nativeWrapperCapabilityEvidenceTasks",
+            "nativeWrapperPackageSourceTasks", "snapshotImportedNativeWrapperRuntimeStages",
+            "candidateCommit", "candidateTree", "private-key", "signing").forEach {
+            assertFalse(it in metadata, it)
+        }
     }
 
     @Test

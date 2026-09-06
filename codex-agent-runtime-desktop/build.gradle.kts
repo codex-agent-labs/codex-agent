@@ -673,18 +673,10 @@ runtimeAdapterMetadataComponents.forEach { (component, title) ->
         this.projection.set(projection)
         mavenRepository.set(layout.dir(importedRuntimeMavenRepository))
     }
-    val stage = tasks.register<Sync>("stage${title}RuntimeMetadata") {
+    val stage = tasks.register("stage${title}RuntimeMetadata") {
         group = "verification"
         description = "Stages the authenticated $component projection and prebuilt Runtime Maven bytes."
         dependsOn(verifyInputs)
-        into(outputsRoot)
-        from(projection) {
-            into("evidence")
-            rename { "$component.json" }
-        }
-        from(layout.dir(importedRuntimeMavenRepository)) { into("maven") }
-        includeEmptyDirs = false
-        duplicatesStrategy = DuplicatesStrategy.FAIL
     }
     registerRuntimeOutputManifest(
         "write${title}RuntimeMetadataOutputManifest",

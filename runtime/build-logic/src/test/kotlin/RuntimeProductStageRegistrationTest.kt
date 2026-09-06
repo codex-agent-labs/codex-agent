@@ -287,6 +287,14 @@ class RuntimeProductStageRegistrationTest {
                 .copyTo(sources.resolve("RuntimeAdapterMetadataInputsTask.kt"))
             repository.resolve("runtime/build-logic/src/main/kotlin/RuntimeProductPythonTooling.kt")
                 .copyTo(sources.resolve("RuntimeProductPythonTooling.kt"))
+            repository.resolve("runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt")
+                .copyTo(sources.resolve("RuntimeReleaseIo.kt"))
+            // Use the already loaded production dependencies; the fixture is offline.
+            val dependencies = buildLogic.resolve("libs").apply { mkdirs() }
+            File(kotlinx.serialization.json.Json::class.java.protectionDomain.codeSource.location.toURI())
+                .copyTo(dependencies.resolve("kotlinx-json.jar"))
+            File(kotlinx.serialization.KSerializer::class.java.protectionDomain.codeSource.location.toURI())
+                .copyTo(dependencies.resolve("kotlinx-core.jar"))
             sources.resolve("RuntimeStageFixturePlugin.kt").writeText(FIXTURE_PLUGIN)
             buildLogic.resolve("settings.gradle.kts").writeText("rootProject.name = \"runtime-stage-fixture\"\n")
             buildLogic.resolve("build.gradle.kts").writeText(
@@ -298,6 +306,9 @@ class RuntimeProductStageRegistrationTest {
                     repositories {
                         mavenCentral()
                         gradlePluginPortal()
+                    }
+                    dependencies {
+                        implementation(files("libs/kotlinx-json.jar", "libs/kotlinx-core.jar"))
                     }
                     gradlePlugin {
                         plugins {

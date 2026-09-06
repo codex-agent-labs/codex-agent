@@ -18,6 +18,8 @@ class RuntimeAdapterMetadataInputsTaskTest {
         assertEquals(value.root.resolve("build"), task.ownedBuildDirectory.get().asFile.toPath())
         assertEquals(value.root.resolve("build/product-stage/runtime/node-wasm/metadata"),
             task.stageDirectory.get().asFile.toPath())
+        assertEquals(value.root.resolve("build/product-stage/runtime/node-wasm/metadata/outputs"),
+            task.outputDirectory.get().asFile.toPath())
     }
 
     @Test
@@ -29,13 +31,15 @@ class RuntimeAdapterMetadataInputsTaskTest {
         value.verify { component, projection ->
             calls++
             assertEquals("jvm", component)
-            assertEquals(value.projection.toFile(), projection)
-            assertFalse(Files.exists(value.stage))
+            assertEquals(value.stage.resolve("outputs/evidence/jvm.json").toFile(), projection)
+            assertEquals("original projection", projection.readText())
+            assertFalse(Files.exists(value.stage.resolve("output-manifest.json")))
         }
         assertEquals(1, calls)
         assertEquals("original projection", Files.readString(value.projection))
         assertEquals("original Maven bytes", Files.readString(value.maven.resolve("artifact.jar")))
         assertEquals("sibling", Files.readString(sibling))
+        assertEquals("original Maven bytes", Files.readString(value.stage.resolve("outputs/maven/artifact.jar")))
     }
 
     @Test
@@ -151,6 +155,44 @@ class RuntimeAdapterMetadataInputsTaskTest {
             assertEquals("original projection", Files.readString(value.projection))
             assertTrue(Files.isDirectory(value.maven))
         }
+    }
+
+    @Test
+    fun `original or staged mutations reject success and remove partial metadata`() {
+        for (mutation in listOf("projection", "maven", "extra-original", "staged", "extra-staged")) fixture { value ->
+            val failure = assertFailsWith<IllegalStateException> {
+                value.verify { _, captured ->
+                    when (mutation) {
+                        "projection" -> Files.writeString(value.projection, "changed original")
+                        "maven" -> Files.writeString(value.maven.resolve("artifact.jar"), "changed Maven bytes")
+                        "extra-original" -> Files.writeString(value.maven.resolve("extra.jar"), "extra original")
+                        "staged" -> captured.writeText("changed captured bytes")
+                        "extra-staged" -> Files.writeString(value.stage.resolve("outputs/extra.json"), "undeclared bytes")
+                    }
+                }
+            }
+            assertTrue("changed during verification" in failure.message.orEmpty(), failure.message)
+            assertFalse(Files.exists(value.stage))
+            assertTrue(Files.isRegularFile(value.projection))
+            assertTrue(Files.isRegularFile(value.maven.resolve("artifact.jar")))
+        }
+    }
+
+    @Test
+    fun `repeated staging verifies fresh bytes and removes only prior owned output`() = fixture { value ->
+        val observed = mutableListOf<String>()
+        val verify: (String, File) -> Unit = { _, captured -> observed += captured.readText() }
+        value.verify(verify)
+        Files.writeString(value.stage.resolve("output-manifest.json"), "prior manifest")
+        Files.writeString(value.stage.resolve("outputs/obsolete.json"), "old bytes")
+        Files.writeString(value.projection, "new original projection")
+        Files.writeString(value.maven.resolve("artifact.jar"), "new original Maven bytes")
+        value.verify(verify)
+        assertEquals(listOf("original projection", "new original projection"), observed)
+        assertFalse(Files.exists(value.stage.resolve("output-manifest.json")))
+        assertFalse(Files.exists(value.stage.resolve("outputs/obsolete.json")))
+        assertEquals("new original projection", Files.readString(value.stage.resolve("outputs/evidence/jvm.json")))
+        assertEquals("new original Maven bytes", Files.readString(value.stage.resolve("outputs/maven/artifact.jar")))
     }
 
     private fun fixture(block: (Fixture) -> Unit) {

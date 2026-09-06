@@ -168,6 +168,7 @@ internal fun writeImportedNativeWrapperMetadataContent(
     repository: File, language: CrossLanguageBinding, packageStage: File, packageReceipt: File,
     compatibilityRequest: File, runtimeStages: File, stagedSdks: File,
     validationStages: File, validationReceipts: File, contentOutput: File,
+    expectedSdkVersion: String,
 ) {
     check(language in nativeWrapperBindings) { "Unsupported native metadata language" }
     val targets = crossLanguageCAbiTargetSpecs.values.map { it.classifier.removePrefix("c-abi-") }.sorted()
@@ -196,6 +197,9 @@ internal fun writeImportedNativeWrapperMetadataContent(
             "--component", language.id).directory(repository).redirectError(ProcessBuilder.Redirect.INHERIT)
             .redirectOutput(result).start()
         check(process.waitFor() == 0) { "Native metadata content join failed" }
+        check(result.readReleaseObject().releaseString("sdkVersion") == expectedSdkVersion) {
+            "Native metadata SDK version differs from requested product version"
+        }
         check(before == nativeValidationInputInventory(sources)) { "Native metadata original inputs changed" }
         publishNativeValidationContent(result, contentOutput, parent)
     } finally {

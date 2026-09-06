@@ -9,6 +9,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
@@ -33,13 +34,21 @@ abstract class ValidateRuntimeAdapterMetadataInputsTask : DefaultTask() {
     @get:Internal
     abstract val ownedBuildDirectory: DirectoryProperty
 
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
     init {
         ownedBuildDirectory.convention(project.layout.buildDirectory)
         stageDirectory.convention(ownedBuildDirectory.dir(component.map { "product-stage/runtime/$it/metadata" }))
+        outputDirectory.convention(stageDirectory.dir("outputs"))
+        outputs.upToDateWhen { false }
     }
 
     @TaskAction
     fun verify() {
+        check(outputDirectory.get().asFile == stageDirectory.get().dir("outputs").asFile) {
+            "Runtime adapter metadata outputs must belong to its owned stage"
+        }
         verifyRuntimeAdapterMetadataInputs(
             component.get(), validationHandoff.get().asFile.toPath(), projection.get().asFile.toPath(),
             mavenRepository.get().asFile.toPath(), stageDirectory.get().asFile.toPath(),
@@ -121,8 +130,56 @@ internal fun verifyRuntimeAdapterMetadataInputs(
     if (Files.exists(stage, LinkOption.NOFOLLOW_LINKS)) {
         Files.walk(stage).use { entries -> entries.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
     }
-    requireRegularRuntimeProductTree(maven, "Runtime Maven repository")
-    verifyProjection(adapter, projectionFile.toFile())
+    try {
+        fun originals(): Map<String, Path> {
+            requireRegularRuntimeProductTree(maven, "Runtime Maven repository")
+            val files = sortedMapOf("evidence/$adapter.json" to projectionFile)
+            Files.walk(maven).use { entries ->
+                entries.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.forEach { path ->
+                    files["maven/" + maven.relativize(path).joinToString("/")] = path
+                }
+            }
+            return files
+        }
+        fun inventory(files: Map<String, Path>): Map<String, Pair<Long, String>> = files.mapValues { (_, path) ->
+            generateSequence(path.parent) { it.parent }.forEach { parent ->
+                check(!Files.isSymbolicLink(parent) && Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
+                    "Runtime adapter metadata file has an unsafe parent: $parent"
+                }
+            }
+            check(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path)) {
+                "Runtime adapter metadata file became unsafe: $path"
+            }
+            Files.size(path) to Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS).use { it.releaseDigest() }
+        }
+        val files = originals()
+        val before = inventory(files)
+        val output = stage.resolve("outputs")
+        files.forEach { (relative, source) ->
+            val destination = output.resolve(relative)
+            Files.createDirectories(destination.parent)
+            Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS).use { Files.copy(it, destination) }
+        }
+        fun stagedInventory(): Map<String, Pair<Long, String>> {
+            requireRegularRuntimeProductTree(output, "Staged Runtime adapter metadata")
+            val staged = sortedMapOf<String, Path>()
+            Files.walk(output).use { entries ->
+                entries.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.forEach { path ->
+                    staged[output.relativize(path).joinToString("/")] = path
+                }
+            }
+            return inventory(staged)
+        }
+        check(stagedInventory() == before) { "Runtime adapter metadata inputs changed during capture" }
+        verifyProjection(adapter, output.resolve("evidence/$adapter.json").toFile())
+        check(inventory(originals()) == before) { "Original Runtime adapter metadata inputs changed during verification" }
+        check(stagedInventory() == before) { "Staged Runtime adapter metadata changed during verification" }
+    } catch (error: Exception) {
+        if (Files.exists(stage, LinkOption.NOFOLLOW_LINKS)) {
+            Files.walk(stage).use { entries -> entries.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+        }
+        throw error
+    }
 }
 
 internal fun requireRegularRuntimeProductDirectory(root: java.nio.file.Path, label: String) {

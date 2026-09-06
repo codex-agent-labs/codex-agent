@@ -187,6 +187,7 @@ def write_output_manifest(
     target: Any,
     product_version: Any,
     output_roots: Any,
+    *, expected_output_paths: Any = None,
 ) -> dict[str, Any]:
     root = require_regular_directory(Path(root), "Output-manifest root")
     _remove_output_manifest(root)
@@ -211,6 +212,12 @@ def write_output_manifest(
         kinds_by_path = {path: kind for kind, path in roots.items()}
 
         records = regular_file_inventory(root, excluded_paths={OUTPUT_MANIFEST_NAME})
+        if expected_output_paths is not None:
+            expected = [require_relative_path(path, "expected output path")
+                        for path in require_array(expected_output_paths, "expected output paths")]
+            if (not expected or len(set(expected)) != len(expected)
+                    or sorted(expected) != [record["relativePath"] for record in records]):
+                raise ValueError("Staged outputs differ from the exact expected output paths")
         counts = {path: 0 for path in paths}
         outputs = []
         for record in records:
@@ -688,6 +695,7 @@ def main(argv: list[str] | None = None) -> int:
     writer.add_argument("--target", required=True)
     writer.add_argument("--product-version", required=True)
     writer.add_argument("--output-root", action="append", required=True)
+    writer.add_argument("--expected-output-path", action="append")
     verifier = subcommands.add_parser("verify-output-manifest")
     verifier.add_argument("--root", required=True)
     verifier.add_argument("--product", required=True)
@@ -713,6 +721,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.target,
                 arguments.product_version,
                 _parse_output_roots(arguments.output_root),
+                expected_output_paths=arguments.expected_output_path,
             )
         elif arguments.command == "verify-output-manifest":
             verify_output_manifest_identity(

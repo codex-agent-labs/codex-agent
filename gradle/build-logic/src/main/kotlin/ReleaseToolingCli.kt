@@ -154,13 +154,13 @@ fun main(arguments: Array<String>) {
         }
         "write-native-wrapper-metadata-content" -> {
             options.requireOnly("repository", "language", "package-stage", "package-receipt", "compatibility-request",
-                "runtime-stages", "staged-sdks", "validation-stages", "validation-receipts", "content-output")
+                "runtime-stages", "staged-sdks", "validation-stages", "validation-receipts", "content-output", "sdk-version")
             val language = nativeWrapperBindings.singleOrNull { it.id == options.required("language") }
                 ?: error("Unsupported native metadata language")
             writeImportedNativeWrapperMetadataContent(options.file("repository"), language,
                 options.file("package-stage"), options.file("package-receipt"), options.file("compatibility-request"),
                 options.file("runtime-stages"), options.file("staged-sdks"), options.file("validation-stages"),
-                options.file("validation-receipts"), options.file("content-output"))
+                options.file("validation-receipts"), options.file("content-output"), options.required("sdk-version"))
         }
         "assemble-native-wrapper-binding-receipt" -> {
             options.requireOnly(

@@ -116,9 +116,6 @@ class RuntimeProductPhaseMappingTest {
             "providers.gradleProperty(\"codexAgent.runtimeMavenRepository\")",
             "ValidateRuntimeAdapterMetadataInputsTask",
             "it.resolve(\"projection.json\")",
-            "into(\"evidence\")",
-            "rename { \"\$component.json\" }",
-            "from(layout.dir(importedRuntimeMavenRepository)) { into(\"maven\") }",
             "\"adapter-evidence\" to \"outputs/evidence\"",
             "\"maven\" to \"outputs/maven\"",
         ).forEach { contract -> assertTrue(contract in nodeBuild, contract) }
@@ -137,10 +134,16 @@ class RuntimeProductPhaseMappingTest {
             "@get:InputFile",
             "@get:Internal\n    abstract val mavenRepository",
             "generateSequence(normalized) { it.parent }",
-            "verifyProjection(adapter, projectionFile.toFile())",
+            "verifyProjection(adapter, output.resolve(\"evidence/\$adapter.json\").toFile())",
+            "outputs.upToDateWhen { false }",
+            "@get:OutputDirectory",
+            "check(inventory(originals()) == before)",
+            "check(stagedInventory() == before)",
         ).forEach { contract -> assertTrue(contract in adapterMetadataInputs, contract) }
         assertFalse("@get:InputDirectory" in adapterMetadataInputs)
         assertFalse("tasks.register<Delete>" in metadata)
+        assertFalse("tasks.register<Sync>" in metadata)
+        assertFalse("from(" in metadata)
         assertFalse("dependsOn(invalidate)" in metadata)
         assertTrue("stageDirectory.set(phaseRoot)" in metadata)
         assertTrue("dependsOn(verifyInputs)" in metadata.substringAfter("val stage =")

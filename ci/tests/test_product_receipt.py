@@ -105,6 +105,22 @@ class ProductReceiptEmissionTest(unittest.TestCase):
             self.emit(**overrides)
         self.assertFalse(path.exists())
 
+    def test_exact_output_paths_reject_unverified_siblings_without_deleting_payloads(self) -> None:
+        expected = ["outputs/library/value.bin"]
+        arguments = (self.stage, "runtime", "linux-x64", "binary", "linux-x64", "1.2.3",
+                     {"runtime-library": "outputs/library"})
+        before = (self.stage / "output-manifest.json").read_bytes()
+        write_output_manifest(*arguments, expected_output_paths=expected)
+        self.assertEqual(before, (self.stage / "output-manifest.json").read_bytes())
+        sibling = self.stage / "outputs/library/unverified.bin"
+        sibling.write_bytes(b"preserve me")
+        for allowed in (expected, [], expected * 2, ["../escape"], ["/absolute"]):
+            with self.subTest(allowed=allowed), self.assertRaises(ValueError):
+                write_output_manifest(*arguments, expected_output_paths=allowed)
+            self.assertFalse((self.stage / "output-manifest.json").exists())
+            self.assertEqual(b"preserve me", sibling.read_bytes())
+            self.assertEqual(b"payload", (self.stage / expected[0]).read_bytes())
+
     def test_emits_canonical_deterministic_receipt_without_changing_stage(self) -> None:
         before = {
             path.relative_to(self.stage).as_posix(): path.read_bytes()

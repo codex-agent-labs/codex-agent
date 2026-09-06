@@ -842,6 +842,10 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     }
     if _is_prefix(path, "gradle/build-logic/src/main/kotlin/"):
         name = path.rsplit("/", 1)[-1]
+        if name == "NativeWrapperMetadataContentTask.kt":
+            return set().union(*(
+                _from_phase("sdk", language, "metadata") for language in NATIVE_BINDINGS
+            ))
         if name in _CONTRACT_EVIDENCE_BUILD_LOGIC:
             return _contract() | _sdk_validation()
         if name in {"VerifyProtocolSourceTask.kt", "codexagent.core-verification.gradle.kts"}:
@@ -976,6 +980,10 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         direct.update(PhaseInstanceId("runtime", target, "validation", target) for target in NATIVE_TARGETS)
     if path == "runtime/build-logic/src/main/kotlin/RuntimeAdapterMetadataInputsTask.kt":
         direct.add(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"))
+    if path == "runtime/build-logic/src/main/kotlin/RuntimeReleaseIo.kt":
+        # Checked-byte adapter staging hashes imports independently of validation.
+        direct.update(PhaseInstanceId("runtime", component, "metadata", component)
+                      for component in ("jvm", "node-js", "node-wasm"))
     components = {(instance.product, instance.component) for instance in selected}
     for product, component in components:
         members = {

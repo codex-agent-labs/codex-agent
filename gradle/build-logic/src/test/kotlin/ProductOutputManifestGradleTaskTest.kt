@@ -47,6 +47,7 @@ class ProductOutputManifestGradleTaskTest {
             "ProductVersion",
             "PythonExecutable",
             "OutputRoots",
+            "ExpectedOutputPaths",
         ).forEach { property ->
             assertNotNull(type.getMethod("get$property").getAnnotation(Input::class.java), property)
         }
@@ -144,6 +145,21 @@ class ProductOutputManifestGradleTaskTest {
             val manifest = fixture.manifest.readText()
             assertTrue("\"kind\":\"contract-bundle\"" in manifest)
             assertTrue("\"relativePath\":\"outputs/codex-agent-contract-0.2.0.zip\"" in manifest)
+        }
+    }
+
+    @Test
+    fun `exact output declaration reaches canonical writer and rejects an unrelated sibling`() {
+        withFixture { fixture ->
+            val payload = fixture.write("outputs/evidence/native-metadata.json", "content")
+            val task = fixture.task(mapOf("native-wrapper-metadata" to "outputs/evidence"))
+            task.expectedOutputPaths.set(listOf("outputs/evidence/native-metadata.json"))
+            execute(task)
+            val sibling = fixture.write("outputs/evidence/unverified.json", "preserve original")
+            assertFails { execute(task) }
+            assertFalse(fixture.manifest.exists())
+            assertEquals("content", payload.readText())
+            assertEquals("preserve original", sibling.readText())
         }
     }
 

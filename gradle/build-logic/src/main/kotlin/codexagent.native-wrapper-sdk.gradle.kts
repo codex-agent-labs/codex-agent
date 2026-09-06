@@ -389,6 +389,51 @@ nativeWrapperLanguageSpecs.forEach { (language, identity) ->
     }
 }
 
+// Metadata consumes original artifacts only. No installed consumer, Runtime
+// staging, package producer or signature task is a predecessor of this phase.
+nativeWrapperLanguageSpecs.forEach { (language, identity) ->
+    val title = identity.first
+    val phaseRoot = layout.buildDirectory.dir("product-stage/sdk/$language/metadata")
+    val content = tasks.register<NativeWrapperMetadataContentTask>("verify${title}NativeWrapperMetadataContent") {
+        group = "verification"
+        description = "Verifies five original host results and writes deterministic $language metadata."
+        this.language.set(language)
+        sdkVersion.set(nativeWrapperSdkVersion)
+        packageStageDirectory.set(layout.dir(importedNativeWrapperSdkPackageStage))
+        packageReceipt.set(layout.file(providers.gradleProperty("codexAgent.sdkPackageReceipt").map(::file)))
+        compatibilityRequest.set(layout.file(nativeWrapperSdkCompatibilityRequest))
+        runtimeStageDirectory.set(layout.dir(nativeWrapperRuntimeStageRoot))
+        stagedSdkDirectory.set(layout.dir(providers.gradleProperty("codexAgent.nativeWrapperStagedSdkRoot").map(::file)))
+        validationStagesDirectory.set(layout.dir(providers.gradleProperty("codexAgent.sdkValidationStagesRoot").map(::file)))
+        validationReceiptsDirectory.set(layout.dir(providers.gradleProperty("codexAgent.sdkValidationReceiptsRoot").map(::file)))
+        verifierSources.from(rootProject.layout.projectDirectory.dir("ci/products").asFileTree.matching {
+            include("*.py")
+        })
+        verifierSources.from(rootProject.layout.projectDirectory.dir("gradle/build-logic/src/main/kotlin").asFileTree.matching {
+            include("NativeWrapperMetadataContentTask.kt", "CrossLanguageNativeWrapper*Evidence.kt")
+        })
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        // Gradle prepares the @OutputFile parent. The gate requires a fresh file
+        // and rejects an existing result; restoring/retiring stages is not its job.
+        contentOutput.set(phaseRoot.map { it.file("outputs/evidence/native-metadata.json") })
+    }
+    tasks.register<WriteProductOutputManifestTask>("write${title}NativeWrapperSdkMetadataOutputManifest") {
+        dependsOn(content)
+        product.set("sdk")
+        component.set(language)
+        phase.set("metadata")
+        target.set("desktop")
+        productVersion.set(nativeWrapperSdkVersion)
+        outputRoots.set(mapOf("native-wrapper-metadata" to "outputs/evidence"))
+        expectedOutputPaths.set(listOf("outputs/evidence/native-metadata.json"))
+        outputsDirectory.set(phaseRoot.map { it.dir("outputs") })
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        stageRoot.set(phaseRoot)
+        manifestFile.set(phaseRoot.map { it.file("output-manifest.json") })
+    }
+}
+
 val nativeWrapperReleaseDirectory = providers.gradleProperty("codexAgent.nativeWrapperReleaseDirectory")
     .map(::file)
 val nativeWrapperHostEvidenceDirectory = providers.gradleProperty(
