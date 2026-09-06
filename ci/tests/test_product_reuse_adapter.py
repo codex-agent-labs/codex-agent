@@ -89,6 +89,137 @@ def impact_plan(*, changed: list[str], full_requested: bool = False, event: str 
     }
 
 
+class ContractProducerRunTest(unittest.TestCase):
+    def setUp(self):
+        self.pin = "c" * 40
+        self.producer = {
+            "repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": COMMIT, "tree": TREE, "event": "pull_request",
+            "runId": 7, "runAttempt": 2, "pullRequest": 31,
+        }
+        self.producers = {phase: dict(self.producer) for phase in ("binary", "package", "validation", "metadata")}
+        self.run = {
+            "id": 7, "run_attempt": 2, "path": self.producer["workflowPath"],
+            "head_sha": "f" * 40, "head_commit": {"tree_id": "9" * 40}, "event": "pull_request",
+            "status": "in_progress", "conclusion": None, "pull_requests": [{
+                "number": 31, "base": {"sha": "1" * 40}, "head": {"sha": "f" * 40},
+            }],
+            "repository": {"full_name": self.producer["repository"], "fork": False},
+            "head_repository": {"full_name": self.producer["repository"], "fork": False},
+            "referenced_workflows": [{
+                "path": f"{self.producer['repository']}/.github/workflows/product-validation.yml@{self.pin}",
+                "sha": self.pin,
+            }],
+        }
+        self.jobs = [{
+            "id": number, "name": f"product-validation / {name}", "run_id": 7,
+            "head_sha": self.run["head_sha"], "status": "completed", "conclusion": "success",
+        } for number, name in enumerate(("product-contracts", "contract-continuation"), 10)]
+        self.commit = {"sha": COMMIT, "tree": {"sha": TREE},
+                       "parents": [{"sha": "1" * 40}, {"sha": "f" * 40}]}
+
+    def verify(self):
+        return product_reuse.verify_contract_producer_runs(
+            self.producers, trusted_workflow_sha=self.pin, token="not-a-real-token")
+
+    def test_exact_attempt_queries_once_and_retains_raw_provenance_despite_sibling_failure(self):
+        before = copy.deepcopy((self.producers, self.run, self.jobs))
+        for status, conclusion in (("in_progress", None), ("completed", "failure"), ("completed", "success")):
+            with self.subTest(status=status, conclusion=conclusion):
+                run = {**self.run, "status": status, "conclusion": conclusion}
+                jobs = [*self.jobs, {"id": 12, "name": "unrelated", "conclusion": "failure"}]
+                with mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]) as query, \
+                        mock.patch.object(product_reuse, "paginated_items", return_value=jobs) as listing:
+                    self.assertEqual([{"run": run, "testedCommit": self.commit, "jobs": jobs}], self.verify())
+                url = "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/7/attempts/2"
+                self.assertEqual([mock.call(url, "not-a-real-token"), mock.call(
+                    "https://api.github.com/repos/codex-agent-labs/codex-agent/git/commits/" + COMMIT,
+                    "not-a-real-token")], query.call_args_list)
+                listing.assert_called_once_with(url + "/jobs", "jobs", "not-a-real-token")
+        self.assertEqual(before, (self.producers, self.run, self.jobs))
+        source = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text()
+        self.assertIn("  product:\n    name: product-${{ matrix.lane }}\n", source)
+        self.assertIn("  contract-continuation:\n    name: contract-continuation\n", source)
+
+    def test_mixed_original_runs_commits_and_attempts_remain_distinct(self):
+        other = {**self.producer, "runId": 9, "runAttempt": 1, "commit": "d" * 40,
+                 "tree": "e" * 40, "event": "merge_group", "pullRequest": None}
+        self.producers["binary"] = other
+        second = {**self.run, "id": 9, "run_attempt": 1, "head_sha": other["commit"],
+                  "head_commit": {"tree_id": other["tree"]}, "event": "merge_group", "pull_requests": []}
+        other_jobs = [{**self.jobs[0], "run_id": 9, "head_sha": other["commit"]}]
+        before = copy.deepcopy(self.producers)
+        other_commit = {"sha": other["commit"], "tree": {"sha": other["tree"]}, "parents": []}
+        with mock.patch.object(product_reuse, "api_json", side_effect=[self.run, self.commit, second, other_commit]) as query, \
+                mock.patch.object(product_reuse, "paginated_items", side_effect=[self.jobs, other_jobs]):
+            self.assertEqual([{"run": self.run, "testedCommit": self.commit, "jobs": self.jobs},
+                              {"run": second, "testedCommit": other_commit, "jobs": other_jobs}], self.verify())
+        self.assertEqual(4, query.call_count)
+        self.assertEqual(before, self.producers)
+
+    def test_invalid_claims_fail_before_any_api_call(self):
+        cases = [{**self.producers, "extra": self.producer},
+                 {phase: value for phase, value in self.producers.items() if phase != "binary"}]
+        for change in ({"repository": "attacker/repo"}, {"workflowPath": ".github/workflows/other.yml"},
+                       {"runAttempt": True}, {"runId": "7"}, {"tree": "f" * 40},
+                       {"event": "local", "workflowPath": None, "runId": None, "runAttempt": None, "pullRequest": None},
+                       {"event": "workflow_dispatch", "pullRequest": None}):
+            cases.append({**self.producers, "binary": {**self.producer, **change}})
+        with mock.patch.object(product_reuse, "api_json") as query, \
+                mock.patch.object(product_reuse, "paginated_items") as listing:
+            for producers in cases:
+                with self.subTest(producers=producers), self.assertRaises(ValueError):
+                    product_reuse.verify_contract_producer_runs(producers, trusted_workflow_sha=self.pin, token="unused")
+            for pin in (None, "main", "a" * 39, "A" * 40, True):
+                with self.subTest(pin=pin), self.assertRaises(ValueError):
+                    product_reuse.verify_contract_producer_runs(self.producers, trusted_workflow_sha=pin, token="unused")
+            query.assert_not_called()
+            listing.assert_not_called()
+
+    def test_wrong_run_policy_and_failed_missing_or_ambiguous_jobs_fail_closed(self):
+        for change in (
+            {"id": 8}, {"run_attempt": 1}, {"head_sha": "d" * 40},
+            {"event": "push"}, {"path": ".github/workflows/other.yml"}, {"status": "queued"},
+            {"pull_requests": [{"number": 32}]}, {"head_repository": {"full_name": "attacker/repo", "fork": True}},
+            {"pull_requests": [{"number": 31}]}, {"pull_requests": self.run["pull_requests"] * 2},
+            {"repository": None}, {"referenced_workflows": []}, {"referenced_workflows": None},
+            {"referenced_workflows": self.run["referenced_workflows"] * 2},
+            {"referenced_workflows": [{**self.run["referenced_workflows"][0], "sha": "f" * 40}]},
+            {"referenced_workflows": [{**self.run["referenced_workflows"][0], "path": "attacker/workflow@" + self.pin}]},
+        ):
+            with self.subTest(change=change), \
+                    mock.patch.object(product_reuse, "api_json", side_effect=[{**self.run, **change}, self.commit]), \
+                    mock.patch.object(product_reuse, "paginated_items") as listing:
+                with self.assertRaises(ValueError):
+                    self.verify()
+                listing.assert_not_called()
+        bad_jobs = [[], self.jobs[:1], [*self.jobs, self.jobs[0]], [*self.jobs, None]]
+        for change in ({"conclusion": "failure"}, {"conclusion": "cancelled"}, {"status": "in_progress"},
+                       {"run_id": 9}, {"run_id": True}, {"head_sha": COMMIT}, {"id": None}):
+            bad_jobs.append([{**self.jobs[0], **change}, self.jobs[1]])
+        for jobs in bad_jobs:
+            with self.subTest(jobs=jobs), mock.patch.object(product_reuse, "api_json", side_effect=[self.run, self.commit]), \
+                    mock.patch.object(product_reuse, "paginated_items", return_value=jobs):
+                with self.assertRaises(ValueError):
+                    self.verify()
+
+    def test_tested_merge_identity_is_verified_separately_from_triggering_head(self):
+        for change in ({"sha": "d" * 40}, {"tree": {"sha": "e" * 40}}, {"tree": None},
+                       {"parents": []}, {"parents": list(reversed(self.commit["parents"]))},
+                       {"parents": [{"sha": "2" * 40}, self.commit["parents"][1]]}):
+            with self.subTest(change=change), \
+                    mock.patch.object(product_reuse, "api_json", side_effect=[self.run, {**self.commit, **change}]), \
+                    mock.patch.object(product_reuse, "paginated_items") as listing:
+                with self.assertRaises(ValueError):
+                    self.verify()
+                listing.assert_not_called()
+        run = {**self.run, "head_sha": COMMIT}
+        jobs = [{**job, "head_sha": COMMIT} for job in self.jobs]
+        with mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]), \
+                mock.patch.object(product_reuse, "paginated_items", return_value=jobs):
+            self.assertEqual([{"run": run, "testedCommit": self.commit, "jobs": jobs}], self.verify())
+
+
 class ProductReuseAdapterTest(unittest.TestCase):
     def test_catalog_accepts_object_bound_and_rejects_oversized_member_before_extraction(self) -> None:
         limits = product_reuse._CATALOG_ZIP_LIMITS

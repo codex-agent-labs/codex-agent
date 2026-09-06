@@ -235,6 +235,99 @@ def _same_pr_run(
     return run
 
 
+def verify_contract_producer_runs(
+    producers: Mapping[str, Any], *, trusted_workflow_sha: str, token: str,
+) -> list[dict[str, Any]]:
+    """Observe exact original CI attempts, not whole-run success or signing authority.
+
+    The protected caller supplies the reviewed workflow pin. This does not bind
+    an uploaded artifact to these jobs: artifact/object/closure admission and
+    protected signing policy must still pass before a private key is used.
+    Returned API evidence stays external to reusable payloads and original receipts.
+    """
+    phases = ("binary", "package", "validation", "metadata")
+    require_exact_keys(producers, set(phases), "Contract phase producers")
+    if not isinstance(trusted_workflow_sha, str) or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None:
+        raise ValueError("Contract producer admission requires a caller-pinned workflow SHA")
+    repository = "codex-agent-labs/codex-agent"
+    workflow = f"{repository}/.github/workflows/product-validation.yml@{trusted_workflow_sha}"
+    attempts: dict[tuple[int, int], dict[str, Any]] = {}
+    for phase in phases:
+        producer = validate_producer(producers[phase], f"Contract {phase} producer")
+        if (producer["repository"] != repository
+                or producer["workflowPath"] != ".github/workflows/ci.yml"
+                or producer["event"] not in {"pull_request", "merge_group"}):
+            raise ValueError("Contract producer is not an eligible original CI producer")
+        identity = producer["runId"], producer["runAttempt"]
+        if identity in attempts and attempts[identity]["producer"] != producer:
+            raise ValueError("Contract phases claim conflicting identities for one CI attempt")
+        attempts.setdefault(identity, {"producer": producer, "phases": []})["phases"].append(phase)
+
+    evidence = []
+    for (run_id, attempt), original in sorted(attempts.items()):
+        producer = original["producer"]
+        url = f"https://api.github.com/repos/{repository}/actions/runs/{run_id}/attempts/{attempt}"
+        run = api_json(url, token)
+        if (require_integer(run.get("id"), "Contract original CI run ID", 1) != run_id
+                or require_integer(run.get("run_attempt"), "Contract original CI attempt", 1) != attempt
+                or run.get("path") != producer["workflowPath"]
+                or run.get("event") != producer["event"]
+                or run.get("status") not in {"in_progress", "completed"}
+                or any(not isinstance(run.get(field), dict)
+                       or run[field].get("full_name") != repository
+                       or run[field].get("fork") is not False
+                       for field in ("repository", "head_repository"))
+                or producer["event"] == "pull_request" and not run_matches_pr(run, producer["pullRequest"])):
+            raise ValueError("Contract original CI attempt does not match its producer")
+        references = require_array(run.get("referenced_workflows"), "Contract original workflow references")
+        selected = [value for value in references if isinstance(value, dict)
+                    and isinstance(value.get("path"), str)
+                    and value["path"].split("@", 1)[0] == workflow.split("@", 1)[0]]
+        if (len(selected) != 1 or selected[0].get("path") != workflow
+                or selected[0].get("sha") != trusted_workflow_sha):
+            raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
+        commit = api_json(f"https://api.github.com/repos/{repository}/git/commits/{producer['commit']}", token)
+        tree = commit.get("tree")
+        if (commit.get("sha") != producer["commit"] or not isinstance(tree, dict)
+                or tree.get("sha") != producer["tree"]):
+            raise ValueError("Contract tested Git commit/tree differs from its original receipt")
+        if producer["event"] == "pull_request":
+            requests = [value for value in run["pull_requests"] if isinstance(value, dict)
+                        and value.get("number") == producer["pullRequest"]]
+            if len(requests) != 1:
+                raise ValueError("Contract original CI attempt has ambiguous pull-request identity")
+            identities = []
+            for field in ("base", "head"):
+                value = requests[0].get(field)
+                oid = value.get("sha") if isinstance(value, dict) else None
+                if not isinstance(oid, str) or re.fullmatch(r"[0-9a-f]{40}", oid) is None:
+                    raise ValueError("Contract original CI attempt lacks exact pull-request base/head")
+                identities.append(oid)
+            parents = require_array(commit.get("parents"), "Contract tested merge parents")
+            if ([value.get("sha") if isinstance(value, dict) else None for value in parents] != identities
+                    or run.get("head_sha") not in {identities[1], producer["commit"]}):
+                raise ValueError("Contract tested merge does not bind the original CI pull-request base/head")
+        elif run.get("head_sha") != producer["commit"]:
+            raise ValueError("Contract merge-group attempt does not match its tested commit")
+        jobs = paginated_items(f"{url}/jobs", "jobs", token)
+        if any(not isinstance(job, dict) for job in jobs):
+            raise ValueError("Contract original CI jobs are malformed")
+        names = {"product-validation / product-contracts" if phase == "binary"
+                 else "product-validation / contract-continuation" for phase in original["phases"]}
+        for name in sorted(names):
+            selected_jobs = [job for job in jobs if job.get("name") == name]
+            if len(selected_jobs) != 1:
+                raise ValueError("Contract original producer job is missing or ambiguous")
+            job = selected_jobs[0]
+            require_integer(job.get("id"), "Contract original producer job ID", 1)
+            if (require_integer(job.get("run_id"), "Contract original producer job run", 1) != run_id
+                    or job.get("head_sha") != run["head_sha"]
+                    or job.get("status") != "completed" or job.get("conclusion") != "success"):
+                raise ValueError("Contract original producer job did not succeed for its exact commit")
+        evidence.append({"run": run, "testedCommit": commit, "jobs": jobs})
+    return evidence
+
+
 def _validate_plan(plan_path: Path, root: Path) -> dict[str, Any]:
     plan = require_exact_keys(
         load_json_bytes(plan_path.read_bytes()), _PLAN_KEYS, "impact plan",

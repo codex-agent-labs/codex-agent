@@ -224,6 +224,7 @@ jobs:
           retention-days: 90
 
   product:
+    name: product-${{ matrix.lane }}
     if: needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.product_matrix != '[]'
     needs: [workflow-lint, plan]
     strategy:
@@ -248,6 +249,7 @@ jobs:
           node-version: ${{ (matrix.lane == 'contracts' || contains(matrix.lane, 'node')) && '24.18.0' || 'none' }}
 
   contract-continuation:
+    name: contract-continuation
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
