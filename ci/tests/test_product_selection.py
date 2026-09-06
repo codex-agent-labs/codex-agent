@@ -70,6 +70,17 @@ class ProductSelectionTest(unittest.TestCase):
                                          and instance.phase == "validation")
             self.assertEqual((path,) if owns else (), phase_inventory_paths([path], instance), instance)
 
+    def test_runtime_raw_stage_verifier_retains_metadata_and_actual_sdk_owners(self):
+        path = "ci/products/runtime_attestation.py"
+        expected = {item for item in PHASE_INSTANCE_IDS if (
+            item.product == "runtime" and item.component in NATIVE_TARGETS and item.phase == "metadata"
+            or item.product == "sdk" and item.phase == "package"
+            or item.product == "sdk" and item.component in NATIVE_BINDINGS and item.phase == "validation"
+        )}
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((path,) if instance in expected else (), phase_inventory_paths([path], instance), instance)
+        self.assertFalse(any(instance.phase == "binary" for instance in classify_paths([path]).instances))
+
     def test_imported_runtime_variant_task_owns_only_native_metadata(self) -> None:
         from ci.tests.test_product_plan import plan
 
@@ -1090,10 +1101,14 @@ class ProductSelectionTest(unittest.TestCase):
     def test_runtime_attestation_and_sdk_compatibility_have_exact_product_owners(self) -> None:
         runtime = classify_paths(["ci/products/runtime_attestation.py"])
         self.assertEqual(
-            set(NATIVE_TARGETS) | {"runtime-aggregate"},
+            set(NATIVE_TARGETS) | {"runtime-aggregate", "sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript"},
             {instance.component for instance in runtime.instances},
         )
-        self.assertTrue(all(instance.product == "runtime" and instance.phase == "metadata" for instance in runtime.instances))
+        self.assertTrue(all(
+            instance.phase == "metadata" if instance.product == "runtime"
+            else instance.phase in {"package", "validation", "metadata"}
+            for instance in runtime.instances
+        ))
 
         aggregate = classify_paths(["ci/products/runtime_aggregate.py"])
         self.assertEqual(

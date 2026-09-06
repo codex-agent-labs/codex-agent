@@ -19,7 +19,6 @@ from .contract_attestation import verify_contract_attestation
 from .inventory import (
     canonical_json_bytes,
     load_canonical_json_bytes,
-    load_json_bytes,
     read_regular_file_bytes,
     require_exact_keys,
     require_integer,
@@ -34,9 +33,8 @@ from .index import (
     _read_parent_file,
     _require_parent_identity,
 )
-from .runtime_attestation import verify_runtime_variant_attestation
+from .runtime_attestation import verify_runtime_variant_attestation, verify_runtime_stages as _verify_runtime_stages
 from .runtime_aggregate import verify_runtime_aggregate_attestation
-from .receipt import validate_phase_receipt, verify_output_manifest_identity
 
 
 _JSON_LIMIT = 16 * 1024 * 1024
@@ -188,50 +186,6 @@ def _variant_record(
         "manifestSha256": sha256_bytes(manifest_bytes),
         "runtimeLibrarySha256": sha256_bytes(library_contents[_LIBRARY_PATHS[target]]),
     }
-
-
-def _verify_runtime_stages(
-    root: Path,
-    target: str,
-    phase_receipts: dict[str, Path],
-    authenticated_attestation: dict[str, Any],
-) -> None:
-    """Bind imported raw stages to the already-authenticated original receipts."""
-    for phase in ("package", "validation"):
-        receipt_bytes = read_regular_file_bytes(
-            phase_receipts[phase], max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
-        )
-        if sha256_bytes(receipt_bytes) != authenticated_attestation["phaseReceipts"][phase]:
-            raise ValueError(f"Runtime original {phase} receipt changed: {target}")
-        receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
-        if (receipt["product"], receipt["component"], receipt["phase"], receipt["target"]) != (
-            "runtime", target, phase, target,
-        ):
-            raise ValueError(f"Runtime original {phase} receipt identity mismatch: {target}")
-        stage = root / target / phase
-        manifest = verify_output_manifest_identity(
-            stage, "runtime", target, phase, target, receipt["productVersion"],
-        )
-        if manifest["outputs"] != receipt["outputs"]:
-            raise ValueError(f"Runtime {phase} stage differs from authenticated receipt: {target}")
-        if phase == "validation":
-            spec = next(spec for spec in TARGET_SPECS.values()
-                        if spec.classifier.removeprefix("c-abi-") == target)
-            proof_path = f"outputs/c-abi/c-abi-package-{target}.json"
-            if not any(output["kind"] == "c-abi" and output["relativePath"] == proof_path
-                       for output in receipt["outputs"]):
-                raise ValueError(f"Runtime C ABI evidence output identity mismatch: {target}")
-            # Raw C ABI evidence retains its original legacy encoding. Its exact
-            # bytes are receipt-bound; portable-verify checks its full semantics.
-            proof = load_json_bytes(read_regular_file_bytes(
-                stage / proof_path,
-                max_bytes=_JSON_LIMIT, reject_symlink_parents=True,
-            ))
-            if (type(proof) is not dict
-                    or proof.get("producerCommit") != receipt["producer"]["commit"]
-                    or proof.get("producerTree") != receipt["producer"]["tree"]
-                    or proof.get("target") != spec.target):
-                raise ValueError(f"Runtime C ABI evidence original producer mismatch: {target}")
 
 
 def produce_sdk_compatibility(

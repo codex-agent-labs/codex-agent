@@ -152,15 +152,23 @@ def _bootstrap_content(raw: Path, manifest: dict, api: dict) -> dict[str, Any]:
 
 
 def _verify_bootstrap_handoff(inputs: Path) -> None:
-    """Rehash the private H already bound to authenticated original phase outputs.
+    """Keep SDK private H as a thin adapter to the K/R-only raw gate."""
+    verify_runtime_bootstrap_content(
+        inputs / "bootstrap", inputs / "bootstrap-reference", inputs / "contract", inputs / "sdks/macos-arm64",
+    )
 
-    This is not standalone receipt/host admission. The SDK input verifier owns
-    original signatures, inventories and plans; the Kotlin matcher still owns
-    exact per-capability/scenario correspondence. No imported code is executed.
+
+def verify_runtime_bootstrap_content(
+    bootstrap: Path, reference: Path, contract: Path, c_abi_sdk: Path,
+) -> dict[str, Any]:
+    """Rehash explicit K/R inputs already bound to authenticated original outputs.
+
+    Callers must first authenticate original signatures, inventories and plans.
+    No SDK package, SDK version or compatibility declaration is required here.
+    The returned content is not a planner/host token; the full Kotlin matcher
+    still owns per-capability/scenario correspondence. No imported code executes.
     """
-    bootstrap, reference = inputs / "bootstrap", inputs / "bootstrap-reference"
-    contract, sdk = inputs / "contract", inputs / "sdks/macos-arm64"
-    roots = (bootstrap, reference, contract, sdk)
+    roots = (bootstrap, reference, contract, c_abi_sdk)
     before = [regular_file_inventory(root) for root in roots]
     manifest = validate_contract_manifest(load_canonical_json_bytes(
         read_regular_file_bytes(contract / "contract-manifest.json", reject_symlink_parents=True)))
@@ -175,7 +183,7 @@ def _verify_bootstrap_handoff(inputs: Path) -> None:
         "cinteropDefinitionSha256": bootstrap / "reference/codex_agent_c.def",
         "exportPolicySha256": reference / "export-policy/macos.exports",
         "generatedHeaderSha256": bootstrap / "original-runner/compiler-header/libcodex_agent_api.h",
-        "releaseLibrarySha256": sdk / "lib/libcodex_agent.dylib",
+        "releaseLibrarySha256": c_abi_sdk / "lib/libcodex_agent.dylib",
         "nativeTestExecutableSha256": bootstrap / "original-runner/test.kexe",
     }.items():
         if _digest(artifacts[field], field) != sha256_bytes(read_regular_file_bytes(path, reject_symlink_parents=True)):
@@ -235,6 +243,7 @@ def _verify_bootstrap_handoff(inputs: Path) -> None:
         raise ValueError("Bootstrap content sidecar differs from its authenticated raw closure")
     if before != [regular_file_inventory(root) for root in roots]:
         raise ValueError("Bootstrap private inputs changed during verification")
+    return content
 
 
 def main(arguments: list[str] | None = None) -> int:

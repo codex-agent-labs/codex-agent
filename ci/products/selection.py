@@ -569,7 +569,9 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
         ))
     if path == "ci/products/runtime_attestation.py":
-        return _runtime(NATIVE_TARGETS, "metadata")
+        return _runtime(NATIVE_TARGETS, "metadata") | _bindings(
+            ("sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript")
+        )
     if path == "ci/products/runtime_aggregate.py":
         return _from_phase("runtime", "runtime-aggregate", "metadata")
     if path == "ci/products/sdk_compatibility.py":
@@ -904,6 +906,10 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         return selected
 
     direct: set[PhaseInstanceId] = set()
+    if path == "ci/products/runtime_attestation.py":
+        # Imported native validation authenticates original stages even on package reuse.
+        direct.update(instance for instance in selected if instance.product == "sdk"
+                      and instance.component in NATIVE_BINDINGS and instance.phase == "validation")
     if path in {
         "ci/native_wrappers.py",
         "codex-agent-bindings/cpp/CMakeLists.txt",

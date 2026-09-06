@@ -10,7 +10,9 @@ import zipfile
 from ci.products.contract import build_contract_bundle
 from ci.products.contract_model import _execution_tree_digest, _verify_extracted_contract_directory
 from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
-from ci.products.sdk_runtime_content import _bootstrap_content, _verify_bootstrap_handoff, bootstrap_content
+from ci.products.sdk_runtime_content import (
+    _bootstrap_content, _verify_bootstrap_handoff, bootstrap_content, verify_runtime_bootstrap_content,
+)
 from ci.tests.test_contract_bundle import ARCHIVE_NAME, VERSION, _write_staging
 
 
@@ -232,6 +234,33 @@ class BootstrapContentTest(unittest.TestCase):
             duplicate.write_bytes((root / "bootstrap-reference/consumer/source.c").read_bytes())
             with self.assertRaisesRegex(ValueError, "ambiguous"):
                 _verify_bootstrap_handoff(root)
+
+    def test_runtime_only_paths_need_no_sdk_package_or_compatibility_declaration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            original = root / "fixture-handoff"
+            self._handoff(original)
+            paths = []
+            for source, destination in (
+                ("bootstrap", "runtime-validation"), ("bootstrap-reference", "runtime-reference"),
+                ("contract", "contract-evidence"), ("sdks/macos-arm64", "c-abi-runtime-payload"),
+            ):
+                path = root / destination
+                (original / source).rename(path)  # Move only this isolated fixture's new directories.
+                paths.append(path)
+            before = [regular_file_inventory(path) for path in paths]
+            value = verify_runtime_bootstrap_content(*paths)
+            self.assertEqual((paths[0] / "bootstrap-content.json").read_bytes(), canonical_json_bytes(value))
+            self.assertEqual(before, [regular_file_inventory(path) for path in paths])
+            self.assertFalse(any("sdk" in key.lower() for key in value))
+            with patch("ci.products.sdk_runtime_content.verify_runtime_bootstrap_content") as gate:
+                _verify_bootstrap_handoff(root / "uncreated-private-handoff")
+                gate.assert_called_once_with(*[root / "uncreated-private-handoff" / name for name in
+                                               ("bootstrap", "bootstrap-reference", "contract", "sdks/macos-arm64")])
+            library = paths[3] / "lib/libcodex_agent.dylib"
+            library.write_bytes(b"tampered Runtime library")
+            with self.assertRaisesRegex(ValueError, "releaseLibrarySha256"):
+                verify_runtime_bootstrap_content(*paths)
 
     def test_handoff_rederives_junit_and_bounded_references_not_only_recorded_digests(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -452,6 +452,10 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
     def test_imported_stages_keep_original_receipt_versions_and_producers(self) -> None:
         # Receipt-bound stage verification unit fixture, not real target execution evidence.
         from ci.tests.test_product_runtime_variant import _inputs, _receipt
+        from ci.products.runtime_attestation import verify_runtime_stages
+
+        self.assertIs(verify_runtime_stages, sdk_compatibility_module._verify_runtime_stages)
+        self.assertEqual("ci.products.runtime_attestation", verify_runtime_stages.__module__)
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -477,7 +481,7 @@ class SdkCompatibilityProducerTest(unittest.TestCase):
                 original[phase] = receipts[phase].read_bytes()
                 attestation["phaseReceipts"][phase] = sha256_bytes(original[phase])
 
-            verify = lambda: sdk_compatibility_module._verify_runtime_stages(
+            verify = lambda: verify_runtime_stages(
                 root, target, receipts, attestation,
             )
             verify()  # No demand that original 0.2.7 receipts use current aggregate SemVer.
