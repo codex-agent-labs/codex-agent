@@ -59,14 +59,16 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
-    def test_bootstrap_content_projector_owns_mac_validation_only(self) -> None:
+    def test_bootstrap_content_projector_and_importer_own_only_executing_validation_phases(self) -> None:
         path = "ci/products/sdk_runtime_content.py"
         owner = PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")
         result = classify_paths([path])
         self.assertIn(owner, result.instances)
         self.assertFalse(any(instance.phase == "binary" for instance in result.instances))
         for instance in PHASE_INSTANCE_IDS:
-            self.assertEqual((path,) if instance == owner else (), phase_inventory_paths([path], instance), instance)
+            owns = instance == owner or (instance.product == "sdk" and instance.component in NATIVE_BINDINGS
+                                         and instance.phase == "validation")
+            self.assertEqual((path,) if owns else (), phase_inventory_paths([path], instance), instance)
 
     def test_imported_runtime_variant_task_owns_only_native_metadata(self) -> None:
         from ci.tests.test_product_plan import plan
@@ -130,8 +132,38 @@ class ProductSelectionTest(unittest.TestCase):
                     if item.product == "runtime" and item.phase == "validation"})
                 for language in NATIVE_BINDINGS:
                     self.assertIn(PhaseInstanceId("sdk", language, "package", "desktop"), selected.instances)
-                self.assertEqual((), phase_inventory_paths([path], PhaseInstanceId(
+                self.assertEqual((path,) if path == "ci/products/contract_model.py" else (), phase_inventory_paths([path], PhaseInstanceId(
                     "runtime", "macos-arm64", "validation", "macos-arm64")))
+
+    def test_bootstrap_shared_parsers_enter_actual_validation_keys(self):
+        from ci.tests.test_product_plan import plan, receipt, upstreams
+
+        owners = [PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")] + [
+            item for item in PHASE_INSTANCE_IDS if item.product == "sdk"
+            and item.component in NATIVE_BINDINGS and item.phase == "validation"
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for path in ("ci/products/contract_model.py", "ci/products/inventory.py", "ci/products/test_results.py"):
+                source = root / path
+                source.parent.mkdir(parents=True, exist_ok=True)
+                for owner in owners:
+                    self.assertEqual((path,), phase_inventory_paths([path], owner), (path, owner))
+                    predecessors = upstreams(owner)
+                    if owner.product == "sdk":
+                        package = PhaseInstanceId("sdk", owner.component, "package", "desktop")
+                        package_plan = plan(package)
+                        package_receipt = receipt(package)
+                        package_receipt.update(inputs=package_plan["inputs"], buildKey=package_plan["buildKey"])
+                        predecessors = [package_receipt if value["product"] == "sdk" else value for value in predecessors]
+                    keys = []
+                    for data in (b"original", b"changed shared validation helper"):
+                        source.write_bytes(data)
+                        keys.append(plan(owner, upstream_receipts=predecessors,
+                                         inventory=phase_file_inventory(root, [path], owner))["buildKey"])
+                    self.assertNotEqual(*keys, (path, owner))
+                for target in NATIVE_TARGETS:
+                    self.assertEqual((), phase_inventory_paths([path], PhaseInstanceId("runtime", target, "binary", target)))
 
     def test_native_installed_consumer_and_policy_helpers_are_direct_validation_inputs(self) -> None:
         from ci.tests.test_product_plan import plan, receipt, upstreams

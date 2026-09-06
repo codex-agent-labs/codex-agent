@@ -76,13 +76,16 @@ class NativeSdkInputsTest(unittest.TestCase):
             validation = runtime / "macos-arm64/validation"
             closure = validation / "outputs/c-abi-bootstrap"
             closure.mkdir(parents=True)
-            required = ("original-runner/test.kexe", "original-runner/compiler-header/libcodex_agent_api.h",
+            required = ("bootstrap-content.json", "original-runner/test.kexe", "original-runner/compiler-header/libcodex_agent_api.h",
                         "reference/codex_agent_c.def", "native-junit/TEST-capi.xml", "consumers/consumer",
                         "original-runner/source/nativeMain/source.kt", "original-runner/source/nativeTest/test.kt")
             for name in required:
                 path = closure / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"explicit fixture\n")
+            reference = validation / "outputs/c-abi-reference/consumer/source.c"
+            reference.parent.mkdir(parents=True)
+            reference.write_bytes(b"explicit original compiler source fixture\n")
             api, coverage = b"canonical API fixture\n", b"canonical coverage fixture\n"
             library = (self.sdks / "macos-arm64/lib/libcodex_agent.dylib").read_bytes()
             bootstrap = {"canonical": {"apiReportSha256": sha256_bytes(api)[7:],
@@ -95,7 +98,8 @@ class NativeSdkInputsTest(unittest.TestCase):
                 archive.writestr("evidence/canonical-coverage.json", coverage)
                 archive.writestr("contract-manifest.json", b'{"fixture":"original Contract manifest"}\n')
             outputs = write_output_manifest(validation, "runtime", "macos-arm64", "validation", "macos-arm64",
-                                            "0.2.7", {"c-abi-bootstrap": "outputs/c-abi-bootstrap"})["outputs"]
+                                            "0.2.7", {"c-abi-bootstrap": "outputs/c-abi-bootstrap",
+                                                      "c-abi-reference": "outputs/c-abi-reference"})["outputs"]
             receipt = root / "validation.json"
             write_receipt(receipt, product="runtime", component="macos-arm64", phase="validation",
                           target="macos-arm64", version="0.2.7", version_identity="0.2.0",
@@ -104,10 +108,15 @@ class NativeSdkInputsTest(unittest.TestCase):
                     "variant_phase_receipts": {"macos-arm64": {"validation": receipt, "package": receipt}}}
             before = regular_file_inventory(runtime)
             raw = receipt.read_bytes()
-            _stage_native_capability_inputs(args, runtime, self.sdks, root / "result")
+            # Copy-only fixture, not a valid native bootstrap. Full raw closure
+            # rederivation has independent positive/mutation tests.
+            with patch("ci.products.sdk_runtime_content._verify_bootstrap_handoff") as gate:
+                _stage_native_capability_inputs(args, runtime, self.sdks, root / "result")
+                gate.assert_called_once_with(root / "result")
             self.assertEqual(before, regular_file_inventory(runtime))
             self.assertEqual(raw, (root / "result/receipts/runtime-macos-arm64-validation.json").read_bytes())
             self.assertEqual(regular_file_inventory(closure), regular_file_inventory(root / "result/bootstrap"))
+            self.assertEqual(reference.read_bytes(), (root / "result/bootstrap-reference/consumer/source.c").read_bytes())
             self.assertEqual(b'{"fixture":"original Contract manifest"}\n',
                              (root / "result/contract/contract-manifest.json").read_bytes())
             for case in ("missing", "kind", "contract", "library"):

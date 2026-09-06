@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
-from .contract_model import _verify_extracted_contract_directory
-from .inventory import (
-    canonical_json_bytes, load_json_bytes, read_regular_file_bytes,
-    require_array, require_exact_keys, require_integer, require_sha256, sha256_bytes,
+from .contract_model import (
+    _canonical_api_projection, _execution_tree_digest, _verify_extracted_contract_directory,
+    validate_contract_manifest,
 )
+from .inventory import (
+    canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes,
+    regular_file_inventory, require_array, require_exact_keys, require_integer,
+    require_relative_path, require_sha256, sha256_bytes,
+)
+from .test_results import read_canonical_test_report
 
 
 def _record(value: Any, label: str, *, multiline: bool = False) -> str:
@@ -41,6 +47,16 @@ def _digest(value: Any, label: str) -> str:
 
 def bootstrap_content(raw: Path, contract_directory: Path) -> dict[str, Any]:
     """Project validated raw facts; never replace the original full compiler gate."""
+    manifest, api = _verify_extracted_contract_directory(
+        contract_directory, required_components=("common", "macos-arm64"),
+        include_canonical_api_projection=True,
+    )
+    assert api is not None
+    return _bootstrap_content(raw, manifest, api)
+
+
+def _bootstrap_content(raw: Path, manifest: dict, api: dict) -> dict[str, Any]:
+    """Shared content model; caller must authenticate the original Contract first."""
     data = read_regular_file_bytes(raw, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     report = require_exact_keys(load_json_bytes(data), {
         "schemaVersion", "protocol", "result", "milestone", "language", "canonical",
@@ -50,11 +66,6 @@ def bootstrap_content(raw: Path, contract_directory: Path) -> dict[str, Any]:
         report["protocol"], report["result"], report["milestone"], report["language"]
     ) != ("codex-agent-c-abi-bootstrap-evidence-v1", "observed", "D104", "c-abi"):
         raise ValueError("Bootstrap identity is not exact observed D104 c-abi evidence")
-    manifest, api = _verify_extracted_contract_directory(
-        contract_directory, required_components=("common", "macos-arm64"),
-        include_canonical_api_projection=True,
-    )
-    assert api is not None
     canonical = require_exact_keys(report["canonical"], {
         "apiReportSha256", "coverageReceiptSha256", "nativeTargetSha256", "capabilityCount",
         "observedCapabilityCount", "observedCapabilitySha256", "observedCapabilityKeys", "missingCapabilityKeys",
@@ -138,6 +149,92 @@ def bootstrap_content(raw: Path, contract_directory: Path) -> dict[str, Any]:
         "compilerConsumers": sorted(consumers, key=lambda row: row["id"]),
         "linkedPublicSymbols": symbols, "nativeTests": tests, "claims": claims,
     }
+
+
+def _verify_bootstrap_handoff(inputs: Path) -> None:
+    """Rehash the private H already bound to authenticated original phase outputs.
+
+    This is not standalone receipt/host admission. The SDK input verifier owns
+    original signatures, inventories and plans; the Kotlin matcher still owns
+    exact per-capability/scenario correspondence. No imported code is executed.
+    """
+    bootstrap, reference = inputs / "bootstrap", inputs / "bootstrap-reference"
+    contract, sdk = inputs / "contract", inputs / "sdks/macos-arm64"
+    roots = (bootstrap, reference, contract, sdk)
+    before = [regular_file_inventory(root) for root in roots]
+    manifest = validate_contract_manifest(load_canonical_json_bytes(
+        read_regular_file_bytes(contract / "contract-manifest.json", reject_symlink_parents=True)))
+    api = _canonical_api_projection({f"evidence/{name}": read_regular_file_bytes(contract / name)
+                                     for name in ("canonical-api.json", "canonical-coverage.json")})
+    raw = bootstrap / "bootstrap-evidence.json"
+    content = _bootstrap_content(raw, manifest, api)
+    report = load_json_bytes(read_regular_file_bytes(raw))
+    artifacts = report["artifacts"]
+    for field, path in {
+        "reviewedHeaderSha256": reference / "include/codex_agent.h",
+        "cinteropDefinitionSha256": bootstrap / "reference/codex_agent_c.def",
+        "exportPolicySha256": reference / "export-policy/macos.exports",
+        "generatedHeaderSha256": bootstrap / "original-runner/compiler-header/libcodex_agent_api.h",
+        "releaseLibrarySha256": sdk / "lib/libcodex_agent.dylib",
+        "nativeTestExecutableSha256": bootstrap / "original-runner/test.kexe",
+    }.items():
+        if _digest(artifacts[field], field) != sha256_bytes(read_regular_file_bytes(path, reject_symlink_parents=True)):
+            raise ValueError(f"Bootstrap raw artifact differs: {field}")
+    for field, path in {
+        "nativeMainSourcesSha256": bootstrap / "original-runner/source/nativeMain",
+        "nativeTestSourcesSha256": bootstrap / "original-runner/source/nativeTest",
+        "nativeTestResultsSha256": bootstrap / "native-junit",
+    }.items():
+        if artifacts[field] != _execution_tree_digest(path):
+            raise ValueError(f"Bootstrap raw tree differs: {field}")
+    sources = regular_file_inventory(reference / "consumer")
+    consumed = []
+    artifact_paths = []
+    for consumer in report["compilerConsumers"]:
+        identity = require_relative_path(consumer["id"], "Bootstrap compiler consumer ID")
+        if "/" in identity:
+            raise ValueError("Bootstrap compiler consumer ID must be a filename")
+        matching = [record for record in sources if record["sha256"] == _digest(consumer["sourceSha256"], "source")]
+        if len(matching) != 1:
+            raise ValueError("Bootstrap compiler source is missing or ambiguous")
+        consumed.append(read_regular_file_bytes(reference / "consumer" / matching[0]["relativePath"]))
+        name = identity if consumer["executed"] else identity + ".o"
+        artifact_paths.append(name)
+        if _digest(consumer["artifactSha256"], "compiler artifact") != sha256_bytes(
+            read_regular_file_bytes(bootstrap / "consumers" / name, reject_symlink_parents=True)
+        ):
+            raise ValueError("Bootstrap compiled consumer artifact differs")
+    if sorted(artifact_paths) != [record["relativePath"] for record in regular_file_inventory(bootstrap / "consumers")]:
+        raise ValueError("Bootstrap compiler artifact inventory differs")
+    tests = []
+    tasks = set()
+    for path in sorted((bootstrap / "native-junit").iterdir()):
+        if path.suffix != ".xml" or ".capi." not in path.name:
+            continue  # Exact same report selection as the original Runtime producer.
+        for test in read_canonical_test_report(path):
+            task, _, suffix = test.test_id.partition(".")
+            tasks.add(task)
+            if (task not in {"macosArm64Test", "testImportedMacosArm64CAbi"}
+                    or not suffix.startswith("io.github.codex_agent_labs.codexagent.capi.")
+                    or not suffix.endswith("[macosArm64]")):
+                raise ValueError("Bootstrap JUnit has a foreign task/package/target")
+            tests.append({"testId": "macosArm64Test." + suffix, "status": test.status.value})
+    if len(tasks) != 1 or sorted(tests, key=lambda row: row["testId"]) != report["nativeTests"]:
+        raise ValueError("Bootstrap raw JUnit differs from the exact passed native test inventory")
+    symbols = read_regular_file_bytes(reference / "export-policy/macos.exports").decode("utf-8").splitlines()
+    if symbols != ["_" + symbol for symbol in report["linkedPublicSymbols"]]:
+        raise ValueError("Bootstrap linked symbols differ from authenticated export policy")
+    header = read_regular_file_bytes(reference / "include/codex_agent.h").decode("utf-8")
+    consumer_text = "\n".join(source.decode("utf-8") for source in consumed)
+    for claim in report["claims"]:
+        for field, text in (("headerReferences", header), ("consumerReferences", consumer_text)):
+            if any(re.search(r"(?<![A-Za-z0-9_])" + re.escape(value) + r"(?![A-Za-z0-9_])", text) is None
+                   for value in claim[field]):
+                raise ValueError(f"Bootstrap claim lacks authenticated {field}")
+    if canonical_json_bytes(content) != read_regular_file_bytes(bootstrap / "bootstrap-content.json"):
+        raise ValueError("Bootstrap content sidecar differs from its authenticated raw closure")
+    if before != [regular_file_inventory(root) for root in roots]:
+        raise ValueError("Bootstrap private inputs changed during verification")
 
 
 def main(arguments: list[str] | None = None) -> int:

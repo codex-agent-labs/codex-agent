@@ -533,7 +533,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
                 _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
             ))
             contract = _contract() if path.endswith(("inventory.py", "ReleaseIo.kt")) else set()
-            return set(ALL_METADATA) | consumers | contract
+            bootstrap = _runtime(("macos-arm64",), "validation") if path == "ci/products/inventory.py" else set()
+            return set(ALL_METADATA) | consumers | contract | bootstrap
         if path in {
             "ci/products/__main__.py", "ci/products/receipt.py",
             "gradle/build-logic/src/main/kotlin/codexagent.root-release.gradle.kts",
@@ -546,7 +547,11 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             ))
         return set(ALL_METADATA)
 
-    if path in {"ci/products/contract.py", "ci/products/contract_model.py"}:
+    if path == "ci/products/contract_model.py":
+        return _contract() | _runtime(("macos-arm64",), "validation").union(*(
+            _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
+        ))
+    if path == "ci/products/contract.py":
         return _contract()
     if path == "ci/products/c_abi.py":
         return _runtime(NATIVE_TARGETS) | _bindings(NATIVE_BINDINGS)
@@ -560,7 +565,9 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/runtime_variant.py":
         return _runtime(NATIVE_TARGETS, "metadata")
     if path == "ci/products/sdk_runtime_content.py":
-        return _runtime(("macos-arm64",), "validation")
+        return _runtime(("macos-arm64",), "validation").union(*(
+            _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
+        ))
     if path == "ci/products/runtime_attestation.py":
         return _runtime(NATIVE_TARGETS, "metadata")
     if path == "ci/products/runtime_aggregate.py":
@@ -588,6 +595,10 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         selected = _runtime(RUNTIME_COMPONENTS, "validation")
         if path != "ci/products/runtime_evidence.py":
             selected |= _contract()
+        if path == "ci/products/test_results.py":
+            selected.update(set().union(*(
+                _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
+            )))
         return selected
     if path == "ci/native_wrappers.py":
         return _bindings(NATIVE_BINDINGS)

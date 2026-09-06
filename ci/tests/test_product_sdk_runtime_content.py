@@ -8,9 +8,9 @@ from unittest.mock import patch
 import zipfile
 
 from ci.products.contract import build_contract_bundle
-from ci.products.contract_model import _verify_extracted_contract_directory
-from ci.products.inventory import canonical_json_bytes, sha256_bytes
-from ci.products.sdk_runtime_content import bootstrap_content
+from ci.products.contract_model import _execution_tree_digest, _verify_extracted_contract_directory
+from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+from ci.products.sdk_runtime_content import _bootstrap_content, _verify_bootstrap_handoff, bootstrap_content
 from ci.tests.test_contract_bundle import ARCHIVE_NAME, VERSION, _write_staging
 
 
@@ -156,6 +156,135 @@ class BootstrapContentTest(unittest.TestCase):
         self.raw.write_bytes(b'{"schemaVersion":1,"schemaVersion":1}\n')
         with self.assertRaises(ValueError):
             bootstrap_content(self.raw, self.contract)
+
+    def _handoff(self, root):
+        """Previously-authenticated-input model only, never native execution proof."""
+        test_class = "io.github.codex_agent_labs.codexagent.capi.Fixture"
+        test_id = f"macosArm64Test.{test_class}#passed[macosArm64]"
+        self.report["nativeTests"] = [{"testId": test_id, "status": "passed"}]
+        for claim in self.report["claims"]:
+            claim["nativeTestIds"] = [test_id]
+        files = {
+            "bootstrap-reference/include/codex_agent.h": b"void codex_agent_fixture(void);\n",
+            "bootstrap-reference/export-policy/macos.exports": b"_codex_agent_fixture\n",
+            "bootstrap-reference/consumer/source.c": b"codex_agent_fixture();\n",
+            "bootstrap/reference/codex_agent_c.def": b"headers = codex_agent.h\n",
+            "bootstrap/original-runner/compiler-header/libcodex_agent_api.h": b"fixture generated header\n",
+            "bootstrap/original-runner/test.kexe": b"fixture native runner\n",
+            "bootstrap/original-runner/source/nativeMain/main.kt": b"fixture source\n",
+            "bootstrap/original-runner/source/nativeTest/test.kt": b"fixture test source\n",
+            "bootstrap/consumers/fixture": b"fixture compiled consumer\n",
+            "sdks/macos-arm64/lib/libcodex_agent.dylib": b"fixture runtime library\n",
+            f"bootstrap/native-junit/TEST-{test_class}.xml": (
+                f'<testsuite><testcase classname="testImportedMacosArm64CAbi.{test_class}" '
+                'name="passed[macosArm64]"/></testsuite>\n').encode(),
+        }
+        for name in ("canonical-api.json", "canonical-coverage.json"):
+            files[f"contract/{name}"] = (self.contract / "evidence" / name).read_bytes()
+        files["contract/contract-manifest.json"] = (self.contract / "contract-manifest.json").read_bytes()
+        for name, data in files.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        for field, name in {
+            "reviewedHeaderSha256": "bootstrap-reference/include/codex_agent.h",
+            "exportPolicySha256": "bootstrap-reference/export-policy/macos.exports",
+            "cinteropDefinitionSha256": "bootstrap/reference/codex_agent_c.def",
+            "generatedHeaderSha256": "bootstrap/original-runner/compiler-header/libcodex_agent_api.h",
+            "releaseLibrarySha256": "sdks/macos-arm64/lib/libcodex_agent.dylib",
+            "nativeTestExecutableSha256": "bootstrap/original-runner/test.kexe",
+        }.items():
+            self.report["artifacts"][field] = sha256_bytes(files[name])[7:]
+        for field, name in {
+            "nativeMainSourcesSha256": "bootstrap/original-runner/source/nativeMain",
+            "nativeTestSourcesSha256": "bootstrap/original-runner/source/nativeTest",
+            "nativeTestResultsSha256": "bootstrap/native-junit",
+        }.items():
+            self.report["artifacts"][field] = _execution_tree_digest(root / name)
+        self.report["compilerConsumers"][0]["sourceSha256"] = sha256_bytes(files["bootstrap-reference/consumer/source.c"])[7:]
+        self.report["compilerConsumers"][0]["artifactSha256"] = sha256_bytes(files["bootstrap/consumers/fixture"])[7:]
+        self._rebind_content(root)
+
+    def _rebind_content(self, root):
+        raw = root / "bootstrap/bootstrap-evidence.json"
+        raw.write_bytes(canonical_json_bytes(self.report))
+        (root / "bootstrap/bootstrap-content.json").write_bytes(canonical_json_bytes(
+            _bootstrap_content(raw, *self.verified)))
+
+    def test_full_handoff_rehashes_every_raw_artifact_and_preserves_originals(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self._handoff(root)
+            before = regular_file_inventory(root)
+            _verify_bootstrap_handoff(root)
+            self.assertEqual(before, regular_file_inventory(root))
+            for record in before:
+                if record["relativePath"].startswith("contract/"):
+                    continue  # Contract authentication is the outer original-input gate.
+                path = root / record["relativePath"]
+                original = path.read_bytes()
+                path.write_bytes(original + b"mutation")
+                with self.subTest(path=record["relativePath"]), self.assertRaises(ValueError):
+                    _verify_bootstrap_handoff(root)
+                self.assertEqual(original + b"mutation", path.read_bytes())
+                path.write_bytes(original)
+            duplicate = root / "bootstrap-reference/consumer/duplicate.c"
+            duplicate.write_bytes((root / "bootstrap-reference/consumer/source.c").read_bytes())
+            with self.assertRaisesRegex(ValueError, "ambiguous"):
+                _verify_bootstrap_handoff(root)
+
+    def test_handoff_rederives_junit_and_bounded_references_not_only_recorded_digests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self._handoff(root)
+            junit = next((root / "bootstrap/native-junit").iterdir())
+            junit.write_bytes(junit.read_bytes().replace(b"passed[", b"other["))
+            self.report["artifacts"]["nativeTestResultsSha256"] = _execution_tree_digest(junit.parent)
+            self._rebind_content(root)
+            with self.assertRaisesRegex(ValueError, "exact passed native test inventory"):
+                _verify_bootstrap_handoff(root)
+            junit.write_bytes(junit.read_bytes().replace(b"other[", b"passed["))
+            self.report["artifacts"]["nativeTestResultsSha256"] = _execution_tree_digest(junit.parent)
+            source = root / "bootstrap-reference/consumer/source.c"
+            source.write_bytes(b"codex_agent_fixture_suffix();\n")
+            self.report["compilerConsumers"][0]["sourceSha256"] = sha256_bytes(source.read_bytes())[7:]
+            self._rebind_content(root)
+            with self.assertRaisesRegex(ValueError, "authenticated consumerReferences"):
+                _verify_bootstrap_handoff(root)
+
+    def test_handoff_accepts_rebound_execution_bytes_without_changing_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self._handoff(root)
+            original = (root / "bootstrap/bootstrap-content.json").read_bytes()
+            for name, field in (("original-runner/test.kexe", "nativeTestExecutableSha256"),
+                                ("original-runner/compiler-header/libcodex_agent_api.h", "generatedHeaderSha256")):
+                path = root / "bootstrap" / name
+                path.write_bytes(path.read_bytes() + b"another compiler envelope\n")
+                self.report["artifacts"][field] = sha256_bytes(path.read_bytes())[7:]
+            artifact = root / "bootstrap/consumers/fixture"
+            artifact.write_bytes(b"another consumer compiler envelope\n")
+            self.report["compilerConsumers"][0]["artifactSha256"] = sha256_bytes(artifact.read_bytes())[7:]
+            junit = next((root / "bootstrap/native-junit").iterdir())
+            junit.write_bytes(junit.read_bytes().replace(b"<testsuite>", b'<testsuite timestamp="another-run">'))
+            self.report["artifacts"]["nativeTestResultsSha256"] = _execution_tree_digest(junit.parent)
+            self._rebind_content(root)
+            self.assertEqual(original, (root / "bootstrap/bootstrap-content.json").read_bytes())
+            _verify_bootstrap_handoff(root)
+
+    def test_handoff_rejects_mixed_native_test_producer_tasks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self._handoff(root)
+            junit = next((root / "bootstrap/native-junit").iterdir())
+            classname = "macosArm64Test.io.github.codex_agent_labs.codexagent.capi.Fixture"
+            junit.write_bytes(junit.read_bytes().replace(b"</testsuite>",
+                f'<testcase classname="{classname}" name="second[macosArm64]"/></testsuite>'.encode()))
+            self.report["nativeTests"].append({"testId": classname + "#second[macosArm64]", "status": "passed"})
+            self.report["artifacts"]["nativeTestResultsSha256"] = _execution_tree_digest(junit.parent)
+            self._rebind_content(root)
+            with self.assertRaisesRegex(ValueError, "exact passed native test inventory"):
+                _verify_bootstrap_handoff(root)
 
 
 if __name__ == "__main__":

@@ -40,16 +40,21 @@ def _stage_native_capability_inputs(
     prefix = "outputs/c-abi-bootstrap/"
     records = [record for record in receipt["outputs"] if record["relativePath"].startswith(prefix)]
     paths = {record["relativePath"].removeprefix(prefix) for record in records}
-    required = {"bootstrap-evidence.json", "original-runner/test.kexe",
+    required = {"bootstrap-evidence.json", "bootstrap-content.json", "original-runner/test.kexe",
                 "original-runner/compiler-header/libcodex_agent_api.h", "reference/codex_agent_c.def"}
     directories = ("native-junit/", "consumers/", "original-runner/source/nativeMain/",
                    "original-runner/source/nativeTest/")
     if (not required <= paths or any(record["kind"] != "c-abi-bootstrap" for record in records)
             or any(not any(path.startswith(directory) for path in paths) for directory in directories)):
         raise ValueError("Authenticated Runtime validation lacks the full C ABI bootstrap closure")
+    references = [record for record in receipt["outputs"]
+                  if record["relativePath"].startswith("outputs/c-abi-reference/")]
+    if not references or any(record["kind"] != "c-abi-reference" for record in references):
+        raise ValueError("Authenticated Runtime validation lacks the C ABI reference closure")
     # Copy raw evidence unchanged: receipt producer and execution identity are
     # external evidence, never rewritten to impersonate this SDK consumer.
     snapshot_regular_tree(stage / "outputs/c-abi-bootstrap", output / "bootstrap")
+    snapshot_regular_tree(stage / "outputs/c-abi-reference", output / "bootstrap-reference")
     snapshot_regular_tree(sdks, output / "sdks")
     evidence = output / "contract"
     evidence.mkdir()
@@ -72,6 +77,8 @@ def _stage_native_capability_inputs(
     for name, path in (("runtime-macos-arm64-package", arguments["variant_phase_receipts"]["macos-arm64"]["package"]),
                        ("contract-metadata", arguments["contract_metadata_receipt"])):
         (receipts / f"{name}.json").write_bytes(read_regular_file_bytes(path, max_bytes=_LIMIT, reject_symlink_parents=True))
+    from .sdk_runtime_content import _verify_bootstrap_handoff
+    _verify_bootstrap_handoff(output)
 
 
 def verify_staged_native_sdk_inputs(
