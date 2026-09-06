@@ -8,6 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -24,6 +25,43 @@ class AppleSdkDistributionPackageTaskTest {
         assertEquals(before, fixture.originalDigests())
         assertEquals(fixture.productDigests(), fixture.outputDigests())
         assertEquals(expectedValidation, fixture.validationDigests())
+    }
+
+    @Test
+    fun `transported product and external evidence rerun the full Apple verifier`() = fixture().use { fixture ->
+        fixture.prepareFullClosure()
+        fixture.stage()
+        val before = fixture.transportedDigests()
+        fixture.verifyTransported()
+        assertEquals(before, fixture.transportedDigests())
+    }
+
+    @Test
+    fun `transported verifier rejects input work aliases without deletion`() = fixture().use { fixture ->
+        fixture.prepareFullClosure()
+        fixture.stage()
+        val before = fixture.transportedDigests()
+        assertFailsWith<IllegalStateException> { fixture.verifyWithProductAsWork() }
+        assertEquals(before, fixture.transportedDigests())
+    }
+
+    @Test
+    fun `transported verifier rejects product proof receipt native and semantic crosspairs`() {
+        listOf(
+            "product", "proof", "original-receipt", "current-receipt", "native", "semantic",
+            "extra", "duplicate-product", "version",
+        ).forEach {
+            mutation -> fixture().use { fixture ->
+                fixture.prepareFullClosure()
+                fixture.stage()
+                fixture.mutateTransported(mutation)
+                val before = fixture.transportedDigests()
+                assertFailsWith<IllegalStateException>(mutation) {
+                    fixture.verifyTransported(if (mutation == "version") "0.2.1" else "0.2.0")
+                }
+                assertEquals(before, fixture.transportedDigests(), mutation)
+            }
+        }
     }
 
     @Test
@@ -134,6 +172,7 @@ private class AppleSdkPackageFixture : AutoCloseable {
         writeText("{\"schemaVersion\":1,\"sdkVersion\":\"0.2.0\"}\n")
     }
     private val work = owned.resolve("work")
+    private val verifyWork = owned.resolve("verify-work")
     val output = owned.resolve("output")
     val validationOutput = owned.resolve("validation-evidence")
     val unownedOutput = root.resolve("unowned/output")
@@ -158,7 +197,7 @@ private class AppleSdkPackageFixture : AutoCloseable {
             parentFile.mkdirs()
             writeText("original native receipt")
         }
-        nativeEvidence.resolve("ios-native-tests-proof.json").writeText("native test evidence")
+        nativeEvidence.resolve(IOS_NATIVE_TESTS_PROOF).writeText("native test evidence")
         writeZip(frameworkArchive, frameworkMembers)
         rewritePackage()
         checksum.writeText("${frameworkArchive.releaseDigest()}\n")
@@ -179,6 +218,19 @@ private class AppleSdkPackageFixture : AutoCloseable {
         evidence, receipt, compatibility, nativeEvidence, nativeReceipt,
         "0.2.0", root, work, evidence, validationOutput,
     )
+
+    fun verifyTransported(version: String = "0.2.0") = verifyTransportedAppleSdkPackageClosure(
+        output, validationOutput, version, owned, verifyWork,
+    )
+
+    fun verifyWithProductAsWork() = verifyTransportedAppleSdkPackageClosure(
+        output, validationOutput, "0.2.0", owned, output,
+    )
+
+    fun transportedDigests() = buildMap {
+        verifiedRegularFiles(output).forEach { (path, file) -> put("product/$path", file.releaseDigest()) }
+        verifiedRegularFiles(validationOutput).forEach { (path, file) -> put("validation/$path", file.releaseDigest()) }
+    }
 
     fun symbolicOutput(): File {
         val link = owned.resolve("linked")
@@ -223,8 +275,75 @@ private class AppleSdkPackageFixture : AutoCloseable {
 
     fun rewriteChecksum(contents: String) = checksum.writeText(contents)
     fun removePackageArchive() = packageArchive.delete().let { }
-    fun removeNativeEvidence() = nativeEvidence.resolve("ios-native-tests-proof.json").delete().let { }
+    fun removeNativeEvidence() = nativeEvidence.resolve(IOS_NATIVE_TESTS_PROOF).delete().let { }
     fun removeNativeReceipt() = nativeReceipt.delete().let { }
+
+    fun prepareFullClosure() {
+        appleVerifiedReportLayout.keys.forEach { path ->
+            evidence.resolve(path).apply { parentFile.mkdirs(); writeText("report:$path") }
+        }
+        appleVerifiedToolchainLayout.keys.forEach { path ->
+            evidence.resolve(path).apply { parentFile.mkdirs(); writeText("toolchain:$path") }
+        }
+        val nativeNames = appleRustSliceSpecs.flatMap { listOf(it.archiveName, it.proofName) } + IOS_NATIVE_TESTS_PROOF
+        nativeNames.forEach { path -> nativeEvidence.resolve(path).writeText("native:$path") }
+        evidence.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).writeText(
+            nativeReceiptJson("1".repeat(40), "2".repeat(40)),
+        )
+        nativeReceipt.writeText(nativeReceiptJson("3".repeat(40), "4".repeat(40)))
+        val files = verifiedRegularFiles(evidence)
+        val identity = AppleVerifiedDistributionIdentity(
+            "1".repeat(40), "2".repeat(40), "0.2.0",
+            "6".repeat(64), "7".repeat(64),
+            evidence.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).releaseDigest(),
+            compatibility.releaseDigest(),
+        )
+        evidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).atomicWriteJson(
+            buildAppleVerifiedDistributionProof(
+                identity,
+                files.filterKeys { it in artifactNames },
+                files.filterKeys { it in appleVerifiedReportLayout },
+                files.filterKeys { it in appleVerifiedToolchainLayout },
+                verifiedRegularFiles(nativeEvidence),
+                mapOf(
+                    IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT to
+                        evidence.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT),
+                ),
+            ),
+        )
+        writeImportReceipt()
+    }
+
+    fun mutateTransported(mutation: String) {
+        val distribution = validationOutput.resolve("verified-distribution")
+        val currentReceipt = validationOutput.resolve("receipts/current-ios-native-evidence.json")
+        when (mutation) {
+            "product" -> output.resolve(packageArchive.name).appendText("changed")
+            "proof" -> distribution.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF).let { proof ->
+                val value = proof.readReleaseObject()
+                proof.atomicWriteJson(JsonObject(value + ("version" to JsonPrimitive("0.2.1"))))
+            }
+            "original-receipt" -> distribution.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT).appendText("changed")
+            "current-receipt" -> currentReceipt.appendText("changed")
+            "native" -> validationOutput.resolve("current-native-evidence/$IOS_NATIVE_TESTS_PROOF").appendText("changed")
+            "semantic" -> {
+                currentReceipt.writeText(nativeReceiptJson(
+                    "3".repeat(40), "4".repeat(40), nativeInputs = "9".repeat(64),
+                ))
+                val imported = validationOutput.resolve("receipts/verified-distribution-import.json")
+                val value = imported.readReleaseObject()
+                imported.atomicWriteJson(JsonObject(value + (
+                    "currentNativeEvidenceReceiptSha256" to JsonPrimitive(currentReceipt.releaseDigest())
+                )))
+            }
+            "extra" -> validationOutput.resolve("extra").writeText("unexpected")
+            "duplicate-product" -> {
+                val valid = output.resolve(packageArchive.name).readBytes()
+                validationOutput.resolve("verified-distribution/${packageArchive.name}").writeBytes(valid)
+                output.resolve(packageArchive.name).appendText("changed")
+            }
+        }
+    }
 
     fun rebindProof() {
         val proof = evidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF)
@@ -252,6 +371,11 @@ private class AppleSdkPackageFixture : AutoCloseable {
                 verifiedRegularFiles(nativeEvidence).forEach { (path, file) -> add(file.releaseRecord(path)) }
             })
         })
+        writeImportReceipt()
+    }
+
+    private fun writeImportReceipt() {
+        val proof = evidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF)
         receipt.atomicWriteJson(buildJsonObject {
             put("schemaVersion", JsonPrimitive(2))
             put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v2"))
@@ -267,6 +391,26 @@ private class AppleSdkPackageFixture : AutoCloseable {
             put("currentNativeEvidenceReceiptSha256", JsonPrimitive(nativeReceipt.releaseDigest()))
         })
     }
+
+    private fun nativeReceiptJson(commit: String, tree: String, nativeInputs: String = "5".repeat(64)) =
+        buildJsonObject {
+            put("schemaVersion", JsonPrimitive(2))
+            put("protocol", JsonPrimitive("codex-agent-ios-native-evidence-v2"))
+            put("result", JsonPrimitive("passed"))
+            put("candidateCommit", JsonPrimitive(commit))
+            put("candidateTree", JsonPrimitive(tree))
+            put("cleanCheckout", JsonPrimitive(true))
+            put("nativeInputsSha256", JsonPrimitive(nativeInputs))
+            put("nativeProvenanceSha256", JsonPrimitive("6".repeat(64)))
+            put("compilerSettingsSha256", JsonPrimitive("7".repeat(64)))
+            put("rustToolchain", JsonPrimitive("1.95.0"))
+            put("rustSrcComponent", JsonPrimitive("required"))
+            put("rustCompilerIdentitySha256", JsonPrimitive("8".repeat(64)))
+            put("xcodeVersionSha256", JsonPrimitive("9".repeat(64)))
+            put("swiftVersionSha256", JsonPrimitive("a".repeat(64)))
+            put("nativeTestsProofSha256", JsonPrimitive("b".repeat(64)))
+            put("slices", buildJsonArray { })
+        }.toString()
 
     private val artifactNames get() = setOf(packageArchive.name, frameworkArchive.name, checksum.name)
 

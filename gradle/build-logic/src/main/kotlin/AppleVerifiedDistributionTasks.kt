@@ -490,6 +490,150 @@ private fun sameApplePackageFiles(expected: Map<String, File>, source: File, cap
     }
 }
 
+@DisableCachingByDefault(because = "Verifies transported Apple package and external evidence without producing content")
+abstract class VerifyTransportedAppleSdkPackageClosureTask : DefaultTask() {
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.NONE)
+    abstract val productDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.NONE)
+    abstract val validationEvidenceDirectory: DirectoryProperty
+    @get:Input abstract val version: Property<String>
+    @get:Internal abstract val ownedBuildDirectory: DirectoryProperty
+    @get:LocalState abstract val workDirectory: DirectoryProperty
+
+    init { outputs.upToDateWhen { false } }
+
+    @TaskAction
+    fun verify() = verifyTransportedAppleSdkPackageClosure(
+        productDirectory.get().asFile,
+        validationEvidenceDirectory.get().asFile,
+        version.get(),
+        ownedBuildDirectory.get().asFile,
+        workDirectory.get().asFile,
+    )
+}
+
+internal fun verifyTransportedAppleSdkPackageClosure(
+    productDirectory: File,
+    validationEvidenceDirectory: File,
+    version: String,
+    ownedBuildDirectory: File,
+    workDirectory: File,
+) {
+    check(PRODUCT_SEMVER.matches(version)) { "Transported Apple SDK version is invalid" }
+    listOf(productDirectory, validationEvidenceDirectory).forEach {
+        requireApplePackagePathWithoutSymlinks(it, "transported input")
+    }
+    listOf(ownedBuildDirectory, workDirectory).forEach {
+        requireApplePackagePathWithoutSymlinks(it, "verification work")
+    }
+    val product = productDirectory.canonicalFile
+    val validation = validationEvidenceDirectory.canonicalFile
+    val ownedRoot = ownedBuildDirectory.canonicalFile
+    val work = workDirectory.canonicalFile
+    val productFiles = verifiedRegularFiles(product)
+    val validationFiles = verifiedRegularFiles(validation)
+    check(productFiles.keys == appleVerifiedArtifactNames(version)) {
+        "Transported Apple SDK product inventory mismatch"
+    }
+    check((!ownedRoot.exists() || ownedRoot.isDirectory) && work.toPath() != ownedRoot.toPath() &&
+        work.toPath().startsWith(ownedRoot.toPath()) &&
+        !work.toPath().startsWith(product.toPath()) && !product.toPath().startsWith(work.toPath()) &&
+        !work.toPath().startsWith(validation.toPath()) && !validation.toPath().startsWith(work.toPath())) {
+        "Transported Apple SDK verification work directory is unsafe"
+    }
+    val protectedRoots = listOf(File(System.getProperty("user.home")).canonicalFile, File(".").canonicalFile)
+    check(protectedRoots.none { protected ->
+        protected.toPath() == work.toPath() || protected.toPath().startsWith(work.toPath())
+    }) { "Transported Apple SDK verification work directory is too broad" }
+    check(!Files.exists(work.toPath(), LinkOption.NOFOLLOW_LINKS) || !Files.isSymbolicLink(work.toPath())) {
+        "Transported Apple SDK verification work directory is a symbolic link"
+    }
+
+    val importReceiptPath = "receipts/verified-distribution-import.json"
+    val currentNativeReceiptPath = "receipts/current-ios-native-evidence.json"
+    val distributionPrefix = "verified-distribution/"
+    val nativePrefix = "current-native-evidence/"
+    val distributionFiles = validationFiles.filterKeys { it.startsWith(distributionPrefix) }
+        .mapKeys { (path, _) -> path.removePrefix(distributionPrefix) }
+    val nativeFiles = validationFiles.filterKeys { it.startsWith(nativePrefix) }
+        .mapKeys { (path, _) -> path.removePrefix(nativePrefix) }
+    check(distributionFiles.keys.intersect(productFiles.keys).isEmpty()) {
+        "Transported Apple SDK product is duplicated in external validation evidence"
+    }
+    check(distributionFiles.isNotEmpty() && nativeFiles.isNotEmpty() &&
+        validationFiles.keys == distributionFiles.keys.map { "$distributionPrefix$it" }.toSet() +
+        nativeFiles.keys.map { "$nativePrefix$it" } + setOf(importReceiptPath, currentNativeReceiptPath)) {
+        "Transported Apple SDK validation evidence inventory mismatch"
+    }
+
+    ownedRoot.mkdirs()
+    deleteReleaseTree(work)
+    val capturedProduct = work.resolve("product").apply { mkdirs() }
+    productFiles.forEach { (path, file) -> copyVerified(file, capturedProduct.resolve(path)) }
+    val capturedValidation = work.resolve("validation").apply { mkdirs() }
+    validationFiles.forEach { (path, file) -> copyVerified(file, capturedValidation.resolve(path)) }
+    val reconstructed = work.resolve("verified-distribution").apply { mkdirs() }
+    productFiles.keys.forEach { path -> copyVerified(capturedProduct.resolve(path), reconstructed.resolve(path)) }
+    distributionFiles.keys.forEach { path ->
+        copyVerified(capturedValidation.resolve("$distributionPrefix$path"), reconstructed.resolve(path))
+    }
+    val capturedNative = work.resolve("current-native-evidence").apply { mkdirs() }
+    nativeFiles.keys.forEach { path ->
+        copyVerified(capturedValidation.resolve("$nativePrefix$path"), capturedNative.resolve(path))
+    }
+    val importReceipt = capturedValidation.resolve(importReceiptPath).readReleaseObject()
+    val currentNativeReceipt = capturedValidation.resolve(currentNativeReceiptPath)
+    val proofFile = reconstructed.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF)
+    val proof = proofFile.readReleaseObject()
+    val receiptKeys = setOf(
+        "schemaVersion", "protocol", "result", "producerCommit", "producerTree",
+        "consumerCommit", "consumerTree", "sourceProofSha256",
+        "originalNativeEvidenceReceiptSha256", "currentNativeEvidenceReceiptSha256",
+    )
+    check(importReceipt.keys == receiptKeys && importReceipt.releaseInt("schemaVersion") == 2 &&
+        importReceipt.releaseString("protocol") == "codex-agent-ios-verified-distribution-import-v2" &&
+        importReceipt.releaseString("result") == "passed" &&
+        proofFile.releaseDigest() == importReceipt.releaseString("sourceProofSha256")) {
+        "Transported Apple SDK import receipt is invalid"
+    }
+    val (producerCommit, producerTree) = appleProofProducerIdentity(proof)
+    val consumerCommit = importReceipt.releaseString("consumerCommit")
+    val consumerTree = importReceipt.releaseString("consumerTree")
+    check(importReceipt.releaseString("producerCommit") == producerCommit &&
+        importReceipt.releaseString("producerTree") == producerTree &&
+        listOf(consumerCommit, consumerTree).all { it.matches(Regex("[0-9a-f]{40}")) }) {
+        "Transported Apple SDK producer or consumer identity mismatch"
+    }
+    val originalNativeReceipt = reconstructed.resolve(IOS_ORIGINAL_NATIVE_EVIDENCE_RECEIPT)
+    check(originalNativeReceipt.releaseDigest() ==
+        importReceipt.releaseString("originalNativeEvidenceReceiptSha256") &&
+        currentNativeReceipt.releaseDigest() ==
+        importReceipt.releaseString("currentNativeEvidenceReceiptSha256")) {
+        "Transported Apple SDK native receipt digest mismatch"
+    }
+    verifyAppleNativeEvidenceReceiptReuse(
+        originalNativeReceipt, currentNativeReceipt,
+        producerCommit, producerTree, consumerCommit, consumerTree,
+    )
+    verifyAppleVerifiedDistribution(
+        reconstructed,
+        capturedNative,
+        AppleVerifiedDistributionIdentity(
+            producerCommit,
+            producerTree,
+            version,
+            proof.releaseString("nativeProvenanceSha256"),
+            proof.releaseString("packageSwiftSha256"),
+            originalNativeReceipt.releaseDigest(),
+            proof.releaseString("sdkCompatibilitySha256"),
+        ),
+    )
+    check(sameApplePackageFiles(productFiles, product, capturedProduct) &&
+        sameApplePackageFiles(validationFiles, validation, capturedValidation)) {
+        "Transported Apple SDK inputs changed during verification"
+    }
+}
+
 private fun requireApplePackagePathWithoutSymlinks(file: File, role: String) {
     var current: File? = file.absoluteFile
     while (current != null) {
