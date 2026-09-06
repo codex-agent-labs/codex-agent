@@ -30,10 +30,22 @@ FAMILIES = ("leaf", "conversation", "agent", "host")
 AUXILIARIES = tuple(f"{family}-{suffix}.tsv" for family in FAMILIES
                     for suffix in ("executed-tests", "real-boundaries"))
 VALUE_TEST = "codex_agent_cpp_value_test"
+LOADER_TESTS = {
+    "codex_agent_native_loader_" + case for case in (
+        "embedded", "hash_mismatch", "external_component", "old_abi", "actual_abi_mismatch",
+        "wrong_abi_major", "incompatible_runtime", "wrong_contract", "wrong_target",
+        "missing_identity", "no_fallback", "missing_compatibility_sidecar", "relative_override",
+        "noncanonical_json", "reordered_json", "duplicate_json_key", "reordered_variants",
+        "duplicate_component", "duplicate_manifest", "invalid_sdk_version", "valid_sdk_prerelease",
+        "invalid_sdk_prerelease", "invalid_identity_schema", "invalid_abi_major", "invalid_abi_minor",
+        "source_aba", "snapshot_aba", "parent_symlink_library", "final_symlink_library",
+        "parent_symlink_compatibility", "final_symlink_compatibility", "zero_leaks",
+    )
+}
 REQUIRED_TESTS = {VALUE_TEST, "codex_agent_cpp_enum_test", "codex_agent_cpp_test",
                   "codex_agent_native_dispatch_generated"} | {
     f"codex_agent_cpp_{family}{suffix}_test" for family in FAMILIES for suffix in ("", "_real")
-}
+} | LOADER_TESTS
 CLASSIFIERS = ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64")
 COMPATIBILITY_RESOURCE = Path("share/CodexAgent/native/sdk-compatibility.json")
 
@@ -183,6 +195,10 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
             private_compatibility.write_bytes(compatibility_bytes)
             environment = os.environ.copy()
             environment.update({"TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)})
+            if classifier == "windows-x64":
+                # Only the private imported DLL directory is added. The source
+                # tree and installed/system runtimes cannot supply this input.
+                environment["PATH"] = str(private_sdk / "bin") + os.pathsep + environment.get("PATH", "")
             commands = (
                 ("configure.log", ["cmake", "-S", str(source), "-B", str(build),
                     "-DCMAKE_BUILD_TYPE=Release", "-DCODEX_AGENT_CPP_BUILD_TESTS=ON",

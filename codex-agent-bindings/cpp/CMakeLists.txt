@@ -138,7 +138,11 @@ if(NOT CODEX_AGENT_CPP_PACKAGE_ONLY)
         if(NOT EXISTS "${CodexAgent_C_SDK_LIBRARY}")
             message(FATAL_ERROR "CodexAgent_C_SDK_LIBRARY does not exist: ${CodexAgent_C_SDK_LIBRARY}")
         endif()
-        add_library(CodexAgentC UNKNOWN IMPORTED)
+        if(WIN32)
+            add_library(CodexAgentC SHARED IMPORTED)
+        else()
+            add_library(CodexAgentC UNKNOWN IMPORTED)
+        endif()
         add_library(CodexAgent::C ALIAS CodexAgentC)
         set_target_properties(
             CodexAgentC
@@ -146,6 +150,13 @@ if(NOT CODEX_AGENT_CPP_PACKAGE_ONLY)
                 IMPORTED_LOCATION "${CodexAgent_C_SDK_LIBRARY}"
                 INTERFACE_INCLUDE_DIRECTORIES "${CodexAgent_C_SDK_INCLUDE_DIR}"
         )
+        if(WIN32)
+            if(MSVC)
+                set_property(TARGET CodexAgentC PROPERTY IMPORTED_IMPLIB "${CODEX_AGENT_C_SDK_MSVC_IMPORT}")
+            else()
+                set_property(TARGET CodexAgentC PROPERTY IMPORTED_IMPLIB "${CODEX_AGENT_C_SDK_GNU_IMPORT}")
+            endif()
+        endif()
     endif()
 endif()
 

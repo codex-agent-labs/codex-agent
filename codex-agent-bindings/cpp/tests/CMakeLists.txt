@@ -118,14 +118,12 @@ foreach(mode noncanonical-json reordered-json duplicate-json-key reordered-varia
     add_test(NAME codex_agent_native_loader_${test_suffix} COMMAND codex_agent_native_loader_test
         $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" "${mode}")
 endforeach()
-if(NOT WIN32)
-    foreach(mode parent-symlink-library final-symlink-library
-            parent-symlink-compatibility final-symlink-compatibility)
-        string(REPLACE "-" "_" test_suffix "${mode}")
-        add_test(NAME codex_agent_native_loader_${test_suffix} COMMAND codex_agent_native_loader_test
-            $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" "${mode}")
-    endforeach()
-endif()
+foreach(mode parent-symlink-library final-symlink-library
+        parent-symlink-compatibility final-symlink-compatibility)
+    string(REPLACE "-" "_" test_suffix "${mode}")
+    add_test(NAME codex_agent_native_loader_${test_suffix} COMMAND codex_agent_native_loader_test
+        $<TARGET_FILE:codex_agent_loader_valid> "${CODEX_AGENT_LOADER_COMPATIBILITY}" "${mode}")
+endforeach()
 add_test(NAME codex_agent_native_loader_zero_leaks COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_loader_cleanup.py"
     $<TARGET_FILE:codex_agent_native_loader_test>
@@ -159,10 +157,10 @@ target_link_libraries(
 target_compile_definitions(codex_agent_cpp_test PRIVATE CODEX_AGENT_CPP_STATIC_TEST_DISPATCH)
 if(MSVC)
     target_compile_options(codex_agent_mock PRIVATE /W4 /WX)
-    target_compile_options(codex_agent_cpp_test PRIVATE /W4 /WX)
+    target_compile_options(codex_agent_cpp_test PRIVATE /W4 /WX /UNDEBUG)
 else()
     target_compile_options(codex_agent_mock PRIVATE -Wall -Wextra -Wpedantic -Werror)
-    target_compile_options(codex_agent_cpp_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(codex_agent_cpp_test PRIVATE -Wall -Wextra -Wpedantic -Werror -UNDEBUG)
 endif()
 add_test(NAME codex_agent_cpp_test COMMAND codex_agent_cpp_test)
 
@@ -417,3 +415,12 @@ set_tests_properties(
     codex_agent_cpp_value_test
     PROPERTIES DEPENDS "codex_agent_cpp_leaf_test;codex_agent_cpp_leaf_real_test;codex_agent_cpp_conversation_test;codex_agent_cpp_conversation_real_test;codex_agent_cpp_agent_test;codex_agent_cpp_agent_real_test;codex_agent_cpp_host_test;codex_agent_cpp_host_real_test"
 )
+
+# Static test dispatch must resolve the real mock definitions, not the imported
+# DLL's __imp_ symbols. This is confined to the five mock-linked test consumers.
+if(WIN32)
+    foreach(consumer codex_agent_cpp_test codex_agent_cpp_conversation_test
+            codex_agent_cpp_agent_test codex_agent_cpp_host_test codex_agent_cpp_leaf_test)
+        target_compile_definitions(${consumer} PRIVATE CODEX_AGENT_BUILD)
+    endforeach()
+endif()

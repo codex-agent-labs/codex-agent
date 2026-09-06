@@ -2,6 +2,8 @@
 
 import importlib.util
 import io
+import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -38,6 +40,7 @@ class ProducerTest(unittest.TestCase):
         self.library = self.write(self.sdk / "lib/libcodex_agent.dylib", "explicit native")
         self.output = self.root / "outputs/raw"
         self.calls = []
+        self.environments = []
         self.mutation = lambda evidence, build: None
         for field, value in (("ROOT", self.source), ("CHECKOUT", self.checkout)):
             patcher = mock.patch.object(producer, field, value)
@@ -57,6 +60,7 @@ class ProducerTest(unittest.TestCase):
 
     def execute(self, command, *, cwd, env, stdout, stderr, check):
         self.calls.append(command)
+        self.environments.append(env.copy())
         self.assertTrue(check)
         self.assertEqual(stderr, subprocess.STDOUT)
         self.assertNotEqual(cwd, self.source)
@@ -90,7 +94,7 @@ class ProducerTest(unittest.TestCase):
             self.assertEqual(evidence / "imported-c-sdk", private)
             self.assertEqual(self.compatibility.read_bytes(), (private / producer.COMPATIBILITY_RESOURCE).read_bytes())
             self.assertEqual(self.header.read_bytes(), (private / "include/codex_agent.h").read_bytes())
-            self.assertEqual(self.library.read_bytes(), (private / "lib/libcodex_agent.dylib").read_bytes())
+            self.assertEqual(self.library.read_bytes(), (private / self.library.relative_to(self.sdk)).read_bytes())
         return subprocess.CompletedProcess(command, 0)
 
     def produce(self, **kwargs):
@@ -195,6 +199,36 @@ class ProducerTest(unittest.TestCase):
             self.produce(classifier="host")
         self.assertEqual(self.calls, [])
 
+    def test_windows_commands_use_private_imported_dll_directory_without_copying_into_build(self):
+        self.library = self.write(self.sdk / "bin/codex_agent.dll", "explicit Windows native")
+        imports = [self.write(self.sdk / name, "explicit import library")
+                   for name in ("lib/codex_agent.lib", "lib/libcodex_agent.dll.a")]
+        before = {path.relative_to(self.sdk): path.read_bytes() for path in self.sdk.rglob("*") if path.is_file()}
+        with mock.patch.dict(os.environ, {"PATH": "original-tool-path"}):
+            self.produce(classifier="windows-x64")
+        self.assertEqual(4, len(self.calls))
+        private = Path(next(arg.split("=", 1)[1] for arg in self.calls[0]
+                            if arg.startswith("-DCodexAgent_C_SDK_ROOT=")))
+        for environment in self.environments:
+            self.assertEqual(str(private / "bin") + os.pathsep + "original-tool-path", environment["PATH"])
+        self.assertFalse((self.output / "build/tests/codex_agent.dll").exists())
+        self.assertEqual(before, {path.relative_to(self.sdk): path.read_bytes()
+                                  for path in self.sdk.rglob("*") if path.is_file()})
+        for original in [self.library, *imports]:
+            self.assertEqual(original.read_bytes(),
+                             (self.output / "imported-c-sdk" / original.relative_to(self.sdk)).read_bytes())
+
+    def test_each_existing_loader_case_is_required_without_skipping(self):
+        self.assertEqual(32, len(producer.LOADER_TESTS))
+        for name in sorted(producer.LOADER_TESTS):
+            with self.subTest(name=name):
+                def omit(evidence, build):
+                    self.junit(evidence / "ctest-suite.xml", producer.REQUIRED_TESTS - {producer.VALUE_TEST, name})
+                self.mutation = omit
+                with self.assertRaisesRegex(ValueError, "omits an existing capability/native proof"):
+                    self.produce()
+                self.assertFalse(self.output.exists())
+
     def test_output_scope_and_symbolic_inputs_fail_before_deletion(self):
         for output in (self.root, self.checkout, self.source, self.source / "tests/destroy",
                        self.api.parent, self.sdk / "result", self.checkout / "unowned", Path.home()):
@@ -290,12 +324,59 @@ class ProducerTest(unittest.TestCase):
         cmake = (SCRIPT.parents[1] / "tests/CMakeLists.txt").read_text()
         self.assertIn("if(NOT DEFINED CODEX_AGENT_CPP_INSTALL_PACKAGE OR CODEX_AGENT_CPP_INSTALL_PACKAGE)", cmake)
         self.assertIn("NAME codex_agent_cpp_installed_package_tamper", cmake)
-        for name in producer.REQUIRED_TESTS:
-            self.assertIn(name, cmake)
+        names = set(re.findall(r"\bNAME\s+(codex_agent_\w+)\s", cmake))
+        for modes in re.findall(r"foreach\(mode\s+([^)]*)\)", cmake):
+            names.update("codex_agent_native_loader_" + mode.replace("-", "_") for mode in modes.split())
+        self.assertEqual(producer.REQUIRED_TESTS,
+                         names - {"codex_agent_cpp_installed_package_tamper"})
+        self.assertNotIn("if(NOT WIN32)", cmake)
         full = (SCRIPT.parents[1] / "tests/value_parity_test.cpp").read_text()
         self.assertIn('require(all_claims.size() == 556', full)
         self.assertIn('"executed evidence is incomplete"', full)
         self.assertIn('"compiler evidence is incomplete"', full)
+
+    def test_windows_import_mock_and_release_assertion_wiring_is_scoped(self):
+        # Source contract only; real generated links and host execution remain separate gates.
+        root = SCRIPT.parents[1]
+        source = (root / "CMakeLists.txt").read_text()
+        installed = (root / "cmake/CodexAgentConfig.cmake.in").read_text()
+        for text, target in ((source, "CodexAgentC"), (installed, "CodexAgent::C")):
+            self.assertIn(f"if(WIN32)\n", text)
+            self.assertIn(f"add_library({target} SHARED IMPORTED)", text)
+            self.assertIn(f"add_library({target} UNKNOWN IMPORTED)", text)
+            self.assertIn(f"set_property(TARGET {target} PROPERTY IMPORTED_IMPLIB", text)
+        self.assertIn('"${CODEX_AGENT_C_SDK_MSVC_IMPORT}"', source)
+        self.assertIn('"${CODEX_AGENT_C_SDK_GNU_IMPORT}"', source)
+        tests = (root / "tests/CMakeLists.txt").read_text()
+        consumers = re.search(r"foreach\(consumer\s+([^)]*)\)", tests).group(1).split()
+        self.assertEqual({"codex_agent_cpp_test", *(f"codex_agent_cpp_{family}_test"
+                                                  for family in producer.FAMILIES)}, set(consumers))
+        self.assertIn("target_compile_definitions(${consumer} PRIVATE CODEX_AGENT_BUILD)", tests)
+        self.assertIn("target_compile_options(codex_agent_cpp_test PRIVATE /W4 /WX /UNDEBUG)", tests)
+        self.assertIn("target_compile_options(codex_agent_cpp_test PRIVATE -Wall -Wextra -Wpedantic -Werror -UNDEBUG)", tests)
+        wrapper = (root / "tests/wrapper_test.cpp").read_text()
+        self.assertIn("assert(host_terminal)", wrapper)
+        self.assertIn("assert(host_events == 3)", wrapper)
+
+    def test_loader_symlink_setup_must_finish_before_rejection_can_pass(self):
+        # Compiler-free control-flow regression; actual filesystem/loader proof
+        # remains mandatory on every host, including Windows privilege failures.
+        source = (SCRIPT.parents[1] / "tests/native_loader_test.cpp").read_text()
+        self.assertIn("bool hostile_link_prepared = false;", source)
+        assignments = re.findall(
+            r"std::filesystem::create_(?:directory_)?symlink\([^;]+\);\s*"
+            r"hostile_link_prepared = true;\s*return resolved\(", source,
+        )
+        self.assertEqual(4, len(assignments))
+        self.assertEqual(4, source.count("hostile_link_prepared = true;"))
+        main = source[source.index("int main("):]
+        for mode in ("parent-symlink-library", "final-symlink-library",
+                     "parent-symlink-compatibility", "final-symlink-compatibility"):
+            self.assertIn(f'mode == "{mode}"', main)
+        self.assertIn("hostile_link_prepared);", main)
+        failure = main[main.index("} catch (const std::exception& error) {"):]
+        self.assertRegex(failure, r"if \(symlink_mode && !hostile_link_prepared\)\s*\{[^}]+return 1;")
+        self.assertLess(failure.index("if (symlink_mode"), failure.index("return 0;"))
 
 
 if __name__ == "__main__":

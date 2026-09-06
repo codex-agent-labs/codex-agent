@@ -92,7 +92,11 @@ if(NOT TARGET CodexAgent::Loader)
 endif()
 
 if(NOT TARGET CodexAgent::C)
-    add_library(CodexAgent::C UNKNOWN IMPORTED)
+    if(WIN32)
+        add_library(CodexAgent::C SHARED IMPORTED)
+    else()
+        add_library(CodexAgent::C UNKNOWN IMPORTED)
+    endif()
     set_target_properties(
         CodexAgent::C
         PROPERTIES

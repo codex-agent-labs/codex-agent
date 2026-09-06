@@ -137,7 +137,8 @@ int execute(
     const std::filesystem::path& library,
     const std::filesystem::path& compatibility,
     std::string_view mode,
-    const std::filesystem::path* external) {
+    const std::filesystem::path* external,
+    bool& hostile_link_prepared) {
     TemporaryDirectory temporary;
     if (mode == "parent-symlink-library" || mode == "final-symlink-library") {
         const auto real = temporary.path / "real";
@@ -147,10 +148,12 @@ int execute(
         if (mode == "parent-symlink-library") {
             const auto alias = temporary.path / "alias";
             std::filesystem::create_directory_symlink(real, alias);
+            hostile_link_prepared = true;
             return resolved(alias / library.filename(), compatibility, nullptr);
         }
         const auto alias = temporary.path / library.filename();
         std::filesystem::create_symlink(copy, alias);
+        hostile_link_prepared = true;
         return resolved(alias, compatibility, nullptr);
     }
     if (mode == "parent-symlink-compatibility" || mode == "final-symlink-compatibility") {
@@ -161,10 +164,12 @@ int execute(
         if (mode == "parent-symlink-compatibility") {
             const auto alias = temporary.path / "alias";
             std::filesystem::create_directory_symlink(real, alias);
+            hostile_link_prepared = true;
             return resolved(library, alias / compatibility.filename(), nullptr);
         }
         const auto alias = temporary.path / compatibility.filename();
         std::filesystem::create_symlink(copy, alias);
+        hostile_link_prepared = true;
         return resolved(library, alias, nullptr);
     }
     if (mode == "snapshot-aba") {
@@ -231,15 +236,23 @@ int main(int argc, char** argv) {
     const auto mode = std::string_view(argv[3]);
     const auto expect_success = mode == "success" || mode == "external-component" ||
         mode == "valid-sdk-prerelease" || mode == "snapshot-aba";
+    const auto symlink_mode = mode == "parent-symlink-library" || mode == "final-symlink-library" ||
+        mode == "parent-symlink-compatibility" || mode == "final-symlink-compatibility";
+    bool hostile_link_prepared = false;
     const std::filesystem::path external = argc == 5 ? argv[4] : "";
     try {
-        const auto result = execute(argv[1], argv[2], mode, argc == 5 ? &external : nullptr);
+        const auto result = execute(argv[1], argv[2], mode, argc == 5 ? &external : nullptr,
+                                    hostile_link_prepared);
         if (!expect_success) {
             std::cerr << "loader unexpectedly accepted incompatible input\n";
             return 1;
         }
         return result;
     } catch (const std::exception& error) {
+        if (symlink_mode && !hostile_link_prepared) {
+            std::cerr << "hostile link fixture setup failed: " << error.what() << '\n';
+            return 1;
+        }
         if (expect_success) {
             std::cerr << error.what() << '\n';
             return 1;
