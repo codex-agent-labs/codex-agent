@@ -65,6 +65,25 @@ val desktopManifest = readDesktopCodexManifest(desktopManifestFile.asFile)
 val localArchiveDirectory = providers.gradleProperty("codexAgent.desktopArchiveDirectory")
 val importedClassifierDirectory = providers.gradleProperty("codexAgent.desktopClassifierDirectory")
 val importedRuntimeBinaryStage = providers.gradleProperty("codexAgent.runtimeBinaryStage").map(::file)
+val importedRuntimeBinaryVersion = providers.provider {
+    val originalVersion = gradle.startParameter.projectProperties["codexAgent.runtimeBinaryVersion"]
+    require(!originalVersion.isNullOrBlank()) {
+        "Imported Runtime binary requires explicit -PcodexAgent.runtimeBinaryVersion"
+    }
+    require(runtimeCompatibilityVersion(originalVersion) == runtimeCompatibilityVersion(runtimeProductVersion.get())) {
+        "Imported Runtime binary version must use the current Runtime compatibility line"
+    }
+    originalVersion
+}
+extensions.extraProperties["codexAgent.runtimeBinaryVersion"] = importedRuntimeBinaryVersion
+if (providers.gradleProperty("codexAgent.product").orNull == "runtime" &&
+    providers.gradleProperty("codexAgent.phase").orNull == "package"
+) {
+    require(!gradle.startParameter.projectProperties["codexAgent.runtimeBinaryStage"].isNullOrBlank()) {
+        "Runtime package phase requires explicit -PcodexAgent.runtimeBinaryStage"
+    }
+    importedRuntimeBinaryVersion.get()
+}
 val importedRuntimePackageStage = providers.gradleProperty("codexAgent.runtimePackageStage").map(::file)
 val importedRuntimeNativePackageStage = providers.gradleProperty("codexAgent.runtimeNativePackageStage").map(::file)
 val supervisorDirectory = providers.gradleProperty("codexAgent.desktopSupervisorDirectory")
@@ -546,7 +565,7 @@ val runtimeNativeBinaryManifestTasks = desktopManifest.distributions.associate {
         providers.provider { component },
         "binary",
         providers.provider { component },
-        runtimeProductVersion,
+        importedRuntimeBinaryVersion,
         importedBinarySnapshotRoot,
         runtimeProductTooling,
         repositoryRootFile,
@@ -911,7 +930,7 @@ val verifyImportedJvmRuntimeBinaryOutputManifest = registerRuntimeOutputVerifica
     providers.provider { "jvm" },
     "binary",
     providers.provider { "jvm" },
-    runtimeProductVersion,
+    importedRuntimeBinaryVersion,
     importedJvmRuntimeBinarySnapshotRoot,
     runtimeProductTooling,
     repositoryRootFile,

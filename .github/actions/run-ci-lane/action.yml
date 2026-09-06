@@ -389,11 +389,13 @@ runs:
             --stacktrace
           binary=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/$component/binary
           test -f "$binary/output-manifest.json"
+          binary_version=$(python3 -c 'from pathlib import Path; from ci.products.inventory import load_canonical_json; import sys; print(load_canonical_json(Path(sys.argv[1]))["productVersion"])' "$binary/output-manifest.json")
           ./gradlew ciProductPhase \
             -PcodexAgent.product=runtime \
             -PcodexAgent.component="$component" \
             -PcodexAgent.phase=package \
             -PcodexAgent.runtimeBinaryStage="$binary" \
+            -PcodexAgent.runtimeBinaryVersion="$binary_version" \
             -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
             -PcodexAgent.candidateTree="$VALIDATION_TREE" \
             --stacktrace
@@ -503,11 +505,13 @@ runs:
             --source "$binary" --destination "$canonical"
           binary=$canonical
         fi
+        binary_version=$(python3 -c 'from pathlib import Path; from ci.products.inventory import load_canonical_json; import sys; print(load_canonical_json(Path(sys.argv[1]))["productVersion"])' "$binary/output-manifest.json")
         ./gradlew ciProductPhase \
           -PcodexAgent.product=runtime \
           -PcodexAgent.component="$component" \
           -PcodexAgent.phase=package \
           -PcodexAgent.runtimeBinaryStage="$binary" \
+          -PcodexAgent.runtimeBinaryVersion="$binary_version" \
           -PcodexAgent.candidateCommit="$VALIDATION_COMMIT" \
           -PcodexAgent.candidateTree="$VALIDATION_TREE" \
           --stacktrace

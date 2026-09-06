@@ -22,6 +22,9 @@ val productTooling = layout.dir(providers.provider { repositoryRootFile.resolve(
 val repositoryRootDirectory = layout.dir(providers.provider { repositoryRootFile })
 val runtimeProductTooling = files(productTooling)
 val runtimeProductVersion = providers.provider { project.version.toString() }
+@Suppress("UNCHECKED_CAST")
+val importedRuntimeBinaryVersion =
+    project.extra["codexAgent.runtimeBinaryVersion"] as Provider<String>
 val importedRuntimeValidationHandoff =
     providers.gradleProperty("codexAgent.runtimeValidationHandoff").map(::file)
 val importedRuntimeMavenRepository =
@@ -240,7 +243,7 @@ val verifyImportedNodeJsRuntimeBinaryOutputManifest =
         providers.provider { "node-js" },
         "binary",
         providers.provider { "node-js" },
-        runtimeProductVersion,
+        importedRuntimeBinaryVersion,
         importedNodeJsRuntimeBinarySnapshotRoot,
         runtimeProductTooling,
         repositoryRootFile,
@@ -304,7 +307,7 @@ val verifyImportedNodeWasmRuntimeBinaryOutputManifest =
         providers.provider { "node-wasm" },
         "binary",
         providers.provider { "node-wasm" },
-        runtimeProductVersion,
+        importedRuntimeBinaryVersion,
         importedNodeWasmRuntimeBinarySnapshotRoot,
         runtimeProductTooling,
         repositoryRootFile,

@@ -139,11 +139,13 @@ case "$lane" in
         -PcodexAgent.candidateCommit="$commit" \
         -PcodexAgent.candidateTree="$tree"
       runtime_binary=$PWD/codex-agent-runtime-desktop/build/product-stage/runtime/node-js/binary
+      runtime_binary_version=$(python3 -c 'from pathlib import Path; from ci.products.inventory import load_canonical_json; import sys; print(load_canonical_json(Path(sys.argv[1]))["productVersion"])' "$runtime_binary/output-manifest.json")
       runtime_gradle node-js ciProductPhase \
         -PcodexAgent.product=runtime \
         -PcodexAgent.component=node-js \
         -PcodexAgent.phase=package \
         -PcodexAgent.runtimeBinaryStage="$runtime_binary" \
+        -PcodexAgent.runtimeBinaryVersion="$runtime_binary_version" \
         -PcodexAgent.candidateCommit="$commit" \
         -PcodexAgent.candidateTree="$tree"
       runtime_gradle node-js :codex-agent-runtime-desktop:writeNodeJsBindingValidationOutputManifest \

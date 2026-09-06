@@ -58,6 +58,28 @@ from validation_reuse import (  # noqa: E402
 
 
 class RunLaneContractTest(unittest.TestCase):
+    def test_runtime_package_callers_forward_original_manifest_version(self):
+        sources = ((CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml", 2),
+                   (CI_ROOT / "run-lane.sh", 1))
+        for path, count in sources:
+            source = path.read_text()
+            self.assertEqual(count, source.count("-PcodexAgent.runtimeBinaryStage="))
+            self.assertEqual(count, source.count("-PcodexAgent.runtimeBinaryVersion="))
+            extracts = re.findall(r"python3 -c '([^']*load_canonical_json[^']*)'", source)
+            self.assertEqual(count, len(extracts))
+            with tempfile.TemporaryDirectory() as temporary:
+                manifest = Path(temporary) / "output-manifest.json"
+                manifest.write_text('{"productVersion":"0.2.0"}\n')
+                for script in extracts:
+                    result = subprocess.run([sys.executable, "-B", "-c", script, str(manifest)],
+                                            cwd=CI_ROOT.parent, text=True, capture_output=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual("0.2.0\n", result.stdout)
+                manifest.write_text('{"productVersion":"0.2.0","productVersion":"0.2.1"}\n')
+                result = subprocess.run([sys.executable, "-B", "-c", extracts[0], str(manifest)],
+                                        cwd=CI_ROOT.parent, text=True, capture_output=True)
+                self.assertNotEqual(0, result.returncode)
+
     def test_contract_binary_is_finalized_only_from_the_elected_phase_plan(self) -> None:
         action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(
             encoding="utf-8"
