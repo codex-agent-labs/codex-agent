@@ -394,6 +394,86 @@ class NativeRuntimeReleaseReuseTest(unittest.TestCase):
                 self.receipt_paths["metadata"].write_bytes(original_metadata)
         self.assertEqual(original_metadata, self.receipt_paths["metadata"].read_bytes())
 
+    def alternative_policy(self, root: Path):
+        private, public, development = generate_development_key(root / "key")
+        signing = {**development, "trustDomain": "release", "keyId": self.release_signing["keyId"]}
+        keys = root / "public-keys"
+        keys.mkdir()
+        (keys / f"{signing['keyId']}.pub").write_bytes(public.read_bytes())
+        keyring = root / "keyring.json"
+        write_canonical_json(keyring, {
+            "schemaVersion": 1, "namespace": signing["namespace"], "algorithm": signing["algorithm"],
+            "trustDomain": "release", "activeKey": {
+                "keyId": signing["keyId"], "fingerprint": signing["fingerprint"],
+            }, "retiredKeys": [],
+        })
+        return private, public, signing, keyring, keys
+
+    def test_catalog_policy_swap_rejects_independently_valid_other_key_attestation(self) -> None:
+        originals = {path: path.read_bytes() for path in (*self.receipt_paths.values(), self.variant)}
+        with tempfile.TemporaryDirectory(prefix="native-unrelated-policy-") as temporary:
+            root = Path(temporary).resolve()
+            private, public, signing, keyring, keys = self.alternative_policy(root)
+            attestation_root = root / "attestation"
+            build_runtime_variant_attestation(
+                self.variant, *(self.receipt_paths[phase] for phase in PHASES), self.validation_evidence,
+                signing, private, public, attestation_root, keyring=keyring, keys_directory=keys)
+            attestation, signature = _attestation_paths(self.variant, attestation_root)
+            # B is independently valid for the exact original product/receipts.
+            # Only the A-signed catalog prevents its use in this lookup session.
+            release_attested_runtime_variant_admission(
+                IndexEntrySource(self.receipt_paths["binary"].read_bytes(),
+                                 self.receipts["binary"]["outputs"][0]["relativePath"]),
+                payload=self.variant,
+                **{f"{phase}_receipt": path for phase, path in self.receipt_paths.items()},
+                validation_evidence=self.validation_evidence, attestation=attestation, signature=signature,
+                public_key=public, keyring=keyring, keys_directory=keys)
+            runtime = {**self.runtime_evidence, "attestation": str(attestation),
+                       "attestationSignature": str(signature), "publicKey": str(public)}
+            evidence = {self.validation_digest: ({}, runtime)}
+            sessions = {phase: self.session(evidence) for phase in PHASES}
+            caller_public = self.release_keys / f"{self.release_signing['keyId']}.pub"
+            original_policy, original_public = self.keyring.read_bytes(), caller_public.read_bytes()
+            try:
+                self.keyring.write_bytes(keyring.read_bytes())
+                caller_public.write_bytes(public.read_bytes())
+                for phase, session in sessions.items():
+                    with self.subTest(phase=phase), self.assertRaises(ReuseLookupError):
+                        session.lookup("promoted-main", self.receipts[phase])
+            finally:
+                self.keyring.write_bytes(original_policy)
+                caller_public.write_bytes(original_public)
+        self.assertEqual(originals, {path: path.read_bytes() for path in originals})
+
+    def test_late_policy_change_cannot_replace_private_native_admission_policy(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="native-late-policy-") as temporary:
+            _, public, _, keyring, _ = self.alternative_policy(Path(temporary).resolve())
+            caller_public = self.release_keys / f"{self.release_signing['keyId']}.pub"
+            original_policy, original_public = self.keyring.read_bytes(), caller_public.read_bytes()
+
+            def late_swap(source, **arguments):
+                self.assertNotEqual(self.keyring, arguments["keyring"])
+                self.assertNotEqual(self.release_keys, arguments["keys_directory"])
+                self.assertEqual(original_policy, arguments["keyring"].read_bytes())
+                self.assertEqual(original_public, (
+                    arguments["keys_directory"] / caller_public.name).read_bytes())
+                try:
+                    self.keyring.write_bytes(keyring.read_bytes())
+                    caller_public.write_bytes(public.read_bytes())
+                    return release_attested_runtime_variant_admission(source, **arguments)
+                finally:
+                    self.keyring.write_bytes(original_policy)
+                    caller_public.write_bytes(original_public)
+
+            session = self.session()
+            with mock.patch.object(reuse_module, "release_attested_runtime_variant_admission",
+                                   side_effect=late_swap) as gate:
+                result = session.lookup("promoted-main", self.receipts["binary"])
+            gate.assert_called_once()
+            self.assertEqual(self.receipt_paths["binary"].read_bytes(), result.envelope["receiptBytes"])
+            self.assertEqual(original_policy, self.keyring.read_bytes())
+            self.assertEqual(original_public, caller_public.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

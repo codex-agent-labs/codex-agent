@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 import re
 import tempfile
@@ -155,6 +156,35 @@ class _RemoteCandidate:
     object_path: Path | None
     index_sha256: str
     catalog: RemoteCatalog
+
+
+@contextmanager
+def _captured_release_candidate(candidate: _RemoteCandidate):
+    """One caller policy authenticates both the original index and its evidence."""
+    from .sdk_inputs import _copy_file
+    from .signatures import load_keyring, public_key_path
+
+    catalog = candidate.catalog
+    if catalog.keyring is None or catalog.keys_directory is None:
+        raise ValueError("Release reuse requires caller-pinned catalog keys")
+    with tempfile.TemporaryDirectory(prefix="release-catalog-policy-") as temporary:
+        root = Path(temporary).resolve()
+        keyring, keys = root / "keyring.json", root / "keys"
+        _copy_file(catalog.keyring, keyring)
+        keys.mkdir()
+        policy = load_keyring(keyring, catalog.keys_directory)
+        for record in ([policy["activeKey"]] if policy["activeKey"] else []) + policy["retiredKeys"]:
+            name = record["keyId"]
+            _copy_file(public_key_path(catalog.keys_directory, name), keys / f"{name}.pub")
+        manifest, signature = root / "product-index.json", root / "product-index.sig"
+        _copy_file(catalog.manifest, manifest)
+        _copy_file(catalog.signature, signature)
+        index, index_bytes = verify_release_product_index(
+            SignedProductIndex(manifest, signature), keyring_path=keyring, keys_directory=keys)
+        if sha256_bytes(index_bytes) != candidate.index_sha256:
+            raise ValueError("Release product index changed during reuse")
+        yield replace(candidate, catalog=replace(catalog, manifest=manifest, signature=signature,
+                                                keyring=keyring, keys_directory=keys)), index
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,14 +514,15 @@ class LookupSession:
                         and envelope["receipt"]["trustDomain"] == "development"
                     ):
                         raise ValueError("Restored receipt trust does not match its product index source")
-                    if (identity.product, identity.component, identity.target) == ("contract", "contract", "common"):
-                        self._verify_release_attested_contract(path, envelope, candidate)
-                    elif identity.product == "runtime" and identity.component == identity.target in NATIVE_TARGETS:
-                        self._verify_release_attested_native_runtime(envelope, candidate)
-                    elif identity == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"):
-                        self._verify_release_attested_runtime_aggregate(envelope, candidate)
-                    else:
-                        raise ValueError("Restored receipt trust does not match its product index source")
+                    with _captured_release_candidate(candidate) as (captured, index):
+                        if (identity.product, identity.component, identity.target) == ("contract", "contract", "common"):
+                            self._verify_release_attested_contract(path, envelope, captured, index)
+                        elif identity.product == "runtime" and identity.component == identity.target in NATIVE_TARGETS:
+                            self._verify_release_attested_native_runtime(envelope, captured, index)
+                        elif identity == PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"):
+                            self._verify_release_attested_runtime_aggregate(envelope, captured)
+                        else:
+                            raise ValueError("Restored receipt trust does not match its product index source")
                 if identity.product == "contract" and identity.phase in {"binary", "metadata"} and self._restore_root is not None:
                     self._restore_contract_stage(path, envelope)
             except (CacheObjectError, OSError, TypeError, ValueError) as error:
@@ -504,16 +535,15 @@ class LookupSession:
             })
         return _LookupResult(None, "artifact-unavailable")
 
-    def _verify_release_attested_native_runtime(self, envelope, candidate):
+    def _verify_release_attested_native_runtime(self, envelope, candidate, index):
         from .c_abi import TARGET_SPECS
 
         catalog = candidate.catalog
         if catalog.keyring is None or catalog.keys_directory is None:
             raise ValueError("Release native Runtime reuse requires caller-pinned catalog keys")
         receipt = envelope["receipt"]
-        metadata_entries = [item.entry for catalogs in self._remote.values() for candidates in catalogs.values()
-                            for item in candidates if item.catalog is catalog and
-                            _identity(item.entry) == PhaseInstanceId("runtime", receipt["target"], "metadata", receipt["target"])]
+        metadata_entries = [entry for entry in index["entries"] if
+                            _identity(entry) == PhaseInstanceId("runtime", receipt["target"], "metadata", receipt["target"])]
         if len(metadata_entries) != 1:
             raise ValueError("Release native Runtime reuse requires its indexed metadata receipt")
         matches = []
@@ -555,7 +585,6 @@ class LookupSession:
 
     def _verify_release_attested_runtime_aggregate(self, envelope, candidate):
         from .sdk_inputs import _copy_file
-        from .signatures import load_keyring, public_key_path
 
         catalog = candidate.catalog
         if catalog.keyring is None or catalog.keys_directory is None:
@@ -586,18 +615,7 @@ class LookupSession:
 
             metadata = root / "selected-metadata.json"
             metadata.write_bytes(envelope["receiptBytes"])
-            keyring = capture(catalog.keyring)
-            keys = root / "caller-keys"
-            keys.mkdir()
-            policy = load_keyring(keyring, catalog.keys_directory)
-            for record in ([policy["activeKey"]] if policy["activeKey"] else []) + policy["retiredKeys"]:
-                name = record["keyId"]
-                _copy_file(public_key_path(catalog.keys_directory, name), keys / f"{name}.pub")
-            _, index_bytes = verify_release_product_index(
-                SignedProductIndex(capture(catalog.manifest), capture(catalog.signature)),
-                keyring_path=keyring, keys_directory=keys)
-            if sha256_bytes(index_bytes) != candidate.index_sha256:
-                raise ValueError("Release Runtime aggregate index changed during reuse")
+            keyring, keys = catalog.keyring, catalog.keys_directory
             release_attested_runtime_aggregate_admission(
                 IndexEntrySource(envelope["receiptBytes"], candidate.entry["artifactName"]),
                 manifest=capture(matched["aggregate_manifest"]), metadata_receipt=metadata,
@@ -620,6 +638,7 @@ class LookupSession:
         archive: Path,
         envelope: dict[str, Any],
         candidate: _RemoteCandidate,
+        index: dict[str, Any],
     ) -> None:
         catalog = candidate.catalog
         if (
@@ -632,12 +651,6 @@ class LookupSession:
             raise ValueError("Release Contract reuse lacks its detached release attestation")
         metadata = envelope
         if envelope["receipt"]["phase"] != "metadata":
-            index, contents = verify_release_product_index(
-                SignedProductIndex(catalog.manifest, catalog.signature),
-                keyring_path=catalog.keyring, keys_directory=catalog.keys_directory,
-            )
-            if sha256_bytes(contents) != candidate.index_sha256:
-                raise ValueError("Release Contract index changed during reuse")
             entries = [entry for entry in index["entries"] if (
                 entry["product"], entry["component"], entry["phase"], entry["target"], entry["productVersion"]
             ) == ("contract", "contract", "metadata", "common", envelope["receipt"]["productVersion"])]

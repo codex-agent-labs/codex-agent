@@ -17,9 +17,18 @@ from unittest.mock import patch
 import ci.products.reuse as reuse_module
 from ci.products.contract_attestation import build_contract_attestation
 from ci.products.index import (
-    IndexEntrySource, release_attested_runtime_aggregate_admission, write_signed_product_index,
+    IndexEntrySource,
+    SignedProductIndex,
+    release_attested_runtime_aggregate_admission,
+    verify_release_product_index,
+    write_signed_product_index,
 )
-from ci.products.inventory import load_canonical_json_bytes, sha256_file, write_canonical_json
+from ci.products.inventory import (
+    load_canonical_json_bytes,
+    regular_file_inventory,
+    sha256_file,
+    write_canonical_json,
+)
 from ci.products.restore import store_local_object
 from ci.products.reuse import LookupSession, RemoteCatalog, ReuseLookupError
 from ci.products.runtime_aggregate import build_runtime_aggregate_attestation, validate_runtime_aggregate_attestation
@@ -39,9 +48,12 @@ class AggregateReleaseReuseTest(unittest.TestCase):
         context, contract, variants, adapters = (chain[name] for name in ("context", "contract", "variants", "adapters"))
         cls.repository = context["producer"]["repository"]
         signing = {**context["signing"], "trustDomain": "release", "keyId": "aggregate-test-key"}
+        cls.signing = signing
         cls.keys = cls.root / "caller-keys"
         cls.keys.mkdir()
         (cls.keys / "aggregate-test-key.pub").write_bytes(context["public_key"].read_bytes())
+        cls.private_marker = cls.keys / "caller-private-marker"
+        cls.private_marker.write_bytes(b"must remain external\n")
         cls.keyring = cls.root / "caller-keyring.json"
         write_canonical_json(cls.keyring, {
             "schemaVersion": 1, "namespace": signing["namespace"], "algorithm": signing["algorithm"],
@@ -110,9 +122,10 @@ class AggregateReleaseReuseTest(unittest.TestCase):
             attestation=cls.inputs["aggregate_attestation"], signature=cls.inputs["aggregate_attestation_signature"],
             public_key=context["public_key"], **variant_inputs, adapter_receipts=adapters["adapter_receipts"],
             keyring=cls.keyring, keys_directory=cls.keys, variant_keyring=cls.keyring, variant_keys_directory=cls.keys)
+        cls.index_source = IndexEntrySource(cls.raw, source.artifact_path, admission)
         cls.manifest = cls.root / "product-index.json"
         write_signed_product_index(
-            [IndexEntrySource(cls.raw, source.artifact_path, admission)], repository=cls.repository,
+            [cls.index_source], repository=cls.repository,
             context={"kind": "promoted-main", "commit": "c" * 40, "tree": "d" * 40,
                      "promotionRunId": 791, "promotionRunAttempt": 1},
             trust_domain="release", signing=signing,
@@ -235,6 +248,14 @@ class AggregateReleaseReuseTest(unittest.TestCase):
             self.assertEqual(original, captured.read_bytes())
             self.assertEqual(self.raw, arguments["metadata_receipt"].read_bytes())
             self.assertNotEqual(self.keyring, arguments["keyring"])
+            self.assertEqual(
+                ["aggregate-test-key.pub"],
+                [record["relativePath"] for record in regular_file_inventory(
+                    arguments["keys_directory"],
+                )],
+            )
+            self.assertEqual(arguments["keys_directory"], arguments["variant_keys_directory"])
+            self.assertEqual(b"must remain external\n", self.private_marker.read_bytes())
             try:
                 original_path.write_bytes(b"concurrent external change\n")
                 return release_attested_runtime_aggregate_admission(source, **arguments)
@@ -245,3 +266,51 @@ class AggregateReleaseReuseTest(unittest.TestCase):
             result = self.session().lookup("promoted-main", self.receipt)
         self.assertEqual(self.raw, result.envelope["receiptBytes"])
         gate.assert_called_once()
+        self.assertEqual(b"must remain external\n", self.private_marker.read_bytes())
+
+    def test_same_key_replacement_index_cannot_change_the_selected_catalog_after_session_creation(self):
+        session = self.session()
+        replacement = self.root / "replacement-index.json"
+        context = self.chain["context"]
+        write_signed_product_index(
+            [self.index_source],
+            repository=self.repository,
+            context={
+                "kind": "promoted-main",
+                "commit": "e" * 40,
+                "tree": "f" * 40,
+                "promotionRunId": 792,
+                "promotionRunAttempt": 1,
+            },
+            trust_domain="release",
+            signing=self.signing,
+            producer={
+                **context["producer"],
+                "event": "push",
+                "pullRequest": None,
+                "commit": "e" * 40,
+                "tree": "f" * 40,
+                "runId": 792,
+            },
+            stable_history=None,
+            private_key=context["private_key"],
+            public_key=context["public_key"],
+            manifest_path=replacement,
+        )
+        verify_release_product_index(
+            SignedProductIndex(replacement, replacement.with_suffix(".sig")),
+            keyring_path=self.keyring,
+            keys_directory=self.keys,
+        )
+        original_manifest = self.manifest.read_bytes()
+        original_signature = self.manifest.with_suffix(".sig").read_bytes()
+        try:
+            self.manifest.write_bytes(replacement.read_bytes())
+            self.manifest.with_suffix(".sig").write_bytes(
+                replacement.with_suffix(".sig").read_bytes(),
+            )
+            with self.assertRaises(ReuseLookupError):
+                session.lookup("promoted-main", self.receipt)
+        finally:
+            self.manifest.write_bytes(original_manifest)
+            self.manifest.with_suffix(".sig").write_bytes(original_signature)
