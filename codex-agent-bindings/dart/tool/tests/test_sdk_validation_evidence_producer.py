@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
+import io
 import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -19,6 +22,51 @@ SPEC.loader.exec_module(producer)
 class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
     """Mocks execution: these fixtures prove orchestration, never Dart/native evidence."""
 
+    def test_combined_subprocess_capture_preserves_invalid_utf8_nul_and_empty_output(self):
+        for raw in (b"stdout\r\nstderr\x00\xff\x80\n", b""):
+            with self.subTest(raw=raw), Fixture() as fixture:
+                original_program = fixture.program.read_bytes()
+                original_compatibility = fixture.compatibility.read_bytes()
+                def run(command, *, cwd, env, check, stdout, stderr):
+                    self.assertEqual(subprocess.STDOUT, stderr)
+                    self.assertIn("b", stdout.mode)
+                    self.assertEqual(["--reporter", "expanded", "test"], command[3:])
+                    stdout.write(raw)
+                    return fixture.run(command, cwd=cwd, env=env, check=check, stdout=stdout, stderr=stderr)
+                with patch.object(producer.subprocess, "run", side_effect=run) as called:
+                    fixture.produce()
+                called.assert_called_once()
+                captured = (fixture.output / "dart-execution.json").read_bytes()
+                execution = json.loads(captured)
+                self.assertEqual({"schemaVersion", "exitCode", "outputBase64"}, set(execution))
+                self.assertEqual(1, execution["schemaVersion"])
+                self.assertEqual(0, execution["exitCode"])
+                self.assertEqual(raw, base64.b64decode(execution["outputBase64"], validate=True))
+                self.assertEqual((json.dumps(execution, sort_keys=True, separators=(",", ":")) + "\n").encode(), captured)
+                self.assertTrue(captured)
+                self.assertFalse((fixture.output / "dart-test.log").exists())
+                self.assertTrue(all(path.stat().st_size > 0 for path in fixture.output.rglob("*") if path.is_file()))
+                self.assertEqual(original_program, fixture.program.read_bytes())
+                self.assertEqual(original_compatibility, fixture.compatibility.read_bytes())
+
+    def test_failed_subprocess_raw_log_never_publishes_partial_success_output(self):
+        with Fixture() as fixture:
+            fixture.output.mkdir()
+            (fixture.output / "stale").write_bytes(b"previous output")
+            raw = b"partial failure\x00\xff\r\n"
+            diagnostics = io.BytesIO()
+            def fail(command, *, cwd, env, check, stdout, stderr):
+                stdout.write(raw)
+                raise subprocess.CalledProcessError(7, command)
+            with patch.object(producer.subprocess, "run", side_effect=fail), \
+                    patch.object(producer.sys, "stderr", SimpleNamespace(buffer=diagnostics)), \
+                    self.assertRaises(subprocess.CalledProcessError) as raised:
+                fixture.produce()
+            self.assertEqual(7, raised.exception.returncode)
+            self.assertEqual(raw, diagnostics.getvalue())
+            self.assertFalse(fixture.output.exists())
+            self.assertTrue(fixture.program.is_file())
+
     def test_existing_runner_executes_complete_suite_in_isolated_source_tree(self):
         with Fixture() as fixture:
             fixture.output.mkdir()
@@ -28,7 +76,7 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
             source_program = fixture.program.read_bytes()
             observed = {}
 
-            def run(command, *, cwd, env, check):
+            def run(command, *, cwd, env, check, stdout, stderr):
                 self.assertEqual("selected-dart", command[0])
                 self.assertEqual(str(fixture.runner), command[2])
                 self.assertEqual(["--reporter", "expanded", "test"], command[3:])
@@ -50,7 +98,7 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                 self.assertEqual(str(fixture.library), env["CODEX_AGENT_REAL_LIBRARY"])
                 self.assertTrue(check)
                 observed["cwd"] = cwd
-                return fixture.run(command, cwd=cwd, env=env, check=check)
+                return fixture.run(command, cwd=cwd, env=env, check=check, stdout=stdout, stderr=stderr)
 
             with patch.object(producer.subprocess, "run", side_effect=run) as runner:
                 fixture.produce()
@@ -61,7 +109,7 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
             self.assertEqual(original_compatibility, fixture.compatibility.read_bytes())
             self.assertEqual("stale source declaration", fixture.source_compatibility.read_text())
             self.assertEqual(source_program, fixture.program.read_bytes())
-            self.assertEqual({"compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence"},
+            self.assertEqual({"compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence", "dart-execution.json"},
                              {path.name for path in fixture.output.iterdir()})
             self.assertEqual(producer.NATIVE_RECEIPTS,
                              {path.name for path in (fixture.output / "native-evidence").iterdir()})
@@ -70,8 +118,8 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
     def test_missing_or_extra_native_auxiliaries_cannot_become_full_proof(self):
         for mutation in ("missing", "extra", "empty", "symlink"):
             with self.subTest(mutation=mutation), Fixture() as fixture:
-                def run(command, *, cwd, env, check):
-                    result = fixture.run(command, cwd=cwd, env=env, check=check)
+                def run(command, *, cwd, env, check, stdout, stderr):
+                    result = fixture.run(command, cwd=cwd, env=env, check=check, stdout=stdout, stderr=stderr)
                     native = cwd / "build/parity"
                     path = native / sorted(producer.NATIVE_RECEIPTS)[0]
                     if mutation == "missing":
@@ -97,8 +145,8 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                 fixture.produce()
             self.assertFalse(fixture.output.exists())
 
-            def incomplete(command, *, cwd, env, check):
-                result = fixture.run(command, cwd=cwd, env=env, check=check)
+            def incomplete(command, *, cwd, env, check, stdout, stderr):
+                result = fixture.run(command, cwd=cwd, env=env, check=check, stdout=stdout, stderr=stderr)
                 path = Path(env[producer.EVIDENCE_ENV]) / "executed-tests.tsv"
                 path.write_text("executedTestId\tstatus\nfixture\tpassed\n")
                 return result
@@ -163,13 +211,13 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                 elif mutation == "stale-payload":
                     (native / "ignored-library.dylib").write_bytes(b"untrusted source runtime")
 
-                def run(command, *, cwd, env, check):
+                def run(command, *, cwd, env, check, stdout, stderr):
                     private = cwd / producer.NATIVE_RESOURCE
                     self.assertFalse(private.is_symlink())
                     self.assertEqual({"sdk-compatibility.json"}, {path.name for path in private.iterdir()})
                     self.assertEqual(fixture.compatibility.read_bytes(),
                                      (private / "sdk-compatibility.json").read_bytes())
-                    return fixture.run(command, cwd=cwd, env=env, check=check)
+                    return fixture.run(command, cwd=cwd, env=env, check=check, stdout=stdout, stderr=stderr)
 
                 with patch.object(producer.subprocess, "run", side_effect=run):
                     fixture.produce()
@@ -201,10 +249,10 @@ class DartSdkValidationEvidenceProducerTest(unittest.TestCase):
                 fixture.compatibility.write_bytes(b"later mutation\n")
                 return original_source_files()
 
-            def run(command, *, cwd, env, check):
+            def run(command, *, cwd, env, check, stdout, stderr):
                 self.assertEqual(captured, (cwd / producer.NATIVE_RESOURCE / "sdk-compatibility.json").read_bytes())
                 fixture.compatibility.write_bytes(captured)
-                return fixture.run(command, cwd=cwd, env=env, check=check)
+                return fixture.run(command, cwd=cwd, env=env, check=check, stdout=stdout, stderr=stderr)
 
             with patch.object(producer, "_source_files", side_effect=source_files), \
                     patch.object(producer.subprocess, "run", side_effect=run):
@@ -308,7 +356,9 @@ class Fixture:
                          sdk_compatibility=self.compatibility,
                          dart_executable="selected-dart", package_config=self.config)
 
-    def run(self, command, *, cwd, env, check):
+    def run(self, command, *, cwd, env, check, stdout, stderr):
+        if stderr != subprocess.STDOUT or "b" not in stdout.mode:
+            raise AssertionError("Dart subprocess output must be captured as combined raw bytes")
         evidence = Path(env[producer.EVIDENCE_ENV])
         (evidence / "compiler-evidence.tsv").write_text("compilerEvidenceId\tpublicSymbols\nfixture\tsymbol\n")
         (evidence / "executed-tests.tsv").write_text("executedTestId\tstatus\n" + "".join(

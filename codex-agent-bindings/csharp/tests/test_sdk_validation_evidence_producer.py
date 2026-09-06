@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import csv
+import io
+import json
 import os
 import subprocess
 import sys
@@ -41,9 +44,27 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
             self.assertEqual(["--real-mcp-values", str(fixture.library)], native[-2:])
             self.assertEqual(2, len(complete))
             self.assertEqual(
-                {"compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence"},
+                {
+                    "compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence",
+                    "dotnet-build-execution.json", "native-values-execution.json",
+                    "complete-suite-execution.json",
+                },
                 {path.name for path in fixture.output.iterdir()},
             )
+            for name, expected in zip(
+                ("dotnet-build-execution.json", "native-values-execution.json", "complete-suite-execution.json"),
+                fixture.command_outputs,
+            ):
+                raw = (fixture.output / name).read_bytes()
+                envelope = json.loads(raw)
+                self.assertEqual({"schemaVersion", "exitCode", "outputBase64"}, set(envelope))
+                self.assertEqual(1, envelope["schemaVersion"])
+                self.assertEqual(0, envelope["exitCode"])
+                self.assertEqual(expected, base64.b64decode(envelope["outputBase64"], validate=True))
+                self.assertEqual(
+                    json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode() + b"\n",
+                    raw,
+                )
             self.assertEqual(
                 producer.NATIVE_EVIDENCE,
                 {path.name for path in (fixture.output / "native-evidence").iterdir()},
@@ -77,6 +98,22 @@ class CSharpSdkValidationEvidenceProducerTest(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "artifact inventory is not exact"):
                 produce(*fixture.inputs, fixture.output)
             self.assertFalse(fixture.output.exists())
+
+    def test_each_failed_command_surfaces_exact_binary_diagnostics_before_cleanup(self) -> None:
+        diagnostics = (b"build failure\xff\n", b"native failure\x00\n", b"suite failure\r\n")
+        for fail_at, expected in enumerate(diagnostics, 1):
+            with self.subTest(fail_at=fail_at), tempfile.TemporaryDirectory() as temporary, \
+                    Fixture(Path(temporary)) as fixture:
+                fixture.command_outputs = diagnostics
+                fixture.fail_at = fail_at
+                parent_stderr = io.BytesIO()
+                stderr = type("BinaryStderr", (), {"buffer": parent_stderr})()
+                with patch.object(producer.sys, "stderr", stderr), \
+                        patch.object(producer.subprocess, "run", side_effect=fixture.run), \
+                        self.assertRaises(subprocess.CalledProcessError):
+                    produce(*fixture.inputs, fixture.output)
+                self.assertEqual(expected, parent_stderr.getvalue())
+                self.assertFalse(fixture.output.exists())
 
     def test_invalid_input_preserves_existing_output_without_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:
@@ -182,6 +219,7 @@ class Fixture:
         self.omit_test = False
         self.omit_native = False
         self.working_directories: list[Path] = []
+        self.command_outputs = (b"build stdout\n\xffstderr\n", b"native values\x00\n", b"")
         self._producer_scope = patch.multiple(
             producer,
             ROOT=self.binding,
@@ -203,9 +241,13 @@ class Fixture:
     def _file(self, relative: str, contents: str) -> Path:
         return self._file_at(self.imports / relative, contents)
 
-    def run(self, command, *, cwd, env, check):
+    def run(self, command, *, cwd, env, stdout, stderr, check):
         self.working_directories.append(Path(cwd))
         self.calls += 1
+        if stderr is not subprocess.STDOUT:
+            raise AssertionError("C# evidence command stderr is not combined with stdout")
+        output_index = 0 if command[1] == "build" else 1 if "--real-mcp-values" in command else 2
+        stdout.write(self.command_outputs[output_index])
         if self.calls == self.fail_at:
             raise subprocess.CalledProcessError(1, command)
         if command[1] == "build":

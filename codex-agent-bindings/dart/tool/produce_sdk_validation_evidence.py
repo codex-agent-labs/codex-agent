@@ -6,15 +6,20 @@ native-boundary suites must emit their complete raw receipts; unsupported hosts 
 closed instead of treating skipped native execution as product acceptance.
 The caller supplies authenticated SDK compatibility bytes; source native resources
 are excluded and only that exact declaration is materialized in the private package.
+Combined subprocess output is retained losslessly as Base64 in external
+dart-execution.json, including empty output; it is not reusable product content
+or an authenticated success receipt.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -189,10 +194,20 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                 "CODEX_AGENT_REAL_LIBRARY": str(library),
                 EVIDENCE_ENV: str(evidence),
             }
-            subprocess.run(
-                [dart_executable, f"--packages={private_config}", str(runner), "--reporter", "expanded", "test"],
-                cwd=source, env=environment, check=True,
-            )
+            log = work / "dart-test.log"
+            with log.open("w+b") as raw_output:
+                try:
+                    subprocess.run(
+                        [dart_executable, f"--packages={private_config}", str(runner), "--reporter", "expanded", "test"],
+                        cwd=source, env=environment, check=True,
+                        stdout=raw_output, stderr=subprocess.STDOUT,
+                    )
+                except subprocess.CalledProcessError:
+                    raw_output.flush()
+                    raw_output.seek(0)
+                    shutil.copyfileobj(raw_output, sys.stderr.buffer)
+                    sys.stderr.buffer.flush()
+                    raise
             _verify_raw(evidence)
             native = source / "build" / "parity"
             if not native.is_dir() or {path.name for path in native.iterdir()} != NATIVE_RECEIPTS:
@@ -205,6 +220,10 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                     raise ValueError("Dart native auxiliary evidence is empty")
                 shutil.copyfile(original, native_output / name)
             shutil.copyfile(source / test_program.relative_to(ROOT), evidence / "test-program")
+            execution = {"schemaVersion": 1, "exitCode": 0,
+                         "outputBase64": base64.b64encode(_required(log).read_bytes()).decode("ascii")}
+            (evidence / "dart-execution.json").write_bytes(
+                (json.dumps(execution, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
             evidence.rename(output)
     except Exception:
         _invalidate(output)

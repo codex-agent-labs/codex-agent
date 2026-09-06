@@ -7,10 +7,13 @@ Input authentication, toolchain admission, and product receipts remain caller re
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
+import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -36,6 +39,29 @@ NATIVE_EVIDENCE = {
 }
 COMPILER_HEADER = ("compilerEvidenceId", "publicSymbols")
 TEST_HEADER = ("executedTestId", "status")
+
+
+def _execution_bytes(output: bytes) -> bytes:
+    return (json.dumps(
+        {"schemaVersion": 1, "exitCode": 0, "outputBase64": base64.b64encode(output).decode("ascii")},
+        sort_keys=True,
+        separators=(",", ":"),
+    ) + "\n").encode("utf-8")
+
+
+def _run_logged(command: list[str], *, cwd: Path, env: dict[str, str], log: Path) -> None:
+    with log.open("w+b") as raw_output:
+        try:
+            subprocess.run(
+                command, cwd=cwd, env=env, stdout=raw_output,
+                stderr=subprocess.STDOUT, check=True,
+            )
+        except subprocess.CalledProcessError:
+            raw_output.flush()
+            raw_output.seek(0)
+            shutil.copyfileobj(raw_output, sys.stderr.buffer)
+            sys.stderr.buffer.flush()
+            raise
 
 
 def _required_file(path: Path, label: str) -> Path:
@@ -199,8 +225,10 @@ def produce(
             source = work / "source"
             program = work / "program"
             scratch = work / "scratch"
+            evidence = work / "evidence"
             dotnet_home = work / "dotnet-home"
             scratch.mkdir()
+            evidence.mkdir()
             dotnet_home.mkdir()
             _copy_sources(source_files, source)
             private_project = source / project.relative_to(ROOT)
@@ -215,7 +243,12 @@ def produce(
                 "TMP": str(scratch),
                 "TEMP": str(scratch),
             }
-            subprocess.run(
+            logs = {
+                "dotnet-build-execution.json": work / "dotnet-build.log",
+                "native-values-execution.json": work / "native-values.log",
+                "complete-suite-execution.json": work / "complete-suite.log",
+            }
+            _run_logged(
                 [
                     str(dotnet), "build", str(private_project), "--configuration", "Release",
                     "--no-restore", "--no-incremental",
@@ -226,26 +259,20 @@ def produce(
                     f"-p:CodexAgentCSdkRoot={c_sdk_root}",
                     f"-p:CodexAgentSdkCompatibility={sdk_compatibility}",
                 ],
-                cwd=source,
-                env=environment,
-                check=True,
+                cwd=source, env=environment, log=logs["dotnet-build-execution.json"],
             )
             test_program = _required_file(program / TEST_PROGRAM, "C# test program")
-            subprocess.run(
+            _run_logged(
                 [str(dotnet), str(test_program), "--real-mcp-values", str(native_library)],
-                cwd=source,
-                env=environment,
-                check=True,
+                cwd=source, env=environment, log=logs["native-values-execution.json"],
             )
-            subprocess.run(
+            _run_logged(
                 [str(dotnet), str(test_program)],
-                cwd=source,
-                env=environment,
-                check=True,
+                cwd=source, env=environment, log=logs["complete-suite-execution.json"],
             )
             compiler, tests, test_program, native = _verify_suite_outputs(program)
-            evidence = Path(temporary) / "evidence"
-            evidence.mkdir()
+            for name, log in logs.items():
+                (evidence / name).write_bytes(_execution_bytes(log.read_bytes()))
             for raw in (compiler, tests):
                 shutil.copyfile(raw, evidence / raw.name)
             shutil.copyfile(test_program, evidence / "test-program")
@@ -255,6 +282,8 @@ def produce(
                 shutil.copyfile(native / name, native_output / name)
             if {path.name for path in evidence.iterdir()} != {
                 "compiler-evidence.tsv", "executed-tests.tsv", "test-program", "native-evidence",
+                "dotnet-build-execution.json", "native-values-execution.json",
+                "complete-suite-execution.json",
             } or {path.name for path in native_output.iterdir()} != NATIVE_EVIDENCE:
                 raise ValueError("Published C# evidence inventory is not exact")
             evidence.rename(output)
