@@ -2026,41 +2026,40 @@ def advance_contract(
     return advanced
 
 
-def advance_products(
-    plan_path: Path, discovery_root: Path, state_root: Path | None,
-    shard_roots: list[Path], destination: Path,
-    github_output_path: Path, *, repository_root: Path | None = None,
-    environ: Mapping[str, str] | None = None,
-    native_evidence_roots: tuple[Path, ...] = (),
-    adapter_evidence_roots: tuple[Path, ...] = (),
-    sdk_evidence_roots: tuple[Path, ...] = (),
-    sdk_validation_tooling: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    github_output(github_output_path, {
-        "full_reuse": False,
-        "target_jobs_required": True,
-        "product_reuse_reason": "not-evaluated",
-        "runtime_evidence_required": False,
-    })
-    supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
-    destination = _prepare_destination(destination, supplied_root)
-    destination.rmdir()
-    root = supplied_root.resolve()
-    discovery_root = Path(os.path.abspath(discovery_root))
-    state_root = discovery_root if state_root is None else Path(os.path.abspath(state_root))
-    shard_roots = [Path(os.path.abspath(path)) for path in shard_roots]
-    try:
-        discovery_root.relative_to(root)
-        state_root.relative_to(root)
-        for shard_root in shard_roots:
-            shard_root.relative_to(root)
-    except ValueError as error:
-        raise ValueError("Product continuation inputs must remain inside the repository") from error
+def _retain_product_plan(
+    plans: dict[PhaseInstanceId, dict[str, Any]],
+    instance: PhaseInstanceId,
+    value: dict[str, Any],
+) -> None:
+    if instance in plans:
+        raise ValueError(f"Duplicate product phase plan: {instance}")
+    plans[instance] = value
 
+
+@dataclass(frozen=True)
+class _VerifiedProductState:
+    """Private replay context; never serialized or accepted as caller evidence."""
+    plan: dict[str, Any]
+    producer: dict[str, Any]
+    consumer: dict[str, Any]
+    requested: tuple[PhaseInstanceId, ...]
+    closure: tuple[PhaseInstanceId, ...]
+    expected_fixed: dict[str, Any]
+    rebased_request: dict[str, Any]
+    prior: dict[str, Any]
+    prior_by_instance: dict[PhaseInstanceId, dict[str, Any]]
+    sources: dict[PhaseInstanceId, Path]
+    prior_carrier_phases: dict[PhaseInstanceId, dict[str, Any]]
+    prior_ready_plans: dict[PhaseInstanceId, dict[str, Any]]
+
+
+def _verified_product_state(
+    plan_path: Path, discovery_root: Path, state_root: Path, root: Path,
+    environment: Mapping[str, str], sdk_validation_tooling: Mapping[str, Any] | None,
+) -> _VerifiedProductState:
     plan = _validate_plan(plan_path, root)
     if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
         raise ValueError("Product continuation requires an authorized PR or merge-group run")
-    environment = os.environ if environ is None else environ
     consumer = _consumer(plan, environment)
     producer = _canonical_control(discovery_root / "producer.json", "Product producer")
     validate_producer(producer, "Product producer")
@@ -2136,19 +2135,10 @@ def advance_products(
     } for record in initial_objects]
     rebased_request.update(_rebase_native_request(request, discovery_root, root))
 
-    def retain(
-        plans: dict[PhaseInstanceId, dict[str, Any]],
-        instance: PhaseInstanceId,
-        value: dict[str, Any],
-    ) -> None:
-        if instance in plans:
-            raise ValueError(f"Duplicate product phase plan: {instance}")
-        plans[instance] = value
-
     replay_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
     replay = _plan_with_sdk_tooling(
         rebased_request, sdk_validation_tooling,
-        build_plan_consumer=lambda instance, value: retain(replay_plans, instance, value),
+        build_plan_consumer=lambda instance, value: _retain_product_plan(replay_plans, instance, value),
     )
     initial = _canonical_control(discovery_root / "reuse-wave-result.json", "Initial reuse result")
     if replay != initial:
@@ -2207,7 +2197,7 @@ def advance_products(
             prior_ready_plans = {}
             state_replay = _plan_with_sdk_tooling(
                 state_request, sdk_validation_tooling,
-                build_plan_consumer=lambda instance, value: retain(
+                build_plan_consumer=lambda instance, value: _retain_product_plan(
                     prior_ready_plans, instance, value,
                 ),
             )
@@ -2221,6 +2211,90 @@ def advance_products(
             })
         if state_replay != prior:
             raise ValueError("Product reuse state is not reproducible from its verified carrier")
+
+    return _VerifiedProductState(
+        plan=plan,
+        producer=producer,
+        consumer=consumer,
+        requested=requested,
+        closure=closure,
+        expected_fixed=expected_fixed,
+        rebased_request=rebased_request,
+        prior=prior,
+        prior_by_instance=prior_by_instance,
+        sources=sources,
+        prior_carrier_phases=prior_carrier_phases,
+        prior_ready_plans=prior_ready_plans,
+    )
+
+
+def inspect_products(
+    plan_path: Path, discovery_root: Path, state_root: Path | None = None, *,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Re-elect ready plans before target setup without admitting new shards."""
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root = Path(os.path.abspath(discovery_root))
+    state_root = discovery_root if state_root is None else Path(os.path.abspath(state_root))
+    try:
+        discovery_root.relative_to(root)
+        state_root.relative_to(root)
+    except ValueError as error:
+        raise ValueError("Product inspection inputs must remain inside the repository") from error
+    state = _verified_product_state(
+        plan_path, discovery_root, state_root, root,
+        os.environ if environ is None else environ, sdk_validation_tooling)
+    return {"result": state.prior,
+            "readyPlans": [state.prior_ready_plans[instance] for instance in sorted(state.prior_ready_plans)]}
+
+
+def advance_products(
+    plan_path: Path, discovery_root: Path, state_root: Path | None,
+    shard_roots: list[Path], destination: Path,
+    github_output_path: Path, *, repository_root: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    native_evidence_roots: tuple[Path, ...] = (),
+    adapter_evidence_roots: tuple[Path, ...] = (),
+    sdk_evidence_roots: tuple[Path, ...] = (),
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    github_output(github_output_path, {
+        "full_reuse": False,
+        "target_jobs_required": True,
+        "product_reuse_reason": "not-evaluated",
+        "runtime_evidence_required": False,
+    })
+    supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
+    destination = _prepare_destination(destination, supplied_root)
+    destination.rmdir()
+    root = supplied_root.resolve()
+    discovery_root = Path(os.path.abspath(discovery_root))
+    state_root = discovery_root if state_root is None else Path(os.path.abspath(state_root))
+    shard_roots = [Path(os.path.abspath(path)) for path in shard_roots]
+    try:
+        discovery_root.relative_to(root)
+        state_root.relative_to(root)
+        for shard_root in shard_roots:
+            shard_root.relative_to(root)
+    except ValueError as error:
+        raise ValueError("Product continuation inputs must remain inside the repository") from error
+
+    state = _verified_product_state(
+        plan_path, discovery_root, state_root, root,
+        os.environ if environ is None else environ, sdk_validation_tooling)
+    plan = state.plan
+    producer = state.producer
+    consumer = state.consumer
+    requested = state.requested
+    closure = state.closure
+    expected_fixed = state.expected_fixed
+    rebased_request = state.rebased_request
+    prior = state.prior
+    prior_by_instance = state.prior_by_instance
+    sources = state.sources
+    prior_carrier_phases = state.prior_carrier_phases
+    prior_ready_plans = state.prior_ready_plans
 
     expected_builds = {
         _identity(phase): phase for phase in prior["phases"] if phase["state"] == "build"
@@ -2321,7 +2395,7 @@ def advance_products(
         ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         advanced = _plan_with_sdk_tooling(
             advanced_request, sdk_validation_tooling,
-            build_plan_consumer=lambda instance, value: retain(ready_plans, instance, value),
+            build_plan_consumer=lambda instance, value: _retain_product_plan(ready_plans, instance, value),
         )
         supplied = set(sources)
         advanced_by_instance = {_identity(phase): phase for phase in advanced["phases"]}

@@ -1,0 +1,138 @@
+"""Read-only inspection of an authenticated resumed product state."""
+
+from pathlib import Path
+import shutil
+import unittest
+
+from ci.products.inventory import load_canonical_json, regular_file_inventory, write_canonical_json
+from ci.tests import test_runtime_resumed_phase as fixture
+
+
+adapter = fixture.adapter
+JVM = fixture.JVM
+
+
+@unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
+class ProductStateInspectionTest(unittest.TestCase):
+    # Delegate the real resumed-state fixture without inheriting its test cases.
+    setUpClass = classmethod(fixture.RuntimeResumedPhaseTest.setUpClass.__func__)
+    control_seams = classmethod(fixture.RuntimeResumedPhaseTest.control_seams.__func__)
+    setUp = fixture.RuntimeResumedPhaseTest.setUp
+    tearDown = fixture.RuntimeResumedPhaseTest.tearDown
+    resume = fixture.RuntimeResumedPhaseTest.resume
+    binary_shard = fixture.RuntimeResumedPhaseTest.binary_shard
+    advance = fixture.RuntimeResumedPhaseTest.advance
+
+    def inspect(self, discovery: Path, state: Path | None = None):
+        with self.control_seams():
+            return adapter.inspect_products(
+                self.plan_path, discovery, state,
+                repository_root=self.repository, environ=self.environment,
+            )
+
+    def test_initial_resumed_state_re_elects_the_exact_runtime_plan_without_original_locations(self):
+        resumed = self.resume()
+        before = regular_file_inventory(resumed)
+        expected = {
+            "result": load_canonical_json(resumed / "reuse-wave-result.json"),
+            "readyPlans": [load_canonical_json(resumed / "phase-plans/runtime-jvm-binary-jvm.json")],
+        }
+        hidden = []
+        try:
+            for source in (self.original, self.discovery, self.state, self.handoff):
+                target = source.with_name(source.name + "-inspection-hidden")
+                source.rename(target)
+                hidden.append((source, target))
+            self.assertEqual(expected, self.inspect(resumed))
+        finally:
+            for source, target in reversed(hidden):
+                target.rename(source)
+        self.assertEqual(before, regular_file_inventory(resumed))
+
+    def test_advanced_runtime_state_replays_its_exact_result_and_original_receipts(self):
+        resumed = self.resume()
+        shard, descriptor = self.binary_shard(resumed, "inspection-advanced")
+        advanced = self.scratch / "advanced-inspection"
+        result = self.advance(resumed, shard, advanced)
+        before = {
+            path: regular_file_inventory(path)
+            for path in (resumed, shard, advanced)
+        }
+
+        self.assertEqual({"result": result, "readyPlans": []}, self.inspect(resumed, advanced))
+        selected = tuple(sorted(
+            adapter._identity(phase) for phase in result["phases"]
+            if phase["state"] in {"retained", "reused"}
+        ))
+        carrier = adapter.verify_carrier(
+            advanced / "carrier", selected, adapter._consumer(self.plan, self.environment),
+        )
+        records = {adapter._identity(record): record for record in carrier["objects"]}
+        for instance, expected in {
+            JVM: descriptor["receiptBytes"],
+            **{
+                adapter.PhaseInstanceId("contract", "contract", phase, "common"): raw
+                for phase, raw in self.original_bytes.items()
+            },
+        }.items():
+            record = records[instance]
+            restored = adapter.verify_object(
+                advanced / "carrier" / adapter.object_relative_path(
+                    record["buildKey"], record["receiptSha256"],
+                ),
+                build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+                object_sha256=record["objectSha256"],
+            )
+            self.assertEqual(expected, restored["receiptBytes"])
+        for path, inventory in before.items():
+            self.assertEqual(inventory, regular_file_inventory(path), str(path))
+
+    def test_request_carrier_producer_and_current_result_mutations_are_rejected_read_only(self):
+        resumed = self.resume()
+
+        def change_request(root: Path) -> None:
+            path = root / "reuse-wave-request.json"
+            value = load_canonical_json(path)
+            value["unexpected"] = True
+            write_canonical_json(path, value)
+
+        def change_carrier(root: Path) -> None:
+            path = root / "reused-carrier/carrier.json"
+            value = load_canonical_json(path)
+            value["unexpected"] = True
+            write_canonical_json(path, value)
+
+        def change_producer(root: Path) -> None:
+            path = root / "producer.json"
+            value = load_canonical_json(path)
+            value["runAttempt"] += 1
+            write_canonical_json(path, value)
+
+        def change_result(root: Path) -> None:
+            path = root / "reuse-wave-result.json"
+            value = load_canonical_json(path)
+            selected = next(phase for phase in value["phases"] if adapter._identity(phase) == JVM)
+            selected["buildKey"] = "sha256:" + "0" * 64
+            matrix = next(phase for phase in value["matrices"]["runtime"] if adapter._identity(phase) == JVM)
+            matrix["buildKey"] = selected["buildKey"]
+            write_canonical_json(path, value)
+
+        original = regular_file_inventory(resumed)
+        for name, mutate, error in (
+            ("request", change_request, "Reuse-wave request"),
+            ("carrier", change_carrier, "[Cc]arrier"),
+            ("producer", change_producer, "current workflow run"),
+            ("result", change_result, "not reproducible"),
+        ):
+            state = self.scratch / f"changed-{name}"
+            shutil.copytree(resumed, state)
+            mutate(state)
+            changed = regular_file_inventory(state)
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, error):
+                self.inspect(resumed, state) if name in {"carrier", "result"} else self.inspect(state)
+            self.assertEqual(changed, regular_file_inventory(state))
+            self.assertEqual(original, regular_file_inventory(resumed))
+
+
+if __name__ == "__main__":
+    unittest.main()
