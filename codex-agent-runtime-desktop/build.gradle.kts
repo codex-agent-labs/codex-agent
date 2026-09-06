@@ -601,36 +601,34 @@ registerRuntimeOutputManifest(
     description = "Writes and verifies the exact Node binding validation handoff manifest."
 }
 
-val runtimeNativeValidationManifestTasks = linkedMapOf(
-    "macos-arm64" to ("MacosArm64" to "writeMacosArm64RuntimeValidationOutputManifest"),
-    "macos-x64" to ("MacosX64" to "writeMacosX64RuntimeValidationOutputManifest"),
-    "linux-arm64" to ("LinuxArm64" to "writeLinuxArm64RuntimeValidationOutputManifest"),
-    "linux-x64" to ("LinuxX64" to "writeLinuxX64RuntimeValidationOutputManifest"),
-    "windows-x64" to ("MingwX64" to "writeMingwX64RuntimeValidationOutputManifest"),
+val runtimeNativeMetadataComponents = linkedMapOf(
+    "macos-arm64" to "MacosArm64",
+    "macos-x64" to "MacosX64",
+    "linux-arm64" to "LinuxArm64",
+    "linux-x64" to "LinuxX64",
+    "windows-x64" to "MingwX64",
 )
-runtimeNativeValidationManifestTasks.forEach { (component, registration) ->
-    val (title, validationTaskName) = registration
+runtimeNativeMetadataComponents.forEach { (component, title) ->
     val phaseRoot = layout.buildDirectory.dir("product-stage/runtime/$component/metadata")
     val outputsRoot = phaseRoot.map { it.dir("outputs") }
-    val invalidate = tasks.register<Delete>("invalidate${title}RuntimeMetadataOutputs") {
+    val stage = tasks.register<ImportedRuntimeVariantTask>("stage${title}RuntimeMetadata") {
         group = "verification"
-        delete(phaseRoot)
-    }
-    val validation = tasks.named(validationTaskName) {
-        mustRunAfter(invalidate)
-    }
-    val stage = tasks.register<Sync>("stage${title}RuntimeMetadata") {
-        group = "verification"
-        description = "Stages the exact $component validation inventory for Runtime metadata aggregation."
-        dependsOn(invalidate, validation)
-        into(outputsRoot)
-        from(layout.buildDirectory.file(
-            "product-stage/runtime/$component/validation/output-manifest.json",
-        )) {
-            rename { "validation-output-manifest.json" }
-        }
-        includeEmptyDirs = false
-        duplicatesStrategy = DuplicatesStrategy.FAIL
+        description = "Produces the reusable $component variant from original imported phase evidence."
+        fun imported(name: String) = layout.file(providers.gradleProperty("codexAgent.runtimeVariant$name").map(::file))
+        this.component.set(component)
+        identity.set(imported("Identity"))
+        binaryReceipt.set(imported("BinaryReceipt"))
+        packageReceipt.set(imported("PackageReceipt"))
+        validationReceipt.set(imported("ValidationReceipt"))
+        cAbiArchive.set(imported("CAbiArchive"))
+        appServerArchive.set(imported("AppServerArchive"))
+        validationEvidence.set(imported("ValidationEvidence"))
+        distributionManifest.set(layout.projectDirectory.file("codex-app-server-distributions.json"))
+        producerSources.from(runtimeProductTooling)
+        repositoryRoot.set(repositoryRootDirectory)
+        outputDirectory.set(outputsRoot)
+        // No validation/compiler dependency: Python verifies the exact original
+        // receipts, archive members and raw report before deriving product content.
     }
     registerRuntimeOutputManifest(
         "write${title}RuntimeMetadataOutputManifest",
@@ -639,14 +637,14 @@ runtimeNativeValidationManifestTasks.forEach { (component, registration) ->
         "metadata",
         providers.provider { component },
         runtimeProductVersion,
-        mapOf("validation-manifest" to "outputs"),
+        mapOf("runtime-variant" to "outputs"),
         outputsRoot,
         phaseRoot,
         runtimeProductTooling,
         repositoryRootFile,
     ).configure {
         group = "verification"
-        description = "Writes the exact $component Runtime metadata handoff manifest."
+        description = "Writes the exact $component Runtime variant output manifest."
     }
 }
 

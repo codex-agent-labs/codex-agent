@@ -59,6 +59,26 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_imported_runtime_variant_task_owns_only_native_metadata(self) -> None:
+        from ci.tests.test_product_plan import plan
+
+        path = "runtime/build-logic/src/main/kotlin/ImportedRuntimeVariantTask.kt"
+        owners = {PhaseInstanceId("runtime", target, "metadata", target) for target in NATIVE_TARGETS}
+        selected = owners | {PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")}
+        self.assertEqual(selected, identities(classify_paths([path])))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / path
+            source.parent.mkdir(parents=True)
+            for instance in PHASE_INSTANCE_IDS:
+                self.assertEqual((path,) if instance in owners else (), phase_inventory_paths([path], instance))
+                if instance.product == "runtime":
+                    keys = []
+                    for content in (b"a", b"b"):
+                        source.write_bytes(content)
+                        keys.append(plan(instance, inventory=phase_file_inventory(root, [path], instance))["buildKey"])
+                    self.assertEqual(instance in owners, keys[0] != keys[1], instance)
+
     def test_root_build_scripts_do_not_enter_standalone_runtime_keys(self) -> None:
         from ci.tests.test_product_plan import plan
 

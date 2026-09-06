@@ -95,9 +95,13 @@ class RuntimeProductPhaseMappingTest {
         assertTrue("writeNodeJsRuntimeBinaryOutputManifest" in nodeJsPackage())
         assertTrue("writeNodeWasmRuntimeBinaryOutputManifest" in nodeWasmPackage())
         assertTrue("dependsOn(invalidate, packagePrerequisite, nativePackagePrerequisite)" in nodeValidation())
-        assertTrue("val runtimeNativeValidationManifestTasks = linkedMapOf(" in nodeBuild)
-        assertTrue("validation-output-manifest.json" in nodeBuild)
-        assertTrue("mustRunAfter(invalidate)" in nodeBuild)
+        val nativeMetadata = nodeBuild.substringAfter("val runtimeNativeMetadataComponents = linkedMapOf(")
+            .substringBefore("val runtimeAdapterMetadataComponents")
+        assertTrue("tasks.register<ImportedRuntimeVariantTask>" in nativeMetadata)
+        assertTrue("mapOf(\"runtime-variant\" to \"outputs\")" in nativeMetadata)
+        assertFalse("validation-output-manifest.json" in nativeMetadata)
+        assertFalse("dependsOn(" in nativeMetadata)
+        assertFalse("mustRunAfter(invalidate)" in nativeMetadata)
     }
 
     @Test

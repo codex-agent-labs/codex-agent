@@ -371,6 +371,8 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(("linux-arm64",), "validation")
     if name == "ImportedCAbiBootstrapTasks.kt":
         return _runtime(("macos-arm64",), "validation")
+    if name == "ImportedRuntimeVariantTask.kt":
+        return _runtime(NATIVE_TARGETS, "metadata")
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_VALIDATION:
         return _runtime(NATIVE_TARGETS, "validation")
     if name == "DesktopRuntimeZipModes.kt":
