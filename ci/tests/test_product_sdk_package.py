@@ -16,7 +16,10 @@ from ci.products.receipt import compute_build_key, validate_phase_receipt, write
 from ci.products.registry import PhaseInstanceId, phase_instance_dependencies
 from ci.products.sdk_maven import MAVEN_GROUPS, package_sdk_maven, verify_sdk_maven_binary_predecessor
 from ci.products.sdk_archive import NPM_COMPATIBILITY_PATH, verify_npm_sdk_compatibility
-from ci.products.sdk_package import _verify_plan, verify_sdk_package_inputs, main as package_main
+from ci.products.sdk_package import (
+    _capture_validation_sources, _verify_native_validation_stage, _verify_plan,
+    verify_sdk_package_inputs, main as package_main,
+)
 from ci.products.selection import phase_git_inventory
 from ci.tests import test_product_sdk_maven as maven_fixture
 from ci.tests import test_product_sdk_native as native_fixture
@@ -28,6 +31,96 @@ from ci.tests.test_product_sdk_inputs import _request
 
 VERSIONS = {"contract": "0.2.0", "sdk": "0.2.9", "runtime-release": "0.2.7",
             "runtime-compatibility": "0.2.0"}
+
+
+class NativeValidationStageInventoryTest(unittest.TestCase):
+    def test_source_programs_bind_original_git_without_executing_or_rebuilding(self):
+        programs = {"python": "tests/test_enum_parity.py", "csharp": "tests/CodexAgent.Tests/Program.cs",
+                    "rust": "tests/enum_parity.rs", "cpp": "tests/value_parity_test.cpp",
+                    "dart": "test/enum_parity_test.dart"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo = root / "repository"
+            repo.mkdir()
+            run_git(repo, "init", "-q")
+            for component, program in programs.items():
+                for relative in (program, "parity/capability-claims.tsv", *(
+                    ("tests/test_installed_package_tamper.py",) if component == "cpp" else ()
+                )):
+                    path = repo / "codex-agent-bindings" / component / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"original source; never execute\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
+                    "-c", "commit.gpgsign=false", "commit", "-qm", "original source")
+            commit = run_git(repo, "rev-parse", "HEAD").strip()
+            for component, program in programs.items():
+                with self.subTest(component=component):
+                    stage = root / component
+                    raw = stage / "outputs/capability/test-program"
+                    raw.parent.mkdir(parents=True)
+                    raw.write_bytes(b"compiled DLL fixture\n" if component == "csharp" else b"original source; never execute\n")
+                    (repo / "codex-agent-bindings" / component / program).write_bytes(b"uncommitted wrong source\n")
+                    validation = {"component": component, "producer": {"commit": commit}}
+                    output = root / (component + "-capture")
+                    _capture_validation_sources(repo, validation, stage, output)
+                    self.assertEqual(b"original source; never execute\n", (output / "validation-source/test-program-source").read_bytes())
+                    if component == "cpp":
+                        self.assertEqual(b"original source; never execute\n",
+                                         (output / "validation-source/test_installed_package_tamper.py").read_bytes())
+                    if component != "csharp":
+                        raw.write_bytes(b"forged source program\n")
+                        with self.assertRaisesRegex(ValueError, "original validation Git source"):
+                            _capture_validation_sources(repo, validation, stage, root / (component + "-bad"))
+
+    def test_exact_raw_kinds_paths_host_and_receipt_are_required(self):
+        for component in ("python", "csharp", "rust", "cpp", "dart"):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as temporary:
+                stage = Path(temporary).resolve()
+                roots = {"native-wrapper-installed": "outputs/installed",
+                         "native-wrapper-capability": "outputs/capability"}
+                if component == "cpp":
+                    roots["native-wrapper-package-negatives"] = "outputs/package-negatives"
+                for path in roots.values():
+                    output = stage / path / "fixture.txt"
+                    output.parent.mkdir(parents=True)
+                    output.write_bytes(b"not semantic acceptance\n")
+                manifest = write_output_manifest(stage, "sdk", component, "validation", "linux-x64", "0.2.9", roots)
+                receipt = {**manifest}  # Only the narrow inventory checker is under test.
+                _verify_native_validation_stage(stage, receipt, "linux-x64")
+                for name in ("host", "receipt-output", "kind", "path", "extra", "symlink", "missing"):
+                    with self.subTest(case=name):
+                        snapshot = stage.parent / (stage.name + "-" + name)
+                        try:
+                            snapshot_regular_tree(stage, snapshot)
+                            changed = copy.deepcopy(receipt)
+                            if name == "host":
+                                expected = "macos-arm64"
+                            else:
+                                expected = "linux-x64"
+                            if name == "receipt-output":
+                                changed["outputs"][0]["sha256"] = "sha256:" + "a" * 64
+                            elif name in ("kind", "path"):
+                                bad_roots = {**roots}
+                                if name == "kind":
+                                    bad_roots["wrong-kind"] = bad_roots.pop("native-wrapper-installed")
+                                else:
+                                    (snapshot / "outputs/installed").rename(snapshot / "outputs/wrong")
+                                    bad_roots["native-wrapper-installed"] = "outputs/wrong"
+                                changed = write_output_manifest(snapshot, "sdk", component, "validation",
+                                                                "linux-x64", "0.2.9", bad_roots)
+                            elif name == "extra":
+                                (snapshot / "extra.txt").write_bytes(b"extra")
+                            elif name == "symlink":
+                                original = snapshot / "outputs/installed/fixture.txt"
+                                original.unlink()
+                                original.symlink_to(stage / "outputs/installed/fixture.txt")
+                            elif name == "missing":
+                                (snapshot / "outputs/installed/fixture.txt").unlink()
+                            with self.assertRaises(ValueError):
+                                _verify_native_validation_stage(snapshot, changed, expected)
+                        finally:
+                            shutil.rmtree(snapshot)
 
 
 def contract_evidence(chain, root):
@@ -67,6 +160,8 @@ class SdkPackagePlanTest(unittest.TestCase):
         for path, contents in {
             "gradle/release/versions/sdk.txt": "0.2.9\n",
             "codex-agent-bindings/csharp/fixture.cs": "// synthetic source input\n",
+            "codex-agent-bindings/csharp/parity/capability-claims.tsv": "original synthetic claims\n",
+            "codex-agent-bindings/csharp/tests/CodexAgent.Tests/Program.cs": "// original synthetic program\n",
             "codex-agent-runtime-android/fixture.kt": "// synthetic source input\n",
         }.items():
             output = cls.repository / path
@@ -214,6 +309,59 @@ class SdkPackagePlanTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         package_main(self.native_cli_arguments() + ["--validation-receipt", str(validation)])
             validation.write_bytes(original)
+
+    def test_validation_import_captures_original_stage_receipt_and_git_claims(self):
+        # Only the raw capture seam is exercised: this fixture deliberately lacks
+        # full bootstrap/behavior proof and cannot satisfy the Kotlin admission CLI.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            stage = root / "stage"
+            for relative in ("installed/evidence.tsv", "capability/test-program"):
+                path = stage / "outputs" / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"synthetic raw execution output\n")
+            manifest = write_output_manifest(stage, "sdk", "csharp", "validation", "linux-x64", "0.2.9", {
+                "native-wrapper-installed": "outputs/installed",
+                "native-wrapper-capability": "outputs/capability",
+            })
+            receipt = self.validation_receipt(root / "plan-fixture")
+            value = load_canonical_json_bytes(receipt.read_bytes())
+            value["outputs"] = manifest["outputs"]
+            receipt.write_bytes(canonical_json_bytes(value))
+            original = receipt.read_bytes()
+            output = root / "captured"
+            arguments = self.native_cli_arguments() + [
+                "--validation-stage", str(stage), "--validation-receipt", str(receipt),
+                "--validation-target", "linux-x64", "--validation-inputs-output", str(output),
+            ]
+            def fixture_handoff(arguments, runtime, sdks, prepared):
+                (prepared / "receipts").mkdir(parents=True)
+
+            source = self.repository / "codex-agent-bindings/csharp/parity/capability-claims.tsv"
+            original_source = source.read_bytes()
+            try:
+                source.write_bytes(b"uncommitted wrong claims\n")
+                with patch("ci.products.sdk_native._stage_native_capability_inputs", side_effect=fixture_handoff):
+                    self.assertEqual(0, package_main(arguments))
+                self.assertEqual(original_source, (output / "validation-source/capability-claims.tsv").read_bytes())
+                self.assertEqual(b"// original synthetic program\n", (output / "validation-source/test-program-source").read_bytes())
+                self.assertEqual(original, (output / "receipts/sdk-validation.json").read_bytes())
+                self.assertEqual((stage / "output-manifest.json").read_bytes(),
+                                 (output / "validation/output-manifest.json").read_bytes())
+                self.assertEqual(original, receipt.read_bytes())
+            finally:
+                source.write_bytes(original_source)
+
+            def mutated_handoff(*args):
+                fixture_handoff(*args)
+                (stage / "outputs/capability/test-program").write_bytes(b"mutated raw bytes\n")
+
+            second = root / "second"
+            with patch("ci.products.sdk_native._stage_native_capability_inputs", side_effect=mutated_handoff):
+                with self.assertRaisesRegex(ValueError, "stage changed before publication"):
+                    package_main(arguments[:-1] + [str(second)])
+            self.assertFalse(second.exists())
+            self.assertEqual(original, receipt.read_bytes())
 
     def verify_native(self, receipt=None):
         return verify_sdk_package_inputs(self.repository, self.native_stage, receipt or self.native_receipt,

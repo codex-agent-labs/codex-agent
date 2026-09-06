@@ -213,6 +213,46 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             "--installed-evidence", root.resolve("installed").absolutePath,
             "--capability-evidence", output.absolutePath, "--claims", fixture.claims.absolutePath)
         assertEquals(0, cli.first, cli.second)
+        // Orchestration fixture only: Python input authentication is tested separately
+        // against signed product fixtures. A subprocess success alone must NOT admit
+        // evidence; the packaged CLI still runs the real Kotlin matcher itself.
+        val importedStage = root.resolve("imported-validation")
+        root.resolve("installed").copyRecursively(importedStage.resolve("outputs/installed"))
+        output.copyRecursively(importedStage.resolve("outputs/capability"))
+        val validationReceipt = root.resolve("validation-receipt.json").apply { writeText("original fixture receipt\n") }
+        val request = root.resolve("compatibility-request.json").apply { writeText("fixture request\n") }
+        val inputVerifier = root.resolve("ci/products/sdk_package.py").apply {
+            parentFile.mkdirs()
+            root.resolve("ci/__init__.py").writeText("")
+            parentFile.resolve("__init__.py").writeText("")
+            writeText("""
+                import pathlib, shutil, sys
+                args = sys.argv[1:]
+                def arg(name): return pathlib.Path(args[args.index(name) + 1])
+                destination = arg('--validation-inputs-output')
+                shutil.copytree('handoff', destination)
+                shutil.copytree(arg('--validation-stage'), destination / 'validation')
+                shutil.copyfile(arg('--validation-receipt'), destination / 'receipts/sdk-validation.json')
+                (destination / 'validation-source').mkdir()
+                shutil.copyfile('${fixture.claims.name}', destination / 'validation-source/capability-claims.tsv')
+            """.trimIndent() + "\n")
+        }
+        val importArguments = arrayOf("verify-imported-native-wrapper-validation", "--repository", root.absolutePath,
+            "--language", "csharp", "--target", "linux-x64", "--package-stage", handoff.absolutePath,
+            "--package-receipt", handoff.resolve("receipts/sdk-package.json").absolutePath,
+            "--compatibility-request", request.absolutePath, "--runtime-stages", handoff.absolutePath,
+            "--staged-sdks", handoff.absolutePath, "--validation-stage", importedStage.absolutePath,
+            "--validation-receipt", validationReceipt.absolutePath)
+        val importedBefore = verifiedRegularFiles(importedStage).mapValues { it.value.releaseDigest() }
+        val importedCli = runReleaseTool(root, *importArguments)
+        assertEquals(0, importedCli.first, importedCli.second)
+        assertEquals(importedBefore, verifiedRegularFiles(importedStage).mapValues { it.value.releaseDigest() })
+        assertEquals("original fixture receipt\n", validationReceipt.readText())
+        val importedResults = importedStage.resolve("outputs/capability/executed-tests.tsv")
+        importedResults.writeText(importedResults.readText().replace("\tpassed", "\tfailed"))
+        assertTrue(runReleaseTool(root, *importArguments).first != 0, "Input success must not bypass full matcher")
+        inputVerifier.writeText("# Successful process without authenticated private handoff\n")
+        assertTrue(runReleaseTool(root, *importArguments).first != 0, "A success token must not admit an import")
         val originalHost = installed.resolve("linux-x64.tsv").readText()
         listOf("a".repeat(64), native.releaseDigest()).forEach { digest ->
             installed.resolve("linux-x64.tsv").writeText(originalHost.replace(digest, "e".repeat(64)))

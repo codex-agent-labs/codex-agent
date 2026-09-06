@@ -140,6 +140,16 @@ fun main(arguments: Array<String>) {
                 options.file("installed-evidence"), options.file("capability-evidence"), options.file("claims"),
             )
         }
+        "verify-imported-native-wrapper-validation" -> {
+            options.requireOnly("repository", "language", "target", "package-stage", "package-receipt",
+                "compatibility-request", "runtime-stages", "staged-sdks", "validation-stage", "validation-receipt")
+            val language = nativeWrapperBindings.singleOrNull { it.id == options.required("language") }
+                ?: error("Unsupported imported native wrapper language")
+            verifyImportedNativeWrapperValidation(options.file("repository"), language, options.required("target"),
+                options.file("package-stage"), options.file("package-receipt"), options.file("compatibility-request"),
+                options.file("runtime-stages"), options.file("staged-sdks"),
+                options.file("validation-stage"), options.file("validation-receipt"))
+        }
         "assemble-native-wrapper-binding-receipt" -> {
             options.requireOnly(
                 "phase", "language", "api-report", "coverage-receipt", "c-abi-bootstrap",

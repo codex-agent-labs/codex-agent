@@ -17,7 +17,7 @@ from .plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
     _contract_projection_from_request, plan_phase,
 )
-from .receipt import validate_phase_receipt, write_output_manifest
+from .receipt import validate_phase_receipt, verify_output_manifest_identity, write_output_manifest
 from .registry import (
     NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId, phase_instance_dependencies, required_contract_components,
 )
@@ -52,6 +52,55 @@ def _instance(receipt: dict[str, Any]) -> PhaseInstanceId:
     return PhaseInstanceId(*(receipt[key] for key in ("product", "component", "phase", "target")))
 
 
+def _verify_native_validation_stage(stage: Path, receipt: dict[str, Any], target: str) -> None:
+    """Inventory/source-input binding only; the trusted caller must run the full matcher."""
+    if (receipt["product"] != "sdk" or receipt["component"] not in NATIVE_BINDINGS
+            or receipt["phase"] != "validation" or target not in NATIVE_TARGETS
+            or receipt["target"] != target):
+        raise ValueError("Native validation stage differs from requested language/host phase")
+    manifest = verify_output_manifest_identity(
+        stage, "sdk", receipt["component"], "validation", target, receipt["productVersion"],
+    )
+    if manifest["outputs"] != receipt["outputs"]:
+        raise ValueError("Native validation stage differs from original receipt outputs")
+    roots = {"native-wrapper-installed": "outputs/installed/",
+             "native-wrapper-capability": "outputs/capability/"}
+    if receipt["component"] == "cpp":
+        roots["native-wrapper-package-negatives"] = "outputs/package-negatives/"
+    if {record["kind"] for record in manifest["outputs"]} != set(roots) or any(
+        not record["relativePath"].startswith(roots.get(record["kind"], "!"))
+        for record in manifest["outputs"]
+    ):
+        raise ValueError("Native validation stage has unexpected raw evidence kinds/roots")
+
+
+def _capture_validation_sources(repository: Path, validation: dict[str, Any], stage: Path, output: Path) -> None:
+    # Original validation and package producers may differ. Never read mutable
+    # checkout claims or execute an imported producer program.
+    component, commit = validation["component"], validation["producer"]["commit"]
+    program = {
+        "python": "tests/test_enum_parity.py", "csharp": "tests/CodexAgent.Tests/Program.cs",
+        "rust": "tests/enum_parity.rs", "cpp": "tests/value_parity_test.cpp",
+        "dart": "test/enum_parity_test.dart",
+    }[component]
+    sources = {"capability-claims.tsv": f"codex-agent-bindings/{component}/parity/capability-claims.tsv",
+               "test-program-source": f"codex-agent-bindings/{component}/{program}"}
+    if component == "cpp":
+        sources["test_installed_package_tamper.py"] = "codex-agent-bindings/cpp/tests/test_installed_package_tamper.py"
+    for name, path in sources.items():
+        contents = git_regular_blob_bytes(repository, commit, path, max_bytes=_LIMIT)
+        if not contents:
+            raise ValueError("Original validation source evidence is empty")
+        # C# transports a compiled DLL, not source-equivalent bytes. Keep its
+        # original Program.cs alongside (never in place of) the receipted DLL.
+        if name == "test-program-source" and component != "csharp" and contents != \
+                read_regular_file_bytes(stage / "outputs/capability/test-program", max_bytes=_LIMIT):
+            raise ValueError("Imported capability program differs from original validation Git source")
+        destination = output / "validation-source" / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(contents)
+
+
 def _verify_plan(repository: Path, receipt: dict[str, Any], versions: dict[str, str], upstream: list, projection) -> None:
     """Replay the sole planner from original Git inputs, never receipt-supplied hashes."""
     commit, tree = receipt["producer"]["commit"], receipt["producer"]["tree"]
@@ -84,6 +133,7 @@ def verify_sdk_package_inputs(
     runtime_package_stage: Path | None = None, runtime_package_receipt: Path | None = None,
     validation_inputs_output: Path | None = None,
     validation_receipt_path: Path | None = None,
+    validation_stage_root: Path | None = None, validation_target: str | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify package semantics, original artifacts and the complete source-input plan.
 
@@ -105,6 +155,11 @@ def verify_sdk_package_inputs(
             raise ValueError("Native SDK validation receipt identity differs from its package")
     if validation_inputs_output is not None and not native:
         raise ValueError("Capability input staging requires a native SDK package")
+    if validation_stage_root is not None or validation_target is not None:
+        if (validation_stage_root is None or validation_target is None or validation is None
+                or validation_inputs_output is None):
+            raise ValueError("Validation stage import requires receipt, expected target and private inputs output")
+        _verify_native_validation_stage(Path(validation_stage_root), validation, validation_target)
     if validation_inputs_output is not None:
         original_request_bytes = read_regular_file_bytes(Path(compatibility_request), max_bytes=_LIMIT, reject_symlink_parents=True)
     if instance.product != "sdk" or instance.phase != "package" or (
@@ -129,6 +184,13 @@ def verify_sdk_package_inputs(
 
     with tempfile.TemporaryDirectory(prefix="sdk-package-plan-") as temporary:
         root = Path(temporary).resolve()
+        if validation_stage_root is not None:
+            validation_inventory = regular_file_inventory(Path(validation_stage_root))
+            validation_stage = root / "validation"
+            snapshot_regular_tree(Path(validation_stage_root), validation_stage)
+            if regular_file_inventory(validation_stage) != validation_inventory:
+                raise ValueError("Native validation stage changed during snapshot")
+            _verify_native_validation_stage(validation_stage, validation, validation_target)
         original_inventory = regular_file_inventory(stage_root)
         stage = root / "package-stage"
         snapshot_regular_tree(stage_root, stage)
@@ -148,6 +210,7 @@ def verify_sdk_package_inputs(
             _require_capability_output_separate(validation_inputs_output, (
                 Path(stage_root), Path(receipt_path), Path(compatibility_request), runtime_stage_root, staged_sdks,
                 Path(validation_receipt_path) if validation_receipt_path is not None else None,
+                Path(validation_stage_root) if validation_stage_root is not None else None,
                 original_arguments,
                 original_arguments["contract_attestation"].parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
             ))
@@ -252,6 +315,12 @@ def verify_sdk_package_inputs(
             prepared = root / "capability-inputs"
             _stage_native_capability_inputs(arguments, runtime_stage_root, staged_sdks, prepared)
             (prepared / "receipts/sdk-package.json").write_bytes(original)
+            if validation_stage_root is not None:
+                _capture_validation_sources(repository, validation, validation_stage, prepared)
+                snapshot_regular_tree(validation_stage, prepared / "validation")
+                (prepared / "receipts/sdk-validation.json").write_bytes(validation_bytes)
+                if regular_file_inventory(Path(validation_stage_root)) != validation_inventory:
+                    raise ValueError("Native validation stage changed before publication")
             if (regular_file_inventory(runtime_original) != runtime_inventory
                     or regular_file_inventory(sdks_original) != sdks_inventory
                     or read_regular_file_bytes(Path(compatibility_request), max_bytes=_LIMIT, reject_symlink_parents=True) != original_request_bytes
@@ -264,6 +333,8 @@ def verify_sdk_package_inputs(
         raise ValueError("SDK package stage or receipt changed during input verification")
     if validation is not None and _receipt(validation_receipt_path)[1] != validation_bytes:
         raise ValueError("SDK validation receipt changed during input verification")
+    if validation_stage_root is not None and regular_file_inventory(Path(validation_stage_root)) != validation_inventory:
+        raise ValueError("SDK validation stage changed during input verification")
     return receipt, original
 
 
@@ -276,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
     native.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     native.add_argument("--validation-inputs-output", type=Path)
     native.add_argument("--validation-receipt", type=Path)
+    native.add_argument("--validation-stage", type=Path)
+    native.add_argument("--validation-target", choices=NATIVE_TARGETS)
     args = parser.parse_args(argv)
     expected = PhaseInstanceId("sdk", args.component, "package", "desktop")
     original, _ = _receipt(args.receipt)
@@ -286,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime_stage_root=args.runtime_stages, staged_sdks=args.staged_sdks,
         validation_inputs_output=args.validation_inputs_output,
         validation_receipt_path=args.validation_receipt,
+        validation_stage_root=args.validation_stage, validation_target=args.validation_target,
     )
     if verified != original:
         raise ValueError("Native SDK package receipt changed during CLI verification")

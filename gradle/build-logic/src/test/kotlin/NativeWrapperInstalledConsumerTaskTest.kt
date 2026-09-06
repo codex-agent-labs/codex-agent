@@ -166,7 +166,10 @@ class NativeWrapperInstalledConsumerTaskTest {
             "snapshotImportedNativeWrapperRuntimeStages.configure { mustRunAfter(invalidate) }",
             "generateNativeWrapperSdkCompatibility.configure { mustRunAfter(invalidate) }",
         ).forEach { assertTrue(it in source, it) }
-        assertFalse("WriteProductOutputManifestTask" in seam)
+        // Raw inventory is now staged canonically, but only after the complete
+        // capability check; it is not a hosted/five-language acceptance receipt.
+        assertTrue("tasks.register<WriteProductOutputManifestTask>" in seam)
+        assertTrue("dependsOn(nativeWrapperCapabilityEvidenceTasks.getValue(language))" in seam)
         assertFalse("GenerateCrossLanguageNativeWrapperBindingReceiptTask" in seam)
         assertFalse("consume" in seam && "--plan" in seam)
         assertTrue("packageReceipt.set(" in seam)
