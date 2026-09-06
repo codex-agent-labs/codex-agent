@@ -59,7 +59,7 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
-    def test_bootstrap_content_projector_and_importer_own_only_executing_validation_phases(self) -> None:
+    def test_bootstrap_content_projector_owns_runtime_validation_and_sdk_admission(self) -> None:
         path = "ci/products/sdk_runtime_content.py"
         owner = PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")
         result = classify_paths([path])
@@ -67,7 +67,7 @@ class ProductSelectionTest(unittest.TestCase):
         self.assertFalse(any(instance.phase == "binary" for instance in result.instances))
         for instance in PHASE_INSTANCE_IDS:
             owns = instance == owner or (instance.product == "sdk" and instance.component in NATIVE_BINDINGS
-                                         and instance.phase == "validation")
+                                         and instance.phase in {"package", "validation"})
             self.assertEqual((path,) if owns else (), phase_inventory_paths([path], instance), instance)
 
     def test_runtime_raw_stage_verifier_retains_metadata_and_actual_sdk_owners(self):
@@ -146,12 +146,12 @@ class ProductSelectionTest(unittest.TestCase):
                 self.assertEqual((path,) if path == "ci/products/contract_model.py" else (), phase_inventory_paths([path], PhaseInstanceId(
                     "runtime", "macos-arm64", "validation", "macos-arm64")))
 
-    def test_bootstrap_shared_parsers_enter_actual_validation_keys(self):
+    def test_bootstrap_shared_parsers_enter_actual_package_and_validation_keys(self):
         from ci.tests.test_product_plan import plan, receipt, upstreams
 
         owners = [PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")] + [
             item for item in PHASE_INSTANCE_IDS if item.product == "sdk"
-            and item.component in NATIVE_BINDINGS and item.phase == "validation"
+            and item.component in NATIVE_BINDINGS and item.phase in {"package", "validation"}
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -161,7 +161,7 @@ class ProductSelectionTest(unittest.TestCase):
                 for owner in owners:
                     self.assertEqual((path,), phase_inventory_paths([path], owner), (path, owner))
                     predecessors = upstreams(owner)
-                    if owner.product == "sdk":
+                    if owner.product == "sdk" and owner.phase == "validation":
                         package = PhaseInstanceId("sdk", owner.component, "package", "desktop")
                         package_plan = plan(package)
                         package_receipt = receipt(package)
@@ -202,7 +202,7 @@ class ProductSelectionTest(unittest.TestCase):
                     self.assertNotEqual(*keys)
                 for language in NATIVE_BINDINGS:
                     package = PhaseInstanceId("sdk", language, "package", "desktop")
-                    self.assertEqual((path,) if path == "ci/native_wrappers.py" else (),
+                self.assertEqual((path,) if path in {"ci/native_wrappers.py", "ci/products/inventory.py"} else (),
                                      phase_inventory_paths([path], package))
 
     def test_node_binding_validator_key_owns_execution_and_shared_copy_without_recompiling(self) -> None:

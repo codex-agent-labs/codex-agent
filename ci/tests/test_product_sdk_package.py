@@ -236,7 +236,7 @@ class SdkPackagePlanTest(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory(prefix="sdk-package-plan-test-")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.root = Path(cls.temporary.name).resolve()
-        cls.chain = build_chain(cls.root / "selected-products", 71)
+        cls.chain = build_chain(cls.root / "selected-products", 71, include_bootstrap=True)
         cls.older = build_chain(cls.root / "original-binary-contract", 72)
         cls.evidence = contract_evidence(cls.chain, cls.root / "contract-stage")
         cls.older_evidence = contract_evidence(cls.older, cls.root / "older-contract-stage")
@@ -269,6 +269,7 @@ class SdkPackagePlanTest(unittest.TestCase):
             value = load_canonical_json_bytes(path.read_bytes())
             cls.upstream[identity(value)] = value
         cls.projections = {}
+        cls.native_projections = None
         cls.sdks = native_fixture.staged_sdks(cls.chain, cls.root / "sdks")
         helper = native_fixture.NativeSdkInputsTest()
         helper.chain, helper.sdks = cls.chain, cls.sdks
@@ -336,10 +337,27 @@ class SdkPackagePlanTest(unittest.TestCase):
         instance = identity(receipt)
         projection = _contract_projection_from_request(instance, VERSIONS, evidence)
         selected = [upstream[item] for item in phase_instance_dependencies(instance)]
+        from ci.products.plan import native_runtime_validation_dependencies
+        from ci.products.sdk_runtime_content import verify_native_runtime_projection
+        dependencies = native_runtime_validation_dependencies(instance)
+        if dependencies and cls.native_projections is None:
+            variants = cls.chain["variants"]
+            cls.native_projections = tuple(verify_native_runtime_projection(
+                target=item.target, runtime_stage_root=variants["stages"],
+                phase_receipts=variants["variant_phase_receipts"][item.target],
+                variant_payload=variants["variant_bundles"][item.target],
+                attestation=variants["variant_attestations"][item.target],
+                signature=variants["variant_attestation_signatures"][item.target],
+                public_key=variants["variant_public_keys"][item.target],
+                contract_projection=projection, contract_payload=cls.chain["contract"]["payload"],
+                required_trust_domain="development",
+            ) for item in dependencies)
         result = plan_phase(instance, inventory=phase_git_inventory(cls.repository, cls.producer["commit"], instance),
                             versions=VERSIONS, upstream_receipts=selected,
                             toolchain_profile_digest=NOT_APPLICABLE_TOOLCHAIN_DIGEST,
-                            flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, contract_projection=projection)
+                            flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, contract_projection=projection,
+                            native_runtime_projections=tuple(value for value in cls.native_projections if value.target in
+                                {item.target for item in dependencies}) if dependencies else None)
         receipt.update(inputs=result["inputs"], buildKey=result["buildKey"], producer=cls.producer)
         path.write_bytes(canonical_json_bytes(validate_phase_receipt(receipt)))
         cls.projections[instance] = (selected, projection)
@@ -476,13 +494,52 @@ class SdkPackagePlanTest(unittest.TestCase):
         self.assertEqual(0, package_main(self.native_cli_arguments()))
         self.assertEqual(original, self.native_receipt.read_bytes())
 
-    def test_native_capability_request_rejects_signed_lifecycle_only_predecessor(self):
+    def test_plan_cli_requires_full_native_evidence_and_matches_original_receipt(self):
+        from ci.products.plan import main as plan_main, native_runtime_validation_dependencies
+        receipt = load_canonical_json_bytes(self.native_receipt.read_bytes())
+        instance = identity(receipt)
+        variants = self.chain["variants"]
+        evidence = [{
+            "target": item.target, "stageRoot": str(variants["stages"]),
+            "phaseReceipts": {phase: str(path) for phase, path in variants["variant_phase_receipts"][item.target].items()},
+            "payload": str(variants["variant_bundles"][item.target]),
+            "attestation": str(variants["variant_attestations"][item.target]),
+            "attestationSignature": str(variants["variant_attestation_signatures"][item.target]),
+            "publicKey": str(variants["variant_public_keys"][item.target]),
+            "keyring": None, "keysDirectory": None,
+        } for item in native_runtime_validation_dependencies(instance)]
+        request = {
+            "schemaVersion": 1, **{key: receipt[key] for key in ("product", "component", "phase", "target")},
+            "repositoryRoot": str(self.repository), "repositoryRevision": self.producer["commit"],
+            "versions": VERSIONS, "upstreamReceipts": self.projections[instance][0],
+            "contractEvidence": self.evidence, "runtimeValidationEvidence": None,
+            "nativeRuntimeEvidence": evidence, "toolchainProfileDigest": NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            "flagsDigest": NOT_APPLICABLE_FLAGS_DIGEST, "outputSchemaVersion": 1,
+        }
+        original = self.native_receipt.read_bytes()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, destination = root / "request.json", root / "plan.json"
+            source.write_bytes(canonical_json_bytes(request))
+            self.assertEqual(0, plan_main(["--request", str(source), "--output", str(destination)]))
+            result = load_canonical_json_bytes(destination.read_bytes())
+            self.assertEqual(receipt["inputs"], result["inputs"])
+            self.assertEqual(receipt["buildKey"], result["buildKey"])
+            for invalid in (None, evidence[:-1], list(reversed(evidence))):
+                source.write_bytes(canonical_json_bytes({**request, "nativeRuntimeEvidence": invalid}))
+                with patch("sys.stderr"), self.assertRaises(SystemExit) as failure:
+                    plan_main(["--request", str(source), "--output", str(root / "rejected.json")])
+                self.assertEqual(2, failure.exception.code)
+                self.assertFalse((root / "rejected.json").exists())
+        self.assertEqual(original, self.native_receipt.read_bytes())
+
+    def test_native_capability_request_retains_full_signed_synthetic_closure(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary).resolve() / "capability-inputs"
             original = self.native_receipt.read_bytes()
-            with self.assertRaisesRegex(ValueError, "full C ABI bootstrap closure"):
-                package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(output)])
-            self.assertFalse(output.exists())
+            self.assertEqual(0, package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(output)]))
+            self.assertTrue((output / "bootstrap/bootstrap-content.json").is_file())
+            # Byte/receipt closure only; synthetic claims do not establish Kotlin/host parity.
             self.assertEqual(original, self.native_receipt.read_bytes())
 
     def test_native_capability_output_cannot_mutate_original_input_trees(self):
@@ -508,11 +565,10 @@ class SdkPackagePlanTest(unittest.TestCase):
                 self.request.write_bytes(original)
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary).resolve() / "capability-inputs"
-            with patch("ci.products.sdk_package.stage_sdk_inputs", side_effect=stage_captured), \
-                    self.assertRaisesRegex(ValueError, "full C ABI bootstrap closure"):
-                package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(output)])
+            with patch("ci.products.sdk_package.stage_sdk_inputs", side_effect=stage_captured):
+                self.assertEqual(0, package_main(self.native_cli_arguments() + ["--validation-inputs-output", str(output)]))
             self.assertEqual(original, self.request.read_bytes())
-            self.assertFalse(output.exists())
+            self.assertTrue((output / "bootstrap/bootstrap-content.json").is_file())
 
     def test_native_cli_rejects_wrong_family_missing_inputs_and_changed_receipt(self):
         arguments = self.native_cli_arguments()

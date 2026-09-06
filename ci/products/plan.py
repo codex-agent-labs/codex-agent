@@ -52,6 +52,7 @@ from .selection import phase_git_inventory
 from .runtime_flags import load_runtime_binary_flags_bytes
 from .runtime_identity import derive_runtime_identity_from_git
 from .toolchain import load_toolchain_profile_bytes
+from .sdk_runtime_content import VerifiedNativeRuntimeProjection, verify_native_runtime_projection
 
 
 _RUNTIME_BINARY_FLAGS_PATH = "codex-agent-runtime-desktop/native/c-api/binary-flags.json"
@@ -276,6 +277,15 @@ def runtime_validation_dependencies(
     )
 
 
+def native_runtime_validation_dependencies(instance: PhaseInstanceId) -> tuple[PhaseInstanceId, ...]:
+    return tuple(identity for identity in sorted(phase_instance_dependencies(instance)) if (
+        instance.product == "sdk" and instance.component in NATIVE_BINDINGS
+        and instance.phase in {"package", "validation"}
+        and identity.product == "runtime" and identity.phase == "validation"
+        and identity.component == identity.target and identity.target in NATIVE_TARGETS
+    ))
+
+
 def verify_runtime_validation_projection(
     instance: PhaseInstanceId,
     report_files: Iterable[Path],
@@ -350,6 +360,7 @@ def plan_phase(
     output_schema_version: int = 1,
     contract_projection: VerifiedContractProjection | None = None,
     runtime_validation_projection: VerifiedRuntimeValidationProjection | None = None,
+    native_runtime_projections: tuple[VerifiedNativeRuntimeProjection, ...] | None = None,
     contract_execution_projection: VerifiedContractExecutionProjection | None = None,
 ) -> dict[str, Any]:
     """Return the exact canonical inputs and build key for one registry phase."""
@@ -391,7 +402,9 @@ def plan_phase(
         for target in {instance.target, "macos-arm64"}:
             runtime_identity = PhaseInstanceId("runtime", target, "validation", target)
             expected_runtime = _upstream_record(upstream_by_identity[runtime_identity])
-            if expected_runtime not in package_receipt["inputs"]["upstreamArtifacts"]:
+            package_runtime = [{key: value for key, value in record.items() if key != "semanticProjection"}
+                               for record in package_receipt["inputs"]["upstreamArtifacts"]]
+            if expected_runtime not in package_runtime:
                 raise ValueError("SDK validation Runtime receipt differs from its embedded package input")
 
     contract_identity = PhaseInstanceId("contract", "contract", "metadata", "common")
@@ -401,6 +414,17 @@ def plan_phase(
         contract_projection,
     )
     semantic_dependencies = runtime_validation_dependencies(instance)
+    native_dependencies = native_runtime_validation_dependencies(instance)
+    native_values = {}
+    if native_dependencies:
+        if not isinstance(native_runtime_projections, (tuple, list)) or len(native_runtime_projections) != len(native_dependencies):
+            raise ValueError("Authenticated native Runtime projections are required for every SDK dependency")
+        for identity, projection in zip(native_dependencies, native_runtime_projections, strict=True):
+            if type(projection) is not VerifiedNativeRuntimeProjection:
+                raise ValueError("Native Runtime projection is not authenticated")
+            native_values[identity] = projection.receipt_value(upstream_by_identity[identity], contract_projection)
+    elif native_runtime_projections is not None:
+        raise ValueError("Unexpected authenticated native Runtime projections")
     semantic_value = None
     if semantic_dependencies:
         if type(runtime_validation_projection) is not VerifiedRuntimeValidationProjection:
@@ -431,6 +455,7 @@ def plan_phase(
                 receipt,
                 contract_value if identity == contract_identity else None,
                 execution_value if identity == execution_identity else
+                native_values.get(identity) if identity in native_values else
                 semantic_value if identity in semantic_dependencies else None,
             )
             for identity, receipt in upstream_by_identity.items()
@@ -624,6 +649,47 @@ def _runtime_validation_projection_from_request(
     return verify_runtime_validation_projection(instance, reports, semantic_receipts)
 
 
+NATIVE_RUNTIME_EVIDENCE_KEYS = {
+    "target", "stageRoot", "phaseReceipts", "payload", "attestation",
+    "attestationSignature", "publicKey", "keyring", "keysDirectory",
+}
+
+
+def _native_runtime_projections_from_request(
+    instance: PhaseInstanceId, upstream_receipts: Any, value: Any,
+    contract_projection: VerifiedContractProjection | None, contract_payload: Path | None,
+    expected_trust_domain: str | None,
+) -> tuple[VerifiedNativeRuntimeProjection, ...] | None:
+    dependencies = native_runtime_validation_dependencies(instance)
+    if not dependencies:
+        if value not in (None, []):
+            raise ValueError("Unexpected native Runtime evidence")
+        return None
+    records = require_array(value, "native Runtime evidence")
+    if [record.get("target") if type(record) is dict else None for record in records] != [item.target for item in dependencies]:
+        raise ValueError("Native Runtime evidence must cover the exact sorted SDK dependency targets")
+    receipts = {_receipt_identity(validate_phase_receipt(item)): item for item in upstream_receipts}
+    projections = []
+    for identity, member in zip(dependencies, records, strict=True):
+        record = require_exact_keys(member, NATIVE_RUNTIME_EVIDENCE_KEYS, "native Runtime evidence")
+        def path(name: str, optional: bool = False) -> Path | None:
+            return None if optional and record[name] is None else Path(require_string(record[name], f"native Runtime {name}"))
+        phases = require_exact_keys(record["phaseReceipts"], {"binary", "package", "validation", "metadata"},
+                                    "native Runtime phase receipts")
+        projection = verify_native_runtime_projection(
+            target=identity.target, runtime_stage_root=path("stageRoot"),
+            phase_receipts={phase: Path(require_string(source, f"native Runtime {phase} receipt")) for phase, source in phases.items()},
+            variant_payload=path("payload"), attestation=path("attestation"), signature=path("attestationSignature"),
+            public_key=path("publicKey"), contract_projection=contract_projection, contract_payload=contract_payload,
+            required_trust_domain=expected_trust_domain, keyring=path("keyring", True), keys_directory=path("keysDirectory", True),
+        )
+        if identity not in receipts:
+            raise ValueError("Native Runtime evidence lacks its exact upstream receipt")
+        projection.receipt_value(receipts[identity], contract_projection)
+        projections.append(projection)
+    return tuple(projections)
+
+
 def _contract_execution_projection_from_request(
     instance: PhaseInstanceId, receipts: Any, value: Any,
 ) -> VerifiedContractExecutionProjection | None:
@@ -680,7 +746,8 @@ def main(argv: list[str] | None = None) -> int:
                 "toolchainProfileDigest",
                 "flagsDigest",
                 "outputSchemaVersion",
-            } | ({"contractExecutionEvidence"} if type(request_value) is dict and "contractExecutionEvidence" in request_value else set()),
+            } | ({"contractExecutionEvidence"} if type(request_value) is dict and "contractExecutionEvidence" in request_value else set())
+            | ({"nativeRuntimeEvidence"} if type(request_value) is dict and "nativeRuntimeEvidence" in request_value else set()),
             "plan request",
         )
         if require_integer(request["schemaVersion"], "plan request.schemaVersion", 1) != 1:
@@ -730,6 +797,12 @@ def main(argv: list[str] | None = None) -> int:
             output_schema_version=request["outputSchemaVersion"],
             contract_projection=contract_projection,
             runtime_validation_projection=runtime_validation_projection,
+            native_runtime_projections=_native_runtime_projections_from_request(
+                instance, request["upstreamReceipts"], request.get("nativeRuntimeEvidence"), contract_projection,
+                Path(request["contractEvidence"]["stageRoot"]) / contract_projection.receipt_value()["bundlePath"]
+                if contract_projection is not None else None,
+                request["contractEvidence"]["expectedTrustDomain"] if contract_projection is not None else None,
+            ),
             contract_execution_projection=_contract_execution_projection_from_request(
                 instance, request["upstreamReceipts"], request.get("contractExecutionEvidence"),
             ),

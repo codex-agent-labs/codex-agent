@@ -340,12 +340,15 @@ def validate_contract_projection(value: Any, label: str) -> dict[str, Any]:
 
 
 def validate_runtime_validation_projection(value: Any, label: str) -> dict[str, Any]:
-    projection = require_exact_keys(value, RUNTIME_VALIDATION_PROJECTION_KEYS, label)
+    native = type(value) is dict and value.get("kind") == "runtime-native-validation-content"
+    projection = require_exact_keys(value, RUNTIME_VALIDATION_PROJECTION_KEYS | ({"receiptSha256"} if native else set()), label)
     if require_integer(projection["schemaVersion"], f"{label}.schemaVersion", 1) != 1:
         raise ValueError("Unsupported Runtime validation projection schemaVersion")
-    if projection["kind"] != "runtime-validation-content":
+    if projection["kind"] not in {"runtime-validation-content", "runtime-native-validation-content"}:
         raise ValueError(f"{label}.kind is invalid")
     require_sha256(projection["sha256"], f"{label}.sha256")
+    if native:
+        require_sha256(projection["receiptSha256"], f"{label}.receiptSha256")
     return projection
 
 
@@ -455,7 +458,7 @@ def build_key_payload(
         projection = upstream.get("contractProjection")
         semantic_projection = upstream.get("semanticProjection")
         if semantic_projection is not None:
-            from .registry import PhaseInstanceId, phase_instance_dependencies
+            from .registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId, phase_instance_dependencies
 
             consumer = PhaseInstanceId(product, component, phase, target)
             dependency = PhaseInstanceId(
@@ -466,12 +469,19 @@ def build_key_payload(
                 (product, component, phase, target) == ("contract", "contract", "package", "common")
                 and semantic_projection["kind"] == "contract-execution-content"
             )
-            if not contract_execution_edge and (
-                product != "runtime"
-                or phase != "metadata"
-                or upstream["target"] == "node-js-binding"
-                or dependency not in phase_instance_dependencies(consumer)
-            ):
+            runtime_metadata_edge = (
+                product == "runtime" and phase == "metadata"
+                and semantic_projection["kind"] == "runtime-validation-content"
+                and upstream["target"] != "node-js-binding"
+                and dependency in phase_instance_dependencies(consumer)
+            )
+            native_sdk_edge = (
+                product == "sdk" and component in NATIVE_BINDINGS and phase in {"package", "validation"}
+                and semantic_projection["kind"] == "runtime-native-validation-content"
+                and upstream["component"] == upstream["target"] and upstream["target"] in NATIVE_TARGETS
+                and dependency in phase_instance_dependencies(consumer)
+            )
+            if not (contract_execution_edge or runtime_metadata_edge or native_sdk_edge):
                 raise ValueError(
                     "Runtime validation semantic projection is attached to an unauthorized edge"
                 )

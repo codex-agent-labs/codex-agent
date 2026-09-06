@@ -20,7 +20,7 @@ from ci.tests.product_chain_adapters import build_adapters
 from ci.tests.test_contract_execution_closure import execution_closure_fixture
 
 
-def build_chain(root: Path, run: int, *, variants: dict | None = None) -> dict:
+def build_chain(root: Path, run: int, *, variants: dict | None = None, include_bootstrap: bool = False) -> dict:
     root.mkdir()
     private_key, public_key, signing = generate_development_key(root / "keys")
     context = {
@@ -51,7 +51,7 @@ def build_chain(root: Path, run: int, *, variants: dict | None = None) -> dict:
         "execution_closure": trust / "execution-closure",
     }
     if variants is None:
-        variants = build_variants(root / "variants", contract, context)
+        variants = build_variants(root / "variants", contract, context, include_bootstrap=include_bootstrap)
     adapters = build_adapters(root / "adapters", contract, variants, context)
     contract_args = {
         "contract_payload": payload, "contract_metadata_receipt": receipt,

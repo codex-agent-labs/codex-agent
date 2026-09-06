@@ -1,7 +1,8 @@
 """Deterministic bootstrap content, emitted only after the full Runtime raw gate.
 
-This projector is not an authentication or reuse-admission API. Original raw
-compiler/JUnit evidence and receipts remain mandatory external proof.
+The raw projector grants no admission; the separate verified projection factory
+requires full captured K/R authentication. Original raw compiler/JUnit evidence
+and receipts remain mandatory external proof.
 """
 
 from __future__ import annotations
@@ -25,6 +26,63 @@ from .inventory import (
     require_relative_path, require_sha256, sha256_bytes, snapshot_regular_tree,
 )
 from .test_results import read_canonical_test_report
+
+
+_VERIFIED_NATIVE_RUNTIME = object()
+
+
+class VerifiedNativeRuntimeProjection:
+    """One exact original Runtime receipt authenticated for native SDK key use."""
+
+    __slots__ = ("_receipt", "_value", "_contract", "_verified")
+
+    def __init__(self, receipt: bytes, digest: str, contract: dict[str, Any], verified: object):
+        if verified is not _VERIFIED_NATIVE_RUNTIME:
+            raise TypeError("Native Runtime projection must come from full K/R verification")
+        self._receipt = receipt
+        self._value = canonical_json_bytes({
+            "schemaVersion": 1, "kind": "runtime-native-validation-content",
+            "sha256": require_sha256(digest, "Native Runtime content digest"),
+            "receiptSha256": sha256_bytes(receipt),
+        })
+        self._contract = canonical_json_bytes(contract)
+        self._verified = verified
+
+    def receipt_value(self, receipt: dict[str, Any], contract_projection: Any) -> dict[str, Any]:
+        from .contract_projection import VerifiedContractProjection
+        if self._verified is not _VERIFIED_NATIVE_RUNTIME or type(contract_projection) is not VerifiedContractProjection:
+            raise ValueError("Native Runtime projection is not authenticated")
+        if canonical_json_bytes(receipt) != self._receipt:
+            raise ValueError("Native Runtime projection belongs to another original receipt")
+        if self._contract != canonical_json_bytes(_native_contract_identity(contract_projection, receipt["target"])):
+            raise ValueError("Native Runtime projection belongs to another Contract content identity")
+        return load_canonical_json_bytes(self._value)
+
+    @property
+    def target(self) -> str:
+        return load_canonical_json_bytes(self._receipt)["target"]
+
+
+def _native_contract_identity(projection: Any, target: str) -> dict[str, Any]:
+    value = projection.receipt_value(include_coverage=target == "macos-arm64")
+    components = {item["component"]: item["sha256"] for item in value["componentDigests"]}
+    if not {"common", target} <= set(components):
+        raise ValueError("Native Runtime projection lacks required Contract components")
+    return {
+        "contractDigest": value["contractDigest"],
+        "componentDigests": {name: components[name] for name in ("common", target)},
+        **({"canonicalCoverageDigest": value["canonicalCoverageDigest"]} if target == "macos-arm64" else {}),
+    }
+
+
+def verify_native_runtime_projection(*args: Any, **kwargs: Any) -> VerifiedNativeRuntimeProjection:
+    """Mint only after the complete captured K/R gate; never accept a supplied digest."""
+    content, receipt = verify_native_runtime_validation_content(*args, **kwargs)
+    projection = kwargs.get("contract_projection") if "contract_projection" in kwargs else args[7]
+    return VerifiedNativeRuntimeProjection(
+        receipt, sha256_bytes(canonical_json_bytes(content)),
+        _native_contract_identity(projection, content["target"]), _VERIFIED_NATIVE_RUNTIME,
+    )
 
 
 def verify_native_runtime_validation_content(

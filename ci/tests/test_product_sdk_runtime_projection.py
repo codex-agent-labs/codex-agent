@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from ci.products.contract_projection import verify_contract_component_projection
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, snapshot_regular_tree
-from ci.products.sdk_runtime_content import verify_native_runtime_validation_content
+from ci.products.sdk_runtime_content import verify_native_runtime_validation_content, verify_native_runtime_projection
 from ci.tests.test_product_native_chain import build_chain
 
 
@@ -69,6 +69,23 @@ class NativeRuntimeContentTest(unittest.TestCase):
     def test_old_mac_lifecycle_fixture_is_rejected_not_upgraded(self):
         with self.assertRaisesRegex(ValueError, "exact authenticated Contract coverage"):
             verify_native_runtime_validation_content(**self.arguments("macos-arm64"))
+
+    def test_complete_mac_fixture_mints_receipt_bound_proof_across_independent_signers(self):
+        from ci.tests.product_chain_variants import build_variants
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            proofs = []
+            for name, chain in (("left", self.left), ("right", self.right)):
+                variants = build_variants(root / name, chain["contract"], chain["context"], include_bootstrap=True)
+                arguments = self.arguments("macos-arm64", name, variants)
+                original = arguments["phase_receipts"]["validation"].read_bytes()
+                proof = verify_native_runtime_projection(**arguments)
+                value = proof.receipt_value(load_canonical_json_bytes(original), self.projections[name])
+                self.assertEqual(original, arguments["phase_receipts"]["validation"].read_bytes())
+                proofs.append(value)
+            self.assertEqual(proofs[0]["sha256"], proofs[1]["sha256"])
+            self.assertNotEqual(proofs[0]["receiptSha256"], proofs[1]["receiptSha256"])
+            # This is synthetic content/signature closure, never Kotlin matcher or host acceptance.
 
     def test_signed_original_consumer_source_change_changes_content(self):
         from ci.products.c_abi import STRICT_CONSUMERS

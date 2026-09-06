@@ -111,7 +111,7 @@ class ProductRegistryTest(unittest.TestCase):
                     PhaseInstanceId("sdk", language, "package", "desktop"), contract, bootstrap,
                     PhaseInstanceId("runtime", target, "validation", target),
                 }, set(phase_instance_dependencies(instance)))
-                self.assertEqual(("common",), required_contract_components(instance))
+                self.assertEqual(tuple(sorted({"common", target, "macos-arm64"})), required_contract_components(instance))
 
     def test_every_sdk_distribution_package_requires_the_shared_compatibility_products(self) -> None:
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
@@ -159,7 +159,7 @@ class ProductRegistryTest(unittest.TestCase):
             PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"): (
                 "ios-arm64", "ios-simulator-arm64",
             ),
-            PhaseInstanceId("sdk", "python", "package", "desktop"): ("common",),
+            PhaseInstanceId("sdk", "python", "package", "desktop"): tuple(sorted(("common", *NATIVE_TARGETS))),
             PhaseInstanceId("sdk", "javascript", "package", "node"): ("node-js",),
         }
         for instance, components in cases.items():

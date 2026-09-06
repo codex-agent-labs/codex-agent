@@ -321,13 +321,13 @@ def required_contract_components(instance: PhaseInstanceId) -> tuple[str, ...]:
     elif phase == PhaseId("sdk", "sdk-ios", "package"):
         components = ("ios-arm64", "ios-simulator-arm64")
     elif phase.product == "sdk" and phase.component in NATIVE_BINDINGS and phase.phase == "package":
-        components = ("common",)
+        components = ("common", *NATIVE_TARGETS)
     elif phase == PhaseId("sdk", "javascript", "package"):
         components = ("node-js",)
     elif phase == PhaseId("runtime", "macos-arm64", "validation"):
         components = ("common", "macos-arm64")
     elif phase.product == "sdk" and phase.component in NATIVE_BINDINGS and phase.phase == "validation":
-        components = ("common",)
+        components = tuple({"common", instance.target, "macos-arm64"})
     else:
         components = ()
     if any(component not in CONTRACT_COMPONENTS for component in components):

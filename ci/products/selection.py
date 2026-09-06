@@ -530,7 +530,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
             "gradle/build-logic/src/main/kotlin/ReleaseIo.kt",
         }:
             consumers = set().union(*(
-                _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
+                _from_phase("sdk", language, "package" if path == "ci/products/inventory.py" else "validation")
+                for language in NATIVE_BINDINGS
             ))
             contract = _contract() if path.endswith(("inventory.py", "ReleaseIo.kt")) else set()
             bootstrap = _runtime(("macos-arm64",), "validation") if path == "ci/products/inventory.py" else set()
@@ -549,7 +550,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
     if path == "ci/products/contract_model.py":
         return _contract() | _runtime(("macos-arm64",), "validation").union(*(
-            _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
+            _from_phase("sdk", language, "package") for language in NATIVE_BINDINGS
         ))
     if path == "ci/products/contract.py":
         return _contract()
@@ -563,10 +564,10 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     if path == "ci/products/runtime_identity.py":
         return _runtime(NATIVE_TARGETS)
     if path == "ci/products/runtime_variant.py":
-        return _runtime(NATIVE_TARGETS, "metadata")
+        return _runtime(NATIVE_TARGETS, "metadata") | _bindings(NATIVE_BINDINGS)
     if path == "ci/products/sdk_runtime_content.py":
         return _runtime(("macos-arm64",), "validation").union(*(
-            _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
+            _from_phase("sdk", language, "package") for language in NATIVE_BINDINGS
         ))
     if path == "ci/products/runtime_attestation.py":
         return _runtime(NATIVE_TARGETS, "metadata") | _bindings(
@@ -597,9 +598,9 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         selected = _runtime(RUNTIME_COMPONENTS, "validation")
         if path != "ci/products/runtime_evidence.py":
             selected |= _contract()
-        if path == "ci/products/test_results.py":
+        if path in {"ci/products/test_results.py", "ci/products/runtime_evidence.py"}:
             selected.update(set().union(*(
-                _from_phase("sdk", language, "validation") for language in NATIVE_BINDINGS
+                _from_phase("sdk", language, "package") for language in NATIVE_BINDINGS
             )))
         return selected
     if path == "ci/native_wrappers.py":
@@ -906,6 +907,12 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         return selected
 
     direct: set[PhaseInstanceId] = set()
+    if path in {"ci/products/sdk_runtime_content.py", "ci/products/contract_model.py",
+                "ci/products/test_results.py", "ci/products/runtime_evidence.py",
+                "ci/products/runtime_variant.py", "ci/products/c_abi.py"}:
+        # Both package planning and imported validation independently execute the full gate.
+        direct.update(instance for instance in selected if instance.product == "sdk"
+                      and instance.component in NATIVE_BINDINGS and instance.phase == "validation")
     if path == "ci/products/runtime_attestation.py":
         # Imported native validation authenticates original stages even on package reuse.
         direct.update(instance for instance in selected if instance.product == "sdk"

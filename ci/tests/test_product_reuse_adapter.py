@@ -1912,6 +1912,37 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 missing, (metadata,), require_complete=False,
             )
 
+    def test_outer_native_sdk_continuation_preserves_wait_without_runtime_metadata_shortcut(self):
+        instance = PhaseInstanceId("sdk", "python", "package", "desktop")
+        closure = product_reuse._dependency_closure((instance,))
+        phases = [{
+            **product_reuse._identity_record(item),
+            "buildKey": None if item == instance else sha256_bytes(repr(item).encode()),
+            "state": "waiting" if item == instance else "retained", "source": None,
+            "transportSource": None, "misses": [],
+            "receiptSha256": None if item == instance else sha256_bytes(f"receipt-{item}".encode()),
+            "objectSha256": None if item == instance else sha256_bytes(f"object-{item}".encode()),
+        } for item in closure]
+        result = {
+            "schemaVersion": 1, "result": "build-required", "fullReuse": False, "phases": phases,
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+            "continuationRequirements": [{
+                "kind": "native-runtime-validation-evidence", **product_reuse._identity_record(instance),
+                "dependencies": [product_reuse._identity_record(item)
+                                 for item in product_reuse.native_runtime_validation_dependencies(instance)],
+            }],
+        }
+        product_reuse._validate_reuse_result(result, (instance,), require_complete=False)
+        self.assertEqual(5, len(result["continuationRequirements"][0]["dependencies"]))
+        for kind in ("runtime-validation-evidence", "caller-asserted-evidence"):
+            invalid = copy.deepcopy(result)
+            invalid["continuationRequirements"][0]["kind"] = kind
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                product_reuse._validate_reuse_result(invalid, (instance,), require_complete=False)
+        result["continuationRequirements"] = []
+        with self.assertRaisesRegex(ValueError, "do not match ready"):
+            product_reuse._validate_reuse_result(result, (instance,), require_complete=False)
+
     def test_outer_jvm_handoff_orders_five_reports_and_rejects_cross_pairing(self) -> None:
         root = self.root.resolve()
         metadata = PhaseInstanceId("runtime", "jvm", "metadata", "jvm")

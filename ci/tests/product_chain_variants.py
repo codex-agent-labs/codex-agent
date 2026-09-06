@@ -198,7 +198,9 @@ def _checksum(contents: bytes, suffix: str) -> bytes:
     return hashlib.new(suffix.removeprefix("."), contents).hexdigest().encode("ascii") + b"\n"
 
 
-def build_variants(root: Path, contract: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def build_variants(
+    root: Path, contract: dict[str, Any], context: dict[str, Any], *, include_bootstrap: bool = False,
+) -> dict[str, Any]:
     """Build five authenticated Runtime variants from deterministic fixture payloads."""
     root = Path(root)
     root.mkdir(parents=True)
@@ -336,13 +338,18 @@ def build_variants(root: Path, contract: dict[str, Any], context: dict[str, Any]
             destination = references / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(source.read_bytes())
+        has_bootstrap = include_bootstrap and target == "macos-arm64"
+        if has_bootstrap:
+            from ci.tests.product_chain_bootstrap import write_synthetic_bootstrap
+            write_synthetic_bootstrap(validation_stage / "outputs/c-abi-bootstrap", references, verified_sdk, contract)
         package_outputs = write_output_manifest(
             package_stage, "runtime", target, "package", target, _VERSION,
             {"c-abi": "outputs/c-abi", "app-server": "outputs/app-server", "maven": "outputs/maven"},
         )["outputs"]
         validation_outputs = write_output_manifest(
             validation_stage, "runtime", target, "validation", target, _VERSION,
-            {"c-abi": "outputs/c-abi", "native": "outputs/native", "c-abi-reference": "outputs/c-abi-reference"},
+            {"c-abi": "outputs/c-abi", "native": "outputs/native", "c-abi-reference": "outputs/c-abi-reference"}
+            | ({"c-abi-bootstrap": "outputs/c-abi-bootstrap"} if has_bootstrap else {}),
         )["outputs"]
 
         receipt_paths = {
@@ -358,9 +365,19 @@ def build_variants(root: Path, contract: dict[str, Any], context: dict[str, Any]
             receipt_paths["package"], component=target, phase="package", target=target,
             outputs=package_outputs, upstream=[reference(binary)], context=context,
         )
+        validation_upstream = [reference(package)]
+        if has_bootstrap:
+            coverage_reference = contract_reference(contract, target)
+            coverage_reference["contractProjection"].update(
+                schemaVersion=2,
+                canonicalCoverageDigest=contract["manifest"]["canonicalCoverageDigest"],
+                componentDigests=[{"component": name, "sha256": contract["manifest"]["components"][name]["sha256"]}
+                                  for name in ("common", target)],
+            )
+            validation_upstream.append(coverage_reference)
         validation = write_receipt(
             receipt_paths["validation"], component=target, phase="validation", target=target,
-            outputs=validation_outputs, upstream=[reference(package)], context=context,
+            outputs=validation_outputs, upstream=validation_upstream, context=context,
         )
         identity = derive_runtime_identity({
             "schemaVersion": 1,

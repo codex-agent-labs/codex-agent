@@ -202,6 +202,9 @@ def verified_execution_fixture(receipt_bytes: bytes):
 def advance_reuse(*args, **kwargs):
     # Real verified fixture proof for tests supplying retained receipts without transported objects.
     kwargs.setdefault("contract_execution_projection_provider", lambda envelope: verified_execution_fixture(envelope["receiptBytes"]))
+    from ci.tests.test_product_plan import verified_native_projections
+    kwargs.setdefault("native_runtime_projection_provider", lambda instance, envelopes, projection:
+                      verified_native_projections(instance, [item["receipt"] for item in envelopes], projection))
     return _advance_reuse(*args, **kwargs)
 
 
@@ -256,6 +259,7 @@ def plan_for(
     inputs: dict[PhaseInstanceId, dict[str, object]],
     resolved: dict[PhaseInstanceId, dict[str, object]],
 ) -> dict[str, object]:
+    from ci.tests.test_product_plan import verified_native_projections
     semantic_dependencies = runtime_validation_dependencies(instance)
     return plan_phase(
         instance,
@@ -275,6 +279,10 @@ def plan_for(
         contract_execution_projection=(
             verified_execution_fixture(resolved[CONTRACT_BINARY]["receiptBytes"])
             if instance == CONTRACT_PACKAGE else None
+        ),
+        native_runtime_projections=verified_native_projections(
+            instance, [resolved[dependency]["receipt"] for dependency in phase_instance_dependencies(instance)],
+            inputs[instance].get("contract_projection"),
         ),
         **inputs[instance],
     )
@@ -1768,6 +1776,18 @@ class ProductReuseTest(unittest.TestCase):
         ]
 
         ready_plans = []
+        waiting, _ = advance_reuse(
+            [PYTHON_PACKAGE], inputs, dependencies, self.session(),
+            repository_root=flags_repository, repository_revision=flags_revision,
+            runtime_validation_projection_provider=test_runtime_projection_provider,
+            native_runtime_projection_provider=None,
+            build_plan_consumer=lambda instance, plan: ready_plans.append((instance, plan)),
+        )
+        self.assertEqual([], ready_plans)
+        self.assertEqual({"contract": [], "runtime": [], "sdk": []}, waiting["matrices"])
+        self.assertEqual(["native-runtime-validation-evidence"],
+                         [entry["kind"] for entry in waiting["continuationRequirements"]])
+        self.assertEqual(5, len(waiting["continuationRequirements"][0]["dependencies"]))
         result, _ = advance_reuse(
             [PYTHON_PACKAGE],
             inputs,

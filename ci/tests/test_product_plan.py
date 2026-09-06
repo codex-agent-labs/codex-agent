@@ -20,6 +20,7 @@ from ci.products.plan import (
     verified_phase_toolchain_digest,
     verify_build_key_output_consistency,
     verify_runtime_validation_projection,
+    native_runtime_validation_dependencies,
 )
 from ci.products.receipt import compute_build_key, output_inventory_digest
 from ci.products.registry import (
@@ -168,6 +169,19 @@ def verified_runtime_projection(
     )
 
 
+def verified_native_projections(instance, receipts, projection, digest=None):
+    from ci.products.sdk_runtime_content import VerifiedNativeRuntimeProjection, _VERIFIED_NATIVE_RUNTIME, _native_contract_identity
+    dependencies = native_runtime_validation_dependencies(instance)
+    if not dependencies:
+        return None
+    by_identity = {PhaseInstanceId(*(value[key] for key in ("product", "component", "phase", "target"))): value
+                   for value in receipts}
+    return tuple(VerifiedNativeRuntimeProjection(
+        canonical_json_bytes(by_identity[identity]), digest or output_inventory_digest(by_identity[identity]["outputs"]),
+        _native_contract_identity(projection, identity.target), _VERIFIED_NATIVE_RUNTIME,
+    ) for identity in dependencies)
+
+
 def plan(
     instance: PhaseInstanceId,
     *,
@@ -204,6 +218,7 @@ def plan(
         flags_digest=flags_digest,
         contract_projection=projection,
         runtime_validation_projection=runtime_validation_projection,
+        native_runtime_projections=verified_native_projections(instance, selected_upstreams, projection),
         contract_execution_projection=execution_projection,
     )
 
@@ -227,6 +242,57 @@ def toolchain_profile(profile_id: str) -> dict[str, object]:
 
 
 class ProductPlanTest(unittest.TestCase):
+    def test_native_sdk_projection_preserves_original_lineage_but_not_run_hashes_in_key(self):
+        instance = PhaseInstanceId("sdk", "python", "package", "desktop")
+        original = upstreams(instance)
+        changed = copy.deepcopy(original)
+        for member in changed:
+            if member["product"] == "runtime" and member["phase"] == "validation":
+                member["producer"] = {**member["producer"], "runId": 99, "commit": "c" * 40}
+                member["outputs"][0]["sha256"] = DIGEST_C
+                member["productVersion"] = "2.3.5"
+        projection = verified_projection(instance)
+        def planned(receipts, digest):
+            return plan_phase(instance, inventory=[file_record()], versions=VERSIONS,
+                              upstream_receipts=receipts, toolchain_profile_digest=DIGEST_A,
+                              flags_digest=DIGEST_B, contract_projection=projection,
+                              native_runtime_projections=verified_native_projections(instance, receipts, projection, digest))
+        first, second = planned(original, DIGEST_A), planned(changed, DIGEST_A)
+        self.assertEqual(first["buildKey"], second["buildKey"])
+        self.assertNotEqual(first["inputs"], second["inputs"])
+        self.assertNotEqual(first["buildKey"], planned(original, DIGEST_B)["buildKey"])
+        records = [member for member in second["inputs"]["upstreamArtifacts"] if member["phase"] == "validation"]
+        originals = sorted((member for member in changed if member["phase"] == "validation"), key=lambda member: member["target"])
+        for record, source in zip(records, originals, strict=True):
+            self.assertEqual(output_inventory_digest(source["outputs"]), record["outputsDigest"])
+            self.assertEqual(sha256_bytes(canonical_json_bytes(source)), record["semanticProjection"]["receiptSha256"])
+
+    def test_native_sdk_projection_rejects_missing_forged_wrong_order_and_stale_receipts(self):
+        instance = PhaseInstanceId("sdk", "python", "package", "desktop")
+        originals = upstreams(instance)
+        projection = verified_projection(instance)
+        proofs = verified_native_projections(instance, originals, projection, DIGEST_A)
+        kwargs = dict(inventory=[file_record()], versions=VERSIONS, upstream_receipts=originals,
+                      toolchain_profile_digest=DIGEST_A, flags_digest=DIGEST_B, contract_projection=projection)
+        for invalid in (None, (), proofs[:-1], proofs + proofs[:1], tuple(reversed(proofs)),
+                        (object(), *proofs[1:])):
+            with self.subTest(proofs=invalid), self.assertRaises(ValueError):
+                plan_phase(instance, **kwargs, native_runtime_projections=invalid)
+        changed = copy.deepcopy(originals)
+        member = next(member for member in changed if member["product"] == "runtime" and member["phase"] == "validation")
+        member["producer"] = {**member["producer"], "runId": 99}
+        with self.assertRaisesRegex(ValueError, "another original receipt"):
+            plan_phase(instance, **{**kwargs, "upstream_receipts": changed}, native_runtime_projections=proofs)
+        with self.assertRaisesRegex(ValueError, "another Contract content identity"):
+            plan_phase(instance, **{**kwargs, "contract_projection": verified_projection(instance, component_digest=DIGEST_B)},
+                       native_runtime_projections=proofs)
+        planned = plan_phase(instance, **kwargs, native_runtime_projections=proofs)
+        forged = copy.deepcopy(planned["inputs"])
+        record = next(member for member in forged["upstreamArtifacts"] if member["phase"] == "validation")
+        record["semanticProjection"] = {"schemaVersion": 1, "kind": "runtime-validation-content", "sha256": DIGEST_A}
+        with self.assertRaisesRegex(ValueError, "unauthorized edge"):
+            compute_build_key(product="sdk", component="python", phase="package", target="desktop", inputs=forged)
+
     def test_contract_coverage_changes_validation_key_not_native_binary_compatibility(self):
         validation = PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64")
         binary = PhaseInstanceId("runtime", "macos-arm64", "binary", "macos-arm64")

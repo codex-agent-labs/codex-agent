@@ -38,6 +38,8 @@ from .plan import (
     verified_phase_toolchain_digest,
     verify_build_key_output_consistency,
     verify_runtime_validation_projection,
+    native_runtime_validation_dependencies, _native_runtime_projections_from_request,
+    NATIVE_RUNTIME_EVIDENCE_KEYS, VerifiedNativeRuntimeProjection,
 )
 from .receipt import output_inventory_digest, validate_phase_receipt
 from .receipt import build_key_payload
@@ -711,7 +713,7 @@ def plan_reuse_wave(
             "runtimeValidationEvidence",
             "availableObjects",
             "catalogs",
-        },
+        } | ({"nativeRuntimeEvidence"} if type(value) is dict and "nativeRuntimeEvidence" in value else set()),
         "reuse-wave request",
     )
     if require_integer(request["schemaVersion"], "reuse-wave request.schemaVersion", 1) != 1:
@@ -784,6 +786,25 @@ def plan_reuse_wave(
         ordered_runtime_evidence.append(instance)
     if tuple(ordered_runtime_evidence) != tuple(sorted(ordered_runtime_evidence)):
         raise ValueError("reuse-wave request.runtimeValidationEvidence must be sorted")
+    native_targets = {dependency.target for instance in closure for dependency in native_runtime_validation_dependencies(instance)}
+    native_evidence = {}
+    for member in require_array(request.get("nativeRuntimeEvidence", []), "reuse-wave native Runtime evidence"):
+        record = require_exact_keys(member, NATIVE_RUNTIME_EVIDENCE_KEYS, "reuse-wave native Runtime evidence")
+        target = record["target"]
+        if target not in native_targets or target in native_evidence:
+            raise ValueError("Unexpected or duplicate reuse-wave native Runtime evidence target")
+        phases = require_exact_keys(record["phaseReceipts"], {"binary", "package", "validation", "metadata"},
+                                    "reuse-wave native Runtime phase receipts")
+        native_evidence[target] = {
+            "target": target,
+            "phaseReceipts": {phase: str(_artifact_path(artifact_root, path, f"native Runtime {phase} receipt"))
+                              for phase, path in phases.items()},
+            **{name: None if record[name] is None and name in {"keyring", "keysDirectory"} else
+               str(_artifact_path(artifact_root, record[name], f"native Runtime {name}"))
+               for name in NATIVE_RUNTIME_EVIDENCE_KEYS - {"target", "phaseReceipts"}},
+        }
+    if list(native_evidence) != sorted(native_evidence):
+        raise ValueError("Reuse-wave native Runtime evidence targets must be sorted")
     phase_inputs: dict[PhaseInstanceId, dict[str, Any]] = {}
     for instance in closure:
         authority = authorities[instance]
@@ -899,17 +920,19 @@ def plan_reuse_wave(
                 session.register_contract_stage(object_path, envelope)
 
         master_projection: VerifiedContractProjection | None = None
+        master_contract_stage: Path | None = None
 
         def contract_projection_provider(
             instance: PhaseInstanceId,
             envelope: dict[str, Any],
         ) -> VerifiedContractProjection:
-            nonlocal master_projection
+            nonlocal master_projection, master_contract_stage
             if contract_evidence is None:
                 raise ValueError("Contract-consuming reuse requires authenticated Contract evidence")
             if master_projection is None:
+                master_contract_stage = session.contract_stage(envelope)
                 master_projection = verify_contract_component_projection(
-                    session.contract_stage(envelope),
+                    master_contract_stage,
                     envelope["receiptBytes"],
                     contract_evidence["attestation"],
                     contract_evidence["attestationSignature"],
@@ -923,6 +946,26 @@ def plan_reuse_wave(
             return master_projection.restrict(required_contract_components(instance))
 
         consumed_runtime_validation_evidence: set[PhaseInstanceId] = set()
+        consumed_native_evidence: set[str] = set()
+        native_projection_cache: dict[tuple[str, str], VerifiedNativeRuntimeProjection] = {}
+
+        def native_runtime_projection_provider(instance, envelopes, projection):
+            targets = [dependency.target for dependency in native_runtime_validation_dependencies(instance)]
+            if any(target not in native_evidence for target in targets):
+                return None
+            if master_projection is None or master_contract_stage is None or contract_evidence is None:
+                raise ValueError("Native Runtime reuse lacks authenticated Contract evidence")
+            keys = [(target, envelope["receiptSha256"]) for target, envelope in zip(targets, envelopes, strict=True)]
+            if any(key not in native_projection_cache for key in keys):
+                verified = _native_runtime_projections_from_request(
+                    instance, [envelope["receipt"] for envelope in envelopes],
+                    [native_evidence[target] for target in targets], projection,
+                    master_contract_stage / master_projection.receipt_value()["bundlePath"],
+                    contract_evidence["expectedTrustDomain"],
+                )
+                native_projection_cache.update(zip(keys, verified, strict=True))
+            consumed_native_evidence.update(targets)
+            return tuple(native_projection_cache[key] for key in keys)
 
         def runtime_validation_projection_provider(
             instance: PhaseInstanceId,
@@ -948,6 +991,7 @@ def plan_reuse_wave(
                 contract_projection_provider if contract_components else None
             ),
             runtime_validation_projection_provider=runtime_validation_projection_provider,
+            native_runtime_projection_provider=native_runtime_projection_provider,
             build_plan_consumer=build_plan_consumer,
         )
         unused_evidence = set(runtime_validation_evidence) - consumed_runtime_validation_evidence
@@ -956,6 +1000,8 @@ def plan_reuse_wave(
                 "Runtime validation evidence was supplied before its metadata phase was ready: "
                 f"{sorted(unused_evidence)[0]}"
             )
+        if set(native_evidence) - consumed_native_evidence:
+            raise ValueError("Native Runtime evidence was supplied before its SDK phase was ready")
         return result
 
 
@@ -974,6 +1020,7 @@ def _plan(
         "output_schema_version",
         "contract_projection",
         "runtime_validation_projection",
+        "native_runtime_projections",
         "contract_execution_projection",
     }
     if not _PHASE_INPUT_KEYS.issubset(keys) or not keys.issubset(allowed):
@@ -1028,6 +1075,10 @@ def advance_reuse(
         [PhaseInstanceId, tuple[dict[str, Any], ...]],
         VerifiedRuntimeValidationProjection | None,
     ] | None = None,
+    native_runtime_projection_provider: Callable[
+        [PhaseInstanceId, tuple[dict[str, Any], ...], VerifiedContractProjection],
+        tuple[VerifiedNativeRuntimeProjection, ...] | None,
+    ] | None = None,
     contract_execution_projection_provider: Callable[
         [dict[str, Any]], VerifiedContractExecutionProjection
     ] | None = None,
@@ -1047,6 +1098,8 @@ def advance_reuse(
         raise ValueError("Runtime validation projection provider must be callable")
     if build_plan_consumer is not None and not callable(build_plan_consumer):
         raise ValueError("Build plan consumer must be callable")
+    if native_runtime_projection_provider is not None and not callable(native_runtime_projection_provider):
+        raise ValueError("Native Runtime projection provider must be callable")
     if contract_execution_projection_provider is not None and not callable(contract_execution_projection_provider):
         raise ValueError("Contract execution projection provider must be callable")
     resolved_repository_root = None if repository_root is None else Path(repository_root)
@@ -1058,7 +1111,7 @@ def advance_reuse(
     for instance, values in phase_inputs.items():
         if not isinstance(values, Mapping):
             raise ValueError(f"Phase inputs must be a mapping: {instance}")
-        if {"runtime_validation_projection", "contract_execution_projection"} & set(values):
+        if {"runtime_validation_projection", "contract_execution_projection", "native_runtime_projections"} & set(values):
             raise ValueError("Callers cannot supply an execution validation projection")
         effective_inputs[instance] = dict(values)
     envelopes: dict[PhaseInstanceId, dict[str, Any]] = {}
@@ -1132,6 +1185,22 @@ def advance_reuse(
                     }
                     continue
                 effective_inputs[instance]["runtime_validation_projection"] = projection
+                continuation_requirements.pop(instance, None)
+            native_dependencies = native_runtime_validation_dependencies(instance)
+            if native_dependencies:
+                native_projections = None if native_runtime_projection_provider is None else native_runtime_projection_provider(
+                    instance, tuple(resolved[dependency] for dependency in native_dependencies),
+                    effective_inputs[instance].get("contract_projection"),
+                )
+                if native_projections is None:
+                    continuation_requirements[instance] = {
+                        "kind": "native-runtime-validation-evidence", "product": instance.product,
+                        "component": instance.component, "phase": instance.phase, "target": instance.target,
+                        "dependencies": [{"product": item.product, "component": item.component,
+                                          "phase": item.phase, "target": item.target} for item in native_dependencies],
+                    }
+                    continue
+                effective_inputs[instance]["native_runtime_projections"] = native_projections
                 continuation_requirements.pop(instance, None)
             plan = _plan(
                 instance,

@@ -50,6 +50,7 @@ from products.plan import (
     NOT_APPLICABLE_FLAGS_DIGEST,
     NOT_APPLICABLE_TOOLCHAIN_DIGEST,
     runtime_validation_dependencies,
+    native_runtime_validation_dependencies,
 )
 from products.runtime_flags import load_runtime_binary_flags_bytes
 from products.runtime_evidence import (
@@ -765,12 +766,14 @@ def _validate_reuse_result(
             {"kind", *_IDENTITY_KEYS, "dependencies"},
             label,
         )
-        if requirement["kind"] != "runtime-validation-evidence":
+        if requirement["kind"] not in {"runtime-validation-evidence", "native-runtime-validation-evidence"}:
             raise ValueError("Reuse continuation requirement kind is invalid")
         instance = _identity(requirement)
         if instance not in phase_by_instance:
             raise ValueError("Reuse continuation requirement is outside the dependency closure")
-        dependencies = runtime_validation_dependencies(instance)
+        dependencies = (native_runtime_validation_dependencies(instance)
+                        if requirement["kind"] == "native-runtime-validation-evidence"
+                        else runtime_validation_dependencies(instance))
         if not dependencies:
             raise ValueError("Reuse continuation requirement is not applicable")
         if phase_by_instance[instance]["state"] != "waiting":
@@ -785,11 +788,11 @@ def _validate_reuse_result(
     expected_requirements = [
         instance for instance in closure
         if phase_by_instance[instance]["state"] == "waiting"
-        and runtime_validation_dependencies(instance)
+        and (runtime_validation_dependencies(instance) or native_runtime_validation_dependencies(instance))
         and all(dependency in selected_set for dependency in phase_instance_dependencies(instance))
     ]
     if requirement_instances != expected_requirements:
-        raise ValueError("Reuse continuation requirements do not match ready metadata phases")
+        raise ValueError("Reuse continuation requirements do not match ready evidence-consuming phases")
     actually_complete = tuple(selected) == closure
     if (
         result["result"] != ("complete" if actually_complete else "build-required")

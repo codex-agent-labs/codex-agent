@@ -16,7 +16,8 @@ from .inventory import (
 )
 from .plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
-    _contract_projection_from_request, plan_phase,
+    _contract_projection_from_request, _native_runtime_projections_from_request,
+    native_runtime_validation_dependencies, plan_phase,
 )
 from .receipt import validate_phase_receipt, verify_output_manifest_identity, write_output_manifest
 from .registry import (
@@ -112,7 +113,8 @@ def _capture_validation_sources(repository: Path, validation: dict[str, Any], st
         destination.write_bytes(contents)
 
 
-def _verify_plan(repository: Path, receipt: dict[str, Any], versions: dict[str, str], upstream: list, projection) -> None:
+def _verify_plan(repository: Path, receipt: dict[str, Any], versions: dict[str, str], upstream: list, projection,
+                 native_projections=None) -> None:
     """Replay the sole planner from original Git inputs, never receipt-supplied hashes."""
     commit, tree = receipt["producer"]["commit"], receipt["producer"]["tree"]
     try:
@@ -130,7 +132,8 @@ def _verify_plan(repository: Path, receipt: dict[str, Any], versions: dict[str, 
         versions=versions, upstream_receipts=upstream,
         toolchain_profile_digest=NOT_APPLICABLE_TOOLCHAIN_DIGEST,
         flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, output_schema_version=1,
-        contract_projection=projection,
+        contract_projection=projection.restrict(required_contract_components(_instance(receipt))),
+        native_runtime_projections=native_projections,
     )
     if receipt["inputs"] != result["inputs"] or receipt["buildKey"] != result["buildKey"]:
         raise ValueError("SDK receipt inputs/build key differ from its original authenticated plan")
@@ -264,6 +267,22 @@ def verify_sdk_package_inputs(
             required_components=required_contract_components(instance),
             keyring=arguments["contract_keyring"], keys_directory=arguments["contract_keys_directory"],
         )
+        native_projections = None
+        if native:
+            native_evidence = [{
+                "target": target, "stageRoot": str(runtime_stage_root),
+                "phaseReceipts": {phase: str(path) for phase, path in arguments["variant_phase_receipts"][target].items()},
+                "payload": str(arguments["variant_bundles"][target]),
+                "attestation": str(arguments["variant_attestations"][target]),
+                "attestationSignature": str(arguments["variant_attestation_signatures"][target]),
+                "publicKey": str(arguments["variant_public_keys"][target]),
+                "keyring": str(arguments["runtime_keyring"]) if arguments["runtime_keyring"] else None,
+                "keysDirectory": str(arguments["runtime_keys_directory"]) if arguments["runtime_keys_directory"] else None,
+            } for target in sorted(NATIVE_TARGETS)]
+            native_projections = _native_runtime_projections_from_request(
+                instance, list(upstream.values()), native_evidence, projection,
+                arguments["contract_payload"], arguments["required_trust_domain"],
+            )
         if javascript:
             from .sdk_archive import verify_javascript_sdk_package_phase
             node, node_bytes = _receipt(runtime_package_receipt)
@@ -316,7 +335,7 @@ def verify_sdk_package_inputs(
         if verified != receipt or verified_bytes != original:
             raise ValueError("SDK package receipt changed during semantic verification")
         _verify_plan(repository, receipt, versions,
-                     [upstream[identity] for identity in phase_instance_dependencies(instance)], projection)
+                     [upstream[identity] for identity in phase_instance_dependencies(instance)], projection, native_projections)
         if validation is not None:
             # Verify original validation lineage with the SAME captured/authenticated
             # Contract/Runtime inputs. This alone grants no behavior or host acceptance.
@@ -325,7 +344,9 @@ def verify_sdk_package_inputs(
             upstream[instance] = receipt
             _verify_plan(repository, validation, versions,
                          [upstream[identity] for identity in phase_instance_dependencies(_instance(validation))],
-                         projection)
+                         projection, tuple(item for item in native_projections if item.target in {
+                             dependency.target for dependency in native_runtime_validation_dependencies(_instance(validation))
+                         }))
         if javascript and (_receipt(runtime_package_receipt)[1] != node_bytes or
                            regular_file_inventory(runtime_package_stage) != node_inventory):
             raise ValueError("SDK Node package inputs changed during verification")
