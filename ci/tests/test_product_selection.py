@@ -1264,6 +1264,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/products/reuse.py",
             "ci/products/native_runtime_inputs.py",
             "ci/products/runtime_adapter_content.py",
+            "ci/products/adapter_runtime_inputs.py",
             "ci/products/selection.py",
         )
         result = classify_paths(paths)

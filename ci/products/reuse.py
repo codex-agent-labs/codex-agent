@@ -47,7 +47,9 @@ from .plan import (
     _native_runtime_projection_from_record, _contract_projection_from_request_components,
 )
 from .receipt import output_inventory_digest, validate_phase_receipt
-from .runtime_adapter_content import VerifiedAdapterRuntimeProjection
+from .runtime_adapter_content import (
+    VerifiedAdapterRuntimeProjection, adapter_comparison_provider, decode_adapter_comparison_records,
+)
 from .receipt import build_key_payload
 from .registry import (
     NATIVE_TARGETS,
@@ -829,7 +831,7 @@ def plan_reuse_wave(
             "runtimeValidationEvidence",
             "availableObjects",
             "catalogs",
-        } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence") if key in value}
+        } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence", "adapterRuntimeComparisonEvidence") if key in value}
              if type(value) is dict else set()),
         "reuse-wave request",
     )
@@ -840,6 +842,7 @@ def plan_reuse_wave(
     repository_root = _absolute_path(request["repositoryRoot"], "reuse-wave request.repositoryRoot")
     artifact_root = _absolute_path(request["artifactRoot"], "reuse-wave request.artifactRoot")
     native_originals = _native_comparison_records(artifact_root, request.get("nativeRuntimeComparisonEvidence", []))
+    decode_adapter_comparison_records(artifact_root, request.get("adapterRuntimeComparisonEvidence", []))
     revision = require_string(request["repositoryRevision"], "reuse-wave request.repositoryRevision")
     if _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Reuse-wave repositoryRevision must be an exact lowercase Git object ID")
@@ -979,6 +982,8 @@ def plan_reuse_wave(
                                 "keys_directory": release_catalog.keys_directory}
     native_comparison = _native_comparison_provider(
         artifact_root, request.get("nativeRuntimeComparisonEvidence", []), **comparison_trust)
+    adapter_comparison = adapter_comparison_provider(
+        artifact_root, request.get("adapterRuntimeComparisonEvidence", []), **comparison_trust)
     pull_request = request["pullRequest"]
     if pull_request is not None:
         pull_request = require_integer(pull_request, "reuse-wave request.pullRequest", 1)
@@ -1014,6 +1019,7 @@ def plan_reuse_wave(
         session = LookupSession(
             repository=require_string(request["repository"], "reuse-wave request.repository"),
             native_runtime_projection=native_comparison,
+            adapter_runtime_projection=adapter_comparison,
             pull_request=pull_request,
             restore_root=restore_root / "remote",
             stable=stable,

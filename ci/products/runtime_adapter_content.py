@@ -6,7 +6,8 @@ from typing import Any
 
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes,
-    regular_file_inventory, require_array, require_exact_keys, require_object, sha256_bytes, snapshot_regular_tree,
+    regular_file_inventory, require_array, require_exact_keys, require_object, require_relative_path,
+    require_sha256, sha256_bytes, snapshot_regular_tree,
 )
 from .receipt import validate_phase_receipt, verify_output_manifest_identity
 from .runtime_adapter_validation import _verify_adapter_host_snapshot
@@ -26,6 +27,90 @@ _MAPS = {"variant_bundles", "variant_attestations", "variant_attestation_signatu
 _NESTED = {"variant_phase_receipts", "adapter_report_files"}
 _TRUST = {f"{product}_{suffix}" for product in ("contract", "aggregate", "variant")
           for suffix in ("keyring", "keys_directory")}
+_RECORD_PATHS = {"aggregateManifest": "aggregate_manifest", "adapterPackageStage": "adapter_package_stage",
+                 "nativePackageStage": "native_package_stage", "validationStage": "validation_stage",
+                 "distributionManifest": "distribution_manifest"}
+
+
+def map_adapter_comparison_record(record, path):
+    """Map declared filesystem paths only; never transform content or identity."""
+    record = require_exact_keys(record, {"receiptSha256", "component", "target", "aggregateInputs", *_RECORD_PATHS},
+                                "adapter comparison record")
+    require_sha256(record["receiptSha256"], "adapter comparison receipt")
+    from .aggregate import RUNTIME_ADAPTERS, RUNTIME_EVIDENCE_TARGETS
+    if record["component"] not in RUNTIME_ADAPTERS or record["target"] not in RUNTIME_EVIDENCE_TARGETS:
+        raise ValueError("Adapter comparison component/target mismatch")
+    inputs = require_object(record["aggregateInputs"], "adapter aggregate inputs")
+    required = _FILES | _MAPS | _NESTED | {"adapter_receipts", "runtime_maven_files", "required_trust_domain"}
+    if not required <= inputs.keys() or inputs.keys() - required - _TRUST:
+        raise ValueError("Adapter comparison requires exact aggregate input fields")
+    if inputs["required_trust_domain"] not in {"development", "release"}:
+        raise ValueError("Adapter comparison trust domain is invalid")
+    mapped = {name: path(inputs[name]) for name in _FILES}
+    for name in _MAPS:
+        mapped[name] = {key: path(value) for key, value in require_object(inputs[name], name).items()}
+    for name in _NESTED:
+        mapped[name] = {key: {part: path(value) for part, value in require_object(member, name).items()}
+                        for key, member in require_object(inputs[name], name).items()}
+    mapped["adapter_receipts"] = [{**require_exact_keys(member, {"component", "phase", "target", "receipt"},
+                                                       "adapter receipt reference"), "receipt": path(member["receipt"])}
+                                  for member in require_array(inputs["adapter_receipts"], "adapter receipts")]
+    mapped["runtime_maven_files"] = [{**require_object(member, "Runtime Maven reference"), "file": path(member["file"])}
+                                     for member in require_array(inputs["runtime_maven_files"], "Runtime Maven files")]
+    mapped["required_trust_domain"] = inputs["required_trust_domain"]
+    mapped.update({name: None if inputs[name] is None else path(inputs[name]) for name in _TRUST if name in inputs})
+    return {**record, "aggregateInputs": mapped, **{name: path(record[name]) for name in _RECORD_PATHS}}
+
+
+def decode_adapter_comparison_records(root: Path, records) -> dict[str, dict[str, Any]]:
+    result = {}
+    for record in require_array(records, "adapter comparison records"):
+        mapped = map_adapter_comparison_record(record, lambda value: root / require_relative_path(value, "adapter evidence path"))
+        digest = mapped["receiptSha256"]
+        if digest in result:
+            raise ValueError("Duplicate adapter comparison receipt")
+        result[digest] = {"component": mapped["component"], "target": mapped["target"],
+                          "aggregate_inputs": mapped["aggregateInputs"],
+                          **{dest: mapped[src] for src, dest in _RECORD_PATHS.items()}}
+    if list(result) != sorted(result):
+        raise ValueError("Adapter comparison records must be sorted by original receipt")
+    return result
+
+
+def rebase_adapter_comparison_records(records, source_root: Path, destination_root: Path):
+    decode_adapter_comparison_records(source_root, records)
+    return [map_adapter_comparison_record(record, lambda value:
+            (source_root / require_relative_path(value, "adapter evidence path")).relative_to(destination_root).as_posix())
+            for record in records]
+
+
+def adapter_comparison_provider(root: Path, records, *, keyring=None, keys_directory=None):
+    originals = decode_adapter_comparison_records(root, records)
+    if (keyring is None) != (keys_directory is None):
+        raise ValueError("Adapter release comparison requires both caller-pinned trust paths")
+
+    def verify(entry, _verified_object):
+        arguments = originals.get(entry["receiptSha256"])
+        if arguments is None:
+            raise ValueError("Adapter comparison lacks original signed K/R evidence")
+        if (entry["component"], entry["target"]) != (arguments["component"], arguments["target"]):
+            raise ValueError("Adapter comparison differs from original component/host")
+        inputs = arguments["aggregate_inputs"]
+        if inputs["required_trust_domain"] == "release":
+            if keyring is None:
+                raise ValueError("Release adapter comparison requires caller-pinned product keys")
+            inputs = {**inputs, **{f"{product}_{suffix}": Path(value)
+                      for product in ("contract", "aggregate", "variant")
+                      for suffix, value in (("keyring", keyring), ("keys_directory", keys_directory))}}
+        proof = verify_runtime_adapter_projection(**{**arguments, "aggregate_inputs": inputs})
+        path = next(member["receipt"] for member in inputs["adapter_receipts"] if
+                    (member["component"], member["phase"], member["target"]) ==
+                    (entry["component"], "validation", entry["target"]))
+        receipt = _receipt(path)
+        proof.output_inventory(entry["receiptSha256"], receipt["outputs"], identity=receipt)
+        return proof
+
+    return verify if originals else None
 
 
 class VerifiedAdapterRuntimeProjection:

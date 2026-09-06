@@ -704,7 +704,9 @@ class ProductReuseTest(unittest.TestCase):
         repository, revision = self.reuse_wave_repository()
         request = self.reuse_wave_request(repository, revision)
         request["nativeRuntimeComparisonEvidence"] = []
+        request["adapterRuntimeComparisonEvidence"] = []
         comparison_provider = mock.Mock()
+        adapter_provider = mock.Mock()
         (repository / "codex-agent-core/src/commonMain/kotlin/example.kt").write_text(
             "package dirty\n",
             encoding="utf-8",
@@ -717,7 +719,8 @@ class ProductReuseTest(unittest.TestCase):
             "matrices": {"contract": [], "runtime": [], "sdk": []},
         }
         with mock.patch("ci.products.reuse.advance_reuse", return_value=(expected, ())) as delegated, \
-                mock.patch("ci.products.reuse._native_comparison_provider", return_value=comparison_provider) as proof_factory:
+                mock.patch("ci.products.reuse._native_comparison_provider", return_value=comparison_provider) as proof_factory, \
+                mock.patch("ci.products.reuse.adapter_comparison_provider", return_value=adapter_provider) as adapter_factory:
             result = plan_reuse_wave(request)
         self.assertIs(expected, result)
         args, kwargs = delegated.call_args
@@ -731,7 +734,9 @@ class ProductReuseTest(unittest.TestCase):
         self.assertEqual(revision, kwargs["repository_revision"])
         self.assertIsInstance(args[3], LookupSession)
         self.assertIs(comparison_provider, args[3]._native_runtime_projection)
+        self.assertIs(adapter_provider, args[3]._adapter_runtime_projection)
         proof_factory.assert_called_once_with(Path(request["artifactRoot"]), [])
+        adapter_factory.assert_called_once_with(Path(request["artifactRoot"]), [])
 
     def test_reuse_wave_rejects_nonexact_authorities_and_unsafe_paths_before_planning(self) -> None:
         repository, revision = self.reuse_wave_repository()

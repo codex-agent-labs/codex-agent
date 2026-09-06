@@ -54,6 +54,8 @@ from products.plan import (
     native_runtime_validation_dependencies,
 )
 from products.runtime_flags import load_runtime_binary_flags_bytes
+from products.runtime_adapter_content import rebase_adapter_comparison_records
+from products.adapter_runtime_inputs import load_adapter_runtime_evidence, stage_adapter_runtime_evidence
 from products.runtime_evidence import (
     derive_authenticated_runtime_validation_projection,
     jvm_evidence_filename,
@@ -102,6 +104,7 @@ _WAVE_REQUEST_KEYS = {
     "contractEvidence", "runtimeValidationEvidence", "availableObjects", "catalogs",
 }
 _NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
+_ADAPTER_REQUEST_KEY = "adapterRuntimeComparisonEvidence"
 _VERSION_PATHS = {
     "contract": "gradle/release/versions/contract.txt",
     "runtime-release": "gradle/release/versions/runtime.txt",
@@ -139,6 +142,7 @@ class Catalog:
     contract_attestation: Path | None = None
     contract_attestation_signature: Path | None = None
     native_runtime_evidence: tuple[dict[str, Any], ...] = ()
+    adapter_runtime_evidence: tuple[dict[str, Any], ...] = ()
 
 
 def _identity(value: Mapping[str, Any]) -> PhaseInstanceId:
@@ -446,6 +450,12 @@ def _materialize_catalog(
         native_records = _rebase_native_evidence_paths(
             load_native_runtime_evidence(native_root), native_root, destination, comparison=True)
         controls.update(f"native-runtime-evidence/{path}" for path in _catalog_files(native_root))
+    adapter_root = extracted / "adapter-runtime-evidence"
+    adapter_records = []
+    if adapter_root.exists():
+        adapter_records = rebase_adapter_comparison_records(
+            load_adapter_runtime_evidence(adapter_root), adapter_root, destination)
+        controls.update(f"adapter-runtime-evidence/{path}" for path in _catalog_files(adapter_root))
     if not controls.issubset(actual) or not actual.issubset(controls | set(expected_objects.values())):
         raise ValueError("Product catalog file set is incomplete or unexpected")
     contract_public_key = None
@@ -496,6 +506,7 @@ def _materialize_catalog(
         contract_attestation,
         contract_attestation_signature,
         tuple(native_records),
+        tuple(adapter_records),
     )
 
 
@@ -610,6 +621,12 @@ def _wave_request(
             records.setdefault(record["receiptSha256"], record)
     if records:
         request["nativeRuntimeComparisonEvidence"] = [records[key] for key in sorted(records)]
+    adapter_records = {}
+    for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source)):
+        for record in catalog.adapter_runtime_evidence:
+            adapter_records.setdefault(record["receiptSha256"], record)
+    if adapter_records:
+        request[_ADAPTER_REQUEST_KEY] = [adapter_records[key] for key in sorted(adapter_records)]
     return request
 
 
@@ -1126,46 +1143,53 @@ def _rebase_native_evidence_paths(value, source_root: Path, repository_root: Pat
 
 
 def _rebase_native_request(request, source_root, artifact_root):
-    return {key: _rebase_native_evidence_paths(request[key], source_root, artifact_root,
+    result = {key: _rebase_native_evidence_paths(request[key], source_root, artifact_root,
                                              comparison=key == "nativeRuntimeComparisonEvidence")
             for key in _NATIVE_REQUEST_KEYS if key in request}
+    if _ADAPTER_REQUEST_KEY in request:
+        result[_ADAPTER_REQUEST_KEY] = rebase_adapter_comparison_records(request[_ADAPTER_REQUEST_KEY], source_root, artifact_root)
+    return result
 
 
 def _wave_control(path, label):
     value = _canonical_control(path, label)
-    return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & _NATIVE_REQUEST_KEYS), label)
+    return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY})), label)
 
 
-def _merge_native_comparison_records(request, records):
+def _merge_native_comparison_records(request, records, *, key="nativeRuntimeComparisonEvidence"):
     originals = {record["receiptSha256"]: record
-                 for record in request.get("nativeRuntimeComparisonEvidence", [])}
+                 for record in request.get(key, [])}
     for record in records:
         originals.setdefault(record["receiptSha256"], record)
     if originals:
-        request["nativeRuntimeComparisonEvidence"] = [originals[key] for key in sorted(originals)]
+        request[key] = [originals[digest] for digest in sorted(originals)]
 
 
-def _capture_native_handoffs(evidence_roots, destination, artifact_root, release_trust=None):
+def _capture_native_handoffs(evidence_roots, destination, artifact_root, release_trust=None, *, adapter=False):
+    load = load_adapter_runtime_evidence if adapter else load_native_runtime_evidence
+    stage = stage_adapter_runtime_evidence if adapter else stage_native_runtime_evidence
     records = []
     for index, source in enumerate(evidence_roots):
         target = destination / str(index)
-        captured = stage_native_runtime_evidence(load_native_runtime_evidence(source), source, target,
+        captured = stage(load(source), source, target,
                     keyring=release_trust.keyring if release_trust else None,
                     keys_directory=release_trust.keys if release_trust else None)
-        records.extend(_rebase_native_evidence_paths(captured, target, artifact_root, comparison=True))
+        records.extend(rebase_adapter_comparison_records(captured, target, artifact_root) if adapter else
+                       _rebase_native_evidence_paths(captured, target, artifact_root, comparison=True))
     return records
 
 
-def _retained_native_handoffs(state_root, artifact_root):
-    path = state_root / "native-runtime-evidence"
+def _retained_native_handoffs(state_root, artifact_root, *, adapter=False):
+    path = state_root / ("adapter-runtime-evidence" if adapter else "native-runtime-evidence")
     if not path.exists():
         return []
     records = []
     # Each directory is one immutable, independently captured handoff. The
     # exact request decoder and full K/R gate, not directory naming, grant trust.
     for child in sorted(path.iterdir()):
-        records.extend(_rebase_native_evidence_paths(
-            load_native_runtime_evidence(child), child, artifact_root, comparison=True))
+        records.extend(rebase_adapter_comparison_records(load_adapter_runtime_evidence(child), child, artifact_root)
+                       if adapter else _rebase_native_evidence_paths(
+                           load_native_runtime_evidence(child), child, artifact_root, comparison=True))
     return records
 
 
@@ -1541,6 +1565,7 @@ def advance_products(
     github_output_path: Path, *, repository_root: Path | None = None,
     environ: Mapping[str, str] | None = None,
     native_evidence_roots: tuple[Path, ...] = (),
+    adapter_evidence_roots: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -1676,6 +1701,8 @@ def advance_products(
             )
             state_request["runtimeValidationEvidence"] = evidence
             _merge_native_comparison_records(state_request, _retained_native_handoffs(state_root, root))
+            _merge_native_comparison_records(state_request, _retained_native_handoffs(state_root, root, adapter=True),
+                                             key=_ADAPTER_REQUEST_KEY)
             prior_ready_plans = {}
             state_replay = plan_reuse_wave(
                 state_request,
@@ -1768,6 +1795,18 @@ def advance_products(
                     keys_directory=native_trust.keys if native_trust else None)
         retained_native = _retained_native_handoffs(temporary_root / "result", root)
         _merge_native_comparison_records(advanced_request, retained_native)
+        adapter_destination = temporary_root / "result/adapter-runtime-evidence"
+        prior_adapter = state_root / "adapter-runtime-evidence"
+        if prior_adapter.exists():
+            snapshot_regular_tree(prior_adapter, adapter_destination)
+        adapter_offset = len(list(adapter_destination.iterdir())) if adapter_destination.exists() else 0
+        adapter_trust = _release_trust(root, plan["validationCommit"], temporary_root / "adapter-trust") if adapter_evidence_roots else None
+        for index, source in enumerate(adapter_evidence_roots, adapter_offset):
+            stage_adapter_runtime_evidence(load_adapter_runtime_evidence(source), source, adapter_destination / str(index),
+                keyring=adapter_trust.keyring if adapter_trust else None,
+                keys_directory=adapter_trust.keys if adapter_trust else None)
+        retained_adapter = _retained_native_handoffs(temporary_root / "result", root, adapter=True)
+        _merge_native_comparison_records(advanced_request, retained_adapter, key=_ADAPTER_REQUEST_KEY)
         ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         advanced = plan_reuse_wave(
             advanced_request,
@@ -1832,6 +1871,7 @@ def advance_products(
         staged_prefix = staged_destination.relative_to(root).as_posix()
         staged_request = dict(rebased_request)
         _merge_native_comparison_records(staged_request, retained_native)
+        _merge_native_comparison_records(staged_request, retained_adapter, key=_ADAPTER_REQUEST_KEY)
         staged_request["runtimeValidationEvidence"] = [{
             **record,
             "reports": [f"{staged_prefix}/{path}" for path in record["reports"]],
@@ -1858,7 +1898,7 @@ def advance_products(
 
         destination_prefix = destination.relative_to(root).as_posix()
         final_request = dict(staged_request)
-        if "nativeRuntimeComparisonEvidence" in final_request:
+        if {"nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY} & final_request.keys():
             # Move only paths inside this staged transport. Original discovery
             # catalogs remain at their separately retained discovery paths.
             def relocated_native(value):
@@ -1869,8 +1909,9 @@ def advance_products(
                 if isinstance(value, str) and value.startswith(staged_prefix + "/"):
                     return destination_prefix + value[len(staged_prefix):]
                 return value
-            final_request["nativeRuntimeComparisonEvidence"] = relocated_native(
-                final_request["nativeRuntimeComparisonEvidence"])
+            for key in ("nativeRuntimeComparisonEvidence", _ADAPTER_REQUEST_KEY):
+                if key in final_request:
+                    final_request[key] = relocated_native(final_request[key])
         final_request["runtimeValidationEvidence"] = [{
             **record,
             "reports": [
@@ -1979,6 +2020,7 @@ def discover(
     plan_path: Path, destination: Path, github_output_path: Path, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     native_evidence_roots: tuple[Path, ...] = (),
+    adapter_evidence_roots: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     # A failing adapter must never make a missing output look like permission to skip work.
     github_output(github_output_path, {
@@ -2014,6 +2056,8 @@ def discover(
     catalogs = _discover_catalogs(plan, destination, trust, environment, versions)
     native_records = _capture_native_handoffs(
         native_evidence_roots, destination / "native-runtime-evidence", destination, trust)
+    adapter_records = _capture_native_handoffs(
+        adapter_evidence_roots, destination / "adapter-runtime-evidence", destination, trust, adapter=True)
 
     contract_evidence = None
     contract = PhaseInstanceId("contract", "contract", "metadata", "common")
@@ -2028,6 +2072,7 @@ def discover(
             plan, root, destination, (contract,), versions, contract_authorities, catalogs, None,
         )
         _merge_native_comparison_records(contract_request, native_records)
+        _merge_native_comparison_records(contract_request, adapter_records, key=_ADAPTER_REQUEST_KEY)
         write_canonical_json(destination / "contract-reuse-request.json", contract_request)
         contract_ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         contract_result = plan_reuse_wave(
@@ -2073,6 +2118,7 @@ def discover(
         plan, root, destination, requested, versions, authorities, catalogs, contract_evidence,
     )
     _merge_native_comparison_records(wave_request, native_records)
+    _merge_native_comparison_records(wave_request, adapter_records, key=_ADAPTER_REQUEST_KEY)
     write_canonical_json(destination / "reuse-wave-request.json", wave_request)
     ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
 
@@ -2122,6 +2168,7 @@ def parser() -> argparse.ArgumentParser:
     discover_command.add_argument("--destination", type=Path, required=True)
     discover_command.add_argument("--handoff", type=Path)
     discover_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
+    discover_command.add_argument("--adapter-runtime-evidence", type=Path, action="append", default=[])
     discover_command.add_argument("--github-output", type=Path, required=True)
     advance_command = commands.add_parser("advance-contract")
     advance_command.add_argument("--plan", type=Path, required=True)
@@ -2138,6 +2185,7 @@ def parser() -> argparse.ArgumentParser:
     products_command.add_argument("--destination", type=Path, required=True)
     products_command.add_argument("--github-output", type=Path, required=True)
     products_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
+    products_command.add_argument("--adapter-runtime-evidence", type=Path, action="append", default=[])
     materialize_command = commands.add_parser("materialize-contract")
     materialize_command.add_argument("--plan", type=Path, required=True)
     materialize_command.add_argument("--state-root", type=Path, required=True)
@@ -2152,7 +2200,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments.command == "discover":
             discover(arguments.plan, arguments.destination, arguments.github_output,
-                     native_evidence_roots=tuple(arguments.native_runtime_evidence))
+                     native_evidence_roots=tuple(arguments.native_runtime_evidence),
+                     adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence))
             if arguments.handoff is not None:
                 publish_regular_tree(arguments.destination, arguments.handoff)
         elif arguments.command == "advance-contract":
@@ -2173,6 +2222,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.destination,
                 arguments.github_output,
                 native_evidence_roots=tuple(arguments.native_runtime_evidence),
+                adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
             )
         else:
             materialize_contract(

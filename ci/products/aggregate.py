@@ -1014,9 +1014,10 @@ def verify_runtime_aggregate_artifacts(
             raise ValueError(f"Runtime {component} package receipt predecessor mismatch")
 
         reports = adapter_report_files[component]
-        if type(reports) is not dict or tuple(reports) != RUNTIME_TARGETS:
+        # JSON object key order is not target order; the canonical traversal below is.
+        if type(reports) is not dict or set(reports) != set(RUNTIME_TARGETS):
             raise ValueError(
-                f"Runtime {component} reports must contain the five targets in canonical order",
+                f"Runtime {component} reports must contain exactly the five targets",
             )
         raw_values = []
         expected_commits = {}

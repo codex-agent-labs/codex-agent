@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from ci.products import index as product_index
+from ci.products.adapter_runtime_inputs import load_adapter_runtime_evidence, stage_adapter_runtime_evidence
 from ci.products.aggregate import verified_index_content, verify_immutable_product_indexes
 from ci.products.index import (
     IndexEntrySource, SignedProductIndex, build_product_index,
@@ -21,7 +22,11 @@ from ci.products.registry import PhaseInstanceId
 from ci.products.plan import verify_build_key_output_consistency
 from ci.products.restore import store_local_object
 from ci.products.reuse import LookupSession, RemoteCatalog
-from ci.products.runtime_adapter_content import verify_runtime_adapter_projection
+from ci.products.runtime_adapter_content import (
+    adapter_comparison_provider, decode_adapter_comparison_records,
+    map_adapter_comparison_record, rebase_adapter_comparison_records,
+    verify_runtime_adapter_projection,
+)
 from ci.products.signatures import generate_development_key, sign_manifest
 from ci.tests.test_product_native_chain import build_chain
 
@@ -105,6 +110,148 @@ class RuntimeAdapterContentTest(unittest.TestCase):
 
     def inventory(self, proof, receipt, raw):
         return proof.output_inventory(sha256_bytes(raw), receipt["outputs"], identity=self.identity(receipt))
+
+    def comparison_record(self, name, component):
+        chain = self.chains[name]
+        _, _, raw = self.receipt(chain, component)
+        arguments = self.arguments(chain, component)
+        record = {
+            "receiptSha256": sha256_bytes(raw), "component": component, "target": self.target,
+            "aggregateManifest": arguments["aggregate_manifest"],
+            "aggregateInputs": arguments["aggregate_inputs"],
+            "adapterPackageStage": arguments["adapter_package_stage"],
+            "nativePackageStage": arguments["native_package_stage"],
+            "validationStage": arguments["validation_stage"],
+            "distributionManifest": arguments["distribution_manifest"],
+        }
+        return map_adapter_comparison_record(record, lambda path: path.relative_to(self.root).as_posix())
+
+    def test_carrier_preserves_original_bytes_and_reauthenticates_relocated_records(self):
+        records = sorted((self.comparison_record("left", component) for component in self.components),
+                         key=lambda record: record["receiptSha256"])
+        original_records = canonical_json_bytes(records)
+        handoff = self.work / "handoff"
+        captured = stage_adapter_runtime_evidence(records, self.root, handoff)
+        self.assertEqual(captured, load_adapter_runtime_evidence(handoff))
+        self.assertEqual(canonical_json_bytes(captured), (handoff / "adapter-runtime-evidence.json").read_bytes())
+        for old, new in zip(records, captured, strict=True):
+            original_paths, captured_paths = [], []
+            map_adapter_comparison_record(old, lambda path: original_paths.append(self.root / path) or path)
+            map_adapter_comparison_record(new, lambda path: captured_paths.append(handoff / path) or path)
+            for source, destination in zip(original_paths, captured_paths, strict=True):
+                if source.is_dir():
+                    self.assertEqual(regular_file_inventory(source), regular_file_inventory(destination))
+                else:
+                    self.assertEqual(source.read_bytes(), destination.read_bytes())
+            source_closure = (self.root / old["aggregateInputs"]["contract_attestation"]).parent / "execution-closure"
+            captured_closure = (handoff / new["aggregateInputs"]["contract_attestation"]).parent / "execution-closure"
+            self.assertEqual(regular_file_inventory(source_closure, allow_empty=True),
+                             regular_file_inventory(captured_closure, allow_empty=True))
+        self.assertEqual(original_records, canonical_json_bytes(records))
+
+        relocated_root = self.work / "relocated"
+        relocated = relocated_root / "carrier"
+        snapshot_regular_tree(handoff, relocated)
+        self.assertEqual(regular_file_inventory(handoff, allow_empty=True),
+                         regular_file_inventory(relocated, allow_empty=True))
+        loaded = load_adapter_runtime_evidence(relocated)
+        rebased = rebase_adapter_comparison_records(loaded, relocated, relocated_root)
+        self.assertEqual(captured, loaded)
+        provider = adapter_comparison_provider(relocated_root, rebased)
+        for record in rebased:
+            _, receipt, raw = self.receipt(self.chains["left"], record["component"])
+            entry = {**self.identity(receipt), "receiptSha256": sha256_bytes(raw)}
+            original = verify_runtime_adapter_projection(record["component"], self.target,
+                                                         **self.arguments(self.chains["left"], record["component"]))
+            self.assertEqual(self.inventory(original, receipt, raw), self.inventory(provider(entry, None), receipt, raw))
+            paths = []
+            map_adapter_comparison_record(record, lambda path: paths.append(path) or path)
+            self.assertTrue(all(path.startswith("carrier/") for path in paths))
+        self.assertEqual(self.original, regular_file_inventory(self.root, allow_empty=True))
+
+    def test_carrier_loader_rejects_extra_and_missing_declared_files(self):
+        handoff = self.work / "handoff"
+        records = stage_adapter_runtime_evidence([self.comparison_record("left", "jvm")], self.root, handoff)
+        extra = handoff / "undeclared-original.json"
+        extra.write_bytes(b"{}\n")
+        with self.assertRaises(ValueError):
+            load_adapter_runtime_evidence(handoff)
+        extra.unlink()
+        self.assertEqual(records, load_adapter_runtime_evidence(handoff))
+        declared = handoff / records[0]["aggregateInputs"]["contract_metadata_receipt"]
+        original = declared.read_bytes()
+        declared.unlink()
+        with self.assertRaises(ValueError):
+            load_adapter_runtime_evidence(handoff)
+        declared.write_bytes(original)
+        self.assertEqual(records, load_adapter_runtime_evidence(handoff))
+
+    def test_codec_and_carrier_reject_escape_duplicate_and_unsorted_original_records(self):
+        records = sorted((self.comparison_record(name, "jvm") for name in ("left", "right")),
+                         key=lambda record: record["receiptSha256"])
+        cases = {"duplicate": [records[0], records[0]], "unsorted": list(reversed(records))}
+        for name, path in (("traversal", "../outside.json"), ("absolute", str(self.chains["left"]["aggregate"])),
+                           ("backslash", "left\\aggregate.json")):
+            changed = copy.deepcopy(records[:1])
+            changed[0]["aggregateManifest"] = path
+            cases[name] = changed
+        for name, changed in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaises(ValueError):
+                    decode_adapter_comparison_records(self.root, changed)
+                destination = self.work / name
+                with self.assertRaises(ValueError):
+                    stage_adapter_runtime_evidence(changed, self.root, destination)
+                self.assertFalse(destination.exists())
+
+    def test_carrier_rejects_crosspaired_component_or_original_receipt_identity(self):
+        record = self.comparison_record("left", "jvm")
+        _, receipt, raw = self.receipt(self.chains["left"], "jvm")
+        entry = {**self.identity(receipt), "receiptSha256": sha256_bytes(raw)}
+        provider = adapter_comparison_provider(self.root, [record])
+        for field, value in (("component", "node-js"), ("target", "macos-arm64")):
+            with self.subTest(provider_field=field), self.assertRaises(ValueError):
+                provider({**entry, field: value}, None)
+        for name, field, value in (
+            ("component", "component", "node-js"),
+            ("target", "target", "macos-arm64"),
+            ("receipt", "receiptSha256", self.comparison_record("right", "jvm")["receiptSha256"]),
+        ):
+            changed = [{**record, field: value}]
+            destination = self.work / name
+            with self.subTest(case=name), self.assertRaises(ValueError):
+                stage_adapter_runtime_evidence(changed, self.root, destination)
+            self.assertFalse(destination.exists())
+
+    def test_release_request_cannot_authorize_itself_with_transported_keyring(self):
+        # Trust-input preflight only: original development signatures remain
+        # untouched. This is not successful release-attestation acceptance.
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            root = Path(temporary)
+            context = self.chains["left"]["context"]
+            keys = root / "keys"
+            keys.mkdir()
+            (keys / "adapter-transport-fixture.pub").write_bytes(context["public_key"].read_bytes())
+            keyring = root / "keyring.json"
+            keyring.write_bytes(canonical_json_bytes({
+                "schemaVersion": 1, "namespace": context["signing"]["namespace"],
+                "algorithm": context["signing"]["algorithm"], "trustDomain": "release",
+                "activeKey": {"keyId": "adapter-transport-fixture", "fingerprint": context["signing"]["fingerprint"]},
+                "retiredKeys": [],
+            }))
+            record = self.comparison_record("left", "jvm")
+            record["aggregateInputs"]["required_trust_domain"] = "release"
+            for product in ("contract", "aggregate", "variant"):
+                record["aggregateInputs"][f"{product}_keyring"] = keyring.relative_to(self.root).as_posix()
+                record["aggregateInputs"][f"{product}_keys_directory"] = keys.relative_to(self.root).as_posix()
+            _, receipt, raw = self.receipt(self.chains["left"], "jvm")
+            with self.assertRaisesRegex(ValueError, "caller-pinned"):
+                adapter_comparison_provider(self.root, [record])(
+                    {**self.identity(receipt), "receiptSha256": sha256_bytes(raw)}, None)
+            destination = self.work / "self-authorized-release"
+            with self.assertRaisesRegex(ValueError, "caller-pinned"):
+                stage_adapter_runtime_evidence([record], self.root, destination)
+            self.assertFalse(destination.exists())
 
     def signed_index_and_object(self, name, component):
         chain = self.chains[name]

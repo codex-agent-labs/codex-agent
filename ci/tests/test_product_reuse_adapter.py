@@ -1435,7 +1435,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
         with mock.patch.object(product_reuse, "discover") as discover, \
                 mock.patch.object(product_reuse, "publish_regular_tree") as publish:
             self.assertEqual(0, product_reuse.main(arguments))
-        discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"), native_evidence_roots=())
+        discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"),
+                                         native_evidence_roots=(), adapter_evidence_roots=())
         publish.assert_called_once_with(Path("discovery"), Path("handoff"))
 
         materialize_arguments = [
@@ -1454,13 +1455,14 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "advance-products", "--plan", "plan.json", "--discovery-root", "discovery",
             "--state-root", "state", "--phase-shard", "one", "--phase-shard", "two",
             "--destination", "advanced", "--github-output", "output",
+            "--adapter-runtime-evidence", "adapter-originals",
         ]
         with mock.patch.object(product_reuse, "advance_products") as advance:
             self.assertEqual(0, product_reuse.main(advance_arguments))
         advance.assert_called_once_with(
             Path("plan.json"), Path("discovery"), Path("state"),
             [Path("one"), Path("two")], Path("advanced"), Path("output"),
-            native_evidence_roots=(),
+            native_evidence_roots=(), adapter_evidence_roots=(Path("adapter-originals"),),
         )
 
     def test_contract_ready_phase_is_exactly_one_known_contract_phase(self) -> None:
