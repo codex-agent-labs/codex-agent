@@ -30,6 +30,23 @@ class AppleReleaseCheckTasksTest {
         assertFailsWith<IllegalStateException> {
             verifyAppleToolchainOutput("Xcode 16.3", "Apple Swift version 6.1.2", "16.4", "16F6", "6.1.2")
         }
+        listOf(
+            "Apple Swift version 6.1.20 effective-5.10",
+            "Apple Swift version 6.1.2beta effective-5.10",
+            "Swift version 6.1.2",
+            "Apple Swift version 6.1.2\nApple Swift version 6.1.3",
+        ).forEach { swift ->
+            assertFailsWith<IllegalStateException> {
+                verifyAppleToolchainOutput(
+                    "Xcode 16.4\nBuild version 16F6", swift, "16.4", "16F6", "6.1.2",
+                )
+            }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            verifyAppleToolchainOutput(
+                "Xcode 16.4\nBuild version 16F6", "Apple Swift version 6.1.2", "16.4", "16F6", "6.1.2beta",
+            )
+        }
     }
 
     @Test
@@ -102,25 +119,54 @@ class AppleReleaseCheckTasksTest {
             assertFalse(forbidden in source, forbidden)
         }
         val productPythonOwners = mapOf(
-            "RepositoryVerificationTasks.kt" to
+            "RepositoryVerificationTasks.kt" to listOf(
                 "\"python3\", \"-m\", \"ci.products.aggregate\"",
-            "codexagent.contract-product.gradle.kts" to
+            ),
+            "codexagent.contract-product.gradle.kts" to listOf(
                 "\"python3\", \"-m\", \"ci.products.contract\"",
-            "ProductOutputManifestGradleTask.kt" to
+                "executable(\"python3\")\n    args(\"-m\", \"ci.products.contract\", \"validate-package\"",
+            ),
+            "ProductOutputManifestGradleTask.kt" to listOf(
                 "pythonExecutable.convention(\"python3\")",
-            "ProductPythonTooling.kt" to
+            ),
+            "ProductPythonTooling.kt" to listOf(
                 "ProcessBuilder(listOf(\"python3\", \"-m\", \"ci.products.\$module\") + arguments)",
-            "CrossLanguageNativeWrapperGradleTasks.kt" to
+            ),
+            "CrossLanguageNativeWrapperGradleTasks.kt" to listOf(
                 "pythonExecutable.convention(\"python3\")",
+                "\"python3\", packageScript.get().asFile.absolutePath, \"package\"",
+            ),
+            "CrossLanguageNativeWrapperValidationEvidence.kt" to listOf(
+                "ProcessBuilder(listOf(\"python3\", \"-E\", \"-s\", \"-B\") + arguments)",
+                "ProcessBuilder(\"python3\", \"-E\", \"-s\", \"-B\", \"-m\", " +
+                    "\"ci.products.sdk_package\", \"native-metadata\"",
+            ),
+            "MavenRepositoryTasks.kt" to listOf(
+                "\"python3\", \"-m\", \"ci.products.sdk_maven\", \"--verify-only\"",
+            ),
+            "NativeWrapperCapabilityEvidenceTask.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+            ),
+            "NativeWrapperInstalledConsumerTask.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+            ),
+            "SdkMavenPackageTask.kt" to listOf(
+                "\"python3\", \"-m\", \"ci.products.sdk_maven\"",
+                "\"python3\", \"-m\", \"ci.products.sdk_archive\"",
+            ),
         )
         val nonProductPythonSource = sources
             .filterKeys { it !in productPythonOwners }
             .values.joinToString("\n")
         assertFalse("python3" in nonProductPythonSource)
-        productPythonOwners.forEach { (owner, invocation) ->
+        productPythonOwners.forEach { (owner, invocations) ->
             val productSource = requireNotNull(sources[owner])
-            assertTrue(invocation in productSource, owner)
-            assertFalse("python3" in productSource.replace(invocation, ""), owner)
+            var remaining = productSource
+            invocations.forEach { invocation ->
+                assertTrue(invocation in remaining, owner)
+                remaining = remaining.replace(invocation, "")
+            }
+            assertFalse("python3" in remaining, owner)
         }
         assertFalse("commandLine(\"python\"" in source)
         assertFalse("executable(\"python\"" in source)
