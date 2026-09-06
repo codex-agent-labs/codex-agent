@@ -11,6 +11,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -141,9 +142,16 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                 "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch),
             })
             # Include the existing ignored macOS real-library tests, not just mock/unit proofs.
-            with (evidence / "cargo-test.log").open("wb") as log:
-                subprocess.run(["cargo", "test", "--locked", "--offline", "--", "--include-ignored"],
-                               cwd=source, env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
+            with (evidence / "cargo-test.log").open("w+b") as log:
+                try:
+                    subprocess.run(["cargo", "test", "--locked", "--offline", "--", "--include-ignored"],
+                                   cwd=source, env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
+                except subprocess.CalledProcessError:
+                    log.flush()
+                    log.seek(0)
+                    shutil.copyfileobj(log, sys.stderr.buffer)
+                    sys.stderr.buffer.flush()
+                    raise
             raw = source / "target/cross-language-evidence"
             _verify_reports(raw)
             for name in REPORTS:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import csv
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -93,6 +95,31 @@ class PythonSdkValidationEvidenceProducerTest(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "native evidence inventory is not exact"):
                 produce(*fixture.inputs, fixture.output)
             self.assertFalse(fixture.output.exists())
+
+    def test_failed_suite_forwards_exact_binary_diagnostics_before_cleanup(self) -> None:
+        for raw in (b"failure\xff\x00\r\n", b""):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as temporary, \
+                    Fixture(Path(temporary)) as fixture:
+                fixture.output.mkdir()
+                (fixture.output / "stale").write_bytes(b"old evidence")
+                diagnostics = io.BytesIO()
+                failure = subprocess.CalledProcessError(7, [sys.executable])
+                original_program = fixture.test_program.read_bytes()
+
+                def fail(command, **kwargs):
+                    kwargs["stdout"].write(raw)
+                    raise failure
+
+                with patch.object(producer.subprocess, "run", side_effect=fail) as runner, \
+                        patch.object(producer.sys, "stderr", SimpleNamespace(buffer=diagnostics)), \
+                        self.assertRaises(subprocess.CalledProcessError) as caught:
+                    produce(*fixture.inputs, fixture.output)
+                runner.assert_called_once()
+                self.assertIs(failure, caught.exception)
+                self.assertEqual(raw, diagnostics.getvalue())
+                self.assertFalse(fixture.output.exists())
+                self.assertEqual(original_program, fixture.test_program.read_bytes())
+                self.assertFalse(any(fixture.output.parent.glob(".python-binding-evidence-*")))
 
     def test_missing_import_or_program_preserves_existing_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, Fixture(Path(temporary)) as fixture:

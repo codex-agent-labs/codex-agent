@@ -220,15 +220,22 @@ def produce(
                 EVIDENCE_ENV: str(evidence),
             })
             log = work / "python-test.log"
-            with log.open("wb") as test_log:
-                subprocess.run(
-                    [sys.executable, "-m", "unittest", "discover", "-s", str(source / "tests"), "-v"],
-                    cwd=source,
-                    env=environment,
-                    stdout=test_log,
-                    stderr=subprocess.STDOUT,
-                    check=True,
-                )
+            with log.open("w+b") as test_log:
+                try:
+                    subprocess.run(
+                        [sys.executable, "-m", "unittest", "discover", "-s", str(source / "tests"), "-v"],
+                        cwd=source,
+                        env=environment,
+                        stdout=test_log,
+                        stderr=subprocess.STDOUT,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError:
+                    test_log.flush()
+                    test_log.seek(0)
+                    shutil.copyfileobj(test_log, sys.stderr.buffer)
+                    sys.stderr.buffer.flush()
+                    raise
             _verify_outputs(evidence)
             shutil.copyfile(source / test_program.relative_to(ROOT), evidence / "test-program")
             if not _required_file(log, "Python test log").stat().st_size:

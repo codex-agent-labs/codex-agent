@@ -15,6 +15,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -200,9 +201,16 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                     "--output-junit", str(evidence / "ctest-value.xml")]),
             )
             for name, command in commands:
-                with (evidence / name).open("wb") as log:
-                    subprocess.run(command, cwd=source, env=environment, stdout=log,
-                                   stderr=subprocess.STDOUT, check=True)
+                with (evidence / name).open("w+b") as log:
+                    try:
+                        subprocess.run(command, cwd=source, env=environment, stdout=log,
+                                       stderr=subprocess.STDOUT, check=True)
+                    except subprocess.CalledProcessError:
+                        log.flush()
+                        log.seek(0)
+                        shutil.copyfileobj(log, sys.stderr.buffer)
+                        sys.stderr.buffer.flush()
+                        raise
                 if name == "ctest-suite.log":
                     # The next CTest call overwrites both the enum TSVs and CTest's
                     # last-run log. Keep those original outputs before proceeding.

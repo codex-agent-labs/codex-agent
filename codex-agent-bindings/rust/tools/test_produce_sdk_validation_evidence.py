@@ -1,10 +1,12 @@
 """Compiler-free orchestration fixtures, never actual Rust/native acceptance."""
 
 import importlib.util
+import io
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -163,6 +165,30 @@ class RustEvidenceProducerTest(unittest.TestCase):
             producer.produce(*self.inputs, self.output)
         self.assertFalse(self.output.exists())
         self.assertFalse(any(path.name.startswith(".rust-binding-evidence-") for path in self.root.iterdir()))
+
+    def test_failed_cargo_forwards_exact_binary_diagnostics_before_cleanup(self):
+        original_program = (producer.ROOT / "tests/enum_parity.rs").read_bytes()
+        for raw in (b"failure\xff\x00\r\n", b""):
+            with self.subTest(raw=raw):
+                self.output.mkdir()
+                (self.output / "stale").write_bytes(b"old evidence")
+                diagnostics = io.BytesIO()
+                failure = subprocess.CalledProcessError(7, ["cargo"])
+
+                def fail(command, **kwargs):
+                    kwargs["stdout"].write(raw)
+                    raise failure
+
+                with patch.object(producer.subprocess, "run", side_effect=fail) as runner, \
+                        patch.object(producer.sys, "stderr", SimpleNamespace(buffer=diagnostics)), \
+                        self.assertRaises(subprocess.CalledProcessError) as caught:
+                    producer.produce(*self.inputs, self.output)
+                runner.assert_called_once()
+                self.assertIs(failure, caught.exception)
+                self.assertEqual(raw, diagnostics.getvalue())
+                self.assertFalse(self.output.exists())
+                self.assertEqual(original_program, (producer.ROOT / "tests/enum_parity.rs").read_bytes())
+                self.assertFalse(any(self.root.glob(".rust-binding-evidence-*")))
 
     def test_missing_artifact_and_unsafe_outputs_never_start_cargo(self):
         with patch.object(producer.subprocess, "run") as run:

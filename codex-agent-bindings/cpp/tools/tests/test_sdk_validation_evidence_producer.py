@@ -1,10 +1,12 @@
 """Compiler-free orchestration fixtures; no C++ or native acceptance evidence."""
 
 import importlib.util
+import io
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 import xml.etree.ElementTree as ET
 
@@ -219,6 +221,35 @@ class ProducerTest(unittest.TestCase):
                                  classifier="macos-arm64", sdk_compatibility=self.compatibility)
         self.assertFalse(self.output.exists())
         self.assertTrue(self.program.is_file())
+
+    def test_every_failed_command_forwards_exact_binary_diagnostics_before_cleanup(self):
+        original_program = self.program.read_bytes()
+        for position in range(1, 5):
+            for raw in (b"failure\xff\x00\r\n", b""):
+                with self.subTest(position=position, raw=raw):
+                    self.write(self.output / "stale", "old evidence")
+                    diagnostics = io.BytesIO()
+                    failure = subprocess.CalledProcessError(7, "fixture")
+                    observed = []
+
+                    def fail(command, **kwargs):
+                        observed.append(command)
+                        if len(observed) == position:
+                            kwargs["stdout"].write(raw)
+                            raise failure
+                        return self.execute(command, **kwargs)
+
+                    with mock.patch.object(producer.subprocess, "run", side_effect=fail), \
+                            mock.patch.object(producer.sys, "stderr", SimpleNamespace(buffer=diagnostics)), \
+                            self.assertRaises(subprocess.CalledProcessError) as caught:
+                        producer.produce(self.api, self.bootstrap, self.sdk, self.library, self.output,
+                                         classifier="macos-arm64", sdk_compatibility=self.compatibility)
+                    self.assertEqual(position, len(observed))
+                    self.assertIs(failure, caught.exception)
+                    self.assertEqual(raw, diagnostics.getvalue())
+                    self.assertFalse(self.output.exists())
+                    self.assertEqual(original_program, self.program.read_bytes())
+                    self.assertFalse(any(self.output.parent.glob(".cpp-binding-evidence-*")))
 
     def test_missing_empty_extra_and_symbolic_native_evidence_reject_publication(self):
         def missing(evidence, build):
