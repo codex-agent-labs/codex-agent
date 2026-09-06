@@ -17,6 +17,59 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
     private val releaseToolingJar = File(checkNotNull(System.getProperty("codexAgent.releaseToolingJar")))
 
     @Test
+    fun `C++ rejects negative evidence before capability execution and preserves originals`() {
+        val root = kotlin.io.path.createTempDirectory("cpp-capability-negative-gate-").toFile().canonicalFile
+        try {
+            val input = root.resolve("handoff").apply { mkdirs(); resolve("fixture").writeText("input") }
+            val negatives = root.resolve("negatives").apply { mkdirs(); resolve("fixture").writeText("original") }
+            val host = root.resolve("host/evidence/cpp").apply { mkdirs() }
+            host.resolve("linux-x64.tsv").writeText(
+                "classifier\tpackageArtifactId\tpackageSha256\tnativeLibrarySha256\ttestId\tstatus\n" +
+                    "linux-x64\tcpp-package/package.zip\t${"a".repeat(64)}\t${"b".repeat(64)}\tcpp-installed-host-lifecycle\tpassed\n",
+            )
+            host.resolve("toolchain.tsv").writeText("tool\tversion\ncmake\tfixture\ncppCompiler\tfixture\n")
+            val source = root.resolve("codex-agent-bindings/cpp/tests/test_installed_package_tamper.py")
+                .apply { parentFile.mkdirs(); writeText("original program fixture") }
+            val reader = root.resolve("codex-agent-bindings/cpp/tools/verify_imported_package.py").apply {
+                parentFile.mkdirs()
+                writeText("""
+                    import pathlib, sys
+                    assert sys.argv[1] == 'verify-evidence'
+                    assert pathlib.Path(sys.argv[sys.argv.index('--expected-test-program') + 1]).read_text() == 'original program fixture'
+                    assert pathlib.Path(sys.argv[sys.argv.index('--evidence') + 1]).name == 'negatives'
+                    pathlib.Path('reader-called').write_text('read-only fixture rejection')
+                    raise SystemExit('synthetic negative evidence rejection')
+                """.trimIndent())
+            }
+            val producer = root.resolve("producer.py").apply {
+                writeText("from pathlib import Path\nPath('producer-called').write_text('must not run')\n")
+            }
+            val project = ProjectBuilder.builder().withProjectDir(root).build()
+            val output = root.resolve("build/capability")
+            val task = project.tasks.create("cppCapabilities", NativeWrapperCapabilityEvidenceTask::class.java).apply {
+                language.set("cpp")
+                expectedClassifier.set("linux-x64")
+                capabilityInputsDirectory.set(input)
+                installedConsumerEvidence.set(root.resolve("host"))
+                packageNegativeEvidenceDirectory.set(negatives)
+                producerScript.set(producer)
+                claims.set(source) // Command ordering fixture, not canonical claims/acceptance.
+                producerSources.from(producer, reader, source)
+                outputDirectory.set(output)
+                repositoryRoot.set(root)
+            }
+            assertFailsWith<org.gradle.api.GradleException> { task.produce() }
+            assertTrue(root.resolve("reader-called").isFile)
+            assertFalse(root.resolve("producer-called").exists())
+            assertFalse(output.exists())
+            assertEquals("original", negatives.resolve("fixture").readText())
+            assertEquals("original program fixture", source.readText())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `derives an exact universal receipt from compiler and executed evidence`() = withFixture { fixture ->
         val receipt = deriveCrossLanguageNativeWrapperBindingReceipt(fixture.input())
 

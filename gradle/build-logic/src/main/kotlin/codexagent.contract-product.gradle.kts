@@ -526,6 +526,16 @@ tasks.register("ciProductPhase") {
                 sdk.get().tasks.named("writeCppNativeWrapperSdkPackageOutputManifest")
             Triple("sdk", "dart", "package") ->
                 sdk.get().tasks.named("writeDartNativeWrapperSdkPackageOutputManifest")
+            Triple("sdk", "python", "validation") ->
+                sdk.get().tasks.named("writePythonNativeWrapperSdkValidationOutputManifest")
+            Triple("sdk", "csharp", "validation") ->
+                sdk.get().tasks.named("writeCSharpNativeWrapperSdkValidationOutputManifest")
+            Triple("sdk", "rust", "validation") ->
+                sdk.get().tasks.named("writeRustNativeWrapperSdkValidationOutputManifest")
+            Triple("sdk", "cpp", "validation") ->
+                sdk.get().tasks.named("writeCppNativeWrapperSdkValidationOutputManifest")
+            Triple("sdk", "dart", "validation") ->
+                sdk.get().tasks.named("writeDartNativeWrapperSdkValidationOutputManifest")
             else -> error("Unsupported product phase: ${selection.first}/${selection.second}/${selection.third}")
         }
     })

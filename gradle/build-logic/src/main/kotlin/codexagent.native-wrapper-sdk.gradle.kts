@@ -277,13 +277,11 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
     val importedSnapshot = layout.buildDirectory.dir(
         nativeWrapperCandidateTree.map { "imported-sdk-product-stages/$it/$language-package" },
     )
-    val evidence = layout.buildDirectory.dir(
-        nativeWrapperCandidateTree.map { "reports/native-wrapper-installed-consumer/$it/$language" },
-    )
+    val validationStage = layout.buildDirectory.dir("product-stage/sdk/$language/validation")
+    val evidence = validationStage.map { it.dir("outputs/installed") }
     val invalidate = tasks.register<Delete>("invalidate${title}NativeWrapperInstalledConsumer") {
-        delete(importedSnapshot, evidence)
+        delete(importedSnapshot, validationStage)
         delete(layout.buildDirectory.dir(nativeWrapperCandidateTree.map { "native-wrapper-capability-inputs/$it/$language" }))
-        delete(layout.buildDirectory.dir(nativeWrapperCandidateTree.map { "reports/native-wrapper-capability/$it/$language" }))
     }
     snapshotImportedNativeWrapperRuntimeStages.configure { mustRunAfter(invalidate) }
     generateNativeWrapperSdkCompatibility.configure { mustRunAfter(invalidate) }
@@ -330,7 +328,7 @@ val nativeWrapperInstalledConsumerTasks = nativeWrapperLanguageSpecs.mapValues {
             nativeWrapperCandidateTree.map { "native-wrapper-capability-inputs/$it/$language" },
         ))
         if (language == "cpp") packageNegativeEvidenceDirectory.set(layout.buildDirectory.dir(
-            nativeWrapperCandidateTree.map { "native-wrapper-package-negatives/$it/$language" },
+            "product-stage/sdk/$language/validation/outputs/package-negatives",
         ))
         repositoryRoot.set(rootProject.layout.projectDirectory)
     }
@@ -347,6 +345,9 @@ val nativeWrapperCapabilityEvidenceTasks = nativeWrapperLanguageSpecs.mapValues 
         expectedClassifier.set(providers.gradleProperty("codexAgent.target"))
         capabilityInputsDirectory.set(authenticated.flatMap { it.capabilityInputsDirectory })
         installedConsumerEvidence.set(authenticated.flatMap { it.outputDirectory })
+        if (language == "cpp") packageNegativeEvidenceDirectory.set(
+            authenticated.flatMap { it.packageNegativeEvidenceDirectory },
+        )
         producerScript.set(nativeWrapperBindingRoot.file(
             "$language/${if (language == "dart") "tool" else "tools"}/produce_sdk_validation_evidence.py",
         ))
@@ -359,10 +360,32 @@ val nativeWrapperCapabilityEvidenceTasks = nativeWrapperLanguageSpecs.mapValues 
         dotnetExecutable.set(providers.gradleProperty("codexAgent.dotnetExecutable"))
         dartExecutable.set(providers.gradleProperty("codexAgent.dartExecutable"))
         dartPackageConfig.set(layout.file(providers.gradleProperty("codexAgent.dartPackageConfig").map(::file)))
-        outputDirectory.set(layout.buildDirectory.dir(
-            nativeWrapperCandidateTree.map { "reports/native-wrapper-capability/$it/$language" },
-        ))
+        outputDirectory.set(layout.buildDirectory.dir("product-stage/sdk/$language/validation/outputs/capability"))
         repositoryRoot.set(rootProject.layout.projectDirectory)
+    }
+}
+
+nativeWrapperLanguageSpecs.forEach { (language, identity) ->
+    val title = identity.first
+    val phaseRoot = layout.buildDirectory.dir("product-stage/sdk/$language/validation")
+    tasks.register<WriteProductOutputManifestTask>("write${title}NativeWrapperSdkValidationOutputManifest") {
+        dependsOn(nativeWrapperCapabilityEvidenceTasks.getValue(language))
+        product.set("sdk")
+        component.set(language)
+        phase.set("validation")
+        target.set(providers.gradleProperty("codexAgent.target"))
+        productVersion.set(nativeWrapperSdkVersion)
+        outputRoots.set(mapOf(
+            "native-wrapper-installed" to "outputs/installed",
+            "native-wrapper-capability" to "outputs/capability",
+        ) + if (language == "cpp") mapOf(
+            "native-wrapper-package-negatives" to "outputs/package-negatives",
+        ) else emptyMap())
+        outputsDirectory.set(phaseRoot.map { it.dir("outputs") })
+        producerSources.from(rootProject.layout.projectDirectory.dir("ci/products"))
+        repositoryRoot.set(rootProject.layout.projectDirectory)
+        stageRoot.set(phaseRoot)
+        manifestFile.set(phaseRoot.map { it.file("output-manifest.json") })
     }
 }
 

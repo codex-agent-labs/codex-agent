@@ -7,6 +7,39 @@ import kotlin.test.assertTrue
 import org.gradle.testkit.runner.GradleRunner
 
 class NativeWrapperProductPhaseArtifactGraphTest {
+    @Test
+    fun `native validation stages once and writes manifest only after complete existing producers`() {
+        val installed = sdk.substringAfter("val nativeWrapperInstalledConsumerTasks =")
+            .substringBefore("val nativeWrapperCapabilityEvidenceTasks =")
+        val capability = sdk.substringAfter("val nativeWrapperCapabilityEvidenceTasks =")
+            .substringBefore("nativeWrapperLanguageSpecs.forEach")
+        val manifest = sdk.substringAfter("nativeWrapperLanguageSpecs.forEach")
+            .substringBefore("val nativeWrapperReleaseDirectory =")
+        assertTrue("product-stage/sdk/\$language/validation" in installed)
+        assertTrue("outputs/installed" in installed)
+        assertTrue("delete(importedSnapshot, validationStage)" in installed)
+        assertTrue("outputs/package-negatives" in installed)
+        assertTrue("outputs/capability" in capability)
+        assertTrue("authenticated.flatMap { it.packageNegativeEvidenceDirectory }" in capability)
+        assertTrue("tasks.register<WriteProductOutputManifestTask>" in manifest)
+        assertTrue("dependsOn(nativeWrapperCapabilityEvidenceTasks.getValue(language))" in manifest)
+        for (root in listOf("installed", "capability", "package-negatives")) {
+            assertTrue("\"native-wrapper-$root\" to \"outputs/$root\"" in manifest)
+        }
+        assertTrue("if (language == \"cpp\")" in manifest)
+        assertTrue("target.set(providers.gradleProperty(\"codexAgent.target\"))" in manifest)
+        assertTrue("productVersion.set(nativeWrapperSdkVersion)" in manifest)
+        assertFalse("Sync" in manifest)
+        assertFalse("copy" in manifest)
+        val task = File("src/main/kotlin/NativeWrapperCapabilityEvidenceTask.kt").readText()
+        assertTrue("\"verify-evidence\"" in task)
+        assertTrue("--expected-test-program" in task)
+        assertTrue("dartPackageConfig.orNull?.asFile, negatives" in task)
+        assertTrue(task.indexOf("val before = capabilityInputInventory(inputs)") < task.indexOf("\"verify-evidence\""))
+        assertTrue(task.indexOf("\"verify-evidence\"") < task.indexOf("val command = nativeWrapperCapabilityCommand("))
+        assertTrue("before == capabilityInputInventory(inputs)" in task)
+    }
+
     private val desktop = File("../../runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts")
         .readText()
     private val sdk = File("src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts").readText()

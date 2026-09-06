@@ -36,6 +36,8 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
     abstract val capabilityInputsDirectory: DirectoryProperty
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val installedConsumerEvidence: DirectoryProperty
+    @get:InputDirectory @get:Optional @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val packageNegativeEvidenceDirectory: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val producerScript: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val claims: RegularFileProperty
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val producerSources: ConfigurableFileCollection
@@ -61,8 +63,12 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
         check(destination != owned && destination.startsWith(owned)) { "Unowned capability output: $output" }
         val handoff = capabilityInputsDirectory.get().asFile
         val host = installedConsumerEvidence.get().asFile
+        val negatives = packageNegativeEvidenceDirectory.orNull?.asFile
+        check((language.get() == "cpp") == (negatives != null)) {
+            "C++ capability validation requires original package negative evidence"
+        }
         val inputs = listOf(handoff, host, producerScript.get().asFile, claims.get().asFile) +
-            producerSources.files + listOfNotNull(dartPackageConfig.orNull?.asFile)
+            producerSources.files + listOfNotNull(dartPackageConfig.orNull?.asFile, negatives)
         inputs.forEach { file ->
             val path = file.canonicalFile.toPath()
             check(!destination.startsWith(path) && !path.startsWith(destination)) {
@@ -75,6 +81,17 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
             val classifier = expectedClassifier.get()
             requireExactNativeWrapperInstalledConsumerEvidence(host, binding.id, classifier)
             val before = capabilityInputInventory(inputs)
+            if (negatives != null) {
+                processes.exec {
+                    workingDir(repositoryRoot.get().asFile)
+                    environment("PYTHONDONTWRITEBYTECODE", "1")
+                    commandLine(pythonExecutable.get(),
+                        repositoryRoot.get().asFile.resolve("codex-agent-bindings/cpp/tools/verify_imported_package.py"),
+                        "verify-evidence", "--evidence", negatives.absolutePath,
+                        "--expected-test-program", repositoryRoot.get().asFile.resolve(
+                            "codex-agent-bindings/cpp/tests/test_installed_package_tamper.py"))
+                }
+            }
             val command = nativeWrapperCapabilityCommand(
                 pythonExecutable.get(), producerScript.get().asFile, binding.id, classifier,
                 handoff, output, dotnetExecutable.orNull, dartExecutable.orNull, dartPackageConfig.orNull?.asFile,

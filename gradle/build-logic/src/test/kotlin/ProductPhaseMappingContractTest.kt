@@ -42,6 +42,11 @@ class ProductPhaseMappingContractTest {
                 "writeCppNativeWrapperSdkPackageOutputManifest",
             Triple("sdk", "dart", "package") to
                 "writeDartNativeWrapperSdkPackageOutputManifest",
+            Triple("sdk", "python", "validation") to "writePythonNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "csharp", "validation") to "writeCSharpNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "rust", "validation") to "writeRustNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "cpp", "validation") to "writeCppNativeWrapperSdkValidationOutputManifest",
+            Triple("sdk", "dart", "validation") to "writeDartNativeWrapperSdkValidationOutputManifest",
         )
 
         assertEquals(expected.size, Regex("""Triple\("""").findAll(mapping).count())
@@ -240,7 +245,7 @@ class ProductPhaseMappingContractTest {
                 "\"writeJavaScriptSdkPackageOutputManifest\")" in javascriptPackage(),
         )
         assertEquals(
-            2,
+            3, // Maven package, native package, and native validation share the same writer.
             Regex("tasks\\.register<WriteProductOutputManifestTask>").findAll(nativeWrapperPackage()).count(),
         )
         assertEquals(1, Regex("abstract class WriteProductOutputManifestTask").findAll(manifestTask).count())
@@ -364,9 +369,10 @@ class ProductPhaseMappingContractTest {
         )
         assertEquals(
             2,
-            Regex("""validationPackageRoot\.zip\(desktopRuntimeCompatibilityVersion\)""")
+            Regex("""validationPackageRoot\.zip\(validationCompatibilityVersion\)""")
                 .findAll(packageInputs).count(),
         )
+        assertTrue("val validationCompatibilityVersion = validationPackageVersion.map(::runtimeCompatibilityVersion)" in handoff)
         assertTrue(
             "root.file(\"outputs/c-abi/\${cAbiArchiveFileName(version, distribution.target)}\")" in
                 packageInputs,
