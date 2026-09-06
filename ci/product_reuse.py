@@ -243,7 +243,7 @@ def _observe_tested_commit(
 
 def _same_pr_run(
     artifact: Mapping[str, Any], api: str, repository: str, pull_request: int, token: str,
-    expected_commit: str, expected_tree: str,
+    expected_commit: str, expected_tree: str, *, expected_attempt: int,
 ) -> dict[str, Any]:
     transport = artifact.get("workflow_run")
     if not isinstance(transport, dict):
@@ -252,7 +252,9 @@ def _same_pr_run(
     head_sha = require_string(transport.get("head_sha"), "product catalog workflow head SHA")
     if _OID.fullmatch(head_sha) is None:
         raise ValueError("Product catalog workflow head SHA is malformed")
-    run = api_json(f"{api}/repos/{repository}/actions/runs/{run_id}", token)
+    require_integer(expected_attempt, "product catalog original run attempt", 1)
+    run_url = f"{api}/repos/{repository}/actions/runs/{run_id}/attempts/{expected_attempt}"
+    run = api_json(run_url, token)
     if (
         require_integer(run.get("id"), "product catalog workflow run ID", 1) != run_id
         or run.get("status") != "completed"
@@ -266,7 +268,9 @@ def _same_pr_run(
         or not run_matches_pr(run, pull_request)
     ):
         raise ValueError("Same-PR product catalog did not come from an allowed successful CI run")
-    require_integer(run.get("run_attempt"), "product catalog workflow run attempt", 1)
+    attempt = require_integer(run.get("run_attempt"), "product catalog workflow run attempt", 1)
+    if attempt != expected_attempt:
+        raise ValueError("Same-PR product catalog claims a different original CI attempt")
     tested_commit = _observe_tested_commit(
         run, api=api, repository=repository, token=token,
         expected_commit=expected_commit, expected_tree=expected_tree, pull_request=pull_request)
@@ -557,6 +561,7 @@ def _materialize_catalog(
     pull_request: int | None,
     release_trust: ReleaseTrust | None,
     workflow_run: Mapping[str, Any] | None = None,
+    *, api: str | None = None,
 ) -> Catalog:
     artifact_id = require_integer(artifact.get("id"), "product catalog artifact.id", 1)
     root = destination / "catalogs" / source / str(artifact_id)
@@ -579,7 +584,14 @@ def _materialize_catalog(
         raise ValueError("Product catalog pull-request context mismatch")
     if source == "same-pr":
         if workflow_run is None:
-            raise ValueError("Same-PR product catalog lacks verified workflow-run provenance")
+            if api is None:
+                raise ValueError("Same-PR product catalog lacks verified workflow-run provenance")
+            # Original claims select what to authenticate; they confer no authority.
+            # Current-consumer commit/tree belong only to the subsequent key planner.
+            workflow_run = _same_pr_run(
+                artifact, api, repository, pull_request, token,
+                index["producer"]["commit"], index["producer"]["tree"],
+                expected_attempt=index["producer"]["runAttempt"])
         observed = require_exact_keys(workflow_run, {"run", "testedCommit"}, "Same-PR workflow observation")
         workflow_run = observed["run"]
         tested_commit = observed["testedCommit"]
@@ -774,13 +786,9 @@ def _discover_catalogs(
         if source != "same-pr" and release_trust is None:
             continue
         for artifact in _candidate_artifacts(artifacts, source, plan["pullRequest"], versions):
-            workflow_run = _same_pr_run(
-                artifact, api, repository, plan["pullRequest"], token,
-                plan["validationCommit"], plan["validationTree"],
-            ) if source == "same-pr" else None
             result.append(_materialize_catalog(
                 source, artifact, token, destination, repository, plan["pullRequest"], release_trust,
-                workflow_run,
+                api=api,
             ))
     return result
 

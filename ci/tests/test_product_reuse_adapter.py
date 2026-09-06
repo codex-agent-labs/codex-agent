@@ -901,7 +901,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         ]
         trust = product_reuse.ReleaseTrust(self.root / "keyring", self.root / "keys")
 
-        def materialize(source: str, artifact: dict[str, object], *_: object) -> product_reuse.Catalog:
+        def materialize(source: str, artifact: dict[str, object], *_: object, **__: object) -> product_reuse.Catalog:
             return product_reuse.Catalog(source, {}, str(artifact["id"]), {}, {})
 
         with mock.patch.object(product_reuse, "paginated_items", return_value=artifacts) as listed, \
@@ -947,12 +947,12 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 {"run": good_run, "testedCommit": tested},
                 product_reuse._same_pr_run(
                     artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token",
-                    COMMIT, TREE,
+                    COMMIT, TREE, expected_attempt=2,
                 ),
             )
         self.assertEqual(original, good_run)
         self.assertEqual([
-            mock.call("https://api.github.test/repos/codex-agent-labs/codex-agent/actions/runs/7", "token"),
+            mock.call("https://api.github.test/repos/codex-agent-labs/codex-agent/actions/runs/7/attempts/2", "token"),
             mock.call(f"https://api.github.test/repos/codex-agent-labs/codex-agent/git/commits/{COMMIT}", "token"),
         ], queried.call_args_list)
         for change in (
@@ -968,7 +968,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "allowed successful CI run"):
                     product_reuse._same_pr_run(
                         artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token",
-                        COMMIT, TREE,
+                        COMMIT, TREE, expected_attempt=2,
                     )
         for change in (
             {"sha": "f" * 40}, {"tree": {"sha": "f" * 40}}, {"tree": None},
@@ -979,7 +979,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 product_reuse, "api_json", side_effect=[good_run, {**tested, **change}],
             ), self.assertRaises(ValueError):
                 product_reuse._same_pr_run(
-                    artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token", COMMIT, TREE)
+                    artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token",
+                    COMMIT, TREE, expected_attempt=2)
         for change in (
             {"pull_requests": [{"number": 31}]},
             {"pull_requests": good_run["pull_requests"] * 2},
@@ -989,7 +990,127 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 product_reuse, "api_json", side_effect=[{**good_run, **change}, tested],
             ), self.assertRaises(ValueError):
                 product_reuse._same_pr_run(
-                    artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token", COMMIT, TREE)
+                    artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token",
+                    COMMIT, TREE, expected_attempt=2)
+
+    def test_older_same_pr_catalog_authenticates_original_identity_before_current_key_planning(self) -> None:
+        # Synthetic signed CI transport, real local Git inventories and sole planner.
+        repository, base, _ = self.contract_repository()
+
+        def git(*arguments, text=None):
+            return subprocess.run(("git", *arguments), cwd=repository, input=text,
+                                  text=True, capture_output=True, check=True).stdout.strip()
+
+        note = repository / "codex-agent-bindings/python/README.md"
+        note.parent.mkdir(parents=True)
+        note.write_text("original SDK documentation\n")
+        git("add", ".")
+        git("commit", "-qm", "original branch head")
+        head, original_tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
+        original_commit = git("commit-tree", original_tree, "-p", base, "-p", head, text="tested PR merge\n")
+        note.write_text("later SDK-only documentation\n")
+        git("add", ".")
+        git("commit", "-qm", "later consumer tree")
+        current_tree = git("rev-parse", "HEAD^{tree}")
+        current_commit = git("commit-tree", current_tree, "-p", original_commit, text="current consumer\n")
+        self.assertNotEqual(original_commit, current_commit)
+        self.assertNotEqual(original_tree, current_tree)
+        binary = PhaseInstanceId("contract", "contract", "binary", "common")
+        original_plan = plan_phase(
+            binary, inventory=phase_git_inventory(repository, original_commit, binary), versions=VERSIONS,
+            upstream_receipts=[], toolchain_profile_digest=product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+            flags_digest=product_reuse.NOT_APPLICABLE_FLAGS_DIGEST)
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+                    "commit": original_commit, "tree": original_tree, "event": "pull_request",
+                    "runId": 7, "runAttempt": 2, "pullRequest": 31}
+        storage = repository / "build/original"
+        storage.mkdir(parents=True)
+        envelope, object_path = self.phase_object(storage, "binary", original_plan, producer)
+        private_key, public_key, signing = generate_development_key(storage / "signing")
+        index = {"schemaVersion": 1, "repository": producer["repository"],
+                 "context": {"kind": "pull-request", "pullRequest": 31, "commit": original_commit,
+                             "tree": original_tree, "runId": 7, "runAttempt": 2},
+                 "entries": [self.product_index_entry(envelope)], "trustDomain": "development",
+                 "signing": signing, "producer": producer}
+        manifest = storage / "product-index.json"
+        manifest.write_bytes(canonical_json_bytes(index))
+        signature = sign_manifest(manifest, private_key, signing)
+        archive = storage / "catalog.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.write(manifest, "product-index.json")
+            output.write(signature, "product-index.sig")
+            output.write(public_key, "public-key.pub")
+            output.write(object_path, product_reuse.object_relative_path(
+                original_plan["buildKey"], envelope["receiptSha256"]))
+        original_bytes = {path: path.read_bytes() for path in (manifest, signature, object_path)}
+        artifact = {"id": 71, "name": "codex-agent-product-catalog-v1-pull-request-31-original",
+                    "expired": False, "digest": sha256_bytes(archive.read_bytes()),
+                    "workflow_run": {"id": 7, "head_sha": head}}
+        run = {"id": 7, "run_attempt": 2, "status": "completed", "conclusion": "success",
+               "path": producer["workflowPath"], "event": "pull_request", "head_sha": head,
+               "head_commit": {"tree_id": original_tree},
+               "repository": {"full_name": producer["repository"], "fork": False},
+               "head_repository": {"full_name": producer["repository"], "fork": False},
+               "pull_requests": [{"number": 31, "base": {"sha": base}, "head": {"sha": head}}]}
+        tested = {"sha": original_commit, "tree": {"sha": original_tree},
+                  "parents": [{"sha": base}, {"sha": head}]}
+        impact = {**impact_plan(changed=[note.relative_to(repository).as_posix()]),
+                  "validationCommit": current_commit, "validationTree": current_tree}
+        environment = {"GITHUB_TOKEN": "unused", "GITHUB_API_URL": "https://api.github.test",
+                       "GITHUB_REPOSITORY": producer["repository"]}
+        destination = repository / "build/discovered"
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[artifact]), \
+                mock.patch.object(product_reuse, "download_artifact", return_value=archive.read_bytes()), \
+                mock.patch.object(product_reuse, "api_json", side_effect=[run, tested]) as queried:
+            catalogs = product_reuse._discover_catalogs(impact, destination, None, environment, VERSIONS)
+        self.assertEqual([
+            mock.call("https://api.github.test/repos/codex-agent-labs/codex-agent/actions/runs/7/attempts/2", "unused"),
+            mock.call(f"https://api.github.test/repos/codex-agent-labs/codex-agent/git/commits/{original_commit}", "unused"),
+        ], queried.call_args_list)
+        request = {"schemaVersion": 1, "requestType": "reuse-wave", "repository": producer["repository"],
+                   "pullRequest": 31, "repositoryRoot": str(repository), "repositoryRevision": current_commit,
+                   "artifactRoot": str(destination), "requested": [product_reuse._identity_record(binary)],
+                   "versions": VERSIONS, "phaseAuthorities": [{**product_reuse._identity_record(binary),
+                       "toolchainProfileDigest": product_reuse.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                       "flagsDigest": product_reuse.NOT_APPLICABLE_FLAGS_DIGEST, "outputSchemaVersion": 1}],
+                   "contractEvidence": None, "runtimeValidationEvidence": [], "availableObjects": [],
+                   "catalogs": product_reuse._catalog_request(catalogs)}
+        result = product_reuse.plan_reuse_wave(request)
+        self.assertEqual("reused", result["phases"][0]["state"])
+        self.assertEqual("same-pr", result["phases"][0]["source"])
+        self.assertEqual(original_plan["buildKey"], result["phases"][0]["buildKey"])
+        self.assertEqual(envelope["receiptSha256"], result["phases"][0]["receiptSha256"])
+        self.assertEqual({"run": run, "testedCommit": tested}, product_inventory.load_canonical_json_bytes(
+            (destination / "catalogs/same-pr/71/workflow-provenance.json").read_bytes()))
+        for path, data in original_bytes.items():
+            self.assertEqual(data, path.read_bytes())
+        core = repository / "codex-agent-core/src/commonMain/kotlin/example.kt"
+        core.write_text("package example\nclass MeaningfulApiChange\n")
+        git("add", "--", core.relative_to(repository).as_posix())
+        # Only the declared source path is committed; external evidence stays outside Git.
+        git("commit", "-qm", "changed Contract source", "--", core.relative_to(repository).as_posix())
+        changed = product_reuse.plan_reuse_wave({**request, "repositoryRevision": git("rev-parse", "HEAD")})
+        self.assertEqual("build", changed["phases"][0]["state"])
+        self.assertNotEqual(original_plan["buildKey"], changed["phases"][0]["buildKey"])
+        for number, (observed_run, observed_commit) in enumerate((
+            ({**run, "run_attempt": 3}, tested), ({**run, "pull_requests": [{"number": 32}]}, tested),
+            (run, {**tested, "sha": current_commit}), (run, {**tested, "tree": {"sha": current_tree}}),
+            ({**run, "path": ".github/workflows/untrusted.yml"}, tested),
+            ({**run, "head_repository": {"full_name": "attacker/repo", "fork": True}}, tested),
+        )):
+            with self.subTest(case=number), \
+                    mock.patch.object(product_reuse, "download_artifact", return_value=archive.read_bytes()), \
+                    mock.patch.object(product_reuse, "api_json", side_effect=[observed_run, observed_commit]), \
+                    self.assertRaises(ValueError):
+                product_reuse._materialize_catalog(
+                    "same-pr", artifact, "unused", repository / f"build/rejected-{number}",
+                    producer["repository"], 31, None, api=environment["GITHUB_API_URL"])
+        # Actual signature verification, not only unsigned catalog/context parsing.
+        retained_manifest = destination / catalogs[0].request["manifest"]
+        retained_manifest.write_bytes(canonical_json_bytes({**index,
+            "context": {**index["context"], "runAttempt": 3}, "producer": {**producer, "runAttempt": 3}}))
+        with self.assertRaises(ValueError):
+            product_reuse.plan_reuse_wave(request)
 
     def test_complete_result_is_reverified_before_jobs_can_be_skipped(self) -> None:
         selected = PhaseInstanceId("contract", "contract", "binary", "common")
