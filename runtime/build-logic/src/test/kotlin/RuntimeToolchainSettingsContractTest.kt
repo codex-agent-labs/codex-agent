@@ -165,8 +165,10 @@ class RuntimeToolchainSettingsContractTest {
             )
         listOf(
             "\"package\" -> require(importedRuntimeBinaryStage.isPresent)",
-            "\"validation\", \"metadata\" -> require(importedRuntimePackageStage.isPresent)",
+            "\"validation\" -> require(importedRuntimePackageStage.isPresent)",
         ).forEach { contract -> assertTrue(contract in pluginGuard, contract) }
+        assertFalse("\"metadata\" -> require(importedRuntimePackageStage.isPresent)" in pluginGuard)
+        assertFalse("\"validation\", \"metadata\"" in pluginGuard)
         assertTrue(
             plugin.indexOf("private val requestedRuntimePhase =") <
                 plugin.indexOf("extensions.configure<KotlinMultiplatformExtension>"),
@@ -175,7 +177,7 @@ class RuntimeToolchainSettingsContractTest {
         mapOf(
             "package" to "codexAgent.runtimeBinaryStage",
             "validation" to "codexAgent.runtimePackageStage",
-            "metadata" to "codexAgent.runtimePackageStage",
+            "metadata" to "codexAgent.runtimeVariantIdentity",
         ).forEach { (phase, predecessor) ->
             val root = createTempDirectory("runtime-$phase-predecessor").toFile().canonicalFile
             try {
@@ -186,6 +188,9 @@ class RuntimeToolchainSettingsContractTest {
                     val nativeRuntimeTargets = setOf("macos-arm64")
                     val commandLineProperties = gradle.startParameter.projectProperties
                     val requestedPhase = commandLineProperties["codexAgent.phase"]
+                    val requestedProduct = "runtime"
+                    val requestedComponent = "macos-arm64"
+                    val requestedTarget = "macos-arm64"
                     val bindingValidation = false
                     val adapterHostValidation = false
                     val semver = Regex("[0-9]+\\.[0-9]+\\.[0-9]+")

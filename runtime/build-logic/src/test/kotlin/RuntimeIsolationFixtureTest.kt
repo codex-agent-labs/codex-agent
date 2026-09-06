@@ -298,9 +298,9 @@ class RuntimeIsolationFixtureTest {
                 positiveKey.writeBytes(publicKeyBytes)
             }
 
-            // No authenticated native Runtime package stage exists in this isolated fixture.
-            // Prove the final lifecycle refuses the selection-only empty directory without compiling;
-            // real package acceptance remains an integration proof over a finalized product stage.
+            // No original native Runtime phase receipts/archives exist in this isolated fixture.
+            // Prove metadata refuses missing explicit original inputs without compiling;
+            // real variant acceptance remains an integration proof over finalized product stages.
             val verification = runner(
                 positive,
                 positiveContract,
@@ -329,8 +329,7 @@ class RuntimeIsolationFixtureTest {
                 "-PcodexAgent.candidateTree=89abcdef0123456789abcdef0123456789abcdef",
             ).buildAndFail()
             assertTrue(
-                "output-manifest.json" in verification.output &&
-                    "missing or unsafe" in verification.output,
+                "Missing mandatory explicit -P project property: codexAgent.runtimeVariantIdentity" in verification.output,
                 verification.output,
             )
             assertTrue(
@@ -340,7 +339,7 @@ class RuntimeIsolationFixtureTest {
                         (name.startsWith("compile") || name.startsWith("cinterop") ||
                             name.startsWith("link") || name == "verifyRuntimeProducerToolchain")
                 },
-                "An empty imported package reached Runtime compilation: ${verification.tasks.map { it.path }}",
+                "Missing imported variant inputs reached Runtime compilation: ${verification.tasks.map { it.path }}",
             )
             assertFalse(workspace.resolve("hostile-python-ran").exists(), "Hostile Python startup code executed")
         } finally {
@@ -445,9 +444,6 @@ class RuntimeIsolationFixtureTest {
             parentFile.mkdirs()
             if (!exists()) writeText("{}\n")
         }
-        // Configuration checks need only selection; the final lifecycle negative deliberately
-        // exercises rejection of this unauthenticated directory before Runtime compilation.
-        val unusedPackageStage = fixture.resolve("inputs/runtime-package-stage-unused").apply { mkdirs() }
         val arguments = mutableListOf(
             task,
             "--offline",
@@ -463,7 +459,6 @@ class RuntimeIsolationFixtureTest {
             "-PcodexAgent.runtimeBinaryPlan=${unusedBinaryPlan.absolutePath}",
             "-PcodexAgent.repositoryRevision=${"0".repeat(40)}",
             "-PcodexAgent.phase=metadata",
-            "-PcodexAgent.runtimePackageStage=${unusedPackageStage.absolutePath}",
             "--configuration-cache",
             "--configuration-cache-problems=fail",
             "--stacktrace",

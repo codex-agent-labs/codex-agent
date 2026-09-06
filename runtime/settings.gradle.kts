@@ -90,7 +90,7 @@ pluginManagement {
     } else if (values.getValue("codexAgent.target") in nativeRuntimeTargets) {
         when (requestedPhase) {
             "package" -> "codexAgent.runtimeBinaryStage"
-            "validation", "metadata" -> "codexAgent.runtimePackageStage"
+            "validation" -> "codexAgent.runtimePackageStage"
             else -> null
         }
     } else {
@@ -113,6 +113,24 @@ pluginManagement {
         require(java.nio.file.Files.isDirectory(predecessor, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
             !java.nio.file.Files.isSymbolicLink(predecessor) && predecessor.toRealPath() == predecessor) {
             "$name must be an existing non-symbolic directory"
+        }
+    }
+    if (requestedProduct == "runtime" && requestedComponent in nativeRuntimeTargets && requestedPhase == "metadata") {
+        listOf("Identity", "BinaryReceipt", "PackageReceipt", "ValidationReceipt", "CAbiArchive",
+            "AppServerArchive", "ValidationEvidence").forEach { suffix ->
+            val name = "codexAgent.runtimeVariant$suffix"
+            require(System.getProperty("org.gradle.project.$name") == null &&
+                System.getenv("ORG_GRADLE_PROJECT_$name") == null) {
+                "$name must be supplied only as an explicit -P project property"
+            }
+            require(commandLineProperties[name]?.isNotBlank() == true) {
+                "Missing mandatory explicit -P project property: $name"
+            }
+            val input = absoluteNormalizedPath(name)
+            require(java.nio.file.Files.isRegularFile(input, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
+                !java.nio.file.Files.isSymbolicLink(input) && input.toRealPath() == input) {
+                "$name must be an existing non-symbolic regular file"
+            }
         }
     }
     if (adapterHostValidation || bindingValidation) {

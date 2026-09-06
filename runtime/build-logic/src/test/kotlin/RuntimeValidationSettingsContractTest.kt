@@ -24,8 +24,13 @@ class RuntimeValidationSettingsContractTest {
         try {
             root.resolve("settings.gradle.kts").writeText("rootProject.name = \"runtime-settings-matrix\"\n")
             root.resolve("predecessor").mkdir()
+            val original = root.resolve("original-input.json").apply { writeText("original fixture bytes\n") }
+            java.nio.file.Files.createSymbolicLink(root.resolve("symbolic-input.json").toPath(), original.toPath())
+            java.nio.file.Files.createSymbolicLink(root.resolve("symbolic-parent").toPath(), root.toPath())
             root.resolve("build.gradle.kts").writeText("""
                 import java.nio.file.Path
+                val variantProperties = listOf("Identity", "BinaryReceipt", "PackageReceipt", "ValidationReceipt",
+                    "CAbiArchive", "AppServerArchive", "ValidationEvidence").map { "codexAgent.runtimeVariant" + it }
                 fun route(component: String, phase: String, target: String, change: Map<String, String?> = emptyMap()): String {
                     val commandLineProperties = mutableMapOf(
                         "codexAgent.product" to "runtime", "codexAgent.component" to component,
@@ -36,6 +41,7 @@ class RuntimeValidationSettingsContractTest {
                         "codexAgent.runtimePackageVersion" to "0.2.4",
                         "codexAgent.runtimeNativePackageVersion" to "0.2.1",
                     )
+                    variantProperties.forEach { commandLineProperties[it] = ${quote(original.path)} }
                     change.forEach { (name, value) -> if (value == null) commandLineProperties.remove(name) else commandLineProperties[name] = value }
                     val values = mapOf("codexAgent.target" to target)
                     fun absoluteNormalizedPath(name: String): Path = Path.of(commandLineProperties.getValue(name)).also {
@@ -63,6 +69,27 @@ class RuntimeValidationSettingsContractTest {
                             }
                         }
                         check(accepted == expected.size)
+                        for (component in native) {
+                            check(route(component, "metadata", component,
+                                mapOf("codexAgent.runtimePackageStage" to null)) == component)
+                        }
+                        for (property in variantProperties) {
+                            for (bad in listOf(null, "", "relative.json", ${quote(root.resolve("missing.json").path)},
+                                ${quote(root.resolve("predecessor").path)}, ${quote(root.resolve("symbolic-input.json").path)},
+                                ${quote(root.resolve("symbolic-parent/original-input.json").path)},
+                                ${quote(root.resolve("predecessor/../original-input.json").path)})) {
+                                check(runCatching { route("macos-arm64", "metadata", "macos-arm64",
+                                    mapOf(property to bad)) }.isFailure) { property + ": " + bad }
+                            }
+                            val systemProperty = "org.gradle.project." + property
+                            val previous = System.getProperty(systemProperty)
+                            try {
+                                System.setProperty(systemProperty, ${quote(original.path)})
+                                check(runCatching { route("macos-arm64", "metadata", "macos-arm64") }.isFailure)
+                            } finally {
+                                if (previous == null) System.clearProperty(systemProperty) else System.setProperty(systemProperty, previous)
+                            }
+                        }
                         for (component in adapters) {
                             for (missing in listOf("runtimePackageStage", "runtimeNativePackageStage", "runtimePackageVersion", "runtimeNativePackageVersion")) {
                                 check(runCatching { route(component, "validation", "macos-arm64", mapOf("codexAgent." + missing to null)) }.isFailure)
@@ -83,6 +110,8 @@ class RuntimeValidationSettingsContractTest {
             assertTrue("Exact registry settings matrix passed:" in result.output, result.output)
             assertTrue("verifyCommand += listOf(\"--required-component\", requestedTarget)" in settings)
         } finally {
+            java.nio.file.Files.deleteIfExists(root.resolve("symbolic-parent").toPath())
+            java.nio.file.Files.deleteIfExists(root.resolve("symbolic-input.json").toPath())
             root.deleteRecursively()
         }
     }

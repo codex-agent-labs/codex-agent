@@ -90,7 +90,7 @@ if (requestedRuntimeTarget in runtimeBinaryFlags) {
         "package" -> require(importedRuntimeBinaryStage.isPresent) {
             "Native Runtime package phase requires codexAgent.runtimeBinaryStage"
         }
-        "validation", "metadata" -> require(importedRuntimePackageStage.isPresent) {
+        "validation" -> require(importedRuntimePackageStage.isPresent) {
             "Native Runtime $requestedRuntimePhase phase requires codexAgent.runtimePackageStage"
         }
     }
