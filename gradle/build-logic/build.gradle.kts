@@ -26,12 +26,25 @@ tasks.processResources {
             "products/test_results.py",
             "products/runtime_evidence.py",
             "products/c_abi.py",
+            "native_wrappers.py",
+            "products/aggregate.py", "products/contract.py", "products/contract_attestation.py",
+            "products/contract_model.py", "products/contract_projection.py", "products/index.py",
+            "products/plan.py", "products/receipt.py", "products/registry.py", "products/restore.py",
+            "products/runtime_adapter_content.py", "products/runtime_adapter_validation.py",
+            "products/runtime_aggregate.py", "products/runtime_attestation.py", "products/runtime_flags.py",
+            "products/runtime_identity.py", "products/sdk_compatibility.py", "products/sdk_inputs.py",
+            "products/sdk_native.py", "products/sdk_package.py", "products/sdk_runtime_content.py",
+            "products/selection.py", "products/signatures.py", "products/toolchain.py",
         )
         into("python/ci")
     }
     from(layout.projectDirectory.dir("../../codex-agent-runtime-desktop/native/c-api")) {
         include("abi-contract.json", "exports/linux.map", "exports/macos.exports", "exports/windows.def")
         into("python/codex-agent-runtime-desktop/native/c-api")
+    }
+    from(layout.projectDirectory.dir("../../codex-agent-bindings/cpp/tools")) {
+        include("verify_imported_package.py")
+        into("python/codex-agent-bindings/cpp/tools")
     }
 }
 

@@ -48,8 +48,10 @@ _NATIVE_METADATA_VERIFIERS = frozenset({
         "CrossLanguageNativeWrapperValidationEvidence", "CrossLanguageNativeWrapperBindingEvidence",
         "NativeWrapperInstalledConsumerTask", "CrossLanguageApiEvidence", "CrossLanguageCAbiBindingEvidence",
         "CrossLanguageBindingParity", "CrossLanguageCAbiClient",
+        "ProductPythonTooling",
     )),
     "ci/native_wrappers.py",
+    "gradle/build-logic/build.gradle.kts",
 })
 _DOC_FILES = frozenset({"README.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"})
 _STATIC_ONLY_FILES = frozenset({".github/actionlint.yaml", ".github/dependabot.yml"})
@@ -928,7 +930,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstanceId]:
-    if path in {"gradle/build-logic/build.gradle.kts", "gradle/build-logic/settings.gradle.kts"}:
+    if path in {"gradle/build-logic/build.gradle.kts", "gradle/build-logic/settings.gradle.kts",
+                "gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt"}:
         # Standalone Runtime includes only runtime/build-logic; still plan broad reuse.
         selected = {instance for instance in selected if instance.product != "runtime"}
     if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py"}:
@@ -944,6 +947,11 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
         return selected
 
     direct: set[PhaseInstanceId] = set()
+    if path in {"gradle/build-logic/build.gradle.kts",
+                "gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt"}:
+        # Imported native validation executes packaged tooling even when its package is reused.
+        direct.update(PhaseInstanceId("sdk", language, "validation", target)
+                      for language in NATIVE_BINDINGS for target in NATIVE_TARGETS)
     if path == "codex-agent-runtime-desktop/codex-app-server-distributions.json":
         # Imported JVM/Node host validation reads this original source independently of binary reuse.
         direct.update(instance for instance in selected if instance.product == "runtime"

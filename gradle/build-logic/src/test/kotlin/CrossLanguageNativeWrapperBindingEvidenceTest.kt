@@ -1,4 +1,7 @@
 import java.io.File
+import java.util.zip.ZipFile
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -227,6 +230,7 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             parentFile.resolve("__init__.py").writeText("")
             writeText("""
                 import pathlib, shutil, sys
+                assert sys.flags.isolated and sys.flags.no_site and sys.flags.dont_write_bytecode
                 args = sys.argv[1:]
                 def arg(name): return pathlib.Path(args[args.index(name) + 1])
                 if args[0] == 'native-content':
@@ -238,19 +242,29 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
                     sys.stdout.write('{"fixture":"five full matcher calls","sdkVersion":"0.2.0"}\n')
                     raise SystemExit(0)
                 destination = arg('--validation-inputs-output')
-                shutil.copytree('handoff', destination)
+                repository = arg('--repository')
+                shutil.copytree(repository / 'handoff', destination)
                 shutil.copytree(arg('--validation-stage'), destination / 'validation')
                 shutil.copyfile(arg('--validation-receipt'), destination / 'receipts/sdk-validation.json')
                 (destination / 'validation-source').mkdir()
-                shutil.copyfile('${fixture.claims.name}', destination / 'validation-source/capability-claims.tsv')
+                shutil.copyfile(repository / '${fixture.claims.name}', destination / 'validation-source/capability-claims.tsv')
             """.trimIndent() + "\n")
         }
+        // Explicit synthetic TOOLING resource, not a production repository-script override.
+        // The unchanged Kotlin matcher is exercised below; signed Python lineage is a separate suite.
+        var fixtureTooling = toolingWithFixturePython(root.resolve("fixture-tooling.jar"), inputVerifier.readBytes())
+        inputVerifier.writeText("raise RuntimeError('UNTRUSTED_CHECKOUT_PYTHON_EXECUTED')\n")
         val importArguments = arrayOf("verify-imported-native-wrapper-validation", "--repository", root.absolutePath,
             "--language", "csharp", "--target", "linux-x64", "--package-stage", handoff.absolutePath,
             "--package-receipt", handoff.resolve("receipts/sdk-package.json").absolutePath,
             "--compatibility-request", request.absolutePath, "--runtime-stages", handoff.absolutePath,
             "--staged-sdks", handoff.absolutePath, "--validation-stage", importedStage.absolutePath,
             "--validation-receipt", validationReceipt.absolutePath)
+        val rejectedCheckout = runReleaseTool(root, *importArguments)
+        assertTrue(rejectedCheckout.first != 0, "Real packaged verifier must reject fake receipts")
+        assertFalse("UNTRUSTED_CHECKOUT_PYTHON_EXECUTED" in rejectedCheckout.second, rejectedCheckout.second)
+        fun runReleaseTool(directory: File, vararg arguments: String): Pair<Int, String> =
+            this.runReleaseTool(directory, *arguments, toolingJar = fixtureTooling)
         val importedBefore = verifiedRegularFiles(importedStage).mapValues { it.value.releaseDigest() }
         val importedCli = runReleaseTool(root, *importArguments)
         assertEquals(0, importedCli.first, importedCli.second)
@@ -327,7 +341,16 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
         assertTrue(runReleaseTool(root, *importArguments).first != 0, "Input success must not bypass full matcher")
         assertTrue(runReleaseTool(root, *contentArguments).first != 0, "Failed full matcher cannot publish content")
         assertFalse(content.exists())
-        inputVerifier.writeText("# Successful process without authenticated private handoff\n")
+        fixtureTooling = toolingWithFixturePython(root.resolve("mutating-fixture-tooling.jar"), """
+            import pathlib, py_compile
+            py_compile.compile(__file__, cfile=str(pathlib.Path(__file__).with_suffix('.pyc')),
+                doraise=True, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        """.trimIndent().toByteArray())
+        val changedTooling = runReleaseTool(root, *importArguments)
+        assertTrue(changedTooling.first != 0 && "resources changed during execution" in changedTooling.second,
+            "New executable bytecode must invalidate the private capture: ${changedTooling.second}")
+        fixtureTooling = toolingWithFixturePython(root.resolve("empty-fixture-tooling.jar"),
+            "# Successful process without authenticated private handoff\n".toByteArray())
         assertTrue(runReleaseTool(root, *importArguments).first != 0, "A success token must not admit an import")
         val originalHost = installed.resolve("linux-x64.tsv").readText()
         listOf("a".repeat(64), native.releaseDigest()).forEach { digest ->
@@ -630,9 +653,25 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
         }
     }
 
-    private fun runReleaseTool(directory: File, vararg arguments: String): Pair<Int, String> {
+    private fun toolingWithFixturePython(destination: File, source: ByteArray): File {
+        val resource = "python/ci/products/sdk_package.py"
+        ZipFile(releaseToolingJar).use { original ->
+            check(original.getEntry(resource) != null)
+            ZipOutputStream(destination.outputStream()).use { output ->
+                original.entries().asSequence().filterNot { it.isDirectory }.forEach { entry ->
+                    output.putNextEntry(ZipEntry(entry.name))
+                    if (entry.name == resource) output.write(source)
+                    else original.getInputStream(entry).use { it.copyTo(output) }
+                    output.closeEntry()
+                }
+            }
+        }
+        return destination
+    }
+
+    private fun runReleaseTool(directory: File, vararg arguments: String, toolingJar: File = releaseToolingJar): Pair<Int, String> {
         val java = File(System.getProperty("java.home"), "bin/java")
-        val process = ProcessBuilder(java.absolutePath, "-jar", releaseToolingJar.absolutePath, *arguments)
+        val process = ProcessBuilder(java.absolutePath, "-jar", toolingJar.absolutePath, *arguments)
             .directory(directory)
             .redirectErrorStream(true)
             .start()

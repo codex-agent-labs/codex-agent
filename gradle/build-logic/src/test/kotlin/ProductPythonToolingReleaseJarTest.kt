@@ -4,6 +4,8 @@ import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
 
 class ProductPythonToolingReleaseJarTest {
     private val releaseToolingJar = File(checkNotNull(System.getProperty("codexAgent.releaseToolingJar")))
@@ -13,13 +15,18 @@ class ProductPythonToolingReleaseJarTest {
         val root = createTempDirectory("release-tooling-python").toFile()
         try {
             val jar = releaseToolingJar.copyTo(root.resolve("release-tooling.jar"))
-            assertEquals(EXPECTED_PYTHON_RESOURCES, jar.pythonProductResources())
+            assertEquals((productPythonResources.values.flatten() +
+                listOf("ci/products/__init__.py", "ci/products/inventory.py"))
+                .map { "python/$it" }.toSet(), jar.pythonProductResources())
 
             val manifest = root.resolve("runtime-manifest.json").apply { writeText(runtimeManifest()) }
             val hostilePython = root.resolve("hostile-python/ci/products").apply { mkdirs() }
             val fallbackMarker = root.resolve("repository-source-fallback-ran")
             hostilePython.resolve("runtime_evidence.py").writeText(
                 "from pathlib import Path\nPath(${fallbackMarker.absolutePath.quotePython()}).write_text('used')\n",
+            )
+            hostilePython.parentFile.parentFile.resolve("sitecustomize.py").writeText(
+                "from pathlib import Path\nPath(${fallbackMarker.absolutePath.quotePython()}).write_text('site')\n",
             )
 
             val java = File(System.getProperty("java.home"), "bin/${if (isWindows()) "java.exe" else "java"}")
@@ -33,7 +40,11 @@ class ProductPythonToolingReleaseJarTest {
             )
                 .directory(root)
                 .redirectErrorStream(true)
-                .apply { environment()["PYTHONPATH"] = hostilePython.parentFile.parentFile.absolutePath }
+                .apply {
+                    environment()["PYTHONPATH"] = hostilePython.parentFile.parentFile.absolutePath
+                    environment()["PYTHONHOME"] = root.resolve("not-a-python-installation").absolutePath
+                    environment()["PYTHONPYCACHEPREFIX"] = root.resolve("hostile-cache").absolutePath
+                }
                 .start()
             val output = process.inputStream.bufferedReader().use { it.readText() }
             val exit = process.waitFor()
@@ -51,9 +62,17 @@ class ProductPythonToolingReleaseJarTest {
         }
     }
 
+    @Test
+    fun `packaged native import closure and fixed cpp verifier require no checkout scripts`() {
+        assertTrue("verify-native" in runProductPythonModule("sdk_package", listOf("--help")))
+        assertTrue("--expected-test-program" in runProductPythonModule("cpp_package", listOf("verify-evidence", "--help")))
+        assertFailsWith<IllegalStateException> { runProductPythonModule("cpp_package", listOf("--help")) }
+        assertFailsWith<IllegalStateException> { runProductPythonModule("arbitrary", emptyList()) }
+    }
+
     private fun File.pythonProductResources(): Set<String> = ZipFile(this).use { archive ->
         archive.entries().asSequence()
-            .filter { !it.isDirectory && it.name.startsWith("python/ci/products/") }
+            .filter { !it.isDirectory && it.name.startsWith("python/") }
             .map { it.name }
             .toSet()
     }
@@ -71,13 +90,6 @@ class ProductPythonToolingReleaseJarTest {
     private fun isWindows() = System.getProperty("os.name").startsWith("Windows")
 
     private companion object {
-        val EXPECTED_PYTHON_RESOURCES = setOf(
-            "python/ci/products/__init__.py",
-            "python/ci/products/c_abi.py",
-            "python/ci/products/inventory.py",
-            "python/ci/products/runtime_evidence.py",
-            "python/ci/products/test_results.py",
-        )
         val RUNTIME_TARGETS = listOf("macosArm64", "macosX64", "linuxArm64", "linuxX64", "mingwX64")
     }
 }

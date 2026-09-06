@@ -1,59 +1,76 @@
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 
-private val productPythonResources = mapOf(
-    "test_results" to listOf("ci/products/test_results.py"),
-    "runtime_evidence" to listOf("ci/products/runtime_evidence.py", "ci/products/test_results.py"),
-    "c_abi" to listOf(
-        "ci/products/c_abi.py",
-        "codex-agent-runtime-desktop/native/c-api/abi-contract.json",
-        "codex-agent-runtime-desktop/native/c-api/exports/linux.map",
-        "codex-agent-runtime-desktop/native/c-api/exports/macos.exports",
-        "codex-agent-runtime-desktop/native/c-api/exports/windows.def",
-    ),
+private val productPythonAbiResources = listOf(
+    "codex-agent-runtime-desktop/native/c-api/abi-contract.json",
+    "codex-agent-runtime-desktop/native/c-api/exports/linux.map",
+    "codex-agent-runtime-desktop/native/c-api/exports/macos.exports",
+    "codex-agent-runtime-desktop/native/c-api/exports/windows.def",
 )
 
-private val extractedProductPythonRoots = mutableMapOf<String, java.io.File>()
+internal val productPythonResources = mapOf(
+    "test_results" to listOf("ci/products/test_results.py"),
+    "runtime_evidence" to listOf("ci/products/runtime_evidence.py", "ci/products/test_results.py"),
+    "c_abi" to (listOf("ci/products/c_abi.py") + productPythonAbiResources),
+    "sdk_package" to (listOf(
+        "aggregate", "c_abi", "contract", "contract_attestation", "contract_model",
+        "contract_projection", "index", "plan", "receipt", "registry", "restore",
+        "runtime_adapter_content", "runtime_adapter_validation", "runtime_aggregate",
+        "runtime_attestation", "runtime_evidence", "runtime_flags", "runtime_identity",
+        "sdk_compatibility", "sdk_inputs", "sdk_native", "sdk_package", "sdk_runtime_content",
+        "selection", "signatures", "test_results", "toolchain",
+    ).map { "ci/products/$it.py" } + "ci/native_wrappers.py" + productPythonAbiResources),
+    "cpp_package" to listOf("codex-agent-bindings/cpp/tools/verify_imported_package.py"),
+)
 
-private fun extractedProductPythonRoot(module: String): java.io.File = synchronized(extractedProductPythonRoots) {
-    extractedProductPythonRoots.getOrPut(module) {
-        val root = Files.createTempDirectory("codex-agent-product-python-").toFile().also {
-            it.deleteOnExit()
-        }
+private object ProductPythonToolingMarker
+
+internal fun runProductPythonModule(module: String, arguments: List<String>): String {
+    val selected = checkNotNull(productPythonResources[module]) { "Unsupported packaged product Python module: $module" }
+    check(module != "cpp_package" || arguments.firstOrNull() == "verify-evidence") {
+        "Packaged C++ tooling permits only imported evidence verification"
+    }
+    val root = Files.createTempDirectory("codex-agent-product-python-").toRealPath().toFile()
+    try {
         val resources = listOf("ci/products/__init__.py", "ci/products/inventory.py") +
-            checkNotNull(productPythonResources[module]) { "Unsupported packaged product Python module: $module" }
-        resources.forEach { relative ->
+            selected
+        resources.distinct().forEach { relative ->
             val resource = "python/$relative"
             val output = root.resolve(relative)
             output.parentFile.mkdirs()
             val input = ProductPythonToolingMarker::class.java.classLoader.getResourceAsStream(resource)
                 ?: error("Packaged product Python resource is missing: $resource")
             input.use { source -> output.outputStream().use(source::copyTo) }
-            output.deleteOnExit()
         }
-        root
+        // A regular private package cannot fall through to another namespace portion.
+        root.resolve("ci/__init__.py").writeText("")
+        val captured = verifiedRegularFiles(root).mapValues { it.value.releaseDigest() }
+        val entry = if (module == "cpp_package")
+            "runpy.run_path(sys.argv.pop(1), run_name='__main__')" else
+            "runpy.run_module('ci.products.$module', run_name='__main__', alter_sys=True)"
+        val bootstrap = "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); $entry"
+        val script = if (module == "cpp_package") listOf(root.resolve(selected.single()).absolutePath) else emptyList()
+        val output = ByteArrayOutputStream()
+        // -I/-S exclude environment, cwd and site hooks; fresh extraction plus -B excludes stale bytecode.
+        val process = ProcessBuilder(listOf("python3", "-I", "-S", "-B", "-c", bootstrap, root.absolutePath) + script + arguments)
+            .directory(root)
+            .redirectInput(ProcessBuilder.Redirect.PIPE)
+            .redirectErrorStream(true)
+            .apply {
+                environment()["LC_ALL"] = "C"
+                environment()["LANG"] = "C"
+            }
+            .start()
+        process.inputStream.use { it.copyTo(output) }
+        val exit = process.waitFor()
+        val stdout = output.toString(Charsets.UTF_8.name())
+        check(captured == verifiedRegularFiles(root).mapValues { it.value.releaseDigest() }) {
+            "Packaged product Python resources changed during execution"
+        }
+        check(exit == 0) { "ci.products.$module failed ($exit): ${stdout.trim()}" }
+        return stdout
+    } finally {
+        // This is only the fresh private extraction owned by this invocation.
+        Files.walk(root.toPath()).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
     }
-}
-
-private object ProductPythonToolingMarker
-
-internal fun runProductPythonModule(module: String, arguments: List<String>): String {
-    val output = ByteArrayOutputStream()
-    val root = extractedProductPythonRoot(module)
-    val process = ProcessBuilder(listOf("python3", "-m", "ci.products.$module") + arguments)
-        .directory(root)
-        .redirectInput(ProcessBuilder.Redirect.PIPE)
-        .redirectErrorStream(true)
-        .apply {
-            environment()["PYTHONPATH"] = root.absolutePath
-            environment()["PYTHONDONTWRITEBYTECODE"] = "1"
-            environment()["LC_ALL"] = "C"
-            environment()["LANG"] = "C"
-        }
-        .start()
-    process.inputStream.use { it.copyTo(output) }
-    val exit = process.waitFor()
-    val stdout = output.toString(Charsets.UTF_8.name())
-    check(exit == 0) { "ci.products.$module failed ($exit): ${stdout.trim()}" }
-    return stdout
 }

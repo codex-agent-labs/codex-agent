@@ -130,16 +130,11 @@ class AppleReleaseCheckTasksTest {
                 "pythonExecutable.convention(\"python3\")",
             ),
             "ProductPythonTooling.kt" to listOf(
-                "ProcessBuilder(listOf(\"python3\", \"-m\", \"ci.products.\$module\") + arguments)",
+                "ProcessBuilder(listOf(\"python3\", \"-I\", \"-S\", \"-B\", \"-c\", bootstrap, root.absolutePath) + script + arguments)",
             ),
             "CrossLanguageNativeWrapperGradleTasks.kt" to listOf(
                 "pythonExecutable.convention(\"python3\")",
                 "\"python3\", packageScript.get().asFile.absolutePath, \"package\"",
-            ),
-            "CrossLanguageNativeWrapperValidationEvidence.kt" to listOf(
-                "ProcessBuilder(listOf(\"python3\", \"-E\", \"-s\", \"-B\") + arguments)",
-                "ProcessBuilder(\"python3\", \"-E\", \"-s\", \"-B\", \"-m\", " +
-                    "\"ci.products.sdk_package\", \"native-metadata\"",
             ),
             "MavenRepositoryTasks.kt" to listOf(
                 "\"python3\", \"-m\", \"ci.products.sdk_maven\", \"--verify-only\"",

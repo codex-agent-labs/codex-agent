@@ -67,14 +67,11 @@ internal fun verifyImportedNativeWrapperValidation(
     try {
         val handoff = work.resolve("inputs")
         fun runPython(vararg arguments: String, stdout: File? = null) {
-            val process = ProcessBuilder(listOf("python3", "-E", "-s", "-B") + arguments)
-                .directory(repository).redirectError(ProcessBuilder.Redirect.INHERIT)
-                .apply { if (stdout == null) redirectOutput(ProcessBuilder.Redirect.INHERIT) else redirectOutput(stdout) }
-                .start()
-            check(process.waitFor() == 0) { "Imported native validation input/evidence verification failed" }
+            val result = runProductPythonModule("sdk_package", arguments.toList())
+            if (stdout != null) stdout.writeText(result) else print(result)
         }
         val guardedOutput = enclosingContentOutput ?: contentOutput
-        runPython("-m", "ci.products.sdk_package", "verify-native",
+        runPython("verify-native",
             "--repository", repository.absolutePath, "--component", language.id,
             "--stage", packageStage.absolutePath, "--receipt", packageReceipt.absolutePath,
             "--compatibility-request", compatibilityRequest.absolutePath,
@@ -87,15 +84,14 @@ internal fun verifyImportedNativeWrapperValidation(
             before.getValue(validationReceipt.absolutePath)) { "Imported validation receipt changed" }
         val captured = verifiedRegularFiles(handoff).mapValues { it.value.releaseDigest() }
         val raw = handoff.resolve("validation/outputs")
-        if (language.id == "cpp") runPython(
-            repository.resolve("codex-agent-bindings/cpp/tools/verify_imported_package.py").absolutePath,
+        if (language.id == "cpp") runProductPythonModule("cpp_package", listOf(
             "verify-evidence", "--evidence", raw.resolve("package-negatives").absolutePath,
-            "--expected-test-program", handoff.resolve("validation-source/test_installed_package_tamper.py").absolutePath)
+            "--expected-test-program", handoff.resolve("validation-source/test_installed_package_tamper.py").absolutePath))
         verifyCrossLanguageNativeWrapperValidationEvidence(language, classifier, handoff,
             raw.resolve("installed"), raw.resolve("capability"),
             handoff.resolve("validation-source/capability-claims.tsv"))
         val content = work.resolve("content.json")
-        if (contentOutput != null) runPython("-m", "ci.products.sdk_package", "native-content",
+        if (contentOutput != null) runPython("native-content",
             "--inputs", handoff.absolutePath, "--component", language.id, "--target", classifier, stdout = content)
         check(captured == verifiedRegularFiles(handoff).mapValues { it.value.releaseDigest() } &&
             before == nativeValidationInputInventory(sources)) {
@@ -192,11 +188,9 @@ internal fun writeImportedNativeWrapperMetadataContent(
                 validationReceipts.resolve("$target.json"), contents.resolve("$target.json"), contentOutput)
         }
         val result = work.resolve("metadata.json")
-        val process = ProcessBuilder("python3", "-E", "-s", "-B", "-m", "ci.products.sdk_package", "native-metadata",
+        result.writeText(runProductPythonModule("sdk_package", listOf("native-metadata",
             "--contents", contents.absolutePath, "--package-receipt", packageReceipt.absolutePath,
-            "--component", language.id).directory(repository).redirectError(ProcessBuilder.Redirect.INHERIT)
-            .redirectOutput(result).start()
-        check(process.waitFor() == 0) { "Native metadata content join failed" }
+            "--component", language.id)))
         check(result.readReleaseObject().releaseString("sdkVersion") == expectedSdkVersion) {
             "Native metadata SDK version differs from requested product version"
         }

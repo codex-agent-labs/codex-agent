@@ -169,7 +169,7 @@ class ProductSelectionTest(unittest.TestCase):
                     self.assertEqual(instance in owners, keys[0] != keys[1], instance)
 
     def test_root_build_scripts_do_not_enter_standalone_runtime_keys(self) -> None:
-        from ci.tests.test_product_plan import plan
+        from ci.tests.test_product_plan import plan, upstreams
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -184,14 +184,25 @@ class ProductSelectionTest(unittest.TestCase):
                               and instance.phase == "package"))
                     if instance.product == "runtime":
                         owned = instance.phase == "binary" and not path.startswith("gradle/build-logic/")
+                    if (path == "gradle/build-logic/build.gradle.kts" and instance.product == "sdk"
+                            and instance.component in NATIVE_BINDINGS and instance.phase in {"validation", "metadata"}):
+                        owned = True
                     self.assertEqual((path,) if owned else (), phase_inventory_paths([path], instance),
                                      (path, instance))
                     if not owned and not (instance.product == "runtime" and instance.phase == "binary"):
                         continue
+                    parents = upstreams(instance)
+                    if instance.product == "sdk" and instance.component in NATIVE_BINDINGS and instance.phase == "validation":
+                        # Match the existing strict embedded-Runtime lineage; a bare fixture
+                        # package receipt intentionally has no upstreams and cannot prove it.
+                        package = next(value for value in parents if value["product"] == "sdk")
+                        package_plan = plan(PhaseInstanceId("sdk", instance.component, "package", "desktop"))
+                        package.update(inputs=package_plan["inputs"], buildKey=package_plan["buildKey"])
                     keys = []
                     for content in (b"a", b"b"):
                         source.write_bytes(content)
-                        keys.append(plan(instance, inventory=phase_file_inventory(root, [path], instance))["buildKey"])
+                        keys.append(plan(instance, upstream_receipts=parents,
+                                         inventory=phase_file_inventory(root, [path], instance))["buildKey"])
                     self.assertEqual(owned, keys[0] != keys[1], (path, instance))
 
     def test_contract_coverage_producers_select_evidence_consumers_without_runtime_compilation(self):
@@ -1309,6 +1320,17 @@ class ProductSelectionTest(unittest.TestCase):
                      "codex-agent-bindings/python/tools/produce_sdk_validation_evidence.py"):
             for language in languages:
                 self.assertEqual((), phase_inventory_paths((path,), PhaseInstanceId("sdk", language, "metadata", "desktop")))
+
+    def test_packaged_native_verifier_and_resource_policy_are_direct_validation_and_metadata_inputs(self):
+        paths = ("gradle/build-logic/build.gradle.kts",
+                 "gradle/build-logic/src/main/kotlin/ProductPythonTooling.kt")
+        for language in ("python", "csharp", "rust", "cpp", "dart"):
+            for phase, target in [("validation", target) for target in NATIVE_TARGETS] + [("metadata", "desktop")]:
+                self.assertEqual(paths, phase_inventory_paths(paths, PhaseInstanceId("sdk", language, phase, target)))
+        # Resource ownership stays in the SDK build, never the standalone Runtime compiler.
+        for instance in PHASE_INSTANCE_IDS:
+            if instance.product == "runtime":
+                self.assertEqual((), phase_inventory_paths(paths, instance))
 
     def test_runtime_adapter_metadata_safety_keys_only_metadata_and_shared_mac_validation(self):
         path = "runtime/build-logic/src/main/kotlin/RuntimeAdapterMetadataInputsTask.kt"
