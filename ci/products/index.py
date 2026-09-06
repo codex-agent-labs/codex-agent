@@ -35,6 +35,7 @@ from .receipt import output_inventory_digest, validate_phase_receipt
 from .registry import published_coordinate
 from .sdk_runtime_content import VerifiedNativeRuntimeProjection
 from .runtime_adapter_content import VerifiedAdapterRuntimeProjection
+from .sdk_validation import VerifiedSdkValidationProjection
 from .signatures import (
     load_keyring,
     public_key_for_metadata,
@@ -96,6 +97,7 @@ class VerifiedStableIndexHistory:
     _contract_objects: tuple[tuple[str, Path], ...] = ()
     _native_runtime_objects: tuple[tuple[str, Path], ...] = ()
     _adapter_runtime_objects: tuple[tuple[str, Path], ...] = ()
+    _sdk_validation_objects: tuple[tuple[str, Path], ...] = ()
 
 
 def _verify_signed_bytes(
@@ -297,6 +299,23 @@ def verify_adapter_runtime_index_object(entry: dict[str, Any], archive: Path, pr
     return proof
 
 
+def verify_sdk_validation_index_object(entry: dict[str, Any], archive: Path, projection_provider):
+    """Bind full SDK admission to the retained exact original object and receipt."""
+    from .registry import NATIVE_BINDINGS, NATIVE_TARGETS
+    if (entry["product"] != "sdk" or entry["phase"] != "validation"
+            or entry["component"] not in NATIVE_BINDINGS or entry["target"] not in NATIVE_TARGETS):
+        raise ValueError("SDK comparison requires an exact native language/host validation entry")
+    if not callable(projection_provider):
+        raise ValueError("SDK comparison requires authenticated original evidence")
+    verified = verify_object(archive, build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+    _verify_index_receipt(entry, {**verified, "receiptSha256": sha256_bytes(verified["receiptBytes"])})
+    proof = projection_provider(entry, archive)
+    if type(proof) is not VerifiedSdkValidationProjection:
+        raise ValueError("Verified SDK validation projection is required for index consistency")
+    proof.output_inventory(entry["receiptSha256"], verified["receipt"]["outputs"], identity=entry)
+    return proof
+
+
 def _contract_object_references(objects, label="Contract"):
     if objects is None:
         return {}
@@ -326,7 +345,7 @@ def _contract_object_projection(objects):
     return verify
 
 
-def _runtime_object_projection(objects, provider, *, adapter=False):
+def _validation_object_projection(objects, provider, verifier=verify_native_runtime_index_object):
     if provider is None:
         return None
     if not callable(provider):
@@ -339,7 +358,6 @@ def _runtime_object_projection(objects, provider, *, adapter=False):
             archive = objects.get(entry["receiptSha256"])
             if archive is None:
                 raise ValueError("Conflicting Runtime inventories require both authenticated objects")
-            verifier = verify_adapter_runtime_index_object if adapter else verify_native_runtime_index_object
             proofs[key] = verifier(entry, archive, provider)
         return proofs[key]
 
@@ -357,13 +375,17 @@ def verify_stable_index_history(
     native_runtime_projection=None,
     adapter_runtime_objects: Mapping[str, Path] | None = None,
     adapter_runtime_projection=None,
+    sdk_validation_objects: Mapping[str, Path] | None = None,
+    sdk_validation_projection=None,
 ) -> VerifiedStableIndexHistory:
     objects = _contract_object_references(contract_objects)
     execution_projection = _contract_object_projection(objects)
     native_objects = _contract_object_references(native_runtime_objects, "Native Runtime")
-    native_projection = _runtime_object_projection(native_objects, native_runtime_projection)
+    native_projection = _validation_object_projection(native_objects, native_runtime_projection)
     adapter_objects = _contract_object_references(adapter_runtime_objects, "Adapter Runtime")
-    adapter_projection = _runtime_object_projection(adapter_objects, adapter_runtime_projection, adapter=True)
+    adapter_projection = _validation_object_projection(adapter_objects, adapter_runtime_projection, verify_adapter_runtime_index_object)
+    sdk_objects = _contract_object_references(sdk_validation_objects, "SDK validation")
+    sdk_projection = _validation_object_projection(sdk_objects, sdk_validation_projection, verify_sdk_validation_index_object)
     keyring = load_keyring(Path(keyring_path), Path(keys_directory))
     authoritative_refs = _authoritative_stable_refs(repository)
     verified: list[bytes] = []
@@ -382,7 +404,8 @@ def verify_stable_index_history(
         for prior in indexes:
             verify_immutable_product_indexes(prior, index, contract_execution_projection=execution_projection,
                                              native_runtime_projection=native_projection,
-                                             adapter_runtime_projection=adapter_projection)
+                                             adapter_runtime_projection=adapter_projection,
+                                             sdk_validation_projection=sdk_projection)
         indexes.append(index)
         verified.append(contents)
     if len(tags) != len(set(tags)) or set(tags) != set(authoritative_refs):
@@ -390,7 +413,8 @@ def verify_stable_index_history(
             "Stable product-index sources do not match the current protected stable-tag inventory"
         )
     return VerifiedStableIndexHistory(repository, tuple(verified), _HISTORY_TOKEN,
-                                      tuple(objects.items()), tuple(native_objects.items()), tuple(adapter_objects.items()))
+                                      tuple(objects.items()), tuple(native_objects.items()), tuple(adapter_objects.items()),
+                                      tuple(sdk_objects.items()))
 
 
 def _validated_entry_source(
@@ -618,10 +642,13 @@ def build_product_index(
     native_runtime_projection=None,
     adapter_runtime_objects: Mapping[str, Path] | None = None,
     adapter_runtime_projection=None,
+    sdk_validation_objects: Mapping[str, Path] | None = None,
+    sdk_validation_projection=None,
 ) -> dict[str, Any]:
     objects = _contract_object_references(contract_objects)
     native_objects = _contract_object_references(native_runtime_objects, "Native Runtime")
     adapter_objects = _contract_object_references(adapter_runtime_objects, "Adapter Runtime")
+    sdk_objects = _contract_object_references(sdk_validation_objects, "SDK validation")
     pairs = sorted(
         (_entry(source, repository=repository, trust_domain=trust_domain) for source in sources),
         key=lambda pair: pair[0]["buildKey"],
@@ -661,16 +688,19 @@ def build_product_index(
                 stable_history._repository != repository:
             raise ValueError("Stable product index requires explicit authenticated history")
         execution_projection = _contract_object_projection({**dict(stable_history._contract_objects), **objects})
-        native_projection = _runtime_object_projection(
+        native_projection = _validation_object_projection(
             {**dict(stable_history._native_runtime_objects), **native_objects}, native_runtime_projection)
-        adapter_projection = _runtime_object_projection(
-            {**dict(stable_history._adapter_runtime_objects), **adapter_objects}, adapter_runtime_projection, adapter=True)
+        adapter_projection = _validation_object_projection(
+            {**dict(stable_history._adapter_runtime_objects), **adapter_objects}, adapter_runtime_projection, verify_adapter_runtime_index_object)
+        sdk_projection = _validation_object_projection(
+            {**dict(stable_history._sdk_validation_objects), **sdk_objects}, sdk_validation_projection, verify_sdk_validation_index_object)
         for contents in stable_history._index_bytes:
             verify_immutable_product_indexes(
                 validate_product_index(load_canonical_json_bytes(contents)), index,
                 contract_execution_projection=execution_projection,
                 native_runtime_projection=native_projection,
                 adapter_runtime_projection=adapter_projection,
+                sdk_validation_projection=sdk_projection,
             )
     elif stable_history is not None:
         raise ValueError("Only a stable product index accepts stable history")
@@ -949,6 +979,8 @@ def write_signed_product_index(
     native_runtime_projection=None,
     adapter_runtime_objects: Mapping[str, Path] | None = None,
     adapter_runtime_projection=None,
+    sdk_validation_objects: Mapping[str, Path] | None = None,
+    sdk_validation_projection=None,
 ) -> dict[str, Any]:
     index = build_product_index(
         sources,
@@ -963,6 +995,8 @@ def write_signed_product_index(
         native_runtime_projection=native_runtime_projection,
         adapter_runtime_objects=adapter_runtime_objects,
         adapter_runtime_projection=adapter_runtime_projection,
+        sdk_validation_objects=sdk_validation_objects,
+        sdk_validation_projection=sdk_validation_projection,
     )
     manifest = Path(os.path.abspath(manifest_path))
     signature = manifest.with_suffix(".sig")

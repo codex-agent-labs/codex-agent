@@ -1946,6 +1946,34 @@ class ProductReuseAdapterTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "do not match ready"):
             product_reuse._validate_reuse_result(result, (instance,), require_complete=False)
 
+    def test_outer_sdk_metadata_requires_exact_validation_wait_and_preserves_record_paths(self):
+        instance = PhaseInstanceId("sdk", "python", "metadata", "desktop")
+        closure = product_reuse._dependency_closure((instance,))
+        result = {"schemaVersion": 1, "result": "build-required", "fullReuse": False,
+            "phases": [{**product_reuse._identity_record(item),
+                "buildKey": None if item == instance else sha256_bytes(repr(item).encode()),
+                "state": "waiting" if item == instance else "retained", "source": None,
+                "transportSource": None, "misses": [],
+                "receiptSha256": None if item == instance else sha256_bytes(f"receipt-{item}".encode()),
+                "objectSha256": None if item == instance else sha256_bytes(f"object-{item}".encode())} for item in closure],
+            "matrices": {"contract": [], "runtime": [], "sdk": []},
+            "continuationRequirements": [{"kind": "sdk-validation-evidence", **product_reuse._identity_record(instance),
+                "dependencies": [product_reuse._identity_record(item) for item in product_reuse.sdk_validation_dependencies(instance)]}]}
+        product_reuse._validate_reuse_result(result, (instance,), require_complete=False)
+        for invalid in ([], [{**result["continuationRequirements"][0], "dependencies": []}],
+                        [{**result["continuationRequirements"][0], "kind": "native-runtime-validation-evidence"}]):
+            with self.assertRaises(ValueError):
+                product_reuse._validate_reuse_result({**result, "continuationRequirements": invalid}, (instance,), require_complete=False)
+        record = {"receiptSha256": "sha256:" + "a" * 64, "component": "python", "target": "linux-x64",
+                  **{field: field for field in ("packageStage", "packageReceipt", "compatibilityRequest", "runtimeStages",
+                                                "stagedSdks", "validationStage", "validationReceipt")}}
+        tooling = {"caller-owned": "not transported evidence"}
+        rebased = product_reuse._rebase_native_request({"sdkValidationEvidence": [record], "sdkValidationTooling": tooling},
+                                                       self.root / "original", self.root)
+        self.assertEqual("original/validationStage", rebased["sdkValidationEvidence"][0]["validationStage"])
+        self.assertEqual(record["receiptSha256"], rebased["sdkValidationEvidence"][0]["receiptSha256"])
+        self.assertIs(tooling, rebased["sdkValidationTooling"])
+
     def test_outer_jvm_handoff_orders_five_reports_and_rejects_cross_pairing(self) -> None:
         root = self.root.resolve()
         metadata = PhaseInstanceId("runtime", "jvm", "metadata", "jvm")

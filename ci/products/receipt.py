@@ -401,6 +401,16 @@ def validate_upstream(value: Any, label: str) -> dict[str, Any]:
                 raise ValueError("Invalid Contract execution projection identity")
             for field in ("sha256", "receiptSha256"):
                 require_sha256(projection[field], f"Contract execution projection.{field}")
+        elif upstream["product"] == "sdk" and upstream["phase"] == "validation":
+            from .registry import NATIVE_BINDINGS, NATIVE_TARGETS
+            projection = require_exact_keys(upstream["semanticProjection"],
+                {"schemaVersion", "kind", "sha256", "receiptSha256"}, f"{label}.semanticProjection")
+            if (upstream["component"] not in NATIVE_BINDINGS or upstream["target"] not in NATIVE_TARGETS
+                    or require_integer(projection["schemaVersion"], "SDK validation projection schema", 1) != 1
+                    or projection["kind"] != "sdk-native-validation-content"):
+                raise ValueError("Invalid SDK validation projection identity")
+            for field in ("sha256", "receiptSha256"):
+                require_sha256(projection[field], f"SDK validation projection.{field}")
         elif upstream["product"] != "runtime" or upstream["phase"] != "validation":
             raise ValueError(
                 f"{label}.semanticProjection is attached to an unsupported upstream"
@@ -488,7 +498,13 @@ def build_key_payload(
                 and upstream["component"] == upstream["target"] and upstream["target"] in NATIVE_TARGETS
                 and dependency in phase_instance_dependencies(consumer)
             )
-            if not (contract_execution_edge or runtime_metadata_edge or native_sdk_edge):
+            sdk_metadata_edge = (
+                product == "sdk" and component in NATIVE_BINDINGS and phase == "metadata"
+                and semantic_projection["kind"] == "sdk-native-validation-content"
+                and upstream["product"] == "sdk" and upstream["component"] == component
+                and upstream["target"] in NATIVE_TARGETS and dependency in phase_instance_dependencies(consumer)
+            )
+            if not (contract_execution_edge or runtime_metadata_edge or native_sdk_edge or sdk_metadata_edge):
                 raise ValueError(
                     "Runtime validation semantic projection is attached to an unauthorized edge"
                 )

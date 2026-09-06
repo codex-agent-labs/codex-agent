@@ -54,6 +54,7 @@ from .runtime_identity import derive_runtime_identity_from_git
 from .toolchain import load_toolchain_profile_bytes
 from .sdk_runtime_content import VerifiedNativeRuntimeProjection, verify_native_runtime_projection
 from .runtime_adapter_content import VerifiedAdapterRuntimeProjection
+from .sdk_validation import VerifiedSdkValidationProjection, sdk_validation_provider
 
 
 _RUNTIME_BINARY_FLAGS_PATH = "codex-agent-runtime-desktop/native/c-api/binary-flags.json"
@@ -287,6 +288,14 @@ def native_runtime_validation_dependencies(instance: PhaseInstanceId) -> tuple[P
     ))
 
 
+def sdk_validation_dependencies(instance: PhaseInstanceId) -> tuple[PhaseInstanceId, ...]:
+    return tuple(identity for identity in sorted(phase_instance_dependencies(instance)) if (
+        instance.product == "sdk" and instance.component in NATIVE_BINDINGS and instance.phase == "metadata"
+        and identity.product == "sdk" and identity.component == instance.component
+        and identity.phase == "validation" and identity.target in NATIVE_TARGETS
+    ))
+
+
 def verify_runtime_validation_projection(
     instance: PhaseInstanceId,
     report_files: Iterable[Path],
@@ -363,6 +372,7 @@ def plan_phase(
     runtime_validation_projection: VerifiedRuntimeValidationProjection | None = None,
     native_runtime_projections: tuple[VerifiedNativeRuntimeProjection, ...] | None = None,
     contract_execution_projection: VerifiedContractExecutionProjection | None = None,
+    sdk_validation_projections: tuple[VerifiedSdkValidationProjection, ...] | None = None,
 ) -> dict[str, Any]:
     """Return the exact canonical inputs and build key for one registry phase."""
     if instance not in PHASE_INSTANCE_IDS:
@@ -417,6 +427,18 @@ def plan_phase(
     semantic_dependencies = runtime_validation_dependencies(instance)
     native_dependencies = native_runtime_validation_dependencies(instance)
     native_values = {}
+    sdk_dependencies = sdk_validation_dependencies(instance)
+    sdk_values = {}
+    if sdk_dependencies:
+        if not isinstance(sdk_validation_projections, (tuple, list)) or len(sdk_validation_projections) != len(sdk_dependencies):
+            raise ValueError("Authenticated SDK validation projections are required for all five metadata hosts")
+        package = upstream_by_identity[PhaseInstanceId("sdk", instance.component, "package", "desktop")]
+        for identity, proof in zip(sdk_dependencies, sdk_validation_projections, strict=True):
+            if type(proof) is not VerifiedSdkValidationProjection:
+                raise ValueError("SDK validation projection is not authenticated")
+            sdk_values[identity] = proof.receipt_value(upstream_by_identity[identity], package)
+    elif sdk_validation_projections is not None:
+        raise ValueError("Unexpected authenticated SDK validation projections")
     if native_dependencies:
         if not isinstance(native_runtime_projections, (tuple, list)) or len(native_runtime_projections) != len(native_dependencies):
             raise ValueError("Authenticated native Runtime projections are required for every SDK dependency")
@@ -457,6 +479,7 @@ def plan_phase(
                 contract_value if identity == contract_identity else None,
                 execution_value if identity == execution_identity else
                 native_values.get(identity) if identity in native_values else
+                sdk_values.get(identity) if identity in sdk_values else
                 semantic_value if identity in semantic_dependencies else None,
             )
             for identity, receipt in upstream_by_identity.items()
@@ -498,7 +521,7 @@ def plan_phase(
 
 def verify_build_key_output_consistency(
     receipts: list[dict[str, Any]], *, contract_execution_projection=None, native_runtime_projection=None,
-    adapter_runtime_projection=None,
+    adapter_runtime_projection=None, sdk_validation_projection=None,
 ) -> None:
     """Reject conflicting content; differing raw execution requires verified proof."""
     receipts_by_key: dict[str, dict[str, Any]] = {}
@@ -506,6 +529,20 @@ def verify_build_key_output_consistency(
         receipt = validate_phase_receipt(value)
         previous = receipts_by_key.setdefault(receipt["buildKey"], receipt)
         if previous["outputs"] != receipt["outputs"]:
+            if sdk_validation_projection is not None and all(
+                member["product"] == "sdk" and member["phase"] == "validation"
+                and member["component"] in NATIVE_BINDINGS and member["target"] in NATIVE_TARGETS
+                for member in (previous, receipt)
+            ):
+                content = []
+                for member in (previous, receipt):
+                    proof = sdk_validation_projection(member)
+                    if type(proof) is not VerifiedSdkValidationProjection:
+                        raise ValueError("Verified SDK validation projection is required for consistency")
+                    content.append(proof.output_inventory(sha256_bytes(canonical_json_bytes(member)),
+                                                          member["outputs"], identity=member))
+                if content[0] == content[1]:
+                    continue
             if adapter_runtime_projection is not None and all(
                 member["product"] == "runtime" and member["phase"] == "validation"
                 and member["component"] in {"jvm", "node-js", "node-wasm"} and member["target"] in NATIVE_TARGETS
@@ -743,6 +780,30 @@ def _contract_execution_projection_from_request(
     )
 
 
+def _sdk_validation_projections_from_request(instance, receipts, value, repository, revision):
+    dependencies = sdk_validation_dependencies(instance)
+    if not dependencies:
+        if value is not None:
+            raise ValueError("Unexpected SDK validation evidence")
+        return None
+    evidence = require_exact_keys(value, {"artifactRoot", "records", "tooling"}, "SDK validation evidence request")
+    root = Path(require_string(evidence["artifactRoot"], "SDK evidence artifact root"))
+    if not root.is_absolute():
+        raise ValueError("SDK evidence artifact root must be absolute")
+    provider = sdk_validation_provider(root, evidence["records"], repository=repository,
+                                       policy_revision=revision, tooling=evidence["tooling"])
+    selected = {_receipt_identity(validate_phase_receipt(receipt)): receipt for receipt in receipts}
+    if not set(dependencies) <= selected.keys():
+        raise ValueError("SDK metadata lacks one or more original host receipts")
+    required = {sha256_bytes(canonical_json_bytes(selected[identity])) for identity in dependencies}
+    if {record["receiptSha256"] for record in evidence["records"]} != required:
+        raise ValueError("SDK metadata evidence must name exactly its five original validation receipts")
+    if provider is None:
+        raise ValueError("SDK metadata requires all five authenticated validation originals")
+    return tuple(provider({**selected[identity], "receiptSha256": sha256_bytes(canonical_json_bytes(selected[identity]))})
+                 for identity in dependencies)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m ci.products plan")
     parser.add_argument("--request", required=True)
@@ -780,7 +841,8 @@ def main(argv: list[str] | None = None) -> int:
                 "flagsDigest",
                 "outputSchemaVersion",
             } | ({"contractExecutionEvidence"} if type(request_value) is dict and "contractExecutionEvidence" in request_value else set())
-            | ({"nativeRuntimeEvidence"} if type(request_value) is dict and "nativeRuntimeEvidence" in request_value else set()),
+            | ({"nativeRuntimeEvidence"} if type(request_value) is dict and "nativeRuntimeEvidence" in request_value else set())
+            | ({"sdkValidationEvidence"} if type(request_value) is dict and "sdkValidationEvidence" in request_value else set()),
             "plan request",
         )
         if require_integer(request["schemaVersion"], "plan request.schemaVersion", 1) != 1:
@@ -839,6 +901,8 @@ def main(argv: list[str] | None = None) -> int:
             contract_execution_projection=_contract_execution_projection_from_request(
                 instance, request["upstreamReceipts"], request.get("contractExecutionEvidence"),
             ),
+            sdk_validation_projections=_sdk_validation_projections_from_request(
+                instance, request["upstreamReceipts"], request.get("sdkValidationEvidence"), repository_root, repository_revision),
         )
         result = attach_runtime_binary_identity(
             repository_root,

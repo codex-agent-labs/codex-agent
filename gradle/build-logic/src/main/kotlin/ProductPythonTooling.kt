@@ -17,7 +17,7 @@ internal val productPythonResources = mapOf(
         "contract_projection", "index", "plan", "receipt", "registry", "restore",
         "runtime_adapter_content", "runtime_adapter_validation", "runtime_aggregate",
         "runtime_attestation", "runtime_evidence", "runtime_flags", "runtime_identity",
-        "sdk_compatibility", "sdk_inputs", "sdk_native", "sdk_package", "sdk_runtime_content",
+        "sdk_compatibility", "sdk_inputs", "sdk_native", "sdk_package", "sdk_runtime_content", "sdk_validation",
         "selection", "signatures", "test_results", "toolchain",
     ).map { "ci/products/$it.py" } + "ci/native_wrappers.py" + productPythonAbiResources),
     "cpp_package" to listOf("codex-agent-bindings/cpp/tools/verify_imported_package.py"),

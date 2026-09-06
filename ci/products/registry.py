@@ -277,6 +277,9 @@ def phase_instance_dependencies(instance: PhaseInstanceId) -> tuple[PhaseInstanc
         dependencies.append(PhaseInstanceId("runtime", instance.target, "validation", instance.target))
         dependencies.append(PhaseInstanceId("runtime", "macos-arm64", "validation", "macos-arm64"))
         dependencies.append(PhaseInstanceId("contract", "contract", "metadata", "common"))
+    elif phase.product == "sdk" and phase.component in NATIVE_BINDINGS and phase.phase == "metadata":
+        # The five-host semantic join binds each validation to this exact package.
+        dependencies.append(PhaseInstanceId("sdk", phase.component, "package", "desktop"))
     elif phase == PhaseId("runtime", "macos-arm64", "validation"):
         dependencies.append(PhaseInstanceId("contract", "contract", "metadata", "common"))
     elif phase == PhaseId("sdk", "javascript", "validation"):

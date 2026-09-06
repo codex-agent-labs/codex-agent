@@ -202,9 +202,12 @@ def verified_execution_fixture(receipt_bytes: bytes):
 def advance_reuse(*args, **kwargs):
     # Real verified fixture proof for tests supplying retained receipts without transported objects.
     kwargs.setdefault("contract_execution_projection_provider", lambda envelope: verified_execution_fixture(envelope["receiptBytes"]))
-    from ci.tests.test_product_plan import verified_native_projections
+    from ci.tests.test_product_plan import verified_native_projections, verified_sdk_projections
     kwargs.setdefault("native_runtime_projection_provider", lambda instance, envelopes, projection:
                       verified_native_projections(instance, [item["receipt"] for item in envelopes], projection))
+    # Planner fixtures only, not authenticated SDK execution/host acceptance.
+    kwargs.setdefault("sdk_validation_projection_provider", lambda instance, envelopes, package:
+                      verified_sdk_projections(instance, [package["receipt"], *[item["receipt"] for item in envelopes]]))
     return _advance_reuse(*args, **kwargs)
 
 
@@ -259,7 +262,7 @@ def plan_for(
     inputs: dict[PhaseInstanceId, dict[str, object]],
     resolved: dict[PhaseInstanceId, dict[str, object]],
 ) -> dict[str, object]:
-    from ci.tests.test_product_plan import verified_native_projections
+    from ci.tests.test_product_plan import verified_native_projections, verified_sdk_projections
     semantic_dependencies = runtime_validation_dependencies(instance)
     return plan_phase(
         instance,
@@ -284,6 +287,8 @@ def plan_for(
             instance, [resolved[dependency]["receipt"] for dependency in phase_instance_dependencies(instance)],
             inputs[instance].get("contract_projection"),
         ),
+        sdk_validation_projections=verified_sdk_projections(
+            instance, [resolved[dependency]["receipt"] for dependency in phase_instance_dependencies(instance)]),
         **inputs[instance],
     )
 
@@ -705,8 +710,10 @@ class ProductReuseTest(unittest.TestCase):
         request = self.reuse_wave_request(repository, revision)
         request["nativeRuntimeComparisonEvidence"] = []
         request["adapterRuntimeComparisonEvidence"] = []
+        request["sdkValidationEvidence"] = []
         comparison_provider = mock.Mock()
         adapter_provider = mock.Mock()
+        sdk_provider = mock.Mock()
         (repository / "codex-agent-core/src/commonMain/kotlin/example.kt").write_text(
             "package dirty\n",
             encoding="utf-8",
@@ -720,7 +727,8 @@ class ProductReuseTest(unittest.TestCase):
         }
         with mock.patch("ci.products.reuse.advance_reuse", return_value=(expected, ())) as delegated, \
                 mock.patch("ci.products.reuse._native_comparison_provider", return_value=comparison_provider) as proof_factory, \
-                mock.patch("ci.products.reuse.adapter_comparison_provider", return_value=adapter_provider) as adapter_factory:
+                mock.patch("ci.products.reuse.adapter_comparison_provider", return_value=adapter_provider) as adapter_factory, \
+                mock.patch("ci.products.reuse.sdk_validation_provider", return_value=sdk_provider) as sdk_factory:
             result = plan_reuse_wave(request)
         self.assertIs(expected, result)
         args, kwargs = delegated.call_args
@@ -735,8 +743,12 @@ class ProductReuseTest(unittest.TestCase):
         self.assertIsInstance(args[3], LookupSession)
         self.assertIs(comparison_provider, args[3]._native_runtime_projection)
         self.assertIs(adapter_provider, args[3]._adapter_runtime_projection)
+        self.assertIs(sdk_provider, args[3]._sdk_validation_projection)
+        self.assertTrue(callable(kwargs["sdk_validation_projection_provider"]))
         proof_factory.assert_called_once_with(Path(request["artifactRoot"]), [])
         adapter_factory.assert_called_once_with(Path(request["artifactRoot"]), [])
+        sdk_factory.assert_called_once_with(Path(request["artifactRoot"]), [], repository=repository,
+                                            policy_revision=revision, tooling=None)
 
     def test_reuse_wave_rejects_nonexact_authorities_and_unsafe_paths_before_planning(self) -> None:
         repository, revision = self.reuse_wave_repository()
@@ -1865,6 +1877,34 @@ class ProductReuseTest(unittest.TestCase):
                     phase["state"] == "build" and phase["phase"] == "binary"
                     for phase in result["phases"]
                 ))
+
+    def test_native_sdk_metadata_waits_for_exact_five_host_proofs_without_scheduling_work(self) -> None:
+        from ci.tests.test_product_plan import verified_sdk_projections
+        repository, revision, _ = self.runtime_flags_revision()
+        inputs, retained = retained_product_closure(PYTHON_METADATA, repository_root=repository, repository_revision=revision)
+        options = dict(repository_root=repository, repository_revision=revision,
+                       runtime_validation_projection_provider=test_runtime_projection_provider)
+        waiting, originals = advance_reuse([PYTHON_METADATA], inputs, list(retained.values()), self.session(),
+                                           **options, sdk_validation_projection_provider=None)
+        self.assertFalse(waiting["fullReuse"])
+        self.assertTrue(all(not values for values in waiting["matrices"].values()))
+        self.assertEqual("sdk-validation-evidence", waiting["continuationRequirements"][0]["kind"])
+        self.assertEqual(5, len(waiting["continuationRequirements"][0]["dependencies"]))
+        def provider(instance, envelopes, package):
+            self.assertEqual(PYTHON_METADATA, instance)
+            self.assertEqual(retained[PYTHON_PACKAGE], package)
+            self.assertEqual(5, len(envelopes))
+            return verified_sdk_projections(instance, [package["receipt"], *[value["receipt"] for value in envelopes]])
+        complete, after = advance_reuse([PYTHON_METADATA], inputs, list(retained.values()), self.session(),
+                                       **options, sdk_validation_projection_provider=provider)
+        self.assertTrue(complete["fullReuse"])
+        self.assertEqual([], complete["continuationRequirements"])
+        self.assertTrue(all(not values for values in complete["matrices"].values()))
+        self.assertEqual({entry["receiptSha256"] for entry in retained.values()}, {entry["receiptSha256"] for entry in after})
+        forged = {identity: dict(value) for identity, value in inputs.items()}
+        forged[PYTHON_METADATA]["sdk_validation_projections"] = ()
+        with self.assertRaisesRegex(ValueError, "Callers cannot supply"):
+            advance_reuse([PYTHON_METADATA], forged, [], self.session(), **options)
 
     def test_one_byte_direct_input_mutation_invalidates_only_the_first_owner_wave(self) -> None:
         flags_repository, flags_revision, _ = self.runtime_flags_revision()

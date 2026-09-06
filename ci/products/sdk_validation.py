@@ -7,7 +7,8 @@ import tempfile
 
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
-    require_exact_keys, require_integer, require_sha256, sha256_bytes, snapshot_regular_tree,
+    require_array, require_exact_keys, require_integer, require_relative_path, require_sha256, require_string,
+    sha256_bytes, snapshot_regular_tree,
 )
 from .receipt import output_inventory_digest, validate_phase_receipt, verify_output_manifest_identity
 from .registry import NATIVE_BINDINGS, NATIVE_TARGETS
@@ -16,6 +17,85 @@ from .registry import NATIVE_BINDINGS, NATIVE_TARGETS
 _VERIFIED = object()
 _IDENTITY = ("product", "component", "phase", "target", "productVersion", "buildKey")
 _LIMIT = 16 * 1024 * 1024
+_EVIDENCE_PATHS = {
+    "packageStage": "package_stage", "packageReceipt": "package_receipt",
+    "compatibilityRequest": "compatibility_request", "runtimeStages": "runtime_stages",
+    "stagedSdks": "staged_sdks", "validationStage": "validation_stage", "validationReceipt": "validation_receipt",
+}
+
+
+def map_sdk_validation_record(record, path):
+    record = require_exact_keys(record, {"receiptSha256", "component", "target", *_EVIDENCE_PATHS}, "SDK validation evidence")
+    require_sha256(record["receiptSha256"], "SDK validation original receipt")
+    if record["component"] not in NATIVE_BINDINGS or record["target"] not in NATIVE_TARGETS:
+        raise ValueError("SDK validation evidence requires an exact native language/host")
+    return {**record, **{name: path(record[name]) for name in _EVIDENCE_PATHS}}
+
+
+def decode_sdk_validation_records(root: Path, records):
+    result = {}
+    for value in require_array(records, "SDK validation records"):
+        record = map_sdk_validation_record(value, lambda path: root / require_relative_path(path, "SDK evidence path"))
+        digest = record["receiptSha256"]
+        if digest in result:
+            raise ValueError("Duplicate SDK validation receipt")
+        result[digest] = record
+    if list(result) != sorted(result):
+        raise ValueError("SDK validation evidence must be sorted by original receipt")
+    return result
+
+
+def rebase_sdk_validation_records(records, source_root: Path, destination_root: Path):
+    decode_sdk_validation_records(source_root, records)
+    return [map_sdk_validation_record(record, lambda value:
+            (source_root / require_relative_path(value, "SDK evidence path")).relative_to(destination_root).as_posix())
+            for record in records]
+
+
+def sdk_validation_provider(root: Path, records, *, repository: Path, policy_revision: str, tooling):
+    """Trusted invocation policy is separate from transported original SDK records."""
+    originals = decode_sdk_validation_records(root, records)
+    if not originals:
+        return None
+    context = require_exact_keys(tooling,
+        {"evidence", "publicKey", "javaExecutable", "requiredTrustDomain", "keyring", "keysDirectory"},
+        "SDK validation caller tooling policy")
+    arguments = {}
+    for field, name in (("evidence", "tooling_evidence"), ("publicKey", "tooling_public_key"),
+                        ("javaExecutable", "java_executable"), ("keyring", "tooling_keyring"),
+                        ("keysDirectory", "tooling_keys_directory")):
+        if field in {"keyring", "keysDirectory"} and context[field] is None:
+            arguments[name] = None
+        else:
+            path = Path(require_string(context[field], f"SDK tooling {field}"))
+            if not path.is_absolute():
+                raise ValueError("SDK tooling policy paths must be absolute caller inputs")
+            arguments[name] = path
+    trust = context["requiredTrustDomain"]
+    if trust not in {"development", "release"} or ((trust == "release") !=
+            (arguments["tooling_keyring"] is not None and arguments["tooling_keys_directory"] is not None)):
+        raise ValueError("SDK tooling trust requires exact caller-pinned release keys")
+    if trust == "development" and any(arguments[name] is not None for name in ("tooling_keyring", "tooling_keys_directory")):
+        raise ValueError("Development SDK tooling rejects release keys")
+    proofs = {}
+
+    def verify(entry, _verified_object=None):
+        digest = entry["receiptSha256"]
+        record = originals.get(digest)
+        if record is None or (entry["component"], entry["target"]) != (record["component"], record["target"]):
+            raise ValueError("SDK validation comparison lacks exact original language/host evidence")
+        if digest not in proofs:
+            proof = verify_sdk_validation_projection(repository=repository, policy_revision=policy_revision,
+                component=record["component"], target=record["target"], required_trust_domain=trust,
+                **arguments, **{dest: record[src] for src, dest in _EVIDENCE_PATHS.items()})
+            if type(proof) is not VerifiedSdkValidationProjection:
+                raise ValueError("SDK validation provider requires the full authenticated proof")
+            proofs[digest] = proof
+        proof = proofs[digest]
+        proof.output_inventory(digest, entry["outputs"], identity=entry)
+        return proof
+
+    return verify
 
 
 class VerifiedSdkValidationProjection:

@@ -182,6 +182,25 @@ def verified_native_projections(instance, receipts, projection, digest=None):
     ) for identity in dependencies)
 
 
+def verified_sdk_projections(instance, receipts):
+    """Planner-only synthetic proof, never full SDK executable/host acceptance."""
+    from ci.products.plan import sdk_validation_dependencies
+    from ci.products.sdk_validation import VerifiedSdkValidationProjection, _VERIFIED
+    dependencies = sdk_validation_dependencies(instance)
+    if not dependencies:
+        return None
+    selected = {PhaseInstanceId(*(receipt[key] for key in ("product", "component", "phase", "target"))): receipt
+                for receipt in receipts}
+    package = selected[PhaseInstanceId("sdk", instance.component, "package", "desktop")]
+    return tuple(VerifiedSdkValidationProjection(canonical_json_bytes(selected[identity]), canonical_json_bytes({
+        "schemaVersion": 2, "kind": "sdk-native-validation-content", "component": instance.component,
+        "target": identity.target, "sdkVersion": package["productVersion"],
+        "packageOutputsDigest": output_inventory_digest(package["outputs"]),
+        "contractDigest": DIGEST_A, "canonicalApiDigest": DIGEST_A, "canonicalCoverageDigest": DIGEST_A,
+        "files": [], "packageNegativeCases": [],
+    }), _VERIFIED) for identity in dependencies)
+
+
 def plan(
     instance: PhaseInstanceId,
     *,
@@ -220,6 +239,7 @@ def plan(
         runtime_validation_projection=runtime_validation_projection,
         native_runtime_projections=verified_native_projections(instance, selected_upstreams, projection),
         contract_execution_projection=execution_projection,
+        sdk_validation_projections=verified_sdk_projections(instance, selected_upstreams),
     )
 
 

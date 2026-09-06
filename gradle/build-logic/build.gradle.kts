@@ -33,7 +33,7 @@ tasks.processResources {
             "products/runtime_adapter_content.py", "products/runtime_adapter_validation.py",
             "products/runtime_aggregate.py", "products/runtime_attestation.py", "products/runtime_flags.py",
             "products/runtime_identity.py", "products/sdk_compatibility.py", "products/sdk_inputs.py",
-            "products/sdk_native.py", "products/sdk_package.py", "products/sdk_runtime_content.py",
+            "products/sdk_native.py", "products/sdk_package.py", "products/sdk_runtime_content.py", "products/sdk_validation.py",
             "products/selection.py", "products/signatures.py", "products/toolchain.py",
         )
         into("python/ci")

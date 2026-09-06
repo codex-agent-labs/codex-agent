@@ -52,9 +52,11 @@ from products.plan import (
     NOT_APPLICABLE_TOOLCHAIN_DIGEST,
     runtime_validation_dependencies,
     native_runtime_validation_dependencies,
+    sdk_validation_dependencies,
 )
 from products.runtime_flags import load_runtime_binary_flags_bytes
 from products.runtime_adapter_content import rebase_adapter_comparison_records
+from products.sdk_validation import rebase_sdk_validation_records
 from products.adapter_runtime_inputs import load_adapter_runtime_evidence, stage_adapter_runtime_evidence
 from products.runtime_evidence import (
     derive_authenticated_runtime_validation_projection,
@@ -105,6 +107,7 @@ _WAVE_REQUEST_KEYS = {
 }
 _NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
 _ADAPTER_REQUEST_KEY = "adapterRuntimeComparisonEvidence"
+_SDK_REQUEST_KEYS = {"sdkValidationEvidence", "sdkValidationTooling"}
 _VERSION_PATHS = {
     "contract": "gradle/release/versions/contract.txt",
     "runtime-release": "gradle/release/versions/runtime.txt",
@@ -804,13 +807,14 @@ def _validate_reuse_result(
             {"kind", *_IDENTITY_KEYS, "dependencies"},
             label,
         )
-        if requirement["kind"] not in {"runtime-validation-evidence", "native-runtime-validation-evidence"}:
+        if requirement["kind"] not in {"runtime-validation-evidence", "native-runtime-validation-evidence", "sdk-validation-evidence"}:
             raise ValueError("Reuse continuation requirement kind is invalid")
         instance = _identity(requirement)
         if instance not in phase_by_instance:
             raise ValueError("Reuse continuation requirement is outside the dependency closure")
         dependencies = (native_runtime_validation_dependencies(instance)
                         if requirement["kind"] == "native-runtime-validation-evidence"
+                        else sdk_validation_dependencies(instance) if requirement["kind"] == "sdk-validation-evidence"
                         else runtime_validation_dependencies(instance))
         if not dependencies:
             raise ValueError("Reuse continuation requirement is not applicable")
@@ -826,7 +830,8 @@ def _validate_reuse_result(
     expected_requirements = [
         instance for instance in closure
         if phase_by_instance[instance]["state"] == "waiting"
-        and (runtime_validation_dependencies(instance) or native_runtime_validation_dependencies(instance))
+        and (runtime_validation_dependencies(instance) or native_runtime_validation_dependencies(instance)
+             or sdk_validation_dependencies(instance))
         and all(dependency in selected_set for dependency in phase_instance_dependencies(instance))
     ]
     if requirement_instances != expected_requirements:
@@ -1148,12 +1153,17 @@ def _rebase_native_request(request, source_root, artifact_root):
             for key in _NATIVE_REQUEST_KEYS if key in request}
     if _ADAPTER_REQUEST_KEY in request:
         result[_ADAPTER_REQUEST_KEY] = rebase_adapter_comparison_records(request[_ADAPTER_REQUEST_KEY], source_root, artifact_root)
+    if "sdkValidationEvidence" in request:
+        result["sdkValidationEvidence"] = rebase_sdk_validation_records(request["sdkValidationEvidence"], source_root, artifact_root)
+    if "sdkValidationTooling" in request:
+        # Invocation-owned absolute tooling policy is not a transported SDK evidence path.
+        result["sdkValidationTooling"] = request["sdkValidationTooling"]
     return result
 
 
 def _wave_control(path, label):
     value = _canonical_control(path, label)
-    return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY})), label)
+    return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY} | _SDK_REQUEST_KEYS)), label)
 
 
 def _merge_native_comparison_records(request, records, *, key="nativeRuntimeComparisonEvidence"):

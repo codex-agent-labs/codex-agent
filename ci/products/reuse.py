@@ -26,6 +26,7 @@ from .index import (
     verify_contract_index_object,
     verify_native_runtime_index_object,
     verify_adapter_runtime_index_object,
+    verify_sdk_validation_index_object,
     SignedProductIndex,
     stable_index_identity,
     verify_release_product_index,
@@ -43,6 +44,7 @@ from .plan import (
     verify_build_key_output_consistency,
     verify_runtime_validation_projection,
     native_runtime_validation_dependencies, _native_runtime_projections_from_request,
+    sdk_validation_dependencies,
     NATIVE_RUNTIME_EVIDENCE_KEYS, VerifiedNativeRuntimeProjection,
     _native_runtime_projection_from_record, _contract_projection_from_request_components,
 )
@@ -51,6 +53,7 @@ from .runtime_adapter_content import (
     VerifiedAdapterRuntimeProjection, adapter_comparison_provider, decode_adapter_comparison_records,
 )
 from .receipt import build_key_payload
+from .sdk_validation import VerifiedSdkValidationProjection, decode_sdk_validation_records, sdk_validation_provider
 from .registry import (
     NATIVE_TARGETS,
     PHASE_INSTANCE_IDS,
@@ -240,6 +243,7 @@ class LookupSession:
         local: LocalCatalog | None = None,
         native_runtime_projection=None,
         adapter_runtime_projection=None,
+        sdk_validation_projection=None,
     ) -> None:
         self.repository = require_relative_path(repository, "lookup repository")
         if self.repository.count("/") != 1:
@@ -258,6 +262,10 @@ class LookupSession:
             raise ValueError("Adapter Runtime comparison provider must be callable")
         self._adapter_runtime_projection = adapter_runtime_projection
         self._adapter_projections: dict[bytes, VerifiedAdapterRuntimeProjection] = {}
+        if sdk_validation_projection is not None and not callable(sdk_validation_projection):
+            raise ValueError("SDK validation comparison provider must be callable")
+        self._sdk_validation_projection = sdk_validation_projection
+        self._sdk_projections: dict[bytes, VerifiedSdkValidationProjection] = {}
         self._remote: dict[str, dict[str, list[_RemoteCandidate]]] = {
             source: {} for source in SOURCES[:-1]
         }
@@ -270,6 +278,7 @@ class LookupSession:
                     prior, index, contract_execution_projection=self._catalog_execution_projection,
                     native_runtime_projection=self._catalog_native_projection,
                     adapter_runtime_projection=self._catalog_adapter_projection,
+                    sdk_validation_projection=self._catalog_sdk_projection,
                 )
             stable_indexes.append(index)
             loaded_indexes.append(index)
@@ -372,9 +381,11 @@ class LookupSession:
                 prior = entries_by_key.setdefault(entry["buildKey"], entry)
                 if prior["outputs"] != entry["outputs"]:
                     left = verified_index_content(prior, self._catalog_execution_projection,
-                                                  self._catalog_native_projection, self._catalog_adapter_projection)
+                                                  self._catalog_native_projection, self._catalog_adapter_projection,
+                                                  self._catalog_sdk_projection)
                     right = verified_index_content(entry, self._catalog_execution_projection,
-                                                   self._catalog_native_projection, self._catalog_adapter_projection)
+                                                   self._catalog_native_projection, self._catalog_adapter_projection,
+                                                   self._catalog_sdk_projection)
                     if left["outputs"] != right["outputs"]:
                         raise ValueError("Signed product indexes conflict for an identical build key")
 
@@ -393,6 +404,22 @@ class LookupSession:
                 self._adapter_projections[key] = proof
                 return proof
         raise ValueError("Conflicting adapter Runtime inventories require both authenticated objects")
+
+    def _catalog_sdk_projection(self, entry: dict[str, Any]) -> VerifiedSdkValidationProjection:
+        key = canonical_json_bytes(entry)
+        if key in self._sdk_projections:
+            return self._sdk_projections[key]
+        for catalog in self._remote.values():
+            for candidate in catalog.get(entry["buildKey"], ()):
+                if candidate.entry != entry or candidate.object_path is None:
+                    continue
+                try:
+                    proof = verify_sdk_validation_index_object(entry, candidate.object_path, self._sdk_validation_projection)
+                except FileNotFoundError:
+                    continue
+                self._sdk_projections[key] = proof
+                return proof
+        raise ValueError("Conflicting SDK validation inventories require both authenticated objects")
 
     @staticmethod
     def _snapshot_local(local: LocalCatalog | None) -> LocalCatalog | None:
@@ -831,7 +858,8 @@ def plan_reuse_wave(
             "runtimeValidationEvidence",
             "availableObjects",
             "catalogs",
-        } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence", "adapterRuntimeComparisonEvidence") if key in value}
+        } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence", "adapterRuntimeComparisonEvidence",
+                             "sdkValidationEvidence", "sdkValidationTooling") if key in value}
              if type(value) is dict else set()),
         "reuse-wave request",
     )
@@ -846,6 +874,9 @@ def plan_reuse_wave(
     revision = require_string(request["repositoryRevision"], "reuse-wave request.repositoryRevision")
     if _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Reuse-wave repositoryRevision must be an exact lowercase Git object ID")
+    sdk_originals = decode_sdk_validation_records(artifact_root, request.get("sdkValidationEvidence", []))
+    sdk_comparison = sdk_validation_provider(artifact_root, request.get("sdkValidationEvidence", []),
+        repository=repository_root, policy_revision=revision, tooling=request.get("sdkValidationTooling"))
     requested = _request_identities(request["requested"], "reuse-wave request.requested")
     closure = _dependency_closure(requested)
     versions = _validated_versions(request["versions"])
@@ -1020,6 +1051,7 @@ def plan_reuse_wave(
             repository=require_string(request["repository"], "reuse-wave request.repository"),
             native_runtime_projection=native_comparison,
             adapter_runtime_projection=adapter_comparison,
+            sdk_validation_projection=sdk_comparison,
             pull_request=pull_request,
             restore_root=restore_root / "remote",
             stable=stable,
@@ -1078,6 +1110,12 @@ def plan_reuse_wave(
         consumed_native_evidence: set[str] = set()
         native_projection_cache: dict[tuple[str, str], VerifiedNativeRuntimeProjection] = {}
 
+        def sdk_projection_provider(instance, envelopes, package):
+            if sdk_comparison is None or any(envelope["receiptSha256"] not in sdk_originals for envelope in envelopes):
+                return None
+            return tuple(sdk_comparison({**envelope["receipt"], "receiptSha256": envelope["receiptSha256"]})
+                         for envelope in envelopes)
+
         def native_runtime_projection_provider(instance, envelopes, projection):
             targets = [dependency.target for dependency in native_runtime_validation_dependencies(instance)]
             selected = [native_evidence.get(target) or native_originals.get(envelope["receiptSha256"], (None, None))[1]
@@ -1128,6 +1166,7 @@ def plan_reuse_wave(
             ),
             runtime_validation_projection_provider=runtime_validation_projection_provider,
             native_runtime_projection_provider=native_runtime_projection_provider,
+            sdk_validation_projection_provider=sdk_projection_provider,
             build_plan_consumer=build_plan_consumer,
         )
         unused_evidence = set(runtime_validation_evidence) - consumed_runtime_validation_evidence
@@ -1158,6 +1197,7 @@ def _plan(
         "runtime_validation_projection",
         "native_runtime_projections",
         "contract_execution_projection",
+        "sdk_validation_projections",
     }
     if not _PHASE_INPUT_KEYS.issubset(keys) or not keys.issubset(allowed):
         raise ValueError(f"Phase inputs fields are invalid: {instance}")
@@ -1218,6 +1258,10 @@ def advance_reuse(
     contract_execution_projection_provider: Callable[
         [dict[str, Any]], VerifiedContractExecutionProjection
     ] | None = None,
+    sdk_validation_projection_provider: Callable[
+        [PhaseInstanceId, tuple[dict[str, Any], ...], dict[str, Any]],
+        tuple[VerifiedSdkValidationProjection, ...] | None,
+    ] | None = None,
     build_plan_consumer: Callable[[PhaseInstanceId, dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave."""
@@ -1238,6 +1282,8 @@ def advance_reuse(
         raise ValueError("Native Runtime projection provider must be callable")
     if contract_execution_projection_provider is not None and not callable(contract_execution_projection_provider):
         raise ValueError("Contract execution projection provider must be callable")
+    if sdk_validation_projection_provider is not None and not callable(sdk_validation_projection_provider):
+        raise ValueError("SDK validation projection provider must be callable")
     resolved_repository_root = None if repository_root is None else Path(repository_root)
     closure = _dependency_closure(requested_instances)
     if not isinstance(phase_inputs, Mapping) or set(phase_inputs) != set(closure):
@@ -1247,7 +1293,7 @@ def advance_reuse(
     for instance, values in phase_inputs.items():
         if not isinstance(values, Mapping):
             raise ValueError(f"Phase inputs must be a mapping: {instance}")
-        if {"runtime_validation_projection", "contract_execution_projection", "native_runtime_projections"} & set(values):
+        if {"runtime_validation_projection", "contract_execution_projection", "native_runtime_projections", "sdk_validation_projections"} & set(values):
             raise ValueError("Callers cannot supply an execution validation projection")
         effective_inputs[instance] = dict(values)
     envelopes: dict[PhaseInstanceId, dict[str, Any]] = {}
@@ -1337,6 +1383,22 @@ def advance_reuse(
                     }
                     continue
                 effective_inputs[instance]["native_runtime_projections"] = native_projections
+                continuation_requirements.pop(instance, None)
+            sdk_dependencies = sdk_validation_dependencies(instance)
+            if sdk_dependencies:
+                package = resolved[PhaseInstanceId("sdk", instance.component, "package", "desktop")]
+                sdk_projections = None if sdk_validation_projection_provider is None else sdk_validation_projection_provider(
+                    instance, tuple(resolved[dependency] for dependency in sdk_dependencies), package,
+                )
+                if sdk_projections is None:
+                    continuation_requirements[instance] = {
+                        "kind": "sdk-validation-evidence", "product": instance.product,
+                        "component": instance.component, "phase": instance.phase, "target": instance.target,
+                        "dependencies": [{"product": item.product, "component": item.component,
+                                          "phase": item.phase, "target": item.target} for item in sdk_dependencies],
+                    }
+                    continue
+                effective_inputs[instance]["sdk_validation_projections"] = sdk_projections
                 continuation_requirements.pop(instance, None)
             plan = _plan(
                 instance,
