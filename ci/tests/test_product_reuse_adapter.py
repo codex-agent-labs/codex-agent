@@ -817,11 +817,11 @@ class ProductReuseAdapterTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "file set"):
                 product_reuse._materialize_catalog(
                     "same-pr", artifact, "token", self.root / "materialized",
-                    "codex-agent-labs/codex-agent", 31, None, {
+                    "codex-agent-labs/codex-agent", 31, None, {"run": {
                         "id": 7, "run_attempt": 1, "head_sha": COMMIT,
                         "path": ".github/workflows/ci.yml",
                         "head_commit": {"tree_id": TREE},
-                    },
+                    }, "testedCommit": {"sha": COMMIT, "tree": {"sha": TREE}}},
                 )
 
     def test_same_pr_catalog_binds_signed_workflow_path_and_tree(self) -> None:
@@ -845,11 +845,30 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 "runAttempt": 1, "pullRequest": 31,
             },
         }
-        workflow_run = {
-            "id": 7, "run_attempt": 1, "head_sha": COMMIT,
-            "path": ".github/workflows/ci.yml", "head_commit": {"tree_id": TREE},
-        }
-        for field, value in (("workflowPath", ".github/workflows/other.yml"), ("tree", "d" * 40)):
+        workflow_run = {"run": {
+            "id": 7, "run_attempt": 1, "head_sha": "b" * 40,
+            "path": ".github/workflows/ci.yml", "head_commit": {"tree_id": "c" * 40},
+        }, "testedCommit": {"sha": COMMIT, "tree": {"sha": TREE}}}
+        catalog = self.root / "catalog-merge.zip"
+        with zipfile.ZipFile(catalog, "w") as archive:
+            archive.writestr("product-index.json", canonical_json_bytes(base))
+            archive.writestr("product-index.sig", b"signature")
+            archive.writestr("public-key.pub", b"key")
+        original = copy.deepcopy(workflow_run)
+        with mock.patch.object(product_reuse, "download_artifact", return_value=catalog.read_bytes()), \
+                mock.patch.object(product_reuse, "validate_product_index", return_value=base):
+            materialized = product_reuse._materialize_catalog(
+                "same-pr", {"id": 7}, "token", self.root / "materialized-merge",
+                "codex-agent-labs/codex-agent", 31, None, workflow_run)
+        self.assertEqual(base, materialized.index)
+        self.assertEqual(original, workflow_run)
+        transport = self.root / "materialized-merge/catalogs/same-pr/7"
+        self.assertEqual(original, product_inventory.load_canonical_json_bytes(
+            (transport / "workflow-provenance.json").read_bytes()))
+        self.assertEqual(canonical_json_bytes(base), (transport / "contents/product-index.json").read_bytes())
+        self.assertFalse((transport / "contents/workflow-provenance.json").exists())
+        for field, value in (("workflowPath", ".github/workflows/other.yml"), ("tree", "d" * 40),
+                             ("commit", "b" * 40), ("runAttempt", 2)):
             with self.subTest(field=field):
                 index = copy.deepcopy(base)
                 index["producer"][field] = value
@@ -909,29 +928,39 @@ class ProductReuseAdapterTest(unittest.TestCase):
         self.assertEqual(3, downloaded.call_count)
 
     def test_same_pr_catalog_requires_actual_successful_ci_run_and_matching_claims(self) -> None:
+        head, base = "b" * 40, "c" * 40
         artifact = {
-            "workflow_run": {"id": 7, "head_sha": COMMIT},
+            "workflow_run": {"id": 7, "head_sha": head},
         }
         good_run = {
             "id": 7, "run_attempt": 2, "status": "completed", "conclusion": "success",
-            "event": "pull_request", "path": ".github/workflows/ci.yml", "head_sha": COMMIT,
-            "head_commit": {"tree_id": TREE},
-            "pull_requests": [{"number": 31}],
+            "event": "pull_request", "path": ".github/workflows/ci.yml", "head_sha": head,
+            "head_commit": {"tree_id": "d" * 40},
+            "repository": {"full_name": "codex-agent-labs/codex-agent", "fork": False},
+            "head_repository": {"full_name": "codex-agent-labs/codex-agent", "fork": False},
+            "pull_requests": [{"number": 31, "base": {"sha": base}, "head": {"sha": head}}],
         }
-        with mock.patch.object(product_reuse, "api_json", return_value=good_run):
+        tested = {"sha": COMMIT, "tree": {"sha": TREE}, "parents": [{"sha": base}, {"sha": head}]}
+        original = copy.deepcopy(good_run)
+        with mock.patch.object(product_reuse, "api_json", side_effect=[good_run, tested]) as queried:
             self.assertEqual(
-                good_run,
+                {"run": good_run, "testedCommit": tested},
                 product_reuse._same_pr_run(
                     artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token",
                     COMMIT, TREE,
                 ),
             )
+        self.assertEqual(original, good_run)
+        self.assertEqual([
+            mock.call("https://api.github.test/repos/codex-agent-labs/codex-agent/actions/runs/7", "token"),
+            mock.call(f"https://api.github.test/repos/codex-agent-labs/codex-agent/git/commits/{COMMIT}", "token"),
+        ], queried.call_args_list)
         for change in (
             {"conclusion": "failure"},
             {"path": ".github/workflows/untrusted.yml"},
             {"head_sha": "d" * 40},
-            {"head_commit": {"tree_id": "d" * 40}},
             {"pull_requests": [{"number": 32}]},
+            {"repository": None}, {"head_repository": {"full_name": "attacker/repo", "fork": True}},
         ):
             with self.subTest(change=change), mock.patch.object(
                 product_reuse, "api_json", return_value={**good_run, **change},
@@ -941,6 +970,26 @@ class ProductReuseAdapterTest(unittest.TestCase):
                         artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token",
                         COMMIT, TREE,
                     )
+        for change in (
+            {"sha": "f" * 40}, {"tree": {"sha": "f" * 40}}, {"tree": None},
+            {"parents": []}, {"parents": list(reversed(tested["parents"]))},
+            {"parents": [{"sha": "e" * 40}, {"sha": head}]},
+        ):
+            with self.subTest(tested=change), mock.patch.object(
+                product_reuse, "api_json", side_effect=[good_run, {**tested, **change}],
+            ), self.assertRaises(ValueError):
+                product_reuse._same_pr_run(
+                    artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token", COMMIT, TREE)
+        for change in (
+            {"pull_requests": [{"number": 31}]},
+            {"pull_requests": good_run["pull_requests"] * 2},
+            {"pull_requests": [{"number": 31, "base": {"sha": head}, "head": {"sha": base}}]},
+        ):
+            with self.subTest(run=change), mock.patch.object(
+                product_reuse, "api_json", side_effect=[{**good_run, **change}, tested],
+            ), self.assertRaises(ValueError):
+                product_reuse._same_pr_run(
+                    artifact, "https://api.github.test", "codex-agent-labs/codex-agent", 31, "token", COMMIT, TREE)
 
     def test_complete_result_is_reverified_before_jobs_can_be_skipped(self) -> None:
         selected = PhaseInstanceId("contract", "contract", "binary", "common")

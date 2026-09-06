@@ -207,6 +207,40 @@ def _prepare_destination(destination: Path, repository_root: Path) -> Path:
     return destination
 
 
+def _observe_tested_commit(
+    run: Mapping[str, Any], *, api: str, repository: str, token: str,
+    expected_commit: str, expected_tree: str, pull_request: int | None,
+) -> dict[str, Any]:
+    """Observe tested Git identity separately from the triggering workflow head."""
+    if any(not isinstance(value, str) or _OID.fullmatch(value) is None
+           for value in (expected_commit, expected_tree)):
+        raise ValueError("Tested Git commit/tree identity is malformed")
+    commit = api_json(f"{api}/repos/{repository}/git/commits/{expected_commit}", token)
+    tree = commit.get("tree")
+    if (commit.get("sha") != expected_commit or not isinstance(tree, dict)
+            or tree.get("sha") != expected_tree):
+        raise ValueError("Tested Git commit/tree differs from its original identity")
+    if run.get("event") == "pull_request":
+        requests = [value for value in require_array(run.get("pull_requests"), "Original CI pull requests")
+                    if isinstance(value, dict) and value.get("number") == pull_request]
+        if len(requests) != 1:
+            raise ValueError("Original CI attempt has ambiguous pull-request identity")
+        identities = []
+        for field in ("base", "head"):
+            value = requests[0].get(field)
+            oid = value.get("sha") if isinstance(value, dict) else None
+            if not isinstance(oid, str) or re.fullmatch(r"[0-9a-f]{40}", oid) is None:
+                raise ValueError("Original CI attempt lacks exact pull-request base/head")
+            identities.append(oid)
+        parents = require_array(commit.get("parents"), "Tested merge parents")
+        if ([value.get("sha") if isinstance(value, dict) else None for value in parents] != identities
+                or run.get("head_sha") not in {identities[1], expected_commit}):
+            raise ValueError("Tested merge does not bind the original CI pull-request base/head")
+    elif run.get("event") != "merge_group" or run.get("head_sha") != expected_commit:
+        raise ValueError("Merge-group attempt does not match its tested commit")
+    return commit
+
+
 def _same_pr_run(
     artifact: Mapping[str, Any], api: str, repository: str, pull_request: int, token: str,
     expected_commit: str, expected_tree: str,
@@ -219,8 +253,6 @@ def _same_pr_run(
     if _OID.fullmatch(head_sha) is None:
         raise ValueError("Product catalog workflow head SHA is malformed")
     run = api_json(f"{api}/repos/{repository}/actions/runs/{run_id}", token)
-    head_commit = run.get("head_commit")
-    tree = head_commit.get("tree_id") if isinstance(head_commit, dict) else None
     if (
         require_integer(run.get("id"), "product catalog workflow run ID", 1) != run_id
         or run.get("status") != "completed"
@@ -228,12 +260,17 @@ def _same_pr_run(
         or run.get("event") != "pull_request"
         or run.get("path") != ".github/workflows/ci.yml"
         or run.get("head_sha") != head_sha
-        or head_sha != expected_commit
-        or tree != expected_tree
+        or any(not isinstance(run.get(field), dict)
+               or run[field].get("full_name") != repository or run[field].get("fork") is not False
+               for field in ("repository", "head_repository"))
         or not run_matches_pr(run, pull_request)
     ):
         raise ValueError("Same-PR product catalog did not come from an allowed successful CI run")
-    return run
+    require_integer(run.get("run_attempt"), "product catalog workflow run attempt", 1)
+    tested_commit = _observe_tested_commit(
+        run, api=api, repository=repository, token=token,
+        expected_commit=expected_commit, expected_tree=expected_tree, pull_request=pull_request)
+    return {"run": run, "testedCommit": tested_commit}
 
 
 def verify_contract_producer_runs(
@@ -294,29 +331,10 @@ def _observe_contract_producer_runs(
         if (len(selected) != 1 or selected[0].get("path") != workflow
                 or selected[0].get("sha") != trusted_workflow_sha):
             raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
-        commit = api_json(f"https://api.github.com/repos/{repository}/git/commits/{producer['commit']}", token)
-        tree = commit.get("tree")
-        if (commit.get("sha") != producer["commit"] or not isinstance(tree, dict)
-                or tree.get("sha") != producer["tree"]):
-            raise ValueError("Contract tested Git commit/tree differs from its original receipt")
-        if producer["event"] == "pull_request":
-            requests = [value for value in run["pull_requests"] if isinstance(value, dict)
-                        and value.get("number") == producer["pullRequest"]]
-            if len(requests) != 1:
-                raise ValueError("Contract original CI attempt has ambiguous pull-request identity")
-            identities = []
-            for field in ("base", "head"):
-                value = requests[0].get(field)
-                oid = value.get("sha") if isinstance(value, dict) else None
-                if not isinstance(oid, str) or re.fullmatch(r"[0-9a-f]{40}", oid) is None:
-                    raise ValueError("Contract original CI attempt lacks exact pull-request base/head")
-                identities.append(oid)
-            parents = require_array(commit.get("parents"), "Contract tested merge parents")
-            if ([value.get("sha") if isinstance(value, dict) else None for value in parents] != identities
-                    or run.get("head_sha") not in {identities[1], producer["commit"]}):
-                raise ValueError("Contract tested merge does not bind the original CI pull-request base/head")
-        elif run.get("head_sha") != producer["commit"]:
-            raise ValueError("Contract merge-group attempt does not match its tested commit")
+        commit = _observe_tested_commit(
+            run, api="https://api.github.com", repository=repository, token=token,
+            expected_commit=producer["commit"], expected_tree=producer["tree"],
+            pull_request=producer["pullRequest"])
         jobs = paginated_items(f"{url}/jobs", "jobs", token)
         if any(not isinstance(job, dict) for job in jobs):
             raise ValueError("Contract original CI jobs are malformed")
@@ -562,33 +580,37 @@ def _materialize_catalog(
     if source == "same-pr":
         if workflow_run is None:
             raise ValueError("Same-PR product catalog lacks verified workflow-run provenance")
+        observed = require_exact_keys(workflow_run, {"run", "testedCommit"}, "Same-PR workflow observation")
+        workflow_run = observed["run"]
+        tested_commit = observed["testedCommit"]
         run_id = require_integer(workflow_run.get("id"), "product catalog workflow run ID", 1)
         run_attempt = require_integer(
             workflow_run.get("run_attempt"), "product catalog workflow run attempt", 1,
         )
-        head_sha = require_string(
-            workflow_run.get("head_sha"), "product catalog workflow head SHA",
+        tested_sha = require_string(
+            tested_commit.get("sha"), "product catalog tested commit SHA",
         )
         workflow_path = require_string(
             workflow_run.get("path"), "product catalog workflow path",
         )
-        head_commit = workflow_run.get("head_commit")
+        tested_tree = tested_commit.get("tree")
         tree = require_string(
-            head_commit.get("tree_id") if isinstance(head_commit, dict) else None,
-            "product catalog workflow tree",
+            tested_tree.get("sha") if isinstance(tested_tree, dict) else None,
+            "product catalog tested tree",
         )
         if (
             index["context"]["runId"] != run_id
             or index["producer"]["runId"] != run_id
             or index["context"]["runAttempt"] != run_attempt
             or index["producer"]["runAttempt"] != run_attempt
-            or index["context"]["commit"] != head_sha
-            or index["producer"]["commit"] != head_sha
+            or index["context"]["commit"] != tested_sha
+            or index["producer"]["commit"] != tested_sha
             or index["context"]["tree"] != tree
             or index["producer"]["tree"] != tree
             or index["producer"]["workflowPath"] != workflow_path
         ):
             raise ValueError("Same-PR product catalog claims different workflow provenance")
+        write_canonical_json(root / "workflow-provenance.json", observed)
     controls = {"product-index.json", "product-index.sig"}
     public_key: Path | None = None
     if source == "same-pr":
