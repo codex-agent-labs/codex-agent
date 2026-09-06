@@ -16,6 +16,7 @@ import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import runpy
 import shutil
+import sys
 import tempfile
 
 
@@ -190,8 +191,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["verify-evidence"]:
+        parser = argparse.ArgumentParser(
+            description="Check retained C++ package evidence without execution or receipt admission.",
+            allow_abbrev=False,
+        )
+        parser.add_argument("--evidence", type=Path, required=True)
+        parser.add_argument("--expected-test-program", type=Path, required=True)
+        args = parser.parse_args(arguments[1:])
+        expected_program = _evidence_bytes(args.expected_test_program)
+        verify_imported_package_evidence(args.evidence, expected_program)
+        return
+    args = parse_args(arguments)
     verify_imported_package(args.package_root, args.output, cmake=args.cmake,
                             libdir=args.libdir, library=args.library)
 

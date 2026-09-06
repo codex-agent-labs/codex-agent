@@ -289,6 +289,53 @@ class ImportedPackageVerifierTest(unittest.TestCase):
             with patch("sys.stderr"), self.assertRaises(SystemExit):
                 verifier.parse_args(args[:index] + args[index + 2:])
 
+    def test_read_only_cli_uses_explicit_original_source_without_execution_or_output_mutation(self):
+        with patch.object(subprocess, "run", side_effect=self.configure_fixture):
+            self.invoke()
+        arguments = ["verify-evidence", "--evidence", str(self.output),
+                     "--expected-test-program", str(verifier.VERIFIER)]
+        before = self.snapshot(self.root)
+        with patch.object(verifier, "verify_imported_package") as produce, \
+                patch.object(subprocess, "run") as run, \
+                patch.object(verifier.runpy, "run_path") as execute:
+            verifier.main(arguments)
+        produce.assert_not_called()
+        run.assert_not_called()
+        execute.assert_not_called()
+        self.assertEqual(before, self.snapshot(self.root))
+        for incomplete in (arguments[:1], arguments[:1] + arguments[3:], arguments[:3]):
+            with patch("sys.stderr"), self.assertRaises(SystemExit):
+                verifier.main(incomplete)
+
+    def test_read_only_cli_rejects_missing_symbolic_changed_original_and_mutated_evidence(self):
+        with patch.object(subprocess, "run", side_effect=self.configure_fixture):
+            self.invoke()
+        changed = self.root / "changed-program.py"
+        changed.write_bytes(verifier.VERIFIER.read_bytes() + b"\n# another original\n")
+        symbolic = self.root / "symbolic-program.py"
+        symbolic.symlink_to(verifier.VERIFIER)
+        with patch.object(subprocess, "run") as run, patch.object(verifier.runpy, "run_path") as execute:
+            for expected in (self.root / "missing", self.root, changed, symbolic):
+                with self.subTest(expected=expected), self.assertRaises(ValueError):
+                    verifier.main(["verify-evidence", "--evidence", str(self.output),
+                                   "--expected-test-program", str(expected)])
+            result = self.output / "package-tamper-results.tsv"
+            result.write_bytes(result.read_bytes().replace(b"passed", b"skipped", 1))
+            before = self.snapshot(self.root)
+            with self.assertRaises(ValueError):
+                verifier.main(["verify-evidence", "--evidence", str(self.output),
+                               "--expected-test-program", str(verifier.VERIFIER)])
+            self.assertEqual(before, self.snapshot(self.root))
+        run.assert_not_called()
+        execute.assert_not_called()
+
+    def test_legacy_execution_cli_dispatch_is_unchanged(self):
+        with patch.object(verifier, "verify_imported_package") as produce:
+            verifier.main(["--package-root", str(self.package), "--output", str(self.output),
+                           "--cmake", "fixture-cmake", "--libdir", "lib", "--library", self.library])
+        produce.assert_called_once_with(self.package, self.output, cmake="fixture-cmake",
+                                        libdir="lib", library=self.library)
+
 
 if __name__ == "__main__":
     unittest.main()
