@@ -129,10 +129,7 @@ class RuntimeProductStageRegistrationTest {
             phaseRoot.resolve("output-manifest.json").writeText("stale\n")
 
             val rejected = fixture.runAndFail("verifyAdapterMetadataInputs")
-            assertEquals(
-                TaskOutcome.SUCCESS,
-                rejected.task(":invalidateAdapterMetadataOutputs")?.outcome,
-            )
+            assertEquals(null, rejected.task(":invalidateAdapterMetadataOutputs"))
             assertEquals(TaskOutcome.FAILED, rejected.task(":verifyAdapterMetadataInputs")?.outcome)
             assertTrue(
                 "Runtime Maven repository" in rejected.output,
@@ -178,6 +175,7 @@ class RuntimeProductStageRegistrationTest {
             .withProjectDir(root)
             .withArguments(
                 task,
+                "--offline",
                 "--configuration-cache",
                 "--configuration-cache-problems=fail",
                 "--info",
@@ -202,7 +200,6 @@ class RuntimeProductStageRegistrationTest {
                 import org.gradle.api.Project
                 import org.gradle.api.file.Directory
                 import org.gradle.api.provider.Provider
-                import org.gradle.api.tasks.Delete
 
                 class RuntimeStageFixturePlugin : Plugin<Project> {
                     override fun apply(project: Project) {
@@ -256,18 +253,13 @@ class RuntimeProductStageRegistrationTest {
                             val adapterPhaseRoot = layout.buildDirectory.dir(
                                 "product-stage/runtime/jvm/metadata",
                             )
-                            val invalidateAdapter = tasks.register(
-                                "invalidateAdapterMetadataOutputs", Delete::class.java,
-                            ) {
-                                delete(adapterPhaseRoot)
-                            }
                             tasks.register(
                                 "verifyAdapterMetadataInputs",
                                 ValidateRuntimeAdapterMetadataInputsTask::class.java,
                                 object : Action<ValidateRuntimeAdapterMetadataInputsTask> {
                                     override fun execute(adapter: ValidateRuntimeAdapterMetadataInputsTask) {
-                                        adapter.dependsOn(invalidateAdapter)
                                         adapter.component.set("jvm")
+                                        adapter.stageDirectory.set(adapterPhaseRoot)
                                         adapter.validationHandoff.set(
                                             layout.projectDirectory.dir("adapter-handoff"),
                                         )

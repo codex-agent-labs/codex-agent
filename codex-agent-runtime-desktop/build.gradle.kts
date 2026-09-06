@@ -662,17 +662,13 @@ runtimeAdapterMetadataComponents.forEach { (component, title) ->
     val projection = layout.file(importedRuntimeValidationHandoff.map {
         it.resolve("projection.json")
     })
-    val invalidate = tasks.register<Delete>("invalidate${title}RuntimeMetadataOutputs") {
-        group = "verification"
-        delete(phaseRoot)
-    }
     val verifyInputs = tasks.register<ValidateRuntimeAdapterMetadataInputsTask>(
         "verify${title}RuntimeMetadataInputs",
     ) {
         group = "verification"
         description = "Verifies the authenticated $component projection and prebuilt Runtime Maven inputs."
-        dependsOn(invalidate)
         this.component.set(component)
+        stageDirectory.set(phaseRoot)
         validationHandoff.set(layout.dir(importedRuntimeValidationHandoff))
         this.projection.set(projection)
         mavenRepository.set(layout.dir(importedRuntimeMavenRepository))

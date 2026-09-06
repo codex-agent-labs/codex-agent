@@ -137,12 +137,12 @@ class RuntimeProductPhaseMappingTest {
             "@get:InputFile",
             "@get:Internal\n    abstract val mavenRepository",
             "generateSequence(normalized) { it.parent }",
-            "verifyRuntimeAdapterProjection(adapter, projectionFile.toFile())",
+            "verifyProjection(adapter, projectionFile.toFile())",
         ).forEach { contract -> assertTrue(contract in adapterMetadataInputs, contract) }
         assertFalse("@get:InputDirectory" in adapterMetadataInputs)
-        assertTrue(metadata.indexOf("val invalidate =") < metadata.indexOf("val verifyInputs ="))
-        assertTrue("dependsOn(invalidate)" in metadata.substringAfter("val verifyInputs =")
-            .substringBefore("val stage ="))
+        assertFalse("tasks.register<Delete>" in metadata)
+        assertFalse("dependsOn(invalidate)" in metadata)
+        assertTrue("stageDirectory.set(phaseRoot)" in metadata)
         assertTrue("dependsOn(verifyInputs)" in metadata.substringAfter("val stage =")
             .substringBefore("registerRuntimeOutputManifest("))
         listOf(

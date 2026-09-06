@@ -1,5 +1,6 @@
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
@@ -26,24 +27,102 @@ abstract class ValidateRuntimeAdapterMetadataInputsTask : DefaultTask() {
     @get:Internal
     abstract val mavenRepository: DirectoryProperty
 
+    @get:Internal
+    abstract val stageDirectory: DirectoryProperty
+
+    @get:Internal
+    abstract val ownedBuildDirectory: DirectoryProperty
+
+    init {
+        ownedBuildDirectory.convention(project.layout.buildDirectory)
+        stageDirectory.convention(ownedBuildDirectory.dir(component.map { "product-stage/runtime/$it/metadata" }))
+    }
+
     @TaskAction
     fun verify() {
-        val adapter = component.get()
-        check(adapter in setOf("jvm", "node-js", "node-wasm")) {
-            "Unsupported Runtime adapter metadata component: $adapter"
-        }
-        val handoff = validationHandoff.get().asFile.toPath().toAbsolutePath().normalize()
-        val projectionFile = projection.get().asFile.toPath().toAbsolutePath().normalize()
-        check(projectionFile.parent == handoff && projectionFile.fileName.toString() == "projection.json") {
-            "Runtime adapter projection must be the validation handoff's projection.json"
-        }
-        requireRegularRuntimeProductDirectory(handoff, "Runtime validation handoff")
-        requireRegularRuntimeProductTree(
-            mavenRepository.get().asFile.toPath().toAbsolutePath().normalize(),
-            "Runtime Maven repository",
+        verifyRuntimeAdapterMetadataInputs(
+            component.get(), validationHandoff.get().asFile.toPath(), projection.get().asFile.toPath(),
+            mavenRepository.get().asFile.toPath(), stageDirectory.get().asFile.toPath(),
+            ownedBuildDirectory.get().asFile.toPath(),
         )
-        verifyRuntimeAdapterProjection(adapter, projectionFile.toFile())
     }
+}
+
+internal fun verifyRuntimeAdapterMetadataInputs(
+    adapter: String, handoff: Path, projectionFile: Path, maven: Path, stage: Path, ownedBuild: Path,
+    verifyProjection: (String, java.io.File) -> Unit = ::verifyRuntimeAdapterProjection,
+) {
+    check(adapter in setOf("jvm", "node-js", "node-wasm")) {
+        "Unsupported Runtime adapter metadata component: $adapter"
+    }
+    listOf(handoff, projectionFile, maven, stage, ownedBuild).forEach { path ->
+        check(path.isAbsolute && path.normalize() == path) { "Runtime adapter metadata path must be absolute and normalized: $path" }
+        // Inspect raw ancestry before any deletion, including dangling links.
+        generateSequence(path.parent) { it.parent }.forEach { parent ->
+            check(!Files.isSymbolicLink(parent) && (!Files.exists(parent, LinkOption.NOFOLLOW_LINKS) ||
+                Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS))) {
+                "Runtime adapter metadata path has an unsafe parent: $parent"
+            }
+        }
+    }
+    check(stage == ownedBuild.resolve("product-stage/runtime/$adapter/metadata")) {
+        "Runtime adapter metadata output must be its exact task-owned stage"
+    }
+    check(projectionFile.parent == handoff && projectionFile.fileName.toString() == "projection.json") {
+        "Runtime adapter projection must be the validation handoff's projection.json"
+    }
+    listOf(handoff, projectionFile, maven).forEach { input ->
+        check(!input.startsWith(stage) && !stage.startsWith(input)) {
+            "Runtime adapter metadata output overlaps an original input: $input"
+        }
+    }
+    requireRegularRuntimeProductDirectory(handoff, "Runtime validation handoff")
+    requireRegularRuntimeProductDirectory(maven, "Runtime Maven repository")
+    check(Files.isRegularFile(projectionFile, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(projectionFile)) {
+        "Runtime adapter projection must be a regular original file"
+    }
+    // Safety is distinct from semantic validity: empty real input directories
+    // may fail below after invalidation, but links/special entries never may.
+    listOf(handoff, maven, stage).forEach { root ->
+        if (Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
+            requireRegularRuntimeProductDirectory(root, "Runtime adapter metadata tree")
+            Files.walk(root).use { entries ->
+                entries.forEach { entry ->
+                    check(!Files.isSymbolicLink(entry) && (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS) ||
+                        Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS))) {
+                        "Runtime adapter metadata tree contains an unsafe entry: $entry"
+                    }
+                }
+            }
+        }
+    }
+    // Case aliases may be lexically disjoint even on the same filesystem.
+    // Resolve missing output suffixes from the nearest existing safe ancestor.
+    var existingStage = stage
+    val missingNames = mutableListOf<Path>()
+    while (!Files.exists(existingStage, LinkOption.NOFOLLOW_LINKS)) {
+        missingNames.add(existingStage.fileName)
+        existingStage = checkNotNull(existingStage.parent)
+    }
+    val realStage = missingNames.asReversed().fold(existingStage.toRealPath()) { parent, name -> parent.resolve(name) }
+    listOf(handoff, projectionFile, maven).forEach { input ->
+        val realInput = input.toRealPath()
+        fun containsSameFile(descendant: Path, ancestor: Path): Boolean =
+            Files.exists(ancestor, LinkOption.NOFOLLOW_LINKS) &&
+                generateSequence(descendant) { it.parent }.any { path ->
+                    Files.exists(path, LinkOption.NOFOLLOW_LINKS) && Files.isSameFile(path, ancestor)
+                }
+        check(!realInput.startsWith(realStage) && !realStage.startsWith(realInput) &&
+            !containsSameFile(realInput, realStage) && !containsSameFile(realStage, realInput)) {
+            "Runtime adapter metadata output overlaps a resolved original input: $input"
+        }
+    }
+    // Files.walk never follows links. Only this known, disjoint stage is owned.
+    if (Files.exists(stage, LinkOption.NOFOLLOW_LINKS)) {
+        Files.walk(stage).use { entries -> entries.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+    }
+    requireRegularRuntimeProductTree(maven, "Runtime Maven repository")
+    verifyProjection(adapter, projectionFile.toFile())
 }
 
 internal fun requireRegularRuntimeProductDirectory(root: java.nio.file.Path, label: String) {
