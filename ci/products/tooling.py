@@ -1,15 +1,18 @@
 """External original-tooling attestation; never a fourth product or SDK receipt."""
 
 from contextlib import contextmanager
+import io
 from pathlib import Path
+import stat
 import tempfile
+import zipfile
 
 from ..impact import effective_pathspecs
 from ..receipt import INPUT_NAMES, parse_validation_actions, validate_receipt
 from .inventory import (
-    git_inventory, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
+    git_inventory, git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer,
-    require_sha256, run_git, sha256_bytes, snapshot_regular_tree, write_canonical_json,
+    require_relative_path, require_sha256, run_git, sha256_bytes, snapshot_regular_tree, write_canonical_json,
 )
 from .receipt import validate_producer
 from .signatures import (
@@ -22,6 +25,10 @@ ATTESTATION = "release-tooling.attestation.json"
 SIGNATURE = "release-tooling.attestation.sig"
 JAR = "payload/gradle/build-logic/build/libs/codex-agent-release-tooling.jar"
 _LIMIT = 16 * 1024 * 1024
+_COMPILER_INPUTS = ("gradle/build-logic/src/main/**", "gradle/build-logic/build.gradle.kts",
+                    "gradle/build-logic/settings.gradle.kts", "gradle/build-logic/gradle.properties",
+                    "gradle/build-logic/gradle.lockfile", "gradle/libs.versions.toml",
+                    "gradle/wrapper/gradle-wrapper.properties")
 
 
 def _json(path):
@@ -120,10 +127,49 @@ def _verify_capture(root: Path, repository: Path, public_key: Path, required_tru
     return original / JAR if schema == 2 else original / "lane" / JAR
 
 
+def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision: str) -> None:
+    """Compare actual executable inputs, not run/commit identity or unrelated CI."""
+    if run_git(repository, "rev-parse", f"{revision}^{{commit}}").strip() != revision:
+        raise ValueError("Tooling policy revision must be an exact Git commit")
+    value = load_canonical_json_bytes(read_regular_file_bytes(captured / ATTESTATION))
+    if value["schemaVersion"] == 2:
+        original = _json(captured / "original/tooling-build-receipt.json")["producer"]["commit"]
+    else:
+        original = _json(captured / "original/lane/lane-receipt.json")["validationCommit"]
+    expected = git_inventory(repository, revision, _COMPILER_INPUTS)
+    if not expected or expected != git_inventory(repository, original, _COMPILER_INPUTS):
+        raise ValueError("Authenticated tooling compiler/build inputs differ from applicable policy")
+    # JARs legitimately contain directory records; the stricter product ZIP
+    # reader intentionally rejects those. Read this already-authenticated private
+    # archive without extracting anything or relaxing reusable product ZIP rules.
+    resources = {}
+    with zipfile.ZipFile(io.BytesIO(read_regular_file_bytes(jar, max_bytes=128 * 1024 * 1024))) as archive:
+        entries = archive.infolist()
+        if len(entries) > 50_000 or sum(item.file_size for item in entries) > 512 * 1024 * 1024:
+            raise ValueError("Tooling JAR inventory is oversized")
+        names = set()
+        for entry in entries:
+            name = require_relative_path(entry.filename.rstrip("/"), "tooling JAR path")
+            mode = stat.S_IFMT(entry.external_attr >> 16)
+            if name in names or entry.file_size > 64 * 1024 * 1024 or mode not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                raise ValueError("Tooling JAR has duplicate, oversized or nonregular entries")
+            names.add(name)
+            if not entry.is_dir() and name.startswith("python/"):
+                resources[name.removeprefix("python/")] = archive.read(entry)
+    if not resources or "ci/products/sdk_package.py" not in resources:
+        raise ValueError("Authenticated tooling lacks its packaged native verifier")
+    # The authenticated build recipe and all Kotlin source above define this
+    # resource allow-list. Verify every actual embedded resource against Git;
+    # do not maintain a second parser/list of Kotlin's packaging declarations.
+    for path, data in resources.items():
+        if data != git_regular_blob_bytes(repository, revision, path, max_bytes=64 * 1024 * 1024):
+            raise ValueError(f"Authenticated tooling resource differs from applicable policy: {path}")
+
+
 @contextmanager
 def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path, *,
                              required_trust_domain: str, keyring: Path | None = None,
-                             keys_directory: Path | None = None):
+                             keys_directory: Path | None = None, policy_revision: str | None = None):
     """Yield only an authenticated private JAR, invalid after this context exits.
 
     The repository is the invoking trusted policy/Git context, never selected by
@@ -138,6 +184,8 @@ def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path,
         key = root / "pinned.pub"
         key.write_bytes(read_regular_file_bytes(public_key, max_bytes=_LIMIT, reject_symlink_parents=True))
         jar = _verify_capture(captured, repository, key, required_trust_domain, keyring, keys_directory)
+        if policy_revision is not None:
+            _verify_tooling_policy(jar, captured, repository, policy_revision)
         checked = regular_file_inventory(captured, allow_empty=True)
         yield jar
         if checked != regular_file_inventory(captured, allow_empty=True) or \

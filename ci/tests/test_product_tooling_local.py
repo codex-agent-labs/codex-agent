@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import zipfile
 from unittest import mock
 
 from ci.products import tooling_local as local
@@ -162,3 +163,37 @@ class LocalToolingTest(GitFixture):
             (self.cache / name).unlink()
         with self.assertRaisesRegex(ValueError, "overlaps"):
             self.produce(output=self.root / "overlap")
+
+    def test_applicable_policy_checks_compiler_and_actual_embedded_resources_not_commit_identity(self):
+        from ci.products.inventory import run_git
+        self.commit("ci/products/sdk_package.py", "# reviewed synthetic verifier\n")
+        original_execute = self.execute
+
+        def execute(command, **kwargs):
+            result = original_execute(command, **kwargs)
+            if command[-1] == "releaseToolingJar":
+                source = Path(kwargs["cwd"])
+                with zipfile.ZipFile(source / JAR.removeprefix("payload/"), "w") as archive:
+                    archive.writestr("META-INF/", b"")
+                    archive.writestr("python/ci/products/sdk_package.py",
+                                     (source / "ci/products/sdk_package.py").read_bytes())
+            return result
+
+        with mock.patch.object(self, "execute", side_effect=execute):
+            self.produce()
+        policy = run_git(self.root, "rev-parse", "HEAD").strip()
+        with self.capture(policy_revision=policy):
+            pass
+        self.commit("notes.md", "unrelated provenance-only commit\n")
+        unrelated = run_git(self.root, "rev-parse", "HEAD").strip()
+        self.assertNotEqual(policy, unrelated)
+        with self.capture(policy_revision=unrelated):
+            pass
+        self.commit("ci/products/sdk_package.py", "# different verifier semantics\n")
+        with self.assertRaisesRegex(ValueError, "resource differs"), \
+                self.capture(policy_revision=run_git(self.root, "rev-parse", "HEAD").strip()):
+            self.fail("old signed verifier was treated as current")
+        self.commit("gradle/build-logic/src/main/kotlin/Verifier.kt", "// changed compiler input\n")
+        with self.assertRaisesRegex(ValueError, "compiler/build inputs"), \
+                self.capture(policy_revision=run_git(self.root, "rev-parse", "HEAD").strip()):
+            self.fail("old compiled matcher was treated as current")
