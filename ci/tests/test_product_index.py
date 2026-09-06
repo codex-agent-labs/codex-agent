@@ -529,6 +529,96 @@ class ProductIndexTest(unittest.TestCase):
                 stable_history=None,
             )
 
+    def _mock_nonmetadata_contract_admission(self):
+        original = source("binary", trust_domain="development")
+        metadata = source("metadata", trust_domain="development")
+        metadata_path = self.root / "metadata-receipt.json"
+        metadata_path.write_bytes(metadata.receipt_bytes)
+        closure = self.root / "execution-closure"
+        (closure / "receipts").mkdir(parents=True)
+        selected_path = closure / "receipts/binary.json"
+        selected_path.write_bytes(original.receipt_bytes)
+        closure_value = {"files": [{
+            "relativePath": "receipts/binary.json",
+            "bytes": len(original.receipt_bytes),
+            "sha256": sha256_bytes(original.receipt_bytes),
+        }]}
+        closure_bytes = canonical_json_bytes(closure_value)
+        (closure / "contract-execution-closure.json").write_bytes(closure_bytes)
+        verifier_result = (
+            {},
+            validate_phase_receipt(load_canonical_json_bytes(metadata.receipt_bytes)),
+            {"executionClosureSha256": sha256_bytes(closure_bytes)},
+        )
+        arguments = {
+            "payload": self.root / "contract.zip",
+            "metadata_receipt": metadata_path,
+            "attestation": self.root / "contract.attestation.json",
+            "signature": self.root / "contract.attestation.sig",
+            "public_key": self.public_key,
+            "keyring": self.keyring,
+            "keys_directory": self.release_keys,
+        }
+        return original, arguments, verifier_result, selected_path, closure_bytes
+
+    def test_nonmetadata_contract_admission_rejects_wrong_identity_and_token_reuse(self) -> None:
+        # This isolates index admission binding; the real signed four-phase closure
+        # is covered by the Contract integration fixture.
+        original, arguments, verifier_result, _, _ = self._mock_nonmetadata_contract_admission()
+        with mock.patch(
+            "ci.products.contract_attestation.verify_contract_attestation",
+            return_value=verifier_result,
+        ):
+            admission = release_attested_contract_admission(original, **arguments)
+            wrong_identity = source(
+                "binary", trust_domain="development", product="sdk",
+                component="contract", target="common",
+            )
+            with self.assertRaisesRegex(ValueError, "original Contract phase"):
+                release_attested_contract_admission(wrong_identity, **arguments)
+            with self.assertRaisesRegex(ValueError, "unadmitted development receipt"):
+                release_attested_contract_admission(
+                    source("binary", trust_domain="release"), **arguments,
+                )
+
+        changed = source("binary", trust_domain="development", flags_digest=DIGEST_B)
+        with self.assertRaisesRegex(ValueError, "trust domain"):
+            build_product_index(
+                [IndexEntrySource(changed.receipt_bytes, changed.artifact_path, admission)],
+                repository=REPOSITORY,
+                context={
+                    "kind": "promoted-main", "commit": COMMIT, "tree": TREE,
+                    "promotionRunId": 7, "promotionRunAttempt": 1,
+                },
+                trust_domain="release",
+                signing=self.release_signing,
+                producer=producer("release"),
+                stable_history=None,
+            )
+
+    def test_nonmetadata_contract_admission_rejects_post_verification_mutation(self) -> None:
+        (original, arguments, verifier_result, selected_path,
+         manifest_bytes) = self._mock_nonmetadata_contract_admission()
+        manifest_path = self.root / "execution-closure/contract-execution-closure.json"
+
+        for changed, error in (("receipt", "differs"), ("manifest", "closure changed")):
+            with self.subTest(changed=changed):
+                selected_path.write_bytes(original.receipt_bytes)
+                manifest_path.write_bytes(manifest_bytes)
+
+                def verified(*_args, **_kwargs):
+                    if changed == "receipt":
+                        selected_path.write_bytes(b"changed")
+                    else:
+                        manifest_path.write_bytes(canonical_json_bytes({"files": []}))
+                    return verifier_result
+
+                with mock.patch(
+                    "ci.products.contract_attestation.verify_contract_attestation",
+                    side_effect=verified,
+                ), self.assertRaisesRegex(ValueError, error):
+                    release_attested_contract_admission(original, **arguments)
+
     def test_release_index_accepts_exact_attested_runtime_variant_phase(self) -> None:
         target = "linux-x64"
         sources = {

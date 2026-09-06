@@ -23,6 +23,8 @@ from .inventory import (
 )
 from .index import (
     _verify_index_receipt,
+    IndexEntrySource,
+    release_attested_contract_admission,
     verify_contract_index_object,
     verify_native_runtime_index_object,
     verify_adapter_runtime_index_object,
@@ -474,13 +476,14 @@ class LookupSession:
                     if not (
                         source in {"stable", "promoted-main"}
                         and envelope["receipt"]["trustDomain"] == "development"
-                        and identity == PhaseInstanceId("contract", "contract", "metadata", "common")
+                        and (identity.product, identity.component, identity.target) == ("contract", "contract", "common")
+                        and identity.phase in {"binary", "package", "validation", "metadata"}
                     ):
                         raise ValueError("Restored receipt trust does not match its product index source")
-                    self._verify_release_attested_contract(path, envelope, candidate.catalog)
+                    self._verify_release_attested_contract(path, envelope, candidate)
                 if identity.product == "contract" and identity.phase in {"binary", "metadata"} and self._restore_root is not None:
                     self._restore_contract_stage(path, envelope)
-            except (CacheObjectError, TypeError, ValueError) as error:
+            except (CacheObjectError, OSError, TypeError, ValueError) as error:
                 raise ReuseLookupError(f"{source} matching object or index entry is corrupt") from error
             return _LookupResult(envelope, None, {
                 "kind": source,
@@ -494,8 +497,9 @@ class LookupSession:
     def _verify_release_attested_contract(
         archive: Path,
         envelope: dict[str, Any],
-        catalog: RemoteCatalog,
+        candidate: _RemoteCandidate,
     ) -> None:
+        catalog = candidate.catalog
         if (
             catalog.contract_attestation is None
             or catalog.contract_attestation_signature is None
@@ -504,24 +508,42 @@ class LookupSession:
             or catalog.keys_directory is None
         ):
             raise ValueError("Release Contract reuse lacks its detached release attestation")
+        metadata = envelope
+        if envelope["receipt"]["phase"] != "metadata":
+            index, contents = verify_release_product_index(
+                SignedProductIndex(catalog.manifest, catalog.signature),
+                keyring_path=catalog.keyring, keys_directory=catalog.keys_directory,
+            )
+            if sha256_bytes(contents) != candidate.index_sha256:
+                raise ValueError("Release Contract index changed during reuse")
+            entries = [entry for entry in index["entries"] if (
+                entry["product"], entry["component"], entry["phase"], entry["target"], entry["productVersion"]
+            ) == ("contract", "contract", "metadata", "common", envelope["receipt"]["productVersion"])]
+            if len(entries) != 1 or catalog.objects.get(entries[0]["buildKey"]) is None:
+                raise ValueError("Release Contract phase reuse requires its indexed metadata object")
+            entry = entries[0]
+            archive = catalog.objects[entry["buildKey"]]
+            metadata = verify_object(archive, build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+            metadata["receiptSha256"] = entry["receiptSha256"]
+            _verify_index_receipt(entry, metadata)
         with tempfile.TemporaryDirectory(prefix="release-contract-reuse-") as temporary:
             stage = Path(temporary).resolve() / "stage"
             restore_object(
                 archive,
                 stage,
-                build_key=envelope["receipt"]["buildKey"],
-                receipt_sha256=envelope["receiptSha256"],
-                object_sha256=envelope["objectSha256"],
+                build_key=metadata["receipt"]["buildKey"],
+                receipt_sha256=metadata["receiptSha256"],
+                object_sha256=metadata["objectSha256"],
             )
-            verify_contract_component_projection(
-                stage,
-                envelope["receiptBytes"],
-                catalog.contract_attestation,
-                catalog.contract_attestation_signature,
-                catalog.contract_public_key,
-                expected_trust_domain="release",
-                expected_contract_version=envelope["receipt"]["productVersion"],
-                required_components=("common",),
+            receipt_path = stage.parent / "metadata-receipt.json"
+            receipt_path.write_bytes(metadata["receiptBytes"])
+            release_attested_contract_admission(
+                IndexEntrySource(envelope["receiptBytes"], candidate.entry["artifactName"]),
+                payload=stage / f"outputs/codex-agent-contract-{envelope['receipt']['productVersion']}.zip",
+                metadata_receipt=receipt_path,
+                attestation=catalog.contract_attestation,
+                signature=catalog.contract_attestation_signature,
+                public_key=catalog.contract_public_key,
                 keyring=catalog.keyring,
                 keys_directory=catalog.keys_directory,
             )

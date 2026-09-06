@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import functools
 import json
 from pathlib import Path
@@ -1296,11 +1297,10 @@ class ProductReuseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "release trust"):
             self.session(stable=[catalog])
 
-    def test_release_attestation_authenticates_unchanged_development_contract_receipt(self) -> None:
+    def test_release_attestation_authenticates_all_original_contract_phase_receipts(self) -> None:
         inputs = all_inputs(CONTRACT_METADATA)
         resolved, objects, payload, receipt, execution_closure = contract_execution_chain(self.root / "release-contract-chain", inputs)
         plan = plan_for(CONTRACT_METADATA, inputs, resolved)
-        envelope, object_path = objects[CONTRACT_METADATA]
 
         attestation_root = self.root / "release-attestation"
         build_contract_attestation(
@@ -1317,28 +1317,99 @@ class ProductReuseTest(unittest.TestCase):
         stem = f"codex-agent-contract-{VERSIONS['contract']}.attestation"
         attestation = attestation_root / f"{stem}.json"
         attestation_signature = attestation_root / f"{stem}.sig"
-        indexed = self.catalog("promoted-main", [(envelope, object_path)])
+        indexed = self.catalog("promoted-main", [objects[CONTRACT_METADATA]])
+        template = json.loads(indexed.manifest.read_bytes())
+        sources = []
+        for original, _ in objects.values():
+            kind = {"binary": "contract-execution", "package": "maven", "validation": "validation", "metadata": "contract-bundle"}[
+                original["receipt"]["phase"]]
+            source = product_index.IndexEntrySource(
+                original["receiptBytes"], next(output["relativePath"] for output in original["receipt"]["outputs"] if output["kind"] == kind))
+            admission = product_index.release_attested_contract_admission(
+                source, payload=payload, metadata_receipt=receipt,
+                attestation=attestation, signature=attestation_signature,
+                public_key=self.public_key, keyring=self.release_keyring,
+                keys_directory=self.release_keys,
+            )
+            sources.append(product_index.IndexEntrySource(source.receipt_bytes, source.artifact_path, admission))
+        index = product_index.build_product_index(
+            sources, repository=REPOSITORY, context=template["context"],
+            trust_domain="release", signing=self.release_signing,
+            producer=template["producer"], stable_history=None,
+        )
+        manifest = self.root / "admitted-product-index.json"
+        write_canonical_json(manifest, index)
+        signature = sign_manifest(manifest, self.private_key, self.release_signing)
         catalog = RemoteCatalog(
-            indexed.manifest,
-            indexed.signature,
-            indexed.objects,
+            manifest,
+            signature,
+            {original["receipt"]["buildKey"]: path for original, path in objects.values()},
             keyring=indexed.keyring,
             keys_directory=indexed.keys_directory,
             contract_attestation=attestation,
             contract_attestation_signature=attestation_signature,
             contract_public_key=self.release_keys / "release-test.pub",
         )
-        result = self.session(
+        session = self.session(
             promoted_main=catalog,
             restore_root=self.root / "release-attested-restore",
-        ).lookup("promoted-main", plan)
-        self.assertEqual(envelope["receiptSha256"], result.envelope["receiptSha256"])
-        self.assertEqual("development", result.envelope["receipt"]["trustDomain"])
+        )
+        for instance, (original, _) in objects.items():
+            with self.subTest(phase=instance.phase):
+                result = session.lookup("promoted-main", plan_for(instance, inputs, resolved))
+                self.assertEqual(original["receiptBytes"], result.envelope["receiptBytes"])
+                self.assertEqual(original["receiptSha256"], result.envelope["receiptSha256"])
+                self.assertEqual(original["receipt"]["producer"], result.envelope["receipt"]["producer"])
+                self.assertEqual("development", result.envelope["receipt"]["trustDomain"])
+
+        missing_metadata = replace(catalog, objects={
+            original["receipt"]["buildKey"]: path for instance, (original, path) in objects.items()
+            if instance != CONTRACT_METADATA
+        })
+        with self.assertRaisesRegex(ReuseLookupError, "corrupt"):
+            self.session(promoted_main=missing_metadata).lookup("promoted-main", plan_for(CONTRACT_BINARY, inputs, resolved))
+        index_bytes = manifest.read_bytes()
+        try:
+            manifest.write_bytes(index_bytes + b" ")
+            with self.assertRaisesRegex(ReuseLookupError, "corrupt"):
+                session.lookup("promoted-main", plan_for(CONTRACT_BINARY, inputs, resolved))
+        finally:
+            manifest.write_bytes(index_bytes)
+
+        # A signed index alone cannot substitute another same-key original producer.
+        original, _ = objects[CONTRACT_BINARY]
+        unrelated = copy.deepcopy(original)
+        unrelated["receipt"]["producer"]["commit"] = "e" * 40
+        unrelated["receiptBytes"] = canonical_json_bytes(unrelated["receipt"])
+        unrelated["receiptSha256"] = sha256_bytes(unrelated["receiptBytes"])
+        unrelated_receipt = self.root / "unrelated-receipt.json"
+        unrelated_receipt.write_bytes(unrelated["receiptBytes"])
+        stored = store_local_object(payload.parents[2] / "binary", unrelated_receipt, self.root / "unrelated-cache")
+        unrelated["objectSha256"] = stored["objectSha256"]
+        forged = self.catalog("promoted-main", [(unrelated, stored["path"]), objects[CONTRACT_METADATA]])
+        forged_catalog = RemoteCatalog(
+            forged.manifest, forged.signature, forged.objects,
+            keyring=forged.keyring, keys_directory=forged.keys_directory,
+            contract_attestation=attestation, contract_attestation_signature=attestation_signature,
+            contract_public_key=self.public_key,
+        )
+        with self.assertRaisesRegex(ReuseLookupError, "corrupt"):
+            self.session(promoted_main=forged_catalog).lookup("promoted-main", plan_for(CONTRACT_BINARY, inputs, resolved))
+
+        # Even a correct selected receipt needs every original sibling in the signed closure.
+        sibling = attestation_root / "execution-closure/receipts/validation.json"
+        original_bytes = sibling.read_bytes()
+        try:
+            sibling.write_bytes(original_bytes + b" ")
+            with self.assertRaisesRegex(ReuseLookupError, "corrupt"):
+                session.lookup("promoted-main", plan_for(CONTRACT_BINARY, inputs, resolved))
+        finally:
+            sibling.write_bytes(original_bytes)
 
         missing = RemoteCatalog(
-            indexed.manifest,
-            indexed.signature,
-            indexed.objects,
+            catalog.manifest,
+            catalog.signature,
+            catalog.objects,
             keyring=indexed.keyring,
             keys_directory=indexed.keys_directory,
         )

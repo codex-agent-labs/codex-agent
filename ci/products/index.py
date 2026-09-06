@@ -472,7 +472,12 @@ def release_attested_contract_admission(
 ) -> ReleaseIndexAdmission:
     from .contract_attestation import verify_contract_attestation
 
-    _, verified_receipt, _ = verify_contract_attestation(
+    receipt, _, _ = _validated_entry_source(source)
+    phase = receipt["phase"]
+    if (receipt["product"], receipt["component"], receipt["target"]) != ("contract", "contract", "common") or \
+            phase not in {"binary", "package", "validation", "metadata"}:
+        raise ValueError("Contract release admission requires an original Contract phase")
+    _, verified_receipt, verified_attestation = verify_contract_attestation(
         Path(payload), Path(metadata_receipt), Path(attestation), Path(signature),
         Path(public_key), required_trust_domain="release",
         keyring=Path(keyring), keys_directory=Path(keys_directory),
@@ -480,9 +485,26 @@ def release_attested_contract_admission(
     receipt_bytes = read_regular_file_bytes(
         Path(metadata_receipt), max_bytes=_INDEX_LIMIT, reject_symlink_parents=True,
     )
+    if phase != "metadata":
+        closure = Path(attestation).parent / "execution-closure"
+        closure_bytes = read_regular_file_bytes(
+            closure / "contract-execution-closure.json", max_bytes=_INDEX_LIMIT, reject_symlink_parents=True)
+        if sha256_bytes(closure_bytes) != verified_attestation["executionClosureSha256"]:
+            raise ValueError("Contract release-admission closure changed after signature verification")
+        original = f"receipts/{phase}.json"
+        inventory = load_canonical_json_bytes(closure_bytes)["files"]
+        records = [value for value in inventory if value["relativePath"] == original]
+        if len(records) != 1:
+            raise ValueError("Contract release-admission closure lacks its exact original phase receipt")
+        record = records[0]
+        receipt_bytes = read_regular_file_bytes(
+            closure / original, max_bytes=_INDEX_LIMIT, reject_symlink_parents=True)
+        if len(receipt_bytes) != record["bytes"] or sha256_bytes(receipt_bytes) != record["sha256"]:
+            raise ValueError("Contract original phase receipt differs from its release-attested closure")
+        verified_receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
     return _mint_release_admission(
         source, verified_receipt, receipt_bytes,
-        ("contract", "contract", "metadata", "common"),
+        ("contract", "contract", phase, "common"),
     )
 
 
