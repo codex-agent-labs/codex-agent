@@ -767,6 +767,10 @@ afterEvaluate {
 // KGP supplies main/sources through nested afterEvaluate callbacks. Capture only
 // after all of them finish; the metadata helper also attaches original usages then.
 gradle.projectsEvaluated {
+    desktopRuntimeEvidenceTargets.forEach { (target, spec) ->
+        retainRuntimeAdapterPublication(spec.classifier.removePrefix("app-server-"),
+            target.replaceFirstChar(Char::uppercaseChar), target)
+    }
     runtimeAdapterMetadataComponents.forEach { (component, title) ->
         val publicationName = runtimeAdapterPublications.getValue(component)
         retainRuntimeAdapterPublication(component, title, publicationName)

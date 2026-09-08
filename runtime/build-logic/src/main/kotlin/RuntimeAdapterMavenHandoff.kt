@@ -28,16 +28,47 @@ import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.TaskProvider
 
 private val runtimeMavenChecksums = linkedMapOf(".md5" to "MD5", ".sha1" to "SHA-1", ".sha256" to "SHA-256", ".sha512" to "SHA-512")
+private val runtimeNativeMavenCinterops = setOf("cinterop-codexDesktop", "cinterop-codexAgentC")
+// KGP's host-specific shared native compilation/commonized-CInterop metadata.
+// The current reviewed hierarchy publishes this additional JAR for macOS only.
+private val runtimeHostMetadataComponents = setOf("macos-arm64", "macos-x64")
+
+internal fun runtimeMavenPublicationSuffix(component: String): String = when (component) {
+    "jvm" -> "jvm"
+    "node-js" -> "js"
+    "node-wasm" -> "wasm-js"
+    "macos-arm64" -> "macosarm64"
+    "macos-x64" -> "macosx64"
+    "linux-arm64" -> "linuxarm64"
+    "linux-x64" -> "linuxx64"
+    "windows-x64" -> "mingwx64"
+    else -> error("Unsupported Runtime Maven component: $component")
+}
+
+private fun requireRuntimeMavenOriginalPhase(component: String, phase: String) {
+    runtimeMavenPublicationSuffix(component)
+    val expected = if (component in setOf("jvm", "node-js", "node-wasm")) "package" else "binary"
+    check(phase == expected) { "Runtime $component Maven handoff requires original $expected phase" }
+}
+
+private fun runtimeMavenOriginalNames(component: String): Map<String, String> {
+    runtimeMavenPublicationSuffix(component)
+    val extension = if (component == "jvm") "jar" else "klib"
+    return mapOf(".$extension" to "main.$extension", "-sources.jar" to "sources.jar", "-javadoc.jar" to "javadoc.jar") +
+        if (component in setOf("jvm", "node-js", "node-wasm")) emptyMap()
+        else runtimeNativeMavenCinterops.associate { "-$it.klib" to "$it.klib" } +
+            if (component in runtimeHostMetadataComponents) mapOf("-metadata.jar" to "metadata.jar") else emptyMap()
+}
 
 internal fun runtimeAdapterPrimaryName(component: String, classifier: String?, extension: String): String {
-    val primaryExtension = when (component) {
-        "jvm" -> "jar"
-        "node-js", "node-wasm" -> "klib"
-        else -> error("Unsupported Runtime Maven adapter: $component")
-    }
+    runtimeMavenPublicationSuffix(component)
+    val primaryExtension = if (component == "jvm") "jar" else "klib"
     return when {
         classifier.isNullOrEmpty() && extension == primaryExtension -> "main.$extension"
         classifier in setOf("sources", "javadoc") && extension == "jar" -> "$classifier.jar"
+        component in runtimeHostMetadataComponents && classifier == "metadata" && extension == "jar" -> "metadata.jar"
+        component !in setOf("jvm", "node-js", "node-wasm") && classifier in runtimeNativeMavenCinterops &&
+            extension == "klib" -> "$classifier.klib"
         else -> error("Unexpected Runtime publication artifact: $classifier.$extension")
     }
 }
@@ -47,11 +78,20 @@ fun Project.retainRuntimeAdapterPublication(component: String, title: String, pu
     val publication = extensions.getByType(PublishingExtension::class.java).publications
         .getByName(publicationName) as MavenPublication
     val artifacts = publication.artifacts.toList()
-    val names = artifacts.map { runtimeAdapterPrimaryName(component, it.classifier, it.extension) }
-    check(names.size == 3 && names.toSet().size == 3) {
-        "Runtime publication must contain exactly main, sources and javadoc: " +
+    val artifactDescription = artifacts.map { "${it.classifier.orEmpty()}:${it.extension}:${it.file.name}" }
+    val names = artifacts.map { artifact ->
+        try {
+            runtimeAdapterPrimaryName(component, artifact.classifier, artifact.extension)
+        } catch (failure: IllegalStateException) {
+            throw IllegalStateException("Runtime publication artifact mismatch: component=$component " +
+                "publication=$publicationName artifacts=$artifactDescription", failure)
+        }
+    }
+    val expected = runtimeMavenOriginalNames(component).values.toSet()
+    check(names.size == expected.size && names.toSet() == expected) {
+        "Runtime publication must contain its exact reviewed primaries $expected: " +
             "component=$component publication=$publicationName artifacts=" +
-            artifacts.map { "${it.classifier.orEmpty()}:${it.extension}:${it.file.name}" } + " mapped=$names"
+            artifactDescription + " mapped=$names"
     }
     tasks.named("stage${title}RuntimeBinaryOutputs", Sync::class.java).configure {
         artifacts.zip(names).forEach { (artifact, name) ->
@@ -76,7 +116,7 @@ abstract class PrepareRuntimeAdapterMavenTask : DefaultTask() {
         val input = originalPackage.get().asFile.toPath()
         val owned = ownedBuild.get().asFile.toPath()
         val output = workspace.get().asFile.toPath()
-        check(component.get() in setOf("jvm", "node-js", "node-wasm"))
+        runtimeMavenPublicationSuffix(component.get())
         check(output == owned.resolve("runtime-adapter-maven/${component.get()}")) { "Runtime Maven workspace must be task-owned" }
         listOf(input, owned, output).forEach { path ->
             check(path.isAbsolute && path.normalize() == path) { "Runtime Maven paths must be absolute and normalized" }
@@ -118,6 +158,7 @@ abstract class PrepareRuntimeAdapterMavenTask : DefaultTask() {
 
 abstract class FinalizeRuntimeAdapterMavenTask : DefaultTask() {
     @get:Input abstract val component: Property<String>
+    @get:Input abstract val originalPhase: Property<String>
     @get:Input abstract val groupId: Property<String>
     @get:Input abstract val artifactId: Property<String>
     @get:Input abstract val productVersion: Property<String>
@@ -127,11 +168,12 @@ abstract class FinalizeRuntimeAdapterMavenTask : DefaultTask() {
     abstract val freshRepository: DirectoryProperty
     @get:OutputDirectory abstract val repository: DirectoryProperty
 
-    init { outputs.upToDateWhen { false } }
+    init { originalPhase.convention("package"); outputs.upToDateWhen { false } }
 
     @TaskAction fun finalizeRepository() = finalizeRuntimeAdapterMaven(
         component.get(), groupId.get(), artifactId.get(), productVersion.get(),
         originalPrimaries.get().asFile, freshRepository.get().asFile, repository.get().asFile,
+        originalPhase.get(),
     )
 }
 
@@ -139,22 +181,23 @@ abstract class FinalizeRuntimeAdapterMavenTask : DefaultTask() {
 internal fun finalizeRuntimeAdapterMaven(
     component: String, group: String, artifact: String, version: String,
     original: File, fresh: File, destination: File,
+    originalPhase: String = "package",
 ) {
+    requireRuntimeMavenOriginalPhase(component, originalPhase)
     check(group == "io.github.codex-agent-labs") { "Unexpected Runtime Maven group" }
-    val suffix = mapOf("jvm" to "jvm", "node-js" to "js", "node-wasm" to "wasm-js").getValue(component)
+    val suffix = runtimeMavenPublicationSuffix(component)
     check(artifact == "codex-agent-runtime-desktop-$suffix") { "Unexpected Runtime Maven coordinate" }
     check(PRODUCT_SEMVER.matches(version)) { "Runtime Maven version must be canonical" }
     val workspace = fresh.parentFile
     check(fresh.name == "fresh" && destination == workspace.resolve("repository") &&
-        original == workspace.resolve("original-package/outputs/publication")) { "Runtime Maven finalization paths must be owned siblings" }
+        original == workspace.resolve("original-$originalPhase/outputs/publication")) { "Runtime Maven finalization paths must be owned siblings" }
     requireRegularRuntimeProductTree(fresh.toPath(), "Fresh Runtime Maven publication")
     requireRegularRuntimeProductTree(original.toPath(), "Original Runtime Maven primaries")
     check(!Files.exists(destination.toPath(), LinkOption.NOFOLLOW_LINKS) ||
         (!Files.isSymbolicLink(destination.toPath()) && Files.isDirectory(destination.toPath(), LinkOption.NOFOLLOW_LINKS) &&
             destination.listFiles()!!.isEmpty())) { "Runtime Maven handoff already exists or is unsafe" }
-    val extension = if (component == "jvm") "jar" else "klib"
     val prefix = "${group.replace('.', '/')}/$artifact/$version/$artifact-$version"
-    val originalNames = mapOf(".$extension" to "main.$extension", "-sources.jar" to "sources.jar", "-javadoc.jar" to "javadoc.jar")
+    val originalNames = runtimeMavenOriginalNames(component)
     check(original.listFiles()!!.map { it.name }.toSet() == originalNames.values.toSet()) { "Runtime Maven original primary inventory mismatch" }
     val primaries = (originalNames.keys + setOf(".pom", ".module")).map { prefix + it }.toSet()
     val metadata = "${group.replace('.', '/')}/$artifact/maven-metadata.xml"
@@ -194,21 +237,24 @@ internal fun finalizeRuntimeAdapterMaven(
 fun Project.registerRuntimeAdapterMavenHandoff(
     component: String, title: String, publicationName: String, originalStage: Provider<Directory>,
     originalVersion: Provider<String>, tooling: FileCollection, repositoryRoot: File,
+    originalPhase: String = "package",
 ): TaskProvider<FinalizeRuntimeAdapterMavenTask> {
+    requireRuntimeMavenOriginalPhase(component, originalPhase)
     val publishing = extensions.getByType(PublishingExtension::class.java)
     val original = publishing.publications.getByName(publicationName) as DefaultMavenPublication
     check(!providers.gradleProperty("signingInMemoryKey").isPresent &&
         !providers.gradleProperty("signing.secretKeyRingFile").isPresent) { "Reusable Runtime Maven handoffs must not be signed" }
     val workspace = layout.buildDirectory.dir("runtime-adapter-maven/$component")
-    val snapshotRoot = workspace.map { it.dir("original-package") }
+    val snapshotRoot = workspace.map { it.dir("original-$originalPhase") }
     val prepare = tasks.register("prepare${title}RuntimeMavenHandoff", PrepareRuntimeAdapterMavenTask::class.java) {
         this.component.set(component); originalPackage.set(originalStage)
         ownedBuild.set(layout.buildDirectory); this.workspace.set(workspace)
     }
-    val snapshot = registerRuntimeStageSnapshot("snapshot${title}RuntimeMavenPackage", originalStage, snapshotRoot, tooling, repositoryRoot)
+    val phaseTitle = originalPhase.replaceFirstChar(Char::uppercaseChar)
+    val snapshot = registerRuntimeStageSnapshot("snapshot${title}RuntimeMaven$phaseTitle", originalStage, snapshotRoot, tooling, repositoryRoot)
     snapshot.configure { dependsOn(prepare) }
     val verify = registerRuntimeOutputVerification(
-        "verify${title}RuntimeMavenPackage", snapshot, providers.provider { component }, "package",
+        "verify${title}RuntimeMaven$phaseTitle", snapshot, providers.provider { component }, originalPhase,
         providers.provider { component }, originalVersion, snapshotRoot, tooling, repositoryRoot,
     )
     val imported = snapshotRoot.map { it.dir("outputs/publication") }
@@ -229,6 +275,7 @@ fun Project.registerRuntimeAdapterMavenHandoff(
     publish.configure { dependsOn(verify) }
     val finalize = tasks.register("finalize${title}RuntimeMavenHandoff", FinalizeRuntimeAdapterMavenTask::class.java) {
         dependsOn(publish); this.component.set(component)
+        this.originalPhase.set(originalPhase)
         originalPrimaries.set(imported); freshRepository.set(workspace.map { it.dir("fresh") })
         repository.set(workspace.map { it.dir("repository") })
     }
@@ -271,6 +318,19 @@ fun Project.registerRuntimeAdapterMavenHandoff(
         publication.artifacts.removeAll { it.classifier == "javadoc" }
         publication.artifact(imported.map { it.file("javadoc.jar") }) {
             classifier = "javadoc"; extension = "jar"; builtBy(verify)
+        }
+        if (component !in setOf("jvm", "node-js", "node-wasm")) {
+            // KGP may attach cinterops directly to the publication rather than
+            // its usages. Preserve both forms without adding compiler edges.
+            val additional = runtimeNativeMavenCinterops.associateWith { "klib" } +
+                if (component in runtimeHostMetadataComponents) mapOf("metadata" to "jar") else emptyMap()
+            additional.forEach { (originalClassifier, originalExtension) ->
+                if (publication.artifacts.none { it.classifier == originalClassifier }) {
+                    publication.artifact(imported.map { it.file("$originalClassifier.$originalExtension") }) {
+                        classifier = originalClassifier; extension = originalExtension; builtBy(verify)
+                    }
+                }
+            }
         }
         finalize.configure {
             groupId.set(publication.groupId); artifactId.set(publication.artifactId); productVersion.set(publication.version)

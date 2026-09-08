@@ -543,6 +543,7 @@ val runtimeNativeBinaryManifestTasks = desktopManifest.distributions.associate {
             "app-server" to "outputs/app-server",
             "c-abi" to "outputs/c-abi",
             "kmp-klib" to "outputs/kmp-klib",
+            "publication" to "outputs/publication",
             "runtime-identity" to "outputs/identity",
             "supervisor" to "outputs/supervisor",
             "validation-runner" to "outputs/validation-runner",

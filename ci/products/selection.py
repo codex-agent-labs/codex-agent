@@ -233,6 +233,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_supervisor.py",
     "ci/runtime_workflow.py",
     "ci/sdk_phase.py",
+    "ci/sdk_ios_phase.py",
     "ci/runtime_adapter_phase.py",
     "ci/products/contract_attestation.py",
     "ci/products/contract_projection.py",
@@ -409,7 +410,7 @@ def _runtime_build_logic_selection(path: str) -> set[PhaseInstanceId] | None:
     if name == "RuntimeAdapterMetadataInputsTask.kt":
         return _runtime(("jvm", "node-js", "node-wasm"), "metadata") | _runtime(("macos-arm64",), "validation")
     if name == "RuntimeAdapterMavenHandoff.kt":
-        return _runtime(("jvm", "node-js", "node-wasm"))
+        return _runtime(RUNTIME_COMPONENTS)
     if name == "ImportedRuntimeVariantTask.kt":
         return _runtime(NATIVE_TARGETS, "metadata")
     if name in _RUNTIME_BUILD_LOGIC_NATIVE_VALIDATION:

@@ -1292,6 +1292,7 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/runtime_supervisor.py",
             "ci/runtime_workflow.py",
             "ci/sdk_phase.py",
+            "ci/sdk_ios_phase.py",
             "ci/contract_release.py",
             "ci/products/contract_projection.py",
             "ci/products/plan.py",
@@ -1373,19 +1374,19 @@ class ProductSelectionTest(unittest.TestCase):
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((path,) if instance in expected else (), phase_inventory_paths((path,), instance))
 
-    def test_runtime_adapter_maven_handoff_keys_binary_capture_and_metadata_only(self):
+    def test_runtime_maven_handoff_keys_binary_capture_and_exact_imported_phase(self):
         from ci.tests.test_product_plan import plan
         path = "runtime/build-logic/src/main/kotlin/RuntimeAdapterMavenHandoff.kt"
         adapters = {"jvm", "node-js", "node-wasm"}
-        direct = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "runtime"
-                  and instance.component in adapters and instance.phase in {"binary", "metadata"}}
+        direct = {instance for instance in PHASE_INSTANCE_IDS if instance.product == "runtime" and (
+            (instance.component in adapters and instance.phase in {"binary", "metadata"}) or
+            (instance.component in NATIVE_TARGETS and instance.phase == "binary"))}
         selected = identities(classify_paths((path,)))
-        self.assertEqual(6, len(direct))
+        self.assertEqual(11, len(direct))
         self.assertTrue({instance for instance in PHASE_INSTANCE_IDS
                          if instance.product == "runtime" and instance.component in adapters}.issubset(selected))
         self.assertIn(PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"), selected)
-        self.assertFalse(any(instance.product == "runtime" and instance.component in NATIVE_TARGETS
-                             and instance.phase in {"binary", "package"} for instance in selected))
+        self.assertTrue(direct.issubset(selected))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / path

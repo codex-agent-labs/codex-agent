@@ -16,18 +16,26 @@ import org.gradle.testfixtures.ProjectBuilder
 class RuntimeAdapterMavenHandoffTest {
     private val rootRepository = File("../..").canonicalFile
     private val adapters = listOf(Triple("jvm", "Jvm", "jvm"), Triple("node-js", "NodeJs", "js"), Triple("node-wasm", "NodeWasm", "wasmJs"))
+    private val native = listOf(
+        Triple("macos-arm64", "MacosArm64", "macosArm64"), Triple("macos-x64", "MacosX64", "macosX64"),
+        Triple("linux-arm64", "LinuxArm64", "linuxArm64"), Triple("linux-x64", "LinuxX64", "linuxX64"),
+        Triple("windows-x64", "MingwX64", "mingwX64"),
+    )
     private val groupPath = "io/github/codex-agent-labs"
 
-    private fun original(root: File, component: String): File {
+    private fun original(root: File, component: String, phase: String = "package"): File {
         val stage = root.resolve("original/$component").apply { mkdirs() }
         val extension = if (component == "jvm") "jar" else "klib"
-        listOf("main.$extension", "sources.jar", "javadoc.jar").forEach { name ->
+        val names = listOf("main.$extension", "sources.jar", "javadoc.jar") +
+            (if (component in native.map { it.first }) listOf("cinterop-codexDesktop.klib", "cinterop-codexAgentC.klib") else emptyList()) +
+            if (component in setOf("macos-arm64", "macos-x64")) listOf("metadata.jar") else emptyList()
+        names.forEach { name ->
             stage.resolve("outputs/publication/$name").apply { parentFile.mkdirs(); writeText("synthetic original $component $name\n") }
         }
         val process = ProcessBuilder(
             "python3", "-B", "-m", "ci.products", "receipt", "write-output-manifest",
             "--root", stage.absolutePath, "--product", "runtime", "--component", component,
-            "--phase", "package", "--target", component, "--product-version", "0.2.0",
+            "--phase", phase, "--target", component, "--product-version", "0.2.0",
             "--output-root", "publication=outputs/publication",
         ).directory(rootRepository).redirectErrorStream(true).start()
         val output = process.inputStream.bufferedReader().readText()
@@ -35,13 +43,13 @@ class RuntimeAdapterMavenHandoffTest {
         return stage
     }
 
-    private fun fixture(root: File) {
-        adapters.forEach { original(root, it.first) }
+    private fun fixture(root: File, family: List<Triple<String, String, String>> = adapters, originalPhase: String = "package") {
+        family.forEach { original(root, it.first, originalPhase) }
         val classpath = listOf(PrepareRuntimeAdapterMavenTask::class.java, Json::class.java, KSerializer::class.java)
             .map { File(it.protectionDomain.codeSource.location.toURI()).invariantSeparatorsPath }.distinct()
         root.resolve("settings.gradle.kts").writeText("rootProject.name = \"imported-runtime-maven\"\n")
         root.resolve("compiler-owned").mkdir()
-        listOf("main.jar", "main.klib", "sources.jar", "javadoc.jar").forEach {
+        listOf("main.jar", "main.klib", "sources.jar", "javadoc.jar", "cinterop-codexDesktop.klib", "cinterop-codexAgentC.klib", "metadata.jar").forEach {
             root.resolve("compiler-owned/$it").writeText("must never be published: $it\n")
         }
         root.resolve("build.gradle.kts").writeText(
@@ -68,7 +76,7 @@ class RuntimeAdapterMavenHandoffTest {
                 }
                 artifact(layout.projectDirectory.file("compiler-owned/javadoc.jar")) { classifier = "javadoc"; builtBy("sourceArchiveForbidden") }
             }
-            listOf(Triple("jvm", "Jvm", "jvm"), Triple("node-js", "NodeJs", "js"), Triple("node-wasm", "NodeWasm", "wasmJs")).forEach { (component, title, target) ->
+            listOf(${family.joinToString(",") { (component, title, target) -> "Triple(\"$component\", \"$title\", \"$target\")" }}).forEach { (component, title, target) ->
                 val extension = if (component == "jvm") "jar" else "klib"
                 val originalComponent = objects.newInstance(RuntimeAdapterComponentFactory::class.java).components.adhoc("original" + title)
                 components.add(originalComponent)
@@ -84,6 +92,11 @@ class RuntimeAdapterMavenHandoffTest {
                             if (kind == "sources") classifier = "sources"
                             builtBy(if (kind == "sources") "sourceArchiveForbidden" else "compileForbidden")
                         }
+                        if (component !in setOf("jvm", "node-js", "node-wasm") && kind != "sources") {
+                            outgoing.artifact(layout.projectDirectory.file("compiler-owned/cinterop-codexDesktop.klib")) {
+                                classifier = "cinterop-codexDesktop"; this.extension = "klib"; builtBy("compileForbidden")
+                            }
+                        }
                     }
                     originalComponent.addVariantsFromConfiguration(configuration) {
                         mapToMavenScope(if (kind == "api") "compile" else "runtime")
@@ -91,9 +104,23 @@ class RuntimeAdapterMavenHandoffTest {
                     }
                 }
                 val originalPublication = publishing.publications.create(target, MavenPublication::class.java) {
-                    artifactId = "codex-agent-runtime-desktop-" + when (component) { "node-js" -> "js"; "node-wasm" -> "wasm-js"; else -> "jvm" }
+                    artifactId = "codex-agent-runtime-desktop-" + when (component) {
+                        "node-js" -> "js"; "node-wasm" -> "wasm-js"; else -> target.lowercase()
+                    }
                     pom { name.set("Original target POM")
                         licenses { license { name.set("GNU General Public License v3.0 or later"); url.set("https://www.gnu.org/licenses/gpl-3.0.txt") } }
+                    }
+                    if (component !in setOf("jvm", "node-js", "node-wasm")) {
+                        // Exercise publication-only cinterops as well as the
+                        // codexDesktop artifact retained through original usages.
+                        artifact(layout.projectDirectory.file("compiler-owned/cinterop-codexAgentC.klib")) {
+                            classifier = "cinterop-codexAgentC"; this.extension = "klib"; builtBy("compileForbidden")
+                        }
+                    }
+                    if (component in setOf("macos-arm64", "macos-x64")) {
+                        artifact(layout.projectDirectory.file("compiler-owned/metadata.jar")) {
+                            classifier = "metadata"; this.extension = "jar"; builtBy("compileForbidden")
+                        }
                     }
                 }
                 // Reproduce the observed KGP ordering: javadoc is already attached,
@@ -106,6 +133,7 @@ class RuntimeAdapterMavenHandoffTest {
                 registerRuntimeAdapterMavenHandoff(
                     component, title, target, providers.provider { layout.projectDirectory.dir("original/" + component) },
                     providers.provider { "0.2.0" }, files(), File("${rootRepository.invariantSeparatorsPath}"),
+                    originalPhase = "$originalPhase",
                 )
             }
             """.trimIndent(),
@@ -116,41 +144,59 @@ class RuntimeAdapterMavenHandoffTest {
         .withArguments(tasks.toList() + listOf("--offline", "--configuration-cache", "--configuration-cache-problems=fail", "--stacktrace"))
 
     @Test fun `all three metadata publications forward imported bytes with original POM and no compiler edges`() {
+        verifyPublications(adapters, "package")
+    }
+
+    @Test fun `all five native imported publications forward original binary primaries without compilation`() {
+        verifyPublications(native, "binary")
+    }
+
+    private fun verifyPublications(family: List<Triple<String, String, String>>, originalPhase: String) {
         val root = createTempDirectory("runtime-adapter-maven-").toFile().canonicalFile
         try {
-            fixture(root)
+            fixture(root, family, originalPhase)
             val originals = root.resolve("original").walkTopDown().filter(File::isFile).associate { it to it.readBytes() }
-            val result = runner(root, *adapters.map { "finalize${it.second}RuntimeMavenHandoff" }.toTypedArray()).build()
+            val result = runner(root, *family.map { "finalize${it.second}RuntimeMavenHandoff" }.toTypedArray()).build()
             assertTrue(result.tasks.none { "Forbidden" in it.path || "BinaryOutputs" in it.path || "compile" in it.path.lowercase() })
-            adapters.forEach { (component, title, target) ->
-                val artifact = "codex-agent-runtime-desktop-" + if (target == "wasmJs") "wasm-js" else target
+            family.forEach { (component, title, target) ->
+                val artifact = "codex-agent-runtime-desktop-" + runtimeMavenPublicationSuffix(component)
                 val repository = root.resolve("build/runtime-adapter-maven/$component/repository/$component")
                 val coordinate = repository.resolve("$groupPath/$artifact/0.2.9")
                 val prefix = "$artifact-0.2.9"
                 val extension = if (component == "jvm") "jar" else "klib"
-                mapOf(".$extension" to "main.$extension", "-sources.jar" to "sources.jar", "-javadoc.jar" to "javadoc.jar").forEach { (suffix, name) ->
+                val names = mapOf(".$extension" to "main.$extension", "-sources.jar" to "sources.jar", "-javadoc.jar" to "javadoc.jar") +
+                    (if (originalPhase == "binary") mapOf("-cinterop-codexDesktop.klib" to "cinterop-codexDesktop.klib",
+                        "-cinterop-codexAgentC.klib" to "cinterop-codexAgentC.klib") else emptyMap()) +
+                    if (component in setOf("macos-arm64", "macos-x64")) mapOf("-metadata.jar" to "metadata.jar") else emptyMap()
+                names.forEach { (suffix, name) ->
                     assertContentEquals(root.resolve("original/$component/outputs/publication/$name").readBytes(), coordinate.resolve(prefix + suffix).readBytes())
                 }
-                assertEquals(25, repository.walkTopDown().count(File::isFile))
+                assertEquals(when {
+                    component in setOf("macos-arm64", "macos-x64") -> 40
+                    originalPhase == "binary" -> 35
+                    else -> 25
+                }, repository.walkTopDown().count(File::isFile))
                 val pom = coordinate.resolve("$prefix.pom").readText()
                 assertTrue("Original target POM" in pom && "GNU General Public License" in pom && "codex-agent-core" in pom)
                 assertTrue(result.tasks.any { it.path == ":generatePomFileFor${target.replaceFirstChar(Char::uppercaseChar)}Publication" })
                 assertFalse(result.tasks.any { it.path == ":generatePomFileForImported${title}RuntimePublication" })
+                assertTrue(result.tasks.any { it.path == ":verify${title}RuntimeMaven${originalPhase.replaceFirstChar(Char::uppercaseChar)}" })
                 val module = coordinate.resolve("$prefix.module").readText()
                 assertTrue("codex-agent-core" in module)
+                if (originalPhase == "binary") assertTrue("cinterop-codexDesktop" in module)
                 assertFalse("buildId" in module || "compiler-owned" in module)
                 coordinate.listFiles()!!.filter { it.name.endsWith(".sha256") }.forEach { sidecar ->
                     assertEquals(sidecar.resolveSibling(sidecar.name.removeSuffix(".sha256")).releaseDigest() + "\n", sidecar.readText())
                 }
             }
-            fun publishedInventory() = adapters.flatMap { (component, _, _) ->
+            fun publishedInventory() = family.flatMap { (component, _, _) ->
                 val repository = root.resolve("build/runtime-adapter-maven/$component/repository")
                 repository.walkTopDown().filter(File::isFile).map { file ->
                     "$component/${file.relativeTo(repository).invariantSeparatorsPath}" to (file.length() to file.releaseDigest())
                 }.toList()
             }.toMap()
             val publishedBefore = publishedInventory()
-            val repeat = runner(root, *adapters.map { "finalize${it.second}RuntimeMavenHandoff" }.toTypedArray()).build()
+            val repeat = runner(root, *family.map { "finalize${it.second}RuntimeMavenHandoff" }.toTypedArray()).build()
             assertTrue("Reusing configuration cache" in repeat.output)
             assertTrue(repeat.tasks.none { "Forbidden" in it.path || "BinaryOutputs" in it.path || "compile" in it.path.lowercase() })
             assertEquals(publishedBefore, publishedInventory())
@@ -169,11 +215,76 @@ class RuntimeAdapterMavenHandoffTest {
         } finally { root.deleteRecursively() }
     }
 
+    @Test fun `native handoff rejects package manifest instead of original binary before publication`() {
+        val root = createTempDirectory("runtime-native-maven-wrong-phase-").toFile().canonicalFile
+        try {
+            fixture(root, listOf(native.first()), "binary")
+            val manifest = root.resolve("original/macos-arm64/output-manifest.json")
+            val original = manifest.readText()
+            assertTrue("\"phase\":\"binary\"" in original)
+            manifest.writeText(original.replace("\"phase\":\"binary\"", "\"phase\":\"package\""))
+            val result = runner(root, "finalizeMacosArm64RuntimeMavenHandoff").buildAndFail()
+            assertTrue(result.tasks.none { "PublicationTo" in it.path || "Forbidden" in it.path })
+            assertFalse(root.resolve("build/runtime-adapter-maven/macos-arm64/repository").exists())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun `missing original native cinterop or host metadata fails before publication without compiler fallback`() {
+        for (missing in listOf("cinterop-codexAgentC.klib", "metadata.jar")) {
+            val root = createTempDirectory("runtime-native-maven-missing-primary-").toFile().canonicalFile
+            try {
+                fixture(root, listOf(native.first()), "binary")
+                root.resolve("original/macos-arm64/outputs/publication/$missing").delete()
+                val result = runner(root, "finalizeMacosArm64RuntimeMavenHandoff").buildAndFail()
+                assertTrue(result.tasks.none { "PublicationTo" in it.path || "Forbidden" in it.path })
+                assertFalse(root.resolve("build/runtime-adapter-maven/macos-arm64/repository").exists())
+            } finally { root.deleteRecursively() }
+        }
+    }
+
+    @Test fun `native requires explicit binary phase and adapter default remains package`() {
+        val root = createTempDirectory("runtime-maven-original-phase-").toFile().canonicalFile
+        try {
+            val project = ProjectBuilder.builder().withProjectDir(root).build()
+            val task = project.tasks.create("finalizeFixture", FinalizeRuntimeAdapterMavenTask::class.java)
+            assertEquals("package", task.originalPhase.get())
+            for ((component, phase) in listOf("macos-arm64" to "package", "linux-arm64" to "validation", "jvm" to "binary")) {
+                val failure = assertFailsWith<IllegalStateException> {
+                    finalizeRuntimeAdapterMaven(component, "io.github.codex-agent-labs",
+                        "codex-agent-runtime-desktop-${runtimeMavenPublicationSuffix(component)}", "0.2.9",
+                        root.resolve("original-$phase/outputs/publication"), root.resolve("fresh"), root.resolve("repository"), phase)
+                }
+                assertTrue("requires original" in failure.message.orEmpty())
+                assertFalse(root.resolve("repository").exists())
+            }
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun `primary mapping is exact and binary and package inventories include original publications`() {
         assertEquals("main.jar", runtimeAdapterPrimaryName("jvm", null, "jar"))
         assertEquals("main.klib", runtimeAdapterPrimaryName("node-js", "", "klib"))
         assertEquals("main.klib", runtimeAdapterPrimaryName("node-wasm", null, "klib"))
-        for (component in adapters.map { it.first }) {
+        native.forEach { (component, _, target) ->
+            assertEquals(target.lowercase(), runtimeMavenPublicationSuffix(component))
+            assertEquals("main.klib", runtimeAdapterPrimaryName(component, null, "klib"))
+            assertFailsWith<IllegalStateException> { runtimeAdapterPrimaryName(component, null, "jar") }
+            for (classifier in listOf("cinterop-codexDesktop", "cinterop-codexAgentC")) {
+                assertEquals("$classifier.klib", runtimeAdapterPrimaryName(component, classifier, "klib"))
+                assertFailsWith<IllegalStateException> { runtimeAdapterPrimaryName(component, classifier, "jar") }
+            }
+            assertFailsWith<IllegalStateException> { runtimeAdapterPrimaryName(component, "cinterop-unreviewed", "klib") }
+            if (component in setOf("macos-arm64", "macos-x64")) {
+                assertEquals("metadata.jar", runtimeAdapterPrimaryName(component, "metadata", "jar"))
+                assertFailsWith<IllegalStateException> { runtimeAdapterPrimaryName(component, "metadata", "klib") }
+            } else {
+                assertFailsWith<IllegalStateException> { runtimeAdapterPrimaryName(component, "metadata", "jar") }
+            }
+        }
+        adapters.forEach { (component, _, _) ->
+            assertFailsWith<IllegalStateException> { runtimeAdapterPrimaryName(component, "cinterop-codexDesktop", "klib") }
+            assertFailsWith<IllegalStateException> { runtimeAdapterPrimaryName(component, "metadata", "jar") }
+        }
+        for (component in (adapters + native).map { it.first }) {
             assertEquals("sources.jar", runtimeAdapterPrimaryName(component, "sources", "jar"))
             assertEquals("javadoc.jar", runtimeAdapterPrimaryName(component, "javadoc", "jar"))
             assertFailsWith<IllegalStateException> { runtimeAdapterPrimaryName(component, "signature", "asc") }
@@ -181,7 +292,8 @@ class RuntimeAdapterMavenHandoffTest {
         val module = rootRepository.resolve("codex-agent-runtime-desktop/build.gradle.kts").readText()
         val plugin = File("src/main/kotlin/codexagent.desktop-runtime.gradle.kts").readText()
         assertEquals(4, Regex("\"publication\" to \"outputs/publication\"").findAll(module).count())
-        assertEquals(2, Regex("\"publication\" to \"outputs/publication\"").findAll(plugin).count())
+        val jvmStages = plugin.substringAfter("val jvmRuntimeBinaryPhaseRoot").substringBefore("check(desktopManifest.distributions")
+        assertEquals(2, Regex("\"publication\" to \"outputs/publication\"").findAll(jvmStages).count())
         assertTrue("retainRuntimeAdapterPublication(component, title, publicationName)" in module)
         assertTrue("gradle.projectsEvaluated {" in module.substringBefore("retainRuntimeAdapterPublication(component, title, publicationName)").takeLast(500))
         assertFalse("importedRuntimeMavenRepository" in module)
