@@ -2479,7 +2479,9 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
             "codexAgent.contractAttestationSignature": str(handoff / f"{stem}.attestation.sig"),
             "codexAgent.contractPublicKey": str(handoff / "public-key.pub"),
         }
-        if instance.component in NATIVE_TARGETS:
+        if instance.component == "runtime-aggregate":
+            specific = {}  # Aggregate is Python metadata production, not a Gradle worker.
+        elif instance.component in NATIVE_TARGETS:
             from runtime_native_phase import properties as native_properties
             binary_plan_path = inputs / "phase-plan.json"
             if instance.phase == "binary":
@@ -2725,6 +2727,81 @@ def execute_runtime_phase(
     return finalize_phase_object(
         stage_root=stage, phase_plan=ready, producer=state.producer,
         product_version=state.expected_fixed["versions"]["runtime-release"],
+        trust_domain="development" if state.plan["event"] == "pull_request" else "release",
+        destination=destination / "shard")
+
+
+def execute_runtime_aggregate(
+    plan_path: Path, discovery_root: Path, state_root: Path | None,
+    destination: Path, *, expected_build_key: str, variant_trust_root: Path,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Produce deterministic metadata from originals; never sign or rebuild inputs."""
+    from runtime_aggregate_phase import collect_inputs
+    from products.runtime_aggregate import produce_runtime_aggregate
+    from products.receipt import write_output_manifest
+
+    instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
+    # The caller's detached evidence is an original input too, not writable output.
+    _product_materialization_paths(root, variant_trust_root, variant_trust_root, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime aggregate destination must not exist")
+    environment = dict(os.environ if environ is None else environ)
+    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
+    ready = state.prior_ready_plans.get(instance)
+    if ready is None or ready["buildKey"] != expected_build_key:
+        raise ValueError("Runtime aggregate is not ready with the expected elected build key")
+    _runtime_worker_checkout(root, state.producer)
+    properties, _ = _prepare_runtime_phase(state, instance, destination / "inputs", expected_build_key, root)
+    inputs = destination / "inputs"
+
+    def predecessor(component, phase, target):
+        directory = inputs / "predecessors" / f"runtime-{component}-{phase}-{target}"
+        receipt_path = directory / "phase-receipt.json"
+        return {"stage": directory / "stage", "receiptPath": receipt_path,
+                "receipt": _canonical_control(receipt_path, "Original aggregate predecessor")}
+
+    trust_root = inputs / "variant-trust"
+    snapshot_regular_tree(variant_trust_root, trust_root)
+    before = regular_file_inventory(inputs, allow_empty=True)
+    records = collect_inputs(ready, predecessor)
+    expected = set()
+    detached = {name: {} for name in ("variant_attestations", "variant_attestation_signatures", "variant_public_keys")}
+    for target, bundle in records["variant_bundles"].items():
+        for field, filename in (("variant_attestations", f"{bundle.stem}.attestation.json"),
+                                ("variant_attestation_signatures", f"{bundle.stem}.attestation.sig"),
+                                ("variant_public_keys", "public-key.pub")):
+            relative = f"{target}/{filename}"
+            expected.add(relative)
+            detached[field][target] = trust_root / relative
+    if {record["relativePath"] for record in regular_file_inventory(trust_root)} != expected:
+        raise ValueError("Runtime aggregate requires exactly five detached variant trust closures")
+    trust = _release_trust(root, state.producer["commit"], destination / "release-policy")
+    if trust is None:
+        raise ValueError("Runtime aggregate requires Git-authoritative release policy")
+    contract = {name: Path(properties[f"codexAgent.{property_name}"]) for name, property_name in (
+        ("contract_payload", "contractPayload"), ("contract_metadata_receipt", "contractMetadataReceipt"),
+        ("contract_attestation", "contractAttestation"), ("contract_attestation_signature", "contractAttestationSignature"),
+        ("contract_public_key", "contractPublicKey"))}
+    stage = destination / "stage"
+    (stage / "outputs").mkdir(parents=True)
+    version = state.expected_fixed["versions"]["runtime-release"]
+    produce_runtime_aggregate(
+        runtime_version=version, **contract, **detached,
+        **{name: value for name, value in records.items() if name not in {"adapter_receipts", "adapter_report_files"}},
+        required_trust_domain="release", output_directory=stage / "outputs",
+        contract_keyring=trust.keyring, contract_keys_directory=trust.keys,
+        variant_keyring=trust.keyring, variant_keys_directory=trust.keys)
+    _runtime_worker_checkout(root, state.producer)
+    if before != regular_file_inventory(inputs, allow_empty=True):
+        raise ValueError("Runtime aggregate original inputs changed during production")
+    write_output_manifest(stage, "runtime", "runtime-aggregate", "metadata", "aggregate", version,
+                          {"runtime-aggregate": "outputs"})
+    return finalize_phase_object(
+        stage_root=stage, phase_plan=ready, producer=state.producer, product_version=version,
         trust_domain="development" if state.plan["event"] == "pull_request" else "release",
         destination=destination / "shard")
 
@@ -3746,6 +3823,12 @@ def parser() -> argparse.ArgumentParser:
     supervisor_execute.add_argument("--state-root", type=Path)
     supervisor_execute.add_argument("--expected-build-key", required=True)
     supervisor_execute.add_argument("--sdk-validation-tooling", type=Path)
+    aggregate_execute = commands.add_parser("execute-runtime-aggregate")
+    for name in ("plan", "discovery-root", "destination", "variant-trust-root"):
+        aggregate_execute.add_argument(f"--{name}", type=Path, required=True)
+    aggregate_execute.add_argument("--state-root", type=Path)
+    aggregate_execute.add_argument("--expected-build-key", required=True)
+    aggregate_execute.add_argument("--sdk-validation-tooling", type=Path)
     for command in (discover_command, products_command):
         command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-tooling", type=Path,
@@ -3879,6 +3962,11 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 arguments.contract_handoff, arguments.destination, arguments.github_output,
                 sdk_validation_tooling=tooling)
+        elif arguments.command == "execute-runtime-aggregate":
+            execute_runtime_aggregate(
+                arguments.plan, arguments.discovery_root, arguments.state_root,
+                arguments.destination, expected_build_key=arguments.expected_build_key,
+                variant_trust_root=arguments.variant_trust_root, sdk_validation_tooling=tooling)
         elif arguments.command in {"materialize-product-predecessors", "prepare-runtime-phase", "execute-runtime-phase"}:
             operation = {"materialize-product-predecessors": materialize_product_predecessors,
                          "prepare-runtime-phase": prepare_runtime_phase,

@@ -1200,6 +1200,13 @@ class ProductSelectionTest(unittest.TestCase):
         ))
 
         aggregate = classify_paths(["ci/products/runtime_aggregate.py"])
+        translated = classify_paths(["ci/runtime_aggregate_phase.py"])
+        aggregate_phase = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        self.assertEqual((aggregate_phase,), translated.instances)
+        self.assertEqual(("ci/runtime_aggregate_phase.py",), phase_inventory_paths(
+            ["ci/runtime_aggregate_phase.py"], aggregate_phase))
+        self.assertEqual((), phase_inventory_paths(["ci/runtime_aggregate_phase.py"],
+            PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")))
         self.assertEqual(
             {("runtime", "runtime-aggregate", "metadata", "aggregate")} |
             {("sdk", language, "metadata", "desktop") for language in NATIVE_BINDINGS},
@@ -1282,6 +1289,9 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/product_reuse.py",
             "ci/runtime_native_phase.py",
             "ci/runtime_adapter_phase.py",
+            "ci/runtime_supervisor.py",
+            "ci/runtime_workflow.py",
+            "ci/sdk_phase.py",
             "ci/contract_release.py",
             "ci/products/contract_projection.py",
             "ci/products/plan.py",

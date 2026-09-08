@@ -795,6 +795,19 @@ def _runtime_variant_bundle_name(target: str, component_id: str) -> str:
     return f"codex-agent-runtime-variant-{target}-{component_id.removeprefix('sha256:')}.zip"
 
 
+def require_runtime_adapter_maven_primary(component, role, record, receipts):
+    """Bind published primaries to both original artifact-only phase receipts."""
+    if component not in RUNTIME_ADAPTERS or role not in {"runtime-resolution", "sources", "javadoc"}:
+        return
+    primary = {"runtime-resolution": "main.jar" if component == "jvm" else "main.klib",
+               "sources": "sources.jar", "javadoc": "javadoc.jar"}[role]
+    original = {"kind": "publication", "relativePath": f"outputs/publication/{primary}",
+                "bytes": record["bytes"], "sha256": record["sha256"]}
+    for phase in ("binary", "package"):
+        if original not in receipts[(component, phase, component)]["outputs"]:
+            raise ValueError(f"Runtime {component} Maven {role} differs from its original {phase} publication")
+
+
 def verify_runtime_aggregate_artifacts(
     aggregate_manifest: Path,
     *,
@@ -966,26 +979,7 @@ def verify_runtime_aggregate_artifacts(
             "maven", f"outputs/{logical_path}", record["bytes"], record["sha256"],
             f"Runtime Maven input {logical_path}", owner_receipt,
         )
-        if component in RUNTIME_ADAPTERS and role in {"runtime-resolution", "sources", "javadoc"}:
-            primary = {
-                "runtime-resolution": "main.jar" if component == "jvm" else "main.klib",
-                "sources": "sources.jar",
-                "javadoc": "javadoc.jar",
-            }[role]
-            original = {
-                "kind": "publication",
-                "relativePath": f"outputs/publication/{primary}",
-                "bytes": record["bytes"],
-                "sha256": record["sha256"],
-            }
-            # Both phases deliberately retain the same primary. Provenance stays
-            # in their distinct original receipts, never in the published bytes.
-            for phase in ("binary", "package"):
-                predecessor = adapter_receipt_map[(component, phase, component)]
-                if original not in predecessor["outputs"]:
-                    raise ValueError(
-                        f"Runtime {component} Maven {role} differs from its original {phase} publication"
-                    )
+        require_runtime_adapter_maven_primary(component, role, record, adapter_receipt_map)
     actual_maven.sort(key=lambda record: record["path"])
     validate_runtime_maven_inventory(actual_maven, actual_maven_contents)
     if actual_maven != aggregate["runtimeMavenFiles"]:

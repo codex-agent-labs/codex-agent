@@ -232,6 +232,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/runtime_native_phase.py",
     "ci/runtime_supervisor.py",
     "ci/runtime_workflow.py",
+    "ci/sdk_phase.py",
     "ci/runtime_adapter_phase.py",
     "ci/products/contract_attestation.py",
     "ci/products/contract_projection.py",
@@ -453,6 +454,10 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         return set(ALL_INSTANCES)
     if _is_prefix(path, ".github/actions/setup-kmp/"):
         return set(ALL_INSTANCES)
+    if any(_is_prefix(path, f".github/actions/{name}/") for name in (
+        "capture-runtime-state", "collect-runtime-wave", "run-runtime-product-phase", "setup-runtime-archive",
+    )):
+        return _runtime(RUNTIME_COMPONENTS)
     if _is_prefix(path, ".github/actions/setup-msvc/"):
         return _runtime(("windows-x64",)) | _bindings(NATIVE_BINDINGS)
     if _is_prefix(path, ".github/actions/setup-sccache/"):
@@ -618,7 +623,7 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
         return _runtime(NATIVE_TARGETS, "metadata") | _bindings(
             ("sdk-core", "sdk-android", "sdk-ios", *NATIVE_BINDINGS, "javascript")
         )
-    if path == "ci/products/runtime_aggregate.py":
+    if path in {"ci/products/runtime_aggregate.py", "ci/runtime_aggregate_phase.py"}:
         return _from_phase("runtime", "runtime-aggregate", "metadata")
     if path == "ci/products/runtime_adapter_validation.py":
         return _runtime(("jvm", "node-js", "node-wasm"), "validation",
