@@ -10,8 +10,8 @@ CI_ROOT = Path(__file__).resolve().parents[1]
 if str(CI_ROOT) not in sys.path:
     sys.path.insert(0, str(CI_ROOT))
 
-from runtime_adapter_phase import properties
-from products.registry import NATIVE_TARGETS, RUNTIME_ADAPTERS
+from runtime_adapter_phase import properties, route
+from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, RUNTIME_ADAPTERS, required_toolchain_profile
 
 
 class RuntimeAdapterPhaseTest(unittest.TestCase):
@@ -38,6 +38,47 @@ class RuntimeAdapterPhaseTest(unittest.TestCase):
     def expected(self, component, phase, prefix, version="0.2.1"):
         return {f"codexAgent.{prefix}Stage": str(self.root / f"{component}-{phase}-{component}"),
                 f"codexAgent.{prefix}Version": version}
+
+    def test_routes_cover_every_adapter_phase_with_exact_existing_host_labels(self):
+        hosts = {
+            "linux-arm64": ("ubuntu-24.04-arm", "Linux", "ARM64"),
+            "linux-x64": ("ubuntu-24.04", "Linux", "X64"),
+            "macos-arm64": ("macos-26", "macOS", "ARM64"),
+            "macos-x64": ("macos-26-intel", "macOS", "X64"),
+            "windows-x64": ("windows-2025", "Windows", "X64"),
+        }
+        identities = [item for item in PHASE_INSTANCE_IDS
+                      if item.product == "runtime" and item.component in RUNTIME_ADAPTERS]
+        self.assertEqual(25, len(identities))
+        for identity in identities:
+            with self.subTest(identity=identity):
+                host = identity.target if identity.phase == "validation" and identity.target in hosts else "linux-x64"
+                runner, runner_os, runner_arch = hosts[host]
+                self.assertIsNone(required_toolchain_profile(identity))
+                self.assertEqual({"runner": runner, "runnerOs": runner_os, "runnerArch": runner_arch,
+                                  "toolchainProfile": None, "producerRole": None, "supervisor": None},
+                                 route(self.plan(identity.component, identity.phase, identity.target)))
+        self.assertEqual([], self.calls)
+
+    def test_route_does_not_accept_caller_runner_or_native_profile_overrides(self):
+        plan = self.plan("node-wasm", "validation", "linux-arm64")
+        expected = route(plan)
+        plan.update(runner="arbitrary", runnerOs="Windows", runnerArch="X64",
+                    toolchainProfile="linux-arm64", producerRole="cross-builder", supervisor={"runner": "arbitrary"})
+        self.assertEqual(expected, route(plan))
+        self.assertEqual("ARM64", expected["runnerArch"])
+        self.assertIsNone(expected["supervisor"])
+        self.assertEqual([], self.calls)
+
+    def test_route_rejects_non_adapter_and_invalid_phase_targets(self):
+        for plan in ({}, {**self.plan("jvm", "binary"), "product": "sdk"},
+                     self.plan("linux-arm64", "binary"), self.plan("runtime-aggregate", "metadata"),
+                     self.plan("node-js", "binary", "linux-x64"), self.plan("jvm", "metadata", "macos-x64"),
+                     self.plan("jvm", "validation", "node-js-binding"),
+                     self.plan("node-wasm", "validation", "node-wasm-binding"),
+                     self.plan("node-js", "validation", "linuxX64"), self.plan("jvm", "unknown")):
+            with self.subTest(plan=plan), self.assertRaises(ValueError):
+                route(plan)
 
     def test_binary_and_package_preserve_original_versions_for_all_adapters(self):
         for component in RUNTIME_ADAPTERS:

@@ -2249,6 +2249,37 @@ def inspect_products(
             "readyPlans": [state.prior_ready_plans[instance] for instance in sorted(state.prior_ready_plans)]}
 
 
+def runtime_worker_matrix(
+    plan_path: Path, discovery_root: Path, state_root: Path | None = None, *,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Route only authenticated ready standalone phases, never the cheap aggregate.
+
+    These rows elect jobs, not observed hosts or permission to skip the worker's
+    own replay, requested-key check, toolchain observation or supervisor proof.
+    """
+    inspected = inspect_products(
+        plan_path, discovery_root, state_root, repository_root=repository_root,
+        environ=environ, sdk_validation_tooling=sdk_validation_tooling)
+    from runtime_adapter_phase import route as adapter_route
+    from runtime_native_phase import route as native_route
+
+    rows = []
+    for plan in inspected["readyPlans"]:
+        instance = _identity(plan)
+        if instance.product != "runtime" or instance.component == "runtime-aggregate":
+            continue
+        route = (native_route if instance.component in NATIVE_TARGETS else adapter_route)(plan)
+        profile = required_toolchain_profile(instance)
+        digest = require_sha256(plan["inputs"]["toolchainProfileDigest"], "Elected toolchain profile digest")
+        if route["toolchainProfile"] != profile or (profile is None and digest != NOT_APPLICABLE_TOOLCHAIN_DIGEST):
+            raise ValueError("Runtime worker route differs from its elected toolchain authority")
+        rows.append({**_identity_record(instance), "buildKey": plan["buildKey"],
+                     "toolchainProfileDigest": digest, **route})
+    return {"include": rows}
+
+
 def _product_materialization_paths(root, discovery_root, state_root, destination):
     discovery_root = Path(os.path.abspath(discovery_root))
     state_root = discovery_root if state_root is None else Path(os.path.abspath(state_root))
@@ -2449,12 +2480,14 @@ def advance_products(
     adapter_evidence_roots: tuple[Path, ...] = (),
     sdk_evidence_roots: tuple[Path, ...] = (),
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    failed_instances: tuple[PhaseInstanceId, ...] = (),
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
         "target_jobs_required": True,
         "product_reuse_reason": "not-evaluated",
         "runtime_evidence_required": False,
+        "wave_failed": True,
     })
     supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
     destination = _prepare_destination(destination, supplied_root)
@@ -2490,6 +2523,11 @@ def advance_products(
     expected_builds = {
         _identity(phase): phase for phase in prior["phases"] if phase["state"] == "build"
     }
+    if (any(type(instance) is not PhaseInstanceId for instance in failed_instances)
+            or len(set(failed_instances)) != len(failed_instances)
+            or not set(failed_instances) <= set(expected_builds)):
+        raise ValueError("Failed phase identities must be distinct elected build phases")
+    failed = set(failed_instances)
     shards = {}
     for shard_root in shard_roots:
         descriptor = require_exact_keys(
@@ -2526,8 +2564,8 @@ def advance_products(
             },
         }
         sources[instance] = shard_root / verified["objectPath"]
-    if set(shards) != set(expected_builds):
-        raise ValueError("Product phase shards do not exactly match the elected build wave")
+    if set(shards) & failed or set(shards) | failed != set(expected_builds):
+        raise ValueError("Product phase shards and failures do not exactly partition the elected build wave")
 
     phase_records = {
         instance: (
@@ -2630,13 +2668,14 @@ def advance_products(
         final_carrier_name = "carrier" if advanced["fullReuse"] else "reused-carrier"
         staged_destination = temporary_root / "result"
         staged_destination.mkdir(exist_ok=True)
-        write_carrier(
-            staged_destination / final_carrier_name,
-            normalized,
-            selected,
-            sources,
-            consumer,
-        )
+        if selected:
+            write_carrier(
+                staged_destination / final_carrier_name,
+                normalized,
+                selected,
+                sources,
+                consumer,
+            )
         staged_evidence = _materialize_runtime_validation_handoffs(
             closure,
             {instance: phase for instance, phase in zip(selected, selected_phases, strict=True)},
@@ -2704,6 +2743,15 @@ def advance_products(
         } for record in staged_request["availableObjects"]]
         write_canonical_json(staged_destination / "reuse-wave-request.json", final_request)
         write_canonical_json(staged_destination / "reuse-wave-result.json", advanced)
+        if failed:
+            # Caller-reported failures are diagnostics, never success evidence or
+            # a replacement for an original phase receipt. Replay ignores them.
+            write_canonical_json(staged_destination / "wave-failures.json", {
+                "schemaVersion": 1, "producer": producer,
+                "failedPhases": [{**_identity_record(instance),
+                                  "buildKey": expected_builds[instance]["buildKey"]}
+                                 for instance in sorted(failed)],
+            })
         _write_ready_plans(staged_destination, ready_plans)
         if ready_plans:
             write_canonical_json(staged_destination / "producer.json", producer)
@@ -2715,6 +2763,7 @@ def advance_products(
             "verified-full-reuse" if advanced["fullReuse"] else "product-build-required"
         ),
         "runtime_evidence_required": bool(advanced["continuationRequirements"]),
+        "wave_failed": bool(failed),
     })
     return advanced
 
@@ -3192,6 +3241,9 @@ def parser() -> argparse.ArgumentParser:
     products_command.add_argument("--discovery-root", type=Path, required=True)
     products_command.add_argument("--state-root", type=Path)
     products_command.add_argument("--phase-shard", type=Path, action="append", default=[])
+    products_command.add_argument("--failed-phase", nargs=4, action="append", default=[],
+                                  metavar=("PRODUCT", "COMPONENT", "PHASE", "TARGET"),
+                                  help="Reported failed worker; never admitted as successful evidence")
     products_command.add_argument("--destination", type=Path, required=True)
     products_command.add_argument("--github-output", type=Path, required=True)
     products_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
@@ -3218,6 +3270,11 @@ def parser() -> argparse.ArgumentParser:
     materialize_command.add_argument("--phase", required=True)
     materialize_command.add_argument("--destination", type=Path, required=True)
     materialize_command.add_argument("--with-receipt", action="store_true")
+    matrix_command = commands.add_parser("runtime-worker-matrix")
+    for argument in ("plan", "discovery-root", "github-output"):
+        matrix_command.add_argument(f"--{argument}", type=Path, required=True)
+    matrix_command.add_argument("--state-root", type=Path)
+    matrix_command.add_argument("--sdk-validation-tooling", type=Path)
     for name in ("materialize-product-predecessors", "prepare-runtime-phase"):
         predecessors_command = commands.add_parser(name)
         for argument in ("plan", "discovery-root", "destination"):
@@ -3281,7 +3338,15 @@ def main(argv: list[str] | None = None) -> int:
                 native_evidence_roots=tuple(arguments.native_runtime_evidence),
                 adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
                 sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
+                failed_instances=tuple(PhaseInstanceId(*value) for value in arguments.failed_phase),
             )
+        elif arguments.command == "runtime-worker-matrix":
+            github_output(arguments.github_output, {"runtime_matrix": '{"include":[]}', "runtime_workers_required": False})
+            matrix = runtime_worker_matrix(
+                arguments.plan, arguments.discovery_root, arguments.state_root,
+                sdk_validation_tooling=tooling)
+            github_output(arguments.github_output, {"runtime_matrix": canonical_json_bytes(matrix).decode("utf-8").strip(),
+                                                   "runtime_workers_required": bool(matrix["include"])})
         elif arguments.command == "capture-contract-ci":
             capture_contract_ci_artifact(
                 arguments.destination, artifact_id=arguments.artifact_id,

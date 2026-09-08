@@ -14,6 +14,34 @@ from products.inventory import require_regular_directory, require_semver
 from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, RUNTIME_ADAPTERS
 
 
+def _identity(plan: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    identity = tuple(plan.get(key) for key in ("product", "component", "phase", "target"))
+    if identity[0] != "runtime" or identity[1] not in RUNTIME_ADAPTERS or not any(
+        identity == (item.product, item.component, item.phase, item.target)
+        for item in PHASE_INSTANCE_IDS
+    ):
+        raise ValueError("Unsupported Runtime adapter phase identity")
+    return identity
+
+
+def route(plan: Mapping[str, Any]) -> dict[str, Any]:
+    """Select existing runner topology, not an observed runner or execution proof."""
+    _, _, phase, target = _identity(plan)
+    # Host validations execute the imported native package on its actual host.
+    # Other adapter work, including JS binding validation, uses the portable lane.
+    host = target if phase == "validation" and target in NATIVE_TARGETS else "linux-x64"
+    runner, runner_os, runner_arch = {
+        "linux-arm64": ("ubuntu-24.04-arm", "Linux", "ARM64"),
+        "linux-x64": ("ubuntu-24.04", "Linux", "X64"),
+        "macos-arm64": ("macos-26", "macOS", "ARM64"),
+        "macos-x64": ("macos-26-intel", "macOS", "X64"),
+        "windows-x64": ("windows-2025", "Windows", "X64"),
+    }[host]
+    # The registry assigns toolchain profiles only to native Runtime binary phases.
+    return {"runner": runner, "runnerOs": runner_os, "runnerArch": runner_arch,
+            "toolchainProfile": None, "producerRole": None, "supervisor": None}
+
+
 def _directory(value: Path, label: str) -> str:
     if not isinstance(value, Path) or not value.is_absolute():
         raise ValueError(f"{label} must be an absolute normalized directory")
@@ -35,13 +63,7 @@ receipt; the receipt identity is checked here only to catch incorrect routing.
 ``validation_handoff`` must be the caller's already-validated, derived handoff,
 not a caller-selected Maven repository or an unverified projection.
 """
-    identity = tuple(plan.get(key) for key in ("product", "component", "phase", "target"))
-    product, component, phase, target = identity
-    if product != "runtime" or component not in RUNTIME_ADAPTERS or not any(
-        identity == (item.product, item.component, item.phase, item.target)
-        for item in PHASE_INSTANCE_IDS
-    ):
-        raise ValueError("Unsupported Runtime adapter phase identity")
+    _, component, phase, target = _identity(plan)
     if phase == "metadata":
         if validation_handoff is None:
             raise ValueError("Runtime adapter metadata requires its validated handoff")

@@ -1880,7 +1880,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             Path("plan.json"), Path("discovery"), Path("state"),
             [Path("one"), Path("two")], Path("advanced"), Path("output"),
             native_evidence_roots=(), adapter_evidence_roots=(Path("adapter-originals"),),
-            sdk_evidence_roots=(), sdk_validation_tooling=None,
+            sdk_evidence_roots=(), sdk_validation_tooling=None, failed_instances=(),
         )
 
         tooling = self.root.resolve() / "caller-tooling.json"

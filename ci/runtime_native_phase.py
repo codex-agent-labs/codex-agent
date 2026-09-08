@@ -12,7 +12,57 @@ import re
 from typing import Any
 
 from products.inventory import require_exact_keys, require_semver, require_sha256
-from products.registry import NATIVE_TARGETS
+from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId, required_toolchain_profile
+
+
+_HOSTS = {
+    "macos-arm64": ("macos-26", "macOS", "ARM64"),
+    "macos-x64": ("macos-26-intel", "macOS", "X64"),
+    "linux-arm64": ("ubuntu-24.04-arm", "Linux", "ARM64"),
+    "linux-x64": ("ubuntu-24.04", "Linux", "X64"),
+    "windows-x64": ("windows-2025", "Windows", "X64"),
+}
+
+
+def _native_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    value = require_exact_keys(plan, {
+        "schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs",
+    }, "Native Runtime elected phase plan")
+    component, phase = value["component"], value["phase"]
+    if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or value["product"] != "runtime" or component not in NATIVE_TARGETS
+            or value["target"] != component or phase not in ("binary", "package", "validation", "metadata")
+            or type(value["inputs"]) is not dict):
+        raise ValueError("Unsupported native Runtime phase plan identity or schema")
+    instance = PhaseInstanceId("runtime", component, phase, component)
+    if instance not in PHASE_INSTANCE_IDS:
+        raise ValueError("Native Runtime phase is not in the product registry")
+    require_sha256(value["buildKey"], "Native Runtime elected build key")
+    return value
+
+
+def route(plan: dict[str, Any]) -> dict[str, Any]:
+    """Fixed worker topology, never an observation or permission to execute.
+
+    Package/metadata consume imported bytes on Linux X64. Validation executes
+    on the real target host. Linux Arm64 binary requires BOTH named producers;
+    the supervisor descriptor is an unresolved prerequisite, not supplied proof.
+    """
+    value = _native_plan(plan)
+    component, phase = value["component"], value["phase"]
+    instance = PhaseInstanceId("runtime", component, phase, component)
+    host = component if phase in {"binary", "validation"} else "linux-x64"
+    role = "builder" if phase == "binary" else None
+    supervisor = None
+    if component == "linux-arm64" and phase == "binary":
+        host, role = "linux-x64", "cross-builder"
+        label, os_name, arch = _HOSTS["linux-arm64"]
+        supervisor = {"runner": label, "runnerOs": os_name, "runnerArch": arch,
+                      "producerRole": "supervisor-builder"}
+    label, os_name, arch = _HOSTS[host]
+    return {"runner": label, "runnerOs": os_name, "runnerArch": arch,
+            "toolchainProfile": required_toolchain_profile(instance),
+            "producerRole": role, "supervisor": supervisor}
 
 
 def _path(value: Path, label: str) -> str:
@@ -32,16 +82,8 @@ def properties(
     In particular, Linux Arm64 cross-production still requires its independently
     provided real Arm64 supervisor/toolchain. No such evidence is invented here.
     """
-    value = require_exact_keys(plan, {
-        "schemaVersion", "product", "component", "phase", "target", "buildKey", "inputs",
-    }, "Native Runtime elected phase plan")
+    value = _native_plan(plan)
     component, phase = value["component"], value["phase"]
-    if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
-            or value["product"] != "runtime" or component not in NATIVE_TARGETS
-            or value["target"] != component or phase not in ("binary", "package", "validation", "metadata")
-            or type(value["inputs"]) is not dict):
-        raise ValueError("Unsupported native Runtime phase plan identity or schema")
-    require_sha256(value["buildKey"], "Native Runtime elected build key")
     selected_plan = _path(plan_path, "Native Runtime elected plan path")
     if type(revision) is not str or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision) is None:
         raise ValueError("Native Runtime repository revision must be an exact Git object ID")

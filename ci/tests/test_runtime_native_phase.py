@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import runtime_native_phase
-from products.registry import NATIVE_TARGETS
+from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS
 
 
 REVISION = "1" * 40
@@ -129,3 +129,50 @@ class RuntimeNativePhaseTest(unittest.TestCase):
             self.invoke(plan, output=mock.Mock(side_effect=ValueError("missing original identity")))
         self.assertNotIn("codexAgent.runtimePackageStage", self.invoke(plan))
         self.assertNotIn("codexAgent.desktopSupervisorDirectory", self.invoke(self.plan("linux-arm64", "binary")))
+
+    def test_all_registry_native_routes_use_fixed_hosts_and_only_binary_profiles(self):
+        hosts = {
+            "macos-arm64": ("macos-26", "macOS", "ARM64"),
+            "macos-x64": ("macos-26-intel", "macOS", "X64"),
+            "linux-arm64": ("ubuntu-24.04-arm", "Linux", "ARM64"),
+            "linux-x64": ("ubuntu-24.04", "Linux", "X64"),
+            "windows-x64": ("windows-2025", "Windows", "X64"),
+        }
+        instances = [item for item in PHASE_INSTANCE_IDS
+                     if item.product == "runtime" and item.component in NATIVE_TARGETS]
+        self.assertEqual(20, len(instances))
+        for instance in instances:
+            with self.subTest(instance=instance):
+                plan = self.plan(instance.component, instance.phase)
+                before = copy.deepcopy(plan)
+                route = runtime_native_phase.route(plan)
+                host = instance.component if instance.phase in {"binary", "validation"} else "linux-x64"
+                supervisor = None
+                role = "builder" if instance.phase == "binary" else None
+                if instance.component == "linux-arm64" and instance.phase == "binary":
+                    host, role = "linux-x64", "cross-builder"
+                    supervisor = {"runner": "ubuntu-24.04-arm", "runnerOs": "Linux",
+                                  "runnerArch": "ARM64", "producerRole": "supervisor-builder"}
+                label, os_name, arch = hosts[host]
+                self.assertEqual({
+                    "runner": label, "runnerOs": os_name, "runnerArch": arch,
+                    "toolchainProfile": instance.component if instance.phase == "binary" else None,
+                    "producerRole": role, "supervisor": supervisor,
+                }, route)
+                self.assertEqual(before, plan)
+
+    def test_routing_rejects_other_registry_families_and_caller_control_fields(self):
+        for instance in PHASE_INSTANCE_IDS:
+            if instance.product == "runtime" and instance.component in NATIVE_TARGETS:
+                continue
+            plan = {**self.plan(instance.component, instance.phase),
+                    "product": instance.product, "target": instance.target}
+            with self.subTest(instance=instance), self.assertRaises(ValueError):
+                runtime_native_phase.route(plan)
+        plan = self.plan("linux-arm64", "binary")
+        for extra in ("runner", "runnerOs", "runnerArch", "toolchainProfile", "producerRole", "supervisor"):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                runtime_native_phase.route({**plan, extra: "caller-selected"})
+        first = runtime_native_phase.route(plan)
+        first["supervisor"]["runner"] = "caller-selected"
+        self.assertEqual("ubuntu-24.04-arm", runtime_native_phase.route(plan)["supervisor"]["runner"])

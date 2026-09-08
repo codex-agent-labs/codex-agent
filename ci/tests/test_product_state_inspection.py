@@ -1,8 +1,11 @@
 """Read-only inspection of an authenticated resumed product state."""
 
 from pathlib import Path
+import json
 import shutil
+import tempfile
 import unittest
+from unittest import mock
 
 from ci.products.inventory import load_canonical_json, regular_file_inventory, write_canonical_json
 from ci.tests import test_runtime_resumed_phase as fixture
@@ -30,6 +33,12 @@ class ProductStateInspectionTest(unittest.TestCase):
                 repository_root=self.repository, environ=self.environment,
             )
 
+    def matrix(self, discovery: Path, state: Path | None = None):
+        with self.control_seams():
+            return adapter.runtime_worker_matrix(
+                self.plan_path, discovery, state,
+                repository_root=self.repository, environ=self.environment)
+
     def test_initial_resumed_state_re_elects_the_exact_runtime_plan_without_original_locations(self):
         resumed = self.resume()
         before = regular_file_inventory(resumed)
@@ -44,6 +53,13 @@ class ProductStateInspectionTest(unittest.TestCase):
                 source.rename(target)
                 hidden.append((source, target))
             self.assertEqual(expected, self.inspect(resumed))
+            self.assertEqual({"include": [{
+                "product": "runtime", "component": "jvm", "phase": "binary", "target": "jvm",
+                "buildKey": expected["readyPlans"][0]["buildKey"],
+                "toolchainProfileDigest": adapter.NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                "runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64",
+                "toolchainProfile": None, "producerRole": None, "supervisor": None,
+            }]}, self.matrix(resumed))
         finally:
             for source, target in reversed(hidden):
                 target.rename(source)
@@ -60,6 +76,7 @@ class ProductStateInspectionTest(unittest.TestCase):
         }
 
         self.assertEqual({"result": result, "readyPlans": []}, self.inspect(resumed, advanced))
+        self.assertEqual({"include": []}, self.matrix(resumed, advanced))
         selected = tuple(sorted(
             adapter._identity(phase) for phase in result["phases"]
             if phase["state"] in {"retained", "reused"}
@@ -129,9 +146,44 @@ class ProductStateInspectionTest(unittest.TestCase):
             mutate(state)
             changed = regular_file_inventory(state)
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, error):
-                self.inspect(resumed, state) if name in {"carrier", "result"} else self.inspect(state)
+                self.matrix(resumed, state) if name in {"carrier", "result"} else self.matrix(state)
             self.assertEqual(changed, regular_file_inventory(state))
             self.assertEqual(original, regular_file_inventory(resumed))
+
+
+class RuntimeMatrixControlTest(unittest.TestCase):
+    """Control translation only; synthetic inspected rows are not admission proof."""
+
+    def test_only_standalone_runtime_rows_are_routed_and_profile_mismatch_fails(self):
+        common = {"schemaVersion": 1, "buildKey": "sha256:" + "1" * 64,
+                  "inputs": {"toolchainProfileDigest": adapter.NOT_APPLICABLE_TOOLCHAIN_DIGEST}}
+        plan = {**common, "product": "runtime", "component": "jvm", "phase": "binary", "target": "jvm"}
+        ignored = [{**common, "product": product, "component": component, "phase": "metadata", "target": target}
+                   for product, component, target in (("contract", "contract", "common"),
+                       ("sdk", "sdk-core", "common"), ("runtime", "runtime-aggregate", "aggregate"))]
+        with mock.patch.object(adapter, "inspect_products", return_value={"readyPlans": [*ignored, plan]}):
+            rows = adapter.runtime_worker_matrix(Path("plan"), Path("discovery"))["include"]
+            self.assertEqual(["jvm"], [row["component"] for row in rows])
+            plan["inputs"] = {"toolchainProfileDigest": "sha256:" + "2" * 64}
+            with self.assertRaisesRegex(ValueError, "elected toolchain authority"):
+                adapter.runtime_worker_matrix(Path("plan"), Path("discovery"))
+
+    def test_cli_outputs_json_and_failure_declarations_are_exact_four_part_arguments(self):
+        matrix = {"include": [{"toolchainProfile": None, "supervisor": None, "runner": "ubuntu-24.04"}]}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            with mock.patch.object(adapter, "runtime_worker_matrix", return_value=matrix):
+                self.assertEqual(0, adapter.main(["runtime-worker-matrix", "--plan", "plan",
+                    "--discovery-root", "discovery", "--github-output", str(output)]))
+            fields = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(matrix, json.loads(fields["runtime_matrix"]))
+            self.assertEqual("true", fields["runtime_workers_required"])
+        with mock.patch.object(adapter, "advance_products") as advance:
+            self.assertEqual(0, adapter.main(["advance-products", "--plan", "plan",
+                "--discovery-root", "discovery", "--destination", "result", "--github-output", "output",
+                "--failed-phase", "runtime", "node-js", "binary", "node-js"]))
+            self.assertEqual((adapter.PhaseInstanceId("runtime", "node-js", "binary", "node-js"),),
+                             advance.call_args.kwargs["failed_instances"])
 
 
 if __name__ == "__main__":
