@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import os
 import ntpath
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import stat
@@ -1581,6 +1581,28 @@ def _wave_control(path, label):
     return require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY} | _SDK_REQUEST_KEYS)), label)
 
 
+def _relocated_wave_control(path, label, root):
+    """Translate only original location tags, never original evidence bytes.
+
+    Producer paths are not opened on this host. All artifact paths remain
+    relative and the caller still replays Git, selection, receipts and trust.
+    """
+    value = _wave_control(path, label)
+    original = value["repositoryRoot"]
+    if (not isinstance(original, str) or not original
+            or any(ord(character) < 32 or ord(character) == 127 for character in original)):
+        raise ValueError(f"{label} has an invalid original repository root")
+    windows = re.match(r"^[A-Za-z]:\\", original) is not None
+    source = PureWindowsPath(original) if windows else PurePosixPath(original)
+    if (not source.is_absolute() or str(source) != original or ".." in source.parts
+            or source == type(source)(source.anchor)
+            or (not windows and ("\\" in original or original.startswith("//")))):
+        raise ValueError(f"{label} has a noncanonical original repository root")
+    if value["artifactRoot"] != str(source / "build" / "product-reuse"):
+        raise ValueError(f"{label} has an unexpected original artifact root")
+    return {**value, "repositoryRoot": str(root), "artifactRoot": str(root / "build/product-reuse")}
+
+
 def _plan_with_sdk_tooling(request, tooling, **kwargs):
     # Never serialize invocation authority into retained control or evidence.
     if "sdkValidationTooling" in request:
@@ -1818,7 +1840,7 @@ def advance_contract(
     if producer != consumer["producer"]:
         raise ValueError("Contract producer does not match the current workflow run")
 
-    request = _wave_control(discovery_root / "contract-reuse-request.json", "Contract reuse request")
+    request = _relocated_wave_control(discovery_root / "contract-reuse-request.json", "Contract reuse request", root)
     contract = PhaseInstanceId("contract", "contract", "metadata", "common")
     contract_closure = _dependency_closure((contract,))
     authorities, unavailable = _authorities(root, plan["validationCommit"], contract_closure)
@@ -2079,7 +2101,7 @@ def _verified_product_state(
     if producer != consumer["producer"]:
         raise ValueError("Product producer does not match the current workflow run")
 
-    request = _wave_control(discovery_root / "reuse-wave-request.json", "Reuse-wave request")
+    request = _relocated_wave_control(discovery_root / "reuse-wave-request.json", "Reuse-wave request", root)
     requested = tuple(
         _identity(value)
         for value in require_array(request["requested"], "Reuse-wave request.requested")
@@ -3120,6 +3142,53 @@ def capture_runtime_supervisor_upload(
     return evidence
 
 
+def capture_runtime_resume_upload(
+    plan_path: Path, destination: Path, *, artifact_id: int, artifact_sha256: str,
+    trusted_workflow_sha: str, repository_root: Path | None = None,
+    environ: Mapping[str, str] | None = None, token: str,
+) -> dict[str, Any]:
+    """Retain the exact resumed upload; full product replay grants admission."""
+    require_integer(artifact_id, "Runtime resume artifact ID", 1)
+    require_sha256(artifact_sha256, "Runtime resume artifact digest")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime resume capture destination must not exist")
+    destination = _prepare_destination(destination, root)
+    destination.rmdir()
+    with tempfile.TemporaryDirectory(prefix="codex-agent-runtime-resume-", dir=root) as temporary:
+        private = Path(temporary).resolve()
+        plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
+                                            reject_symlink_parents=True)
+        captured_plan = private / "impact-plan.json"
+        captured_plan.write_bytes(plan_bytes)
+        plan = _validate_plan(captured_plan, root)
+        if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
+            raise ValueError("Runtime resume capture requires an authorized PR or merge-group run")
+        producer = _consumer(plan, os.environ if environ is None else environ)["producer"]
+        observed = _observe_ci_producer_jobs(
+            {"resume": producer}, jobs_by_phase={"resume": "product-validation / product-resume"},
+            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        artifact, raw = _download_contract_ci_upload(
+            artifact_id, artifact_sha256, f"codex-agent-product-resume-{producer['tree']}",
+            producer, observed[0]["run"], token)
+        archive = private / "transport.zip"
+        archive.write_bytes(raw)
+        verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+        prepared = private / "captured"
+        original = prepared / "original"
+        safe_extract(archive, original)
+        if ({member.name for member in original.iterdir()} != {"product-resume-inputs", "product-resume-state"}
+                or any(not member.is_dir() for member in original.iterdir())):
+            raise ValueError("Runtime resume upload requires the exact two original directories")
+        if read_regular_file_bytes(original / "product-resume-inputs/plan/impact-plan.json",
+                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes:
+            raise ValueError("Runtime resume upload plan differs from the validated original plan")
+        transport = {"artifact": artifact, "captureProducer": producer, "observed": observed}
+        write_canonical_json(prepared / "capture-transport.json", transport)
+        publish_regular_tree(prepared, destination, allow_empty=True)
+    return transport
+
+
 def capture_product_resume_inputs(
     plan_path: Path, destination: Path, *, uploads: Mapping[str, Any],
     trusted_workflow_sha: str, repository_root: Path | None = None,
@@ -3544,6 +3613,12 @@ def parser() -> argparse.ArgumentParser:
     supervisor_capture.add_argument("--artifact-id", type=int, required=True)
     for name in ("artifact-sha256", "expected-build-key", "trusted-workflow-sha"):
         supervisor_capture.add_argument(f"--{name}", required=True)
+    runtime_resume_capture = commands.add_parser("capture-runtime-resume-upload")
+    for name in ("plan", "destination"):
+        runtime_resume_capture.add_argument(f"--{name}", type=Path, required=True)
+    runtime_resume_capture.add_argument("--artifact-id", type=int, required=True)
+    for name in ("artifact-sha256", "trusted-workflow-sha"):
+        runtime_resume_capture.add_argument(f"--{name}", required=True)
     supervisor_execute = commands.add_parser("execute-runtime-supervisor")
     for name in ("plan", "discovery-root", "destination"):
         supervisor_execute.add_argument(f"--{name}", type=Path, required=True)
@@ -3658,6 +3733,11 @@ def main(argv: list[str] | None = None) -> int:
             capture_runtime_supervisor_upload(
                 arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
                 artifact_sha256=arguments.artifact_sha256, expected_build_key=arguments.expected_build_key,
+                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
+        elif arguments.command == "capture-runtime-resume-upload":
+            capture_runtime_resume_upload(
+                arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
+                artifact_sha256=arguments.artifact_sha256,
                 trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
         elif arguments.command == "capture-product-resume-inputs":
             capture_product_resume_inputs(
