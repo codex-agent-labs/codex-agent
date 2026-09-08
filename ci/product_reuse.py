@@ -2249,6 +2249,64 @@ def inspect_products(
             "readyPlans": [state.prior_ready_plans[instance] for instance in sorted(state.prior_ready_plans)]}
 
 
+def materialize_product_predecessors(
+    plan_path: Path, discovery_root: Path, state_root: Path | None,
+    instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Restore the full original closure, not new evidence or execution authority."""
+    expected_build_key = require_sha256(expected_build_key, "Expected elected build key")
+    if instance not in PHASE_INSTANCE_IDS:
+        raise ValueError("Unknown product phase instance")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root = Path(os.path.abspath(discovery_root))
+    state_root = discovery_root if state_root is None else Path(os.path.abspath(state_root))
+    destination = Path(os.path.abspath(destination))
+    for source in (discovery_root, state_root):
+        try:
+            source.relative_to(root)
+        except ValueError as error:
+            raise ValueError("Product materialization inputs must remain inside the repository") from error
+        # Check real file identities before creating anything, including case aliases.
+        if any(parent.exists() and parent.samefile(source)
+               for parent in (destination, *destination.parents)) or (
+            destination.exists() and any(destination.samefile(parent)
+                                         for parent in (source, *source.parents))
+        ):
+            raise ValueError("Product materialization destination overlaps original state")
+    state = _verified_product_state(
+        plan_path, discovery_root, state_root, root,
+        os.environ if environ is None else environ, sdk_validation_tooling)
+    ready = state.prior_ready_plans.get(instance)
+    if ready is None or ready["buildKey"] != expected_build_key:
+        raise ValueError("Product phase is not ready with the expected elected build key")
+    dependencies = tuple(dependency for dependency in _dependency_closure((instance,))
+                         if dependency != instance)
+    if any(dependency not in state.sources for dependency in dependencies):
+        raise ValueError("Elected product phase lacks an authenticated original predecessor")
+    destination = _prepare_destination(destination, root)
+    destination.rmdir()
+    with tempfile.TemporaryDirectory(prefix="codex-agent-product-inputs-", dir=root) as temporary:
+        prepared = Path(temporary).resolve() / "inputs"
+        prepared.mkdir()
+        for dependency in dependencies:
+            record = state.prior_carrier_phases[dependency]
+            name = "-".join((dependency.product, dependency.component, dependency.phase, dependency.target))
+            predecessor = prepared / name
+            predecessor.mkdir()
+            restored = restore_object(
+                state.sources[dependency], predecessor / "stage",
+                build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+                object_sha256=record["objectSha256"],
+            )
+            (predecessor / "phase-receipt.json").write_bytes(restored["receiptBytes"])
+        write_canonical_json(prepared / "phase-plan.json", ready)
+        write_canonical_json(prepared / "producer.json", state.producer)
+        publish_regular_tree(prepared, destination)
+    return ready
+
+
 def advance_products(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     shard_roots: list[Path], destination: Path,
@@ -3027,6 +3085,14 @@ def parser() -> argparse.ArgumentParser:
     materialize_command.add_argument("--phase", required=True)
     materialize_command.add_argument("--destination", type=Path, required=True)
     materialize_command.add_argument("--with-receipt", action="store_true")
+    predecessors_command = commands.add_parser("materialize-product-predecessors")
+    for name in ("plan", "discovery-root", "destination"):
+        predecessors_command.add_argument(f"--{name}", type=Path, required=True)
+    predecessors_command.add_argument("--state-root", type=Path)
+    for name in (*_IDENTITY_KEYS, "expected-build-key"):
+        predecessors_command.add_argument(f"--{name}", required=True)
+    predecessors_command.add_argument("--sdk-validation-tooling", type=Path,
+                                      help="Current caller-owned tooling policy JSON")
     capture_command = commands.add_parser("capture-contract-ci")
     capture_command.add_argument("--destination", type=Path, required=True)
     capture_command.add_argument("--artifact-id", type=int, required=True)
@@ -3100,6 +3166,12 @@ def main(argv: list[str] | None = None) -> int:
             resume_products(
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 arguments.contract_handoff, arguments.destination, arguments.github_output,
+                sdk_validation_tooling=tooling)
+        elif arguments.command == "materialize-product-predecessors":
+            materialize_product_predecessors(
+                arguments.plan, arguments.discovery_root, arguments.state_root,
+                PhaseInstanceId(arguments.product, arguments.component, arguments.phase, arguments.target),
+                arguments.destination, expected_build_key=arguments.expected_build_key,
                 sdk_validation_tooling=tooling)
         elif arguments.command == "capture-contract-original-ci":
             capture_contract_original_ci_phases(
