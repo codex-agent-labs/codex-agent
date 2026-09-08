@@ -12,7 +12,10 @@ import re
 from typing import Any
 
 from products.inventory import require_exact_keys, require_semver, require_sha256
+from products.contract_projection import VerifiedContractProjection
+from products.plan import attach_runtime_binary_identity
 from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId, required_toolchain_profile
+from products.runtime_identity import verify_runtime_binary_plan
 
 
 _HOSTS = {
@@ -63,6 +66,29 @@ def route(plan: dict[str, Any]) -> dict[str, Any]:
     return {"runner": label, "runnerOs": os_name, "runnerArch": arch,
             "toolchainProfile": required_toolchain_profile(instance),
             "producerRole": role, "supervisor": supervisor}
+
+
+def binary_plan(
+    plan: dict[str, Any], *, repository_root: Path, revision: str,
+    contract_projection: VerifiedContractProjection,
+    verified_contract_manifest: dict[str, Any], runtime_version: str,
+) -> dict[str, Any]:
+    """Attach the existing identity without changing the elected receipt plan.
+
+    The caller supplies the existing authenticated Contract projection/manifest.
+    This does not observe a toolchain or supply Linux Arm64 supervisor evidence.
+    """
+    value = _native_plan(plan)
+    if value["phase"] != "binary":
+        raise ValueError("Runtime binary identity requires a native binary phase")
+    instance = PhaseInstanceId("runtime", value["component"], "binary", value["target"])
+    complete = attach_runtime_binary_identity(
+        repository_root, revision, instance, value, contract_projection)
+    verify_runtime_binary_plan(
+        repository_root, revision, complete, verified_contract_manifest,
+        expected_target=value["target"], expected_runtime_version=runtime_version,
+        expected_flags_digest=value["inputs"].get("flagsDigest"))
+    return complete
 
 
 def _path(value: Path, label: str) -> str:

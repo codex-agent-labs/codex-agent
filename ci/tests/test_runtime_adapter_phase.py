@@ -1,17 +1,21 @@
 """Adapter property routing only: no compiled products or authentication claim."""
 
 from pathlib import Path
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 CI_ROOT = Path(__file__).resolve().parents[1]
 if str(CI_ROOT) not in sys.path:
     sys.path.insert(0, str(CI_ROOT))
 
-from runtime_adapter_phase import properties, route
+from runtime_adapter_phase import preflight, properties, route
 from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, RUNTIME_ADAPTERS, required_toolchain_profile
+from products.runtime_evidence import PINNED_NODE_VERSION
 
 
 class RuntimeAdapterPhaseTest(unittest.TestCase):
@@ -79,6 +83,51 @@ class RuntimeAdapterPhaseTest(unittest.TestCase):
                      self.plan("node-js", "validation", "linuxX64"), self.plan("jvm", "unknown")):
             with self.subTest(plan=plan), self.assertRaises(ValueError):
                 route(plan)
+
+    def installed_node(self):
+        node = self.root / ("node.exe" if os.name == "nt" else "node")
+        node.write_bytes(b"not executed: subprocess boundary is mocked\n")
+        node.chmod(0o755)
+        return node
+
+    def test_node_preflight_runs_only_required_phases_with_exact_command_and_explicit_environment(self):
+        node = self.installed_node()
+        environment = {"PATH": str(self.root), "PREFLIGHT_FIXTURE": "explicit-only"}
+        result = subprocess.CompletedProcess([], 0, f"v{PINNED_NODE_VERSION}\r\n".encode("ascii"))
+        for identity in PHASE_INSTANCE_IDS:
+            if identity.product != "runtime" or identity.component not in RUNTIME_ADAPTERS:
+                continue
+            required = identity.component != "jvm" and identity.phase in {"binary", "validation"}
+            with self.subTest(identity=identity), mock.patch("runtime_adapter_phase.subprocess.run", return_value=result) as run:
+                observed = preflight(self.plan(identity.component, identity.phase, identity.target),
+                                     repository_root=self.root, environ=environment)
+                self.assertEqual({"nodeExecutable": str(node), "nodeVersion": PINNED_NODE_VERSION} if required else {}, observed)
+                if required:
+                    run.assert_called_once_with([str(node), "--version"], cwd=self.root, env=environment,
+                                                check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+                else:
+                    run.assert_not_called()
+        self.assertEqual({"PATH": str(self.root), "PREFLIGHT_FIXTURE": "explicit-only"}, environment)
+
+    def test_node_preflight_missing_version_failure_and_timeout_never_accept(self):
+        plan = self.plan("node-js", "validation", "node-js-binding")
+        with mock.patch("runtime_adapter_phase.subprocess.run") as run:
+            with self.assertRaisesRegex(ValueError, "installed Node"):
+                preflight(plan, repository_root=self.root, environ={"PATH": str(self.root / "missing")})
+            with self.assertRaisesRegex(ValueError, "Unsupported Runtime adapter"):
+                preflight(self.plan("jvm", "validation", "node-js-binding"), repository_root=self.root, environ={})
+            run.assert_not_called()
+        self.installed_node()
+        for exit_code, output in ((0, b"v24.17.0\n"), (1, f"v{PINNED_NODE_VERSION}\n".encode()),
+                                  (0, b""), (0, b"\xff\x00"), (0, b"v24.18.0\nextra\n")):
+            with self.subTest(exit_code=exit_code, output=output), mock.patch(
+                "runtime_adapter_phase.subprocess.run", return_value=subprocess.CompletedProcess([], exit_code, output),
+            ), self.assertRaises(ValueError):
+                preflight(plan, repository_root=self.root, environ={"PATH": str(self.root)})
+        for error in (FileNotFoundError("node disappeared"), subprocess.TimeoutExpired(["node", "--version"], 30)):
+            with self.subTest(error=type(error)), mock.patch("runtime_adapter_phase.subprocess.run", side_effect=error), \
+                    self.assertRaises(type(error)):
+                preflight(plan, repository_root=self.root, environ={"PATH": str(self.root)})
 
     def test_binary_and_package_preserve_original_versions_for_all_adapters(self):
         for component in RUNTIME_ADAPTERS:

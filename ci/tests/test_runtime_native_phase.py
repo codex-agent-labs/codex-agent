@@ -2,6 +2,7 @@
 import copy
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -9,6 +10,14 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import runtime_native_phase
 from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS
+from products import contract_projection
+from products.inventory import canonical_json_bytes, sha256_bytes, write_canonical_json
+from products.receipt import compute_build_key, validate_receipt_inputs
+from products.registry import PhaseInstanceId
+from products.runtime_flags import load_runtime_binary_flags
+from products.runtime_identity import verify_runtime_binary_plan
+from products.selection import phase_git_inventory
+from products.toolchain import PROFILE_SHAPES, PROFILE_TOOL_NAMES
 
 
 REVISION = "1" * 40
@@ -176,3 +185,130 @@ class RuntimeNativePhaseTest(unittest.TestCase):
         first = runtime_native_phase.route(plan)
         first["supervisor"]["runner"] = "caller-selected"
         self.assertEqual("ubuntu-24.04-arm", runtime_native_phase.route(plan)["supervisor"]["runner"])
+
+
+class RuntimeNativeBinaryPlanTest(unittest.TestCase):
+    """Real Git derivation; synthetic profiles/projections are not host or trust evidence."""
+
+    @classmethod
+    def setUpClass(cls):
+        temporary = tempfile.TemporaryDirectory(prefix="native-worker-binary-plan-")
+        cls.addClassCleanup(temporary.cleanup)
+        cls.root = Path(temporary.name).resolve()
+        checkout = Path(__file__).resolve().parents[2]
+        abi = "codex-agent-runtime-desktop/native/c-api"
+        for relative in (
+            f"{abi}/abi-contract.json", f"{abi}/binary-flags.json",
+            f"{abi}/include/codex_agent.h", f"{abi}/exports/macos.exports",
+            f"{abi}/exports/linux.map", f"{abi}/exports/windows.def",
+            "codex-agent-runtime-desktop/codex-app-server-distributions.json",
+        ):
+            destination = cls.root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((checkout / relative).read_bytes())
+        cls.profiles = {}
+        for target in NATIVE_TARGETS:
+            profile = cls.root / f"gradle/release/toolchains/runtime/{target}.json"
+            write_canonical_json(profile, {
+                "schemaVersion": 2, "id": target,
+                "producers": [{
+                    "role": role, "runner": {"os": os_name, "arch": arch},
+                    "tools": [{"name": name, "identity": f"synthetic-{name}"}
+                              for name in PROFILE_TOOL_NAMES[(target, role)]],
+                } for role, os_name, arch in PROFILE_SHAPES[target]],
+            })
+            cls.profiles[target] = sha256_bytes(profile.read_bytes())
+        def git(*arguments):
+            return subprocess.run(["git", *arguments], cwd=cls.root, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        git("init", "-q")
+        git("config", "user.email", "fixture@example.invalid")
+        git("config", "user.name", "Synthetic native authority fixture")
+        git("add", ".")
+        git("commit", "-qm", "synthetic authorities; no observed host")
+        cls.revision = git("rev-parse", "HEAD")
+        cls.flags = load_runtime_binary_flags(cls.root / f"{abi}/binary-flags.json")
+        cls.manifest = {
+            "schemaVersion": 1, "product": "contract", "contractVersion": "0.2.0",
+            "contractDigest": FLAGS, "canonicalApiDigest": FLAGS,
+            "canonicalCoverageDigest": FLAGS, "protocolDigest": FLAGS, "capabilityCount": 1,
+            "components": {target: {"mavenPaths": [f"maven/{target}"], "sha256": FLAGS}
+                           for target in NATIVE_TARGETS}, "mavenFiles": [], "evidenceFiles": [],
+        }
+
+    def inputs(self, target):
+        projection = contract_projection.VerifiedContractProjection({
+            "schemaVersion": 1, "receiptSha256": FLAGS,
+            "bundlePath": "outputs/codex-agent-contract-0.2.0.zip", "bundleSha256": FLAGS,
+            "manifestSha256": sha256_bytes(canonical_json_bytes(self.manifest)),
+            "contractVersion": "0.2.0", "contractDigest": FLAGS,
+            "componentDigests": [{"component": target, "sha256": FLAGS}],
+        }, contract_projection._VERIFIED)
+        inventory = phase_git_inventory(self.root, self.revision, PhaseInstanceId("runtime", target, "binary", target))
+        inputs = validate_receipt_inputs({
+            "inventory": inventory, "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
+            "versionIdentity": "0.2.0", "flagsDigest": self.flags[target].digest,
+            "toolchainProfileDigest": self.profiles[target], "outputSchemaVersion": 1,
+            "upstreamArtifacts": [{"product": "contract", "component": "contract", "phase": "metadata",
+                                   "target": "common", "buildKey": FLAGS, "outputsDigest": FLAGS,
+                                   "contractProjection": projection.receipt_value()}],
+        })
+        plan = {"schemaVersion": 1, "product": "runtime", "component": target,
+                "phase": "binary", "target": target, "inputs": inputs}
+        plan["buildKey"] = compute_build_key(product="runtime", component=target, phase="binary", target=target, inputs=inputs)
+        return plan, {"repository_root": self.root, "revision": self.revision,
+                      "contract_projection": projection, "verified_contract_manifest": self.manifest,
+                      "runtime_version": "0.2.4"}
+
+    def test_all_five_complete_plans_pass_the_real_settings_verifier_without_changing_election(self):
+        for target in NATIVE_TARGETS:
+            with self.subTest(target=target):
+                plan, arguments = self.inputs(target)
+                original = canonical_json_bytes(plan)
+                with self.assertRaises(ValueError):
+                    verify_runtime_binary_plan(self.root, self.revision, plan, self.manifest,
+                                               expected_target=target, expected_runtime_version="0.2.4",
+                                               expected_flags_digest=self.flags[target].digest)
+                complete = runtime_native_phase.binary_plan(plan, **arguments)
+                self.assertEqual(set(plan) | {"runtimeBinaryIdentity"}, set(complete))
+                self.assertEqual(original, canonical_json_bytes(plan))
+                self.assertEqual(plan, {key: complete[key] for key in plan})
+                self.assertEqual(complete["runtimeBinaryIdentity"], verify_runtime_binary_plan(
+                    self.root, self.revision, complete, self.manifest, expected_target=target,
+                    expected_runtime_version="0.2.4", expected_flags_digest=self.flags[target].digest))
+                self.assertEqual(plan["buildKey"], complete["runtimeBinaryIdentity"]["binaryBuildKey"])
+                self.assertEqual("0.2.0", complete["runtimeBinaryIdentity"]["runtimeCompatibilityVersion"])
+                self.assertNotIn("supervisor", complete)
+
+    def test_wrong_projection_manifest_version_revision_phase_or_claimed_key_rejects(self):
+        plan, arguments = self.inputs("macos-arm64")
+        for changes in (
+            {"contract_projection": arguments["contract_projection"].receipt_value()},
+            {"contract_projection": self.inputs("macos-x64")[1]["contract_projection"]},
+            {"verified_contract_manifest": {**self.manifest, "contractDigest": "sha256:" + "4" * 64}},
+            {"runtime_version": "0.3.0"}, {"revision": "HEAD"}, {"revision": "0" * 40},
+        ):
+            with self.subTest(changes=changes), self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                runtime_native_phase.binary_plan(plan, **{**arguments, **changes})
+        for changes in ({"phase": "package"}, {"buildKey": "sha256:" + "4" * 64},
+                        {"runtimeBinaryIdentity": {}}, {"target": "macos-x64"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                runtime_native_phase.binary_plan({**plan, **changes}, **arguments)
+
+    def test_coherent_wrong_flags_profile_and_changed_checkout_reject(self):
+        plan, arguments = self.inputs("linux-arm64")
+        for field in ("flagsDigest", "toolchainProfileDigest"):
+            altered = copy.deepcopy(plan)
+            altered["inputs"][field] = "sha256:" + "4" * 64
+            altered["buildKey"] = compute_build_key(product="runtime", component="linux-arm64", phase="binary",
+                                                     target="linux-arm64", inputs=altered["inputs"])
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                runtime_native_phase.binary_plan(altered, **arguments)
+        source = self.root / "codex-agent-runtime-desktop/native/c-api/include/codex_agent.h"
+        original = source.read_bytes()
+        try:
+            source.write_bytes(original + b"\n/* unplanned checkout bytes */\n")
+            with self.assertRaisesRegex(ValueError, "checkout bytes"):
+                runtime_native_phase.binary_plan(plan, **arguments)
+        finally:
+            source.write_bytes(original)

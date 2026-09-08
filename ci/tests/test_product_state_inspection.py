@@ -154,6 +154,30 @@ class ProductStateInspectionTest(unittest.TestCase):
 class RuntimeMatrixControlTest(unittest.TestCase):
     """Control translation only; synthetic inspected rows are not admission proof."""
 
+    def test_worker_command_keeps_fixed_task_and_windows_arguments_out_of_a_shell(self):
+        wrapper = "/fixture path/gradlew"
+        properties = {"codexAgent.phase": "package", "codexAgent.product": "runtime"}
+        with mock.patch.object(adapter.os, "name", "posix"):
+            command = adapter._runtime_worker_command(wrapper, properties, {})
+        self.assertEqual([wrapper, "--offline", "--no-daemon", "--configuration-cache",
+            "--configuration-cache-problems=fail", "-p", "runtime", "ciProductPhase",
+            "-PcodexAgent.phase=package", "-PcodexAgent.product=runtime"], command)
+        wrapper = "C:\\fixture path\\gradlew.bat"
+        with mock.patch.object(adapter.os, "name", "nt"):
+            environment = {"JAVA_HOME": "C:\\java path", "ComSpec": "never-invoked"}
+            command = adapter._runtime_worker_command(wrapper, properties, environment)
+            self.assertEqual(["C:\\java path\\bin\\java.exe", "-Xmx64m", "-Xms64m",
+                "-Dorg.gradle.appname=gradlew", "-jar",
+                "C:\\fixture path\\gradle\\wrapper\\gradle-wrapper.jar"], command[:6])
+            self.assertNotIn("never-invoked", command)
+            for character in '&|<>()^%!':
+                with self.subTest(character=character):
+                    command = adapter._runtime_worker_command(wrapper,
+                        {"codexAgent.contractPayload": f"C:\\a{character}b"}, environment)
+                    self.assertEqual(f"-PcodexAgent.contractPayload=C:\\a{character}b", command[-1])
+            with self.assertRaisesRegex(ValueError, "JAVA_HOME"):
+                adapter._runtime_worker_command(wrapper, properties, {})
+
     def test_only_standalone_runtime_rows_are_routed_and_profile_mismatch_fails(self):
         common = {"schemaVersion": 1, "buildKey": "sha256:" + "1" * 64,
                   "inputs": {"toolchainProfileDigest": adapter.NOT_APPLICABLE_TOOLCHAIN_DIGEST}}

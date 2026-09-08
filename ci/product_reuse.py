@@ -7,12 +7,14 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import os
+import ntpath
 from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from typing import Any, Mapping
 
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
@@ -52,6 +54,7 @@ from products.registry import (
     PhaseInstanceId,
     phase_instance_dependencies,
     required_toolchain_profile,
+    required_contract_components,
 )
 from products.index import _verify_index_receipt
 from products.plan import (
@@ -81,6 +84,7 @@ from products.restore import (
     verify_object,
     verify_phase_shard,
     write_carrier,
+    finalize_phase_object,
 )
 from products.receipt import validate_producer, verify_output_manifest_identity
 from products.reuse import (
@@ -2363,6 +2367,10 @@ def prepare_runtime_phase(
     state = _verified_product_state(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling)
+    return _prepare_runtime_phase(state, instance, destination, expected_build_key, root)
+
+
+def _prepare_runtime_phase(state, instance, destination, expected_build_key, root):
     evidence = state.rebased_request["contractEvidence"]
     if evidence is None or evidence["expectedTrustDomain"] != "release":
         raise ValueError("Runtime worker requires authenticated release Contract evidence")
@@ -2419,7 +2427,7 @@ def prepare_runtime_phase(
             if read_regular_file_bytes(retained) != read_regular_file_bytes(
                     handoff / f"execution-closure/receipts/{phase}.json"):
                 raise ValueError("Runtime worker Contract closure rewrites an original receipt")
-        verify_contract_attestation(
+        manifest, _, _ = verify_contract_attestation(
             handoff / f"{stem}.zip", contract["receiptPath"],
             handoff / f"{stem}.attestation.json", handoff / f"{stem}.attestation.sig",
             handoff / "public-key.pub", required_trust_domain="release",
@@ -2438,6 +2446,21 @@ def prepare_runtime_phase(
         }
         if instance.component in NATIVE_TARGETS:
             from runtime_native_phase import properties as native_properties
+            binary_plan_path = inputs / "phase-plan.json"
+            if instance.phase == "binary":
+                from products.contract_projection import verify_contract_component_projection
+                from runtime_native_phase import binary_plan
+                projection = verify_contract_component_projection(
+                    contract["stage"], contract["receiptPath"],
+                    handoff / f"{stem}.attestation.json", handoff / f"{stem}.attestation.sig",
+                    handoff / "public-key.pub", expected_trust_domain="release",
+                    expected_contract_version=version, required_components=required_contract_components(instance),
+                    keyring=trust.keyring, keys_directory=trust.keys)
+                binary_plan_path = prepared / "runtime-binary-plan.json"
+                write_canonical_json(binary_plan_path, binary_plan(
+                    ready, repository_root=root, revision=state.producer["commit"],
+                    contract_projection=projection, verified_contract_manifest=manifest,
+                    runtime_version=state.expected_fixed["versions"]["runtime-release"]))
 
             def report(component, target):
                 dependency = PhaseInstanceId("runtime", component, "validation", target)
@@ -2445,7 +2468,7 @@ def prepare_runtime_phase(
                 return _runtime_report_output(instance, dependency, value["stage"], value["receipt"])
 
             specific = native_properties(
-                ready, plan_path=inputs / "phase-plan.json", revision=state.producer["commit"],
+                ready, plan_path=binary_plan_path, revision=state.producer["commit"],
                 predecessor=predecessor,
                 output=lambda component, phase, target, kind: one_output(predecessor(component, phase, target), kind),
                 report=report)
@@ -2469,6 +2492,136 @@ def prepare_runtime_phase(
         write_canonical_json(prepared / "gradle-properties.json", properties)
         publish_regular_tree(prepared, destination)
     return properties
+
+
+def _runtime_worker_checkout(root, producer):
+    if (_git_value(root, "rev-parse", "HEAD") != producer["commit"]
+            or _git_value(root, "rev-parse", "HEAD^{tree}") != producer["tree"]
+            or _git_value(root, "diff", "--name-only", "HEAD")):
+        raise ValueError("Runtime worker requires the exact unchanged tracked checkout")
+    untracked = _git_value(root, "ls-files", "--others", "--",
+                          "runtime", "codex-agent-runtime-desktop", "ci", "gradle", "legal", "build-logic",
+                          ":(glob)**/*.py", ":(glob)**/*.pyc", ":(glob)**/*.pyo",
+                          "sitecustomize", "usercustomize", ":(glob)sitecustomize.*", ":(glob)usercustomize.*",
+                          ":(exclude).codex/**", ":(exclude)**/build/**",
+                          ":(exclude)**/.gradle/**", ":(exclude)**/__pycache__/**")
+    if untracked:
+        raise ValueError("Runtime worker rejects untracked source or build policy")
+
+
+def _runtime_worker_command(wrapper, properties, environment):
+    command = [str(wrapper), "--offline", "--no-daemon", "--configuration-cache",
+               "--configuration-cache-problems=fail", "-p", "runtime", "ciProductPhase",
+               *(f"-P{key}={value}" for key, value in sorted(properties.items()))]
+    if os.name == "nt":
+        java_home = environment.get("JAVA_HOME", "")
+        if not ntpath.isabs(java_home):
+            raise ValueError("Windows Runtime worker requires absolute JAVA_HOME")
+        # Use the exact launcher used by gradlew.bat, without a command shell.
+        command = [ntpath.join(java_home, "bin", "java.exe"), "-Xmx64m", "-Xms64m",
+                   "-Dorg.gradle.appname=gradlew", "-jar",
+                   ntpath.join(ntpath.dirname(str(wrapper)), "gradle", "wrapper", "gradle-wrapper.jar"),
+                   *command[1:]]
+    return command
+
+
+def execute_runtime_phase(
+    plan_path: Path, discovery_root: Path, state_root: Path | None,
+    instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute the fixed phase, retaining diagnostics separately from its shard.
+
+    No imported result, command or success callback can finalize a phase here.
+    A failed process keeps inputs/logs for diagnosis and never creates a shard.
+    """
+    from native_wrappers import HOSTS, host_classifier
+    from runtime_native_phase import route as native_route
+    from runtime_adapter_phase import route as adapter_route, preflight as adapter_preflight
+
+    if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime" or instance.component == "runtime-aggregate":
+        raise ValueError("Unsupported Runtime worker phase")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime execution destination must not exist")
+    environment = dict(os.environ if environ is None else environ)
+    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
+    ready = state.prior_ready_plans.get(instance)
+    if ready is None or ready["buildKey"] != expected_build_key:
+        raise ValueError("Runtime worker is not ready with the expected elected build key")
+    route = (native_route if instance.component in NATIVE_TARGETS else adapter_route)(ready)
+    host = host_classifier()
+    if HOSTS[host][2:4] != (route["runnerOs"], route["runnerArch"]):
+        raise ValueError("Runtime worker actual host differs from its elected route")
+    if route["supervisor"] is not None:
+        raise ValueError("Linux Arm64 binary requires the independent authenticated supervisor handoff")
+    _runtime_worker_checkout(root, state.producer)
+    for name in environment:
+        if (name.startswith("ORG_GRADLE_PROJECT_") or name in {
+                "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_OPTS",
+                "GRADLE_OPTS", "NODE_OPTIONS"}) and environment[name]:
+            raise ValueError(f"Runtime worker rejects injected execution option: {name}")
+    gradle_home = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
+    if not gradle_home.is_absolute():
+        raise ValueError("Runtime worker Gradle user home must be absolute")
+    for name in ("init.gradle", "init.gradle.kts", "init.d", "gradle.properties"):
+        path = gradle_home / name
+        if path.exists() or path.is_symlink():
+            raise ValueError("Runtime worker rejects external Gradle initialization/properties")
+    environment.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
+                        "PYTHONSAFEPATH": "1", "PYTHONPATH": str(root),
+                        "PYTHONPYCACHEPREFIX": str(destination / "python-bytecode"),
+                        "npm_config_offline": "true", "npm_config_audit": "false", "npm_config_fund": "false"})
+    for name in ("PYTHONHOME", "PYTHONINSPECT", "PYTHONSTARTUP"):
+        environment.pop(name, None)
+    wrapper = root / ("gradlew.bat" if os.name == "nt" else "gradlew")
+    if read_regular_file_bytes(wrapper, reject_symlink_parents=True) != git_regular_blob_bytes(
+            root, state.producer["commit"], wrapper.name, max_bytes=64 * 1024):
+        raise ValueError("Runtime worker wrapper differs from its exact Git source")
+    if os.name == "nt":
+        launcher = "gradle/wrapper/gradle-wrapper.jar"
+        if read_regular_file_bytes(root / launcher, reject_symlink_parents=True) != git_regular_blob_bytes(
+                root, state.producer["commit"], launcher, max_bytes=1024 * 1024):
+            raise ValueError("Runtime worker launcher differs from its exact Git source")
+    stage = root / f"codex-agent-runtime-desktop/build/product-stage/runtime/{instance.component}/{instance.phase}"
+    if instance.phase == "validation" and instance.component not in NATIVE_TARGETS:
+        stage /= instance.target
+    if stage == destination or stage in destination.parents or destination in stage.parents:
+        raise ValueError("Runtime worker evidence and product stage must not overlap")
+    if stage.exists() or stage.is_symlink():
+        raise ValueError("Runtime worker refuses a pre-existing output stage")
+    # Validate every existing parent without erasing any previous product bytes.
+    _prepare_destination(stage, root).rmdir()
+    observation = {} if instance.component in NATIVE_TARGETS else adapter_preflight(
+        ready, repository_root=root, environ=environment)
+    properties = _prepare_runtime_phase(state, instance, destination / "inputs", expected_build_key, root)
+    input_inventory = regular_file_inventory(destination / "inputs")
+    _runtime_worker_checkout(root, state.producer)
+    if stage.exists() or stage.is_symlink():
+        raise ValueError("Runtime worker output stage appeared before execution")
+    command = _runtime_worker_command(wrapper, properties, environment)
+    started = time.monotonic_ns()
+    with (destination / "gradle.log").open("xb") as log:
+        completed = subprocess.run(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT, check=False)
+    write_canonical_json(destination / "execution.json", {
+        "schemaVersion": 1, "producer": state.producer, "buildKey": ready["buildKey"],
+        "command": command, "host": host, "observations": observation,
+        "returnCode": completed.returncode, "elapsedNs": time.monotonic_ns() - started,
+    })
+    if completed.returncode != 0:
+        raise ValueError(f"Runtime phase failed with exit code {completed.returncode}; see {destination / 'gradle.log'}")
+    _runtime_worker_checkout(root, state.producer)
+    if (destination / "python-bytecode").exists() or (destination / "python-bytecode").is_symlink():
+        raise ValueError("Runtime worker private Python bytecode namespace was modified")
+    if input_inventory != regular_file_inventory(destination / "inputs"):
+        raise ValueError("Runtime worker inputs changed during execution")
+    return finalize_phase_object(
+        stage_root=stage, phase_plan=ready, producer=state.producer,
+        product_version=state.expected_fixed["versions"]["runtime-release"],
+        trust_domain="development" if state.plan["event"] == "pull_request" else "release",
+        destination=destination / "shard")
 
 
 def advance_products(
@@ -3275,7 +3428,7 @@ def parser() -> argparse.ArgumentParser:
         matrix_command.add_argument(f"--{argument}", type=Path, required=True)
     matrix_command.add_argument("--state-root", type=Path)
     matrix_command.add_argument("--sdk-validation-tooling", type=Path)
-    for name in ("materialize-product-predecessors", "prepare-runtime-phase"):
+    for name in ("materialize-product-predecessors", "prepare-runtime-phase", "execute-runtime-phase"):
         predecessors_command = commands.add_parser(name)
         for argument in ("plan", "discovery-root", "destination"):
             predecessors_command.add_argument(f"--{argument}", type=Path, required=True)
@@ -3366,9 +3519,10 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 arguments.contract_handoff, arguments.destination, arguments.github_output,
                 sdk_validation_tooling=tooling)
-        elif arguments.command in {"materialize-product-predecessors", "prepare-runtime-phase"}:
-            operation = (prepare_runtime_phase if arguments.command == "prepare-runtime-phase"
-                         else materialize_product_predecessors)
+        elif arguments.command in {"materialize-product-predecessors", "prepare-runtime-phase", "execute-runtime-phase"}:
+            operation = {"materialize-product-predecessors": materialize_product_predecessors,
+                         "prepare-runtime-phase": prepare_runtime_phase,
+                         "execute-runtime-phase": execute_runtime_phase}[arguments.command]
             operation(
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 PhaseInstanceId(arguments.product, arguments.component, arguments.phase, arguments.target),

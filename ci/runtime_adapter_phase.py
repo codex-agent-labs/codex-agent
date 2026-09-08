@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
+import shutil
+import subprocess
 from typing import Any
 
 from products.inventory import require_regular_directory, require_semver
 from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, RUNTIME_ADAPTERS
+from products.runtime_evidence import PINNED_NODE_VERSION
 
 
 def _identity(plan: Mapping[str, Any]) -> tuple[str, str, str, str]:
@@ -40,6 +43,30 @@ def route(plan: Mapping[str, Any]) -> dict[str, Any]:
     # The registry assigns toolchain profiles only to native Runtime binary phases.
     return {"runner": runner, "runnerOs": runner_os, "runnerArch": runner_arch,
             "toolchainProfile": None, "producerRole": None, "supervisor": None}
+
+
+def preflight(
+    plan: Mapping[str, Any], *, repository_root: Path, environ: Mapping[str, str],
+) -> dict[str, str]:
+    """Observe required Node only; the shared worker owns host/environment checks.
+
+The caller supplies the sanitized execution environment. The fixed observation
+does not authenticate a compiler, assign a profile, or replace runtime tests.
+"""
+    _, component, phase, _ = _identity(plan)
+    if component == "jvm" or phase not in {"binary", "validation"}:
+        return {}
+    executable = shutil.which("node", path=environ.get("PATH", ""))
+    if executable is None:
+        raise ValueError("Runtime adapter requires installed Node")
+    node = Path(executable).resolve(strict=True)
+    observed = subprocess.run(
+        [str(node), "--version"], cwd=repository_root, env=dict(environ),
+        check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30,
+    )
+    if observed.returncode != 0 or observed.stdout.decode("ascii").strip() != f"v{PINNED_NODE_VERSION}":
+        raise ValueError(f"Runtime adapter requires exactly Node v{PINNED_NODE_VERSION}")
+    return {"nodeExecutable": str(node), "nodeVersion": PINNED_NODE_VERSION}
 
 
 def _directory(value: Path, label: str) -> str:
