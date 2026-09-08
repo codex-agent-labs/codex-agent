@@ -1280,6 +1280,8 @@ class ProductSelectionTest(unittest.TestCase):
             "ci/legacy_lanes.py",
             "ci/product_legacy.py",
             "ci/product_reuse.py",
+            "ci/runtime_native_phase.py",
+            "ci/runtime_adapter_phase.py",
             "ci/contract_release.py",
             "ci/products/contract_projection.py",
             "ci/products/plan.py",

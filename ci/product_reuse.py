@@ -2249,17 +2249,7 @@ def inspect_products(
             "readyPlans": [state.prior_ready_plans[instance] for instance in sorted(state.prior_ready_plans)]}
 
 
-def materialize_product_predecessors(
-    plan_path: Path, discovery_root: Path, state_root: Path | None,
-    instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
-    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
-    sdk_validation_tooling: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Restore the full original closure, not new evidence or execution authority."""
-    expected_build_key = require_sha256(expected_build_key, "Expected elected build key")
-    if instance not in PHASE_INSTANCE_IDS:
-        raise ValueError("Unknown product phase instance")
-    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+def _product_materialization_paths(root, discovery_root, state_root, destination):
     discovery_root = Path(os.path.abspath(discovery_root))
     state_root = discovery_root if state_root is None else Path(os.path.abspath(state_root))
     destination = Path(os.path.abspath(destination))
@@ -2275,9 +2265,13 @@ def materialize_product_predecessors(
                                          for parent in (source, *source.parents))
         ):
             raise ValueError("Product materialization destination overlaps original state")
-    state = _verified_product_state(
-        plan_path, discovery_root, state_root, root,
-        os.environ if environ is None else environ, sdk_validation_tooling)
+    return discovery_root, state_root, destination
+
+
+def _materialize_product_predecessors(state, instance, destination, expected_build_key, root):
+    expected_build_key = require_sha256(expected_build_key, "Expected elected build key")
+    if instance not in PHASE_INSTANCE_IDS:
+        raise ValueError("Unknown product phase instance")
     ready = state.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("Product phase is not ready with the expected elected build key")
@@ -2305,6 +2299,145 @@ def materialize_product_predecessors(
         write_canonical_json(prepared / "producer.json", state.producer)
         publish_regular_tree(prepared, destination)
     return ready
+
+
+def materialize_product_predecessors(
+    plan_path: Path, discovery_root: Path, state_root: Path | None,
+    instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Restore the full original closure, not new evidence or execution authority."""
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(
+        root, discovery_root, state_root, destination)
+    state = _verified_product_state(
+        plan_path, discovery_root, state_root, root,
+        os.environ if environ is None else environ, sdk_validation_tooling)
+    return _materialize_product_predecessors(state, instance, destination, expected_build_key, root)
+
+
+def prepare_runtime_phase(
+    plan_path: Path, discovery_root: Path, state_root: Path | None,
+    instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
+    repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """Prepare original worker inputs; never execute or grant hosted acceptance."""
+    if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime" or instance.component == "runtime-aggregate":
+        raise ValueError("Unsupported Runtime worker phase")
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(
+        root, discovery_root, state_root, destination)
+    state = _verified_product_state(
+        plan_path, discovery_root, state_root, root,
+        os.environ if environ is None else environ, sdk_validation_tooling)
+    evidence = state.rebased_request["contractEvidence"]
+    if evidence is None or evidence["expectedTrustDomain"] != "release":
+        raise ValueError("Runtime worker requires authenticated release Contract evidence")
+    destination = _prepare_destination(destination, root)
+    destination.rmdir()
+    with tempfile.TemporaryDirectory(prefix="codex-agent-runtime-worker-", dir=root) as temporary:
+        prepared = Path(temporary).resolve() / "worker"
+        prepared.mkdir()
+        trust = _release_trust(root, state.plan["validationCommit"], prepared)
+        if trust is None:
+            raise ValueError("Runtime worker requires Git-authoritative release policy")
+        inputs = prepared / "predecessors"
+        ready = _materialize_product_predecessors(state, instance, inputs, expected_build_key, root)
+
+        def original(product, component, phase, target):
+            dependency = PhaseInstanceId(product, component, phase, target)
+            if dependency == instance or dependency not in _dependency_closure((instance,)):
+                raise ValueError("Runtime worker requested an unrelated predecessor")
+            directory = inputs / "-".join((product, component, phase, target))
+            receipt_path = directory / "phase-receipt.json"
+            receipt = _canonical_control(receipt_path, "Original worker receipt")
+            manifest = verify_output_manifest_identity(
+                directory / "stage", product, component, phase, target, receipt["productVersion"])
+            if manifest["outputs"] != receipt["outputs"]:
+                raise ValueError("Runtime worker predecessor differs from its original receipt")
+            return {"stage": directory / "stage", "receiptPath": receipt_path, "receipt": receipt}
+
+        def predecessor(component, phase, target):
+            return original("runtime", component, phase, target)
+
+        def one_output(value, kind):
+            outputs = [record for record in value["receipt"]["outputs"] if record["kind"] == kind]
+            if len(outputs) != 1:
+                raise ValueError(f"Runtime worker requires one exact original {kind} output")
+            return value["stage"] / outputs[0]["relativePath"]
+
+        contract = original("contract", "contract", "metadata", "common")
+        version = contract["receipt"]["productVersion"]
+        stem = f"codex-agent-contract-{version}"
+        handoff = prepared / "contract-input"
+        handoff.mkdir()
+        for source, name, limit in (
+            (one_output(contract, "contract-bundle"), f"{stem}.zip", 512 * 1024 * 1024),
+            (root / evidence["attestation"], f"{stem}.attestation.json", 16 * 1024 * 1024),
+            (root / evidence["attestationSignature"], f"{stem}.attestation.sig", 1024 * 1024),
+            (root / evidence["publicKey"], "public-key.pub", 1024 * 1024),
+        ):
+            (handoff / name).write_bytes(read_regular_file_bytes(
+                source, max_bytes=limit, reject_symlink_parents=True))
+        snapshot_regular_tree((root / evidence["attestation"]).parent / "execution-closure",
+                              handoff / "execution-closure")
+        for phase in ("binary", "package", "validation", "metadata"):
+            retained = original("contract", "contract", phase, "common")["receiptPath"]
+            if read_regular_file_bytes(retained) != read_regular_file_bytes(
+                    handoff / f"execution-closure/receipts/{phase}.json"):
+                raise ValueError("Runtime worker Contract closure rewrites an original receipt")
+        verify_contract_attestation(
+            handoff / f"{stem}.zip", contract["receiptPath"],
+            handoff / f"{stem}.attestation.json", handoff / f"{stem}.attestation.sig",
+            handoff / "public-key.pub", required_trust_domain="release",
+            keyring=trust.keyring, keys_directory=trust.keys)
+        properties = {
+            **{f"codexAgent.{key}": value for key, value in _identity_record(instance).items()},
+            "codexAgent.contractVersion": version,
+            "codexAgent.runtimeVersion": state.expected_fixed["versions"]["runtime-release"],
+            "codexAgent.candidateCommit": state.producer["commit"],
+            "codexAgent.candidateTree": state.producer["tree"],
+            "codexAgent.contractPayload": str(handoff / f"{stem}.zip"),
+            "codexAgent.contractMetadataReceipt": str(contract["receiptPath"]),
+            "codexAgent.contractAttestation": str(handoff / f"{stem}.attestation.json"),
+            "codexAgent.contractAttestationSignature": str(handoff / f"{stem}.attestation.sig"),
+            "codexAgent.contractPublicKey": str(handoff / "public-key.pub"),
+        }
+        if instance.component in NATIVE_TARGETS:
+            from runtime_native_phase import properties as native_properties
+
+            def report(component, target):
+                dependency = PhaseInstanceId("runtime", component, "validation", target)
+                value = predecessor(component, "validation", target)
+                return _runtime_report_output(instance, dependency, value["stage"], value["receipt"])
+
+            specific = native_properties(
+                ready, plan_path=inputs / "phase-plan.json", revision=state.producer["commit"],
+                predecessor=predecessor,
+                output=lambda component, phase, target, kind: one_output(predecessor(component, phase, target), kind),
+                report=report)
+        else:
+            from runtime_adapter_phase import properties as adapter_properties
+            validation_handoff = None
+            if instance.phase == "metadata":
+                _materialize_runtime_validation_handoffs(
+                    (instance,), state.prior_by_instance, state.sources,
+                    prepared / "runtime-validation", root)
+                validation_handoff = prepared / f"runtime-validation/{instance.component}-{instance.target}"
+            specific = adapter_properties(ready, predecessor=predecessor, validation_handoff=validation_handoff)
+        if properties.keys() & specific.keys():
+            raise ValueError("Runtime family properties override common verified identity")
+        properties.update(specific)
+        properties = {
+            key: str(destination / Path(value).relative_to(prepared))
+            if value.startswith(str(prepared) + os.sep) else value
+            for key, value in properties.items()
+        }
+        write_canonical_json(prepared / "gradle-properties.json", properties)
+        publish_regular_tree(prepared, destination)
+    return properties
 
 
 def advance_products(
@@ -3085,14 +3218,15 @@ def parser() -> argparse.ArgumentParser:
     materialize_command.add_argument("--phase", required=True)
     materialize_command.add_argument("--destination", type=Path, required=True)
     materialize_command.add_argument("--with-receipt", action="store_true")
-    predecessors_command = commands.add_parser("materialize-product-predecessors")
-    for name in ("plan", "discovery-root", "destination"):
-        predecessors_command.add_argument(f"--{name}", type=Path, required=True)
-    predecessors_command.add_argument("--state-root", type=Path)
-    for name in (*_IDENTITY_KEYS, "expected-build-key"):
-        predecessors_command.add_argument(f"--{name}", required=True)
-    predecessors_command.add_argument("--sdk-validation-tooling", type=Path,
-                                      help="Current caller-owned tooling policy JSON")
+    for name in ("materialize-product-predecessors", "prepare-runtime-phase"):
+        predecessors_command = commands.add_parser(name)
+        for argument in ("plan", "discovery-root", "destination"):
+            predecessors_command.add_argument(f"--{argument}", type=Path, required=True)
+        predecessors_command.add_argument("--state-root", type=Path)
+        for argument in (*_IDENTITY_KEYS, "expected-build-key"):
+            predecessors_command.add_argument(f"--{argument}", required=True)
+        predecessors_command.add_argument("--sdk-validation-tooling", type=Path,
+                                          help="Current caller-owned tooling policy JSON")
     capture_command = commands.add_parser("capture-contract-ci")
     capture_command.add_argument("--destination", type=Path, required=True)
     capture_command.add_argument("--artifact-id", type=int, required=True)
@@ -3167,8 +3301,10 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 arguments.contract_handoff, arguments.destination, arguments.github_output,
                 sdk_validation_tooling=tooling)
-        elif arguments.command == "materialize-product-predecessors":
-            materialize_product_predecessors(
+        elif arguments.command in {"materialize-product-predecessors", "prepare-runtime-phase"}:
+            operation = (prepare_runtime_phase if arguments.command == "prepare-runtime-phase"
+                         else materialize_product_predecessors)
+            operation(
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 PhaseInstanceId(arguments.product, arguments.component, arguments.phase, arguments.target),
                 arguments.destination, expected_build_key=arguments.expected_build_key,
