@@ -2284,6 +2284,10 @@ def inspect_products(
             "readyPlans": [state.prior_ready_plans[instance] for instance in sorted(state.prior_ready_plans)]}
 
 
+def _runtime_worker_instance(instance):
+    return instance.product == "runtime" and instance.component != "runtime-aggregate"
+
+
 def runtime_worker_matrix(
     plan_path: Path, discovery_root: Path, state_root: Path | None = None, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
@@ -2303,7 +2307,7 @@ def runtime_worker_matrix(
     rows = []
     for plan in inspected["readyPlans"]:
         instance = _identity(plan)
-        if instance.product != "runtime" or instance.component == "runtime-aggregate":
+        if not _runtime_worker_instance(instance):
             continue
         route = (native_route if instance.component in NATIVE_TARGETS else adapter_route)(plan)
         profile = required_toolchain_profile(instance)
@@ -2725,6 +2729,100 @@ def execute_runtime_phase(
         destination=destination / "shard")
 
 
+def collect_runtime_workers(
+    plan_path: Path, discovery_root: Path, state_root: Path | None, destination: Path, *,
+    trusted_workflow_sha: str, repository_root: Path | None = None,
+    environ: Mapping[str, str] | None = None, token: str,
+    sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Collect every elected Runtime row; failed siblings cannot erase originals.
+
+    This external report is not receipt authority. advance_products verifies
+    successful original shards again and enforces its exact elected partition.
+    """
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime collection destination must not exist")
+    environment = os.environ if environ is None else environ
+    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
+    producer = state.producer
+    selected = [(instance, ready) for instance, ready in sorted(state.prior_ready_plans.items())
+                if _runtime_worker_instance(instance)]
+    observed, artifacts, jobs = [], [], []
+    if selected:
+        observed = _observe_ci_producer_jobs(
+            {"resume": producer}, jobs_by_phase={"resume": "product-validation / product-resume"},
+            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        jobs = observed[0]["jobs"]
+        artifacts = paginated_items(
+            f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{producer['runId']}/artifacts",
+            "artifacts", token)
+    for instance, _ready in selected:
+        name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+        if any(job.get("name") == name and job.get("status") != "completed" for job in jobs):
+            raise ValueError("An elected Runtime worker is still running; collect after all siblings finish")
+    _prepare_destination(destination, root).rmdir()
+    with tempfile.TemporaryDirectory(prefix="codex-agent-runtime-collection-", dir=root) as temporary:
+        prepared = Path(temporary).resolve() / "collection"
+        prepared.mkdir()
+        rows = []
+        for instance, ready in selected:
+            name = f"{instance.component}-{instance.phase}-{instance.target}"
+            job_name = f"product-validation / runtime-{name}"
+            artifact_name = (f"codex-agent-runtime-worker-{name}-{ready['buildKey'].removeprefix('sha256:')}-"
+                             f"{producer['tree']}-attempt-{producer['runAttempt']}")
+            row = {**_identity_record(instance), "buildKey": ready["buildKey"],
+                   "jobName": job_name, "artifactName": artifact_name, "result": "failure", "reason": None,
+                   "artifact": None, "originalDirectory": None, "shardDirectory": None}
+            rows.append(row)
+            try:
+                matching_jobs = [job for job in jobs if job.get("name") == job_name]
+                if len(matching_jobs) != 1:
+                    raise ValueError("Runtime worker job is missing or ambiguous")
+                job = matching_jobs[0]
+                require_integer(job.get("id"), "Runtime worker job ID", 1)
+                if (require_integer(job.get("run_id"), "Runtime worker job run", 1) != producer["runId"]
+                        or job.get("head_sha") != observed[0]["run"]["head_sha"]):
+                    raise ValueError("Runtime worker job differs from the original producer")
+                candidates = [item for item in artifacts if isinstance(item, dict) and item.get("name") == artifact_name]
+                if len(candidates) != 1:
+                    raise ValueError("Runtime worker upload is missing or ambiguous")
+                candidate = candidates[0]
+                artifact, raw = _download_contract_ci_upload(
+                    candidate.get("id"), candidate.get("digest"), artifact_name, producer, observed[0]["run"], token)
+                timestamps = [datetime.fromisoformat(require_string(value, "Runtime worker timestamp").replace("Z", "+00:00"))
+                              for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
+                if (any(value.utcoffset() != timedelta(0) for value in timestamps)
+                        or not timestamps[0] <= timestamps[1] <= timestamps[2]):
+                    raise ValueError("Runtime upload is outside its original job-attempt window")
+                row["artifact"] = artifact
+                retained = prepared / "rows" / name
+                retained.mkdir(parents=True)
+                archive = retained / "transport.zip"
+                archive.write_bytes(raw)
+                verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                original = retained / "original"
+                safe_extract(archive, original)
+                row["originalDirectory"] = original.relative_to(prepared).as_posix()
+                if job.get("conclusion") != "success":
+                    raise ValueError("Runtime worker job did not succeed; original diagnostics retained")
+                verified = verify_phase_shard(original / "shard", instance)
+                receipt = verified["receipt"]
+                if (receipt["producer"] != producer or receipt["buildKey"] != ready["buildKey"]
+                        or receipt["productVersion"] != state.expected_fixed["versions"]["runtime-release"]
+                        or receipt["trustDomain"] != ("development" if state.plan["event"] == "pull_request" else "release")):
+                    raise ValueError("Runtime worker shard differs from its elected plan and producer")
+                row.update(result="success", reason="verified-original-shard",
+                           shardDirectory=(original / "shard").relative_to(prepared).as_posix())
+            except (ValueError, OSError) as error:
+                row["reason"] = str(error)
+        result = {"schemaVersion": 1, "producer": producer, "observed": observed, "rows": rows}
+        write_canonical_json(prepared / "collection.json", result)
+        publish_regular_tree(prepared, destination, allow_empty=True)
+    return result
+
+
 def advance_products(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     shard_roots: list[Path], destination: Path,
@@ -2735,6 +2833,7 @@ def advance_products(
     sdk_evidence_roots: tuple[Path, ...] = (),
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     failed_instances: tuple[PhaseInstanceId, ...] = (),
+    runtime_workers_only: bool = False,
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -2777,6 +2876,11 @@ def advance_products(
     expected_builds = {
         _identity(phase): phase for phase in prior["phases"] if phase["state"] == "build"
     }
+    if type(runtime_workers_only) is not bool:
+        raise ValueError("Runtime worker collection scope must be boolean")
+    if runtime_workers_only:
+        expected_builds = {instance: phase for instance, phase in expected_builds.items()
+                           if _runtime_worker_instance(instance)}
     if (any(type(instance) is not PhaseInstanceId for instance in failed_instances)
             or len(set(failed_instances)) != len(failed_instances)
             or not set(failed_instances) <= set(expected_builds)):
@@ -3591,6 +3695,8 @@ def parser() -> argparse.ArgumentParser:
     products_command.add_argument("--failed-phase", nargs=4, action="append", default=[],
                                   metavar=("PRODUCT", "COMPONENT", "PHASE", "TARGET"),
                                   help="Reported failed worker; never admitted as successful evidence")
+    products_command.add_argument("--runtime-workers-only", action="store_true",
+                                  help="Collect exactly the elected standalone Runtime rows; leave other families ready")
     products_command.add_argument("--destination", type=Path, required=True)
     products_command.add_argument("--github-output", type=Path, required=True)
     products_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
@@ -3619,6 +3725,12 @@ def parser() -> argparse.ArgumentParser:
     runtime_resume_capture.add_argument("--artifact-id", type=int, required=True)
     for name in ("artifact-sha256", "trusted-workflow-sha"):
         runtime_resume_capture.add_argument(f"--{name}", required=True)
+    runtime_collection = commands.add_parser("collect-runtime-workers")
+    for name in ("plan", "discovery-root", "destination"):
+        runtime_collection.add_argument(f"--{name}", type=Path, required=True)
+    runtime_collection.add_argument("--state-root", type=Path)
+    runtime_collection.add_argument("--trusted-workflow-sha", required=True)
+    runtime_collection.add_argument("--sdk-validation-tooling", type=Path)
     supervisor_execute = commands.add_parser("execute-runtime-supervisor")
     for name in ("plan", "discovery-root", "destination"):
         supervisor_execute.add_argument(f"--{name}", type=Path, required=True)
@@ -3710,7 +3822,13 @@ def main(argv: list[str] | None = None) -> int:
                 adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
                 sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
                 failed_instances=tuple(PhaseInstanceId(*value) for value in arguments.failed_phase),
+                **({"runtime_workers_only": True} if arguments.runtime_workers_only else {}),
             )
+        elif arguments.command == "collect-runtime-workers":
+            collect_runtime_workers(
+                arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
+                trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
+                sdk_validation_tooling=tooling)
         elif arguments.command == "runtime-worker-matrix":
             github_output(arguments.github_output, {"runtime_matrix": '{"include":[]}', "runtime_workers_required": False})
             matrix = runtime_worker_matrix(
