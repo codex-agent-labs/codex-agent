@@ -36,6 +36,8 @@ class RuntimeSupervisorWorkerTest(unittest.TestCase):
         self.capture = self.stack.enter_context(mock.patch.object(worker, "capture_runtime_supervisor_upload",
                                                                 return_value={"captureProducer": self.producer}))
         self.content = self.stack.enter_context(mock.patch("runtime_supervisor.verify_supervisor_handoff"))
+        self.stack.enter_context(mock.patch("runtime_native_phase.capture_archive",
+                                           return_value=self.destination / "inputs/app-server-archive"))
         self.supervisor = self.stack.enter_context(mock.patch("runtime_supervisor.execute_supervisor", return_value={"fixture": True}))
         self.process = self.stack.enter_context(mock.patch.object(worker.subprocess, "run", return_value=SimpleNamespace(returncode=0)))
         self.finalize = self.stack.enter_context(mock.patch.object(worker, "finalize_phase_object", return_value={"fixture": True}))
@@ -59,7 +61,7 @@ class RuntimeSupervisorWorkerTest(unittest.TestCase):
             return worker.execute_runtime_phase(
                 self.root / "plan", self.root / "discovery", None, self.instance, self.destination,
                 expected_build_key=self.ready["buildKey"], repository_root=self.root, environ={},
-                supervisor_upload=upload)
+                supervisor_upload=upload, app_server_archive=self.root / "pinned-archive")
 
     def test_supervisor_entry_uses_elected_key_and_in_memory_manifest(self):
         with self.assertRaisesRegex(ValueError, "elected build key"):

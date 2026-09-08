@@ -9,13 +9,23 @@ from collections.abc import Callable
 import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Any
 
-from products.inventory import require_exact_keys, require_semver, require_sha256
+from products.inventory import (
+    git_regular_blob_bytes, publish_regular_tree, read_regular_file_bytes,
+    require_exact_keys, require_regular_directory, require_semver, require_sha256, sha256_bytes,
+)
 from products.contract_projection import VerifiedContractProjection
 from products.plan import attach_runtime_binary_identity
 from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId, required_toolchain_profile
 from products.runtime_identity import verify_runtime_binary_plan
+from products.runtime_evidence import PRODUCT_RUNTIME_TARGETS, read_distribution_manifest
+from products.receipt import compute_build_key, validate_receipt_inputs
+
+
+_DISTRIBUTION_MANIFEST = "codex-agent-runtime-desktop/codex-app-server-distributions.json"
+_PINNED_ARCHIVE_LIMIT = 512 * 1024 * 1024
 
 
 _HOSTS = {
@@ -89,6 +99,62 @@ def binary_plan(
         expected_target=value["target"], expected_runtime_version=runtime_version,
         expected_flags_digest=value["inputs"].get("flagsDigest"))
     return complete
+
+
+def capture_archive(
+    plan: dict[str, Any], *, repository_root: Path, revision: str,
+    source: Path, destination: Path,
+) -> Path:
+    """Capture only Git-pinned upstream bytes for the offline native producer.
+
+    The worker already replays the complete plan. No download, unpacking,
+    product receipt or producer provenance is created by this capture.
+    """
+    value = _native_plan(plan)
+    if value["phase"] != "binary":
+        raise ValueError("Pinned app-server capture requires a native binary phase")
+    if type(revision) is not str or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision) is None:
+        raise ValueError("Pinned archive authority requires an exact Git object ID")
+    inputs = validate_receipt_inputs(value["inputs"])
+    if compute_build_key(product="runtime", component=value["component"], phase="binary",
+                         target=value["target"], inputs=inputs) != value["buildKey"]:
+        raise ValueError("Pinned archive plan build key differs from its canonical inputs")
+    source, destination = Path(source), Path(destination)
+    _path(source, "Pinned archive source")
+    _path(destination, "Pinned archive destination")
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Pinned archive destination must not exist")
+    for parent in destination.parents:
+        if parent.exists() or parent.is_symlink():
+            require_regular_directory(parent, "Pinned archive destination ancestor")
+    for left, right in ((source, destination), (source.resolve(strict=True), destination.resolve(strict=False))):
+        if left == right or left in right.parents or right in left.parents:
+            raise ValueError("Pinned archive capture overlaps its original input")
+    manifest_bytes = git_regular_blob_bytes(repository_root, revision, _DISTRIBUTION_MANIFEST,
+                                            max_bytes=1024 * 1024)
+    expected_record = {"relativePath": _DISTRIBUTION_MANIFEST, "bytes": len(manifest_bytes),
+                       "sha256": sha256_bytes(manifest_bytes)}
+    if expected_record not in inputs["inventory"]:
+        raise ValueError("Pinned distribution manifest differs from the elected binary inputs")
+    with tempfile.TemporaryDirectory(prefix="runtime-pinned-archive-") as temporary:
+        private = Path(temporary).resolve()
+        manifest_path = private / "distribution-manifest.json"
+        manifest_path.write_bytes(manifest_bytes)
+        manifest = read_distribution_manifest(manifest_path)
+        selected = next(record for record in manifest.distributions
+                        if PRODUCT_RUNTIME_TARGETS[record.target] == value["target"])
+        if selected.classifier != f"app-server-{value['target']}":
+            raise ValueError("Pinned app-server classifier differs from the selected native target")
+        contents = read_regular_file_bytes(source, max_bytes=_PINNED_ARCHIVE_LIMIT, reject_symlink_parents=True)
+        if not contents or sha256_bytes(contents) != f"sha256:{selected.archive_sha256}":
+            raise ValueError("Pinned app-server archive SHA-256 mismatch")
+        staged = private / "archive"
+        staged.mkdir()
+        (staged / selected.asset).write_bytes(contents)
+        if read_regular_file_bytes(source, max_bytes=_PINNED_ARCHIVE_LIMIT, reject_symlink_parents=True) != contents:
+            raise ValueError("Pinned app-server archive changed during capture")
+        publish_regular_tree(staged, destination)
+    return destination
 
 
 def _path(value: Path, label: str) -> str:

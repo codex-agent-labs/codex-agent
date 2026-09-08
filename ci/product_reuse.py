@@ -2604,6 +2604,7 @@ def execute_runtime_phase(
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     supervisor_upload: Mapping[str, Any] | None = None,
+    app_server_archive: Path | None = None,
 ) -> dict[str, Any]:
     """Execute the fixed phase, retaining diagnostics separately from its shard.
 
@@ -2633,6 +2634,11 @@ def execute_runtime_phase(
         raise ValueError("Linux Arm64 binary requires the independent authenticated supervisor handoff")
     if route["supervisor"] is None and supervisor_upload is not None:
         raise ValueError("Supervisor upload is only valid for Linux Arm64 binary production")
+    needs_archive = instance.component in NATIVE_TARGETS and instance.phase == "binary"
+    if needs_archive and app_server_archive is None:
+        raise ValueError("Native binary requires a pinned app-server archive")
+    if not needs_archive and app_server_archive is not None:
+        raise ValueError("App-server archive is only valid for native binary production")
     environment, wrapper = _runtime_worker_environment(root, state.producer, destination, environment)
     stage = root / f"codex-agent-runtime-desktop/build/product-stage/runtime/{instance.component}/{instance.phase}"
     if instance.phase == "validation" and instance.component not in NATIVE_TARGETS:
@@ -2646,6 +2652,11 @@ def execute_runtime_phase(
     observation = {} if instance.component in NATIVE_TARGETS else adapter_preflight(
         ready, repository_root=root, environ=environment)
     properties, manifest = _prepare_runtime_phase(state, instance, destination / "inputs", expected_build_key, root)
+    if app_server_archive is not None:
+        from runtime_native_phase import capture_archive
+        properties["codexAgent.desktopArchiveDirectory"] = str(capture_archive(
+            ready, repository_root=root, revision=state.producer["commit"],
+            source=app_server_archive, destination=destination / "inputs/app-server-archive"))
     if supervisor_upload is not None:
         from runtime_supervisor import verify_supervisor_handoff
         upload = require_exact_keys(supervisor_upload, {"artifactId", "artifactSha256", "trustedWorkflowSha"},
@@ -3564,6 +3575,8 @@ def parser() -> argparse.ArgumentParser:
         predecessors_command.add_argument("--sdk-validation-tooling", type=Path,
                                           help="Current caller-owned tooling policy JSON")
         if name == "execute-runtime-phase":
+            predecessors_command.add_argument("--app-server-archive", type=Path,
+                                              help="Existing native binary archive; verified against exact Git policy")
             predecessors_command.add_argument("--supervisor-artifact-id", type=int)
             predecessors_command.add_argument("--supervisor-artifact-sha256")
             predecessors_command.add_argument("--supervisor-trusted-workflow-sha")
@@ -3664,6 +3677,8 @@ def main(argv: list[str] | None = None) -> int:
                          "execute-runtime-phase": execute_runtime_phase}[arguments.command]
             additional = {}
             if arguments.command == "execute-runtime-phase":
+                if arguments.app_server_archive is not None:
+                    additional["app_server_archive"] = arguments.app_server_archive
                 values = (arguments.supervisor_artifact_id, arguments.supervisor_artifact_sha256,
                           arguments.supervisor_trusted_workflow_sha)
                 if any(value is not None for value in values):
