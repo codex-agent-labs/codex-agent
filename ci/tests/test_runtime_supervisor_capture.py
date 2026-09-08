@@ -39,7 +39,7 @@ class RuntimeSupervisorCaptureTest(GitFixture):
                     "status": "completed", "conclusion": "success"}
         # Deliberately NOT a valid supervisor closure: transport cannot grant
         # content admission or convert arbitrary files into product evidence.
-        self.raw = archive({"raw-evidence.txt": b"original synthetic bytes\n"})
+        self.raw = archive({"raw-evidence.txt": b"original synthetic bytes\n", "gradle.log": b""})
         self.url = "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/101"
         self.artifact = {
             "id": 101, "digest": sha256_bytes(self.raw), "expired": False,
@@ -69,6 +69,7 @@ class RuntimeSupervisorCaptureTest(GitFixture):
         destination = self.root / "build/supervisor-capture"
         result, query, listing, download = self.capture(destination)
         self.assertEqual(b"original synthetic bytes\n", (destination / "original/raw-evidence.txt").read_bytes())
+        self.assertEqual(b"", (destination / "original/gradle.log").read_bytes())
         self.assertEqual(result, load_canonical_json(destination / "capture-transport.json"))
         self.assertEqual(self.producer, result["captureProducer"])
         self.assertEqual(self.key, result["buildKey"])

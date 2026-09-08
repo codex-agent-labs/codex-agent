@@ -2376,7 +2376,7 @@ def prepare_runtime_phase(
     state = _verified_product_state(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling)
-    return _prepare_runtime_phase(state, instance, destination, expected_build_key, root)
+    return _prepare_runtime_phase(state, instance, destination, expected_build_key, root)[0]
 
 
 def _prepare_runtime_phase(state, instance, destination, expected_build_key, root):
@@ -2500,7 +2500,7 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
         }
         write_canonical_json(prepared / "gradle-properties.json", properties)
         publish_regular_tree(prepared, destination)
-    return properties
+    return properties, manifest
 
 
 def _runtime_worker_checkout(root, producer):
@@ -2534,11 +2534,76 @@ def _runtime_worker_command(wrapper, properties, environment):
     return command
 
 
+def _runtime_worker_environment(root, producer, destination, environ):
+    environment = dict(environ)
+    _runtime_worker_checkout(root, producer)
+    for name in environment:
+        if (name.startswith("ORG_GRADLE_PROJECT_") or name in {
+                "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_OPTS",
+                "GRADLE_OPTS", "NODE_OPTIONS"}) and environment[name]:
+            raise ValueError(f"Runtime worker rejects injected execution option: {name}")
+    gradle_home = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
+    if not gradle_home.is_absolute():
+        raise ValueError("Runtime worker Gradle user home must be absolute")
+    for name in ("init.gradle", "init.gradle.kts", "init.d", "gradle.properties"):
+        path = gradle_home / name
+        if path.exists() or path.is_symlink():
+            raise ValueError("Runtime worker rejects external Gradle initialization/properties")
+    environment.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
+                        "PYTHONSAFEPATH": "1", "PYTHONPATH": str(root),
+                        "PYTHONPYCACHEPREFIX": str(destination / "python-bytecode"),
+                        "npm_config_offline": "true", "npm_config_audit": "false", "npm_config_fund": "false"})
+    for name in ("PYTHONHOME", "PYTHONINSPECT", "PYTHONSTARTUP"):
+        environment.pop(name, None)
+    wrapper = root / ("gradlew.bat" if os.name == "nt" else "gradlew")
+    if read_regular_file_bytes(wrapper, reject_symlink_parents=True) != git_regular_blob_bytes(
+            root, producer["commit"], wrapper.name, max_bytes=64 * 1024):
+        raise ValueError("Runtime worker wrapper differs from its exact Git source")
+    if os.name == "nt":
+        launcher = "gradle/wrapper/gradle-wrapper.jar"
+        if read_regular_file_bytes(root / launcher, reject_symlink_parents=True) != git_regular_blob_bytes(
+                root, producer["commit"], launcher, max_bytes=1024 * 1024):
+            raise ValueError("Runtime worker launcher differs from its exact Git source")
+    return environment, wrapper
+
+
+def execute_runtime_supervisor(
+    plan_path: Path, discovery_root: Path, state_root: Path | None, destination: Path, *,
+    expected_build_key: str, repository_root: Path | None = None,
+    environ: Mapping[str, str] | None = None, sdk_validation_tooling: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    from native_wrappers import host_classifier
+    from runtime_supervisor import execute_supervisor
+
+    root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
+    discovery_root, state_root, destination = _product_materialization_paths(root, discovery_root, state_root, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime supervisor worker destination must not exist")
+    environment = dict(os.environ if environ is None else environ)
+    state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling)
+    instance = PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")
+    ready = state.prior_ready_plans.get(instance)
+    if ready is None or ready["buildKey"] != expected_build_key:
+        raise ValueError("Runtime supervisor is not ready with the expected elected build key")
+    if host_classifier() != "linux-arm64":
+        raise ValueError("Runtime supervisor requires the actual Linux ARM64 host")
+    _runtime_worker_environment(root, state.producer, destination / "supervisor-diagnostics", environment)
+    properties, manifest = _prepare_runtime_phase(state, instance, destination / "inputs", expected_build_key, root)
+    full_plan = _canonical_control(Path(properties["codexAgent.runtimeBinaryPlan"]), "Prepared supervisor binary plan")
+    if canonical_json_bytes({key: value for key, value in full_plan.items() if key != "runtimeBinaryIdentity"}) != canonical_json_bytes(ready):
+        raise ValueError("Prepared supervisor plan differs from the original elected plan")
+    return execute_supervisor(
+        repository_root=root, producer=state.producer, properties=properties, phase_plan=full_plan,
+        contract_manifest=manifest, runtime_version=state.expected_fixed["versions"]["runtime-release"],
+        destination=destination / "supervisor", environ=environment)
+
+
 def execute_runtime_phase(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
+    supervisor_upload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the fixed phase, retaining diagnostics separately from its shard.
 
@@ -2564,36 +2629,11 @@ def execute_runtime_phase(
     host = host_classifier()
     if HOSTS[host][2:4] != (route["runnerOs"], route["runnerArch"]):
         raise ValueError("Runtime worker actual host differs from its elected route")
-    if route["supervisor"] is not None:
+    if route["supervisor"] is not None and supervisor_upload is None:
         raise ValueError("Linux Arm64 binary requires the independent authenticated supervisor handoff")
-    _runtime_worker_checkout(root, state.producer)
-    for name in environment:
-        if (name.startswith("ORG_GRADLE_PROJECT_") or name in {
-                "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_OPTS",
-                "GRADLE_OPTS", "NODE_OPTIONS"}) and environment[name]:
-            raise ValueError(f"Runtime worker rejects injected execution option: {name}")
-    gradle_home = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
-    if not gradle_home.is_absolute():
-        raise ValueError("Runtime worker Gradle user home must be absolute")
-    for name in ("init.gradle", "init.gradle.kts", "init.d", "gradle.properties"):
-        path = gradle_home / name
-        if path.exists() or path.is_symlink():
-            raise ValueError("Runtime worker rejects external Gradle initialization/properties")
-    environment.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
-                        "PYTHONSAFEPATH": "1", "PYTHONPATH": str(root),
-                        "PYTHONPYCACHEPREFIX": str(destination / "python-bytecode"),
-                        "npm_config_offline": "true", "npm_config_audit": "false", "npm_config_fund": "false"})
-    for name in ("PYTHONHOME", "PYTHONINSPECT", "PYTHONSTARTUP"):
-        environment.pop(name, None)
-    wrapper = root / ("gradlew.bat" if os.name == "nt" else "gradlew")
-    if read_regular_file_bytes(wrapper, reject_symlink_parents=True) != git_regular_blob_bytes(
-            root, state.producer["commit"], wrapper.name, max_bytes=64 * 1024):
-        raise ValueError("Runtime worker wrapper differs from its exact Git source")
-    if os.name == "nt":
-        launcher = "gradle/wrapper/gradle-wrapper.jar"
-        if read_regular_file_bytes(root / launcher, reject_symlink_parents=True) != git_regular_blob_bytes(
-                root, state.producer["commit"], launcher, max_bytes=1024 * 1024):
-            raise ValueError("Runtime worker launcher differs from its exact Git source")
+    if route["supervisor"] is None and supervisor_upload is not None:
+        raise ValueError("Supervisor upload is only valid for Linux Arm64 binary production")
+    environment, wrapper = _runtime_worker_environment(root, state.producer, destination, environment)
     stage = root / f"codex-agent-runtime-desktop/build/product-stage/runtime/{instance.component}/{instance.phase}"
     if instance.phase == "validation" and instance.component not in NATIVE_TARGETS:
         stage /= instance.target
@@ -2605,8 +2645,27 @@ def execute_runtime_phase(
     _prepare_destination(stage, root).rmdir()
     observation = {} if instance.component in NATIVE_TARGETS else adapter_preflight(
         ready, repository_root=root, environ=environment)
-    properties = _prepare_runtime_phase(state, instance, destination / "inputs", expected_build_key, root)
-    input_inventory = regular_file_inventory(destination / "inputs")
+    properties, manifest = _prepare_runtime_phase(state, instance, destination / "inputs", expected_build_key, root)
+    if supervisor_upload is not None:
+        from runtime_supervisor import verify_supervisor_handoff
+        upload = require_exact_keys(supervisor_upload, {"artifactId", "artifactSha256", "trustedWorkflowSha"},
+                                    "Caller-bound supervisor upload")
+        captured = destination / "inputs/supervisor-upload"
+        transport = capture_runtime_supervisor_upload(
+            plan_path, captured, artifact_id=upload["artifactId"], artifact_sha256=upload["artifactSha256"],
+            expected_build_key=ready["buildKey"], trusted_workflow_sha=upload["trustedWorkflowSha"],
+            repository_root=root, environ=environment, token=environment.get("GITHUB_TOKEN", ""))
+        if canonical_json_bytes(transport["captureProducer"]) != canonical_json_bytes(state.producer):
+            raise ValueError("Supervisor transport differs from the current elected producer")
+        full_plan = _canonical_control(Path(properties["codexAgent.runtimeBinaryPlan"]), "Prepared binary plan")
+        if canonical_json_bytes({key: value for key, value in full_plan.items() if key != "runtimeBinaryIdentity"}) != canonical_json_bytes(ready):
+            raise ValueError("Prepared binary plan differs from the original elected plan")
+        verify_supervisor_handoff(
+            captured / "original", repository_root=root, revision=state.producer["commit"],
+            phase_plan=full_plan, contract_manifest=manifest, producer=state.producer,
+            runtime_version=state.expected_fixed["versions"]["runtime-release"])
+        properties["codexAgent.desktopSupervisorDirectory"] = str(captured / "original")
+    input_inventory = regular_file_inventory(destination / "inputs", allow_empty=True)
     _runtime_worker_checkout(root, state.producer)
     if stage.exists() or stage.is_symlink():
         raise ValueError("Runtime worker output stage appeared before execution")
@@ -2624,7 +2683,7 @@ def execute_runtime_phase(
     _runtime_worker_checkout(root, state.producer)
     if (destination / "python-bytecode").exists() or (destination / "python-bytecode").is_symlink():
         raise ValueError("Runtime worker private Python bytecode namespace was modified")
-    if input_inventory != regular_file_inventory(destination / "inputs"):
+    if input_inventory != regular_file_inventory(destination / "inputs", allow_empty=True):
         raise ValueError("Runtime worker inputs changed during execution")
     return finalize_phase_object(
         stage_root=stage, phase_plan=ready, producer=state.producer,
@@ -3040,13 +3099,13 @@ def capture_runtime_supervisor_upload(
         private = Path(temporary).resolve()
         archive = private / "transport.zip"
         archive.write_bytes(raw)
-        verified_zip_contents(archive, retained_paths=(), **_CATALOG_ZIP_LIMITS)
+        verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
         prepared = private / "captured"
         safe_extract(archive, prepared / "original")
         evidence = {"artifact": artifact, "captureProducer": producer, "observed": observed,
                     "buildKey": expected_build_key}
         write_canonical_json(prepared / "capture-transport.json", evidence)
-        publish_regular_tree(prepared, destination)
+        publish_regular_tree(prepared, destination, allow_empty=True)
     return evidence
 
 
@@ -3474,6 +3533,12 @@ def parser() -> argparse.ArgumentParser:
     supervisor_capture.add_argument("--artifact-id", type=int, required=True)
     for name in ("artifact-sha256", "expected-build-key", "trusted-workflow-sha"):
         supervisor_capture.add_argument(f"--{name}", required=True)
+    supervisor_execute = commands.add_parser("execute-runtime-supervisor")
+    for name in ("plan", "discovery-root", "destination"):
+        supervisor_execute.add_argument(f"--{name}", type=Path, required=True)
+    supervisor_execute.add_argument("--state-root", type=Path)
+    supervisor_execute.add_argument("--expected-build-key", required=True)
+    supervisor_execute.add_argument("--sdk-validation-tooling", type=Path)
     for command in (discover_command, products_command):
         command.add_argument("--sdk-validation-evidence", type=Path, action="append", default=[])
         command.add_argument("--sdk-validation-tooling", type=Path,
@@ -3498,6 +3563,10 @@ def parser() -> argparse.ArgumentParser:
             predecessors_command.add_argument(f"--{argument}", required=True)
         predecessors_command.add_argument("--sdk-validation-tooling", type=Path,
                                           help="Current caller-owned tooling policy JSON")
+        if name == "execute-runtime-phase":
+            predecessors_command.add_argument("--supervisor-artifact-id", type=int)
+            predecessors_command.add_argument("--supervisor-artifact-sha256")
+            predecessors_command.add_argument("--supervisor-trusted-workflow-sha")
     capture_command = commands.add_parser("capture-contract-ci")
     capture_command.add_argument("--destination", type=Path, required=True)
     capture_command.add_argument("--artifact-id", type=int, required=True)
@@ -3568,6 +3637,10 @@ def main(argv: list[str] | None = None) -> int:
                 transport_producer=_canonical_control(arguments.transport_producer, "Caller capture producer"),
                 trusted_workflow_sha=arguments.trusted_workflow_sha,
                 contract_version=arguments.contract_version, token=os.environ.get("GITHUB_TOKEN", ""))
+        elif arguments.command == "execute-runtime-supervisor":
+            execute_runtime_supervisor(
+                arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
+                expected_build_key=arguments.expected_build_key, sdk_validation_tooling=tooling)
         elif arguments.command == "capture-runtime-supervisor-upload":
             capture_runtime_supervisor_upload(
                 arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
@@ -3589,11 +3662,20 @@ def main(argv: list[str] | None = None) -> int:
             operation = {"materialize-product-predecessors": materialize_product_predecessors,
                          "prepare-runtime-phase": prepare_runtime_phase,
                          "execute-runtime-phase": execute_runtime_phase}[arguments.command]
+            additional = {}
+            if arguments.command == "execute-runtime-phase":
+                values = (arguments.supervisor_artifact_id, arguments.supervisor_artifact_sha256,
+                          arguments.supervisor_trusted_workflow_sha)
+                if any(value is not None for value in values):
+                    if any(value is None for value in values):
+                        raise ValueError("All three caller-bound supervisor upload arguments are required")
+                    additional["supervisor_upload"] = dict(zip(
+                        ("artifactId", "artifactSha256", "trustedWorkflowSha"), values))
             operation(
                 arguments.plan, arguments.discovery_root, arguments.state_root,
                 PhaseInstanceId(arguments.product, arguments.component, arguments.phase, arguments.target),
                 arguments.destination, expected_build_key=arguments.expected_build_key,
-                sdk_validation_tooling=tooling)
+                sdk_validation_tooling=tooling, **additional)
         elif arguments.command == "capture-contract-original-ci":
             capture_contract_original_ci_phases(
                 arguments.capture_root, arguments.destination, contract_version=arguments.contract_version,
