@@ -1,6 +1,9 @@
 name: Setup Kotlin build
 description: Install pinned build tools and restore read-only-safe Gradle and Konan caches.
 inputs:
+  product-worker:
+    description: Restore dependency caches without injecting Gradle init scripts; the worker still verifies the environment.
+    default: "false"
   cache-read-only:
     description: Prevent this job from writing the shared Gradle cache.
     default: "true"
@@ -31,8 +34,10 @@ runs:
       env:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         REQUEST_READ_ONLY: ${{ inputs.cache-read-only }}
+        PRODUCT_WORKER: ${{ inputs.product-worker }}
       shell: bash
       run: |
+        case "$PRODUCT_WORKER" in true|false) ;; *) exit 1 ;; esac
         write=false
         if [ "$REQUEST_READ_ONLY" != true ] && [ "$GITHUB_EVENT_NAME" = pull_request ] && \
           [ -n "$PR_NUMBER" ] && [ "$GITHUB_REF" = "refs/pull/$PR_NUMBER/merge" ]; then
@@ -59,6 +64,9 @@ runs:
         fi
         gradle="gradle-main-dependencies-v1-$RUNNER_OS-$RUNNER_ARCH-${{ hashFiles('**/*.gradle.kts', 'gradle/**/*.toml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties') }}"
         konan="konan-main-v2-$RUNNER_OS-$RUNNER_ARCH-$fingerprint-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties') }}"
+        printf 'product-key=gradle-product-worker-v1-%s-%s-%s-%s-%s\n' \
+          "$RUNNER_OS" "$RUNNER_ARCH" "$fingerprint" "${PR_NUMBER:-main}" \
+          "${{ hashFiles('**/*.gradle.kts', '**/*.lockfile', '**/package-lock.json', 'gradle/**/*.toml', 'gradle/wrapper/gradle-wrapper.properties', '**/gradle.properties', '.github/actions/setup-kmp/action.yml') }}" >> "$GITHUB_OUTPUT"
         printf 'fingerprint=%s\ngradle-main-key=%s\nkonan-main-key=%s\nkonan-pr-key=konan-pr-v2-%s-%s-%s-%s-%s\n' \
           "$fingerprint" "$gradle" "$konan" "$RUNNER_OS" "$RUNNER_ARCH" "$fingerprint" \
           "${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties') }}" \
@@ -68,10 +76,27 @@ runs:
       with:
         path: ~/.gradle/caches/modules-2
         key: ${{ steps.cache-keys.outputs.gradle-main-key }}
-    - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+    - if: inputs.product-worker != 'true'
+      uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
       with:
         cache-read-only: ${{ steps.cache-policy.outputs.write != 'true' }}
         cache-encryption-key: ${{ inputs.cache-encryption-key }}
+    - if: inputs.product-worker == 'true' && steps.cache-policy.outputs.write != 'true'
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          ~/.npm/_cacache
+        key: ${{ steps.cache-keys.outputs.product-key }}
+    - if: inputs.product-worker == 'true' && steps.cache-policy.outputs.write == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          ~/.npm/_cacache
+        key: ${{ steps.cache-keys.outputs.product-key }}
     - id: konan-main-read
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +18,49 @@ from stage import OUTPUTS, RUNNER_IDENTITY, TOOLCHAIN_IDENTITY, recorded_identit
 
 
 class CacheIdentityContractTest(unittest.TestCase):
+    def test_product_worker_cache_policy_is_opt_in_and_fail_closed(self) -> None:
+        action = (REPOSITORY / ".github/actions/setup-kmp/action.yml").read_text()
+        script = textwrap.dedent(action.split("      run: |\n", 1)[1].split("    - uses:", 1)[0])
+        for mode, event, ref, readonly, expected in (
+            ("true", "pull_request", "refs/pull/31/merge", "false", "true"),
+            ("false", "pull_request", "refs/pull/31/merge", "false", "true"),
+            ("true", "pull_request", "refs/pull/31/merge", "true", "false"),
+            ("true", "pull_request", "refs/heads/feature", "false", "false"),
+            ("true", "merge_group", "refs/pull/31/merge", "false", "false"),
+            ("invalid", "pull_request", "refs/pull/31/merge", "false", None),
+        ):
+            with self.subTest(mode=mode, event=event, ref=ref, readonly=readonly), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "output"
+                result = subprocess.run(["bash", "-eu", "-c", script], env={
+                    **os.environ, "PRODUCT_WORKER": mode, "GITHUB_EVENT_NAME": event,
+                    "GITHUB_REF": ref, "PR_NUMBER": "31", "REQUEST_READ_ONLY": readonly,
+                    "GITHUB_OUTPUT": str(output),
+                }, capture_output=True, text=True)
+                if expected is None:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), f"write={expected}\n")
+
+    def test_product_worker_restores_dependencies_without_init_injection(self) -> None:
+        action = (REPOSITORY / ".github/actions/setup-kmp/action.yml").read_text()
+        self.assertIn('product-worker:\n', action)
+        self.assertIn("- if: inputs.product-worker != 'true'\n      uses: gradle/actions/setup-gradle@", action)
+        for writable in ("!=", "=="):
+            block = action.split(f"inputs.product-worker == 'true' && steps.cache-policy.outputs.write {writable} 'true'", 1)[1].split("    - ", 1)[0]
+            self.assertIn("actions/cache/restore@" if writable == "!=" else "actions/cache@", block)
+            self.assertIn("~/.gradle/caches\n          ~/.gradle/wrapper\n          ~/.npm/_cacache", block)
+            self.assertIn("key: ${{ steps.cache-keys.outputs.product-key }}", block)
+            self.assertNotIn("restore-keys:", block)
+            self.assertNotIn("init.d", block)
+        self.assertIn('"${PR_NUMBER:-main}"', action)
+        self.assertIn("'**/package-lock.json'", action)
+        self.assertIn('"$RUNNER_OS" "$RUNNER_ARCH" "$fingerprint"', action)
+        msvc = (REPOSITORY / ".github/actions/setup-msvc/action.yml").read_text()
+        self.assertIn('$required = @("Path", "INCLUDE", "LIB", "VCToolsVersion", "WindowsSDKVersion")', msvc)
+        self.assertIn('($required + @("LIBPATH")) | ForEach-Object', msvc)
+
     def test_receipt_identity_has_one_exact_fail_closed_source(self) -> None:
         values = {
             environment: "unavailable" if name in {"node", "rustc", "cargo", "xcode", "swift"} else f"actual-{name}"
